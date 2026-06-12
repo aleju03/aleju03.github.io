@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" fill="none">
+  <!--
+    DocIndexer mark: a document streaming one indexed line out through a gap
+    in its right edge, toward a worker node. Flat, two colors, drawn by hand.
+  -->
+  <!-- document outline with a dog-ear fold; the right edge breaks where the line exits -->
+  <path
+    d="M 62 58 V 72 Q 62 80 54 80 H 28 Q 20 80 20 72 V 24 Q 20 16 28 16 H 47 L 62 31 V 46"
+    stroke="#fafaf9"
+    stroke-width="5.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <!-- fold -->
+  <path
+    d="M 47 16 V 27 Q 47 31 51 31 H 62"
+    stroke="#fafaf9"
+    stroke-width="5.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <!-- content lines -->
+  <path d="M 31 42 H 51" stroke="#fafaf9" stroke-width="5.5" stroke-linecap="round" />
+  <path d="M 31 66 H 45" stroke="#fafaf9" stroke-width="5.5" stroke-linecap="round" />
+  <!-- the indexed line leaving the document -->
+  <path d="M 31 54 H 70" stroke="#60a5fa" stroke-width="5.5" stroke-linecap="round" />
+  <circle cx="79" cy="54" r="5" fill="#60a5fa" />
+</svg>

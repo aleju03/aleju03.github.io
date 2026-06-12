@@ -1,0 +1,117 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'SFMono-Regular', monospace;
+  --font-display: 'Clash Display', 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* display face for the hero name only; self-hosted, Fontshare ITF Free Font License */
+@font-face {
+  font-family: 'Clash Display';
+  src: url('/fonts/clash-display-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+/*
+  Theme: light/dark, default follows prefers-color-scheme, manual toggle persisted
+  in localStorage ('theme'). Warm stone neutrals in both modes.
+  Accent: blue-600 (blue-400 on dark), used for links, primary CTA, and focus rings.
+  Radius system: cards and media 12px (rounded-xl), interactive pills full radius.
+*/
+
+:root {
+  --page: var(--color-stone-50);
+}
+.dark {
+  --page: var(--color-stone-950);
+  color-scheme: dark;
+}
+
+html {
+  background-color: var(--page);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  @apply bg-stone-50 text-stone-600 antialiased font-sans dark:bg-stone-950 dark:text-stone-400;
+}
+
+/* browsers give buttons cursor: default; clickable things should look clickable */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']) {
+  cursor: pointer;
+}
+
+::selection {
+  background-color: var(--color-blue-600);
+  color: var(--color-stone-50);
+}
+
+/* scrollbars: slim stone pill on a transparent track, page-wide and inside
+   scroll containers (project modal, command palette) */
+:root {
+  --scrollbar-thumb: var(--color-stone-300);
+  --scrollbar-thumb-hover: var(--color-stone-400);
+}
+.dark {
+  --scrollbar-thumb: var(--color-stone-700);
+  --scrollbar-thumb-hover: var(--color-stone-600);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  /* transparent border + padding-box clip keeps the pill off the content edge */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  background-color: var(--scrollbar-thumb);
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox has no ::-webkit-scrollbar; the standard properties approximate the same look */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+
+/* elements inside an obvious focus context (command palette input) opt out via the data attribute */
+:focus-visible:not([data-no-focus-ring]) {
+  outline: 2px solid var(--color-blue-600);
+  outline-offset: 2px;
+}
+
+/* theme toggle wipe: the new theme is revealed by a JS-driven clip-path circle */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-new(root) {
+  z-index: 10;
+}
+::view-transition-old(root) {
+  z-index: 1;
+}

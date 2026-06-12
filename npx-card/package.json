@@ -1,0 +1,22 @@
+{
+  "name": "aleju",
+  "version": "1.0.0",
+  "description": "Alejandro Jiménez's business card, in your terminal",
+  "bin": {
+    "aleju": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ],
+  "keywords": [
+    "card",
+    "cli",
+    "portfolio"
+  ],
+  "author": "Alejandro Jiménez <alejimenezu@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aleju03"
+  }
+}

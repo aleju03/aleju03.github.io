@@ -1,0 +1,112 @@
+import { useState } from 'react'
+import { AnimatePresence } from 'motion/react'
+import { ArrowUpRightIcon, ArrowsOutSimpleIcon, GithubLogoIcon } from '@phosphor-icons/react'
+import { showcase } from '../data/projects'
+import type { ShowcaseProject } from '../data/projects'
+import { Reveal } from './Reveal'
+import { TechList } from './TechList'
+import { ZigzagDoodle } from './Doodles'
+import { ProjectModal } from './ProjectModal'
+
+function WorkCard({ project, onOpen }: { project: ShowcaseProject; onOpen: () => void }) {
+  return (
+    <article
+      role="button"
+      tabIndex={0}
+      aria-haspopup="dialog"
+      aria-label={`View details for ${project.name}`}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+      className="group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-black/40"
+    >
+      <div className="relative border-b border-stone-200 bg-stone-100 p-4 dark:border-stone-800 dark:bg-stone-950/60">
+        {/* whole thumbnail, never cropped */}
+        <div className="flex aspect-[16/10] items-center justify-center">
+          <img
+            src={project.image}
+            alt={project.imageAlt}
+            loading="lazy"
+            className="max-h-full max-w-full rounded-lg border border-stone-200 object-contain transition-transform duration-500 ease-out group-hover:scale-[1.02] dark:border-stone-800"
+          />
+        </div>
+        <span className="absolute top-3 right-3 flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white/85 text-stone-600 opacity-0 shadow-sm backdrop-blur transition duration-300 group-hover:opacity-100 dark:border-stone-700 dark:bg-stone-900/85 dark:text-stone-300">
+          <ArrowsOutSimpleIcon size={15} weight="bold" />
+        </span>
+      </div>
+      <div className="flex flex-1 flex-col gap-3 p-6">
+        <h3 className="text-lg font-semibold tracking-tight text-stone-900 dark:text-stone-100">
+          {project.name}
+        </h3>
+        <p className="flex-1 text-sm leading-relaxed text-stone-600 dark:text-stone-400">
+          {project.description}
+        </p>
+        <TechList tech={project.tech} />
+        <div className="mt-1 flex flex-wrap items-center gap-5 text-sm font-medium">
+          {project.live && (
+            <a
+              href={project.live}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-1 text-blue-600 transition-colors hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+            >
+              {project.liveLabel}
+              <ArrowUpRightIcon size={14} weight="bold" />
+            </a>
+          )}
+          <a
+            href={project.repo}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1.5 text-stone-500 transition-colors hover:text-stone-900 dark:hover:text-stone-200"
+          >
+            <GithubLogoIcon size={15} weight="bold" />
+            Source
+          </a>
+        </div>
+      </div>
+    </article>
+  )
+}
+
+export function WorkGrid() {
+  const [selected, setSelected] = useState<ShowcaseProject | null>(null)
+
+  return (
+    <section id="work" className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800">
+      <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
+        <Reveal>
+          <div className="flex items-center gap-5 sm:gap-10">
+            <h2 className="shrink-0 text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
+              Selected work
+            </h2>
+            <ZigzagDoodle className="hidden min-w-0 flex-1 text-stone-800 sm:block dark:text-stone-200" />
+            <ZigzagDoodle short className="min-w-0 flex-1 text-stone-800 sm:hidden dark:text-stone-200" />
+          </div>
+        </Reveal>
+        <div className="mt-12 grid grid-cols-1 gap-6 md:grid-cols-2">
+          {showcase.map((project, i) => (
+            <Reveal key={project.name} delay={(i % 2) * 0.08} className="h-full">
+              <WorkCard project={project} onOpen={() => setSelected(project)} />
+            </Reveal>
+          ))}
+        </div>
+      </div>
+      <AnimatePresence>
+        {selected && (
+          <ProjectModal
+            key={selected.name}
+            project={selected}
+            onClose={() => setSelected(null)}
+          />
+        )}
+      </AnimatePresence>
+    </section>
+  )
+}
