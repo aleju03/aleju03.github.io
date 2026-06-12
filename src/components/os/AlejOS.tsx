@@ -422,8 +422,9 @@ export default function AlejOS() {
           />
         </div>
         <div className="hidden h-7 shrink-0 items-center justify-center gap-3 sm:flex">
-          <span className="text-[10px] font-semibold tracking-[0.35em] text-stone-500 select-none">
-            ALEJTRON 700
+          <span className="flex items-baseline gap-2 select-none">
+            <span className="text-[11px] font-bold tracking-[0.08em] text-stone-500 italic">AJU</span>
+            <span className="text-[10px] font-medium tracking-[0.3em] text-stone-500/70">700FD</span>
           </span>
           <span
             aria-hidden
