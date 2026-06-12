@@ -38,6 +38,7 @@ import {
 } from './fs'
 import type { FsNode } from './fs'
 import { glyphFor } from './apps'
+import { tinted } from './tinted'
 
 /*
   File Explorer: a real navigable view over the AlejOS filesystem. Address
@@ -48,20 +49,20 @@ import { glyphFor } from './apps'
 */
 
 const DRIVES = [
-  { name: 'Local Disk (C:)', path: 'C:', icon: <HardDriveIcon size={34} weight="duotone" /> },
-  { name: '3½ Floppy (A:)', path: 'A:', icon: <FloppyDiskIcon size={34} weight="duotone" /> },
-  { name: 'CD Drive (D:)', path: 'D:', icon: <DiscIcon size={34} weight="duotone" /> },
+  { name: 'Local Disk (C:)', path: 'C:', icon: tinted('#44403c', '#d6d3d1', <HardDriveIcon size={34} weight="duotone" />) },
+  { name: '3½ Floppy (A:)', path: 'A:', icon: tinted('#1e40af', '#60a5fa', <FloppyDiskIcon size={34} weight="duotone" />) },
+  { name: 'CD Drive (D:)', path: 'D:', icon: tinted('#475569', '#cbd5e1', <DiscIcon size={34} weight="duotone" />) },
 ]
 
 const QUICK_LINKS: { label: string; path: string; icon: ReactNode }[] = [
-  { label: 'My Computer', path: MY_COMPUTER, icon: <DesktopTowerIcon size={15} weight="duotone" /> },
-  { label: 'Local Disk (C:)', path: 'C:', icon: <HardDriveIcon size={15} weight="duotone" /> },
+  { label: 'My Computer', path: MY_COMPUTER, icon: tinted('#57534e', '#e7e5e4', <DesktopTowerIcon size={15} weight="duotone" />) },
+  { label: 'Local Disk (C:)', path: 'C:', icon: tinted('#44403c', '#d6d3d1', <HardDriveIcon size={15} weight="duotone" />) },
   { label: 'Desktop', path: DESKTOP, icon: null },
   { label: 'Documents', path: 'C:\\Documents', icon: null },
   { label: 'Pictures', path: 'C:\\Pictures', icon: null },
   { label: 'Projects', path: 'C:\\Projects', icon: null },
   { label: 'Program Files', path: 'C:\\Program Files', icon: null },
-  { label: 'Recycle Bin', path: RECYCLE_BIN, icon: <TrashIcon size={15} weight="duotone" /> },
+  { label: 'Recycle Bin', path: RECYCLE_BIN, icon: tinted('#57534e', '#d6d3d1', <TrashIcon size={15} weight="duotone" />) },
 ]
 
 function displayPath(path: string): string {

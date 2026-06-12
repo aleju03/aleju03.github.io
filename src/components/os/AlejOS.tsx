@@ -3,6 +3,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -23,12 +24,14 @@ import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT } from '../../events'
 import { lockPageForOverlay } from '../../overlay'
 import { APPS, glyphFor, isAppId } from './apps'
+import { tinted } from './tinted'
 import type { AppId } from './apps'
 import { Window } from './Window'
 import type { WinState } from './Window'
 import { sounds } from './sounds'
 import { getWallpaperId, subscribeWallpaper, wallpaperById } from './wallpapers'
 import { BiosScreen } from './BiosScreen'
+import { FlagLogo } from './FlagLogo'
 import { ScreenEffects } from './ScreenEffects'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
@@ -106,10 +109,61 @@ function Clock() {
   )
 }
 
+// --- the desktop icon grid ---------------------------------------------------
+// icons live on Windows-style cells: column-major flow by default, but any
+// icon can be dragged to a new cell and the arrangement sticks (localStorage).
+interface Cell {
+  col: number
+  row: number
+}
+
+const ICON_POS_KEY = 'alejos-icon-pos'
+const CELL_W = 102
+const CELL_H = 78
+const GRID_PAD = 12
+
+const loadIconPos = (): Record<string, Cell> => {
+  try {
+    return JSON.parse(localStorage.getItem(ICON_POS_KEY) ?? '{}') as Record<string, Cell>
+  } catch {
+    return {}
+  }
+}
+
+/** stored cells win (first come keeps the spot); the rest flow down the columns */
+function layoutIcons(
+  ids: string[],
+  placed: Record<string, Cell>,
+  cols: number,
+  rows: number,
+): Record<string, Cell> {
+  const out: Record<string, Cell> = {}
+  const taken = new Set<string>()
+  const key = (c: Cell) => `${c.col},${c.row}`
+  for (const id of ids) {
+    const p = placed[id]
+    if (p && p.col >= 0 && p.row >= 0 && p.col < cols && p.row < rows && !taken.has(key(p))) {
+      out[id] = p
+      taken.add(key(p))
+    }
+  }
+  let slot = 0
+  for (const id of ids) {
+    if (out[id]) continue
+    while (taken.has(`${Math.floor(slot / rows)},${slot % rows}`)) slot++
+    const c = { col: Math.floor(slot / rows), row: slot % rows }
+    out[id] = c
+    taken.add(key(c))
+    slot++
+  }
+  return out
+}
+
 interface DesktopIconProps {
   id: string
   label: string
   glyph: React.ReactNode
+  cell: Cell
   selected: boolean
   renaming?: boolean
   /** light wallpapers take dark text; everything else gets white + shadow */
@@ -117,11 +171,51 @@ interface DesktopIconProps {
   onSelect: () => void
   onOpen: () => void
   onRename?: (next: string) => void
+  /** pixel delta (in desktop space) from the icon's resting cell, on drop */
+  onDragEnd: (dx: number, dy: number) => void
 }
 
 // single click selects like a real desktop; double click (or tap, where
 // there is no hover) opens. data-icon makes the marquee hit-test find it.
-function DesktopIcon({ id, label, glyph, selected, renaming, onLight, onSelect, onOpen, onRename }: DesktopIconProps) {
+// holding and moving past a small threshold picks the icon up instead.
+function DesktopIcon({ id, label, glyph, cell, selected, renaming, onLight, onSelect, onOpen, onRename, onDragEnd }: DesktopIconProps) {
+  const dragRef = useRef<{ px: number; py: number; scale: number; moved: boolean } | null>(null)
+  const suppressClick = useRef(false)
+  const [lift, setLift] = useState<{ x: number; y: number } | null>(null)
+
+  type Drag = NonNullable<typeof dragRef.current>
+  const localDelta = (d: Drag, e: React.PointerEvent) => ({
+    x: (e.clientX - d.px) / d.scale,
+    y: (e.clientY - d.py) / d.scale,
+  })
+
+  const startDrag = (e: React.PointerEvent) => {
+    if (renaming || e.button !== 0) return
+    // the 3D CRT scales the screen DOM, so client px ≠ desktop px
+    const el = e.currentTarget as HTMLElement
+    const scale = el.getBoundingClientRect().width / el.offsetWidth || 1
+    dragRef.current = { px: e.clientX, py: e.clientY, scale, moved: false }
+    el.setPointerCapture(e.pointerId)
+  }
+  const moveDrag = (e: React.PointerEvent) => {
+    const d = dragRef.current
+    if (!d) return
+    const { x, y } = localDelta(d, e)
+    if (!d.moved && Math.hypot(x, y) < 5) return
+    d.moved = true
+    setLift({ x, y })
+  }
+  const endDrag = (e: React.PointerEvent) => {
+    const d = dragRef.current
+    dragRef.current = null
+    setLift(null)
+    if (d?.moved) {
+      const { x, y } = localDelta(d, e)
+      onDragEnd(x, y)
+      suppressClick.current = true
+    }
+  }
+
   const ink = onLight
     ? 'text-stone-800 drop-shadow-sm'
     : 'text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.7)]'
@@ -130,6 +224,10 @@ function DesktopIcon({ id, label, glyph, selected, renaming, onLight, onSelect, 
       type="button"
       data-icon={id}
       onClick={() => {
+        if (suppressClick.current) {
+          suppressClick.current = false
+          return
+        }
         if (renaming) return
         if (window.matchMedia('(hover: none)').matches) onOpen()
         else {
@@ -141,9 +239,18 @@ function DesktopIcon({ id, label, glyph, selected, renaming, onLight, onSelect, 
         if (!renaming) onOpen()
       }}
       onFocus={onSelect}
-      className={`flex w-24 cursor-pointer flex-col items-center gap-1 rounded-md p-2 ${
-        selected ? 'bg-blue-700/30' : onLight ? 'hover:bg-stone-950/10' : 'hover:bg-white/15'
-      }`}
+      onPointerDown={startDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      style={{
+        left: GRID_PAD + cell.col * CELL_W,
+        top: GRID_PAD + cell.row * CELL_H,
+        ...(lift && { transform: `translate(${lift.x}px, ${lift.y}px)`, zIndex: 3000 }),
+      }}
+      className={`pointer-events-auto absolute flex w-24 cursor-pointer touch-none flex-col items-center gap-1 rounded-md p-2 ${
+        lift ? 'opacity-75' : ''
+      } ${selected ? 'bg-blue-700/30' : onLight ? 'hover:bg-stone-950/10' : 'hover:bg-white/15'}`}
     >
       <span className={`${ink} [&_svg]:block`}>{glyph}</span>
       {renaming && onRename ? (
@@ -171,22 +278,37 @@ function DesktopIcon({ id, label, glyph, selected, renaming, onLight, onSelect, 
 
 function BootScreen() {
   return (
-    <div className="flex h-full flex-col items-center justify-center bg-stone-950">
-      <p className="font-display text-5xl font-semibold text-stone-100">
-        Alej<span className="text-blue-500">OS</span>
-      </p>
-      <div className="mt-10 h-4 w-56 overflow-hidden rounded-sm border border-stone-700 p-0.5">
-        <motion.div
-          className="flex h-full gap-1"
-          animate={{ x: [-44, 224] }}
-          transition={{ duration: 1.3, repeat: Infinity, ease: 'linear' }}
-        >
-          <span className="h-full w-3 rounded-[2px] bg-blue-500" />
-          <span className="h-full w-3 rounded-[2px] bg-blue-500" />
-          <span className="h-full w-3 rounded-[2px] bg-blue-500" />
-        </motion.div>
+    <div className="relative flex h-full flex-col items-center justify-center bg-black">
+      <div>
+        <FlagLogo size={88} className="ml-14" />
+        <p className="mt-1 text-[13px] font-medium tracking-wide text-stone-200">AJU Systems</p>
+        <p className="font-display text-[44px] leading-none font-semibold text-white">
+          AlejOS
+          <sup className="ml-1 align-super text-lg font-bold text-orange-500">v2</sup>
+        </p>
       </div>
-      <p className="mt-6 font-mono text-xs text-stone-500">starting alejos v2.0</p>
+      <div className="mt-16 h-[18px] w-52 rounded-[9px] border-2 border-stone-400/90 p-[2px]">
+        <div className="h-full overflow-hidden rounded-[5px]">
+          <motion.div
+            className="flex h-full gap-[3px]"
+            animate={{ x: [-42, 208] }}
+            transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
+          >
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className="h-full w-2.5 shrink-0 rounded-[2px]"
+                style={{
+                  background: 'linear-gradient(180deg, #8fa7f8 0%, #3e63e8 45%, #2746c6 100%)',
+                }}
+              />
+            ))}
+          </motion.div>
+        </div>
+      </div>
+      <p className="absolute bottom-4 left-5 text-[11px] text-stone-400">
+        Copyright © 2003 AJU Systems, Inc.
+      </p>
       <p className="absolute right-5 bottom-4 font-mono text-[11px] text-stone-600">esc to skip</p>
     </div>
   )
@@ -207,6 +329,8 @@ export default function AlejOS() {
   const [marquee, setMarquee] = useState<Rect | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; icon: string | null } | null>(null)
   const [renamingIcon, setRenamingIcon] = useState<string | null>(null)
+  const [iconPos, setIconPos] = useState<Record<string, Cell>>(loadIconPos)
+  const [grid, setGrid] = useState({ cols: 8, rows: 8 })
   const phaseRef = useRef(phase)
   const desktopRef = useRef<HTMLDivElement>(null)
   const marqueeOriginRef = useRef<{ x: number; y: number } | null>(null)
@@ -219,6 +343,53 @@ export default function AlejOS() {
   useSyncExternalStore(subscribeFs, getFsVersion)
   const desktopNodes = listDir(DESKTOP)
   const binCount = recycleBinCount()
+
+  // how many icon cells fit on this screen; re-measured when the CRT resizes
+  useLayoutEffect(() => {
+    if (phase !== 'on') return
+    const el = desktopRef.current
+    if (!el) return
+    const measure = () =>
+      setGrid({
+        cols: Math.max(1, Math.floor((el.clientWidth - GRID_PAD) / CELL_W)),
+        // leave the taskbar (h-12) plus a little breathing room at the bottom
+        rows: Math.max(1, Math.floor((el.clientHeight - GRID_PAD - 56) / CELL_H)),
+      })
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [phase])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ICON_POS_KEY, JSON.stringify(iconPos))
+    } catch {
+      /* storage unavailable; the arrangement still works in memory */
+    }
+  }, [iconPos])
+
+  const iconIds = [
+    'my-computer',
+    ...desktopNodes.map((n) => `fs:${n.name}`),
+    'recycle-bin',
+    'exit',
+  ]
+  const iconCells = layoutIcons(iconIds, iconPos, grid.cols, grid.rows)
+
+  const moveIcon = (id: string, dx: number, dy: number) => {
+    const from = iconCells[id]
+    const col = Math.min(grid.cols - 1, Math.max(0, Math.round(from.col + dx / CELL_W)))
+    const row = Math.min(grid.rows - 1, Math.max(0, Math.round(from.row + dy / CELL_H)))
+    if (col === from.col && row === from.row) return
+    // freeze the whole current layout, then swap with whoever holds the cell
+    const next = { ...iconCells }
+    const occupant = iconIds.find((k) => k !== id && next[k].col === col && next[k].row === row)
+    if (occupant) next[occupant] = from
+    next[id] = { col, row }
+    setIconPos(next)
+    sounds.click()
+  }
 
   const shutdown = useCallback(() => {
     sounds.shutdown()
@@ -497,7 +668,18 @@ export default function AlejOS() {
     const clean = next.trim()
     if (!clean || clean === node.name) return
     const r = renameNode(joinPath(DESKTOP, node.name), clean)
-    if (!r.ok) sounds.error()
+    if (!r.ok) {
+      sounds.error()
+      return
+    }
+    // the icon's grid spot is keyed by name, so it moves with the rename
+    setIconPos((prev) => {
+      const cell = prev[`fs:${node.name}`]
+      if (!cell) return prev
+      const next = { ...prev, [`fs:${r.name}`]: cell }
+      delete next[`fs:${node.name}`]
+      return next
+    })
   }
 
   // --- context menus --------------------------------------------------------
@@ -505,9 +687,10 @@ export default function AlejOS() {
     {
       label: 'Arrange Icons By',
       sub: [
-        { label: 'Name', onClick: () => sortChildren(DESKTOP, 'name') },
-        { label: 'Type', onClick: () => sortChildren(DESKTOP, 'type') },
-        { label: 'Modified', onClick: () => sortChildren(DESKTOP, 'modified') },
+        // sorting also forgets manual spots, so everything flows again
+        { label: 'Name', onClick: () => { setIconPos({}); sortChildren(DESKTOP, 'name') } },
+        { label: 'Type', onClick: () => { setIconPos({}); sortChildren(DESKTOP, 'type') } },
+        { label: 'Modified', onClick: () => { setIconPos({}); sortChildren(DESKTOP, 'modified') } },
       ],
     },
     { label: 'Refresh', onClick: () => sounds.click() },
@@ -607,16 +790,19 @@ export default function AlejOS() {
         }
       />
 
-      {/* desktop icons: My Computer, then C:\Desktop, then the bin */}
-      <div className="absolute top-3 left-3 flex flex-col flex-wrap gap-1.5" style={{ maxHeight: 'calc(100% - 4rem)' }}>
+      {/* desktop icons: My Computer, then C:\Desktop, then the bin. each one
+          sits on its grid cell; the layer itself must not eat desktop clicks */}
+      <div className="pointer-events-none absolute inset-0 bottom-12">
         <DesktopIcon
           id="my-computer"
           label="My Computer"
-          glyph={<DesktopTowerIcon size={34} weight="duotone" />}
+          glyph={tinted('#57534e', '#e7e5e4', <DesktopTowerIcon size={34} weight="duotone" />)}
+          cell={iconCells['my-computer']}
           selected={selected.has('my-computer')}
           onLight={onLightWallpaper}
           onSelect={() => setSelected(new Set(['my-computer']))}
           onOpen={() => openApp('explorer', { path: MY_COMPUTER })}
+          onDragEnd={(dx, dy) => moveIcon('my-computer', dx, dy)}
         />
         {desktopNodes.map((node) => {
           const id = `fs:${node.name}`
@@ -626,32 +812,38 @@ export default function AlejOS() {
               id={id}
               label={node.name}
               glyph={glyphFor(node, 34)}
+              cell={iconCells[id]}
               selected={selected.has(id)}
               renaming={renamingIcon === id}
               onLight={onLightWallpaper}
               onSelect={() => setSelected(new Set([id]))}
               onOpen={() => openPath(joinPath(DESKTOP, node.name))}
               onRename={(next) => commitIconRename(node, next)}
+              onDragEnd={(dx, dy) => moveIcon(id, dx, dy)}
             />
           )
         })}
         <DesktopIcon
           id="recycle-bin"
           label={binCount > 0 ? `Recycle Bin (${binCount})` : 'Recycle Bin'}
-          glyph={<TrashIcon size={34} weight={binCount > 0 ? 'fill' : 'duotone'} />}
+          glyph={tinted('#57534e', '#d6d3d1', <TrashIcon size={34} weight={binCount > 0 ? 'fill' : 'duotone'} />)}
+          cell={iconCells['recycle-bin']}
           selected={selected.has('recycle-bin')}
           onLight={onLightWallpaper}
           onSelect={() => setSelected(new Set(['recycle-bin']))}
           onOpen={() => openApp('explorer', { path: RECYCLE_BIN })}
+          onDragEnd={(dx, dy) => moveIcon('recycle-bin', dx, dy)}
         />
         <DesktopIcon
           id="exit"
           label="Back to site"
-          glyph={<SignOutIcon size={34} weight="duotone" />}
+          glyph={tinted('#1d4ed8', '#93c5fd', <SignOutIcon size={34} weight="duotone" />)}
+          cell={iconCells['exit']}
           selected={selected.has('exit')}
           onLight={onLightWallpaper}
           onSelect={() => setSelected(new Set(['exit']))}
           onOpen={shutdown}
+          onDragEnd={(dx, dy) => moveIcon('exit', dx, dy)}
         />
       </div>
 
@@ -748,7 +940,7 @@ export default function AlejOS() {
                     >
                       <span className="text-blue-700 [&_svg]:size-5">
                         {item.label === 'My Computer' ? (
-                          <DesktopTowerIcon size={20} weight="duotone" />
+                          tinted('#57534e', '#e7e5e4', <DesktopTowerIcon size={20} weight="duotone" />)
                         ) : (
                           APPS[item.app].glyph(20)
                         )}
@@ -864,6 +1056,7 @@ export default function AlejOS() {
           setSession(s)
           setPhase('on')
         }}
+        onShutdown={shutdown}
       />
     ) : phase === 'down' ? (
       downMsg ? (

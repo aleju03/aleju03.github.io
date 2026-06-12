@@ -206,6 +206,22 @@ button:not(:disabled),
   }
 }
 
+/* AlejOS icons: phosphor duotone glyphs ship their fill layer as a path with
+   opacity="0.2" in currentColor. Inside .icon-tone that layer is restored to
+   full opacity and painted with --tone, so each icon carries its own solid
+   colors like a real OS icon instead of reading as a faint outline */
+.icon-tone svg path[opacity] {
+  opacity: 1;
+  fill: var(--tone, currentColor);
+}
+
+/* the fill-weight backing under each duotone glyph: it plugs the holes the
+   duotone outline leaves open (folder flap, page body, chat bubble) so the
+   wallpaper never shows through the icon's body */
+.icon-tone-back {
+  color: var(--tone, currentColor);
+}
+
 /* circular theme wipe (fine pointers): the new theme is revealed by a
    JS-driven clip-path circle. Only the OLD frame is a static snapshot — the
    new view is the live page, so animations keep running under the sweep;
