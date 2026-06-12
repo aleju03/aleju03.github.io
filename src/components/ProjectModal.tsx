@@ -58,9 +58,19 @@ function SectionLabel({ children }: { children: string }) {
 
 export function ProjectModal({
   project,
+  labels,
+  sourceLabel,
   onClose,
 }: {
   project: ShowcaseProject
+  labels: {
+    builtWith: string
+    buildingIt: string
+    learned: string
+    close: string
+    screenshot: string
+  }
+  sourceLabel: string
   onClose: () => void
 }) {
   const reduce = useReducedMotion()
@@ -158,7 +168,7 @@ export function ProjectModal({
                     key={img.src}
                     type="button"
                     onClick={() => setActive(i)}
-                    aria-label={`Show screenshot ${i + 1}: ${img.alt}`}
+                    aria-label={`${labels.screenshot} ${i + 1}: ${img.alt}`}
                     aria-current={i === active}
                     className={`flex h-14 w-[5.5rem] shrink-0 items-center justify-center overflow-hidden rounded-md border transition ${
                       i === active
@@ -203,13 +213,13 @@ export function ProjectModal({
                   className="inline-flex items-center gap-1.5 text-stone-500 transition-colors hover:text-stone-900 dark:hover:text-stone-200"
                 >
                   <GithubLogoIcon size={15} weight="bold" />
-                  Source
+                  {sourceLabel}
                 </a>
               </div>
             </header>
 
             <section className="flex flex-col gap-2.5">
-              <SectionLabel>Built with</SectionLabel>
+              <SectionLabel>{labels.builtWith}</SectionLabel>
               <ul className="flex flex-wrap gap-2">
                 {project.tech.map((t) => (
                   <TechBadge key={t} name={t} />
@@ -218,7 +228,7 @@ export function ProjectModal({
             </section>
 
             <section className="flex flex-col gap-2.5">
-              <SectionLabel>Building it</SectionLabel>
+              <SectionLabel>{labels.buildingIt}</SectionLabel>
               {story.map((paragraph) => (
                 <p
                   key={paragraph.slice(0, 32)}
@@ -230,7 +240,7 @@ export function ProjectModal({
             </section>
 
             <section className="flex flex-col gap-2.5">
-              <SectionLabel>What I learned</SectionLabel>
+              <SectionLabel>{labels.learned}</SectionLabel>
               <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-stone-600 marker:text-stone-400 dark:text-stone-400 dark:marker:text-stone-600">
                 {learned.map((item) => (
                   <li key={item}>{item}</li>
@@ -243,7 +253,7 @@ export function ProjectModal({
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close project details"
+          aria-label={labels.close}
           className="absolute top-3 right-5 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-stone-200 bg-white/90 text-stone-600 shadow-sm transition hover:scale-105 hover:text-stone-900 active:scale-95 dark:border-stone-700 dark:bg-stone-900/90 dark:text-stone-300 dark:hover:text-stone-100 sm:backdrop-blur"
         >
           <XIcon size={18} weight="bold" />

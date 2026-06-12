@@ -243,6 +243,9 @@ export default function BlockName({
         taillightMat.dispose()
         flameMat.dispose()
       })
+      // the scene shrinks with the name on small screens, which left the car
+      // looking like a crumb on phones; scale it back up so it stays a toy
+      const carScale = coarse ? 1.7 : 1
       const car = new THREE.Group()
       const chassis = new THREE.Group()
       car.add(chassis)
@@ -354,6 +357,7 @@ export default function BlockName({
       const carVel = new THREE.Vector2()
       car.position.set(carPos.x, carPos.y, 0)
       car.rotation.z = carHeading
+      car.scale.setScalar(carScale)
       holder.add(car)
 
       // drift trails: each rear wheel lays a continuous ribbon — a ring buffer
@@ -513,7 +517,7 @@ export default function BlockName({
       layout()
       // the parking spot sits to the right of the name, which on phones can
       // fall past the screen edge; pull the car back in so it stays tappable
-      carPos.x = THREE.MathUtils.clamp(carPos.x, driveBounds.minX + 3.5, driveBounds.maxX - 3.5)
+      carPos.x = THREE.MathUtils.clamp(carPos.x, driveBounds.minX + 3.5 * carScale, driveBounds.maxX - 3.5 * carScale)
       car.position.x = carPos.x
       // the hero content fades in with a small translate; re-measure after it lands
       const settleTimers = [setTimeout(layout, 600), setTimeout(layout, 1400)]
@@ -636,7 +640,11 @@ export default function BlockName({
           // a tap near the car (generous, thumb-sized hitbox) opens the touch
           // controls. Once open, the viewport listener above owns dismissal.
           const p = toPlane(e)
-          if (p && (p.x - carPos.x) ** 2 + (p.y - carPos.y) ** 2 < 42) {
+          if (p && (p.x - carPos.x) ** 2 + (p.y - carPos.y) ** 2 < 42 * carScale * carScale) {
+            // stop here: this same pointerdown would otherwise bubble on to
+            // the window-level dismiss listener, which now sees the pad as
+            // open and closes it again in the same tap
+            e.stopPropagation()
             setPad(true)
             if (!hintDone) {
               hintDone = true
@@ -995,7 +1003,7 @@ export default function BlockName({
         // space, so it scales with the scene and scrolls off with the car
         if (!hintDone) {
           hintWorld
-            .set(carPos.x + holder.position.x, carPos.y - 3.6 + holder.position.y, 0)
+            .set(carPos.x + holder.position.x, carPos.y - 3.6 * carScale + holder.position.y, 0)
             .project(camera)
           // clamp onto the screen by the hint's measured size so a car parked
           // near an edge (narrow viewports) can't drag any of the text out of
@@ -1028,8 +1036,8 @@ export default function BlockName({
             flame.scale.set(flick, 0.7 + 0.3 * flick, 0.7 + 0.3 * flick)
           }
         }
-        car.scale.x += ((boosting ? 1.06 : 1) - car.scale.x) * 0.1
-        car.scale.y += ((boosting ? 0.96 : 1) - car.scale.y) * 0.1
+        car.scale.x += ((boosting ? 1.06 : 1) * carScale - car.scale.x) * 0.1
+        car.scale.y += ((boosting ? 0.96 : 1) * carScale - car.scale.y) * 0.1
         // taillights work like brake/reverse lights: bright while backing up
         // or braking, idling dim otherwise
         const lit = fwd < -0.5 || (keys.has('s') && fwd > 0.5)
@@ -1037,8 +1045,10 @@ export default function BlockName({
         // lay rubber while sliding: each rear wheel extends its ribbon
         if (Math.abs(lat) > 4.5) {
           const strength = THREE.MathUtils.clamp(Math.abs(lat) / 14, 0.45, 1)
-          trailStamp(trails[0], carPos.x - fwdX * 1.45 - fwdY * 1.08, carPos.y - fwdY * 1.45 + fwdX * 1.08, strength)
-          trailStamp(trails[1], carPos.x - fwdX * 1.45 + fwdY * 1.08, carPos.y - fwdY * 1.45 - fwdX * 1.08, strength)
+          const bx = 1.45 * carScale
+          const by = 1.08 * carScale
+          trailStamp(trails[0], carPos.x - fwdX * bx - fwdY * by, carPos.y - fwdY * bx + fwdX * by, strength)
+          trailStamp(trails[1], carPos.x - fwdX * bx + fwdY * by, carPos.y - fwdY * bx - fwdX * by, strength)
         } else trailBreak()
         trailFade(dt)
 
@@ -1079,7 +1089,7 @@ export default function BlockName({
           if (i === dragged) continue
           const dx = pos[i].x - carPos.x
           const dy = pos[i].y - carPos.y
-          const reach = letterRadius[i] + 2.4
+          const reach = letterRadius[i] + 2.4 * carScale
           const d2 = dx * dx + dy * dy
           if (d2 > reach * reach || d2 === 0) continue
           const d = Math.sqrt(d2)

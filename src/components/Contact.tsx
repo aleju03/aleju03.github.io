@@ -1,15 +1,18 @@
 import { ArrowUpRightIcon, GithubLogoIcon, LinkedinLogoIcon } from '@phosphor-icons/react'
 import { email, github, linkedin } from '../data/projects'
 import { Reveal } from './Reveal'
+import { useI18n } from '../i18n'
 
 export function Contact() {
+  const { t } = useI18n()
+
   return (
     <section id="contact" className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800">
       <div className="mx-auto max-w-6xl px-5 pt-16 sm:px-8 lg:pt-20">
         <Reveal>
           <img
             src="/brand/contact.webp"
-            alt="Hand-drawn illustration of a paper airplane looping over rounded hills"
+            alt={t.contact.imageAlt}
             width={1800}
             height={772}
             loading="lazy"
@@ -20,10 +23,10 @@ export function Contact() {
       <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 lg:py-24">
         <Reveal>
           <h2 className="text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
-            Get in touch
+            {t.sections.contact}
           </h2>
           <p className="mt-4 max-w-md leading-relaxed text-stone-600 dark:text-stone-400">
-            Open to interesting projects and good conversations about software.
+            {t.contact.body}
           </p>
           <a
             href={`mailto:${email}`}
@@ -40,13 +43,13 @@ export function Contact() {
       </div>
       <footer className="border-t border-stone-200 dark:border-stone-800">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-6 sm:px-8">
-          <p className="text-sm text-stone-500">Alejandro Jiménez, Costa Rica</p>
+          <p className="text-sm text-stone-500">{t.contact.footer}</p>
           <div className="flex items-center gap-4">
             <a
               href={github}
               target="_blank"
               rel="noreferrer"
-              aria-label="GitHub profile"
+              aria-label={t.nav.github}
               className="-m-2 p-2 text-stone-500 transition-colors hover:text-stone-900 dark:hover:text-stone-200"
             >
               <GithubLogoIcon size={18} weight="bold" />
@@ -55,7 +58,7 @@ export function Contact() {
               href={linkedin}
               target="_blank"
               rel="noreferrer"
-              aria-label="LinkedIn profile"
+              aria-label={t.nav.linkedin}
               className="-m-2 p-2 text-stone-500 transition-colors hover:text-stone-900 dark:hover:text-stone-200"
             >
               <LinkedinLogoIcon size={18} weight="bold" />

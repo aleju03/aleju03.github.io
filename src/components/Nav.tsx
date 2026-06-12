@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   GithubLogoIcon,
+  GlobeHemisphereWestIcon,
   LinkedinLogoIcon,
   MagnifyingGlassIcon,
   MoonIcon,
@@ -9,18 +10,19 @@ import {
 import { github, linkedin } from '../data/projects'
 import { currentTheme, onThemeChange, toggleThemeFrom, watchSystemTheme } from '../theme'
 import { OPEN_PALETTE_EVENT } from '../events'
-
-const links = [
-  { label: 'Work', href: '#work' },
-  { label: 'Experience', href: '#experience' },
-  { label: 'About', href: '#about' },
-  { label: 'Contact', href: '#contact' },
-]
+import { useI18n } from '../i18n'
 
 const isMac = /mac/i.test(navigator.platform)
 
 export function Nav() {
   const [theme, setThemeState] = useState(() => currentTheme())
+  const { language, setLanguage, t } = useI18n()
+  const links = [
+    { label: t.nav.work, href: '#work' },
+    { label: t.nav.experience, href: '#experience' },
+    { label: t.nav.about, href: '#about' },
+    { label: t.nav.contact, href: '#contact' },
+  ]
 
   useEffect(() => {
     const offChange = onThemeChange(setThemeState)
@@ -36,7 +38,7 @@ export function Nav() {
       <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
         <a
           href="#"
-          aria-label="Back to top"
+          aria-label={t.nav.backToTop}
           className="font-mono text-sm font-bold text-blue-600 dark:text-blue-400"
         >
           aj
@@ -54,7 +56,7 @@ export function Nav() {
           <button
             type="button"
             onClick={() => window.dispatchEvent(new Event(OPEN_PALETTE_EVENT))}
-            aria-label="Open command palette"
+            aria-label={t.nav.openPalette}
             className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-stone-200 px-3 py-1.5 text-stone-500 transition-colors hover:border-stone-400 hover:text-stone-900 sm:ml-1 dark:border-stone-700 dark:text-stone-400 dark:hover:border-stone-500 dark:hover:text-stone-100"
           >
             <MagnifyingGlassIcon size={15} weight="bold" />
@@ -64,7 +66,7 @@ export function Nav() {
             href={github}
             target="_blank"
             rel="noreferrer"
-            aria-label="GitHub profile"
+            aria-label={t.nav.github}
             className="rounded-full p-2 text-stone-500 transition-colors hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
           >
             <GithubLogoIcon size={18} weight="bold" />
@@ -73,15 +75,26 @@ export function Nav() {
             href={linkedin}
             target="_blank"
             rel="noreferrer"
-            aria-label="LinkedIn profile"
+            aria-label={t.nav.linkedin}
             className="rounded-full p-2 text-stone-500 transition-colors hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
           >
             <LinkedinLogoIcon size={18} weight="bold" />
           </a>
+          {/* only two languages, so a toggle beats a dropdown: tapping it
+              swaps EN <-> ES and shows the one you'd switch to */}
+          <button
+            type="button"
+            onClick={() => setLanguage(language === 'en' ? 'es' : 'en')}
+            aria-label={t.nav.language}
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-stone-200 px-2.5 py-1.5 font-mono text-xs font-bold text-stone-500 transition-colors hover:border-stone-400 hover:text-stone-900 dark:border-stone-700 dark:text-stone-400 dark:hover:border-stone-500 dark:hover:text-stone-100"
+          >
+            <GlobeHemisphereWestIcon size={16} weight="bold" aria-hidden="true" />
+            {language === 'en' ? 'ES' : 'EN'}
+          </button>
           <button
             type="button"
             onClick={(e) => toggleThemeFrom(e.clientX || innerWidth - 40, e.clientY || 32)}
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            aria-label={theme === 'dark' ? t.nav.switchLight : t.nav.switchDark}
             className="cursor-pointer rounded-full p-2 text-stone-500 transition-colors hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
           >
             {theme === 'dark' ? (

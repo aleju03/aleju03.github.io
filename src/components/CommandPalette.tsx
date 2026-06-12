@@ -16,11 +16,12 @@ import {
   TerminalWindowIcon,
   UserIcon,
 } from '@phosphor-icons/react'
-import { showcase, secondary, more, github, linkedin, email } from '../data/projects'
+import { github, linkedin, email } from '../data/projects'
 import type { SecondaryProject, ShowcaseProject, SmallProject } from '../data/projects'
 import { shouldAutoFocusTextInput } from '../device'
 import { lockPageForOverlay } from '../overlay'
 import { toggleTheme } from '../theme'
+import { useI18n } from '../i18n'
 
 import { BOOT_OS_EVENT, OPEN_PALETTE_EVENT, OPEN_TERMINAL_EVENT } from '../events'
 
@@ -46,6 +47,7 @@ function goTo(hash: string) {
 
 export function CommandPalette() {
   const reduce = useReducedMotion()
+  const { projects: localizedProjects, t } = useI18n()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
@@ -72,18 +74,22 @@ export function CommandPalette() {
 
   const items = useMemo<Item[]>(() => {
     const nav: Item[] = [
-      { id: 'top', group: 'Navigate', label: 'Top', icon: <HouseIcon size={16} />, run: () => goTo('#') },
-      { id: 'work', group: 'Navigate', label: 'Selected work', icon: <SquaresFourIcon size={16} />, run: () => goTo('#work') },
-      { id: 'experience', group: 'Navigate', label: 'Experience', icon: <BriefcaseIcon size={16} />, run: () => goTo('#experience') },
-      { id: 'about', group: 'Navigate', label: 'About', icon: <UserIcon size={16} />, run: () => goTo('#about') },
-      { id: 'contact', group: 'Navigate', label: 'Contact', icon: <ChatCircleIcon size={16} />, run: () => goTo('#contact') },
+      { id: 'top', group: t.palette.navigate, label: t.palette.top, icon: <HouseIcon size={16} />, run: () => goTo('#') },
+      { id: 'work', group: t.palette.navigate, label: t.sections.selectedWork, icon: <SquaresFourIcon size={16} />, run: () => goTo('#work') },
+      { id: 'experience', group: t.palette.navigate, label: t.sections.experience, icon: <BriefcaseIcon size={16} />, run: () => goTo('#experience') },
+      { id: 'about', group: t.palette.navigate, label: t.sections.about, icon: <UserIcon size={16} />, run: () => goTo('#about') },
+      { id: 'contact', group: t.palette.navigate, label: t.nav.contact, icon: <ChatCircleIcon size={16} />, run: () => goTo('#contact') },
     ]
-    const projects: Item[] = [...showcase, ...secondary, ...more].map((p: AnyProject) => {
+    const projects: Item[] = [
+      ...localizedProjects.showcase,
+      ...localizedProjects.secondary,
+      ...localizedProjects.more,
+    ].map((p: AnyProject) => {
       const live = isShowcase(p) ? p.live : undefined
       const liveLabel = isShowcase(p) ? p.liveLabel : undefined
       return {
         id: p.repo,
-        group: 'Projects',
+        group: t.palette.projects,
         label: p.name,
         hint: live ? liveLabel : 'GitHub',
         icon: <ArrowUpRightIcon size={16} />,
@@ -91,15 +97,15 @@ export function CommandPalette() {
       }
     })
     const actions: Item[] = [
-      { id: 'theme', group: 'Actions', label: 'Toggle theme', icon: <MoonIcon size={16} />, run: () => toggleTheme() },
-      { id: 'terminal', group: 'Actions', label: 'Open terminal', hint: 'ctrl `', icon: <TerminalWindowIcon size={16} />, run: () => window.dispatchEvent(new Event(OPEN_TERMINAL_EVENT)) },
-      { id: 'alejos', group: 'Actions', label: 'Boot AlejOS', hint: 'desktop mode', icon: <DesktopIcon size={16} />, run: () => window.dispatchEvent(new Event(BOOT_OS_EVENT)) },
-      { id: 'email', group: 'Actions', label: 'Send an email', hint: email, icon: <EnvelopeSimpleIcon size={16} />, run: () => { location.href = `mailto:${email}` } },
-      { id: 'github', group: 'Actions', label: 'Open GitHub profile', hint: 'aleju03', icon: <GithubLogoIcon size={16} />, run: () => window.open(github, '_blank', 'noreferrer') },
-      { id: 'linkedin', group: 'Actions', label: 'Open LinkedIn profile', hint: 'Alejandro Jiménez', icon: <LinkedinLogoIcon size={16} />, run: () => window.open(linkedin, '_blank', 'noreferrer') },
+      { id: 'theme', group: t.palette.actions, label: t.palette.toggleTheme, icon: <MoonIcon size={16} />, run: () => toggleTheme() },
+      { id: 'terminal', group: t.palette.actions, label: t.palette.openTerminal, hint: 'ctrl `', icon: <TerminalWindowIcon size={16} />, run: () => window.dispatchEvent(new Event(OPEN_TERMINAL_EVENT)) },
+      { id: 'alejos', group: t.palette.actions, label: t.palette.bootAlejOS, hint: t.palette.desktopMode, icon: <DesktopIcon size={16} />, run: () => window.dispatchEvent(new Event(BOOT_OS_EVENT)) },
+      { id: 'email', group: t.palette.actions, label: t.palette.sendEmail, hint: email, icon: <EnvelopeSimpleIcon size={16} />, run: () => { location.href = `mailto:${email}` } },
+      { id: 'github', group: t.palette.actions, label: t.palette.openGithub, hint: 'aleju03', icon: <GithubLogoIcon size={16} />, run: () => window.open(github, '_blank', 'noreferrer') },
+      { id: 'linkedin', group: t.palette.actions, label: t.palette.openLinkedin, hint: 'Alejandro Jiménez', icon: <LinkedinLogoIcon size={16} />, run: () => window.open(linkedin, '_blank', 'noreferrer') },
     ]
     return [...nav, ...projects, ...actions]
-  }, [])
+  }, [localizedProjects.more, localizedProjects.secondary, localizedProjects.showcase, t])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -181,14 +187,14 @@ export function CommandPalette() {
         >
           <button
             type="button"
-            aria-label="Close command palette"
+            aria-label={t.palette.close}
             onClick={closePalette}
             className="absolute inset-0 cursor-default bg-stone-950/35 dark:bg-stone-950/60 sm:backdrop-blur-sm"
           />
           <motion.div
             role="dialog"
             aria-modal="true"
-            aria-label="Command palette"
+            aria-label={t.nav.openPalette}
             initial={reduce ? false : { opacity: 0, scale: 0.97, y: -10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: -10 }}
@@ -207,13 +213,13 @@ export function CommandPalette() {
                   setActive(0)
                 }}
                 onKeyDown={onInputKey}
-                placeholder="Search projects, sections, actions"
-                aria-label="Search projects, sections, actions"
+                placeholder={t.palette.placeholder}
+                aria-label={t.palette.placeholder}
                 className="h-12 w-full bg-transparent text-sm text-stone-900 outline-none placeholder:text-stone-400 focus-visible:outline-none dark:text-stone-100 dark:placeholder:text-stone-500"
               />
               <button
                 type="button"
-                aria-label="Close command palette"
+                aria-label={t.palette.close}
                 onClick={closePalette}
                 className="rounded-sm border border-stone-200 px-1.5 py-0.5 font-mono text-[10px] text-stone-400 transition-colors hover:border-stone-300 hover:text-stone-600 dark:border-stone-700 dark:hover:border-stone-600 dark:hover:text-stone-200"
               >
@@ -223,7 +229,7 @@ export function CommandPalette() {
             <ul ref={listRef} className="max-h-[19rem] overflow-y-auto p-2">
               {filtered.length === 0 && (
                 <li className="px-3 py-6 text-center text-sm text-stone-500">
-                  Nothing matches "{query}"
+                  {t.palette.noMatches} "{query}"
                 </li>
               )}
               {filtered.map((item, i) => {

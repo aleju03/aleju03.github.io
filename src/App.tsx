@@ -8,13 +8,14 @@ import { MoreProjects } from './components/MoreProjects'
 import { Experience } from './components/Experience'
 import { About } from './components/About'
 import { Contact } from './components/Contact'
+import { I18nProvider } from './i18n'
 
 const Terminal = lazy(() => import('./components/Terminal').then((m) => ({ default: m.Terminal })))
 const AlejOS = lazy(() => import('./components/os/AlejOS'))
 
 function App() {
   return (
-    <>
+    <I18nProvider>
       <Progress />
       <Nav />
       <CommandPalette />
@@ -32,7 +33,7 @@ function App() {
         <About />
       </main>
       <Contact />
-    </>
+    </I18nProvider>
   )
 }
 

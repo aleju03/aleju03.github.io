@@ -1,24 +1,27 @@
 import { ArrowUpRightIcon } from '@phosphor-icons/react'
-import { secondary, more, github } from '../data/projects'
+import { github } from '../data/projects'
 import { Reveal } from './Reveal'
 import { TechList } from './TechList'
 import { BlocksDoodle } from './Doodles'
+import { useI18n } from '../i18n'
 
 export function MoreProjects() {
+  const { projects, t } = useI18n()
+
   return (
     <section className="border-t border-stone-200 dark:border-stone-800">
       <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
         <Reveal>
           <div className="flex items-end justify-between gap-6">
             <h2 className="text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
-              More projects
+              {t.sections.moreProjects}
             </h2>
             <BlocksDoodle className="-mb-2 w-24 shrink-0 text-stone-800 sm:w-28 dark:text-stone-200" />
           </div>
         </Reveal>
 
         <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2">
-          {secondary.map((project, i) => (
+          {projects.secondary.map((project, i) => (
             <Reveal key={project.name} delay={i * 0.08} className="h-full">
               <a
                 href={project.repo}
@@ -61,7 +64,7 @@ export function MoreProjects() {
 
         <Reveal className="mt-12">
           <ul className="divide-y divide-stone-200 border-y border-stone-200 dark:divide-stone-800 dark:border-stone-800">
-            {more.map((project) => (
+            {projects.more.map((project) => (
               <li key={project.name}>
                 <a
                   href={project.repo}
@@ -90,7 +93,7 @@ export function MoreProjects() {
             rel="noreferrer"
             className="mt-5 inline-flex items-center gap-1 text-sm font-medium text-stone-500 transition-colors hover:text-stone-900 dark:hover:text-stone-200"
           >
-            All repositories
+            {t.sections.allRepositories}
             <ArrowUpRightIcon size={13} weight="bold" />
           </a>
         </Reveal>

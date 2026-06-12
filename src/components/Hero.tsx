@@ -4,12 +4,14 @@ import { ArrowDownIcon, GithubLogoIcon } from '@phosphor-icons/react'
 import { github } from '../data/projects'
 import { getHeroNameFontPreset } from './heroNameFonts'
 import { StaticName } from './StaticName'
+import { useI18n } from '../i18n'
 
 const HeroScene = lazy(() => import('./HeroScene'))
 const BlockName = lazy(() => import('./BlockName'))
 
 export function Hero() {
   const reduce = useReducedMotion()
+  const { t } = useI18n()
   const nameFont = getHeroNameFontPreset()
   const enter = (delay: number) => ({
     initial: reduce ? false : ({ opacity: 0, y: 24 } as const),
@@ -71,7 +73,7 @@ export function Hero() {
                   scrambled ? 'opacity-100' : 'pointer-events-none opacity-0'
                 }`}
               >
-                fix my name
+                {t.hero.fixName}
               </button>
             </div>
           </div>
@@ -80,15 +82,14 @@ export function Hero() {
           {...enter(0.12)}
           className="mt-0 max-w-md leading-relaxed text-stone-600 dark:text-stone-400"
         >
-          Full-stack developer from Costa Rica. I build web apps end to end, from React frontends
-          to the servers behind them.
+          {t.hero.intro}
         </motion.p>
         <motion.div {...enter(0.24)} className="mt-9 flex flex-wrap items-center gap-3">
           <a
             href="#work"
             className="inline-flex h-11 items-center gap-2 rounded-full bg-blue-600 px-6 text-sm font-medium text-white transition hover:bg-blue-700 active:scale-[0.98] dark:hover:bg-blue-500"
           >
-            View work
+            {t.hero.viewWork}
             <ArrowDownIcon size={15} weight="bold" />
           </a>
           <a

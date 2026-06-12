@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { AnimatePresence } from 'motion/react'
 import { ArrowUpRightIcon, ArrowsOutSimpleIcon, GithubLogoIcon } from '@phosphor-icons/react'
-import { showcase } from '../data/projects'
 import type { ShowcaseProject } from '../data/projects'
 import { Reveal } from './Reveal'
 import { TechList } from './TechList'
 import { ZigzagDoodle } from './Doodles'
 import { ProjectModal } from './ProjectModal'
+import { useI18n } from '../i18n'
 
 const primedImages = new Set<string>()
 
@@ -22,7 +22,19 @@ function primeProject(project: ShowcaseProject) {
   project.details.gallery.slice(0, 2).forEach((shot) => primeImage(shot.src))
 }
 
-function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject; onOpen: () => void; wide?: boolean }) {
+function WorkCard({
+  project,
+  onOpen,
+  sourceLabel,
+  detailsLabel,
+  wide = false,
+}: {
+  project: ShowcaseProject
+  onOpen: () => void
+  sourceLabel: string
+  detailsLabel: string
+  wide?: boolean
+}) {
   /* phone shots come in portrait, so a single one drowns in the 16:10 pane — fan out three instead */
   const phoneShots = project.imageKind === 'phone' ? project.details.gallery.slice(0, 3) : null
   return (
@@ -30,7 +42,7 @@ function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject;
       role="button"
       tabIndex={0}
       aria-haspopup="dialog"
-      aria-label={`View details for ${project.name}`}
+      aria-label={`${detailsLabel} ${project.name}`}
       onClick={onOpen}
       onFocus={() => primeProject(project)}
       onPointerDown={() => primeProject(project)}
@@ -106,7 +118,7 @@ function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject;
             className="inline-flex items-center gap-1.5 text-stone-500 transition-colors hover:text-stone-900 dark:hover:text-stone-200"
           >
             <GithubLogoIcon size={15} weight="bold" />
-            Source
+            {sourceLabel}
           </a>
         </div>
       </div>
@@ -115,8 +127,9 @@ function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject;
 }
 
 export function WorkGrid() {
+  const { projects, t } = useI18n()
   const [selected, setSelected] = useState<ShowcaseProject | null>(null)
-  const [featured, ...rest] = showcase
+  const [featured, ...rest] = projects.showcase
   const openProject = (project: ShowcaseProject) => {
     primeProject(project)
     setSelected(project)
@@ -128,19 +141,30 @@ export function WorkGrid() {
         <Reveal>
           <div className="flex items-center gap-5 sm:gap-10">
             <h2 className="shrink-0 text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
-              Selected work
+              {t.sections.selectedWork}
             </h2>
             <ZigzagDoodle className="hidden min-w-0 flex-1 text-stone-800 sm:block dark:text-stone-200" />
             <ZigzagDoodle short className="min-w-0 flex-1 text-stone-800 sm:hidden dark:text-stone-200" />
           </div>
         </Reveal>
         <Reveal className="mt-12">
-          <WorkCard project={featured} wide onOpen={() => openProject(featured)} />
+          <WorkCard
+            project={featured}
+            sourceLabel={t.work.source}
+            detailsLabel={t.work.viewDetails}
+            wide
+            onOpen={() => openProject(featured)}
+          />
         </Reveal>
         <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
           {rest.map((project, i) => (
             <Reveal key={project.name} delay={(i % 2) * 0.08} className="h-full">
-              <WorkCard project={project} onOpen={() => openProject(project)} />
+              <WorkCard
+                project={project}
+                sourceLabel={t.work.source}
+                detailsLabel={t.work.viewDetails}
+                onOpen={() => openProject(project)}
+              />
             </Reveal>
           ))}
         </div>
@@ -150,6 +174,8 @@ export function WorkGrid() {
           <ProjectModal
             key={selected.name}
             project={selected}
+            labels={t.modal}
+            sourceLabel={t.work.source}
             onClose={() => setSelected(null)}
           />
         )}
