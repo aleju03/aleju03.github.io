@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, useReducedMotion } from 'motion/react'
 import {
@@ -9,6 +9,7 @@ import {
 } from '@phosphor-icons/react'
 import type { CSSProperties } from 'react'
 import type { ShowcaseProject } from '../data/projects'
+import { lockPageForOverlay } from '../overlay'
 import { techBrands } from '../data/techBrands'
 
 function TechBadge({ name }: { name: string }) {
@@ -49,14 +50,13 @@ export function ProjectModal({
   const shot = gallery[active]
 
   // scroll lock + focus hand-off for the dialog's lifetime
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null
-    panelRef.current?.focus()
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    panelRef.current?.focus({ preventScroll: true })
+    const unlock = lockPageForOverlay()
     return () => {
-      document.body.style.overflow = prevOverflow
-      previous?.focus()
+      unlock()
+      previous?.focus({ preventScroll: true })
     }
   }, [])
 
@@ -88,11 +88,12 @@ export function ProjectModal({
       onKeyDown={handleKeyDown}
     >
       <motion.div
-        className="absolute inset-0 bg-stone-950/60 backdrop-blur-sm"
+        className="absolute inset-0 bg-stone-950/55 sm:backdrop-blur-sm"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.25 }}
+        style={{ willChange: 'opacity' }}
         onClick={onClose}
         aria-hidden="true"
       />
@@ -101,7 +102,8 @@ export function ProjectModal({
         initial={reduce ? { opacity: 0 } : { opacity: 0, y: 28, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={reduce ? { opacity: 0 } : { opacity: 0, y: 16, scale: 0.98 }}
-        transition={{ type: 'spring', stiffness: 320, damping: 30 }}
+        transition={{ duration: reduce ? 0.12 : 0.22, ease: [0.16, 1, 0.3, 1] }}
+        style={{ willChange: 'transform, opacity' }}
       >
         <div
           ref={panelRef}
@@ -118,6 +120,8 @@ export function ProjectModal({
                 key={shot.src}
                 src={shot.src}
                 alt={shot.alt}
+                decoding="async"
+                loading="eager"
                 initial={reduce ? false : { opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 0.3 }}
@@ -145,6 +149,7 @@ export function ProjectModal({
                     <img
                       src={img.src}
                       alt=""
+                      decoding="async"
                       loading="lazy"
                       className="max-h-full max-w-full object-contain"
                     />
@@ -219,7 +224,7 @@ export function ProjectModal({
           type="button"
           onClick={onClose}
           aria-label="Close project details"
-          className="absolute top-3 right-5 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-stone-200 bg-white/85 text-stone-600 shadow-sm backdrop-blur transition hover:scale-105 hover:text-stone-900 active:scale-95 dark:border-stone-700 dark:bg-stone-900/85 dark:text-stone-300 dark:hover:text-stone-100"
+          className="absolute top-3 right-5 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-stone-200 bg-white/90 text-stone-600 shadow-sm transition hover:scale-105 hover:text-stone-900 active:scale-95 dark:border-stone-700 dark:bg-stone-900/90 dark:text-stone-300 dark:hover:text-stone-100 sm:backdrop-blur"
         >
           <XIcon size={18} weight="bold" />
         </button>

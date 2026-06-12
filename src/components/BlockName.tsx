@@ -3,6 +3,8 @@ import * as THREE from 'three'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
 import type { HeroNameFontPreset } from './heroNameFonts'
+import { isCoarsePointer } from '../device'
+import { onOverlayChange, overlayIsOpen } from '../overlay'
 
 /*
   The hero name as chunky 3D letter blocks. The canvas covers the WHOLE hero
@@ -88,16 +90,19 @@ export default function BlockName({
     // devices, a tap-to-drive nudge anywhere a finger could be the input.
     // maxTouchPoints catches mobile emulators that report a fine pointer
     const hintEl = hintRef.current
+    const coarse = isCoarsePointer()
     const canDrive =
+      !coarse &&
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
       navigator.maxTouchPoints === 0
     if (hintEl && !canDrive) hintEl.textContent = 'tap the car to drive'
 
     let disposed = false
     const disposers: (() => void)[] = []
+    let pausedByOverlay = coarse && overlayIsOpen()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
     renderer.setSize(el.clientWidth, el.clientHeight)
     // start transparent and fade in once the first frame is rendered in place,
     // so the assembled name develops depth over the static fallback instead of
@@ -855,6 +860,11 @@ export default function BlockName({
       let revealed = false
       let last = performance.now()
       const tick = (now: number) => {
+        if (pausedByOverlay) {
+          raf = 0
+          return
+        }
+
         const dt = Math.min((now - last) / 1000, 0.033)
         last = now
         const t = now / 1000
@@ -1097,6 +1107,17 @@ export default function BlockName({
           if (!hintDone) hintEl!.style.opacity = '1'
         }
         raf = requestAnimationFrame(tick)
+      }
+      if (coarse) {
+        disposers.push(
+          onOverlayChange((open) => {
+            pausedByOverlay = open
+            if (!pausedByOverlay && raf === 0 && !disposed) {
+              last = performance.now()
+              raf = requestAnimationFrame(tick)
+            }
+          }),
+        )
       }
       raf = requestAnimationFrame(tick)
       disposers.push(() => cancelAnimationFrame(raf))

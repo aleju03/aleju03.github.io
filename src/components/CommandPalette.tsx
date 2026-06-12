@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
@@ -18,6 +18,8 @@ import {
 } from '@phosphor-icons/react'
 import { showcase, secondary, more, github, linkedin, email } from '../data/projects'
 import type { SecondaryProject, ShowcaseProject, SmallProject } from '../data/projects'
+import { shouldAutoFocusTextInput } from '../device'
+import { lockPageForOverlay } from '../overlay'
 import { toggleTheme } from '../theme'
 
 import { BOOT_OS_EVENT, OPEN_PALETTE_EVENT, OPEN_TERMINAL_EVENT } from '../events'
@@ -49,6 +51,24 @@ export function CommandPalette() {
   const [active, setActive] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
+
+  const openPalette = useCallback(() => {
+    setQuery('')
+    setActive(0)
+    setOpen(true)
+  }, [])
+
+  const closePalette = useCallback(() => {
+    setOpen(false)
+  }, [])
+
+  const togglePalette = useCallback(() => {
+    if (open) {
+      closePalette()
+    } else {
+      openPalette()
+    }
+  }, [closePalette, open, openPalette])
 
   const items = useMemo<Item[]>(() => {
     const nav: Item[] = [
@@ -96,36 +116,36 @@ export function CommandPalette() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        setOpen((o) => !o)
+        togglePalette()
       } else if (e.key === 'Escape') {
-        setOpen(false)
+        closePalette()
       }
     }
-    const onOpen = () => setOpen(true)
+    const onOpen = () => openPalette()
     window.addEventListener('keydown', onKey)
     window.addEventListener(OPEN_PALETTE_EVENT, onOpen)
     return () => {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener(OPEN_PALETTE_EVENT, onOpen)
     }
-  }, [])
+  }, [closePalette, openPalette, togglePalette])
 
-  useEffect(() => {
-    if (open) {
-      setQuery('')
-      setActive(0)
-      document.body.style.overflow = 'hidden'
-      requestAnimationFrame(() => inputRef.current?.focus())
-    } else {
-      document.body.style.overflow = ''
-    }
+  useLayoutEffect(() => {
+    if (!open) return
+
+    const unlock = lockPageForOverlay()
+    const raf = shouldAutoFocusTextInput()
+      ? requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }))
+      : 0
+
     return () => {
-      document.body.style.overflow = ''
+      if (raf) cancelAnimationFrame(raf)
+      unlock()
     }
   }, [open])
 
   const select = (item: Item) => {
-    setOpen(false)
+    closePalette()
     item.run()
   }
 
@@ -162,8 +182,8 @@ export function CommandPalette() {
           <button
             type="button"
             aria-label="Close command palette"
-            onClick={() => setOpen(false)}
-            className="absolute inset-0 cursor-default bg-stone-950/30 backdrop-blur-sm dark:bg-stone-950/60"
+            onClick={closePalette}
+            className="absolute inset-0 cursor-default bg-stone-950/35 dark:bg-stone-950/60 sm:backdrop-blur-sm"
           />
           <motion.div
             role="dialog"
@@ -173,6 +193,7 @@ export function CommandPalette() {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: -10 }}
             transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            style={{ willChange: 'transform, opacity' }}
             className="relative w-full max-w-lg overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl shadow-stone-950/20 dark:border-stone-700 dark:bg-stone-900"
           >
             <div className="flex items-center gap-3 border-b border-stone-200 px-4 dark:border-stone-800">
@@ -190,9 +211,14 @@ export function CommandPalette() {
                 aria-label="Search projects, sections, actions"
                 className="h-12 w-full bg-transparent text-sm text-stone-900 outline-none placeholder:text-stone-400 focus-visible:outline-none dark:text-stone-100 dark:placeholder:text-stone-500"
               />
-              <kbd className="rounded-sm border border-stone-200 px-1.5 py-0.5 font-mono text-[10px] text-stone-400 dark:border-stone-700">
+              <button
+                type="button"
+                aria-label="Close command palette"
+                onClick={closePalette}
+                className="rounded-sm border border-stone-200 px-1.5 py-0.5 font-mono text-[10px] text-stone-400 transition-colors hover:border-stone-300 hover:text-stone-600 dark:border-stone-700 dark:hover:border-stone-600 dark:hover:text-stone-200"
+              >
                 esc
-              </kbd>
+              </button>
             </div>
             <ul ref={listRef} className="max-h-[19rem] overflow-y-auto p-2">
               {filtered.length === 0 && (
@@ -214,7 +240,9 @@ export function CommandPalette() {
                       type="button"
                       data-index={i}
                       onClick={() => select(item)}
-                      onMouseMove={() => setActive(i)}
+                      onMouseMove={() => {
+                        if (active !== i) setActive(i)
+                      }}
                       className={`flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
                         i === active
                           ? 'bg-stone-100 text-stone-900 dark:bg-stone-800 dark:text-stone-100'

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { XIcon } from '@phosphor-icons/react'
 import { showcase, secondary, more, github, linkedin, email } from '../data/projects'
 import { toggleTheme } from '../theme'
 import { BOOT_OS_EVENT, OPEN_TERMINAL_EVENT } from '../events'
+import { lockPageForOverlay } from '../overlay'
 
 /*
   A small typeable terminal. TerminalView is the reusable core (it also runs
@@ -325,11 +326,9 @@ export function Terminal() {
     }
   }, [])
 
-  useEffect(() => {
-    document.body.style.overflow = open ? 'hidden' : ''
-    return () => {
-      document.body.style.overflow = ''
-    }
+  useLayoutEffect(() => {
+    if (!open) return
+    return lockPageForOverlay()
   }, [open])
 
   return (
@@ -346,7 +345,7 @@ export function Terminal() {
             type="button"
             aria-label="Close terminal"
             onClick={() => setOpen(false)}
-            className="absolute inset-0 cursor-default bg-stone-950/30 backdrop-blur-sm dark:bg-stone-950/60"
+            className="absolute inset-0 cursor-default bg-stone-950/35 dark:bg-stone-950/60 sm:backdrop-blur-sm"
           />
           <motion.div
             role="dialog"
@@ -356,6 +355,7 @@ export function Terminal() {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: -10 }}
             transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            style={{ willChange: 'transform, opacity' }}
             className="relative flex h-[26rem] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-stone-700 bg-stone-950 shadow-2xl shadow-stone-950/40"
           >
             <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stone-800 px-4">

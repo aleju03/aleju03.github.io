@@ -32,7 +32,7 @@ export function Nav() {
   }, [])
 
   return (
-    <header className="sticky top-0 z-40 border-b border-stone-200 bg-stone-50/80 backdrop-blur-md dark:border-stone-800 dark:bg-stone-950/80">
+    <header className="sticky top-0 z-40 border-b border-stone-200 bg-stone-50/95 dark:border-stone-800 dark:bg-stone-950/95 sm:bg-stone-50/80 sm:backdrop-blur-md sm:dark:bg-stone-950/80">
       <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
         <a
           href="#"

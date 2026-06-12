@@ -8,6 +8,20 @@ import { TechList } from './TechList'
 import { ZigzagDoodle } from './Doodles'
 import { ProjectModal } from './ProjectModal'
 
+const primedImages = new Set<string>()
+
+function primeImage(src: string) {
+  if (primedImages.has(src)) return
+  primedImages.add(src)
+  const img = new Image()
+  img.decoding = 'async'
+  img.src = src
+}
+
+function primeProject(project: ShowcaseProject) {
+  project.details.gallery.slice(0, 2).forEach((shot) => primeImage(shot.src))
+}
+
 function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject; onOpen: () => void; wide?: boolean }) {
   /* phone shots come in portrait, so a single one drowns in the 16:10 pane — fan out three instead */
   const phoneShots = project.imageKind === 'phone' ? project.details.gallery.slice(0, 3) : null
@@ -18,6 +32,9 @@ function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject;
       aria-haspopup="dialog"
       aria-label={`View details for ${project.name}`}
       onClick={onOpen}
+      onFocus={() => primeProject(project)}
+      onPointerDown={() => primeProject(project)}
+      onPointerEnter={() => primeProject(project)}
       onKeyDown={(e) => {
         if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
           e.preventDefault()
@@ -37,6 +54,7 @@ function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject;
                 key={shot.src}
                 src={shot.src}
                 alt={shot.alt}
+                decoding="async"
                 loading="lazy"
                 className={`max-h-full min-w-0 rounded-lg border border-stone-200 object-contain shadow-sm transition-transform duration-500 ease-out dark:border-stone-800 ${
                   i === 1
@@ -49,6 +67,7 @@ function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject;
             <img
               src={project.image}
               alt={project.imageAlt}
+              decoding="async"
               loading="lazy"
               className="max-h-full max-w-full rounded-lg border border-stone-200 object-contain transition-transform duration-500 ease-out group-hover:scale-[1.02] dark:border-stone-800"
             />
@@ -98,6 +117,10 @@ function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject;
 export function WorkGrid() {
   const [selected, setSelected] = useState<ShowcaseProject | null>(null)
   const [featured, ...rest] = showcase
+  const openProject = (project: ShowcaseProject) => {
+    primeProject(project)
+    setSelected(project)
+  }
 
   return (
     <section id="work" className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800">
@@ -112,12 +135,12 @@ export function WorkGrid() {
           </div>
         </Reveal>
         <Reveal className="mt-12">
-          <WorkCard project={featured} wide onOpen={() => setSelected(featured)} />
+          <WorkCard project={featured} wide onOpen={() => openProject(featured)} />
         </Reveal>
         <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
           {rest.map((project, i) => (
             <Reveal key={project.name} delay={(i % 2) * 0.08} className="h-full">
-              <WorkCard project={project} onOpen={() => setSelected(project)} />
+              <WorkCard project={project} onOpen={() => openProject(project)} />
             </Reveal>
           ))}
         </div>

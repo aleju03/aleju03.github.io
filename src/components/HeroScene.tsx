@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
+import { isCoarsePointer } from '../device'
+import { onOverlayChange, overlayIsOpen } from '../overlay'
 
 /*
   3D dot-wave field rendered under the hero content. Isolated leaf component,
@@ -13,9 +15,11 @@ export default function HeroScene() {
     const el = ref.current
     if (!el) return
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const coarse = isCoarsePointer()
+    let pausedByOverlay = coarse && overlayIsOpen()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
     renderer.setSize(el.clientWidth, el.clientHeight)
     el.appendChild(renderer.domElement)
 
@@ -24,8 +28,8 @@ export default function HeroScene() {
     camera.position.set(0, 3.6, 9.5)
     camera.lookAt(0, -0.5, 0)
 
-    const COLS = 110
-    const ROWS = 60
+    const COLS = coarse ? 72 : 110
+    const ROWS = coarse ? 42 : 60
     const SPACING = 0.32
     const count = COLS * ROWS
     const positions = new Float32Array(count * 3)
@@ -172,6 +176,10 @@ export default function HeroScene() {
     }
 
     const tick = (t: number) => {
+      if (pausedByOverlay) {
+        raf = 0
+        return
+      }
       const nowSec = t / 1000
       ripples = ripples.filter((r) => nowSec - r.t0 < 3)
       wave(t / 1600, nowSec)
@@ -180,6 +188,13 @@ export default function HeroScene() {
       renderer.render(scene, camera)
       raf = requestAnimationFrame(tick)
     }
+
+    const offOverlay = onOverlayChange((open) => {
+      pausedByOverlay = coarse && open
+      if (!reduce && !pausedByOverlay && raf === 0) {
+        raf = requestAnimationFrame(tick)
+      }
+    })
 
     if (reduce) {
       wave(1.5, 0)
@@ -200,6 +215,7 @@ export default function HeroScene() {
 
     return () => {
       cancelAnimationFrame(raf)
+      offOverlay()
       themeObserver.disconnect()
       window.removeEventListener('resize', onResize)
       window.removeEventListener('pointermove', onPointer)
