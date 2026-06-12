@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
+import type { HeroNameFontPreset } from './heroNameFonts'
 
 /*
   The hero name as chunky 3D letter blocks. The canvas covers the WHOLE hero
@@ -37,11 +38,7 @@ const LINES = [
   { word: 'ALEJANDRO', accent: false },
   { word: 'JIMÉNEZ', accent: true },
 ]
-const SIZE = 5 // em size in scene units; Clash Display caps sit around 0.7em
-const CAP = SIZE * 0.7
 const DEPTH = 2.2
-const GAP = 1.1
-const LINE_SPACING = CAP + 1.9 // distance between the two baselines' centers
 
 // front faces and extrusion sides get separate colors so the blocks read as
 // sculpted material in both themes instead of a flat dark slab
@@ -60,6 +57,7 @@ function supportsWebGL() {
 }
 
 interface BlockNameProps {
+  fontPreset: HeroNameFontPreset
   /** in-flow element marking where the assembled name should sit */
   slotRef: React.RefObject<HTMLDivElement | null>
   /** Hero calls this to spring every letter back home */
@@ -69,7 +67,13 @@ interface BlockNameProps {
   onScrambled: (scrambled: boolean) => void
 }
 
-export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: BlockNameProps) {
+export default function BlockName({
+  fontPreset,
+  slotRef,
+  resetRef,
+  onActive,
+  onScrambled,
+}: BlockNameProps) {
   const ref = useRef<HTMLDivElement>(null)
   const hintRef = useRef<HTMLSpanElement>(null)
   const padRef = useRef<HTMLDivElement>(null)
@@ -136,12 +140,12 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
     const themeObserver = new MutationObserver(() => applyColors(isDark()))
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
 
-    new FontLoader().load('/fonts/clash-display-semibold.typeface.json', (font) => {
+    new FontLoader().load(fontPreset.typeface, (font) => {
       if (disposed) return
 
       const textOpts = {
         font,
-        size: SIZE,
+        size: fontPreset.size,
         depth: DEPTH,
         curveSegments: 6,
         bevelEnabled: true,
@@ -174,27 +178,35 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
           disposers.push(() => geo.dispose())
           if (letter === 'É') {
             // the font has no É: stack a slanted block as the acute accent
-            const accGeo = new THREE.BoxGeometry(1.7, 0.65, DEPTH)
+            const accGeo = new THREE.BoxGeometry(
+              fontPreset.accent.width,
+              fontPreset.accent.height,
+              DEPTH,
+            )
             const acc = new THREE.Mesh(accGeo, accentFaceMat)
-            acc.rotation.z = 0.5
-            acc.position.set(0.3, (bb.max.y - bb.min.y) / 2 + 0.85, 0)
+            acc.rotation.z = fontPreset.accent.rotation
+            acc.position.set(
+              fontPreset.accent.x,
+              (bb.max.y - bb.min.y) / 2 + fontPreset.accent.y,
+              0,
+            )
             node.add(acc)
             disposers.push(() => accGeo.dispose())
           }
           node.userData.idx = blocks.length
           swing.add(node)
           blocks.push({ node, width: w })
-          slots.push(new THREE.Vector3(cursor + w / 2, -lineIdx * LINE_SPACING, 0))
-          cursor += w + GAP
+          slots.push(new THREE.Vector3(cursor + w / 2, -lineIdx * fontPreset.lineSpacing, 0))
+          cursor += w + fontPreset.gap
         }
-        lineWidths.push(cursor - GAP)
+        lineWidths.push(cursor - fontPreset.gap)
       }
 
       // left-align both lines and center the whole grid on the swing origin
       const totalW = Math.max(...lineWidths)
       for (const slot of slots) {
         slot.x -= totalW / 2
-        slot.y += LINE_SPACING / 2
+        slot.y += fontPreset.lineSpacing / 2
       }
 
       // the toy car: a cobalt rally hatchback with a dark glass canopy. The
@@ -331,7 +343,7 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
       // parked to the right of the name, nose pointed at it. The car lives in
       // holder (not swing) so the pointer-parallax tilt, which pivots around
       // the name, can't sway it when it's driving far down the page
-      const carPos = new THREE.Vector2(totalW / 2 + 7, -LINE_SPACING / 2)
+      const carPos = new THREE.Vector2(totalW / 2 + 7, -fontPreset.lineSpacing / 2)
       let carHeading = Math.PI * 0.85
       const carVel = new THREE.Vector2()
       car.position.set(carPos.x, carPos.y, 0)
@@ -476,7 +488,8 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
         if (cr.width === 0 || cr.height === 0 || sr.width === 0) return
         renderer.setSize(el.clientWidth, el.clientHeight)
         camera.aspect = cr.width / cr.height
-        const worldPerPixel = totalW / sr.width
+        const fitScale = cr.width < 640 ? 0.78 : cr.width < 900 ? 0.88 : 1
+        const worldPerPixel = totalW / (sr.width * fitScale)
         const halfV = Math.tan((camera.fov * Math.PI) / 360)
         camera.position.z = (cr.height * worldPerPixel) / 2 / halfV
         camera.updateProjectionMatrix()

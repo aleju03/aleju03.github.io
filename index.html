@@ -5,9 +5,9 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#fafaf9" />
-    <!-- the hero name needs both Clash faces ASAP: the woff2 for the static
-         fallback, the typeface JSON for the 3D blocks. Preload kills the
-         Geist->Clash flash and gets the assembled name on screen sooner. -->
+    <!-- Clash is still the site's display face; Optimer is the default hero
+         3D typeface. Preloading both keeps first paint and the assembled name
+         from waiting on late font fetches. -->
     <link
       rel="preload"
       href="/fonts/clash-display-600.woff2"
@@ -15,7 +15,7 @@
       type="font/woff2"
       crossorigin
     />
-    <link rel="preload" href="/fonts/clash-display-semibold.typeface.json" as="fetch" />
+    <link rel="preload" href="/fonts/optimer_bold.typeface.json" as="fetch" />
     <meta
       name="description"
       content="Alejandro Jiménez is a full-stack developer from Costa Rica building web apps end to end."

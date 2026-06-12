@@ -1,3 +1,5 @@
+import type { HeroNameFontPreset } from './heroNameFonts'
+
 /*
   Plain text rendering of the hero name. Shown while the voxel scene loads,
   and instead of it under reduced motion or when WebGL is unavailable.
@@ -5,11 +7,12 @@
   hand-off to the assembled name reads as the flat text gaining depth, not a
   swap. Always aria-hidden: the real <h1> lives in Hero as sr-only text.
 */
-export function StaticName() {
+export function StaticName({ fontPreset }: { fontPreset: HeroNameFontPreset }) {
   return (
     <div
       aria-hidden
-      className="font-display text-[min(13vw,3.75rem)] font-semibold uppercase leading-[0.95] tracking-[0.02em] text-stone-900 sm:text-[min(13.5vw,6rem)] lg:text-9xl dark:text-stone-50"
+      className="font-display text-[min(10.8vw,3.1rem)] font-semibold uppercase leading-[0.95] tracking-[0.02em] text-stone-900 sm:text-[min(13.5vw,6rem)] lg:text-9xl dark:text-stone-50"
+      style={{ fontFamily: fontPreset.staticFontFamily }}
     >
       Alejandro
       <br />

@@ -2,6 +2,7 @@ import { Suspense, lazy, useRef, useState } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
 import { ArrowDownIcon, GithubLogoIcon } from '@phosphor-icons/react'
 import { github } from '../data/projects'
+import { getHeroNameFontPreset } from './heroNameFonts'
 import { StaticName } from './StaticName'
 
 const HeroScene = lazy(() => import('./HeroScene'))
@@ -9,6 +10,7 @@ const BlockName = lazy(() => import('./BlockName'))
 
 export function Hero() {
   const reduce = useReducedMotion()
+  const nameFont = getHeroNameFontPreset()
   const enter = (delay: number) => ({
     initial: reduce ? false : ({ opacity: 0, y: 24 } as const),
     animate: { opacity: 1, y: 0 },
@@ -35,6 +37,7 @@ export function Hero() {
       {!reduce && (
         <Suspense fallback={null}>
           <BlockName
+            fontPreset={nameFont}
             slotRef={nameSlotRef}
             resetRef={resetBlocksRef}
             onActive={setBlocksActive}
@@ -43,10 +46,10 @@ export function Hero() {
         </Suspense>
       )}
 
-      <div className="relative mx-auto flex min-h-[calc(100dvh-4rem)] max-w-6xl flex-col justify-center px-5 pb-16 sm:px-8">
+      <div className="relative z-20 mx-auto flex min-h-[calc(100dvh-4rem)] max-w-6xl flex-col justify-center px-5 pb-16 sm:px-8">
         <motion.div {...enter(0)}>
           <h1 className="sr-only">Alejandro Jiménez</h1>
-          <div className="relative">
+          <div className="relative pb-16 lg:pb-14">
             <div
               ref={nameSlotRef}
               aria-hidden
@@ -57,14 +60,14 @@ export function Hero() {
                   blocksActive ? 'opacity-0' : 'opacity-100'
                 }`}
               >
-                <StaticName />
+                <StaticName fontPreset={nameFont} />
               </div>
             </div>
-            <div className="absolute top-full left-1 mt-2">
+            <div className="absolute bottom-5 left-1 z-20">
               <button
                 type="button"
                 onClick={() => resetBlocksRef.current()}
-                className={`cursor-pointer font-mono text-xs text-stone-500 underline decoration-dotted underline-offset-4 transition-opacity duration-300 hover:text-stone-900 dark:hover:text-stone-200 ${
+                className={`rounded-sm bg-stone-50/75 px-1.5 py-0.5 font-mono text-xs text-stone-500 underline decoration-dotted underline-offset-4 backdrop-blur-sm transition-opacity duration-300 hover:text-stone-900 dark:bg-stone-950/70 dark:hover:text-stone-200 ${
                   scrambled ? 'opacity-100' : 'pointer-events-none opacity-0'
                 }`}
               >
@@ -75,7 +78,7 @@ export function Hero() {
         </motion.div>
         <motion.p
           {...enter(0.12)}
-          className="mt-7 max-w-md leading-relaxed text-stone-600 dark:text-stone-400"
+          className="mt-0 max-w-md leading-relaxed text-stone-600 dark:text-stone-400"
         >
           Full-stack developer from Costa Rica. I build web apps end to end, from React frontends
           to the servers behind them.
