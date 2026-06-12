@@ -1,20 +1,6 @@
-import {
-  ArrowSquareOutIcon,
-  ChatsCircleIcon,
-  FileTextIcon,
-  FolderIcon,
-  FolderOpenIcon,
-  GlobeIcon,
-  ImageSquareIcon,
-  MonitorIcon,
-  NotePencilIcon,
-  PaintBrushIcon,
-  TargetIcon,
-  TerminalWindowIcon,
-} from '@phosphor-icons/react'
 import type { ReactNode } from 'react'
 import { TerminalView } from '../Terminal'
-import { tinted } from './tinted'
+import { xpIcon } from './xpIcon'
 import { ExplorerApp } from './ExplorerApp'
 import { NotepadApp } from './NotepadApp'
 import { ImageViewerApp } from './ImageViewerApp'
@@ -64,7 +50,7 @@ export interface AppDef {
 export const APPS: Record<AppId, AppDef> = {
   explorer: {
     name: 'File Explorer',
-    glyph: (s) => tinted('#a16207', '#fbbf24', <FolderOpenIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('folder-open', s),
     w: 680,
     h: 470,
     render: (ctx) => (
@@ -77,7 +63,7 @@ export const APPS: Record<AppId, AppDef> = {
   },
   notepad: {
     name: 'Notepad',
-    glyph: (s) => tinted('#1d4ed8', '#bfdbfe', <NotePencilIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('notepad', s),
     w: 500,
     h: 420,
     render: (ctx) => (
@@ -89,7 +75,7 @@ export const APPS: Record<AppId, AppDef> = {
   },
   viewer: {
     name: 'Image Viewer',
-    glyph: (s) => tinted('#15803d', '#86efac', <ImageSquareIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('image-file', s),
     w: 560,
     h: 440,
     render: (ctx) => (
@@ -101,7 +87,7 @@ export const APPS: Record<AppId, AppDef> = {
   },
   browser: {
     name: 'Internet Explorer',
-    glyph: (s) => tinted('#1d4ed8', '#93c5fd', <GlobeIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('ie', s),
     w: 760,
     h: 540,
     render: (ctx) => (
@@ -113,7 +99,7 @@ export const APPS: Record<AppId, AppDef> = {
   },
   chat: {
     name: 'Chat Rooms',
-    glyph: (s) => tinted('#7c3aed', '#ddd6fe', <ChatsCircleIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('messenger', s),
     w: 640,
     h: 480,
     single: true,
@@ -121,7 +107,7 @@ export const APPS: Record<AppId, AppDef> = {
   },
   terminal: {
     name: 'Terminal',
-    glyph: (s) => tinted('#a8a29e', '#1c1917', <TerminalWindowIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('cmd', s),
     w: 560,
     h: 380,
     single: true,
@@ -133,7 +119,7 @@ export const APPS: Record<AppId, AppDef> = {
   },
   minesweeper: {
     name: 'Minesweeper',
-    glyph: (s) => tinted('#b91c1c', '#fca5a5', <TargetIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('minesweeper', s),
     w: 330,
     h: 470,
     single: true,
@@ -141,7 +127,7 @@ export const APPS: Record<AppId, AppDef> = {
   },
   paint: {
     name: 'Paint',
-    glyph: (s) => tinted('#c2410c', '#fdba74', <PaintBrushIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('paint', s),
     w: 640,
     h: 490,
     single: true,
@@ -149,7 +135,7 @@ export const APPS: Record<AppId, AppDef> = {
   },
   display: {
     name: 'Display Properties',
-    glyph: (s) => tinted('#44403c', '#7dd3fc', <MonitorIcon size={s} weight="duotone" />),
+    glyph: (s) => xpIcon('display', s),
     w: 400,
     h: 480,
     single: true,
@@ -163,19 +149,17 @@ export function isAppId(id: string | undefined): id is AppId {
 
 /** icon for a filesystem node, shared by the desktop and Explorer */
 export function glyphFor(node: FsNode | null, size: number): ReactNode {
-  const folder = tinted('#a16207', '#fbbf24', <FolderIcon size={size} weight="duotone" />)
+  const folder = xpIcon('folder', size)
   if (!node) return folder
   switch (node.kind) {
     case 'folder':
       return folder
     case 'text':
-      return tinted('#57534e', '#ffffff', <FileTextIcon size={size} weight="duotone" />)
+      return xpIcon('text-file', size)
     case 'image':
-      return tinted('#15803d', '#86efac', <ImageSquareIcon size={size} weight="duotone" />)
+      return xpIcon('image-file', size)
     case 'link':
-      return node.embed
-        ? tinted('#1d4ed8', '#93c5fd', <GlobeIcon size={size} weight="duotone" />)
-        : tinted('#1d4ed8', '#93c5fd', <ArrowSquareOutIcon size={size} weight="duotone" />)
+      return xpIcon('url', size)
     case 'app':
       return isAppId(node.app) ? APPS[node.app].glyph(size) : folder
   }

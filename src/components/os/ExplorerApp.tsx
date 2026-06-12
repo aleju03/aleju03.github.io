@@ -5,11 +5,6 @@ import {
   ArrowRightIcon,
   ArrowUUpLeftIcon,
   ArrowUpIcon,
-  DesktopTowerIcon,
-  DiscIcon,
-  FloppyDiskIcon,
-  HardDriveIcon,
-  TrashIcon,
 } from '@phosphor-icons/react'
 import { sounds } from './sounds'
 import { useOs } from './osContext'
@@ -38,7 +33,7 @@ import {
 } from './fs'
 import type { FsNode } from './fs'
 import { glyphFor } from './apps'
-import { tinted } from './tinted'
+import { xpIcon } from './xpIcon'
 
 /*
   File Explorer: a real navigable view over the AlejOS filesystem. Address
@@ -49,20 +44,20 @@ import { tinted } from './tinted'
 */
 
 const DRIVES = [
-  { name: 'Local Disk (C:)', path: 'C:', icon: tinted('#44403c', '#d6d3d1', <HardDriveIcon size={34} weight="duotone" />) },
-  { name: '3½ Floppy (A:)', path: 'A:', icon: tinted('#1e40af', '#60a5fa', <FloppyDiskIcon size={34} weight="duotone" />) },
-  { name: 'CD Drive (D:)', path: 'D:', icon: tinted('#475569', '#cbd5e1', <DiscIcon size={34} weight="duotone" />) },
+  { name: 'Local Disk (C:)', path: 'C:', icon: xpIcon('hard-drive', 34) },
+  { name: '3½ Floppy (A:)', path: 'A:', icon: xpIcon('floppy', 34) },
+  { name: 'CD Drive (D:)', path: 'D:', icon: xpIcon('cd-drive', 34) },
 ]
 
 const QUICK_LINKS: { label: string; path: string; icon: ReactNode }[] = [
-  { label: 'My Computer', path: MY_COMPUTER, icon: tinted('#57534e', '#e7e5e4', <DesktopTowerIcon size={15} weight="duotone" />) },
-  { label: 'Local Disk (C:)', path: 'C:', icon: tinted('#44403c', '#d6d3d1', <HardDriveIcon size={15} weight="duotone" />) },
+  { label: 'My Computer', path: MY_COMPUTER, icon: xpIcon('my-computer', 15) },
+  { label: 'Local Disk (C:)', path: 'C:', icon: xpIcon('hard-drive', 15) },
   { label: 'Desktop', path: DESKTOP, icon: null },
   { label: 'Documents', path: 'C:\\Documents', icon: null },
   { label: 'Pictures', path: 'C:\\Pictures', icon: null },
   { label: 'Projects', path: 'C:\\Projects', icon: null },
   { label: 'Program Files', path: 'C:\\Program Files', icon: null },
-  { label: 'Recycle Bin', path: RECYCLE_BIN, icon: tinted('#57534e', '#d6d3d1', <TrashIcon size={15} weight="duotone" />) },
+  { label: 'Recycle Bin', path: RECYCLE_BIN, icon: xpIcon('recycle-empty', 15) },
 ]
 
 function displayPath(path: string): string {

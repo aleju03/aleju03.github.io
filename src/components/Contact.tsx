@@ -40,6 +40,19 @@ export function Contact() {
               className="transition-transform duration-300 group-hover:translate-x-1 group-hover:-translate-y-1"
             />
           </a>
+          {/* the quieter channel: boots AlejOS with the chat queued so the
+              visitor lands in the rooms right after login */}
+          <p className="mt-5">
+            <button
+              type="button"
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent(BOOT_OS_EVENT, { detail: { app: 'chat' } }))
+              }
+              className="cursor-pointer text-left text-sm text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-4 transition-colors hover:text-stone-700 dark:decoration-stone-700 dark:hover:text-stone-300"
+            >
+              {t.contact.chatTease}
+            </button>
+          </p>
         </Reveal>
         {/* the OS's own machine, dumped in the corner: BlockName draws the 3D
             wreck over the stage span and reveals this button once the model
@@ -55,19 +68,22 @@ export function Contact() {
             style={{ display: 'none' }}
             onClick={() => window.dispatchEvent(new Event(BOOT_OS_EVENT))}
             aria-label={t.contact.wreckAria}
-            className="group mt-10 flex cursor-pointer flex-col items-center gap-1 lg:absolute lg:right-8 lg:bottom-0 lg:mt-0"
+            className="mt-10 flex cursor-pointer flex-col items-center lg:absolute lg:right-8 lg:bottom-0 lg:mt-0"
           >
             <span id="os-wreck" aria-hidden className="block h-32 w-64 sm:h-40 sm:w-80" />
-            <span className="font-mono text-xs text-stone-400 transition-colors group-hover:text-stone-600 dark:text-stone-600 dark:group-hover:text-stone-300">
-              {t.contact.wreck}
-            </span>
           </button>
         </div>
       </div>
       <footer className="border-t border-stone-200 dark:border-stone-800">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-6 sm:px-8">
-          <p className="text-sm text-stone-500">{t.contact.footer}</p>
-          <div className="flex items-center gap-4">
+        <div className="mx-auto grid max-w-6xl gap-3 px-5 py-6 sm:px-8 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-center">
+          <p className="text-sm text-stone-500 md:justify-self-start">{t.contact.footer}</p>
+          <p
+            className="text-base font-medium text-stone-600 italic md:translate-x-6 md:justify-self-center dark:text-stone-400"
+            style={{ fontFamily: "Georgia, 'Times New Roman', Times, serif" }}
+          >
+            {t.contact.footerQuote}
+          </p>
+          <div className="flex items-center gap-4 md:justify-self-end">
             <a
               href={github}
               target="_blank"

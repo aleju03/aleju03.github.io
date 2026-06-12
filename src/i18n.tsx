@@ -61,8 +61,9 @@ const dictionaries = {
     contact: {
       imageAlt: 'Hand-drawn illustration of a paper airplane looping over rounded hills',
       body: 'Open to interesting projects and good conversations about software.',
+      chatTease: 'or boot the old machine and leave an anonymous message in the chat',
       footer: 'Alejandro Jiménez, Costa Rica',
-      wreck: 'it still boots',
+      footerQuote: "There's always something to build",
       wreckAria: 'Boot AlejOS',
     },
     palette: {
@@ -134,8 +135,9 @@ const dictionaries = {
     contact: {
       imageAlt: 'Ilustración dibujada a mano de un avión de papel sobre colinas redondeadas',
       body: 'Abierto a proyectos interesantes y buenas conversaciones sobre software.',
+      chatTease: 'o enciende la compu vieja y deja un mensaje anónimo en el chat',
       footer: 'Alejandro Jiménez, Costa Rica',
-      wreck: 'todavía enciende',
+      footerQuote: 'Siempre hay algo que construir',
       wreckAria: 'Iniciar AlejOS',
     },
     palette: {
@@ -277,7 +279,7 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
     imageAlt: 'Pantalla de búsqueda de cartas de Pokémon TCG Searcher',
     details: {
       story: [
-        'Mi primera app móvil, construida con Flutter para un curso universitario. Permite buscar cualquier carta, explorar sets y revisar precios de mercado usando la API pública de Pokémon TCG.',
+        'Sí, otra app de Pokémon, ya sé. Tarde o temprano todo desarrollador hace una, y la mía además fue mi primera app móvil, construida con Flutter para un curso universitario. Permite buscar cualquier carta, explorar sets y revisar precios de mercado usando la API pública de Pokémon TCG.',
         'Viniendo del mundo web, el árbol de widgets de Flutter y el manejo de estado con Provider me obligaron a pensar distinto. Pasé la mayor parte del tiempo optimizando el uso de la API: pedir solo los campos que cada pantalla necesita y paginar los resultados para que la app se mantuviera rápida con datos móviles. Y el inicio de sesión con Google a través de Firebase me hizo pelear con toda la configuración de OAuth, huellas SHA-1 incluidas.',
       ],
       learned: [

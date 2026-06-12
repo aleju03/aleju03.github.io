@@ -206,25 +206,9 @@ button:not(:disabled),
   }
 }
 
-/* AlejOS icons: phosphor duotone glyphs ship their fill layer as a path with
-   opacity="0.2" in currentColor. Inside .icon-tone that layer is restored to
-   full opacity and painted with --tone, so each icon carries its own solid
-   colors like a real OS icon instead of reading as a faint outline */
-.icon-tone svg path[opacity] {
-  opacity: 1;
-  fill: var(--tone, currentColor);
-}
-
-/* the fill-weight backing under each duotone glyph: it plugs the holes the
-   duotone outline leaves open (folder flap, page body, chat bubble) so the
-   wallpaper never shows through the icon's body */
-.icon-tone-back {
-  color: var(--tone, currentColor);
-}
-
-/* circular theme wipe (fine pointers): the new theme is revealed by a
-   JS-driven clip-path circle. Only the OLD frame is a static snapshot — the
-   new view is the live page, so animations keep running under the sweep;
+/* circular theme wipe (all pointers, VT browsers): the new theme is revealed
+   by a JS-driven clip-path circle. Only the OLD frame is a static snapshot —
+   the new view is the live page, so animations keep running under the sweep;
    never pause anything for this transition */
 ::view-transition-old(root),
 ::view-transition-new(root) {
@@ -238,9 +222,10 @@ button:not(:disabled),
   z-index: 1;
 }
 
-/* theme toggle on coarse pointers: a brief color-only crossfade instead of the
-   wipe (the full-page snapshot stutters on phones). The .theme-fade class
-   wraps the flip; duration mirrors THEME_FADE_MS in theme.ts */
+/* color-only crossfade for desktop browsers without View Transitions (and the
+   palette/terminal toggles). The universal selector makes this expensive —
+   coarse pointers never get this class, they snap or take the wipe. Duration
+   mirrors THEME_FADE_MS in theme.ts */
 .theme-fade,
 .theme-fade *,
 .theme-fade *::before,

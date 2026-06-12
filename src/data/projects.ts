@@ -188,7 +188,7 @@ export const showcase: ShowcaseProject[] = [
     repo: 'https://github.com/aleju03/pokemon_tcg_app',
     details: {
       story: [
-        'My first mobile app, built with Flutter for a university course. It lets you search any card, browse sets, and check market prices through the public Pokémon TCG API.',
+        'Yes, another Pokémon app, I know. Sooner or later every developer builds one, and mine doubled as my first mobile app, built with Flutter for a university course. It lets you search any card, browse sets, and check market prices through the public Pokémon TCG API.',
         "Coming from web, Flutter's widget tree and Provider-based state were a real mind shift. I spent most of my time optimizing API usage, requesting only the fields each screen needs and paginating results so the app stays fast on a phone connection. Google sign-in through Firebase taught me the joys of OAuth configuration, SHA-1 fingerprints included.",
       ],
       learned: [

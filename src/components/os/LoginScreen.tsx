@@ -135,14 +135,9 @@ export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
           <div className="flex flex-col items-center sm:items-end">
             <div className="flex items-center gap-3">
               <FlagLogo size={64} />
-              <div>
-                <p className="text-[11px] font-medium tracking-wide text-blue-100/90">
-                  AJU Systems
-                </p>
-                <p className="font-display text-4xl leading-none font-semibold text-white">
-                  AlejOS
-                </p>
-              </div>
+              <p className="font-display text-4xl leading-none font-semibold text-white">
+                AlejOS
+              </p>
             </div>
             <p className="mt-5 text-sm text-blue-50 [text-shadow:0_1px_2px_rgba(0,0,0,0.3)]">
               To begin, click your user name

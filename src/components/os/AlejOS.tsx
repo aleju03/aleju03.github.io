@@ -12,19 +12,16 @@ import { AnimatePresence, motion } from 'motion/react'
 import {
   ArrowSquareOutIcon,
   CrownSimpleIcon,
-  DesktopTowerIcon,
   GithubLogoIcon,
   LinkedinLogoIcon,
   PowerIcon,
-  SignOutIcon,
-  TrashIcon,
   UserIcon,
 } from '@phosphor-icons/react'
 import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT } from '../../events'
 import { lockPageForOverlay } from '../../overlay'
 import { APPS, glyphFor, isAppId } from './apps'
-import { tinted } from './tinted'
+import { preloadXpIcons, xpIcon } from './xpIcon'
 import type { AppId } from './apps'
 import { Window } from './Window'
 import type { WinState } from './Window'
@@ -70,7 +67,7 @@ import type { FsNode } from './fs'
 
 const CrtScene = lazy(() => import('./CrtScene'))
 
-type Phase = 'off' | 'post' | 'boot' | 'login' | 'on' | 'down'
+type Phase = 'off' | 'post' | 'boot' | 'login' | 'on' | 'down' | 'room'
 type Mode = 'flat' | '3d'
 
 const OS_PATH = '/alejOS'
@@ -281,8 +278,7 @@ function BootScreen() {
     <div className="relative flex h-full flex-col items-center justify-center bg-black">
       <div>
         <FlagLogo size={88} className="ml-14" />
-        <p className="mt-1 text-[13px] font-medium tracking-wide text-stone-200">AJU Systems</p>
-        <p className="font-display text-[44px] leading-none font-semibold text-white">
+        <p className="mt-1 font-display text-[44px] leading-none font-semibold text-white">
           AlejOS
           <sup className="ml-1 align-super text-lg font-bold text-orange-500">v2</sup>
         </p>
@@ -307,7 +303,7 @@ function BootScreen() {
         </div>
       </div>
       <p className="absolute bottom-4 left-5 text-[11px] text-stone-400">
-        Copyright © 2003 AJU Systems, Inc.
+        Copyright © 2003 AJU Corporation
       </p>
       <p className="absolute right-5 bottom-4 font-mono text-[11px] text-stone-600">esc to skip</p>
     </div>
@@ -321,6 +317,9 @@ export default function AlejOS() {
   const [phase, setPhase] = useState<Phase>('off')
   const [mode, setMode] = useState<Mode>('flat')
   const [downMsg, setDownMsg] = useState(false)
+  // the screen the shutdown started from, so the CRT-off collapse plays over
+  // what was actually showing (turning off at login must not flash the desktop)
+  const [downFrom, setDownFrom] = useState<Phase>('on')
   const [session, setSession] = useState<Session | null>(null)
   const [wins, setWins] = useState<OsWin[]>([])
   const [activeId, setActiveId] = useState('')
@@ -329,14 +328,20 @@ export default function AlejOS() {
   const [marquee, setMarquee] = useState<Rect | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; icon: string | null } | null>(null)
   const [renamingIcon, setRenamingIcon] = useState<string | null>(null)
+  const [iconsReady, setIconsReady] = useState(false)
   const [iconPos, setIconPos] = useState<Record<string, Cell>>(loadIconPos)
   const [grid, setGrid] = useState({ cols: 8, rows: 8 })
   const phaseRef = useRef(phase)
+  const pendingAppRef = useRef<AppId | null>(null)
   const desktopRef = useRef<HTMLDivElement>(null)
   const marqueeOriginRef = useRef<{ x: number; y: number } | null>(null)
   useEffect(() => {
     phaseRef.current = phase
   }, [phase])
+
+  const warmDesktopIcons = useCallback(() => {
+    void preloadXpIcons().then(() => setIconsReady(true))
+  }, [])
 
   const wallpaper = wallpaperById(useSyncExternalStore(subscribeWallpaper, getWallpaperId))
   const onLightWallpaper = Boolean(wallpaper.light)
@@ -391,32 +396,65 @@ export default function AlejOS() {
     sounds.click()
   }
 
-  const shutdown = useCallback(() => {
-    sounds.shutdown()
-    setStartOpen(false)
-    setMenu(null)
-    setDownMsg(false)
-    setPhase('down')
-    // the picture collapses to a bright line first, then the farewell text;
-    // in 3D mode the camera also needs time to retreat from the glass
-    setTimeout(() => setDownMsg(true), 650)
-    setTimeout(
-      () => {
-        setWins([])
-        setActiveId('')
-        setSelected(new Set())
-        setSession(null)
-        setPhase('off')
-        // hand the address bar back to the site
-        if (isOsUrl()) history.pushState(null, '', '/')
-      },
-      mode === '3d' ? 2900 : 2200,
-    )
-  }, [mode])
+  /** power off; in 3D mode the room stays up to roam unless toSite is set */
+  const shutdown = useCallback(
+    (toSite = false) => {
+      sounds.shutdown()
+      setDownFrom(phase)
+      setStartOpen(false)
+      setMenu(null)
+      setDownMsg(false)
+      setPhase('down')
+      // the picture collapses to a bright line first, then the farewell text;
+      // in 3D mode the camera also needs time to retreat from the glass
+      setTimeout(() => setDownMsg(true), 650)
+      setTimeout(
+        () => {
+          setWins([])
+          setActiveId('')
+          setSelected(new Set())
+          setSession(null)
+          if (mode === '3d' && !toSite) {
+            // the machine is dark but the desk is still there: free-look time
+            setPhase('room')
+          } else {
+            setPhase('off')
+            // hand the address bar back to the site
+            if (isOsUrl()) history.pushState(null, '', '/')
+          }
+        },
+        mode === '3d' ? 2900 : 2200,
+      )
+    },
+    [mode, phase],
+  )
 
-  const boot = useCallback(() => {
+  /** clicked the dark machine while roaming: boot it again */
+  const wake = useCallback(() => {
+    if (phaseRef.current !== 'room') return
+    sounds.click()
+    warmDesktopIcons()
+    setPhase('post')
+  }, [warmDesktopIcons])
+
+  /** the "Back to site" icon: straight out, no detour through the dark room */
+  const exitToSite = useCallback(() => shutdown(true), [shutdown])
+
+  /** leave the roam scene for the site proper */
+  const leaveRoom = useCallback(() => {
+    if (phaseRef.current !== 'room') return
+    setPhase('off')
+    if (isOsUrl()) history.pushState(null, '', '/')
+  }, [])
+
+  const boot = useCallback((e?: Event) => {
     if (phaseRef.current !== 'off') return
     sounds.click()
+    warmDesktopIcons()
+    // the boot event's detail can name an app to open once someone logs in;
+    // the contact section uses this to land visitors straight in the chat
+    const want = (e as CustomEvent<{ app?: string }> | undefined)?.detail?.app
+    pendingAppRef.current = isAppId(want) ? want : null
     // the 3D session only where it can land: mouse, big screen, motion ok
     const fancy =
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
@@ -426,7 +464,7 @@ export default function AlejOS() {
     setPhase(fancy ? 'post' : 'boot')
     // make the session shareable: the OS owns /alejOS while it runs
     if (!isOsUrl()) history.pushState({ alejos: true }, '', OS_PATH)
-  }, [])
+  }, [warmDesktopIcons])
 
   useEffect(() => {
     window.addEventListener(BOOT_OS_EVENT, boot)
@@ -435,14 +473,16 @@ export default function AlejOS() {
     // browser navigation works like a power switch
     const onPop = () => {
       if (isOsUrl() && phaseRef.current === 'off') boot()
-      else if (!isOsUrl() && phaseRef.current !== 'off' && phaseRef.current !== 'down') shutdown()
+      else if (!isOsUrl() && phaseRef.current === 'room') leaveRoom()
+      else if (!isOsUrl() && phaseRef.current !== 'off' && phaseRef.current !== 'down')
+        shutdown(true)
     }
     window.addEventListener('popstate', onPop)
     return () => {
       window.removeEventListener(BOOT_OS_EVENT, boot)
       window.removeEventListener('popstate', onPop)
     }
-  }, [boot, shutdown])
+  }, [boot, shutdown, leaveRoom])
 
   useEffect(() => {
     if (phase !== 'post') return
@@ -457,6 +497,12 @@ export default function AlejOS() {
   }, [phase])
 
   useEffect(() => {
+    if (phase === 'post' || phase === 'boot' || phase === 'login' || phase === 'on') {
+      warmDesktopIcons()
+    }
+  }, [phase, warmDesktopIcons])
+
+  useEffect(() => {
     if (phase === 'off') return
     const unlock = lockPageForOverlay()
     const onKey = (e: KeyboardEvent) => {
@@ -467,6 +513,8 @@ export default function AlejOS() {
         setPhase('login')
       } else if (phaseRef.current === 'login') {
         shutdown()
+      } else if (phaseRef.current === 'room') {
+        leaveRoom()
       } else if (phaseRef.current === 'on') {
         if (startOpen) setStartOpen(false)
         else if (menu) setMenu(null)
@@ -478,7 +526,7 @@ export default function AlejOS() {
       unlock()
       window.removeEventListener('keydown', onKey)
     }
-  }, [phase, startOpen, menu, shutdown])
+  }, [phase, startOpen, menu, shutdown, leaveRoom])
 
   const topZ = (list: OsWin[]) => list.reduce((max, w) => Math.max(max, w.z), 10)
 
@@ -591,7 +639,7 @@ export default function AlejOS() {
     },
     openPath,
     logOff,
-    shutdown,
+    shutdown: () => shutdown(),
   }
 
   const onTaskButton = (w: OsWin) => {
@@ -745,7 +793,7 @@ export default function AlejOS() {
       ]
     }
     if (icon === 'exit') {
-      return [{ label: 'Back to site', bold: true, onClick: shutdown }]
+      return [{ label: 'Back to site', bold: true, onClick: exitToSite }]
     }
     const name = icon.startsWith('fs:') ? icon.slice(3) : icon
     const node = desktopNodes.find((n) => n.name === name)
@@ -796,7 +844,7 @@ export default function AlejOS() {
         <DesktopIcon
           id="my-computer"
           label="My Computer"
-          glyph={tinted('#57534e', '#e7e5e4', <DesktopTowerIcon size={34} weight="duotone" />)}
+          glyph={xpIcon('my-computer', 34)}
           cell={iconCells['my-computer']}
           selected={selected.has('my-computer')}
           onLight={onLightWallpaper}
@@ -826,7 +874,7 @@ export default function AlejOS() {
         <DesktopIcon
           id="recycle-bin"
           label={binCount > 0 ? `Recycle Bin (${binCount})` : 'Recycle Bin'}
-          glyph={tinted('#57534e', '#d6d3d1', <TrashIcon size={34} weight={binCount > 0 ? 'fill' : 'duotone'} />)}
+          glyph={xpIcon(binCount > 0 ? 'recycle-full' : 'recycle-empty', 34)}
           cell={iconCells['recycle-bin']}
           selected={selected.has('recycle-bin')}
           onLight={onLightWallpaper}
@@ -837,12 +885,12 @@ export default function AlejOS() {
         <DesktopIcon
           id="exit"
           label="Back to site"
-          glyph={tinted('#1d4ed8', '#93c5fd', <SignOutIcon size={34} weight="duotone" />)}
+          glyph={xpIcon('exit', 34)}
           cell={iconCells['exit']}
           selected={selected.has('exit')}
           onLight={onLightWallpaper}
           onSelect={() => setSelected(new Set(['exit']))}
-          onOpen={shutdown}
+          onOpen={exitToSite}
           onDragEnd={(dx, dy) => moveIcon('exit', dx, dy)}
         />
       </div>
@@ -940,7 +988,7 @@ export default function AlejOS() {
                     >
                       <span className="text-blue-700 [&_svg]:size-5">
                         {item.label === 'My Computer' ? (
-                          tinted('#57534e', '#e7e5e4', <DesktopTowerIcon size={20} weight="duotone" />)
+                          xpIcon('my-computer', 20)
                         ) : (
                           APPS[item.app].glyph(20)
                         )}
@@ -981,7 +1029,7 @@ export default function AlejOS() {
                 <li>
                   <button
                     type="button"
-                    onClick={shutdown}
+                    onClick={() => shutdown()}
                     className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
                   >
                     <PowerIcon size={18} className="text-blue-700" />
@@ -1034,7 +1082,7 @@ export default function AlejOS() {
           <Clock />
           <button
             type="button"
-            onClick={shutdown}
+            onClick={() => shutdown()}
             aria-label="Shut down AlejOS"
             className="cursor-pointer rounded-md p-1.5 text-white/80 transition-colors hover:bg-white/20 hover:text-white"
           >
@@ -1055,8 +1103,12 @@ export default function AlejOS() {
         onLogin={(s) => {
           setSession(s)
           setPhase('on')
+          const app = pendingAppRef.current
+          pendingAppRef.current = null
+          // let the desktop land before the requested window pops up
+          if (app) setTimeout(() => openApp(app), 700)
         }}
-        onShutdown={shutdown}
+        onShutdown={() => shutdown()}
       />
     ) : phase === 'down' ? (
       downMsg ? (
@@ -1067,11 +1119,22 @@ export default function AlejOS() {
         </div>
       ) : (
         <div className="pointer-events-none h-full motion-safe:animate-[os-crt-off_0.6s_ease-in_forwards]">
-          {desktop}
+          {downFrom === 'on' ? (
+            desktop
+          ) : downFrom === 'boot' ? (
+            <BootScreen />
+          ) : downFrom === 'post' ? (
+            <BiosScreen />
+          ) : (
+            <LoginScreen onLogin={() => {}} onShutdown={() => {}} />
+          )}
         </div>
       )
+    ) : phase === 'room' ? (
+      // the tube is cold; the room outside is the show now
+      <div className="h-full bg-stone-950" />
     ) : (
-      desktop
+      iconsReady ? desktop : <BootScreen />
     )
 
   // Chromium refuses to compositor-scroll DOM that lives under the CSS3D
@@ -1109,10 +1172,15 @@ export default function AlejOS() {
           className="fixed inset-0 z-[60] bg-stone-950"
         >
           <Suspense fallback={null}>
-            <CrtScene off={phase === 'down'} onFail={() => setMode('flat')}>
+            <CrtScene
+              off={phase === 'down'}
+              roam={phase === 'room'}
+              onWake={wake}
+              onFail={() => setMode('flat')}
+            >
               <div className="relative h-full w-full" onWheel={onScreenWheel}>
                 {screen}
-                <ScreenEffects />
+                {phase !== 'room' && <ScreenEffects />}
               </div>
             </CrtScene>
           </Suspense>

@@ -37,9 +37,11 @@ export function toggleTheme() {
 
 /** toggle with a brief color crossfade instead of a hard swap. Color-only CSS
     transitions keep the page fully live — no view-transition snapshot, so
-    scrolling, input and the WebGL scenes never stall while the theme flips */
+    scrolling, input and the WebGL scenes never stall while the theme flips.
+    Skipped on coarse pointers: .theme-fade transitions every element, and that
+    many concurrent repaints drops frames on phones — they snap instead */
 export function toggleThemeSmooth() {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (isCoarsePointer() || matchMedia('(prefers-reduced-motion: reduce)').matches) {
     toggleTheme()
     return
   }
@@ -54,14 +56,17 @@ export function toggleThemeSmooth() {
 /** circular wipe from the toggle position. The wipe rides the View Transitions
     API, but only the OUTGOING frame is a static snapshot — the incoming view is
     the live page, and nothing pauses the WebGL scenes, so everything keeps
-    moving while the circle sweeps. Phones skip it (the full-page snapshot +
-    composite stutters there) and get the color crossfade instead. */
+    moving while the circle sweeps. Phones get it too: the theme flips in a
+    single recalc and the circle is a compositor-side clip-path, far cheaper
+    than 200ms of whole-page color repaints. Coarse pointers run it slightly
+    shorter to trim the window where the page composites through the
+    transition. */
 export function toggleThemeFrom(x: number, y: number) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
     toggleTheme()
     return
   }
-  if (!document.startViewTransition || isCoarsePointer()) {
+  if (!document.startViewTransition) {
     toggleThemeSmooth()
     return
   }
@@ -78,7 +83,7 @@ export function toggleThemeFrom(x: number, y: number) {
       document.documentElement.animate(
         { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
         {
-          duration: 450,
+          duration: isCoarsePointer() ? 400 : 450,
           easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
           pseudoElement: '::view-transition-new(root)',
         },

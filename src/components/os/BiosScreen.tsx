@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react'
 
 const LINES: string[] = [
   'AJU 700FD BIOS v2.31',
-  'Copyright (c) 2003 AJU Systems, Inc.',
+  'Copyright (c) 2003 AJU Corporation',
   '',
   'Main Processor : AJ-7 700 MHz',
   '__MEM__',

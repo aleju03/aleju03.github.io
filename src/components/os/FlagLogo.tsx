@@ -1,7 +1,7 @@
 import { useId } from 'react'
 
 /*
-  The AJU Systems flag: four glossy panes caught mid-wave, drawn by hand so
+  The AJU flag: four glossy panes caught mid-wave, drawn by hand so
   it nods at a certain 2001 operating system without tracing it. The stroke
   matches each pane's fill purely to round the corners.
 */
