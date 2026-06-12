@@ -81,9 +81,9 @@ export const showcase: ShowcaseProject[] = [
           caption: 'Country rankings with weekly rank movement.',
         },
         {
-          src: '/projects/mania-live-3.png',
-          alt: 'Live tracker feed of scores streaming in real time',
-          caption: 'The live tracker, streaming scores to the browser as they happen.',
+          src: '/projects/tracker.png',
+          alt: 'Populated live tracker feed with many recent score updates',
+          caption: 'The live tracker, streaming a busy score feed to the browser as plays come in.',
         },
         {
           src: '/projects/mania-replay.png',
@@ -221,6 +221,51 @@ export const showcase: ShowcaseProject[] = [
       ],
     },
   },
+  {
+    name: 'Aula',
+    description:
+      'Mobile app for schools where teachers create assignments, message students, and manage their class groups, with separate interfaces for teachers and administrators.',
+    tech: ['React Native', 'Expo', 'Firebase', 'Redux Toolkit', 'React Native Paper'],
+    image: '/projects/aula-2.png',
+    imageAlt: 'Aula teacher home screen with class groups overview',
+    imageKind: 'phone',
+    repo: 'https://github.com/aleju03/Aula',
+    details: {
+      story: [
+        'Aula lets teachers and school administrators run their classes from a phone. Teachers create assignments with file attachments and due dates, message students, and keep track of their class groups, while administrators oversee groups across the institution. Depending on who logs in, the app shows a different set of screens.',
+        'It runs on React Native with Expo, with Firebase as the backend. The two things that taught me the most were the data and the state. On the data side, I had to figure out how to organize everything in Firestore, deciding which collections to create and how assignments, groups, and messages point to each other. On the state side, Redux Toolkit keeps the signed-in user, their role, and the data each screen needs in one place, so everything stays in sync as you move through the app.',
+      ],
+      learned: [
+        'Managing app-wide state with Redux Toolkit, from the signed-in user and their role to the data each screen shows',
+        'Organizing data in Firestore, choosing the collections and how documents reference each other',
+        'Showing skeleton placeholders while data loads, my first time using the pattern instead of a spinner',
+        'Splitting one app into two experiences by role with Expo Router',
+        'Building a clean mobile UI with React Native Paper',
+      ],
+      gallery: [
+        {
+          src: '/projects/aula-2.png',
+          alt: 'Aula teacher home screen with class groups overview',
+          caption: 'The teacher home screen, summarizing groups and members at a glance.',
+        },
+        {
+          src: '/projects/aula-3.png',
+          alt: 'Assignment creation form with attachment and stages',
+          caption: 'Creating an assignment with a file attachment, deadline, and stages.',
+        },
+        {
+          src: '/projects/aula-4.png',
+          alt: 'Messages inbox with received and sent tabs',
+          caption: 'The internal messaging inbox between teachers and students.',
+        },
+        {
+          src: '/projects/aula.png',
+          alt: 'Login screen with school illustration',
+          caption: 'Signing in with the student or teacher ID assigned by the institution.',
+        },
+      ],
+    },
+  },
 ]
 
 export const secondary: SecondaryProject[] = [
@@ -251,11 +296,6 @@ export const more: SmallProject[] = [
     name: 'WebNBA',
     description: 'NBA games and stats browser built with React.',
     repo: 'https://github.com/aleju03/WebNBA',
-  },
-  {
-    name: 'Aula',
-    description: 'School management app for assignments, messaging, and classroom coordination.',
-    repo: 'https://github.com/aleju03/Aula',
   },
   {
     name: 'admin-dashboard',

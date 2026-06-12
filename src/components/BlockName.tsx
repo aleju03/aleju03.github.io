@@ -755,7 +755,7 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
           const REACH = 40 // px of knob travel for full deflection
           let stickPointer = -1
           const setKnob = (dx: number, dy: number) => {
-            knobEl.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
+            knobEl.style.transform = `translate(${dx}px, ${dy}px)`
           }
           const track = (e: PointerEvent) => {
             const r = stickEl.getBoundingClientRect()
@@ -1082,9 +1082,13 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
           aria-label="Drive joystick"
           className="pointer-events-auto relative h-32 w-32 touch-none rounded-full border border-stone-300 bg-white/50 shadow-sm backdrop-blur-sm select-none [-webkit-touch-callout:none] dark:border-stone-600 dark:bg-stone-900/50"
         >
+          {/* centered with negative margins, NOT translate utilities: the
+              knob's inline transform carries the deflection, and Tailwind's
+              separate `translate` property would compose with it and shove
+              the knob off-center the moment it moves */}
           <div
             data-knob
-            className="absolute top-1/2 left-1/2 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border border-stone-300 bg-white/90 shadow-sm dark:border-stone-500 dark:bg-stone-700/90"
+            className="absolute top-1/2 left-1/2 -mt-7 -ml-7 h-14 w-14 rounded-full border border-stone-300 bg-white/90 shadow-sm dark:border-stone-500 dark:bg-stone-700/90"
           />
         </div>
         <div className="flex flex-col items-end gap-3">

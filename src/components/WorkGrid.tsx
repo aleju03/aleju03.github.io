@@ -8,7 +8,9 @@ import { TechList } from './TechList'
 import { ZigzagDoodle } from './Doodles'
 import { ProjectModal } from './ProjectModal'
 
-function WorkCard({ project, onOpen }: { project: ShowcaseProject; onOpen: () => void }) {
+function WorkCard({ project, onOpen, wide = false }: { project: ShowcaseProject; onOpen: () => void; wide?: boolean }) {
+  /* phone shots come in portrait, so a single one drowns in the 16:10 pane — fan out three instead */
+  const phoneShots = project.imageKind === 'phone' ? project.details.gallery.slice(0, 3) : null
   return (
     <article
       role="button"
@@ -22,17 +24,35 @@ function WorkCard({ project, onOpen }: { project: ShowcaseProject; onOpen: () =>
           onOpen()
         }
       }}
-      className="group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-black/40"
+      className={`group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-black/40 ${wide ? 'md:flex-row' : ''}`}
     >
-      <div className="relative border-b border-stone-200 bg-stone-100 p-4 dark:border-stone-800 dark:bg-stone-950/60">
+      <div
+        className={`relative border-b border-stone-200 bg-stone-100 p-4 dark:border-stone-800 dark:bg-stone-950/60 ${wide ? 'md:flex md:w-[55%] md:shrink-0 md:items-center md:border-r md:border-b-0' : ''}`}
+      >
         {/* whole thumbnail, never cropped */}
-        <div className="flex aspect-[16/10] items-center justify-center">
-          <img
-            src={project.image}
-            alt={project.imageAlt}
-            loading="lazy"
-            className="max-h-full max-w-full rounded-lg border border-stone-200 object-contain transition-transform duration-500 ease-out group-hover:scale-[1.02] dark:border-stone-800"
-          />
+        <div className={`flex aspect-[16/10] w-full items-center justify-center ${phoneShots ? 'gap-3 sm:gap-4' : ''}`}>
+          {phoneShots ? (
+            phoneShots.map((shot, i) => (
+              <img
+                key={shot.src}
+                src={shot.src}
+                alt={shot.alt}
+                loading="lazy"
+                className={`max-h-full min-w-0 rounded-lg border border-stone-200 object-contain shadow-sm transition-transform duration-500 ease-out dark:border-stone-800 ${
+                  i === 1
+                    ? 'z-10 group-hover:scale-[1.04]'
+                    : `translate-y-2 ${i === 0 ? '-rotate-2 group-hover:-rotate-1' : 'rotate-2 group-hover:rotate-1'} group-hover:scale-[1.02]`
+                }`}
+              />
+            ))
+          ) : (
+            <img
+              src={project.image}
+              alt={project.imageAlt}
+              loading="lazy"
+              className="max-h-full max-w-full rounded-lg border border-stone-200 object-contain transition-transform duration-500 ease-out group-hover:scale-[1.02] dark:border-stone-800"
+            />
+          )}
         </div>
         <span className="absolute top-3 right-3 flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white/85 text-stone-600 opacity-0 shadow-sm backdrop-blur transition duration-300 group-hover:opacity-100 dark:border-stone-700 dark:bg-stone-900/85 dark:text-stone-300">
           <ArrowsOutSimpleIcon size={15} weight="bold" />
@@ -77,6 +97,7 @@ function WorkCard({ project, onOpen }: { project: ShowcaseProject; onOpen: () =>
 
 export function WorkGrid() {
   const [selected, setSelected] = useState<ShowcaseProject | null>(null)
+  const [featured, ...rest] = showcase
 
   return (
     <section id="work" className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800">
@@ -90,8 +111,11 @@ export function WorkGrid() {
             <ZigzagDoodle short className="min-w-0 flex-1 text-stone-800 sm:hidden dark:text-stone-200" />
           </div>
         </Reveal>
-        <div className="mt-12 grid grid-cols-1 gap-6 md:grid-cols-2">
-          {showcase.map((project, i) => (
+        <Reveal className="mt-12">
+          <WorkCard project={featured} wide onOpen={() => setSelected(featured)} />
+        </Reveal>
+        <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
+          {rest.map((project, i) => (
             <Reveal key={project.name} delay={(i % 2) * 0.08} className="h-full">
               <WorkCard project={project} onOpen={() => setSelected(project)} />
             </Reveal>
