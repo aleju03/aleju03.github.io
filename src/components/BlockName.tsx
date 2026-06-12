@@ -1,10 +1,4 @@
 import { useEffect, useRef } from 'react'
-import {
-  ArrowDownIcon,
-  ArrowLeftIcon,
-  ArrowRightIcon,
-  ArrowUpIcon,
-} from '@phosphor-icons/react'
 import * as THREE from 'three'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
@@ -14,10 +8,11 @@ import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
   section (pointer-events: none, listeners live on the section) so dragged
   letters never hit a canvas edge; the assembled name is mapped onto the
   in-flow slot element that Hero provides. Each letter is one block: grab it
-  with the mouse and drop it anywhere, letters trade places when you drop one
-  on another's slot. On touch a tap makes the letter hop instead, so the page
-  still scrolls. Hero owns the static fallback and the reset button; this
-  component reports readiness and scramble state through callbacks.
+  with the mouse or a finger and drop it anywhere, letters trade places when
+  you drop one on another's slot. Touch drags swallow the gesture only when a
+  letter is actually grabbed, so the page still scrolls everywhere else. Hero
+  owns the static fallback and the reset button; this component reports
+  readiness and scramble state through callbacks.
 
   A toy car shares the scene: WASD drives it (viewed from above, like a
   tabletop), Shift is a turbo boost and Space is a handbrake that breaks
@@ -25,8 +20,10 @@ import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
   name sends letters flying; their springs pull them back home. An HTML
   control hint hangs under the parked car and fades for good on the first
   drive key; on touch screens it reads "tap the car to drive" instead, and
-  tapping the car toggles an on-screen pad that feeds the same key set, so
-  the physics can't tell fingers from keyboards.
+  tapping the car toggles on-screen controls: a left-thumb joystick that
+  maps to analog steer and throttle, plus drift and turbo buttons under the
+  right thumb that feed the same key set as the keyboard — so one thumb
+  drives while the other drifts.
 
   The canvas is FIXED to the viewport and the world is pinned to the
   document: the camera slides down with the scroll position, so the car can
@@ -534,7 +531,7 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
       onActive(true)
 
       // pointer handling lives on the section so the pass-through canvas
-      // never blocks the CTAs: hover lift, mouse drag with slot swap, touch hop
+      // never blocks the CTAs: hover lift, drag with slot swap on mouse and touch
       const raycaster = new THREE.Raycaster()
       const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
       const planePoint = new THREE.Vector3()
@@ -569,8 +566,10 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
         return swing.worldToLocal(planePoint.clone())
       }
 
-      // the touch pad toggles on a car tap and feeds the same key set as
-      // WASD below, so the car physics can't tell fingers from keyboards
+      // the touch pad toggles on a car tap: the drift/turbo buttons feed the
+      // same key set as the keyboard, while the joystick writes analog steer
+      // and throttle that the physics adds on top of the keys
+      const stick = { x: 0, y: 0, active: false }
       const padEl = padRef.current
       let padOpen = false
       const setPad = (open: boolean) => {
@@ -608,13 +607,6 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
         }
         const idx = pick(e)
         if (idx < 0) return
-        if (e.pointerType === 'touch') {
-          // a hop keeps taps fun without hijacking scroll
-          vel[idx].z += 11
-          vel[idx].x += (Math.random() - 0.5) * 4
-          angVel[idx].set((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 6)
-          return
-        }
         e.preventDefault()
         dragged = idx
         sectionEl.setPointerCapture(e.pointerId)
@@ -626,7 +618,11 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
         if (dragged < 0) return
         const idx = dragged
         dragged = -1
-        sectionEl.releasePointerCapture(e.pointerId)
+        try {
+          sectionEl.releasePointerCapture(e.pointerId)
+        } catch {
+          // pointercancel already released the capture
+        }
         sectionEl.style.cursor = ''
         // settle into the nearest slot; whoever lives there moves to the old one
         let nearest = 0
@@ -652,15 +648,28 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
         hovered = -1
         sectionEl.style.cursor = ''
       }
+      // pointerdown runs before the matching touchstart, so by the time the
+      // touch event arrives we know whether a letter was grabbed; swallowing
+      // it then stops the browser from hijacking the gesture for scrolling,
+      // while touches that miss the letters keep scrolling the page
+      const onTouch = (e: TouchEvent) => {
+        if (dragged >= 0) e.preventDefault()
+      }
       sectionEl.addEventListener('pointermove', onMove)
       sectionEl.addEventListener('pointerdown', onDown)
       sectionEl.addEventListener('pointerup', onUp)
+      sectionEl.addEventListener('pointercancel', onUp)
       sectionEl.addEventListener('pointerleave', onLeave)
+      sectionEl.addEventListener('touchstart', onTouch, { passive: false })
+      sectionEl.addEventListener('touchmove', onTouch, { passive: false })
       disposers.push(() => {
         sectionEl.removeEventListener('pointermove', onMove)
         sectionEl.removeEventListener('pointerdown', onDown)
         sectionEl.removeEventListener('pointerup', onUp)
+        sectionEl.removeEventListener('pointercancel', onUp)
         sectionEl.removeEventListener('pointerleave', onLeave)
+        sectionEl.removeEventListener('touchstart', onTouch)
+        sectionEl.removeEventListener('touchmove', onTouch)
         sectionEl.style.cursor = ''
       })
 
@@ -708,6 +717,9 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
           const k = btn.dataset.key!
           const press = (e: PointerEvent) => {
             e.preventDefault()
+            // don't bubble to the section, which would read this as a car
+            // tap (closing the pad) or a letter grab
+            e.stopPropagation()
             try {
               btn.setPointerCapture(e.pointerId)
             } catch {
@@ -731,6 +743,71 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
             btn.removeEventListener('pointercancel', lift)
             btn.removeEventListener('contextmenu', swallow)
             lift()
+          })
+        }
+
+        // the joystick: knob displacement maps to analog steer (x) and
+        // throttle (y, push forward / pull back). Pointer capture keeps the
+        // knob glued to the thumb even when it slides off the base circle
+        const stickEl = padEl.querySelector<HTMLDivElement>('[data-joystick]')
+        const knobEl = stickEl?.querySelector<HTMLDivElement>('[data-knob]')
+        if (stickEl && knobEl) {
+          const REACH = 40 // px of knob travel for full deflection
+          let stickPointer = -1
+          const setKnob = (dx: number, dy: number) => {
+            knobEl.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
+          }
+          const track = (e: PointerEvent) => {
+            const r = stickEl.getBoundingClientRect()
+            let dx = e.clientX - (r.left + r.width / 2)
+            let dy = e.clientY - (r.top + r.height / 2)
+            const len = Math.hypot(dx, dy)
+            if (len > REACH) {
+              dx *= REACH / len
+              dy *= REACH / len
+            }
+            setKnob(dx, dy)
+            // a small deadzone so a resting thumb doesn't creep the car
+            stick.x = Math.abs(dx) < 5 ? 0 : dx / REACH
+            stick.y = Math.abs(dy) < 5 ? 0 : -dy / REACH
+          }
+          const stickDown = (e: PointerEvent) => {
+            e.preventDefault()
+            e.stopPropagation()
+            stickPointer = e.pointerId
+            try {
+              stickEl.setPointerCapture(e.pointerId)
+            } catch {
+              // a pointer can vanish mid-gesture; tracking still works
+            }
+            knobEl.style.transition = 'none'
+            stick.active = true
+            track(e)
+          }
+          const stickMove = (e: PointerEvent) => {
+            if (e.pointerId === stickPointer) track(e)
+          }
+          const stickUp = (e: PointerEvent) => {
+            if (e.pointerId !== stickPointer) return
+            stickPointer = -1
+            stick.active = false
+            stick.x = 0
+            stick.y = 0
+            knobEl.style.transition = 'transform 150ms ease-out'
+            setKnob(0, 0)
+          }
+          const swallowMenu = (e: Event) => e.preventDefault()
+          stickEl.addEventListener('pointerdown', stickDown)
+          stickEl.addEventListener('pointermove', stickMove)
+          stickEl.addEventListener('pointerup', stickUp)
+          stickEl.addEventListener('pointercancel', stickUp)
+          stickEl.addEventListener('contextmenu', swallowMenu)
+          disposers.push(() => {
+            stickEl.removeEventListener('pointerdown', stickDown)
+            stickEl.removeEventListener('pointermove', stickMove)
+            stickEl.removeEventListener('pointerup', stickUp)
+            stickEl.removeEventListener('pointercancel', stickUp)
+            stickEl.removeEventListener('contextmenu', swallowMenu)
           })
         }
       }
@@ -792,8 +869,20 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
         // while quickening the steering — that combination is the drift.
         const turbo = keys.has('shift')
         const drifting = keys.has(' ')
-        const throttle = (keys.has('w') ? 1 : 0) - (keys.has('s') ? 0.6 : 0)
-        const steer = (keys.has('a') ? 1 : 0) - (keys.has('d') ? 1 : 0)
+        // the joystick adds analog steer/throttle on top of the keys; pulling
+        // back reverses at the same reduced strength as the S key
+        const throttle = THREE.MathUtils.clamp(
+          (keys.has('w') ? 1 : 0) -
+            (keys.has('s') ? 0.6 : 0) +
+            (carOnScreen ? (stick.y > 0 ? stick.y : stick.y * 0.6) : 0),
+          -0.6,
+          1,
+        )
+        const steer = THREE.MathUtils.clamp(
+          (keys.has('a') ? 1 : 0) - (keys.has('d') ? 1 : 0) - (carOnScreen ? stick.x : 0),
+          -1,
+          1,
+        )
         const fwdX = Math.cos(carHeading)
         const fwdY = Math.sin(carHeading)
         let fwd = carVel.x * fwdX + carVel.y * fwdY
@@ -835,10 +924,16 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
           hintWorld
             .set(carPos.x + holder.position.x, carPos.y - 3.6 + holder.position.y, 0)
             .project(camera)
-          // clamp onto the screen so a car parked near an edge (narrow
-          // viewports) can't drag the hint out of view
-          const hx = THREE.MathUtils.clamp((hintWorld.x * 0.5 + 0.5) * view.W, 70, view.W - 70)
-          const hy = THREE.MathUtils.clamp((-hintWorld.y * 0.5 + 0.5) * view.H, 12, view.H - 72)
+          // clamp onto the screen by the hint's measured size so a car parked
+          // near an edge (narrow viewports) can't drag any of the text out of
+          // view — the touch wording is wider than half the old fixed margin
+          const halfW = hintEl!.offsetWidth / 2 + 8
+          const hx = THREE.MathUtils.clamp((hintWorld.x * 0.5 + 0.5) * view.W, halfW, view.W - halfW)
+          const hy = THREE.MathUtils.clamp(
+            (-hintWorld.y * 0.5 + 0.5) * view.H,
+            12,
+            view.H - hintEl!.offsetHeight - 12,
+          )
           hintEl!.style.transform = `translate(${hx}px, ${hy}px) translate(-50%, 0)`
         }
         // body language: front wheels steer, chassis pitches under throttle
@@ -882,7 +977,13 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
         const screenY = carDocY - scrollY
         carOnScreen = screenY > -150 && screenY < view.H + 150
         if (!carOnScreen) keys.clear()
-        const driving = keys.has('w') || keys.has('a') || keys.has('s') || keys.has('d') || keys.has(' ')
+        const driving =
+          keys.has('w') ||
+          keys.has('a') ||
+          keys.has('s') ||
+          keys.has('d') ||
+          keys.has(' ') ||
+          stick.active
         if (carOnScreen && (driving || carSpd > 6)) {
           const followTarget = THREE.MathUtils.clamp(
             THREE.MathUtils.clamp(scrollY, carDocY - view.H * 0.72, carDocY - view.H * 0.22),
@@ -968,38 +1069,31 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
       >
         {'wasd to drive\nshift turbo\nspace drift'}
       </span>
-      {/* touch controls, toggled by tapping the car; steering under the left
-          thumb, throttle and the fun buttons under the right */}
+      {/* touch controls, toggled by tapping the car; the joystick under the
+          left thumb is steering and throttle at once (push to drive, pull to
+          reverse), drift and turbo sit under the right thumb */}
       <div
         ref={padRef}
         style={{ visibility: 'hidden' }}
-        className="absolute inset-x-0 bottom-0 flex items-end justify-between px-5 pb-[max(1.25rem,env(safe-area-inset-bottom,0px))] opacity-0 transition-opacity duration-300"
+        className="absolute inset-x-0 bottom-0 flex items-end justify-between px-6 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] opacity-0 transition-opacity duration-300"
       >
-        <div className="flex gap-3">
-          <PadButton k="a" label="Steer left">
-            <ArrowLeftIcon size={22} weight="bold" />
-          </PadButton>
-          <PadButton k="d" label="Steer right">
-            <ArrowRightIcon size={22} weight="bold" />
-          </PadButton>
+        <div
+          data-joystick
+          aria-label="Drive joystick"
+          className="pointer-events-auto relative h-32 w-32 touch-none rounded-full border border-stone-300 bg-white/50 shadow-sm backdrop-blur-sm select-none [-webkit-touch-callout:none] dark:border-stone-600 dark:bg-stone-900/50"
+        >
+          <div
+            data-knob
+            className="absolute top-1/2 left-1/2 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border border-stone-300 bg-white/90 shadow-sm dark:border-stone-500 dark:bg-stone-700/90"
+          />
         </div>
         <div className="flex flex-col items-end gap-3">
-          <div className="flex gap-2">
-            <PadButton k=" " label="Handbrake drift" pill>
-              drift
-            </PadButton>
-            <PadButton k="shift" label="Turbo boost" pill>
-              turbo
-            </PadButton>
-          </div>
-          <div className="flex gap-3">
-            <PadButton k="s" label="Reverse">
-              <ArrowDownIcon size={22} weight="bold" />
-            </PadButton>
-            <PadButton k="w" label="Accelerate">
-              <ArrowUpIcon size={22} weight="bold" />
-            </PadButton>
-          </div>
+          <PadButton k="shift" label="Turbo boost">
+            turbo
+          </PadButton>
+          <PadButton k=" " label="Handbrake drift">
+            drift
+          </PadButton>
         </div>
       </div>
     </div>
@@ -1007,26 +1101,14 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
 }
 
 /** One pad control: data-key names the synthetic key it presses */
-function PadButton({
-  k,
-  label,
-  pill = false,
-  children,
-}: {
-  k: string
-  label: string
-  pill?: boolean
-  children: React.ReactNode
-}) {
+function PadButton({ k, label, children }: { k: string; label: string; children: React.ReactNode }) {
   return (
     <button
       type="button"
       tabIndex={-1}
       data-key={k}
       aria-label={label}
-      className={`pointer-events-auto flex touch-none items-center justify-center rounded-full border border-stone-300 bg-white/70 text-stone-700 shadow-sm backdrop-blur-sm transition-transform select-none [-webkit-touch-callout:none] dark:border-stone-600 dark:bg-stone-900/70 dark:text-stone-200 ${
-        pill ? 'h-9 px-4 font-mono text-[11px]' : 'h-14 w-14'
-      }`}
+      className="pointer-events-auto flex h-14 touch-none items-center justify-center rounded-full border border-stone-300 bg-white/70 px-7 font-mono text-xs text-stone-700 shadow-sm backdrop-blur-sm transition-transform select-none [-webkit-touch-callout:none] dark:border-stone-600 dark:bg-stone-900/70 dark:text-stone-200"
     >
       {children}
     </button>
