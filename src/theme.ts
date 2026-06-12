@@ -1,5 +1,3 @@
-import { isCoarsePointer } from './device'
-
 export type Theme = 'light' | 'dark'
 
 const listeners = new Set<(t: Theme) => void>()
@@ -22,25 +20,28 @@ export function toggleTheme() {
 /** circular wipe from the toggle position, when the browser supports it */
 export function toggleThemeFrom(x: number, y: number) {
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
-  if (!document.startViewTransition || reduce || isCoarsePointer() || themeTransitionRunning) {
+  if (!document.startViewTransition || reduce || themeTransitionRunning) {
     toggleTheme()
     return
   }
 
+  const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y))
+
   themeTransitionRunning = true
+  document.documentElement.toggleAttribute('data-theme-transitioning', true)
   const transition = document.startViewTransition(() => toggleTheme())
   transition.ready
     .then(() => {
-      const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y))
       document.documentElement.animate(
         { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
-        { duration: 360, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', pseudoElement: '::view-transition-new(root)' },
+        { duration: 500, easing: 'ease-in-out', pseudoElement: '::view-transition-new(root)' },
       )
     })
     .catch(() => {})
   transition.finished
     .finally(() => {
       themeTransitionRunning = false
+      document.documentElement.toggleAttribute('data-theme-transitioning', false)
     })
     .catch(() => {})
 }

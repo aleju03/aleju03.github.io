@@ -16,7 +16,8 @@ export default function HeroScene() {
     if (!el) return
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const coarse = isCoarsePointer()
-    let pausedByOverlay = coarse && overlayIsOpen()
+    const themeIsTransitioning = () => document.documentElement.hasAttribute('data-theme-transitioning')
+    let paused = (coarse && overlayIsOpen()) || themeIsTransitioning()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
@@ -85,7 +86,7 @@ export default function HeroScene() {
     // sparse cobalt dots in a mostly-neutral field; recolored when the theme flips
     const colorAttr = geo.getAttribute('color') as THREE.BufferAttribute
     const applyColors = (dark: boolean) => {
-      const base = new THREE.Color(dark ? '#57534e' : '#d6d3d1')
+      const base = new THREE.Color(dark ? '#57534e' : '#d5cbb8')
       const accent = new THREE.Color(dark ? '#3b82f6' : '#2563eb')
       let n = 0
       for (let x = 0; x < COLS; x++) {
@@ -97,7 +98,7 @@ export default function HeroScene() {
       }
       colorAttr.needsUpdate = true
       // ridges fade with distance: farthest range closest to the page color
-      const ridgeShades = (dark ? ['#37332f', '#44403c', '#534e49'] : ['#e7e5e4', '#ddd9d6', '#d6d3d1']).map(
+      const ridgeShades = (dark ? ['#37332f', '#44403c', '#534e49'] : ['#f5f1e6', '#e8e2d0', '#d5cbb8']).map(
         (s) => new THREE.Color(s),
       )
       const ridgeColor = ridgeGeo.getAttribute('color') as THREE.BufferAttribute
@@ -176,7 +177,7 @@ export default function HeroScene() {
     }
 
     const tick = (t: number) => {
-      if (pausedByOverlay) {
+      if (paused) {
         raf = 0
         return
       }
@@ -189,12 +190,20 @@ export default function HeroScene() {
       raf = requestAnimationFrame(tick)
     }
 
-    const offOverlay = onOverlayChange((open) => {
-      pausedByOverlay = coarse && open
-      if (!reduce && !pausedByOverlay && raf === 0) {
+    const resumeIfReady = () => {
+      if (!reduce && !paused && raf === 0) {
         raf = requestAnimationFrame(tick)
       }
+    }
+    const offOverlay = onOverlayChange((open) => {
+      paused = (coarse && open) || themeIsTransitioning()
+      resumeIfReady()
     })
+    const pauseObserver = new MutationObserver(() => {
+      paused = (coarse && overlayIsOpen()) || themeIsTransitioning()
+      resumeIfReady()
+    })
+    pauseObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-transitioning'] })
 
     if (reduce) {
       wave(1.5, 0)
@@ -216,6 +225,7 @@ export default function HeroScene() {
     return () => {
       cancelAnimationFrame(raf)
       offOverlay()
+      pauseObserver.disconnect()
       themeObserver.disconnect()
       window.removeEventListener('resize', onResize)
       window.removeEventListener('pointermove', onPointer)

@@ -19,17 +19,35 @@
 
 /*
   Theme: light/dark, default follows prefers-color-scheme, manual toggle persisted
-  in localStorage ('theme'). Warm stone neutrals in both modes.
+  in localStorage ('theme'). Light mode uses a warm cream paper palette inspired
+  by Wallpaper Archive; dark mode keeps the original stone neutrals.
   Accent: blue-600 (blue-400 on dark), used for links, primary CTA, and focus rings.
   Radius system: cards and media 12px (rounded-xl), interactive pills full radius.
 */
 
 :root {
   --page: var(--color-stone-50);
+  --surface: #fffdf8;
 }
 .dark {
   --page: var(--color-stone-950);
+  --surface: var(--color-stone-900);
   color-scheme: dark;
+}
+
+/* Light-only neutral remap. Tailwind's dark utilities fall back to the default
+   stone scale because this selector stops matching once .dark is on <html>. */
+:root:not(.dark) {
+  --color-stone-50: #faf8f0;
+  --color-stone-100: #f5f1e6;
+  --color-stone-200: #e8e2d0;
+  --color-stone-300: #d5cbb8;
+  --color-stone-400: #a99f8d;
+  --color-stone-500: #6f6658;
+  --color-stone-600: #4f4638;
+  --color-stone-700: #3a342b;
+  --color-stone-800: #27231d;
+  --color-stone-900: #15130f;
 }
 
 html {
@@ -44,6 +62,10 @@ html {
 
 body {
   @apply bg-stone-50 text-stone-600 antialiased font-sans dark:bg-stone-950 dark:text-stone-400;
+}
+
+:root:not(.dark) .bg-white {
+  background-color: var(--surface);
 }
 
 /* browsers give buttons cursor: default; clickable things should look clickable */

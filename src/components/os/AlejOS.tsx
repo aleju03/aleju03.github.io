@@ -9,6 +9,7 @@ import {
 } from '@phosphor-icons/react'
 import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT } from '../../events'
+import { lockPageForOverlay } from '../../overlay'
 import { APPS } from './apps'
 import type { AppId } from './apps'
 import { Window } from './Window'
@@ -139,7 +140,7 @@ export default function AlejOS() {
 
   useEffect(() => {
     if (phase === 'off') return
-    document.body.style.overflow = 'hidden'
+    const unlock = lockPageForOverlay()
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (phaseRef.current === 'boot') {
@@ -152,7 +153,7 @@ export default function AlejOS() {
     }
     window.addEventListener('keydown', onKey)
     return () => {
-      document.body.style.overflow = ''
+      unlock()
       window.removeEventListener('keydown', onKey)
     }
   }, [phase, startOpen])

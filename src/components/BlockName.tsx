@@ -45,7 +45,7 @@ const DEPTH = 2.2
 // front faces and extrusion sides get separate colors so the blocks read as
 // sculpted material in both themes instead of a flat dark slab
 const COLORS = {
-  light: { face: '#fafaf9', side: '#78716c', accentFace: '#2563eb', accentSide: '#1e3a8a' },
+  light: { face: '#faf8f0', side: '#7d725f', accentFace: '#2563eb', accentSide: '#1e3a8a' },
   dark: { face: '#f5f5f4', side: '#57534e', accentFace: '#3b82f6', accentSide: '#1e40af' },
 }
 
@@ -99,7 +99,8 @@ export default function BlockName({
 
     let disposed = false
     const disposers: (() => void)[] = []
-    let pausedByOverlay = coarse && overlayIsOpen()
+    const themeIsTransitioning = () => document.documentElement.hasAttribute('data-theme-transitioning')
+    let paused = (coarse && overlayIsOpen()) || themeIsTransitioning()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
@@ -606,14 +607,17 @@ export default function BlockName({
 
       const onViewportDown = (e: PointerEvent) => {
         if (e.pointerType !== 'touch' || !padOpen) return
+        const path = e.composedPath()
         const target = e.target
-        if (target instanceof Node && padEl?.contains(target)) return
+        if ((target instanceof Node && padEl?.contains(target)) || (padEl && path.includes(padEl))) {
+          return
+        }
         e.preventDefault()
         e.stopPropagation()
         setPad(false)
       }
-      window.addEventListener('pointerdown', onViewportDown, true)
-      disposers.push(() => window.removeEventListener('pointerdown', onViewportDown, true))
+      window.addEventListener('pointerdown', onViewportDown)
+      disposers.push(() => window.removeEventListener('pointerdown', onViewportDown))
 
       const onMove = (e: PointerEvent) => {
         const rect = el.getBoundingClientRect()
@@ -721,7 +725,7 @@ export default function BlockName({
       }
       const onKeyDown = (e: KeyboardEvent) => {
         const k = e.key.toLowerCase()
-        if (!carOnScreen || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return
+        if (!carOnScreen || overlayIsOpen() || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return
         if (k === 'w' || k === 'a' || k === 's' || k === 'd' || k === 'shift') keys.add(k)
         // the hint has done its job the moment the car first drives off
         if (!hintDone && (k === 'w' || k === 'a' || k === 's' || k === 'd')) {
@@ -732,16 +736,17 @@ export default function BlockName({
         // default stops the browser's jarring page-down scroll
         if (k === ' ') {
           e.preventDefault()
+          e.stopPropagation()
           keys.add(' ')
         }
       }
       const onKeyUp = (e: KeyboardEvent) => keys.delete(e.key.toLowerCase())
       const onBlur = () => keys.clear()
-      window.addEventListener('keydown', onKeyDown)
+      window.addEventListener('keydown', onKeyDown, true)
       window.addEventListener('keyup', onKeyUp)
       window.addEventListener('blur', onBlur)
       disposers.push(() => {
-        window.removeEventListener('keydown', onKeyDown)
+        window.removeEventListener('keydown', onKeyDown, true)
         window.removeEventListener('keyup', onKeyUp)
         window.removeEventListener('blur', onBlur)
       })
@@ -860,7 +865,7 @@ export default function BlockName({
       let revealed = false
       let last = performance.now()
       const tick = (now: number) => {
-        if (pausedByOverlay) {
+        if (paused) {
           raf = 0
           return
         }
@@ -1108,17 +1113,26 @@ export default function BlockName({
         }
         raf = requestAnimationFrame(tick)
       }
+      const resumeIfReady = () => {
+        if (!paused && raf === 0 && !disposed) {
+          last = performance.now()
+          raf = requestAnimationFrame(tick)
+        }
+      }
       if (coarse) {
         disposers.push(
           onOverlayChange((open) => {
-            pausedByOverlay = open
-            if (!pausedByOverlay && raf === 0 && !disposed) {
-              last = performance.now()
-              raf = requestAnimationFrame(tick)
-            }
+            paused = open || themeIsTransitioning()
+            resumeIfReady()
           }),
         )
       }
+      const pauseObserver = new MutationObserver(() => {
+        paused = (coarse && overlayIsOpen()) || themeIsTransitioning()
+        resumeIfReady()
+      })
+      pauseObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-transitioning'] })
+      disposers.push(() => pauseObserver.disconnect())
       raf = requestAnimationFrame(tick)
       disposers.push(() => cancelAnimationFrame(raf))
     })

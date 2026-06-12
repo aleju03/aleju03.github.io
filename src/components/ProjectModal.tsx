@@ -15,11 +15,10 @@ import { techBrands } from '../data/techBrands'
 function TechBadge({ name }: { name: string }) {
   const brand = techBrands[name]
   const color = brand?.icon && !brand.mono ? `#${brand.icon.hex}` : 'currentColor'
-  return (
-    <li
-      style={{ '--brand': color } as CSSProperties}
-      className="flex items-center gap-2 rounded-full border border-stone-200 bg-white py-1.5 pr-3.5 pl-2.5 text-sm text-stone-700 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:border-(--brand) hover:shadow-md dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300"
-    >
+  const className =
+    'flex items-center gap-2 rounded-full border border-stone-200 bg-white py-1.5 pr-3.5 pl-2.5 text-sm text-stone-700 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:border-(--brand) hover:shadow-md focus:outline-none focus-visible:border-(--brand) focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300'
+  const contents = (
+    <>
       {brand?.icon ? (
         <svg role="img" aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill={color}>
           <path d={brand.icon.path} />
@@ -28,6 +27,27 @@ function TechBadge({ name }: { name: string }) {
         <ChartLineUpIcon size={16} aria-hidden="true" />
       )}
       {name}
+    </>
+  )
+
+  return (
+    <li>
+      {brand?.url ? (
+        <a
+          href={brand.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`Open ${name} website`}
+          style={{ '--brand': color } as CSSProperties}
+          className={className}
+        >
+          {contents}
+        </a>
+      ) : (
+        <span style={{ '--brand': color } as CSSProperties} className={className}>
+          {contents}
+        </span>
+      )}
     </li>
   )
 }

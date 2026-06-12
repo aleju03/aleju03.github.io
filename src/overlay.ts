@@ -2,6 +2,7 @@ export const OVERLAY_CHANGE_EVENT = 'portfolio-overlay-change'
 
 let lockDepth = 0
 let previousOverflow = ''
+let previousPaddingRight = ''
 
 function setOverlayState(open: boolean) {
   document.documentElement.toggleAttribute('data-overlay-open', open)
@@ -10,8 +11,14 @@ function setOverlayState(open: boolean) {
 
 export function lockPageForOverlay() {
   if (lockDepth === 0) {
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth
     previousOverflow = document.body.style.overflow
+    previousPaddingRight = document.body.style.paddingRight
     document.body.style.overflow = 'hidden'
+    if (scrollbarWidth > 0) {
+      const currentPadding = Number.parseFloat(getComputedStyle(document.body).paddingRight) || 0
+      document.body.style.paddingRight = `${currentPadding + scrollbarWidth}px`
+    }
     setOverlayState(true)
   }
 
@@ -25,6 +32,7 @@ export function lockPageForOverlay() {
 
     if (lockDepth === 0) {
       document.body.style.overflow = previousOverflow
+      document.body.style.paddingRight = previousPaddingRight
       setOverlayState(false)
     }
   }
