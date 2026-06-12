@@ -493,7 +493,8 @@ export default function BlockName({
         const halfV = Math.tan((camera.fov * Math.PI) / 360)
         camera.position.z = (cr.height * worldPerPixel) / 2 / halfV
         camera.updateProjectionMatrix()
-        holder.position.x = (sr.left + sr.width / 2 - cr.width / 2) * worldPerPixel
+        const fittedWidth = sr.width * fitScale
+        holder.position.x = (sr.left + fittedWidth / 2 - cr.width / 2) * worldPerPixel
         holder.position.y = -(sr.top + sr.height / 2 + window.scrollY - cr.height / 2) * worldPerPixel
         view.wpp = worldPerPixel
         view.W = cr.width
