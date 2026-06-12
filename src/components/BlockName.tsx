@@ -21,8 +21,8 @@ import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
   control hint hangs under the parked car and fades for good on the first
   drive key; on touch screens it reads "tap the car to drive" instead, and
   tapping the car toggles on-screen controls: a left-thumb joystick that
-  maps to analog steer and throttle, plus drift and turbo buttons under the
-  right thumb that feed the same key set as the keyboard — so one thumb
+  maps to screen-space drive direction, plus drift and turbo buttons under
+  the right thumb that feed the same key set as the keyboard — so one thumb
   drives while the other drifts.
 
   The canvas is FIXED to the viewport and the world is pinned to the
@@ -567,17 +567,34 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
       }
 
       // the touch pad toggles on a car tap: the drift/turbo buttons feed the
-      // same key set as the keyboard, while the joystick writes analog steer
-      // and throttle that the physics adds on top of the keys
+      // same key set as the keyboard, while the joystick writes a screen-space
+      // direction vector so mobile controls feel literal.
       const stick = { x: 0, y: 0, active: false }
       const padEl = padRef.current
+      let resetStickControl = () => {
+        stick.x = 0
+        stick.y = 0
+        stick.active = false
+      }
       let padOpen = false
       const setPad = (open: boolean) => {
         if (!padEl) return
         padOpen = open
         padEl.style.visibility = open ? 'visible' : 'hidden'
         padEl.style.opacity = open ? '1' : '0'
+        if (!open) resetStickControl()
       }
+
+      const onViewportDown = (e: PointerEvent) => {
+        if (e.pointerType !== 'touch' || !padOpen) return
+        const target = e.target
+        if (target instanceof Node && padEl?.contains(target)) return
+        e.preventDefault()
+        e.stopPropagation()
+        setPad(false)
+      }
+      window.addEventListener('pointerdown', onViewportDown, true)
+      disposers.push(() => window.removeEventListener('pointerdown', onViewportDown, true))
 
       const onMove = (e: PointerEvent) => {
         const rect = el.getBoundingClientRect()
@@ -593,11 +610,11 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
       }
       const onDown = (e: PointerEvent) => {
         if (e.pointerType === 'touch') {
-          // a tap near the car (generous, thumb-sized hitbox) toggles the
-          // touch controls
+          // a tap near the car (generous, thumb-sized hitbox) opens the touch
+          // controls. Once open, the viewport listener above owns dismissal.
           const p = toPlane(e)
           if (p && (p.x - carPos.x) ** 2 + (p.y - carPos.y) ** 2 < 42) {
-            setPad(!padOpen)
+            setPad(true)
             if (!hintDone) {
               hintDone = true
               hintEl!.style.opacity = '0'
@@ -746,9 +763,9 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
           })
         }
 
-        // the joystick: knob displacement maps to analog steer (x) and
-        // throttle (y, push forward / pull back). Pointer capture keeps the
-        // knob glued to the thumb even when it slides off the base circle
+        // the joystick: knob displacement maps to screen-space direction.
+        // Pointer capture keeps the knob glued to the thumb even when it
+        // slides off the base circle.
         const stickEl = padEl.querySelector<HTMLDivElement>('[data-joystick]')
         const knobEl = stickEl?.querySelector<HTMLDivElement>('[data-knob]')
         if (stickEl && knobEl) {
@@ -790,13 +807,18 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
           const stickUp = (e: PointerEvent) => {
             if (e.pointerId !== stickPointer) return
             stickPointer = -1
+            knobEl.style.transition = 'transform 150ms ease-out'
+            resetStickControl()
+          }
+          const swallowMenu = (e: Event) => e.preventDefault()
+          resetStickControl = () => {
+            stickPointer = -1
             stick.active = false
             stick.x = 0
             stick.y = 0
             knobEl.style.transition = 'transform 150ms ease-out'
             setKnob(0, 0)
           }
-          const swallowMenu = (e: Event) => e.preventDefault()
           stickEl.addEventListener('pointerdown', stickDown)
           stickEl.addEventListener('pointermove', stickMove)
           stickEl.addEventListener('pointerup', stickUp)
@@ -869,30 +891,52 @@ export default function BlockName({ slotRef, resetRef, onActive, onScrambled }: 
         // while quickening the steering — that combination is the drift.
         const turbo = keys.has('shift')
         const drifting = keys.has(' ')
-        // the joystick adds analog steer/throttle on top of the keys; pulling
-        // back reverses at the same reduced strength as the S key
-        const throttle = THREE.MathUtils.clamp(
+        // Keyboard keeps the tabletop car controls. Touch uses screen-space
+        // direction instead: push down, the car goes down regardless of where
+        // its nose happened to be pointing.
+        const stickMag = carOnScreen ? Math.min(1, Math.hypot(stick.x, stick.y)) : 0
+        const touchDrive = stick.active && stickMag > 0
+        let throttle = THREE.MathUtils.clamp(
           (keys.has('w') ? 1 : 0) -
             (keys.has('s') ? 0.6 : 0) +
             (carOnScreen ? (stick.y > 0 ? stick.y : stick.y * 0.6) : 0),
           -0.6,
           1,
         )
-        const steer = THREE.MathUtils.clamp(
+        let steer = THREE.MathUtils.clamp(
           (keys.has('a') ? 1 : 0) - (keys.has('d') ? 1 : 0) - (carOnScreen ? stick.x : 0),
           -1,
           1,
         )
-        const fwdX = Math.cos(carHeading)
-        const fwdY = Math.sin(carHeading)
+        let fwdX = Math.cos(carHeading)
+        let fwdY = Math.sin(carHeading)
         let fwd = carVel.x * fwdX + carVel.y * fwdY
         let lat = -carVel.x * fwdY + carVel.y * fwdX
-        fwd += throttle * (turbo ? 105 : 58) * dt
-        fwd *= Math.max(0, 1 - (drifting ? 2.6 : 1.7) * dt)
-        fwd = THREE.MathUtils.clamp(fwd, -13, turbo ? 48 : 30)
-        lat *= Math.max(0, 1 - (drifting ? 1.8 : 11) * dt)
-        carHeading += steer * (drifting ? 4.1 : 2.7) * dt * THREE.MathUtils.clamp(fwd / 9, -1, 1)
-        carVel.set(fwdX * fwd - fwdY * lat, fwdY * fwd + fwdX * lat)
+        if (touchDrive) {
+          const desiredHeading = Math.atan2(stick.y, stick.x)
+          const desiredSpeed = stickMag * (turbo ? 42 : 28)
+          const desiredX = Math.cos(desiredHeading) * desiredSpeed
+          const desiredY = Math.sin(desiredHeading) * desiredSpeed
+          const velocityEase = 1 - Math.exp(-(drifting ? 9 : 18) * dt)
+          carVel.x += (desiredX - carVel.x) * velocityEase
+          carVel.y += (desiredY - carVel.y) * velocityEase
+
+          const turn = Math.atan2(Math.sin(desiredHeading - carHeading), Math.cos(desiredHeading - carHeading))
+          carHeading += turn * (1 - Math.exp(-(drifting ? 7 : 14) * dt))
+          throttle = stickMag
+          steer = THREE.MathUtils.clamp(turn / (Math.PI / 2), -1, 1)
+        } else {
+          fwd += throttle * (turbo ? 105 : 58) * dt
+          fwd *= Math.max(0, 1 - (drifting ? 2.6 : 1.7) * dt)
+          fwd = THREE.MathUtils.clamp(fwd, -13, turbo ? 48 : 30)
+          lat *= Math.max(0, 1 - (drifting ? 1.8 : 11) * dt)
+          carHeading += steer * (drifting ? 4.1 : 2.7) * dt * THREE.MathUtils.clamp(fwd / 9, -1, 1)
+          carVel.set(fwdX * fwd - fwdY * lat, fwdY * fwd + fwdX * lat)
+        }
+        fwdX = Math.cos(carHeading)
+        fwdY = Math.sin(carHeading)
+        fwd = carVel.x * fwdX + carVel.y * fwdY
+        lat = -carVel.x * fwdY + carVel.y * fwdX
         carPos.addScaledVector(carVel, dt)
         const carSpd = carVel.length()
         // horizontal: wrap at the screen edges (break the trail so the ribbon
