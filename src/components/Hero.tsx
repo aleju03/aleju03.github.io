@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useRef, useState } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
 import { ArrowDownIcon, GithubLogoIcon } from '@phosphor-icons/react'
 import { github } from '../data/projects'
@@ -8,19 +8,6 @@ import { useI18n } from '../i18n'
 
 const HeroScene = lazy(() => import('./HeroScene'))
 const BlockName = lazy(() => import('./BlockName'))
-
-function supportsWebGL() {
-  try {
-    const canvas = document.createElement('canvas')
-    return Boolean(
-      canvas.getContext('webgl2') ||
-        canvas.getContext('webgl') ||
-        canvas.getContext('experimental-webgl'),
-    )
-  } catch {
-    return false
-  }
-}
 
 export function Hero() {
   const reduce = useReducedMotion()
@@ -38,42 +25,18 @@ export function Hero() {
   const resetBlocksRef = useRef<() => void>(() => {})
   const [blocksActive, setBlocksActive] = useState(false)
   const [scrambled, setScrambled] = useState(false)
-  const [threeReady, setThreeReady] = useState(false)
-
-  useEffect(() => {
-    if (reduce) return
-
-    const finePointer =
-      window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
-      navigator.maxTouchPoints === 0
-    if (!finePointer || !supportsWebGL()) return
-
-    if ('requestIdleCallback' in window) {
-      const id = window.requestIdleCallback(() => setThreeReady(true), { timeout: 1600 })
-      return () => window.cancelIdleCallback(id)
-    }
-
-    const id = globalThis.setTimeout(() => setThreeReady(true), 700)
-    return () => globalThis.clearTimeout(id)
-  }, [reduce])
 
   return (
     <section className="relative overflow-hidden">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 text-stone-300/60 opacity-75 [background-image:radial-gradient(circle_at_center,currentColor_1px,transparent_1px)] [background-size:18px_18px] dark:text-stone-700/60"
-      />
-      {threeReady && (
-        <Suspense fallback={null}>
-          <HeroScene />
-        </Suspense>
-      )}
+      <Suspense fallback={null}>
+        <HeroScene />
+      </Suspense>
       {/* fade the dot field toward the edges so text stays readable */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,var(--page)_0%,transparent_35%,transparent_60%,var(--page)_100%)]"
       />
-      {threeReady && (
+      {!reduce && (
         <Suspense fallback={null}>
           <BlockName
             fontPreset={nameFont}

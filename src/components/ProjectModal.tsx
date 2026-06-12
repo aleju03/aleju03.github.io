@@ -20,14 +20,9 @@ function TechBadge({ name }: { name: string }) {
   const contents = (
     <>
       {brand?.icon ? (
-        <span
-          aria-hidden="true"
-          className="h-4 w-4 shrink-0 bg-(--brand)"
-          style={{
-            mask: `url(${brand.icon.src}) center / contain no-repeat`,
-            WebkitMask: `url(${brand.icon.src}) center / contain no-repeat`,
-          }}
-        />
+        <svg role="img" aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill={color}>
+          <path d={brand.icon.path} />
+        </svg>
       ) : (
         <ChartLineUpIcon size={16} aria-hidden="true" />
       )}
