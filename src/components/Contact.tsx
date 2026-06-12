@@ -1,5 +1,6 @@
 import { ArrowUpRightIcon, GithubLogoIcon, LinkedinLogoIcon } from '@phosphor-icons/react'
 import { email, github, linkedin } from '../data/projects'
+import { BOOT_OS_EVENT } from '../events'
 import { Reveal } from './Reveal'
 import { useI18n } from '../i18n'
 
@@ -20,7 +21,7 @@ export function Contact() {
           />
         </Reveal>
       </div>
-      <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 lg:py-24">
+      <div className="relative mx-auto max-w-6xl px-5 py-20 sm:px-8 lg:py-24">
         <Reveal>
           <h2 className="text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
             {t.sections.contact}
@@ -40,6 +41,28 @@ export function Contact() {
             />
           </a>
         </Reveal>
+        {/* the OS's own machine, dumped in the corner: BlockName draws the 3D
+            wreck over the stage span and reveals this button once the model
+            loads. Clicking it boots AlejOS; crashing the paper plane into its
+            screen takes the same trip. On large screens it shares the contact
+            block's vertical band (absolute, bottom right) so it adds no
+            height; on small ones it stacks below the email. Where the 3D
+            scene never mounts the button stays hidden and the page ends at
+            the footer as before. */}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            style={{ display: 'none' }}
+            onClick={() => window.dispatchEvent(new Event(BOOT_OS_EVENT))}
+            aria-label={t.contact.wreckAria}
+            className="group mt-10 flex cursor-pointer flex-col items-center gap-1 lg:absolute lg:right-8 lg:bottom-0 lg:mt-0"
+          >
+            <span id="os-wreck" aria-hidden className="block h-32 w-64 sm:h-40 sm:w-80" />
+            <span className="font-mono text-xs text-stone-400 transition-colors group-hover:text-stone-600 dark:text-stone-600 dark:group-hover:text-stone-300">
+              {t.contact.wreck}
+            </span>
+          </button>
+        </div>
       </div>
       <footer className="border-t border-stone-200 dark:border-stone-800">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-6 sm:px-8">

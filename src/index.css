@@ -20,7 +20,7 @@
 /*
   Theme: light/dark, default follows prefers-color-scheme, manual toggle persisted
   in localStorage ('theme'). Light mode uses a warm cream paper palette inspired
-  by Wallpaper Archive; dark mode keeps the original stone neutrals.
+  by Wallpaper Archive; dark mode uses a softer cream-neutral night palette.
   Accent: blue-600 (blue-400 on dark), used for links, primary CTA, and focus rings.
   Radius system: cards and media 12px (rounded-xl), interactive pills full radius.
 */
@@ -32,11 +32,22 @@
 .dark {
   --page: var(--color-stone-950);
   --surface: var(--color-stone-900);
+  --color-stone-50: #fbf2e5;
+  --color-stone-100: #f0e5d5;
+  --color-stone-200: #dccab5;
+  --color-stone-300: #c4b299;
+  --color-stone-400: #a89782;
+  --color-stone-500: #807160;
+  --color-stone-600: #665847;
+  --color-stone-700: #4f4334;
+  --color-stone-800: #393027;
+  --color-stone-900: #29231c;
+  --color-stone-950: #1d1913;
   color-scheme: dark;
 }
 
-/* Light-only neutral remap. Tailwind's dark utilities fall back to the default
-   stone scale because this selector stops matching once .dark is on <html>. */
+/* Tailwind's utilities read these scoped variables, so each theme gets its
+   own stone scale without changing component classes. */
 :root:not(.dark) {
   --color-stone-50: #faf8f0;
   --color-stone-100: #f5f1e6;
@@ -163,6 +174,16 @@ button:not(:disabled),
   }
   100% {
     opacity: 1;
+  }
+}
+
+/* the Internet Explorer loading bar slides across the top of the page */
+@keyframes os-ie-load {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
   }
 }
 

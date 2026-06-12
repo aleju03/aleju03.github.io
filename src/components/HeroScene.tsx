@@ -95,9 +95,9 @@ export default function HeroScene() {
         ridges: ['#f5f1e6', '#e8e2d0', '#d5cbb8'].map((s) => new THREE.Color(s)),
       },
       dark: {
-        base: new THREE.Color('#57534e'),
+        base: new THREE.Color('#807160'),
         accent: new THREE.Color('#3b82f6'),
-        ridges: ['#37332f', '#44403c', '#534e49'].map((s) => new THREE.Color(s)),
+        ridges: ['#29231c', '#393027', '#4f4334'].map((s) => new THREE.Color(s)),
       },
     }
     const base = new THREE.Color()

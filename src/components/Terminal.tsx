@@ -194,6 +194,7 @@ export function TerminalView({ onExit, insideOS }: TerminalViewProps) {
               <p>name: Alejandro Jiménez</p>
               <p>role: full-stack developer</p>
               <p>location: Costa Rica</p>
+              <p>lang: es_CR.UTF-8 / en_US</p>
               <p>stack: react / node / docker</p>
               <p>hosting: vercel + own server</p>
               <p>

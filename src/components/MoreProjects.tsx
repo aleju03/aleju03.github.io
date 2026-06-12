@@ -27,7 +27,7 @@ export function MoreProjects() {
                 href={project.repo}
                 target="_blank"
                 rel="noreferrer"
-                className="group flex h-full gap-5 rounded-xl border border-stone-200 bg-white p-5 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-black/40"
+                className="group flex h-full gap-5 rounded-xl border border-stone-200 bg-white p-5 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-stone-950/45"
               >
                 <div
                   className={`flex w-28 shrink-0 items-center justify-center self-stretch rounded-lg p-3 sm:w-32 ${

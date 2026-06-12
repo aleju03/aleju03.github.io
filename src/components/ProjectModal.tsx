@@ -141,7 +141,7 @@ export function ProjectModal({
           aria-modal="true"
           aria-label={project.name}
           tabIndex={-1}
-          className="max-h-[88dvh] overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl shadow-stone-950/30 outline-none dark:border-stone-800 dark:bg-stone-900 dark:shadow-black/60"
+          className="max-h-[88dvh] overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl shadow-stone-950/30 outline-none dark:border-stone-800 dark:bg-stone-900 dark:shadow-stone-950/60"
         >
           {/* gallery */}
           <div className="border-b border-stone-200 bg-stone-100 p-4 dark:border-stone-800 dark:bg-stone-950/60">

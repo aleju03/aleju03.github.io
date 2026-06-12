@@ -11,10 +11,12 @@ export interface Wallpaper {
   src?: string
   /** solid-color wallpapers, era classic */
   color?: string
+  /** light backdrop: desktop icons switch to dark text to stay readable */
+  light?: boolean
 }
 
 export const WALLPAPERS: Wallpaper[] = [
-  { id: 'daybreak', name: 'Daybreak', src: '/os/wallpaper.webp' },
+  { id: 'daybreak', name: 'Daybreak', src: '/os/wallpaper.webp', light: true },
   { id: 'hillside', name: 'Hillside', src: '/os/wallpapers/hillside.webp' },
   { id: 'dusk', name: 'Dusk', src: '/os/wallpapers/dusk.webp' },
   { id: 'night', name: 'Night', src: '/os/wallpapers/night.webp' },

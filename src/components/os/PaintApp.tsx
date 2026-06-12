@@ -14,6 +14,7 @@ import {
   TrashIcon,
 } from '@phosphor-icons/react'
 import { sounds } from './sounds'
+import { createNode } from './fs'
 
 /*
   Paint for AlejOS. A fixed 880x560 logical canvas, CSS-scaled to fit the
@@ -130,6 +131,7 @@ export function PaintApp() {
     snapshot: null,
   })
   const undoRef = useRef<ImageData[]>([])
+  const [savedTo, setSavedTo] = useState('')
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext('2d')
@@ -305,18 +307,17 @@ export function PaintApp() {
     sounds.close()
   }
 
+  // saving goes into the AlejOS filesystem, where Explorer and the image
+  // viewer can find it again; localStorage keeps it across reboots
   const save = () => {
     const canvas = canvasRef.current
     if (!canvas) return
-    canvas.toBlob((blob) => {
-      if (!blob) return
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'untitled.png'
-      a.click()
-      URL.revokeObjectURL(url)
+    const r = createNode('C:\\Pictures', {
+      name: 'painting.png',
+      kind: 'image',
+      src: canvas.toDataURL('image/png'),
     })
+    setSavedTo(r.ok ? `saved to C:\\Pictures\\${r.name}` : r.error)
     sounds.open()
   }
 
@@ -339,9 +340,16 @@ export function PaintApp() {
         <button type="button" aria-label="Clear canvas" title="Clear" onClick={clear} className={raised}>
           <TrashIcon size={14} />
         </button>
-        <button type="button" aria-label="Save image" title="Save" onClick={save} className={raised}>
+        <button
+          type="button"
+          aria-label="Save to C:\Pictures"
+          title="Save to C:\Pictures"
+          onClick={save}
+          className={raised}
+        >
           <FloppyDiskIcon size={14} />
         </button>
+        {savedTo && <span className="ml-1 truncate font-mono text-[10px] text-stone-500">{savedTo}</span>}
         <span aria-hidden className="mx-1.5 h-4 w-px bg-stone-400/60" />
         {WIDTHS.map((w) => (
           <button

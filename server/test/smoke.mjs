@@ -1,5 +1,5 @@
-// Smoke test: spawns the server as a child process and runs the core
-// visitor/admin flows against it over real WebSockets.
+// Smoke test for chat server v2: spawns the server as a child process and
+// runs the register/login/guest + rooms flows against it over real WebSockets.
 
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -44,11 +44,19 @@ function connect(url) {
         resolve(msg);
       });
     });
+  // Skip broadcast chatter (rooms/users/typing) until a given type arrives.
+  const nextOf = async (type, label) => {
+    for (let i = 0; i < 20; i++) {
+      const msg = await next(label);
+      if (msg.type === type) return msg;
+    }
+    throw new Error(`never saw a ${type} message (${label})`);
+  };
   const opened = new Promise((resolve, reject) => {
     ws.on('open', resolve);
     ws.on('error', reject);
   });
-  return { ws, next, opened, send: (obj) => ws.send(JSON.stringify(obj)) };
+  return { ws, next, nextOf, opened, send: (obj) => ws.send(JSON.stringify(obj)) };
 }
 
 function startServer() {
@@ -59,7 +67,7 @@ function startServer() {
         ...process.env,
         PORT: '0',
         ADMIN_TOKEN,
-        DB_PATH: path.join(tmpDir, 'messages.db'),
+        DB_PATH: path.join(tmpDir, 'chat.db'),
       },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
@@ -77,81 +85,97 @@ function startServer() {
 async function main() {
   const port = await startServer();
   const url = `ws://127.0.0.1:${port}/ws`;
-  const visitorId = 'smoke-visitor-1';
 
-  // 1. Visitor hello: presence offline, empty history.
-  const visitor = connect(url);
-  await visitor.opened;
-  visitor.send({ type: 'hello', role: 'visitor', id: visitorId, name: 'Smokey' });
-  const helloOk = await visitor.next('visitor hello-ok');
-  assert.equal(helloOk.type, 'hello-ok');
-  assert.equal(helloOk.presence.online, false);
-  const history = await visitor.next('visitor history');
-  assert.equal(history.type, 'history');
-  assert.deepEqual(history.messages, []);
-  console.log('1. visitor hello-ok, presence offline, empty history');
+  // 1. Guest hello: gets a guest name and the room list.
+  const guest = connect(url);
+  await guest.opened;
+  guest.send({ type: 'hello' });
+  const guestHello = await guest.nextOf('hello-ok', 'guest hello-ok');
+  assert.equal(guestHello.user, null);
+  assert.match(guestHello.you, /^guest-/);
+  assert.ok(guestHello.rooms.some((r) => r.id === 'general'));
+  console.log('1. guest hello-ok with guest name and room list');
 
-  // 2. Visitor sends a message, expects ack.
-  visitor.send({ type: 'msg', text: 'hello from the smoke test', tmp: 'tmp-1' });
-  const ack = await visitor.next('visitor ack');
-  assert.equal(ack.type, 'ack');
+  // 2. Register a user, get a token back.
+  const alice = connect(url);
+  await alice.opened;
+  alice.send({ type: 'hello' });
+  await alice.nextOf('hello-ok', 'alice hello-ok');
+  alice.send({ type: 'register', username: 'alice', password: 'hunter2' });
+  const reg = await alice.nextOf('auth-ok', 'alice auth-ok');
+  assert.equal(reg.user.name, 'alice');
+  assert.equal(reg.user.admin, false);
+  assert.ok(typeof reg.token === 'string' && reg.token.length > 20);
+  console.log('2. registration returns token and user');
+
+  // 3. Duplicate username is rejected.
+  const dup = connect(url);
+  await dup.opened;
+  dup.send({ type: 'hello' });
+  await dup.nextOf('hello-ok', 'dup hello-ok');
+  dup.send({ type: 'register', username: 'alice', password: 'whatever' });
+  const dupErr = await dup.nextOf('error', 'dup error');
+  assert.equal(dupErr.code, 'taken');
+  console.log('3. duplicate username rejected');
+
+  // 4. Token resume: a fresh socket with the token is alice again.
+  const alice2 = connect(url);
+  await alice2.opened;
+  alice2.send({ type: 'hello', token: reg.token });
+  const resumed = await alice2.nextOf('hello-ok', 'alice resume');
+  assert.equal(resumed.user.name, 'alice');
+  assert.equal(resumed.badToken, false);
+  console.log('4. token resume works');
+
+  // 5. Wrong password and admin login.
+  dup.send({ type: 'login', username: 'alice', password: 'wrong' });
+  const loginErr = await dup.nextOf('error', 'bad login');
+  assert.equal(loginErr.code, 'auth');
+  dup.send({ type: 'login', username: 'aleju', password: ADMIN_TOKEN });
+  const adminOk = await dup.nextOf('auth-ok', 'admin login');
+  assert.equal(adminOk.user.admin, true);
+  console.log('5. wrong password rejected, admin login flagged admin');
+
+  // 6. Join a room, send a message, others receive it with identity flags.
+  alice2.send({ type: 'join', room: 'general' });
+  const aliceHistory = await alice2.nextOf('history', 'alice history');
+  assert.equal(aliceHistory.room, 'general');
+  assert.deepEqual(aliceHistory.messages, []);
+  guest.send({ type: 'join', room: 'general' });
+  await guest.nextOf('history', 'guest history');
+
+  alice2.send({ type: 'msg', room: 'general', text: 'hello rooms', tmp: 'tmp-1' });
+  const ack = await alice2.nextOf('ack', 'alice ack');
   assert.equal(ack.tmp, 'tmp-1');
   assert.ok(Number.isInteger(ack.id));
-  assert.ok(typeof ack.at === 'number');
-  console.log('2. visitor message acked');
+  const received = await guest.nextOf('msg', 'guest receives');
+  assert.equal(received.room, 'general');
+  assert.equal(received.message.from, 'alice');
+  assert.equal(received.message.registered, true);
+  assert.equal(received.message.admin, false);
+  console.log('6. room message delivered with identity flags');
 
-  // 3. Admin hello with bad token gets auth error.
-  const badAdmin = connect(url);
-  await badAdmin.opened;
-  badAdmin.send({ type: 'hello', role: 'admin', token: 'wrong-token' });
-  const authErr = await badAdmin.next('auth error');
-  assert.equal(authErr.type, 'error');
-  assert.equal(authErr.code, 'auth');
-  console.log('3. bad admin token rejected with auth error');
+  // 7. History persists: a new joiner sees the message.
+  const late = connect(url);
+  await late.opened;
+  late.send({ type: 'hello' });
+  await late.nextOf('hello-ok', 'late hello-ok');
+  late.send({ type: 'join', room: 'general' });
+  const lateHistory = await late.nextOf('history', 'late history');
+  assert.equal(lateHistory.messages.length, 1);
+  assert.equal(lateHistory.messages[0].text, 'hello rooms');
+  console.log('7. room history persists for late joiners');
 
-  // 4. Admin hello with good token: hello-ok + convos; visitor sees presence.
-  const admin = connect(url);
-  await admin.opened;
-  admin.send({ type: 'hello', role: 'admin', token: ADMIN_TOKEN });
-  const adminHello = await admin.next('admin hello-ok');
-  assert.equal(adminHello.type, 'hello-ok');
-  const convos = await admin.next('admin convos');
-  assert.equal(convos.type, 'convos');
-  const convo = convos.convos.find((c) => c.id === visitorId);
-  assert.ok(convo, 'visitor convo listed');
-  assert.equal(convo.lastText, 'hello from the smoke test');
-  assert.equal(convo.count, 1);
-  assert.equal(convo.name, 'Smokey');
-  const presence = await visitor.next('presence online');
-  assert.equal(presence.type, 'presence');
-  assert.equal(presence.online, true);
-  console.log('4. admin authed, convos listed, visitor got presence online');
+  // 8. Guests cannot take a registered name as a nick.
+  guest.send({ type: 'nick', name: 'alice' });
+  const nickErr = await guest.nextOf('error', 'nick taken');
+  assert.equal(nickErr.code, 'taken');
+  guest.send({ type: 'nick', name: 'wanderer' });
+  const nickOk = await guest.nextOf('nick-ok', 'nick ok');
+  assert.equal(nickOk.name, 'wanderer');
+  console.log('8. nick protection works, free nicks accepted');
 
-  // 5. Admin reply reaches the visitor (and echoes to admin).
-  admin.send({ type: 'reply', to: visitorId, text: 'hi back' });
-  const visitorMsg = await visitor.next('admin reply to visitor');
-  assert.equal(visitorMsg.type, 'msg');
-  assert.equal(visitorMsg.message.sender, 'admin');
-  assert.equal(visitorMsg.message.text, 'hi back');
-  const adminEcho = await admin.next('admin echo');
-  assert.equal(adminEcho.type, 'msg');
-  assert.equal(adminEcho.convo, visitorId);
-  assert.equal(adminEcho.message.text, 'hi back');
-  console.log('5. admin reply delivered to visitor and echoed to admin');
-
-  // 6. Admin open returns both messages, oldest first.
-  admin.send({ type: 'open', id: visitorId });
-  const adminHistory = await admin.next('admin history');
-  assert.equal(adminHistory.type, 'history');
-  assert.equal(adminHistory.convo, visitorId);
-  assert.equal(adminHistory.messages.length, 2);
-  assert.equal(adminHistory.messages[0].sender, 'visitor');
-  assert.equal(adminHistory.messages[1].sender, 'admin');
-  console.log('6. admin open returned full history, oldest first');
-
-  visitor.ws.close();
-  admin.ws.close();
-  badAdmin.ws.close();
+  for (const c of [guest, alice, alice2, dup, late]) c.ws.close();
   child.kill('SIGTERM');
   await new Promise((resolve) => child.on('exit', resolve));
   fs.rmSync(tmpDir, { recursive: true, force: true });

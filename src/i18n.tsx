@@ -55,12 +55,15 @@ const dictionaries = {
       paragraphs: [
         "I'm a full-stack developer who likes shipping things end to end: the interface, the API behind it, and the server it all runs on.",
         'Most of my work runs on React and TypeScript up front, with Python or Node.js behind it. I deploy on Vercel for frontends and run my own server for the always-on pieces.',
+        "More than any of that, I care about how things feel. Whatever I ship should look good and feel good to use, whether you're on a phone or a big screen.",
       ],
     },
     contact: {
       imageAlt: 'Hand-drawn illustration of a paper airplane looping over rounded hills',
       body: 'Open to interesting projects and good conversations about software.',
       footer: 'Alejandro Jiménez, Costa Rica',
+      wreck: 'it still boots',
+      wreckAria: 'Boot AlejOS',
     },
     palette: {
       navigate: 'Navigate',
@@ -96,7 +99,7 @@ const dictionaries = {
     hero: {
       fixName: 'arreglar mi nombre',
       intro:
-        'Desarrollador full-stack de Costa Rica. Construyo aplicaciones web de punta a punta, desde frontends en React hasta los servidores que las sostienen.',
+        'Desarrollador full-stack de Costa Rica. Construyo aplicaciones web completas, desde el frontend en React hasta el servidor donde corren.',
       viewWork: 'Ver proyectos',
     },
     sections: {
@@ -123,14 +126,17 @@ const dictionaries = {
       imageAlt:
         'Ilustración dibujada a mano de un desarrollador en un escritorio junto a un servidor y una monstera',
       paragraphs: [
-        'Soy un desarrollador full-stack al que le gusta lanzar productos completos: la interfaz, la API detrás de ella y el servidor donde todo corre.',
-        'La mayoría de mi trabajo usa React y TypeScript en el frontend, con Python o Node.js en el backend. Despliego frontends en Vercel y administro mi propio servidor para las piezas que siempre deben estar encendidas.',
+        'Soy un desarrollador full-stack al que le gusta construir las cosas completas: la interfaz, la API detrás y el servidor donde corre todo.',
+        'Casi todo lo que hago usa React y TypeScript en el frontend, con Python o Node.js en el backend. Los frontends los despliego en Vercel, y tengo mi propio servidor para lo que necesita estar corriendo todo el tiempo.',
+        'Pero más que todo eso, me importa cómo se siente lo que hago. Quiero que todo se vea bien y sea agradable de usar, igual en el teléfono que en una pantalla grande.',
       ],
     },
     contact: {
       imageAlt: 'Ilustración dibujada a mano de un avión de papel sobre colinas redondeadas',
       body: 'Abierto a proyectos interesantes y buenas conversaciones sobre software.',
       footer: 'Alejandro Jiménez, Costa Rica',
+      wreck: 'todavía enciende',
+      wreckAria: 'Iniciar AlejOS',
     },
     palette: {
       navigate: 'Navegar',
@@ -156,19 +162,19 @@ type Dictionary = typeof dictionaries.en
 const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<ShowcaseProject['details']> }> = {
   'Mania Tracker': {
     description:
-      'Rankings por país, seguimiento de puntajes en vivo, mejores jugadas y visor de repeticiones para osu!mania. Un frontend con TanStack Start y un servicio Node que ingiere puntajes y transmite actualizaciones al navegador por SSE.',
+      'Rankings por país, seguimiento de puntajes en vivo, mejores jugadas y un visor de repeticiones para osu!mania. El frontend usa TanStack Start, y detrás hay un servicio en Node que procesa los puntajes y manda las actualizaciones al navegador por SSE.',
     imageAlt: 'Panel principal de Mania Tracker con rankings y puntajes en vivo',
     details: {
       story: [
-        'Mania Tracker sigue la escena competitiva de un juego de ritmo: quién sube en los rankings, quién acaba de hacer una gran jugada y qué está jugando la comunidad. Un frontend con TanStack Start vive encima de un servicio Node siempre activo que hace el trabajo pesado.',
-        'Los problemas interesantes estuvieron en el pipeline en tiempo real. El servicio ingiere puntajes desde un feed comunitario, mantiene proyecciones durables en SQLite y empuja enriquecimiento, tablas de líderes y renderizado de repeticiones a través de una cola de trabajos respaldada por la base de datos. El navegador obtiene una fotografía inicial y se suscribe a un stream de Server-Sent Events; si la conexión cae, el cliente reproduce exactamente los eventos que se perdió.',
-        'El frontend corre en Vercel, mientras el servicio en vivo y su base de datos viven en un VPS de Hetzner que administro, con Caddy al frente y varias capas de caché entre la API externa y el navegador para que las páginas sigan rápidas sin gastar las cuotas.',
+        'Mania Tracker sigue la escena competitiva de un juego de ritmo: quién sube en los rankings, quién acaba de hacer una gran jugada y qué está jugando la comunidad. El frontend está hecho con TanStack Start, y detrás hay un servicio en Node siempre encendido que hace el trabajo pesado.',
+        'Lo más interesante fue el pipeline en tiempo real. El servicio recibe los puntajes desde un feed de la comunidad, los guarda en SQLite y maneja el enriquecimiento de datos, las tablas de posiciones y el renderizado de repeticiones con una cola de trabajos sobre esa misma base de datos. El navegador carga una foto inicial del estado y se suscribe a un stream de Server-Sent Events, y si la conexión se cae, el cliente recupera exactamente los eventos que se perdió.',
+        'El frontend corre en Vercel, y el servicio en vivo con su base de datos vive en un VPS de Hetzner que yo administro, con Caddy al frente y varias capas de caché entre la API externa y el navegador para que las páginas se mantengan rápidas sin gastarse las cuotas.',
       ],
       learned: [
-        'Transmitir actualizaciones en vivo con SSE y reproducir eventos perdidos al reconectar',
+        'Transmitir actualizaciones en vivo con SSE y recuperar los eventos perdidos al reconectar',
         'Construir una cola de trabajos durable sobre SQLite sin infraestructura extra',
-        'Provisionar y operar un VPS de producción en Hetzner con Caddy como proxy inverso',
-        'Combinar capas de caché y un limitador token-bucket para mantener la app rápida sin agotar cuotas de API',
+        'Configurar y administrar un VPS de producción en Hetzner con Caddy como proxy inverso',
+        'Combinar capas de caché con un limitador token-bucket para mantener la app rápida sin agotar las cuotas de la API',
       ],
       gallery: [
         {
@@ -196,16 +202,16 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
   },
   'Wallpaper Archive': {
     description:
-      'Explora, descarga y rankea wallpapers, con un modo Arena donde votos cara a cara deciden los mejores fondos. Una API en Fastify guarda rankings en Turso y sirve imágenes desde Cloudflare R2.',
+      'Explora, descarga y rankea wallpapers, con un modo Arena donde duelos uno a uno deciden cuáles son los mejores fondos. Una API en Fastify guarda los rankings en Turso y sirve las imágenes desde Cloudflare R2.',
     imageAlt: 'Galería de Wallpaper Archive',
     details: {
       story: [
-        'Empezó como una forma más rápida de explorar y descargar wallpapers para mí, y creció hasta convertirse en una galería pública con modo Arena, donde dos fondos compiten y un rating Elo decide los mejores de todos los tiempos.',
-        'La mayor parte del trabajo real está en el pipeline de imágenes. Cada wallpaper recibe miniaturas, metadatos extraídos y una revisión de duplicados por hash, para que una misma imagen tomada de dos fuentes aparezca solo una vez. Una API en Fastify mantiene rankings y metadatos en Turso mientras los originales se sirven desde Cloudflare R2.',
+        'Empezó como una forma más rápida de ver y descargar wallpapers para mi propio uso, y terminó convirtiéndose en una galería pública con un modo Arena, donde dos fondos compiten y un rating Elo decide cuáles son los mejores de todos los tiempos.',
+        'La mayor parte del trabajo real está en el pipeline de imágenes. A cada wallpaper se le generan miniaturas, se le extraen metadatos y se revisa por hash que no esté repetido, para que la misma imagen sacada de dos fuentes distintas aparezca solo una vez. Una API en Fastify guarda los rankings y metadatos en Turso, y los originales se sirven desde Cloudflare R2.',
       ],
       learned: [
         'Servir miles de imágenes de forma barata desde object storage',
-        'Usar SQLite en el edge con Turso y exprimir una app real dentro de free tiers',
+        'Usar SQLite en el edge con Turso y hacer que una app real quepa en planes gratuitos',
         'Detectar imágenes duplicadas con hashing en vez de comparar píxeles',
       ],
       gallery: [
@@ -234,11 +240,11 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
     details: {
       story: [
         'Un dashboard personal de salud para peso, composición corporal, hidratación, pasos y ejercicio, con vistas históricas y resúmenes por periodo. Fue mi primera vez poniendo un backend en Python detrás de un frontend en React.',
-        'FastAPI resultó ser un excelente primer framework de API, pero la parte que más me enseñó fue el modelo de datos. Necesitaba cuentas reales con registro e inicio de sesión, además de años de métricas diarias estructuradas para que las vistas históricas y los resúmenes fueran rápidos. En el frontend usé shadcn/ui y animación para que un dashboard CRUD se sintiera pulido en lugar de clínico.',
+        'FastAPI resultó ser un excelente primer framework de API, pero lo que más me enseñó fue el modelo de datos. Necesitaba cuentas reales con registro e inicio de sesión, además de años de métricas diarias bien estructuradas para que las vistas históricas y los resúmenes cargaran rápido. En el frontend usé shadcn/ui y animaciones para que un dashboard CRUD se sintiera pulido y no frío.',
       ],
       learned: [
         'Diseñar y documentar una API REST con FastAPI',
-        'Modelar una base de datos relacional desde cero, con autenticación real encima',
+        'Modelar una base de datos relacional desde cero, con autenticación real incluida',
         'Pulir una interfaz cargada de datos con shadcn/ui, Recharts y motion',
       ],
       gallery: [
@@ -272,13 +278,13 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
     details: {
       story: [
         'Mi primera app móvil, construida con Flutter para un curso universitario. Permite buscar cualquier carta, explorar sets y revisar precios de mercado usando la API pública de Pokémon TCG.',
-        'Viniendo de web, el árbol de widgets de Flutter y el estado con Provider fueron un cambio mental fuerte. Pasé la mayor parte del tiempo optimizando el uso de la API: pidiendo solo los campos que cada pantalla necesitaba y paginando resultados para que la app siguiera rápida en una conexión móvil. El inicio de sesión con Google por Firebase me enseñó las alegrías de configurar OAuth, huellas SHA-1 incluidas.',
+        'Viniendo del mundo web, el árbol de widgets de Flutter y el manejo de estado con Provider me obligaron a pensar distinto. Pasé la mayor parte del tiempo optimizando el uso de la API: pedir solo los campos que cada pantalla necesita y paginar los resultados para que la app se mantuviera rápida con datos móviles. Y el inicio de sesión con Google a través de Firebase me hizo pelear con toda la configuración de OAuth, huellas SHA-1 incluidas.',
       ],
       learned: [
         'Fundamentos de Flutter y Dart, desde el árbol de widgets hasta navegación y datos asíncronos',
-        'Tratar las llamadas a API como un presupuesto: seleccionar campos, paginar y reducir viajes',
+        'Tratar las llamadas a la API como un presupuesto: pedir solo los campos necesarios, paginar y hacer menos llamadas',
         'Configurar Google OAuth con Firebase Auth en Android',
-        'Acotar y entregar una app real con fecha límite de curso',
+        'Definir el alcance y entregar una app real con la fecha límite de un curso',
       ],
       gallery: [
         {
@@ -310,13 +316,13 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
     imageAlt: 'Pantalla principal docente de Aula con resumen de grupos',
     details: {
       story: [
-        'Aula permite que docentes y administradores escolares manejen sus clases desde el teléfono. Los docentes crean tareas con archivos adjuntos y fechas límite, envían mensajes a estudiantes y dan seguimiento a sus grupos, mientras los administradores supervisan grupos de toda la institución. Según quién inicia sesión, la app muestra un conjunto distinto de pantallas.',
-        'Corre en React Native con Expo, con Firebase como backend. Las dos cosas que más me enseñaron fueron los datos y el estado. En los datos tuve que definir cómo organizar todo en Firestore, qué colecciones crear y cómo tareas, grupos y mensajes se relacionan. En el estado, Redux Toolkit mantiene en un solo lugar el usuario autenticado, su rol y los datos que cada pantalla necesita, para que todo siga sincronizado al moverse por la app.',
+        'Aula permite que docentes y administradores escolares manejen sus clases desde el teléfono. Los docentes crean tareas con archivos adjuntos y fechas límite, envían mensajes a estudiantes y dan seguimiento a sus grupos, mientras los administradores supervisan los grupos de toda la institución. Dependiendo de quién inicie sesión, la app muestra pantallas distintas.',
+        'Corre en React Native con Expo, con Firebase como backend. Lo que más me enseñó fueron los datos y el estado. Del lado de los datos tuve que decidir cómo organizar todo en Firestore, qué colecciones crear y cómo se relacionan tareas, grupos y mensajes. Del lado del estado, Redux Toolkit mantiene en un solo lugar al usuario autenticado, su rol y los datos que cada pantalla necesita, para que todo se mantenga sincronizado al moverse por la app.',
       ],
       learned: [
         'Manejar estado global con Redux Toolkit, desde el usuario autenticado y su rol hasta los datos de cada pantalla',
         'Organizar datos en Firestore, eligiendo colecciones y referencias entre documentos',
-        'Mostrar skeleton placeholders mientras cargan datos, mi primera vez usando ese patrón en lugar de un spinner',
+        'Mostrar skeleton placeholders mientras cargan los datos, la primera vez que usé ese patrón en lugar de un spinner',
         'Dividir una app en dos experiencias por rol con Expo Router',
         'Construir una interfaz móvil limpia con React Native Paper',
       ],
@@ -354,7 +360,7 @@ const secondaryEs: Record<string, Partial<SecondaryProject>> = {
   },
   DocIndexer: {
     description:
-      'Indexación y búsqueda distribuida de documentos: un coordinador en FastAPI reparte procesamiento de texto a workers mediante colas Redis.',
+      'Indexación y búsqueda distribuida de documentos: un coordinador en FastAPI reparte el procesamiento de texto entre workers usando colas de Redis.',
     imageAlt: 'Marca de DocIndexer',
   },
 }

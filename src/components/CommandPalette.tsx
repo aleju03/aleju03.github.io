@@ -175,21 +175,25 @@ export function CommandPalette() {
 
   let lastGroup = ''
 
+  // matches the old sm:backdrop-blur-sm breakpoint; blur stays off on phones
+  const blurBackdrop = window.matchMedia('(min-width: 640px)').matches
+
   return (
     <AnimatePresence>
       {open && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-[14dvh]"
-        >
-          <button
+        // no opacity animation here: a fading ancestor becomes the backdrop
+        // root, which keeps the child's backdrop-filter from sampling the page
+        // until the fade ends (blur pops in instead of easing)
+        <motion.div className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-[14dvh]">
+          <motion.button
             type="button"
             aria-label={t.palette.close}
             onClick={closePalette}
-            className="absolute inset-0 cursor-default bg-stone-950/35 dark:bg-stone-950/60 sm:backdrop-blur-sm"
+            initial={{ opacity: 0, ...(blurBackdrop && { backdropFilter: 'blur(0px)' }) }}
+            animate={{ opacity: 1, ...(blurBackdrop && { backdropFilter: 'blur(4px)' }) }}
+            exit={{ opacity: 0, ...(blurBackdrop && { backdropFilter: 'blur(0px)' }) }}
+            transition={{ duration: 0.15 }}
+            className="absolute inset-0 cursor-default bg-stone-950/35 dark:bg-stone-950/60"
           />
           <motion.div
             role="dialog"

@@ -1,8 +1,10 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
 import type { HeroNameFontPreset } from './heroNameFonts'
+import { BOOT_OS_EVENT } from '../events'
 import { isCoarsePointer } from '../device'
 import { onOverlayChange, overlayIsOpen } from '../overlay'
 import { THEME_FADE_MS } from '../theme'
@@ -18,23 +20,33 @@ import { THEME_FADE_MS } from '../theme'
   owns the static fallback and the reset button; this component reports
   readiness and scramble state through callbacks.
 
-  A toy car shares the scene: WASD drives it (viewed from above, like a
-  tabletop), Shift is a turbo boost and Space is a handbrake that breaks
-  rear grip for drifting, laying continuous rubber ribbons. Ramming the
-  name sends letters flying; their springs pull them back home. An HTML
-  control hint hangs under the parked car and fades for good on the first
-  drive key; on touch screens it reads "tap the car to drive" instead, and
-  tapping the car toggles on-screen controls: a left-thumb joystick that
-  maps to screen-space drive direction, plus drift and turbo buttons under
-  the right thumb that feed the same key set as the keyboard — so one thumb
-  drives while the other drifts.
+  A paper plane shares the scene — the same dart that loops through the
+  contact illustration at the foot of the page, folded in 3D. WASD flies it
+  (viewed from above, like a tabletop), Shift is a boost and Space is a
+  swoop that breaks lateral grip so it carves wide sliding arcs. It inks a
+  blue dashed contrail behind itself while flying, so a carved loop draws
+  the illustration's looping dashes. Ramming the name sends letters flying;
+  their springs pull them back home. An HTML control hint hangs under the
+  parked plane and fades for good on the first flight key; on touch screens
+  it reads "tap the plane to fly" instead, and tapping the plane toggles
+  on-screen controls: a left-thumb joystick that maps to screen-space flight
+  direction, plus swoop and boost buttons under the right thumb that feed
+  the same key set as the keyboard — so one thumb steers while the other
+  swoops.
 
   The canvas is FIXED to the viewport and the world is pinned to the
-  document: the camera slides down with the scroll position, so the car can
-  drive across the entire page, and while it's being driven the page
+  document: the camera slides down with the scroll position, so the plane
+  can fly across the entire page, and while it's being flown the page
   scrolls along to keep it in view. Keys (including Space, which is purely
-  the handbrake) only register while the car is on screen and the user
+  the swoop) only register while the plane is on screen and the user
   isn't typing; arrow keys are left alone so the page always scrolls.
+
+  At the foot of the page the same world holds the wreck: the OS's own
+  computer (the AJU 700FD from CrtScene) lying tilted above the footer,
+  mapped onto a stage element that Contact renders. A terminal cursor
+  blinks in the corner of its dead screen (faster under a hover, while the
+  whole thing perks up a little), and flying the plane into the glass
+  boots AlejOS — the same trip as clicking it.
 */
 
 const LINES = [
@@ -47,7 +59,7 @@ const DEPTH = 2.2
 // sculpted material in both themes instead of a flat dark slab
 const COLORS = {
   light: { face: '#faf8f0', side: '#7d725f', accentFace: '#2563eb', accentSide: '#1e3a8a' },
-  dark: { face: '#f5f5f4', side: '#57534e', accentFace: '#3b82f6', accentSide: '#1e40af' },
+  dark: { face: '#fbf2e5', side: '#807160', accentFace: '#3b82f6', accentSide: '#1e40af' },
 }
 
 function supportsWebGL() {
@@ -87,16 +99,16 @@ export default function BlockName({
     const sectionEl = el?.parentElement
     if (!el || !slotEl || !sectionEl || !supportsWebGL()) return
 
-    // the control hint hangs off the parked car: wasd keys on mouse-only
-    // devices, a tap-to-drive nudge anywhere a finger could be the input.
+    // the control hint hangs off the parked plane: wasd keys on mouse-only
+    // devices, a tap-to-fly nudge anywhere a finger could be the input.
     // maxTouchPoints catches mobile emulators that report a fine pointer
     const hintEl = hintRef.current
     const coarse = isCoarsePointer()
-    const canDrive =
+    const canFly =
       !coarse &&
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
       navigator.maxTouchPoints === 0
-    if (hintEl && !canDrive) hintEl.textContent = 'tap the car to drive'
+    if (hintEl && !canFly) hintEl.textContent = 'tap the plane to fly'
 
     let disposed = false
     const disposers: (() => void)[] = []
@@ -241,42 +253,30 @@ export default function BlockName({
         slot.y += fontPreset.lineSpacing / 2
       }
 
-      // the toy car: a cobalt rally hatchback with a dark glass canopy. The
-      // body is the side silhouette extruded across the width — a real hood /
-      // windshield / roof line — and the trim is primitives, so it keeps the
-      // letters' sculpted-block material language. Nose points along +x.
-      const wheelMat = new THREE.MeshStandardMaterial({ color: '#292524', roughness: 0.7, metalness: 0 })
-      const hubMat = new THREE.MeshStandardMaterial({ color: '#d6d3d1', roughness: 0.35, metalness: 0.2 })
-      const glassMat = new THREE.MeshStandardMaterial({ color: '#1c1917', roughness: 0.18, metalness: 0.1 })
-      const headlightMat = new THREE.MeshStandardMaterial({
-        color: '#fffbeb',
-        emissive: '#fde68a',
-        emissiveIntensity: 0.7,
-        roughness: 0.3,
-      })
-      const taillightMat = new THREE.MeshStandardMaterial({
-        color: '#dc2626',
-        emissive: '#ef4444',
-        emissiveIntensity: 0.15,
-        roughness: 0.3,
-      })
-      const flameMat = new THREE.MeshBasicMaterial({ color: '#fb923c', transparent: true, opacity: 0.85 })
+      // the paper plane: two creased wing panels rising from a folded keel —
+      // the classic dart, the same one that loops through the contact
+      // illustration at the foot of the page. The paper is the letters' cream
+      // face material with a hair of extrusion so the sheet has an edge, and
+      // every panel carries a drawn outline in the letters' side color so it
+      // reads on the cream background the way the hand-inked doodle does.
+      // Nose points along +x.
+      const outlineMat = new THREE.LineBasicMaterial()
+      // share the letters' Color instances so the theme fade applies for free
+      outlineMat.color = sideMat.color
+      const streakMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.75 })
+      streakMat.color = accentFaceMat.color
       disposers.push(() => {
-        wheelMat.dispose()
-        hubMat.dispose()
-        glassMat.dispose()
-        headlightMat.dispose()
-        taillightMat.dispose()
-        flameMat.dispose()
+        outlineMat.dispose()
+        streakMat.dispose()
       })
-      // the scene shrinks with the name on small screens, which left the car
+      // the scene shrinks with the name on small screens, which left the plane
       // looking like a crumb on phones; scale it back up so it stays a toy
-      const carScale = coarse ? 1.7 : 1
-      const car = new THREE.Group()
-      const chassis = new THREE.Group()
-      car.add(chassis)
-      const carGeos: THREE.BufferGeometry[] = []
-      const carPart = (
+      const planeScale = coarse ? 1.7 : 1
+      const plane = new THREE.Group()
+      const body = new THREE.Group()
+      plane.add(body)
+      const planeGeos: THREE.BufferGeometry[] = []
+      const part = (
         geo: THREE.BufferGeometry,
         mat: THREE.Material | THREE.Material[],
         x: number,
@@ -285,114 +285,89 @@ export default function BlockName({
       ) => {
         const mesh = new THREE.Mesh(geo, mat)
         mesh.position.set(x, y, z)
-        carGeos.push(geo)
+        planeGeos.push(geo)
         return mesh
       }
-      // profiles are drawn in the XZ sense (length, height); rotateX stands
-      // them up so the extrusion depth becomes the car's width, then the
-      // geometry is centered on y and its underside parked at `bottom`
-      const standUp = (geo: THREE.ExtrudeGeometry, bottom: number) => {
-        geo.rotateX(Math.PI / 2)
-        geo.computeBoundingBox()
-        const b = geo.boundingBox!
-        geo.translate(0, -(b.min.y + b.max.y) / 2, bottom - b.min.z)
-        return geo
+      const PAPER = 0.07 // sheet thickness
+      const FOLD = 0.36 // dihedral: the wings rise from the keel in a shallow V
+      // one sheet of paper: drawn flat in the top view, extruded paper-thin,
+      // folded into place, then outlined. The fold must transform the GEOMETRY
+      // (not the mesh) because the outline is derived from it afterwards.
+      const sheet = (
+        pts: [number, number][],
+        mat: THREE.Material,
+        fold: (geo: THREE.ExtrudeGeometry) => void,
+      ) => {
+        const shape = new THREE.Shape()
+        shape.moveTo(pts[0][0], pts[0][1])
+        for (const [x, y] of pts.slice(1)) shape.lineTo(x, y)
+        shape.closePath()
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: PAPER, bevelEnabled: false })
+        fold(geo)
+        body.add(part(geo, mat, 0, 0, 0))
+        const edgeGeo = new THREE.EdgesGeometry(geo)
+        planeGeos.push(edgeGeo)
+        body.add(new THREE.LineSegments(edgeGeo, outlineMat))
       }
-      const bodyShape = new THREE.Shape()
-      bodyShape.moveTo(-2.3, 0.06)
-      bodyShape.lineTo(-2.3, 0.66) // rear bumper
-      bodyShape.lineTo(-1.7, 0.88) // trunk kick-up
-      bodyShape.lineTo(1.35, 0.88) // beltline
-      bodyShape.lineTo(2.1, 0.72) // hood
-      bodyShape.lineTo(2.3, 0.42) // nose
-      bodyShape.lineTo(2.3, 0.06)
-      bodyShape.closePath()
-      const bodyGeo = standUp(
-        new THREE.ExtrudeGeometry(bodyShape, {
-          depth: 1.9,
-          bevelEnabled: true,
-          bevelThickness: 0.07,
-          bevelSize: 0.07,
-          bevelSegments: 2,
-        }),
-        -0.55,
+      // wings: nose point, swept-back wingtip, root running just off the fold
+      // line so the two panels never share a face to z-fight over
+      for (const side of [1, -1]) {
+        sheet(
+          [
+            [2.7, side * 0.02],
+            [-2.1, side * 1.75],
+            [-1.85, side * 0.06],
+          ],
+          faceMat,
+          (geo) => geo.rotateX(side * FOLD),
+        )
+      }
+      // the keel hangs under the fold — the spine you'd pinch to throw it; the
+      // letters' darker side material reads as the shadowed inner crease
+      sheet(
+        [
+          [2.7, 0],
+          [-2.1, 0],
+          [-2.1, -0.72],
+        ],
+        sideMat,
+        (geo) => {
+          geo.rotateX(Math.PI / 2) // stand it vertical, hanging below the fold
+          geo.translate(0, PAPER / 2, 0) // center the sheet thickness on the spine
+        },
       )
-      // extrude caps are the car's flanks, walls are hood/roof/floor: reuse
-      // the letters' bright-face / dark-side split so it reads as one set
-      chassis.add(carPart(bodyGeo, [accentSideMat, accentFaceMat], 0, 0, 0))
-      const glassShape = new THREE.Shape()
-      glassShape.moveTo(-1.35, 0.86)
-      glassShape.lineTo(-0.6, 1.5) // rear window
-      glassShape.lineTo(0.62, 1.5) // roofline
-      glassShape.lineTo(1.25, 0.86) // windshield
-      glassShape.closePath()
-      const glassGeo = standUp(new THREE.ExtrudeGeometry(glassShape, { depth: 1.56, bevelEnabled: false }), 0.25)
-      chassis.add(carPart(glassGeo, glassMat, 0, 0, 0))
-      // body-color roof cap over the canopy, with a white rally stripe
-      chassis.add(carPart(new THREE.BoxGeometry(1.3, 1.68, 0.12), accentFaceMat, 0.01, 0, 0.89))
-      chassis.add(carPart(new THREE.BoxGeometry(1.26, 0.44, 0.05), faceMat, 0.01, 0, 0.96))
-      // sits ~0.03 proud of the beveled hood top (z≈0.33 mid-hood): closer
-      // and the two near-coplanar faces z-fight while the car moves
-      const hoodStripe = carPart(new THREE.BoxGeometry(0.78, 0.44, 0.05), faceMat, 1.72, 0, 0.38)
-      hoodStripe.rotation.y = 0.21 // lie flat on the sloping hood
-      chassis.add(hoodStripe)
-      // rear wing on struts, splitter lip under the nose
-      chassis.add(carPart(new THREE.BoxGeometry(0.46, 1.9, 0.1), accentSideMat, -2.1, 0, 0.52))
-      chassis.add(carPart(new THREE.BoxGeometry(0.12, 0.16, 0.28), wheelMat, -2.0, 0.6, 0.36))
-      chassis.add(carPart(new THREE.BoxGeometry(0.12, 0.16, 0.28), wheelMat, -2.0, -0.6, 0.36))
-      chassis.add(carPart(new THREE.BoxGeometry(0.5, 2.0, 0.12), wheelMat, 2.1, 0, -0.55))
+      // boost feedback: an accent-blue wind streak flickers behind each
+      // wingtip while Shift is held (paper planes have no exhaust to flame)
+      const streakGeo = new THREE.BoxGeometry(1.15, 0.06, 0.06)
+      const streaks: THREE.Mesh[] = []
       for (const side of [-1, 1]) {
-        chassis.add(carPart(new THREE.BoxGeometry(0.12, 0.4, 0.2), headlightMat, 2.34, side * 0.58, -0.25))
-        // taillights poke out past the rear wing so the top-down view still
-        // sees them light up when braking or reversing
-        chassis.add(carPart(new THREE.BoxGeometry(0.2, 0.48, 0.26), taillightMat, -2.46, side * 0.6, 0.0))
+        const streak = part(streakGeo, streakMat, -2.85, side * 1.6, 0.5)
+        streak.visible = false
+        streaks.push(streak)
+        body.add(streak)
       }
-      // exhaust pipes with turbo flames behind them (hidden until Shift)
-      const exhaustGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.34, 10)
-      exhaustGeo.rotateZ(Math.PI / 2)
-      const flameGeo = new THREE.ConeGeometry(0.14, 0.55, 8)
-      flameGeo.rotateZ(Math.PI / 2) // apex points backward (-x)
-      const flames: THREE.Mesh[] = []
-      for (const side of [-1, 1]) {
-        chassis.add(carPart(exhaustGeo, hubMat, -2.4, side * 0.42, -0.38))
-        const flame = carPart(flameGeo, flameMat, -2.62, side * 0.42, -0.38)
-        flame.visible = false
-        flames.push(flame)
-        chassis.add(flame)
-      }
-      const frontWheels: THREE.Group[] = []
-      for (const [wx, wy] of [
-        [1.45, 1.08],
-        [1.45, -1.08],
-        [-1.45, 1.08],
-        [-1.45, -1.08],
-      ]) {
-        const wheel = new THREE.Group()
-        wheel.add(carPart(new THREE.CylinderGeometry(0.62, 0.62, 0.5, 18), wheelMat, 0, 0, 0))
-        wheel.add(carPart(new THREE.CylinderGeometry(0.33, 0.33, 0.56, 12), hubMat, 0, 0, 0))
-        wheel.position.set(wx, wy, -0.4)
-        if (wx > 0) frontWheels.push(wheel)
-        chassis.add(wheel)
-      }
-      disposers.push(() => carGeos.forEach((g) => g.dispose()))
-      // parked to the right of the name, nose pointed at it. The car lives in
+      disposers.push(() => planeGeos.forEach((g) => g.dispose()))
+      // parked to the right of the name, nose pointed at it. The plane lives in
       // holder (not swing) so the pointer-parallax tilt, which pivots around
       // the name, can't sway it when it's driving far down the page
-      const carPos = new THREE.Vector2(totalW / 2 + 7, -fontPreset.lineSpacing / 2)
-      let carHeading = Math.PI * 0.85
-      const carVel = new THREE.Vector2()
-      car.position.set(carPos.x, carPos.y, 0)
-      car.rotation.z = carHeading
-      car.scale.setScalar(carScale)
-      holder.add(car)
+      const planePos = new THREE.Vector2(totalW / 2 + 7, -fontPreset.lineSpacing / 2)
+      let heading = Math.PI * 0.85
+      const planeVel = new THREE.Vector2()
+      plane.position.set(planePos.x, planePos.y, 0)
+      plane.rotation.z = heading
+      plane.scale.setScalar(planeScale)
+      holder.add(plane)
 
-      // drift trails: each rear wheel lays a continuous ribbon — a ring buffer
-      // of quads stitched between consecutive wheel positions, fading through
-      // per-vertex alpha — so slides read as smooth rubber arcs, not stamps
-      const TRAIL_QUADS = 160
-      const TRAIL_LIFE = 2.6
-      const TRAIL_HALF_W = 0.23
-      const trailColor = new THREE.Color('#78716c')
+      // the contrail: the plane inks its path as the blue dashed line from the
+      // contact illustration — a ring buffer of quads stitched between
+      // consecutive tail positions, gated into dashes by distance flown and
+      // fading through per-vertex alpha, so a carved loop draws the doodle's
+      // looping dashes and then dissolves
+      const TRAIL_QUADS = 200
+      const TRAIL_LIFE = 3.2
+      const TRAIL_HALF_W = 0.11
+      const DASH_ON = 1.05 // world units of ink per dash...
+      const DASH_CYCLE = 1.8 // ...within this repeat length
       const makeTrail = () => {
         const geo = new THREE.BufferGeometry()
         const posAttr = new THREE.BufferAttribute(new Float32Array(TRAIL_QUADS * 4 * 3), 3)
@@ -400,10 +375,12 @@ export default function BlockName({
         posAttr.setUsage(THREE.DynamicDrawUsage)
         colAttr.setUsage(THREE.DynamicDrawUsage)
         const col = colAttr.array as Float32Array
+        // vertex RGB stays white; the material's (theme-faded) accent blue
+        // multiplies in, leaving the vertex channel to carry only alpha
         for (let v = 0; v < TRAIL_QUADS * 4; v++) {
-          col[v * 4] = trailColor.r
-          col[v * 4 + 1] = trailColor.g
-          col[v * 4 + 2] = trailColor.b
+          col[v * 4] = 1
+          col[v * 4 + 1] = 1
+          col[v * 4 + 2] = 1
         }
         const index: number[] = []
         for (let q = 0; q < TRAIL_QUADS; q++)
@@ -412,6 +389,7 @@ export default function BlockName({
         geo.setAttribute('position', posAttr)
         geo.setAttribute('color', colAttr)
         const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false })
+        mat.color = accentFaceMat.color // shared Color: theme fade applies for free
         const mesh = new THREE.Mesh(geo, mat)
         mesh.frustumCulled = false
         holder.add(mesh)
@@ -427,6 +405,7 @@ export default function BlockName({
           cursor: 0,
           hasPrev: false,
           edges: false,
+          dist: 0,
           prevX: 0,
           prevY: 0,
           prevLX: 0,
@@ -435,7 +414,7 @@ export default function BlockName({
           prevRY: 0,
         }
       }
-      const trails = [makeTrail(), makeTrail()]
+      const trails = [makeTrail()]
       const trailBreak = () => {
         for (const tr of trails) {
           tr.hasPrev = false
@@ -447,7 +426,7 @@ export default function BlockName({
         const dy = y - tr.prevY
         const len = Math.hypot(dx, dy)
         if (!tr.hasPrev || len > 4) {
-          // fresh slide (or a wrap teleport): just anchor the first point
+          // fresh flight (or a wrap teleport): just anchor the first point
           tr.hasPrev = true
           tr.edges = false
           tr.prevX = x
@@ -455,6 +434,15 @@ export default function BlockName({
           return
         }
         if (len < 0.16) return // too short for a clean segment, wait for more
+        tr.dist += len
+        if (tr.dist % DASH_CYCLE > DASH_ON) {
+          // the gap between dashes: slide the anchor forward without inking,
+          // and break the ribbon so the next dash starts a fresh edge pair
+          tr.edges = false
+          tr.prevX = x
+          tr.prevY = y
+          return
+        }
         const px = (-dy / len) * TRAIL_HALF_W
         const py = (dx / len) * TRAIL_HALF_W
         if (!tr.edges) {
@@ -497,7 +485,7 @@ export default function BlockName({
           for (let q = 0; q < TRAIL_QUADS; q++) {
             if (tr.ages[q] >= TRAIL_LIFE) continue
             tr.ages[q] += dt
-            const alpha = Math.max(0, 1 - tr.ages[q] / TRAIL_LIFE) * tr.strengths[q] * 0.4
+            const alpha = Math.max(0, 1 - tr.ages[q] / TRAIL_LIFE) * tr.strengths[q] * 0.55
             const o = q * 16
             col[o + 3] = alpha
             col[o + 7] = alpha
@@ -509,10 +497,129 @@ export default function BlockName({
         }
       }
 
-      // horizontal roam bounds (the car wraps at the real screen edges) plus
+      // horizontal roam bounds (the plane wraps at the real screen edges) plus
       // the world↔page mapping, refreshed by layout() below
-      const driveBounds = { minX: -40, maxX: 40 }
+      const flightBounds = { minX: -40, maxX: 40 }
       const view = { wpp: 0.05, W: 1200, H: 800 }
+
+      // the wreck: the OS's own computer, dumped above the footer. Contact
+      // owns the button (and its click boots the OS); this scene draws the
+      // model over the button's stage span and reveals the button once the
+      // GLB lands. The boot radius is measured off the actual glass mesh so
+      // the plane has to reach the SCREEN, not just the furniture around it.
+      const wreckStage = document.getElementById('os-wreck')
+      const wreckBtn = wreckStage?.closest('button') ?? null
+      let layoutWreck = () => {}
+      const wreckScreen = new THREE.Vector2()
+      let wreckScreenR = 0
+      let planeInScreen = false
+      let wreckHover = 0
+      let wreckHoverTarget = 0
+      let wreckCursor: THREE.Mesh | null = null
+      let wreckNode: THREE.Group | null = null
+      const WRECK_TILT_Z = 0.26
+      if (wreckStage && wreckBtn) {
+        new GLTFLoader().load('/os/models/computer.glb', (gltf) => {
+          if (disposed) return
+          const model = gltf.scene
+          let glassMesh: THREE.Mesh | null = null
+          model.traverse((o) => {
+            const mesh = o as THREE.Mesh
+            if (!mesh.isMesh) return
+            // the baked-on screen content belongs to the living machine in
+            // CrtScene; this one is off
+            if (mesh.name === 'screen_text') mesh.visible = false
+            if (mesh.name === 'monitor_2') glassMesh = mesh
+          })
+          const glass = glassMesh as THREE.Mesh | null
+          if (glass) {
+            // dead glass, with a lone terminal cursor blinking in the corner
+            // as the "still plugged in" tell — placed on the actual tube face
+            // (raycast, like CrtScene does) since it tilts up on its stand
+            const glassMat = new THREE.MeshStandardMaterial({ color: '#0d100e', roughness: 0.35 })
+            glass.material = glassMat
+            model.updateMatrixWorld(true)
+            const gb = new THREE.Box3().setFromObject(glass)
+            const gc = gb.getCenter(new THREE.Vector3())
+            const gs = gb.getSize(new THREE.Vector3())
+            const ray = new THREE.Raycaster(
+              gc.clone().add(new THREE.Vector3(0, 0, 2)),
+              new THREE.Vector3(0, 0, -1),
+            )
+            const hit = ray.intersectObject(glass, false)[0]
+            const normal = hit?.face
+              ? hit.face.normal.clone().transformDirection(glass.matrixWorld).normalize()
+              : new THREE.Vector3(0, 0, 1)
+            const anchor = hit ? hit.point.clone() : gc.clone()
+            const curGeo = new THREE.PlaneGeometry(gs.x * 0.07, gs.y * 0.16)
+            const curMat = new THREE.MeshBasicMaterial({ color: '#86efac' })
+            const cur = new THREE.Mesh(curGeo, curMat)
+            cur.position
+              .copy(anchor)
+              .addScaledVector(normal, gs.x * 0.03)
+              .add(new THREE.Vector3(-gs.x * 0.3, gs.y * 0.22, 0))
+            cur.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal)
+            // the model is at identity here, so world coords double as
+            // model-local ones; centering below moves the cursor along
+            model.add(cur)
+            wreckCursor = cur
+            disposers.push(() => {
+              glassMat.dispose()
+              curGeo.dispose()
+              curMat.dispose()
+            })
+          }
+          // center the setup and normalize its height so layoutWreck can
+          // size it in pixels; the outer group carries the fallen-over tilt
+          const bb = new THREE.Box3().setFromObject(model)
+          model.position.sub(bb.getCenter(new THREE.Vector3()))
+          const inner = new THREE.Group()
+          inner.scale.setScalar(1 / bb.getSize(new THREE.Vector3()).y)
+          inner.add(model)
+          const node = new THREE.Group()
+          node.add(inner)
+          node.rotation.set(0.12, -0.55, WRECK_TILT_Z)
+          holder.add(node)
+          wreckNode = node
+          const baseSize = new THREE.Box3().setFromObject(node).getSize(new THREE.Vector3())
+          wreckBtn.style.display = '' // reveal the stage; rects are valid below
+          const hoverOn = () => {
+            wreckHoverTarget = 1
+          }
+          const hoverOff = () => {
+            wreckHoverTarget = 0
+          }
+          wreckBtn.addEventListener('pointerenter', hoverOn)
+          wreckBtn.addEventListener('pointerleave', hoverOff)
+          disposers.push(() => {
+            wreckBtn.removeEventListener('pointerenter', hoverOn)
+            wreckBtn.removeEventListener('pointerleave', hoverOff)
+          })
+          layoutWreck = () => {
+            const wr = wreckStage.getBoundingClientRect()
+            if (wr.width === 0) return
+            node.scale.setScalar(
+              Math.min((wr.height * view.wpp) / baseSize.y, (wr.width * view.wpp) / baseSize.x),
+            )
+            // same document pinning as the holder: stage center -> world,
+            // then into holder space so planePos can compare directly
+            node.position.set(
+              (wr.left + wr.width / 2 - view.W / 2) * view.wpp - holder.position.x,
+              -(wr.top + window.scrollY + wr.height / 2 - view.H / 2) * view.wpp -
+                holder.position.y,
+              0,
+            )
+            if (!glass) return
+            node.updateMatrixWorld(true)
+            const gBox = new THREE.Box3().setFromObject(glass)
+            const gc = gBox.getCenter(new THREE.Vector3())
+            const gs = gBox.getSize(new THREE.Vector3())
+            wreckScreen.set(gc.x - holder.position.x, gc.y - holder.position.y)
+            wreckScreenR = Math.max(gs.x, gs.y) * 0.62 + 1.4 * planeScale
+          }
+          layoutWreck()
+        })
+      }
 
       // fit the camera to the viewport-sized canvas, then pin the world to
       // the DOCUMENT: origin sits at the viewport center at scroll 0, the
@@ -537,14 +644,15 @@ export default function BlockName({
         view.H = cr.height
         const halfH = camera.position.z * halfV
         const halfW = halfH * camera.aspect
-        driveBounds.minX = -halfW - holder.position.x
-        driveBounds.maxX = halfW - holder.position.x
+        flightBounds.minX = -halfW - holder.position.x
+        flightBounds.maxX = halfW - holder.position.x
+        layoutWreck()
       }
       layout()
       // the parking spot sits to the right of the name, which on phones can
-      // fall past the screen edge; pull the car back in so it stays tappable
-      carPos.x = THREE.MathUtils.clamp(carPos.x, driveBounds.minX + 3.5 * carScale, driveBounds.maxX - 3.5 * carScale)
-      car.position.x = carPos.x
+      // fall past the screen edge; pull the plane back in so it stays tappable
+      planePos.x = THREE.MathUtils.clamp(planePos.x, flightBounds.minX + 3.5 * planeScale, flightBounds.maxX - 3.5 * planeScale)
+      plane.position.x = planePos.x
       // the hero content fades in with a small translate; re-measure after it lands
       const settleTimers = [setTimeout(layout, 600), setTimeout(layout, 1400)]
       disposers.push(() => settleTimers.forEach(clearTimeout))
@@ -556,7 +664,7 @@ export default function BlockName({
       const count = blocks.length
       // letters start assembled in their slots so the name lands aligned over
       // the static fallback; the scatter/spring physics still drive dragging
-      // and the car. A small initial tilt settles upright for a touch of life.
+      // and the plane. A small initial tilt settles upright for a touch of life.
       const pos = slots.map((s) => s.clone())
       const vel = slots.map(() => new THREE.Vector3())
       const rot = slots.map(
@@ -583,7 +691,7 @@ export default function BlockName({
       // pointer handling lives on the section so the pass-through canvas
       // never blocks the CTAs: hover lift, drag with slot swap on mouse and touch
       const raycaster = new THREE.Raycaster()
-      const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
+      const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
       const planePoint = new THREE.Vector3()
       let hovered = -1
       let dragged = -1
@@ -612,11 +720,11 @@ export default function BlockName({
       }
       const toPlane = (e: PointerEvent) => {
         castFrom(e)
-        if (!raycaster.ray.intersectPlane(plane, planePoint)) return null
+        if (!raycaster.ray.intersectPlane(dragPlane, planePoint)) return null
         return swing.worldToLocal(planePoint.clone())
       }
 
-      // the touch pad toggles on a car tap: the drift/turbo buttons feed the
+      // the touch pad toggles on a plane tap: the swoop/boost buttons feed the
       // same key set as the keyboard, while the joystick writes a screen-space
       // direction vector so mobile controls feel literal.
       const stick = { x: 0, y: 0, active: false }
@@ -663,10 +771,10 @@ export default function BlockName({
       }
       const onDown = (e: PointerEvent) => {
         if (e.pointerType === 'touch') {
-          // a tap near the car (generous, thumb-sized hitbox) opens the touch
+          // a tap near the plane (generous, thumb-sized hitbox) opens the touch
           // controls. Once open, the viewport listener above owns dismissal.
           const p = toPlane(e)
-          if (p && (p.x - carPos.x) ** 2 + (p.y - carPos.y) ** 2 < 42 * carScale * carScale) {
+          if (p && (p.x - planePos.x) ** 2 + (p.y - planePos.y) ** 2 < 42 * planeScale * planeScale) {
             // stop here: this same pointerdown would otherwise bubble on to
             // the window-level dismiss listener, which now sees the pad as
             // open and closes it again in the same tap
@@ -749,9 +857,9 @@ export default function BlockName({
 
       // WASD only registers while the CAR is on screen (it can be anywhere on
       // the page now) and the user is not typing somewhere; arrows are
-      // untouched so the page always scrolls. tick() keeps carOnScreen fresh.
+      // untouched so the page always scrolls. tick() keeps planeOnScreen fresh.
       const keys = new Set<string>()
-      let carOnScreen = true
+      let planeOnScreen = true
       let hintDone = !hintEl
       const isTyping = (e: KeyboardEvent) => {
         const t = e.target as HTMLElement | null
@@ -759,14 +867,14 @@ export default function BlockName({
       }
       const onKeyDown = (e: KeyboardEvent) => {
         const k = e.key.toLowerCase()
-        if (!carOnScreen || overlayIsOpen() || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return
+        if (!planeOnScreen || overlayIsOpen() || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return
         if (k === 'w' || k === 'a' || k === 's' || k === 'd' || k === 'shift') keys.add(k)
-        // the hint has done its job the moment the car first drives off
+        // the hint has done its job the moment the plane first flies off
         if (!hintDone && (k === 'w' || k === 'a' || k === 's' || k === 'd')) {
           hintDone = true
           hintEl!.style.opacity = '0'
         }
-        // Space is the handbrake whenever the car is around; swallowing the
+        // Space is the swoop whenever the plane is around; swallowing the
         // default stops the browser's jarring page-down scroll
         if (k === ' ') {
           e.preventDefault()
@@ -792,7 +900,7 @@ export default function BlockName({
           const k = btn.dataset.key!
           const press = (e: PointerEvent) => {
             e.preventDefault()
-            // don't bubble to the section, which would read this as a car
+            // don't bubble to the section, which would read this as a plane
             // tap (closing the pad) or a letter grab
             e.stopPropagation()
             try {
@@ -842,7 +950,7 @@ export default function BlockName({
               dy *= REACH / len
             }
             setKnob(dx, dy)
-            // a small deadzone so a resting thumb doesn't creep the car
+            // a small deadzone so a resting thumb doesn't creep the plane
             stick.x = Math.abs(dx) < 5 ? 0 : dx / REACH
             stick.y = Math.abs(dy) < 5 ? 0 : -dy / REACH
           }
@@ -895,6 +1003,7 @@ export default function BlockName({
       const target = new THREE.Vector3()
       const force = new THREE.Vector3()
       const hintWorld = new THREE.Vector3()
+      let lastDocH = 0
       let raf = 0
       let revealed = false
       let last = performance.now()
@@ -948,90 +1057,101 @@ export default function BlockName({
           blocks[i].node.rotation.set(rot[i].x, rot[i].y, rot[i].z)
         }
 
-        // toy car: heading and velocity are separate so grip is a real force.
-        // Velocity splits into forward + lateral parts each frame; grip bleeds
-        // the lateral slip fast, and the Space handbrake nearly turns grip off
-        // while quickening the steering — that combination is the drift.
-        const turbo = keys.has('shift')
-        const drifting = keys.has(' ')
-        // Keyboard keeps the tabletop car controls. Touch uses screen-space
-        // direction instead: push down, the car goes down regardless of where
+        // paper plane: heading and velocity are separate so air grip is a real
+        // force. Velocity splits into forward + lateral parts each frame; grip
+        // bleeds the lateral slip, and the Space swoop nearly turns grip off
+        // while quickening the steering — that combination carves the wide
+        // sliding arcs that ink the illustration's loops.
+        const boost = keys.has('shift')
+        const swooping = keys.has(' ')
+        // Keyboard keeps the tabletop plane controls. Touch uses screen-space
+        // direction instead: push down, the plane goes down regardless of where
         // its nose happened to be pointing.
-        const stickMag = carOnScreen ? Math.min(1, Math.hypot(stick.x, stick.y)) : 0
-        const touchDrive = stick.active && stickMag > 0
+        const stickMag = planeOnScreen ? Math.min(1, Math.hypot(stick.x, stick.y)) : 0
+        const touchFly = stick.active && stickMag > 0
         let throttle = THREE.MathUtils.clamp(
           (keys.has('w') ? 1 : 0) -
             (keys.has('s') ? 0.6 : 0) +
-            (carOnScreen ? (stick.y > 0 ? stick.y : stick.y * 0.6) : 0),
+            (planeOnScreen ? (stick.y > 0 ? stick.y : stick.y * 0.6) : 0),
           -0.6,
           1,
         )
         let steer = THREE.MathUtils.clamp(
-          (keys.has('a') ? 1 : 0) - (keys.has('d') ? 1 : 0) - (carOnScreen ? stick.x : 0),
+          (keys.has('a') ? 1 : 0) - (keys.has('d') ? 1 : 0) - (planeOnScreen ? stick.x : 0),
           -1,
           1,
         )
-        let fwdX = Math.cos(carHeading)
-        let fwdY = Math.sin(carHeading)
-        let fwd = carVel.x * fwdX + carVel.y * fwdY
-        let lat = -carVel.x * fwdY + carVel.y * fwdX
-        if (touchDrive) {
+        let fwdX = Math.cos(heading)
+        let fwdY = Math.sin(heading)
+        let fwd = planeVel.x * fwdX + planeVel.y * fwdY
+        let lat = -planeVel.x * fwdY + planeVel.y * fwdX
+        if (touchFly) {
           const desiredHeading = Math.atan2(stick.y, stick.x)
-          const desiredSpeed = stickMag * (turbo ? 42 : 28)
+          const desiredSpeed = stickMag * (boost ? 42 : 28)
           const desiredX = Math.cos(desiredHeading) * desiredSpeed
           const desiredY = Math.sin(desiredHeading) * desiredSpeed
-          const velocityEase = 1 - Math.exp(-(drifting ? 9 : 18) * dt)
-          carVel.x += (desiredX - carVel.x) * velocityEase
-          carVel.y += (desiredY - carVel.y) * velocityEase
+          const velocityEase = 1 - Math.exp(-(swooping ? 9 : 18) * dt)
+          planeVel.x += (desiredX - planeVel.x) * velocityEase
+          planeVel.y += (desiredY - planeVel.y) * velocityEase
 
-          const turn = Math.atan2(Math.sin(desiredHeading - carHeading), Math.cos(desiredHeading - carHeading))
-          carHeading += turn * (1 - Math.exp(-(drifting ? 7 : 14) * dt))
+          const turn = Math.atan2(Math.sin(desiredHeading - heading), Math.cos(desiredHeading - heading))
+          heading += turn * (1 - Math.exp(-(swooping ? 7 : 14) * dt))
           throttle = stickMag
           steer = THREE.MathUtils.clamp(turn / (Math.PI / 2), -1, 1)
         } else {
-          fwd += throttle * (turbo ? 105 : 58) * dt
-          fwd *= Math.max(0, 1 - (drifting ? 2.6 : 1.7) * dt)
-          fwd = THREE.MathUtils.clamp(fwd, -13, turbo ? 48 : 30)
-          lat *= Math.max(0, 1 - (drifting ? 1.8 : 11) * dt)
-          carHeading += steer * (drifting ? 4.1 : 2.7) * dt * THREE.MathUtils.clamp(fwd / 9, -1, 1)
-          carVel.set(fwdX * fwd - fwdY * lat, fwdY * fwd + fwdX * lat)
+          fwd += throttle * (boost ? 105 : 58) * dt
+          // light drag so the plane glides on after the keys lift; S is an
+          // airbrake with only a token reverse (it's a hover, not a gearbox)
+          fwd *= Math.max(0, 1 - (swooping ? 2.2 : 1.15) * dt)
+          fwd = THREE.MathUtils.clamp(fwd, -8, boost ? 48 : 30)
+          lat *= Math.max(0, 1 - (swooping ? 1.8 : 7.5) * dt)
+          heading += steer * (swooping ? 4.1 : 2.7) * dt * THREE.MathUtils.clamp(fwd / 9, -1, 1)
+          planeVel.set(fwdX * fwd - fwdY * lat, fwdY * fwd + fwdX * lat)
         }
-        fwdX = Math.cos(carHeading)
-        fwdY = Math.sin(carHeading)
-        fwd = carVel.x * fwdX + carVel.y * fwdY
-        lat = -carVel.x * fwdY + carVel.y * fwdX
-        carPos.addScaledVector(carVel, dt)
-        const carSpd = carVel.length()
+        fwdX = Math.cos(heading)
+        fwdY = Math.sin(heading)
+        fwd = planeVel.x * fwdX + planeVel.y * fwdY
+        lat = -planeVel.x * fwdY + planeVel.y * fwdX
+        planePos.addScaledVector(planeVel, dt)
+        const spd = planeVel.length()
         // horizontal: wrap at the screen edges (break the trail so the ribbon
-        // doesn't streak across); vertical: the car ranges over the whole
+        // doesn't streak across); vertical: the plane ranges over the whole
         // document and bounces softly off the page's top and bottom
         const margin = 4
-        if (carPos.x > driveBounds.maxX + margin || carPos.x < driveBounds.minX - margin) {
-          carPos.x = carPos.x > 0 ? driveBounds.minX - margin : driveBounds.maxX + margin
+        if (planePos.x > flightBounds.maxX + margin || planePos.x < flightBounds.minX - margin) {
+          planePos.x = planePos.x > 0 ? flightBounds.minX - margin : flightBounds.maxX + margin
           trailBreak()
         }
         const docH = document.documentElement.scrollHeight
+        // late image loads (and the wreck button itself appearing) move the
+        // foot of the page; re-pin the wreck whenever the document grows
+        if (docH !== lastDocH) {
+          lastDocH = docH
+          layoutWreck()
+        }
         const pageTopY = (view.H / 2) * view.wpp - holder.position.y - 3
         const pageBottomY = (view.H / 2 - docH) * view.wpp - holder.position.y + 3
-        if (carPos.y > pageTopY) {
-          carPos.y = pageTopY
-          if (carVel.y > 0) carVel.y *= -0.35
+        if (planePos.y > pageTopY) {
+          planePos.y = pageTopY
+          if (planeVel.y > 0) planeVel.y *= -0.35
           trailBreak()
         }
-        if (carPos.y < pageBottomY) {
-          carPos.y = pageBottomY
-          if (carVel.y < 0) carVel.y *= -0.35
+        if (planePos.y < pageBottomY) {
+          planePos.y = pageBottomY
+          if (planeVel.y < 0) planeVel.y *= -0.35
           trailBreak()
         }
-        car.position.set(carPos.x, carPos.y, 0)
-        car.rotation.z = carHeading
-        // the control hint is HTML pinned a little below the car in world
-        // space, so it scales with the scene and scrolls off with the car
+        // the plane floats: a slow bob on z sells hovering over the page
+        // instead of parking on it (collisions and trails stay 2D)
+        plane.position.set(planePos.x, planePos.y, (0.3 + 0.14 * Math.sin(t * 1.6)) * planeScale)
+        plane.rotation.z = heading
+        // the control hint is HTML pinned a little below the plane in world
+        // space, so it scales with the scene and scrolls off with the plane
         if (!hintDone) {
           hintWorld
-            .set(carPos.x + holder.position.x, carPos.y - 3.6 * carScale + holder.position.y, 0)
+            .set(planePos.x + holder.position.x, planePos.y - 3.6 * planeScale + holder.position.y, 0)
             .project(camera)
-          // clamp onto the screen by the hint's measured size so a car parked
+          // clamp onto the screen by the hint's measured size so a plane parked
           // near an edge (narrow viewports) can't drag any of the text out of
           // view — the touch wording is wider than half the old fixed margin
           const halfW = hintEl!.offsetWidth / 2 + 8
@@ -1043,49 +1163,75 @@ export default function BlockName({
           )
           hintEl!.style.transform = `translate(${hx}px, ${hy}px) translate(-50%, 0)`
         }
-        // body language: front wheels steer, chassis pitches under throttle
-        // and rolls against lateral slip like the suspension is loaded
-        for (const wheel of frontWheels) wheel.rotation.z += (steer * 0.38 - wheel.rotation.z) * 0.25
-        chassis.rotation.y += (-throttle * (turbo ? 0.12 : 0.07) - chassis.rotation.y) * 0.12
-        const roll = THREE.MathUtils.clamp(
-          steer * THREE.MathUtils.clamp(fwd / 30, -1, 1) * 0.12 - lat * 0.012,
-          -0.3,
-          0.3,
+        // body language: the plane banks INTO its turns (unlike the outward
+        // lean of a car), digs in harder while sliding, pitches gently under
+        // thrust, and rocks on an idle breeze while parked so it reads as
+        // floating rather than sitting
+        const sway = Math.sin(t * 1.3) * 0.07 * THREE.MathUtils.clamp(1 - spd / 7, 0, 1)
+        body.rotation.y += (-throttle * (boost ? 0.16 : 0.1) - body.rotation.y) * 0.1
+        const bank = THREE.MathUtils.clamp(
+          -steer * THREE.MathUtils.clamp(fwd / 26, -1, 1) * 0.55 + lat * 0.016,
+          -0.85,
+          0.85,
         )
-        chassis.rotation.x += (roll - chassis.rotation.x) * 0.15
-        // turbo: exhaust flames flicker and the body stretches slightly
-        const boosting = turbo && throttle > 0 && fwd > 2
-        for (const [f, flame] of flames.entries()) {
-          flame.visible = boosting
+        body.rotation.x += (bank + sway - body.rotation.x) * 0.12
+        // boost: the wingtip streaks flicker and the paper stretches slightly
+        const boosting = boost && throttle > 0 && fwd > 2
+        for (const [s, streak] of streaks.entries()) {
+          streak.visible = boosting
           if (boosting) {
-            const flick = 0.8 + 0.45 * Math.sin(t * 43 + f * 2.6) + 0.25 * Math.sin(t * 91 + f)
-            flame.scale.set(flick, 0.7 + 0.3 * flick, 0.7 + 0.3 * flick)
+            const flick = 0.8 + 0.45 * Math.sin(t * 43 + s * 2.6) + 0.25 * Math.sin(t * 91 + s)
+            streak.scale.set(flick, 1, 1)
           }
         }
-        car.scale.x += ((boosting ? 1.06 : 1) * carScale - car.scale.x) * 0.1
-        car.scale.y += ((boosting ? 0.96 : 1) * carScale - car.scale.y) * 0.1
-        // taillights work like brake/reverse lights: bright while backing up
-        // or braking, idling dim otherwise
-        const lit = fwd < -0.5 || (keys.has('s') && fwd > 0.5)
-        taillightMat.emissiveIntensity += ((lit ? 2.4 : 0.15) - taillightMat.emissiveIntensity) * 0.25
-        // lay rubber while sliding: each rear wheel extends its ribbon
-        if (Math.abs(lat) > 4.5) {
-          const strength = THREE.MathUtils.clamp(Math.abs(lat) / 14, 0.45, 1)
-          const bx = 1.45 * carScale
-          const by = 1.08 * carScale
-          trailStamp(trails[0], carPos.x - fwdX * bx - fwdY * by, carPos.y - fwdY * bx + fwdX * by, strength)
-          trailStamp(trails[1], carPos.x - fwdX * bx + fwdY * by, carPos.y - fwdY * bx - fwdX * by, strength)
+        plane.scale.x += ((boosting ? 1.06 : 1) * planeScale - plane.scale.x) * 0.1
+        plane.scale.y += ((boosting ? 0.96 : 1) * planeScale - plane.scale.y) * 0.1
+        // ink the contrail from the tail whenever the plane is really moving;
+        // the dash gating inside trailStamp turns the path into the doodle's
+        // dashes, and speed presses the ink in a little darker
+        if (spd > 3) {
+          const strength = THREE.MathUtils.clamp(spd / 24, 0.4, 1)
+          trailStamp(
+            trails[0],
+            planePos.x - fwdX * 2.3 * planeScale,
+            planePos.y - fwdY * 2.3 * planeScale,
+            strength,
+          )
         } else trailBreak()
         trailFade(dt)
 
-        // while the car is actually being driven, scroll the page along with
+        // the wreck's body language: it perks up a touch under a hover while
+        // the cursor on its dead screen keeps its steady terminal blink
+        if (wreckNode) {
+          wreckHover += (wreckHoverTarget - wreckHover) * 0.08
+          wreckNode.rotation.z = WRECK_TILT_Z * (1 - wreckHover * 0.45)
+          if (wreckCursor) wreckCursor.visible = t % 1.06 < 0.58
+        }
+        // fly into the dead screen and the machine wakes: crossing into the
+        // glass radius at speed boots AlejOS, same trip as clicking the
+        // wreck. Edge-triggered so the plane left parked on the screen after
+        // a shutdown doesn't boot it straight back up.
+        if (wreckScreenR > 0) {
+          const wdx = planePos.x - wreckScreen.x
+          const wdy = planePos.y - wreckScreen.y
+          const inside = wdx * wdx + wdy * wdy < wreckScreenR * wreckScreenR
+          if (inside && !planeInScreen && spd > 4 && !overlayIsOpen()) {
+            planeVel.set(0, 0)
+            keys.clear()
+            trailBreak()
+            window.dispatchEvent(new Event(BOOT_OS_EVENT))
+          }
+          planeInScreen = inside
+        }
+
+        // while the plane is actually being flown, scroll the page along with
         // it so it can tour the whole site; manual scrolling wins otherwise.
         // 'instant' sidesteps the CSS smooth-scroll, which would fight the
         // per-frame easing here
-        const carDocY = view.H / 2 - (holder.position.y + carPos.y) / view.wpp
-        const screenY = carDocY - scrollY
-        carOnScreen = screenY > -150 && screenY < view.H + 150
-        if (!carOnScreen) keys.clear()
+        const planeDocY = view.H / 2 - (holder.position.y + planePos.y) / view.wpp
+        const screenY = planeDocY - scrollY
+        planeOnScreen = screenY > -150 && screenY < view.H + 150
+        if (!planeOnScreen) keys.clear()
         const driving =
           keys.has('w') ||
           keys.has('a') ||
@@ -1093,9 +1239,9 @@ export default function BlockName({
           keys.has('d') ||
           keys.has(' ') ||
           stick.active
-        if (carOnScreen && (driving || carSpd > 6)) {
+        if (planeOnScreen && (driving || spd > 6)) {
           const followTarget = THREE.MathUtils.clamp(
-            THREE.MathUtils.clamp(scrollY, carDocY - view.H * 0.72, carDocY - view.H * 0.22),
+            THREE.MathUtils.clamp(scrollY, planeDocY - view.H * 0.72, planeDocY - view.H * 0.22),
             0,
             docH - view.H,
           )
@@ -1104,35 +1250,40 @@ export default function BlockName({
               top: scrollY + (followTarget - scrollY) * Math.min(1, 14 * dt),
               behavior: 'instant',
             })
+            // re-sync the camera to the scroll we just performed: rendering
+            // this frame against the pre-scroll offset paints the world one
+            // scroll-step behind the page, and that varying lag reads as
+            // stutter the whole time the page is following the plane
+            camera.position.y = -window.scrollY * view.wpp
           }
         }
 
         // ram the name: overlapping letters get an impulse along the contact
-        // normal plus the car's velocity; their slot springs pull them home
-        const carVx = carVel.x
-        const carVy = carVel.y
+        // normal plus the plane's velocity; their slot springs pull them home
+        const planeVx = planeVel.x
+        const planeVy = planeVel.y
         for (let i = 0; i < count; i++) {
           if (i === dragged) continue
-          const dx = pos[i].x - carPos.x
-          const dy = pos[i].y - carPos.y
-          const reach = letterRadius[i] + 2.4 * carScale
+          const dx = pos[i].x - planePos.x
+          const dy = pos[i].y - planePos.y
+          const reach = letterRadius[i] + 2.4 * planeScale
           const d2 = dx * dx + dy * dy
           if (d2 > reach * reach || d2 === 0) continue
           const d = Math.sqrt(d2)
           const nx = dx / d
           const ny = dy / d
-          if (carSpd > 2.5 && now - lastHit[i] > 250) {
+          if (spd > 2.5 && now - lastHit[i] > 250) {
             lastHit[i] = now
-            vel[i].x += nx * 5 + carVx * 0.85
-            vel[i].y += ny * 5 + carVy * 0.85
-            vel[i].z += Math.min(carSpd * 0.32, 11)
-            const spin = THREE.MathUtils.clamp(carSpd * 0.4, 2, 10)
+            vel[i].x += nx * 5 + planeVx * 0.85
+            vel[i].y += ny * 5 + planeVy * 0.85
+            vel[i].z += Math.min(spd * 0.32, 11)
+            const spin = THREE.MathUtils.clamp(spd * 0.4, 2, 10)
             angVel[i].set(
               (Math.random() - 0.5) * spin,
               (Math.random() - 0.5) * spin,
               (Math.random() - 0.5) * spin,
             )
-            carVel.multiplyScalar(0.8)
+            planeVel.multiplyScalar(0.8)
           } else {
             // nudging at parking speed just shoulders the letter aside
             vel[i].x += nx * 24 * dt
@@ -1181,9 +1332,9 @@ export default function BlockName({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // fixed (not absolute): the car roams the whole document, so the canvas
+  // fixed (not absolute): the plane roams the whole document, so the canvas
   // tracks the viewport; the world inside compensates with the scroll offset.
-  // The control hint is screen-space HTML pinned under the car by tick().
+  // The control hint is screen-space HTML pinned under the plane by tick().
   return (
     <>
       <div ref={ref} aria-hidden className="pointer-events-none fixed inset-0 z-10">
@@ -1191,12 +1342,12 @@ export default function BlockName({
           ref={hintRef}
           className="absolute top-0 left-0 text-center font-mono text-xs leading-5 whitespace-pre text-stone-400 opacity-0 transition-opacity duration-700 dark:text-stone-600"
         >
-          {'wasd to drive\nshift turbo\nspace drift'}
+          {'wasd to fly\nshift boost\nspace swoop'}
         </span>
       </div>
-      {/* touch controls, toggled by tapping the car; the joystick under the
-          left thumb is steering and throttle at once (push to drive, pull to
-          reverse), drift and turbo sit under the right thumb. This layer is a
+      {/* touch controls, toggled by tapping the plane; the joystick under the
+          left thumb is steering and throttle at once (push to fly, pull to
+          brake), swoop and boost sit under the right thumb. This layer is a
           SIBLING of the canvas layer, above the hero copy (z-20): inside the
           z-10 canvas layer the copy wins hit-testing, so the joystick never
           received the touch and the press read as outside-the-pad (dismiss) */}
@@ -1208,7 +1359,7 @@ export default function BlockName({
       >
         <div
           data-joystick
-          aria-label="Drive joystick"
+          aria-label="Flight joystick"
           className="pointer-events-auto relative h-32 w-32 touch-none rounded-full border border-stone-300 bg-white/50 shadow-sm backdrop-blur-sm select-none [-webkit-touch-callout:none] dark:border-stone-600 dark:bg-stone-900/50"
         >
           {/* centered with negative margins, NOT translate utilities: the
@@ -1221,11 +1372,11 @@ export default function BlockName({
           />
         </div>
         <div className="flex flex-col items-end gap-3">
-          <PadButton k="shift" label="Turbo boost">
-            turbo
+          <PadButton k="shift" label="Speed boost">
+            boost
           </PadButton>
-          <PadButton k=" " label="Handbrake drift">
-            drift
+          <PadButton k=" " label="Swoop">
+            swoop
           </PadButton>
         </div>
       </div>

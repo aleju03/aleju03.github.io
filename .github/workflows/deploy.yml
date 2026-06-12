@@ -25,7 +25,12 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # VITE_CHAT_URL is a repo variable (Settings → Variables), e.g.
+      # wss://chat.example.com/ws. Unset, AlejOS login still offers Guest
+      # and Chat Rooms falls back to mail.
       - run: npm run build
+        env:
+          VITE_CHAT_URL: ${{ vars.VITE_CHAT_URL }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

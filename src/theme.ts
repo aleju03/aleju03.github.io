@@ -9,12 +9,24 @@ const listeners = new Set<(t: Theme) => void>()
 let fadeTimer: ReturnType<typeof setTimeout> | undefined
 let wipeRunning = false
 
+const THEME_COLORS: Record<Theme, string> = {
+  light: '#faf8f0',
+  dark: '#1d1913',
+}
+
+function updateThemeColor(theme: Theme) {
+  document
+    .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    ?.setAttribute('content', THEME_COLORS[theme])
+}
+
 export function currentTheme(): Theme {
   return document.documentElement.classList.contains('dark') ? 'dark' : 'light'
 }
 
 export function setTheme(theme: Theme) {
   document.documentElement.classList.toggle('dark', theme === 'dark')
+  updateThemeColor(theme)
   localStorage.setItem('theme', theme)
   listeners.forEach((l) => l(theme))
 }
@@ -94,6 +106,7 @@ export function watchSystemTheme() {
     if (localStorage.getItem('theme')) return
     const t: Theme = e.matches ? 'dark' : 'light'
     document.documentElement.classList.toggle('dark', t === 'dark')
+    updateThemeColor(t)
     listeners.forEach((l) => l(t))
   }
   mq.addEventListener('change', handler)

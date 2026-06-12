@@ -53,7 +53,7 @@ function WorkCard({
           onOpen()
         }
       }}
-      className={`group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-black/40 ${wide ? 'md:flex-row' : ''}`}
+      className={`group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-stone-950/45 ${wide ? 'md:flex-row' : ''}`}
     >
       <div
         className={`relative border-b border-stone-200 bg-stone-100 p-4 dark:border-stone-800 dark:bg-stone-950/60 ${wide ? 'md:flex md:w-[55%] md:shrink-0 md:items-center md:border-r md:border-b-0' : ''}`}
