@@ -293,6 +293,11 @@ export const secondary: SecondaryProject[] = [
 
 export const more: SmallProject[] = [
   {
+    name: 'aleju03.github.io',
+    description: 'This portfolio, with a 3D hero, a terminal, and a little OS hiding inside.',
+    repo: 'https://github.com/aleju03/aleju03.github.io',
+  },
+  {
     name: 'WebNBA',
     description: 'NBA games and stats browser built with React.',
     repo: 'https://github.com/aleju03/WebNBA',

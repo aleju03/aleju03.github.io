@@ -360,6 +360,9 @@ const secondaryEs: Record<string, Partial<SecondaryProject>> = {
 }
 
 const moreEs: Record<string, Partial<SmallProject>> = {
+  'aleju03.github.io': {
+    description: 'Este portafolio, con un hero 3D, una terminal y un pequeño OS escondido dentro.',
+  },
   WebNBA: {
     description: 'Explorador de partidos y estadísticas de NBA construido con React.',
   },

@@ -85,6 +85,13 @@ export const sounds = {
       { freq: 440, at: 0.07, dur: 0.14, gain: 0.045 },
     ])
   },
+  /** incoming chat message: soft double blip, MSN energy without the sample */
+  message() {
+    play([
+      { freq: 880, dur: 0.09, gain: 0.05 },
+      { freq: 1108.73, at: 0.1, dur: 0.16, gain: 0.05 },
+    ])
+  },
   error() {
     play([
       { freq: 220, dur: 0.22, type: 'square', gain: 0.025 },

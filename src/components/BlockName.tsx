@@ -5,6 +5,7 @@ import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
 import type { HeroNameFontPreset } from './heroNameFonts'
 import { isCoarsePointer } from '../device'
 import { onOverlayChange, overlayIsOpen } from '../overlay'
+import { THEME_FADE_MS } from '../theme'
 
 /*
   The hero name as chunky 3D letter blocks. The canvas covers the WHOLE hero
@@ -99,8 +100,7 @@ export default function BlockName({
 
     let disposed = false
     const disposers: (() => void)[] = []
-    const themeIsTransitioning = () => document.documentElement.hasAttribute('data-theme-transitioning')
-    let paused = (coarse && overlayIsOpen()) || themeIsTransitioning()
+    let paused = coarse && overlayIsOpen()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
@@ -134,17 +134,43 @@ export default function BlockName({
     const sideMat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0 })
     const accentFaceMat = new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0 })
     const accentSideMat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0 })
-    const applyColors = (dark: boolean) => {
-      const palette = dark ? COLORS.dark : COLORS.light
-      faceMat.color.set(palette.face)
-      sideMat.color.set(palette.side)
-      accentFaceMat.color.set(palette.accentFace)
-      accentSideMat.color.set(palette.accentSide)
+    // a 0..1 light->dark mix lets the materials fade in step with the page's
+    // .theme-fade color crossfade instead of snapping to the new palette
+    const matPairs = (['face', 'side', 'accentFace', 'accentSide'] as const).map((key, i) => ({
+      mat: [faceMat, sideMat, accentFaceMat, accentSideMat][i],
+      light: new THREE.Color(COLORS.light[key]),
+      dark: new THREE.Color(COLORS.dark[key]),
+    }))
+    const applyColors = (mix: number) => {
+      for (const p of matPairs) p.mat.color.lerpColors(p.light, p.dark, mix)
     }
     const isDark = () => document.documentElement.classList.contains('dark')
-    applyColors(isDark())
-    const themeObserver = new MutationObserver(() => applyColors(isDark()))
+    let themeMix = isDark() ? 1 : 0
+    applyColors(themeMix)
+    let themeFadeRaf = 0
+    const themeObserver = new MutationObserver(() => {
+      const target = isDark() ? 1 : 0
+      if (target === themeMix) return // class churn (e.g. .theme-fade itself), not a theme flip
+      cancelAnimationFrame(themeFadeRaf)
+      // no .theme-fade means the circular wipe is revealing the new theme
+      // behind a moving edge — colors must land instantly to keep it crisp
+      if (!document.documentElement.classList.contains('theme-fade')) {
+        themeMix = target
+        applyColors(themeMix)
+        return
+      }
+      const from = themeMix
+      const start = performance.now()
+      const step = (now: number) => {
+        const t = Math.min((now - start) / THEME_FADE_MS, 1)
+        themeMix = from + (target - from) * (1 - (1 - t) * (1 - t)) // ease-out, like the CSS fade
+        applyColors(themeMix)
+        themeFadeRaf = t < 1 ? requestAnimationFrame(step) : 0
+      }
+      themeFadeRaf = requestAnimationFrame(step)
+    })
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    disposers.push(() => cancelAnimationFrame(themeFadeRaf))
 
     new FontLoader().load(fontPreset.typeface, (font) => {
       if (disposed) return
@@ -1132,17 +1158,11 @@ export default function BlockName({
       if (coarse) {
         disposers.push(
           onOverlayChange((open) => {
-            paused = open || themeIsTransitioning()
+            paused = open
             resumeIfReady()
           }),
         )
       }
-      const pauseObserver = new MutationObserver(() => {
-        paused = (coarse && overlayIsOpen()) || themeIsTransitioning()
-        resumeIfReady()
-      })
-      pauseObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-transitioning'] })
-      disposers.push(() => pauseObserver.disconnect())
       raf = requestAnimationFrame(tick)
       disposers.push(() => cancelAnimationFrame(raf))
     })
@@ -1165,20 +1185,26 @@ export default function BlockName({
   // tracks the viewport; the world inside compensates with the scroll offset.
   // The control hint is screen-space HTML pinned under the car by tick().
   return (
-    <div ref={ref} aria-hidden className="pointer-events-none fixed inset-0 z-10">
-      <span
-        ref={hintRef}
-        className="absolute top-0 left-0 text-center font-mono text-xs leading-5 whitespace-pre text-stone-400 opacity-0 transition-opacity duration-700 dark:text-stone-600"
-      >
-        {'wasd to drive\nshift turbo\nspace drift'}
-      </span>
+    <>
+      <div ref={ref} aria-hidden className="pointer-events-none fixed inset-0 z-10">
+        <span
+          ref={hintRef}
+          className="absolute top-0 left-0 text-center font-mono text-xs leading-5 whitespace-pre text-stone-400 opacity-0 transition-opacity duration-700 dark:text-stone-600"
+        >
+          {'wasd to drive\nshift turbo\nspace drift'}
+        </span>
+      </div>
       {/* touch controls, toggled by tapping the car; the joystick under the
           left thumb is steering and throttle at once (push to drive, pull to
-          reverse), drift and turbo sit under the right thumb */}
+          reverse), drift and turbo sit under the right thumb. This layer is a
+          SIBLING of the canvas layer, above the hero copy (z-20): inside the
+          z-10 canvas layer the copy wins hit-testing, so the joystick never
+          received the touch and the press read as outside-the-pad (dismiss) */}
       <div
         ref={padRef}
+        aria-hidden
         style={{ visibility: 'hidden' }}
-        className="absolute inset-x-0 bottom-0 flex items-end justify-between px-6 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] opacity-0 transition-opacity duration-300"
+        className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex items-end justify-between px-6 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] opacity-0 transition-opacity duration-300"
       >
         <div
           data-joystick
@@ -1203,7 +1229,7 @@ export default function BlockName({
           </PadButton>
         </div>
       </div>
-    </div>
+    </>
   )
 }
 

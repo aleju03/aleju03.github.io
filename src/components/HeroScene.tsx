@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { isCoarsePointer } from '../device'
 import { onOverlayChange, overlayIsOpen } from '../overlay'
+import { THEME_FADE_MS } from '../theme'
 
 /*
   3D dot-wave field rendered under the hero content. Isolated leaf component,
@@ -16,8 +17,7 @@ export default function HeroScene() {
     if (!el) return
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const coarse = isCoarsePointer()
-    const themeIsTransitioning = () => document.documentElement.hasAttribute('data-theme-transitioning')
-    let paused = (coarse && overlayIsOpen()) || themeIsTransitioning()
+    let paused = coarse && overlayIsOpen()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
@@ -83,11 +83,30 @@ export default function HeroScene() {
       depthWrite: false,
     })
 
-    // sparse cobalt dots in a mostly-neutral field; recolored when the theme flips
+    // sparse cobalt dots in a mostly-neutral field; recolored when the theme
+    // flips. applyColors takes a 0..1 light->dark mix so the flip can fade in
+    // step with the page's .theme-fade color crossfade instead of snapping
     const colorAttr = geo.getAttribute('color') as THREE.BufferAttribute
-    const applyColors = (dark: boolean) => {
-      const base = new THREE.Color(dark ? '#57534e' : '#d5cbb8')
-      const accent = new THREE.Color(dark ? '#3b82f6' : '#2563eb')
+    const palette = {
+      light: {
+        base: new THREE.Color('#d5cbb8'),
+        accent: new THREE.Color('#2563eb'),
+        // ridges fade with distance: farthest range closest to the page color
+        ridges: ['#f5f1e6', '#e8e2d0', '#d5cbb8'].map((s) => new THREE.Color(s)),
+      },
+      dark: {
+        base: new THREE.Color('#57534e'),
+        accent: new THREE.Color('#3b82f6'),
+        ridges: ['#37332f', '#44403c', '#534e49'].map((s) => new THREE.Color(s)),
+      },
+    }
+    const base = new THREE.Color()
+    const accent = new THREE.Color()
+    const ridgeShades = palette.light.ridges.map(() => new THREE.Color())
+    const applyColors = (mix: number) => {
+      base.lerpColors(palette.light.base, palette.dark.base, mix)
+      accent.lerpColors(palette.light.accent, palette.dark.accent, mix)
+      ridgeShades.forEach((c, k) => c.lerpColors(palette.light.ridges[k], palette.dark.ridges[k], mix))
       let n = 0
       for (let x = 0; x < COLS; x++) {
         for (let z = 0; z < ROWS; z++) {
@@ -97,10 +116,6 @@ export default function HeroScene() {
         }
       }
       colorAttr.needsUpdate = true
-      // ridges fade with distance: farthest range closest to the page color
-      const ridgeShades = (dark ? ['#37332f', '#44403c', '#534e49'] : ['#f5f1e6', '#e8e2d0', '#d5cbb8']).map(
-        (s) => new THREE.Color(s),
-      )
       const ridgeColor = ridgeGeo.getAttribute('color') as THREE.BufferAttribute
       for (let k = 0; k < ridgeRange.length; k++) {
         const c = k % 41 === 0 ? accent : ridgeShades[ridgeRange[k]]
@@ -109,10 +124,32 @@ export default function HeroScene() {
       ridgeColor.needsUpdate = true
     }
     const isDark = () => document.documentElement.classList.contains('dark')
-    applyColors(isDark())
+    let themeMix = isDark() ? 1 : 0
+    applyColors(themeMix)
+    let themeFadeRaf = 0
     const themeObserver = new MutationObserver(() => {
-      applyColors(isDark())
-      if (reduce) renderer.render(scene, camera)
+      const target = isDark() ? 1 : 0
+      if (target === themeMix) return // class churn (e.g. .theme-fade itself), not a theme flip
+      cancelAnimationFrame(themeFadeRaf)
+      // no .theme-fade means the circular wipe is revealing the new theme
+      // behind a moving edge — colors must land instantly to keep it crisp
+      const fading = document.documentElement.classList.contains('theme-fade')
+      if (reduce || !fading) {
+        themeMix = target
+        applyColors(themeMix)
+        if (reduce || raf === 0) renderer.render(scene, camera)
+        return
+      }
+      const from = themeMix
+      const start = performance.now()
+      const step = (now: number) => {
+        const t = Math.min((now - start) / THEME_FADE_MS, 1)
+        themeMix = from + (target - from) * (1 - (1 - t) * (1 - t)) // ease-out, like the CSS fade
+        applyColors(themeMix)
+        if (raf === 0) renderer.render(scene, camera) // main loop paused: present the frame ourselves
+        themeFadeRaf = t < 1 ? requestAnimationFrame(step) : 0
+      }
+      themeFadeRaf = requestAnimationFrame(step)
     })
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
     const mat = new THREE.PointsMaterial({
@@ -196,14 +233,9 @@ export default function HeroScene() {
       }
     }
     const offOverlay = onOverlayChange((open) => {
-      paused = (coarse && open) || themeIsTransitioning()
+      paused = coarse && open
       resumeIfReady()
     })
-    const pauseObserver = new MutationObserver(() => {
-      paused = (coarse && overlayIsOpen()) || themeIsTransitioning()
-      resumeIfReady()
-    })
-    pauseObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-transitioning'] })
 
     if (reduce) {
       wave(1.5, 0)
@@ -224,8 +256,8 @@ export default function HeroScene() {
 
     return () => {
       cancelAnimationFrame(raf)
+      cancelAnimationFrame(themeFadeRaf)
       offOverlay()
-      pauseObserver.disconnect()
       themeObserver.disconnect()
       window.removeEventListener('resize', onResize)
       window.removeEventListener('pointermove', onPointer)

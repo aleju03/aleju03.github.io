@@ -1,16 +1,30 @@
 import {
-  EnvelopeSimpleIcon,
+  ChatCircleDotsIcon,
   FileTextIcon,
   FolderOpenIcon,
+  MonitorIcon,
+  PaintBrushIcon,
+  TargetIcon,
   TerminalWindowIcon,
 } from '@phosphor-icons/react'
 import type { ReactNode } from 'react'
 import { TerminalView } from '../Terminal'
-import { ProjectsApp, AboutApp, ContactApp } from './appWindows'
+import { ProjectsApp, AboutApp } from './appWindows'
+import { MessengerApp } from './MessengerApp'
+import { MinesweeperApp } from './MinesweeperApp'
+import { PaintApp } from './PaintApp'
+import { DisplayApp } from './DisplayApp'
 
 // the AlejOS app registry: window defaults plus how each app renders
 
-export type AppId = 'projects' | 'about' | 'terminal' | 'contact'
+export type AppId =
+  | 'projects'
+  | 'about'
+  | 'terminal'
+  | 'messenger'
+  | 'minesweeper'
+  | 'paint'
+  | 'display'
 
 export interface AppDef {
   title: string
@@ -52,12 +66,36 @@ export const APPS: Record<AppId, AppDef> = {
       </div>
     ),
   },
-  contact: {
-    title: 'New Message',
-    icon: <EnvelopeSimpleIcon size={15} weight="fill" />,
-    big: <EnvelopeSimpleIcon size={34} weight="duotone" />,
-    w: 460,
-    h: 380,
-    render: () => <ContactApp />,
+  messenger: {
+    title: 'Messenger',
+    icon: <ChatCircleDotsIcon size={15} weight="fill" />,
+    big: <ChatCircleDotsIcon size={34} weight="duotone" />,
+    w: 500,
+    h: 460,
+    render: () => <MessengerApp />,
+  },
+  minesweeper: {
+    title: 'Minesweeper',
+    icon: <TargetIcon size={15} weight="fill" />,
+    big: <TargetIcon size={34} weight="duotone" />,
+    w: 330,
+    h: 470,
+    render: () => <MinesweeperApp />,
+  },
+  paint: {
+    title: 'Paint',
+    icon: <PaintBrushIcon size={15} weight="fill" />,
+    big: <PaintBrushIcon size={34} weight="duotone" />,
+    w: 640,
+    h: 490,
+    render: () => <PaintApp />,
+  },
+  display: {
+    title: 'Display Properties',
+    icon: <MonitorIcon size={15} weight="fill" />,
+    big: <MonitorIcon size={34} weight="duotone" />,
+    w: 400,
+    h: 480,
+    render: (close) => <DisplayApp close={close} />,
   },
 }

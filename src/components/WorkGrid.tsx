@@ -62,18 +62,40 @@ function WorkCard({
         <div className={`flex aspect-[16/10] w-full items-center justify-center ${phoneShots ? 'gap-3 sm:gap-4' : ''}`}>
           {phoneShots ? (
             phoneShots.map((shot, i) => (
-              <img
+              /* real iPhone frame (PommePlate, CC0) with the screen punched out;
+                 the screenshot sits underneath, positioned on the screen cutout */
+              <div
                 key={shot.src}
-                src={shot.src}
-                alt={shot.alt}
-                decoding="async"
-                loading="lazy"
-                className={`max-h-full min-w-0 rounded-lg border border-stone-200 object-contain shadow-sm transition-transform duration-500 ease-out dark:border-stone-800 ${
+                className={`relative h-full shrink-0 transition-transform duration-500 ease-out ${
                   i === 1
                     ? 'z-10 group-hover:scale-[1.04]'
                     : `translate-y-2 ${i === 0 ? '-rotate-2 group-hover:-rotate-1' : 'rotate-2 group-hover:rotate-1'} group-hover:scale-[1.02]`
                 }`}
-              />
+                style={{ aspectRatio: '1 / 2' }}
+              >
+                {/* contain instead of cover: aspect slack becomes black bars that
+                    blend with the notch/bezel rather than cropping the UI */}
+                <div
+                  className="absolute flex items-center justify-center bg-black"
+                  style={{ left: '6.71%', top: '3.09%', width: '86.73%', height: '93.94%' }}
+                >
+                  <img
+                    src={shot.src}
+                    alt={shot.alt}
+                    decoding="async"
+                    loading="lazy"
+                    className="h-full w-full object-contain"
+                  />
+                </div>
+                <img
+                  src="/projects/iphone-frame.png"
+                  alt=""
+                  aria-hidden
+                  decoding="async"
+                  loading="lazy"
+                  className="relative h-full w-full drop-shadow-md"
+                />
+              </div>
             ))
           ) : (
             <img

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
   ArrowSquareOutIcon,
@@ -15,17 +15,34 @@ import type { AppId } from './apps'
 import { Window } from './Window'
 import type { WinState } from './Window'
 import { sounds } from './sounds'
+import { getWallpaperId, subscribeWallpaper, wallpaperById } from './wallpapers'
+import { BiosScreen } from './BiosScreen'
+import { ScreenEffects } from './ScreenEffects'
 
 /*
   AlejOS: the portfolio as an early-2000s desktop. Booted from the command
-  palette or the terminal's `boot` command, drawn inside a CRT monitor bezel
-  (plastic frame, scanlines, power LED) on larger screens. Esc shuts down,
-  so the easter egg never traps anyone.
+  palette or the terminal's `boot` command. On capable screens the whole
+  session is physical: CrtScene maps this component's live DOM onto the glass
+  of a 3D CRT monitor on a night desk, the camera pushes in during the BIOS
+  POST and you use the OS right there on the tube. Phones, reduced motion, or
+  a WebGL failure fall back to the flat CRT-bezel chrome. Esc always backs
+  out, so the easter egg never traps anyone.
 */
 
-type Phase = 'off' | 'boot' | 'on' | 'down'
+const CrtScene = lazy(() => import('./CrtScene'))
 
-const DESKTOP_APPS: AppId[] = ['projects', 'about', 'terminal', 'contact']
+type Phase = 'off' | 'post' | 'boot' | 'on' | 'down'
+type Mode = 'flat' | '3d'
+
+const DESKTOP_APPS: AppId[] = ['projects', 'about', 'terminal', 'messenger', 'minesweeper', 'paint']
+const START_APPS: AppId[] = [...DESKTOP_APPS, 'display']
+
+interface Rect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
 
 function Clock() {
   const [now, setNow] = useState(() => new Date())
@@ -41,6 +58,7 @@ function Clock() {
 }
 
 interface DesktopIconProps {
+  id: string
   label: string
   glyph: React.ReactNode
   selected: boolean
@@ -49,14 +67,18 @@ interface DesktopIconProps {
 }
 
 // single click selects like a real desktop; double click (or tap, where
-// there is no hover) opens
-function DesktopIcon({ label, glyph, selected, onSelect, onOpen }: DesktopIconProps) {
+// there is no hover) opens. data-icon makes the marquee hit-test find it.
+function DesktopIcon({ id, label, glyph, selected, onSelect, onOpen }: DesktopIconProps) {
   return (
     <button
       type="button"
+      data-icon={id}
       onClick={() => {
         if (window.matchMedia('(hover: none)').matches) onOpen()
-        else sounds.click()
+        else {
+          sounds.click()
+          onSelect()
+        }
       }}
       onDoubleClick={onOpen}
       onFocus={onSelect}
@@ -93,41 +115,72 @@ function BootScreen() {
   )
 }
 
+const sameSet = (a: Set<string>, b: Set<string>) =>
+  a.size === b.size && [...a].every((v) => b.has(v))
+
 export default function AlejOS() {
   const [phase, setPhase] = useState<Phase>('off')
+  const [mode, setMode] = useState<Mode>('flat')
+  const [downMsg, setDownMsg] = useState(false)
   const [wins, setWins] = useState<(WinState & { app: AppId })[]>([])
   const [activeId, setActiveId] = useState('')
   const [startOpen, setStartOpen] = useState(false)
-  const [selected, setSelected] = useState<AppId | 'exit' | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [marquee, setMarquee] = useState<Rect | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const zRef = useRef(10)
   const openCountRef = useRef(0)
   const phaseRef = useRef(phase)
+  const desktopRef = useRef<HTMLDivElement>(null)
+  const marqueeOriginRef = useRef<{ x: number; y: number } | null>(null)
   useEffect(() => {
     phaseRef.current = phase
   }, [phase])
 
-  const shutdown = () => {
+  const wallpaper = wallpaperById(useSyncExternalStore(subscribeWallpaper, getWallpaperId))
+
+  const shutdown = useCallback(() => {
     sounds.shutdown()
     setStartOpen(false)
+    setMenu(null)
+    setDownMsg(false)
     setPhase('down')
-    setTimeout(() => {
-      setWins([])
-      setActiveId('')
-      setSelected(null)
-      openCountRef.current = 0
-      setPhase('off')
-    }, 1700)
-  }
+    // the picture collapses to a bright line first, then the farewell text;
+    // in 3D mode the camera also needs time to retreat from the glass
+    setTimeout(() => setDownMsg(true), 650)
+    setTimeout(
+      () => {
+        setWins([])
+        setActiveId('')
+        setSelected(new Set())
+        openCountRef.current = 0
+        setPhase('off')
+      },
+      mode === '3d' ? 2900 : 2200,
+    )
+  }, [mode])
 
   useEffect(() => {
     const onBoot = () => {
       if (phaseRef.current !== 'off') return
       sounds.click()
-      setPhase('boot')
+      // the 3D session only where it can land: mouse, big screen, motion ok
+      const fancy =
+        window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
+        !window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
+        window.innerWidth >= 640
+      setMode(fancy ? '3d' : 'flat')
+      setPhase(fancy ? 'post' : 'boot')
     }
     window.addEventListener(BOOT_OS_EVENT, onBoot)
     return () => window.removeEventListener(BOOT_OS_EVENT, onBoot)
   }, [])
+
+  useEffect(() => {
+    if (phase !== 'post') return
+    const id = setTimeout(() => setPhase('boot'), 2800)
+    return () => clearTimeout(id)
+  }, [phase])
 
   useEffect(() => {
     if (phase !== 'boot') return
@@ -143,7 +196,9 @@ export default function AlejOS() {
     const unlock = lockPageForOverlay()
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (phaseRef.current === 'boot') {
+      if (phaseRef.current === 'post') {
+        setPhase('boot')
+      } else if (phaseRef.current === 'boot') {
         setPhase('on')
         sounds.startup()
       } else if (phaseRef.current === 'on') {
@@ -156,7 +211,7 @@ export default function AlejOS() {
       unlock()
       window.removeEventListener('keydown', onKey)
     }
-  }, [phase, startOpen])
+  }, [phase, startOpen, shutdown])
 
   const focusWin = (id: string) => {
     setActiveId(id)
@@ -166,7 +221,8 @@ export default function AlejOS() {
   const openApp = (app: AppId) => {
     sounds.open()
     setStartOpen(false)
-    setSelected(null)
+    setMenu(null)
+    setSelected(new Set())
     setWins((prev) => {
       const existing = prev.find((w) => w.app === app)
       if (existing) {
@@ -215,187 +271,353 @@ export default function AlejOS() {
     }
   }
 
+  // --- desktop marquee selection (that blue thing) -------------------------
+  const onDesktopPointerDown = (e: React.PointerEvent) => {
+    if (!(e.target as HTMLElement).closest('[data-desktop-bg]')) return
+    setStartOpen(false)
+    setMenu(null)
+    setSelected(new Set())
+    if (e.pointerType !== 'mouse' || e.button !== 0) return
+    const root = desktopRef.current
+    if (!root) return
+    const rect = root.getBoundingClientRect()
+    marqueeOriginRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    root.setPointerCapture(e.pointerId)
+  }
+
+  const onDesktopPointerMove = (e: React.PointerEvent) => {
+    const origin = marqueeOriginRef.current
+    const root = desktopRef.current
+    if (!origin || !root) return
+    const rect = root.getBoundingClientRect()
+    const cx = Math.min(Math.max(e.clientX - rect.left, 0), rect.width)
+    const cy = Math.min(Math.max(e.clientY - rect.top, 0), rect.height)
+    const m: Rect = {
+      x: Math.min(origin.x, cx),
+      y: Math.min(origin.y, cy),
+      w: Math.abs(cx - origin.x),
+      h: Math.abs(cy - origin.y),
+    }
+    setMarquee(m)
+    const hits = new Set<string>()
+    root.querySelectorAll<HTMLElement>('[data-icon]').forEach((node) => {
+      const r = node.getBoundingClientRect()
+      const left = r.left - rect.left
+      const top = r.top - rect.top
+      if (left < m.x + m.w && left + r.width > m.x && top < m.y + m.h && top + r.height > m.y) {
+        hits.add(node.dataset.icon as string)
+      }
+    })
+    setSelected((prev) => (sameSet(prev, hits) ? prev : hits))
+  }
+
+  const endMarquee = () => {
+    marqueeOriginRef.current = null
+    setMarquee(null)
+  }
+
+  const onDesktopContextMenu = (e: React.MouseEvent) => {
+    if (!(e.target as HTMLElement).closest('[data-desktop-bg]')) return
+    e.preventDefault()
+    const root = desktopRef.current
+    if (!root) return
+    const rect = root.getBoundingClientRect()
+    setStartOpen(false)
+    setMenu({
+      x: Math.min(e.clientX - rect.left, rect.width - 190),
+      y: Math.min(e.clientY - rect.top, rect.height - 170),
+    })
+  }
+
   if (phase === 'off') return null
 
-  const screen =
-    phase === 'boot' ? (
-      <BootScreen />
-    ) : phase === 'down' ? (
-      <div className="flex h-full items-center justify-center bg-stone-950 px-6">
-        <p className="text-center font-mono text-sm text-stone-400">
-          It is now safe to close this portfolio.
-        </p>
-      </div>
-    ) : (
-      <div className="relative h-full select-none">
-        <img
-          src="/os/wallpaper.webp"
-          alt=""
-          draggable={false}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
+  const desktop = (
+    <div
+      ref={desktopRef}
+      className="relative h-full select-none"
+      onPointerDown={onDesktopPointerDown}
+      onPointerMove={onDesktopPointerMove}
+      onPointerUp={endMarquee}
+      onPointerCancel={endMarquee}
+      onContextMenu={onDesktopContextMenu}
+    >
+      <div
+        aria-hidden
+        data-desktop-bg="true"
+        className="absolute inset-0 bg-cover bg-center"
+        style={
+          wallpaper.src
+            ? { backgroundImage: `url(${wallpaper.src})` }
+            : { backgroundColor: wallpaper.color }
+        }
+      />
 
-        {/* desktop icons */}
-        <div className="absolute top-3 left-3 flex flex-col gap-1.5">
-          {DESKTOP_APPS.map((app) => (
-            <DesktopIcon
-              key={app}
-              label={APPS[app].title.split(' — ')[0]}
-              glyph={APPS[app].big}
-              selected={selected === app}
-              onSelect={() => setSelected(app)}
-              onOpen={() => openApp(app)}
-            />
-          ))}
+      {/* desktop icons */}
+      <div className="absolute top-3 left-3 flex flex-col flex-wrap gap-1.5" style={{ maxHeight: 'calc(100% - 4rem)' }}>
+        {DESKTOP_APPS.map((app) => (
           <DesktopIcon
-            label="Back to site"
-            glyph={<SignOutIcon size={34} weight="duotone" />}
-            selected={selected === 'exit'}
-            onSelect={() => setSelected('exit')}
-            onOpen={shutdown}
+            key={app}
+            id={app}
+            label={APPS[app].title.split(' — ')[0]}
+            glyph={APPS[app].big}
+            selected={selected.has(app)}
+            onSelect={() => setSelected(new Set([app]))}
+            onOpen={() => openApp(app)}
           />
-        </div>
+        ))}
+        <DesktopIcon
+          id="exit"
+          label="Back to site"
+          glyph={<SignOutIcon size={34} weight="duotone" />}
+          selected={selected.has('exit')}
+          onSelect={() => setSelected(new Set(['exit']))}
+          onOpen={shutdown}
+        />
+      </div>
 
-        {/* windows live between the icons and the taskbar; the layer itself
-            must not eat desktop clicks */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 bottom-12">
-          {wins.map((w) => (
-            <Window
-              key={w.id}
-              win={w}
-              active={activeId === w.id}
-              onFocus={() => focusWin(w.id)}
-              onClose={() => closeWin(w.id)}
-              onMinimize={() => patchWin(w.id, { minimized: true })}
-              onToggleMaximize={() => patchWin(w.id, { maximized: !w.maximized })}
-              onMove={(x, y) => patchWin(w.id, { x, y })}
-              onResize={(width, height) => patchWin(w.id, { w: width, h: height })}
-            >
-              {APPS[w.app].render(() => closeWin(w.id))}
-            </Window>
-          ))}
-        </div>
+      {/* the marquee itself, under the windows like the real thing */}
+      {marquee && marquee.w + marquee.h > 4 && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute border border-blue-500 bg-blue-600/20"
+          style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }}
+        />
+      )}
 
-        {/* start menu */}
-        <AnimatePresence>
-          {startOpen && (
-            <>
-              <button
-                type="button"
-                aria-label="Close start menu"
-                onClick={() => setStartOpen(false)}
-                className="absolute inset-0 cursor-default"
-              />
-              <motion.nav
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 8 }}
-                transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
-                aria-label="Start menu"
-                className="absolute bottom-13 left-1.5 z-[5000] w-72 overflow-hidden rounded-lg border border-blue-900 bg-stone-50 shadow-2xl shadow-stone-950/50"
-              >
-                <div className="flex items-center gap-3 bg-gradient-to-b from-blue-600 to-blue-700 px-4 py-3">
-                  <span className="flex size-9 items-center justify-center rounded-full bg-white/20 font-mono text-sm font-bold text-white">
-                    aj
-                  </span>
-                  <p className="text-sm font-medium text-white">Alejandro Jiménez</p>
-                </div>
-                <ul className="p-1.5">
-                  {DESKTOP_APPS.map((app) => (
-                    <li key={app}>
-                      <button
-                        type="button"
-                        onClick={() => openApp(app)}
-                        className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
-                      >
-                        <span className="text-blue-700 [&_svg]:size-5">{APPS[app].big}</span>
-                        {APPS[app].title.split(' — ')[0]}
-                      </button>
-                    </li>
-                  ))}
-                  <li aria-hidden className="mx-3 my-1.5 border-t border-stone-200" />
-                  {[
-                    { label: 'GitHub', href: github, icon: <GithubLogoIcon size={18} /> },
-                    { label: 'LinkedIn', href: linkedin, icon: <LinkedinLogoIcon size={18} /> },
-                  ].map((item) => (
-                    <li key={item.label}>
-                      <a
-                        href={item.href}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-stone-700 hover:bg-blue-600/10"
-                      >
-                        <span className="text-blue-700">{item.icon}</span>
-                        {item.label}
-                        <ArrowSquareOutIcon size={13} className="ml-auto text-stone-400" />
-                      </a>
-                    </li>
-                  ))}
-                  <li aria-hidden className="mx-3 my-1.5 border-t border-stone-200" />
-                  <li>
-                    <button
-                      type="button"
-                      onClick={shutdown}
-                      className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
-                    >
-                      <PowerIcon size={18} className="text-blue-700" />
-                      Shut down
-                    </button>
-                  </li>
-                </ul>
-              </motion.nav>
-            </>
-          )}
-        </AnimatePresence>
-
-        {/* taskbar */}
-        <div className="absolute inset-x-0 bottom-0 z-[4000] flex h-12 items-stretch border-t border-blue-500/60 bg-gradient-to-b from-blue-700 to-blue-800">
-          <button
-            type="button"
-            aria-label="Start"
-            onClick={() => {
-              sounds.click()
-              setStartOpen((o) => !o)
-            }}
-            className={`m-1.5 flex cursor-pointer items-center gap-2 rounded-md px-4 font-display text-sm font-semibold text-white transition-colors ${
-              startOpen ? 'bg-white/30' : 'bg-white/15 hover:bg-white/25'
-            }`}
+      {/* windows live between the icons and the taskbar; the layer itself
+          must not eat desktop clicks */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 bottom-12">
+        {wins.map((w) => (
+          <Window
+            key={w.id}
+            win={w}
+            active={activeId === w.id}
+            onFocus={() => focusWin(w.id)}
+            onClose={() => closeWin(w.id)}
+            onMinimize={() => patchWin(w.id, { minimized: true })}
+            onToggleMaximize={() => patchWin(w.id, { maximized: !w.maximized })}
+            onMove={(x, y) => patchWin(w.id, { x, y })}
+            onResize={(width, height) => patchWin(w.id, { w: width, h: height })}
           >
-            <span className="flex size-5 items-center justify-center rounded-sm bg-white font-mono text-[11px] font-bold text-blue-700">
-              aj
-            </span>
-            start
-          </button>
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1.5">
-            {wins.map((w) => (
-              <button
-                key={w.id}
-                type="button"
-                onClick={() => onTaskButton(w)}
-                className={`flex h-full min-w-0 max-w-44 cursor-pointer items-center gap-2 rounded-md px-3 text-xs text-white transition-colors ${
-                  activeId === w.id && !w.minimized
-                    ? 'bg-white/30 shadow-[inset_0_1px_3px_rgba(0,0,0,0.25)]'
-                    : 'bg-white/10 hover:bg-white/20'
-                }`}
-              >
-                <span className="shrink-0">{w.icon}</span>
-                <span className="truncate">{w.title.split(' — ')[0]}</span>
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-2 border-l border-white/20 px-3">
-            <Clock />
+            {APPS[w.app].render(() => closeWin(w.id))}
+          </Window>
+        ))}
+      </div>
+
+      {/* desktop context menu */}
+      <AnimatePresence>
+        {menu && (
+          <>
             <button
               type="button"
-              onClick={shutdown}
-              aria-label="Shut down AlejOS"
-              className="cursor-pointer rounded-md p-1.5 text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+              aria-label="Close menu"
+              onClick={() => setMenu(null)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setMenu(null)
+              }}
+              className="absolute inset-0 z-[4400] cursor-default"
+            />
+            <motion.ul
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.1 }}
+              className="absolute z-[4500] w-44 rounded-md border border-stone-300 bg-stone-50 py-1 shadow-xl shadow-stone-950/30"
+              style={{ left: menu.x, top: menu.y }}
             >
-              <PowerIcon size={15} weight="bold" />
+              {(
+                [
+                  { label: 'Change wallpaper', run: () => openApp('display') },
+                  { label: 'Open terminal', run: () => openApp('terminal') },
+                ] as { label: string; run: () => void }[]
+              ).map((item) => (
+                <li key={item.label}>
+                  <button
+                    type="button"
+                    onClick={item.run}
+                    className="block w-full cursor-pointer px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-blue-600/10"
+                  >
+                    {item.label}
+                  </button>
+                </li>
+              ))}
+              <li aria-hidden className="mx-2 my-1 border-t border-stone-200" />
+              <li>
+                <button
+                  type="button"
+                  onClick={shutdown}
+                  className="block w-full cursor-pointer px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-blue-600/10"
+                >
+                  Shut down
+                </button>
+              </li>
+            </motion.ul>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* start menu */}
+      <AnimatePresence>
+        {startOpen && (
+          <>
+            <button
+              type="button"
+              aria-label="Close start menu"
+              onClick={() => setStartOpen(false)}
+              className="absolute inset-0 cursor-default"
+            />
+            <motion.nav
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+              aria-label="Start menu"
+              className="absolute bottom-13 left-1.5 z-[5000] w-72 overflow-hidden rounded-lg border border-blue-900 bg-stone-50 shadow-2xl shadow-stone-950/50"
+            >
+              <div className="flex items-center gap-3 bg-gradient-to-b from-blue-600 to-blue-700 px-4 py-3">
+                <span className="flex size-9 items-center justify-center rounded-full bg-white/20 font-mono text-sm font-bold text-white">
+                  aj
+                </span>
+                <p className="text-sm font-medium text-white">Alejandro Jiménez</p>
+              </div>
+              <ul className="p-1.5">
+                {START_APPS.map((app) => (
+                  <li key={app}>
+                    <button
+                      type="button"
+                      onClick={() => openApp(app)}
+                      className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
+                    >
+                      <span className="text-blue-700 [&_svg]:size-5">{APPS[app].big}</span>
+                      {APPS[app].title.split(' — ')[0]}
+                    </button>
+                  </li>
+                ))}
+                <li aria-hidden className="mx-3 my-1.5 border-t border-stone-200" />
+                {[
+                  { label: 'GitHub', href: github, icon: <GithubLogoIcon size={18} /> },
+                  { label: 'LinkedIn', href: linkedin, icon: <LinkedinLogoIcon size={18} /> },
+                ].map((item) => (
+                  <li key={item.label}>
+                    <a
+                      href={item.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-stone-700 hover:bg-blue-600/10"
+                    >
+                      <span className="text-blue-700">{item.icon}</span>
+                      {item.label}
+                      <ArrowSquareOutIcon size={13} className="ml-auto text-stone-400" />
+                    </a>
+                  </li>
+                ))}
+                <li aria-hidden className="mx-3 my-1.5 border-t border-stone-200" />
+                <li>
+                  <button
+                    type="button"
+                    onClick={shutdown}
+                    className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
+                  >
+                    <PowerIcon size={18} className="text-blue-700" />
+                    Shut down
+                  </button>
+                </li>
+              </ul>
+            </motion.nav>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* taskbar */}
+      <div className="absolute inset-x-0 bottom-0 z-[4000] flex h-12 items-stretch border-t border-blue-500/60 bg-gradient-to-b from-blue-700 to-blue-800">
+        <button
+          type="button"
+          aria-label="Start"
+          onClick={() => {
+            sounds.click()
+            setMenu(null)
+            setStartOpen((o) => !o)
+          }}
+          className={`m-1.5 flex cursor-pointer items-center gap-2 rounded-md px-4 font-display text-sm font-semibold text-white transition-colors ${
+            startOpen ? 'bg-white/30' : 'bg-white/15 hover:bg-white/25'
+          }`}
+        >
+          <span className="flex size-5 items-center justify-center rounded-sm bg-white font-mono text-[11px] font-bold text-blue-700">
+            aj
+          </span>
+          start
+        </button>
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1.5">
+          {wins.map((w) => (
+            <button
+              key={w.id}
+              type="button"
+              onClick={() => onTaskButton(w)}
+              className={`flex h-full min-w-0 max-w-44 cursor-pointer items-center gap-2 rounded-md px-3 text-xs text-white transition-colors ${
+                activeId === w.id && !w.minimized
+                  ? 'bg-white/30 shadow-[inset_0_1px_3px_rgba(0,0,0,0.25)]'
+                  : 'bg-white/10 hover:bg-white/20'
+              }`}
+            >
+              <span className="shrink-0">{w.icon}</span>
+              <span className="truncate">{w.title.split(' — ')[0]}</span>
             </button>
-          </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 border-l border-white/20 px-3">
+          <Clock />
+          <button
+            type="button"
+            onClick={shutdown}
+            aria-label="Shut down AlejOS"
+            className="cursor-pointer rounded-md p-1.5 text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+          >
+            <PowerIcon size={15} weight="bold" />
+          </button>
         </div>
       </div>
+    </div>
+  )
+
+  const screen =
+    phase === 'post' ? (
+      <BiosScreen />
+    ) : phase === 'boot' ? (
+      <BootScreen />
+    ) : phase === 'down' ? (
+      downMsg ? (
+        <div className="flex h-full items-center justify-center bg-stone-950 px-6">
+          <p className="text-center font-mono text-sm text-stone-400">
+            It is now safe to close this portfolio.
+          </p>
+        </div>
+      ) : (
+        <div className="pointer-events-none h-full motion-safe:animate-[os-crt-off_0.6s_ease-in_forwards]">
+          {desktop}
+        </div>
+      )
+    ) : (
+      desktop
+    )
+
+  // 3D mode: the OS lives on the monitor glass inside the night-desk scene
+  if (mode === '3d')
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="fixed inset-0 z-[60] bg-stone-950"
+      >
+        <Suspense fallback={null}>
+          <CrtScene off={phase === 'down'} onFail={() => setMode('flat')}>
+            <div className="relative h-full w-full">
+              {screen}
+              <ScreenEffects />
+            </div>
+          </CrtScene>
+        </Suspense>
+      </motion.div>
     )
 
   return (
@@ -408,19 +630,8 @@ export default function AlejOS() {
       <div className="flex h-full flex-col rounded-none sm:rounded-[26px] sm:bg-stone-300 sm:p-3 sm:shadow-[0_30px_80px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.6)] sm:dark:bg-stone-400">
         <div className="relative flex-1 overflow-hidden bg-stone-950 sm:rounded-lg">
           {screen}
-          {/* scanlines + vignette sell the tube without hurting readability */}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 z-[9000] opacity-50"
-            style={{
-              backgroundImage:
-                'repeating-linear-gradient(0deg, rgba(0,0,0,0.10) 0px, rgba(0,0,0,0.10) 1px, transparent 1px, transparent 3px)',
-            }}
-          />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 z-[9000] shadow-[inset_0_0_110px_rgba(0,0,0,0.42)] sm:rounded-lg"
-          />
+          {/* scanlines + beam + vignette sell the tube without hurting readability */}
+          <ScreenEffects rounded />
         </div>
         <div className="hidden h-7 shrink-0 items-center justify-center gap-3 sm:flex">
           <span className="flex items-baseline gap-2 select-none">

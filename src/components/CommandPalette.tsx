@@ -20,7 +20,7 @@ import { github, linkedin, email } from '../data/projects'
 import type { SecondaryProject, ShowcaseProject, SmallProject } from '../data/projects'
 import { shouldAutoFocusTextInput } from '../device'
 import { lockPageForOverlay } from '../overlay'
-import { toggleTheme } from '../theme'
+import { toggleThemeSmooth } from '../theme'
 import { useI18n } from '../i18n'
 
 import { BOOT_OS_EVENT, OPEN_PALETTE_EVENT, OPEN_TERMINAL_EVENT } from '../events'
@@ -97,7 +97,7 @@ export function CommandPalette() {
       }
     })
     const actions: Item[] = [
-      { id: 'theme', group: t.palette.actions, label: t.palette.toggleTheme, icon: <MoonIcon size={16} />, run: () => toggleTheme() },
+      { id: 'theme', group: t.palette.actions, label: t.palette.toggleTheme, icon: <MoonIcon size={16} />, run: () => toggleThemeSmooth() },
       { id: 'terminal', group: t.palette.actions, label: t.palette.openTerminal, hint: 'ctrl `', icon: <TerminalWindowIcon size={16} />, run: () => window.dispatchEvent(new Event(OPEN_TERMINAL_EVENT)) },
       { id: 'alejos', group: t.palette.actions, label: t.palette.bootAlejOS, hint: t.palette.desktopMode, icon: <DesktopIcon size={16} />, run: () => window.dispatchEvent(new Event(BOOT_OS_EVENT)) },
       { id: 'email', group: t.palette.actions, label: t.palette.sendEmail, hint: email, icon: <EnvelopeSimpleIcon size={16} />, run: () => { location.href = `mailto:${email}` } },

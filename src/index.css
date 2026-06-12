@@ -125,7 +125,70 @@ button:not(:disabled),
   outline-offset: 2px;
 }
 
-/* theme toggle wipe: the new theme is revealed by a JS-driven clip-path circle */
+/* AlejOS CRT effects. The beam is a faint band of light sweeping down the tube
+   like a slow electron-gun refresh; percentages are relative to the band's own
+   height (28% of the screen), so 460% carries it fully past the bottom edge.
+   os-crt-off is the classic power-off: picture collapses to a bright line. */
+@keyframes os-beam {
+  from {
+    transform: translateY(-110%);
+  }
+  to {
+    transform: translateY(460%);
+  }
+}
+
+/* tube warm-up: dark, then a couple of unstable flashes before settling */
+@keyframes os-flicker {
+  0% {
+    opacity: 0;
+  }
+  52% {
+    opacity: 0;
+  }
+  58% {
+    opacity: 0.9;
+  }
+  63% {
+    opacity: 0.15;
+  }
+  70% {
+    opacity: 1;
+  }
+  76% {
+    opacity: 0.4;
+  }
+  84% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes os-crt-off {
+  0% {
+    transform: scale(1, 1);
+    filter: brightness(1);
+  }
+  55% {
+    transform: scale(1, 0.006);
+    filter: brightness(2.2);
+  }
+  75% {
+    transform: scale(1, 0.006);
+    filter: brightness(2.6);
+  }
+  100% {
+    transform: scale(0.001, 0.004);
+    filter: brightness(3);
+  }
+}
+
+/* circular theme wipe (fine pointers): the new theme is revealed by a
+   JS-driven clip-path circle. Only the OLD frame is a static snapshot — the
+   new view is the live page, so animations keep running under the sweep;
+   never pause anything for this transition */
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation: none;
@@ -136,4 +199,17 @@ button:not(:disabled),
 }
 ::view-transition-old(root) {
   z-index: 1;
+}
+
+/* theme toggle on coarse pointers: a brief color-only crossfade instead of the
+   wipe (the full-page snapshot stutters on phones). The .theme-fade class
+   wraps the flip; duration mirrors THEME_FADE_MS in theme.ts */
+.theme-fade,
+.theme-fade *,
+.theme-fade *::before,
+.theme-fade *::after {
+  transition-property: background-color, border-color, outline-color, color, fill, stroke !important;
+  transition-duration: 200ms !important;
+  transition-timing-function: ease-out !important;
+  transition-delay: 0s !important;
 }

@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
+  CaretDownIcon,
+  CheckIcon,
   GithubLogoIcon,
   GlobeHemisphereWestIcon,
   LinkedinLogoIcon,
@@ -14,8 +16,15 @@ import { useI18n } from '../i18n'
 
 const isMac = /mac/i.test(navigator.platform)
 
+const LANGUAGES = [
+  { code: 'en', label: 'English' },
+  { code: 'es', label: 'Español' },
+] as const
+
 export function Nav() {
   const [theme, setThemeState] = useState(() => currentTheme())
+  const [langOpen, setLangOpen] = useState(false)
+  const langRef = useRef<HTMLDivElement>(null)
   const { language, setLanguage, t } = useI18n()
   const links = [
     { label: t.nav.work, href: '#work' },
@@ -32,6 +41,22 @@ export function Nav() {
       offSystem()
     }
   }, [])
+
+  useEffect(() => {
+    if (!langOpen) return
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target instanceof Node && !langRef.current?.contains(e.target)) setLangOpen(false)
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLangOpen(false)
+    }
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [langOpen])
 
   return (
     <header className="sticky top-0 z-40 border-b border-stone-200 bg-stone-50/95 dark:border-stone-800 dark:bg-stone-950/95 sm:bg-stone-50/80 sm:backdrop-blur-md sm:dark:bg-stone-950/80">
@@ -80,17 +105,54 @@ export function Nav() {
           >
             <LinkedinLogoIcon size={18} weight="bold" />
           </a>
-          {/* only two languages, so a toggle beats a dropdown: tapping it
-              swaps EN <-> ES and shows the one you'd switch to */}
-          <button
-            type="button"
-            onClick={() => setLanguage(language === 'en' ? 'es' : 'en')}
-            aria-label={t.nav.language}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-stone-200 px-2.5 py-1.5 font-mono text-xs font-bold text-stone-500 transition-colors hover:border-stone-400 hover:text-stone-900 dark:border-stone-700 dark:text-stone-400 dark:hover:border-stone-500 dark:hover:text-stone-100"
-          >
-            <GlobeHemisphereWestIcon size={16} weight="bold" aria-hidden="true" />
-            {language === 'en' ? 'ES' : 'EN'}
-          </button>
+          <div ref={langRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setLangOpen((open) => !open)}
+              aria-label={t.nav.language}
+              aria-haspopup="listbox"
+              aria-expanded={langOpen}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-stone-200 px-2.5 py-1.5 font-mono text-xs font-bold text-stone-500 transition-colors hover:border-stone-400 hover:text-stone-900 dark:border-stone-700 dark:text-stone-400 dark:hover:border-stone-500 dark:hover:text-stone-100"
+            >
+              <GlobeHemisphereWestIcon size={16} weight="bold" aria-hidden="true" />
+              {language.toUpperCase()}
+              <CaretDownIcon
+                size={10}
+                weight="bold"
+                aria-hidden="true"
+                className={`transition-transform duration-200 ${langOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+            {langOpen && (
+              <ul
+                role="listbox"
+                aria-label={t.nav.language}
+                className="absolute top-full right-0 mt-2 w-36 overflow-hidden rounded-xl border border-stone-200 bg-white py-1 shadow-lg dark:border-stone-700 dark:bg-stone-900"
+              >
+                {LANGUAGES.map((option) => (
+                  <li key={option.code} role="option" aria-selected={language === option.code}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLanguage(option.code)
+                        setLangOpen(false)
+                      }}
+                      className="flex w-full cursor-pointer items-center justify-between px-3.5 py-2 text-left text-sm text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-100"
+                    >
+                      {option.label}
+                      {language === option.code && (
+                        <CheckIcon
+                          size={14}
+                          weight="bold"
+                          className="text-blue-600 dark:text-blue-400"
+                        />
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <button
             type="button"
             onClick={(e) => toggleThemeFrom(e.clientX || innerWidth - 40, e.clientY || 32)}

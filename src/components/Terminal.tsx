@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { XIcon } from '@phosphor-icons/react'
 import { showcase, secondary, more, github, linkedin, email } from '../data/projects'
-import { toggleTheme } from '../theme'
+import { toggleThemeSmooth } from '../theme'
 import { BOOT_OS_EVENT, OPEN_TERMINAL_EVENT } from '../events'
 import { lockPageForOverlay } from '../overlay'
 
@@ -204,7 +204,7 @@ export function TerminalView({ onExit, insideOS }: TerminalViewProps) {
         )
         break
       case 'theme':
-        toggleTheme()
+        toggleThemeSmooth()
         print(<p className="text-stone-400">theme toggled (the terminal stays dark, obviously)</p>)
         break
       case 'boot':
