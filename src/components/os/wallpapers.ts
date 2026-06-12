@@ -11,15 +11,15 @@ export interface Wallpaper {
   src?: string
   /** solid-color wallpapers, era classic */
   color?: string
-  /** light backdrop: desktop icons switch to dark text to stay readable */
+  /** light backdrop: desktop icons use darker hover states */
   light?: boolean
 }
 
 export const WALLPAPERS: Wallpaper[] = [
-  { id: 'daybreak', name: 'Daybreak', src: '/os/wallpaper.webp', light: true },
-  { id: 'hillside', name: 'Hillside', src: '/os/wallpapers/hillside.webp' },
-  { id: 'dusk', name: 'Dusk', src: '/os/wallpapers/dusk.webp' },
-  { id: 'night', name: 'Night', src: '/os/wallpapers/night.webp' },
+  { id: 'bliss', name: 'Bliss', src: '/os/wallpapers/bliss.webp', light: true },
+  { id: 'azul', name: 'Azul', src: '/os/wallpapers/azul.webp' },
+  { id: 'autumn', name: 'Autumn', src: '/os/wallpapers/autumn.webp' },
+  { id: 'stonehenge', name: 'Stonehenge', src: '/os/wallpapers/stonehenge.webp' },
   { id: 'teal', name: 'Classic Teal', color: '#1d7a74' },
 ]
 

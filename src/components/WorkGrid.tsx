@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 import { AnimatePresence } from 'motion/react'
 import { ArrowUpRightIcon, ArrowsOutSimpleIcon, GithubLogoIcon } from '@phosphor-icons/react'
 import type { ShowcaseProject } from '../data/projects'
 import { Reveal } from './Reveal'
 import { TechList } from './TechList'
 import { ZigzagDoodle } from './Doodles'
-import { ProjectModal } from './ProjectModal'
 import { useI18n } from '../i18n'
+
+const ProjectModal = lazy(() =>
+  import('./ProjectModal').then((m) => ({ default: m.ProjectModal })),
+)
 
 const primedImages = new Set<string>()
 
@@ -191,17 +194,19 @@ export function WorkGrid() {
           ))}
         </div>
       </div>
-      <AnimatePresence>
-        {selected && (
-          <ProjectModal
-            key={selected.name}
-            project={selected}
-            labels={t.modal}
-            sourceLabel={t.work.source}
-            onClose={() => setSelected(null)}
-          />
-        )}
-      </AnimatePresence>
+      <Suspense fallback={null}>
+        <AnimatePresence>
+          {selected && (
+            <ProjectModal
+              key={selected.name}
+              project={selected}
+              labels={t.modal}
+              sourceLabel={t.work.source}
+              onClose={() => setSelected(null)}
+            />
+          )}
+        </AnimatePresence>
+      </Suspense>
     </section>
   )
 }

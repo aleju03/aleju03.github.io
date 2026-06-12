@@ -119,11 +119,41 @@ const CELL_W = 102
 const CELL_H = 78
 const GRID_PAD = 12
 
+const isCell = (value: unknown): value is Cell => {
+  if (!value || typeof value !== 'object') return false
+  const { col, row } = value as Partial<Cell>
+  return (
+    typeof col === 'number' &&
+    typeof row === 'number' &&
+    Number.isInteger(col) &&
+    Number.isInteger(row) &&
+    col >= 0 &&
+    row >= 0
+  )
+}
+
+const cleanIconPos = (value: unknown): Record<string, Cell> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out: Record<string, Cell> = {}
+  for (const [id, cell] of Object.entries(value)) {
+    if (isCell(cell)) out[id] = { col: cell.col, row: cell.row }
+  }
+  return out
+}
+
 const loadIconPos = (): Record<string, Cell> => {
   try {
-    return JSON.parse(localStorage.getItem(ICON_POS_KEY) ?? '{}') as Record<string, Cell>
+    return cleanIconPos(JSON.parse(localStorage.getItem(ICON_POS_KEY) ?? '{}'))
   } catch {
     return {}
+  }
+}
+
+const saveIconPos = (positions: Record<string, Cell>) => {
+  try {
+    localStorage.setItem(ICON_POS_KEY, JSON.stringify(positions))
+  } catch {
+    /* storage unavailable; the arrangement still works in memory */
   }
 }
 
@@ -163,7 +193,7 @@ interface DesktopIconProps {
   cell: Cell
   selected: boolean
   renaming?: boolean
-  /** light wallpapers take dark text; everything else gets white + shadow */
+  /** light wallpapers use darker hover treatment; labels keep XP-style contrast */
   onLight: boolean
   onSelect: () => void
   onOpen: () => void
@@ -213,9 +243,7 @@ function DesktopIcon({ id, label, glyph, cell, selected, renaming, onLight, onSe
     }
   }
 
-  const ink = onLight
-    ? 'text-stone-800 drop-shadow-sm'
-    : 'text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.7)]'
+  const ink = 'text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]'
   return (
     <button
       type="button"
@@ -313,7 +341,7 @@ function BootScreen() {
 const sameSet = (a: Set<string>, b: Set<string>) =>
   a.size === b.size && [...a].every((v) => b.has(v))
 
-export default function AlejOS() {
+export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unknown } }) {
   const [phase, setPhase] = useState<Phase>('off')
   const [mode, setMode] = useState<Mode>('flat')
   const [downMsg, setDownMsg] = useState(false)
@@ -351,7 +379,7 @@ export default function AlejOS() {
 
   // how many icon cells fit on this screen; re-measured when the CRT resizes
   useLayoutEffect(() => {
-    if (phase !== 'on') return
+    if (phase !== 'on' || !iconsReady) return
     const el = desktopRef.current
     if (!el) return
     const measure = () =>
@@ -364,15 +392,7 @@ export default function AlejOS() {
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [phase])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(ICON_POS_KEY, JSON.stringify(iconPos))
-    } catch {
-      /* storage unavailable; the arrangement still works in memory */
-    }
-  }, [iconPos])
+  }, [phase, iconsReady])
 
   const iconIds = [
     'my-computer',
@@ -381,6 +401,11 @@ export default function AlejOS() {
     'exit',
   ]
   const iconCells = layoutIcons(iconIds, iconPos, grid.cols, grid.rows)
+
+  const commitIconPos = (next: Record<string, Cell>) => {
+    saveIconPos(next)
+    setIconPos(next)
+  }
 
   const moveIcon = (id: string, dx: number, dy: number) => {
     const from = iconCells[id]
@@ -392,7 +417,7 @@ export default function AlejOS() {
     const occupant = iconIds.find((k) => k !== id && next[k].col === col && next[k].row === row)
     if (occupant) next[occupant] = from
     next[id] = { col, row }
-    setIconPos(next)
+    commitIconPos(next)
     sounds.click()
   }
 
@@ -465,6 +490,11 @@ export default function AlejOS() {
     // make the session shareable: the OS owns /alejOS while it runs
     if (!isOsUrl()) history.pushState({ alejos: true }, '', OS_PATH)
   }, [warmDesktopIcons])
+
+  useEffect(() => {
+    if (!initialBoot) return
+    boot(new CustomEvent(BOOT_OS_EVENT, { detail: initialBoot.detail }))
+  }, [boot, initialBoot])
 
   useEffect(() => {
     window.addEventListener(BOOT_OS_EVENT, boot)
@@ -721,13 +751,11 @@ export default function AlejOS() {
       return
     }
     // the icon's grid spot is keyed by name, so it moves with the rename
-    setIconPos((prev) => {
-      const cell = prev[`fs:${node.name}`]
-      if (!cell) return prev
-      const next = { ...prev, [`fs:${r.name}`]: cell }
-      delete next[`fs:${node.name}`]
-      return next
-    })
+    const cell = iconPos[`fs:${node.name}`]
+    if (!cell) return
+    const nextPos = { ...iconPos, [`fs:${r.name}`]: cell }
+    delete nextPos[`fs:${node.name}`]
+    commitIconPos(nextPos)
   }
 
   // --- context menus --------------------------------------------------------
@@ -736,9 +764,9 @@ export default function AlejOS() {
       label: 'Arrange Icons By',
       sub: [
         // sorting also forgets manual spots, so everything flows again
-        { label: 'Name', onClick: () => { setIconPos({}); sortChildren(DESKTOP, 'name') } },
-        { label: 'Type', onClick: () => { setIconPos({}); sortChildren(DESKTOP, 'type') } },
-        { label: 'Modified', onClick: () => { setIconPos({}); sortChildren(DESKTOP, 'modified') } },
+        { label: 'Name', onClick: () => { commitIconPos({}); sortChildren(DESKTOP, 'name') } },
+        { label: 'Type', onClick: () => { commitIconPos({}); sortChildren(DESKTOP, 'type') } },
+        { label: 'Modified', onClick: () => { commitIconPos({}); sortChildren(DESKTOP, 'modified') } },
       ],
     },
     { label: 'Refresh', onClick: () => sounds.click() },

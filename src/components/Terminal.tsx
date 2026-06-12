@@ -305,9 +305,9 @@ export function TerminalView({ onExit, insideOS }: TerminalViewProps) {
   )
 }
 
-export function Terminal() {
+export function Terminal({ initialOpen = false }: { initialOpen?: boolean }) {
   const reduce = useReducedMotion()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(initialOpen)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
