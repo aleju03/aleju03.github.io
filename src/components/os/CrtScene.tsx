@@ -50,6 +50,318 @@ const MODELS = [
 /** fraction of the viewport height the glass fills once parked */
 const FILL = 0.86
 const INTRO_S = 2.6
+const WINDOW_CENTER_Y = 3.3
+const WINDOW_CENTER_Z = 5.75
+const WINDOW_HOLE_W = 1.78
+const WINDOW_HOLE_H = 1.14
+
+const seeded = (seed: number) => () => {
+  seed = (seed * 1664525 + 1013904223) >>> 0
+  return seed / 0x100000000
+}
+
+const makeExteriorTexture = () => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 512
+  canvas.height = 256
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    const w = canvas.width
+    const h = canvas.height
+    const rand = seeded(0x51d3)
+    const sky = ctx.createLinearGradient(0, 0, 0, h)
+    sky.addColorStop(0, '#071125')
+    sky.addColorStop(0.46, '#172b49')
+    sky.addColorStop(0.74, '#43516c')
+    sky.addColorStop(1, '#1b2638')
+    ctx.fillStyle = sky
+    ctx.fillRect(0, 0, w, h)
+
+    const moon = ctx.createRadialGradient(390, 58, 2, 390, 58, 72)
+    moon.addColorStop(0, 'rgba(242,232,193,0.95)')
+    moon.addColorStop(0.12, 'rgba(242,232,193,0.4)')
+    moon.addColorStop(1, 'rgba(242,232,193,0)')
+    ctx.fillStyle = moon
+    ctx.fillRect(300, 0, 200, 150)
+    ctx.fillStyle = 'rgba(245,236,207,0.8)'
+    ctx.beginPath()
+    ctx.arc(390, 58, 15, 0, Math.PI * 2)
+    ctx.fill()
+
+    for (let i = 0; i < 90; i++) {
+      const x = rand() * w
+      const y = rand() * h * 0.55
+      const a = 0.18 + rand() * 0.62
+      ctx.fillStyle = `rgba(224,236,255,${a})`
+      ctx.fillRect(x, y, rand() < 0.08 ? 2 : 1, 1)
+    }
+
+    const drawRidge = (base: number, amp: number, color: string, points: number) => {
+      ctx.beginPath()
+      ctx.moveTo(0, h)
+      ctx.lineTo(0, base)
+      for (let i = 0; i <= points; i++) {
+        const x = (i / points) * w
+        const y =
+          base -
+          Math.sin(i * 0.85 + 0.6) * amp * 0.42 -
+          rand() * amp
+        ctx.lineTo(x, y)
+      }
+      ctx.lineTo(w, h)
+      ctx.closePath()
+      ctx.fillStyle = color
+      ctx.fill()
+    }
+    drawRidge(166, 23, '#1f3149', 14)
+    drawRidge(184, 16, '#142338', 18)
+
+    const glow = ctx.createLinearGradient(0, 122, 0, 224)
+    glow.addColorStop(0, 'rgba(243,170,92,0)')
+    glow.addColorStop(0.52, 'rgba(243,170,92,0.16)')
+    glow.addColorStop(1, 'rgba(243,170,92,0)')
+    ctx.fillStyle = glow
+    ctx.fillRect(0, 122, w, 102)
+
+    ctx.fillStyle = '#0b1525'
+    for (let x = -10; x < w; x += 24 + rand() * 18) {
+      const bw = 16 + rand() * 26
+      const bh = 28 + rand() * 72
+      ctx.fillRect(x, 198 - bh, bw, bh)
+      if (rand() > 0.62) ctx.fillRect(x + bw * 0.4, 198 - bh - 12, bw * 0.2, 12)
+      ctx.fillStyle = `rgba(246,205,128,${0.35 + rand() * 0.34})`
+      for (let wx = x + 4; wx < x + bw - 3; wx += 7) {
+        for (let wy = 198 - bh + 7; wy < 191; wy += 10) {
+          if (rand() > 0.7) ctx.fillRect(wx, wy, 2, 3)
+        }
+      }
+      ctx.fillStyle = '#0b1525'
+    }
+
+    ctx.fillStyle = '#0a1020'
+    ctx.beginPath()
+    ctx.moveTo(0, 207)
+    ctx.bezierCurveTo(90, 202, 148, 217, 225, 209)
+    ctx.bezierCurveTo(320, 197, 406, 213, 512, 203)
+    ctx.lineTo(512, 256)
+    ctx.lineTo(0, 256)
+    ctx.closePath()
+    ctx.fill()
+
+    ctx.strokeStyle = 'rgba(141,172,211,0.23)'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(36, 252)
+    ctx.bezierCurveTo(155, 222, 307, 232, 484, 210)
+    ctx.stroke()
+  }
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.generateMipmaps = false
+  texture.minFilter = THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  return texture
+}
+
+const makeMoonSpillTexture = () => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 256
+  canvas.height = 128
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.filter = 'blur(14px)'
+    const wash = ctx.createRadialGradient(102, 58, 8, 108, 58, 112)
+    wash.addColorStop(0, 'rgba(130,180,255,0.52)')
+    wash.addColorStop(0.34, 'rgba(100,155,235,0.24)')
+    wash.addColorStop(1, 'rgba(100,155,235,0)')
+    ctx.fillStyle = wash
+    ctx.fillRect(-24, -18, 300, 170)
+    ctx.globalCompositeOperation = 'screen'
+    ctx.fillStyle = 'rgba(150,198,255,0.18)'
+    ctx.beginPath()
+    ctx.moveTo(18, 34)
+    ctx.lineTo(210, 8)
+    ctx.lineTo(244, 30)
+    ctx.lineTo(48, 76)
+    ctx.closePath()
+    ctx.fill()
+    ctx.beginPath()
+    ctx.moveTo(4, 94)
+    ctx.lineTo(192, 44)
+    ctx.lineTo(236, 66)
+    ctx.lineTo(42, 126)
+    ctx.closePath()
+    ctx.fill()
+    ctx.filter = 'none'
+  }
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.generateMipmaps = false
+  texture.minFilter = THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  return texture
+}
+
+const addExteriorWorld = (
+  windowFrame: THREE.Group,
+  trackDisposable: (disposable: { dispose: () => void }) => void,
+  trackTexture: (texture: THREE.Texture) => void,
+) => {
+  const backdropTexture = makeExteriorTexture()
+  trackDisposable(backdropTexture)
+  trackTexture(backdropTexture)
+
+  const backdropMat = new THREE.MeshBasicMaterial({
+    map: backdropTexture,
+    fog: false,
+    side: THREE.FrontSide,
+  })
+  const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(7.8, 4.3), backdropMat)
+  backdrop.position.set(0, 0.32, -5.8)
+  backdrop.renderOrder = 1
+  windowFrame.add(backdrop)
+
+  const tmpMatrix = new THREE.Matrix4()
+  const tmpPos = new THREE.Vector3()
+  const tmpScale = new THREE.Vector3()
+  const tmpQuat = new THREE.Quaternion()
+  const tmpEuler = new THREE.Euler()
+  const setPlane = (
+    mesh: THREE.InstancedMesh,
+    i: number,
+    x: number,
+    y: number,
+    z: number,
+    sx: number,
+    sy: number,
+    rot = 0,
+  ) => {
+    tmpPos.set(x, y, z)
+    tmpScale.set(sx, sy, 1)
+    tmpQuat.setFromEuler(tmpEuler.set(0, 0, rot))
+    mesh.setMatrixAt(i, tmpMatrix.compose(tmpPos, tmpQuat, tmpScale))
+  }
+  const setBox = (
+    mesh: THREE.InstancedMesh,
+    i: number,
+    x: number,
+    y: number,
+    z: number,
+    sx: number,
+    sy: number,
+    sz: number,
+    rotY = 0,
+  ) => {
+    tmpPos.set(x, y, z)
+    tmpScale.set(sx, sy, sz)
+    tmpQuat.setFromEuler(tmpEuler.set(0, rotY, 0))
+    mesh.setMatrixAt(i, tmpMatrix.compose(tmpPos, tmpQuat, tmpScale))
+  }
+
+  const rand = seeded(0xa11e)
+  const planeGeo = new THREE.PlaneGeometry(1, 1)
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1)
+  const farMat = new THREE.MeshStandardMaterial({
+    color: '#09182a',
+    roughness: 0.9,
+    emissive: '#050c16',
+    emissiveIntensity: 0.45,
+    fog: false,
+  })
+  const midMat = new THREE.MeshStandardMaterial({
+    color: '#112b46',
+    roughness: 0.86,
+    emissive: '#081523',
+    emissiveIntensity: 0.5,
+    fog: false,
+  })
+  const buildingDefs: Array<{
+    x: number
+    y: number
+    z: number
+    w: number
+    h: number
+    d: number
+    mat: 0 | 1 | 2
+  }> = []
+
+  for (let i = 0; i < 18; i++) {
+    const z = -13 + rand() * 3.2
+    const w = 0.65 + rand() * 1.05
+    const h = 1.3 + rand() * 2.1
+    buildingDefs.push({
+      x: -7.2 + i * 0.84 + (rand() - 0.5) * 0.38,
+      y: -0.72 + h / 2,
+      z,
+      w,
+      h,
+      d: 0.6 + rand() * 1.0,
+      mat: 0,
+    })
+  }
+  for (let i = 0; i < 12; i++) {
+    const z = -8.4 + rand() * 1.8
+    const w = 0.46 + rand() * 0.76
+    const h = 0.95 + rand() * 1.75
+    buildingDefs.push({
+      x: -5 + i * 0.86 + (rand() - 0.5) * 0.25,
+      y: -0.78 + h / 2,
+      z,
+      w,
+      h,
+      d: 0.5 + rand() * 0.85,
+      mat: 1,
+    })
+  }
+  const mats = [farMat, midMat]
+  mats.forEach((mat, matIndex) => {
+    const defs = buildingDefs.filter((b) => b.mat === matIndex)
+    const buildings = new THREE.InstancedMesh(boxGeo, mat, defs.length)
+    defs.forEach((b, i) => setBox(buildings, i, b.x, b.y, b.z, b.w, b.h, b.d, (rand() - 0.5) * 0.08))
+    buildings.instanceMatrix.needsUpdate = true
+    buildings.renderOrder = 2 + matIndex
+    windowFrame.add(buildings)
+  })
+
+  const windowMat = new THREE.MeshBasicMaterial({
+    color: '#ffc96d',
+    fog: false,
+    transparent: true,
+    opacity: 0.86,
+    depthWrite: false,
+  })
+  const lightSlots: Array<{ x: number; y: number; z: number; sx: number; sy: number }> = []
+  buildingDefs.forEach((b) => {
+    const cols = Math.max(1, Math.floor(b.w / 0.12))
+    const rows = Math.max(1, Math.floor(b.h / 0.16))
+    for (let cx = 0; cx < cols; cx++) {
+      for (let cy = 0; cy < rows; cy++) {
+        if (rand() < 0.62) continue
+        lightSlots.push({
+          x: b.x - b.w * 0.34 + (cols === 1 ? 0 : (cx / (cols - 1)) * b.w * 0.68),
+          y: b.y - b.h * 0.38 + (rows === 1 ? 0 : (cy / (rows - 1)) * b.h * 0.7),
+          z: b.z + b.d / 2 + 0.012,
+          sx: 0.032 + rand() * 0.02,
+          sy: 0.04 + rand() * 0.03,
+        })
+      }
+    }
+  })
+  const lights = new THREE.InstancedMesh(planeGeo, windowMat, Math.min(150, lightSlots.length))
+  for (let i = 0; i < lights.count; i++) {
+    const light = lightSlots[i]
+    setPlane(lights, i, light.x, light.y, light.z, light.sx, light.sy)
+  }
+  lights.instanceMatrix.needsUpdate = true
+  lights.renderOrder = 6
+  windowFrame.add(lights)
+
+  windowFrame.traverse((o) => {
+    if (o !== windowFrame) o.frustumCulled = false
+  })
+}
 
 export default function CrtScene({
   off,
@@ -94,6 +406,8 @@ export default function CrtScene({
     let webgl: THREE.WebGLRenderer | null = null
     let scene: THREE.Scene | null = null
     let cleanupDom: (() => void) | null = null
+    const runtimeDisposables: Array<{ dispose: () => void }> = []
+    const runtimeTextures: THREE.Texture[] = []
 
     const bail = setTimeout(() => {
       if (!webgl) failRef.current()
@@ -187,7 +501,20 @@ export default function CrtScene({
         }
         const depth = ROOM.maxZ - ROOM.minZ
         const midZ = (ROOM.minZ + ROOM.maxZ) / 2
-        shell(depth, ROOM.h, [ROOM.minX, ROOM.h / 2, midZ], [0, Math.PI / 2], '#4a3d30')
+        const windowCut = {
+          z0: WINDOW_CENTER_Z - WINDOW_HOLE_W / 2,
+          z1: WINDOW_CENTER_Z + WINDOW_HOLE_W / 2,
+          y0: WINDOW_CENTER_Y - WINDOW_HOLE_H / 2,
+          y1: WINDOW_CENTER_Y + WINDOW_HOLE_H / 2,
+        }
+        const leftWall = (z0: number, z1: number, y0: number, y1: number) => {
+          if (z1 <= z0 || y1 <= y0) return
+          shell(z1 - z0, y1 - y0, [ROOM.minX, (y0 + y1) / 2, (z0 + z1) / 2], [0, Math.PI / 2], '#4a3d30')
+        }
+        leftWall(ROOM.minZ, ROOM.maxZ, 0, windowCut.y0)
+        leftWall(ROOM.minZ, ROOM.maxZ, windowCut.y1, ROOM.h)
+        leftWall(ROOM.minZ, windowCut.z0, windowCut.y0, windowCut.y1)
+        leftWall(windowCut.z1, ROOM.maxZ, windowCut.y0, windowCut.y1)
         shell(depth, ROOM.h, [ROOM.maxX, ROOM.h / 2, midZ], [0, -Math.PI / 2], '#4a3d30')
         shell(ROOM.maxX - ROOM.minX, ROOM.h, [0, ROOM.h / 2, ROOM.maxZ], [0, Math.PI], '#50412f')
         shell(ROOM.maxX - ROOM.minX, depth, [0, ROOM.h, midZ], [Math.PI / 2, 0], '#3a3129')
@@ -292,6 +619,17 @@ export default function CrtScene({
           metalness: 0,
           emissive: new THREE.Color('#152944'),
           emissiveIntensity: 0.08,
+        })
+        const windowGlassMat = new THREE.MeshStandardMaterial({
+          color: '#8fb4d8',
+          roughness: 0.16,
+          metalness: 0,
+          emissive: new THREE.Color('#28415e'),
+          emissiveIntensity: 0.18,
+          transparent: true,
+          opacity: 0.34,
+          depthWrite: false,
+          side: THREE.DoubleSide,
         })
         const bookMats = ['#b75b4e', '#4e6f8f', '#d0a64f', '#59784f', '#6c537b'].map(
           (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.78 }),
@@ -539,8 +877,14 @@ export default function CrtScene({
         addObstacleFrom(chair, 0.18)
 
         const windowFrame = new THREE.Group()
-        const pane = makeBox(1.85, 1.22, 0.035, glassBlueMat, false)
+        const pane = makeBox(1.85, 1.22, 0.035, windowGlassMat, false)
+        pane.renderOrder = 8
         windowFrame.add(pane)
+        addExteriorWorld(
+          windowFrame,
+          (disposable) => runtimeDisposables.push(disposable),
+          (texture) => runtimeTextures.push(texture),
+        )
         ;[
           [2.03, 0.1, 0.08, 0, 0.66, 0.035],
           [2.03, 0.1, 0.08, 0, -0.66, 0.035],
@@ -553,9 +897,35 @@ export default function CrtScene({
           rail.position.set(x, y, z)
           windowFrame.add(rail)
         })
-        windowFrame.position.set(ROOM.minX + 0.045, 3.3, 5.75)
+        windowFrame.position.set(ROOM.minX + 0.045, WINDOW_CENTER_Y, WINDOW_CENTER_Z)
         windowFrame.rotation.y = Math.PI / 2
         scene.add(windowFrame)
+
+        const moonSpillTexture = makeMoonSpillTexture()
+        runtimeDisposables.push(moonSpillTexture)
+        runtimeTextures.push(moonSpillTexture)
+        const moonSpillMat = new THREE.MeshBasicMaterial({
+          map: moonSpillTexture,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          side: THREE.DoubleSide,
+          fog: false,
+        })
+        const moonPool = new THREE.Mesh(new THREE.PlaneGeometry(4.9, 2.15), moonSpillMat)
+        moonPool.rotation.x = -Math.PI / 2
+        moonPool.rotation.z = -0.13
+        moonPool.position.set(ROOM.minX + 2.72, 0.028, WINDOW_CENTER_Z + 0.03)
+        moonPool.renderOrder = 12
+        moonPool.frustumCulled = false
+        scene.add(moonPool)
+        const windowSpill = new THREE.SpotLight('#9dbfff', 0, 8, 0.6, 0.78, 1.6)
+        windowSpill.position.set(ROOM.minX + 0.06, WINDOW_CENTER_Y + 0.08, WINDOW_CENTER_Z + 0.05)
+        windowSpill.target.position.set(ROOM.minX + 4.6, 0.55, WINDOW_CENTER_Z - 0.22)
+        const windowWash = new THREE.PointLight('#7faeff', 0, 5.5, 1.75)
+        windowWash.position.set(ROOM.minX + 0.55, WINDOW_CENTER_Y - 0.05, WINDOW_CENTER_Z)
+        scene.add(windowSpill, windowSpill.target, windowWash)
 
         const shelf = new THREE.Group()
         const shelfHeights = [0.38, 0.88, 1.38, 1.88]
@@ -721,11 +1091,15 @@ export default function CrtScene({
         const GLOW_ROAM = 7
         const PEND_ROAM = 75
         const MOON_ROAM = 0.8
+        const WINDOW_SPILL_ROAM = 8
         const roomLight = (k: number) => {
           hemi.intensity = HEMI_SEATED + (HEMI_ROAM - HEMI_SEATED) * k
           roomGlow.intensity = GLOW_ROAM * k
           pendant.intensity = PEND_ROAM * k
           moon.intensity = MOON_ROAM * k
+          windowSpill.intensity = WINDOW_SPILL_ROAM * (0.25 + k * 0.75)
+          windowWash.intensity = 2.5 * (0.35 + k * 0.65)
+          moonSpillMat.opacity = 0.13 * (0.45 + k * 0.7)
           if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
         }
         const key = new THREE.SpotLight('#ffd9a0', 60, 0, 0.55, 0.6, 1.6)
@@ -762,6 +1136,10 @@ export default function CrtScene({
         const camEndFor = (h: number) =>
           front.clone().add(normal.clone().multiplyScalar((gSize.y * h) / (divH * 2 * tanHalf)))
         let camEnd = camEndFor(H)
+        // Warm every static shader/texture path now, so the first look toward
+        // the window during roam does not hitch while the GPU compiles it.
+        runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
+        webgl.compile(scene, camera)
 
         const render = () => {
           if (!webgl || !scene) return
@@ -1263,6 +1641,7 @@ export default function CrtScene({
         })
       }
       webgl?.dispose()
+      runtimeDisposables.forEach((d) => d.dispose())
       cleanupDom?.()
       setScreenEl(null)
     }
