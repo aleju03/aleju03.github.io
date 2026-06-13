@@ -1,0 +1,4 @@
+Libre Franklin (libre-franklin-latin.woff2, libre-franklin-italic-latin.woff2)
+Copyright 2015 The Libre Franklin Project Authors (https://github.com/impallari/Libre-Franklin)
+Licensed under the SIL Open Font License, Version 1.1: https://openfontlicense.org
+Latin subsets served by Google Fonts (fonts.gstatic.com), self-hosted here.

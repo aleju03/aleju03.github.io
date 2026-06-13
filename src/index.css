@@ -6,6 +6,7 @@
   --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, 'SFMono-Regular', monospace;
   --font-display: 'Clash Display', 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-xp: 'Libre Franklin', 'Franklin Gothic Medium', ui-sans-serif, system-ui, sans-serif;
 }
 
 /* display face for the hero name only; self-hosted, Fontshare ITF Free Font License */
@@ -14,6 +15,23 @@
   src: url('/fonts/clash-display-600.woff2') format('woff2');
   font-weight: 600;
   font-style: normal;
+  font-display: swap;
+}
+
+/* AlejOS display face: Libre Franklin (OFL), the open cousin of the Franklin
+   Gothic that a certain 2001 OS set its welcome screen and start button in */
+@font-face {
+  font-family: 'Libre Franklin';
+  src: url('/fonts/libre-franklin-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Libre Franklin';
+  src: url('/fonts/libre-franklin-italic-latin.woff2') format('woff2');
+  font-weight: 600;
+  font-style: italic;
   font-display: swap;
 }
 
@@ -204,6 +222,119 @@ button:not(:disabled),
     transform: scale(0.001, 0.004);
     filter: brightness(3);
   }
+}
+
+/* AlejOS taskbar, Luna Blue. The multi-stop gradients are the whole trick:
+   a bright crest near the top, a long flat body, and a dark seat at the
+   bottom edge read as 2001 molded plastic without using any images. */
+.os-taskbar {
+  background: linear-gradient(
+    to bottom,
+    #1f2f86 0%,
+    #3165c4 3%,
+    #3682e5 6%,
+    #4490e6 10%,
+    #3883e5 12%,
+    #2b71e0 15%,
+    #2663da 18%,
+    #235bd6 20%,
+    #2258d5 23%,
+    #2157d6 38%,
+    #245ddb 54%,
+    #2562df 86%,
+    #245fdc 89%,
+    #2158d4 92%,
+    #1d4ec0 95%,
+    #1941a5 98%
+  );
+}
+
+/* the green start pill: full bar height, a true half-round cap on the right
+   like the original, with a dark falloff on its trailing edge so it looks
+   set into the bar */
+.os-start {
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(
+    to bottom,
+    #2c7d2c 0%,
+    #56b256 4%,
+    #48a548 8%,
+    #3c9a3a 13%,
+    #349233 19%,
+    #2f8d2f 56%,
+    #318f31 83%,
+    #2c852b 88%,
+    #267b25 93%,
+    #1d691d 97%,
+    #145214 100%
+  );
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    inset -3px 0 4px rgba(7, 42, 7, 0.55),
+    2px 0 5px rgba(0, 0, 0, 0.35);
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.55);
+  transition: filter 120ms;
+}
+.os-start:hover {
+  filter: brightness(1.1);
+}
+.os-start:active,
+.os-start[data-open='true'] {
+  filter: brightness(0.9);
+  box-shadow:
+    inset 1px 2px 4px rgba(7, 42, 7, 0.6),
+    2px 0 5px rgba(0, 0, 0, 0.35);
+}
+
+/* task buttons: glossy blue chips; the focused window's chip sits pressed */
+.os-task {
+  border-radius: 3px;
+  background: linear-gradient(
+    to bottom,
+    #4d92fa 0%,
+    #3a80f4 4%,
+    #3578f0 7%,
+    #2f6fe4 50%,
+    #2a64d4 95%,
+    #2e6ada 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset -1px 0 1px rgba(8, 24, 88, 0.25),
+    inset 0 -1px 1px rgba(8, 24, 88, 0.35);
+  text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.45);
+  transition: filter 120ms;
+}
+.os-task:hover {
+  filter: brightness(1.12);
+}
+.os-task[data-active='true'] {
+  background: linear-gradient(to bottom, #1e50bd 0%, #2560d2 8%, #2a66da 40%, #2c69e0 100%);
+  box-shadow: inset 1px 1px 3px rgba(8, 24, 88, 0.6);
+  filter: none;
+}
+
+/* the tray runs lighter and cooler than the bar, split off by a crisp seam
+   with a cyan glint on its inner edge */
+.os-tray {
+  border-left: 1px solid #1042af;
+  box-shadow: inset 1px 0 1px #18bbff;
+  background: linear-gradient(
+    to bottom,
+    #0c59b9 1%,
+    #139ee9 6%,
+    #18b5f2 10%,
+    #139beb 14%,
+    #1290e8 19%,
+    #0d8dea 63%,
+    #0d9ff1 81%,
+    #0f9eed 88%,
+    #119be9 91%,
+    #1392e2 94%,
+    #137ed7 97%,
+    #095bc9 100%
+  );
+  text-shadow: 1px 1px 1px rgba(0, 9, 50, 0.5);
 }
 
 /* circular theme wipe (all pointers, VT browsers): the new theme is revealed

@@ -1,15 +1,9 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
-import {
-  CrownSimpleIcon,
-  PowerIcon,
-  UserCircleIcon,
-  UserCirclePlusIcon,
-  UserIcon,
-} from '@phosphor-icons/react'
 import { sounds } from './sounds'
 import { authRequest } from './chatRooms'
 import { FlagLogo } from './FlagLogo'
+import { xpIcon } from './xpIcon'
 import type { Session } from './osContext'
 
 /*
@@ -48,28 +42,35 @@ function storeSession(session: Session | null) {
 }
 
 interface TileProps {
-  icon: React.ReactNode
-  frame: string
+  /** a real XP account picture from public/os/pictures */
+  img: string
   title: string
   sub: string
   onClick: () => void
 }
 
-function Tile({ icon, frame, title, sub, onClick }: TileProps) {
+function Tile({ img, title, sub, onClick }: TileProps) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="group flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left transition hover:bg-white/10"
+      className="group flex w-full cursor-pointer items-center gap-3.5 px-3 py-2 text-left"
     >
-      <span
-        className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-md border-2 border-white/60 bg-gradient-to-br text-white transition group-hover:border-white group-hover:shadow-[0_0_14px_rgba(255,255,255,0.45)] ${frame}`}
-      >
-        {icon}
+      <span className="h-[54px] w-[54px] shrink-0 rounded-[4px] border border-white/50 bg-gradient-to-b from-white to-[#d8e2f8] p-[3px] shadow-[1px_1px_3px_rgba(0,0,30,0.4)] transition group-hover:border-white group-hover:shadow-[0_0_14px_rgba(255,233,160,0.7)]">
+        <img
+          src={img}
+          alt=""
+          width={48}
+          height={48}
+          draggable={false}
+          className="h-full w-full rounded-[2px] select-none"
+        />
       </span>
       <span className="min-w-0">
-        <span className="block truncate text-[15px] font-semibold text-white">{title}</span>
-        <span className="block text-[11px] text-blue-100/80">{sub}</span>
+        <span className="font-xp block truncate text-[17px] font-medium text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)] transition group-hover:[text-shadow:0_0_10px_rgba(255,255,255,0.85)]">
+          {title}
+        </span>
+        <span className="block text-[11px] text-blue-100/85">{sub}</span>
       </span>
     </button>
   )
@@ -112,34 +113,38 @@ export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col [font-family:Tahoma,Verdana,sans-serif]">
       <div
-        className="h-12 sm:h-14"
-        style={{ background: 'linear-gradient(180deg, #24409e 0%, #152c7f 100%)' }}
+        className="h-12 sm:h-16"
+        style={{ background: 'linear-gradient(180deg, #1c349f 0%, #0b2185 100%)' }}
       />
-      <div className="h-0.5 bg-gradient-to-r from-blue-200/90 via-blue-300/40 to-transparent" />
+      <div
+        className="h-[2px]"
+        style={{
+          background:
+            'linear-gradient(90deg, rgba(166,202,255,0.95) 0%, rgba(222,236,255,0.9) 30%, rgba(166,202,255,0.4) 70%, rgba(166,202,255,0.1) 100%)',
+        }}
+      />
 
       <div
         className="relative flex min-h-0 flex-1 items-center justify-center px-6"
-        style={{ background: 'linear-gradient(180deg, #5e82e0 0%, #4868cd 55%, #3a55b8 100%)' }}
+        style={{ background: 'linear-gradient(180deg, #7396e8 0%, #5379d8 50%, #3f5ec2 100%)' }}
       >
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0"
           style={{
             background:
-              'radial-gradient(ellipse 60% 45% at 20% 22%, rgba(255,255,255,0.25), transparent 70%)',
+              'radial-gradient(ellipse 55% 55% at 50% 45%, rgba(255,255,255,0.16), transparent 70%), radial-gradient(ellipse 55% 40% at 16% 14%, rgba(255,255,255,0.22), transparent 70%)',
           }}
         />
         <div className="relative grid w-full max-w-2xl items-center gap-8 sm:grid-cols-[1fr_auto_1fr]">
           <div className="flex flex-col items-center sm:items-end">
             <div className="flex items-center gap-3">
               <FlagLogo size={64} />
-              <p className="font-display text-4xl leading-none font-semibold text-white">
-                AlejOS
-              </p>
+              <p className="font-xp text-4xl leading-none font-semibold text-white">AlejOS</p>
             </div>
-            <p className="mt-5 text-sm text-blue-50 [text-shadow:0_1px_2px_rgba(0,0,0,0.3)]">
+            <p className="font-xp mt-5 text-lg font-medium text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.35)]">
               To begin, click your user name
             </p>
           </div>
@@ -153,28 +158,20 @@ export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
             initial={{ opacity: 0, x: 10 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-            className="flex w-full max-w-xs flex-col gap-1.5 justify-self-center sm:justify-self-start"
+            className="flex w-full max-w-xs flex-col gap-2 justify-self-center sm:justify-self-start"
           >
             {mode === 'pick' ? (
               <>
                 {saved && (
                   <Tile
-                    icon={
-                      saved.admin ? (
-                        <CrownSimpleIcon size={28} weight="duotone" />
-                      ) : (
-                        <UserCircleIcon size={28} weight="duotone" />
-                      )
-                    }
-                    frame="from-amber-300 to-orange-500"
+                    img={saved.admin ? '/os/pictures/chess.png' : '/os/pictures/ball.png'}
                     title={saved.name}
                     sub="click to sign back in"
                     onClick={() => enter(saved)}
                   />
                 )}
                 <Tile
-                  icon={<UserCirclePlusIcon size={28} weight="duotone" />}
-                  frame="from-lime-300 to-green-600"
+                  img="/os/pictures/accounts.png"
                   title="Sign in or register"
                   sub="make a name for yourself"
                   onClick={() => {
@@ -184,8 +181,7 @@ export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
                   }}
                 />
                 <Tile
-                  icon={<UserIcon size={28} weight="duotone" />}
-                  frame="from-sky-300 to-blue-600"
+                  img="/os/pictures/duck.png"
                   title="Guest"
                   sub="just looking around"
                   onClick={() => enter({ kind: 'guest', name: 'guest' })}
@@ -267,19 +263,31 @@ export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
         </div>
       </div>
 
-      <div className="h-0.5 bg-gradient-to-r from-orange-400/90 via-orange-300/40 to-transparent" />
       <div
-        className="flex h-14 items-center justify-between px-4 sm:h-16 sm:px-6"
-        style={{ background: 'linear-gradient(180deg, #2c4ab2 0%, #142a7c 100%)' }}
+        className="h-[2px]"
+        style={{
+          background:
+            'linear-gradient(90deg, #ffb142 0%, #f1922a 30%, rgba(241,146,42,0.35) 65%, rgba(241,146,42,0) 90%)',
+        }}
+      />
+      <div
+        className="flex h-14 items-center justify-between px-4 sm:h-[72px] sm:px-7"
+        style={{ background: 'linear-gradient(180deg, #1c349f 0%, #0b2185 100%)' }}
       >
-        <button type="button" onClick={onShutdown} className="group flex cursor-pointer items-center gap-2.5">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md border border-white/40 bg-gradient-to-b from-[#f4885c] to-[#cf3a0e] text-white transition group-hover:brightness-110">
-            <PowerIcon size={15} weight="bold" />
+        <button
+          type="button"
+          onClick={onShutdown}
+          className="group flex cursor-pointer items-center gap-2.5"
+        >
+          <span className="transition group-hover:brightness-110 group-hover:drop-shadow-[0_0_7px_rgba(255,190,120,0.65)]">
+            {xpIcon('exit', 32)}
           </span>
-          <span className="text-sm font-medium text-white">Turn off computer</span>
+          <span className="font-xp text-[15px] font-medium text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
+            Turn off computer
+          </span>
         </button>
-        <p className="hidden max-w-56 text-right text-[11px] leading-snug text-blue-100/80 sm:block">
-          After you sign in, the desktop is all yours.
+        <p className="hidden max-w-64 text-right text-[11px] leading-snug text-blue-100/85 sm:block">
+          To look around without an account, click Guest.
         </p>
       </div>
     </div>

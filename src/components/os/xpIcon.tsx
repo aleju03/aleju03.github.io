@@ -43,6 +43,11 @@ export const XP_ICON_URLS = XP_ICON_NAMES.flatMap((name) =>
 
 let preloadPromise: Promise<void> | null = null
 
+// hold on to every preloaded element: if the Image is garbage-collected the
+// browser may evict its decoded bitmap, and the desktop's first paint would
+// flash blank exactly like nothing was preloaded
+const retained = new Map<string, HTMLImageElement>()
+
 export function xpIconSrc(name: XpIconName, size: number): string {
   return size <= 16 ? `/os/icons/${name}-16.png` : `/os/icons/${name}.png`
 }
@@ -52,6 +57,7 @@ function loadAndDecodeImage(src: string): Promise<void> {
 
   return new Promise((resolve) => {
     const img = new Image()
+    retained.set(src, img)
     let settled = false
 
     const finish = (decode: boolean) => {
@@ -83,6 +89,18 @@ function loadAndDecodeImage(src: string): Promise<void> {
 export function preloadXpIcons(): Promise<void> {
   preloadPromise ??= Promise.all(XP_ICON_URLS.map(loadAndDecodeImage)).then(() => undefined)
   return preloadPromise
+}
+
+/** warm any one-off image (the desktop wallpaper) the same way the icons are */
+const preloadedImages = new Map<string, Promise<void>>()
+
+export function preloadImage(src: string): Promise<void> {
+  let p = preloadedImages.get(src)
+  if (!p) {
+    p = loadAndDecodeImage(src)
+    preloadedImages.set(src, p)
+  }
+  return p
 }
 
 export function xpIcon(name: XpIconName, size: number): ReactNode {

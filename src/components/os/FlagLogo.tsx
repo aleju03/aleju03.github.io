@@ -13,7 +13,16 @@ const PANES = [
   { d: 'M 44,49 C 56,53 70,53 84,42 L 84,68 C 70,79 56,79 44,75 Z', from: '#ffd84d', to: '#eda20a' },
 ]
 
-export function FlagLogo({ size = 64, className }: { size?: number; className?: string }) {
+export function FlagLogo({
+  size = 64,
+  className,
+  outlined = false,
+}: {
+  size?: number
+  className?: string
+  /** white halo + drop shadow, the way the flag sits on the start button */
+  outlined?: boolean
+}) {
   const id = useId()
   return (
     <svg
@@ -31,6 +40,19 @@ export function FlagLogo({ size = 64, className }: { size?: number; className?: 
           </linearGradient>
         ))}
       </defs>
+      {outlined && (
+        <g
+          fill="#fff"
+          stroke="#fff"
+          strokeWidth={10}
+          strokeLinejoin="round"
+          style={{ filter: 'drop-shadow(1px 2px 1px rgba(0,0,0,0.4))' }}
+        >
+          {PANES.map((p, i) => (
+            <path key={i} d={p.d} />
+          ))}
+        </g>
+      )}
       <g strokeLinejoin="round" strokeWidth={3}>
         {PANES.map((p, i) => (
           <path key={i} d={p.d} fill={`url(#${id}-${i})`} stroke={`url(#${id}-${i})`} />
