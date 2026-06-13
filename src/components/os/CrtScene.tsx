@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import * as THREE from 'three'
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
 
@@ -42,7 +43,6 @@ const MODELS = [
   '/os/models/desk.glb',
   '/os/models/mug.glb',
   '/os/models/plant.glb',
-  '/os/models/keyboard.glb',
   '/os/models/mouse.glb',
   '/os/models/lamp.glb',
   '/os/models/player.glb',
@@ -106,18 +106,27 @@ export default function CrtScene({
       )
 
     Promise.all(MODELS.map(load))
-      .then(([computer, desk, mug, plant, keyboard, mouse, lamp, player]) => {
+      .then(([computer, desk, mug, plant, mouse, lamp, player]) => {
         clearTimeout(bail)
         if (disposed) return
 
         const W = mount.clientWidth
         const H = mount.clientHeight
-        webgl = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-        webgl.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+        webgl = new THREE.WebGLRenderer({
+          antialias: true,
+          alpha: true,
+          powerPreference: 'high-performance',
+        })
+        const PR_CAP = Math.min(window.devicePixelRatio, 2)
+        webgl.setPixelRatio(PR_CAP)
         webgl.setSize(W, H)
         webgl.shadowMap.enabled = true
-        // VSM + blur: plain PCF stair-steps badly on the wall this close up
-        webgl.shadowMap.type = THREE.VSMShadowMap
+        // PCFSoft is less prone to the blotchy VSM halos that show up around
+        // thin desk legs and chair casters on the dark floor.
+        webgl.shadowMap.type = THREE.PCFSoftShadowMap
+        // the scene is static except the player body, so shadow maps are baked
+        // once and re-rendered only on frames where a caster actually moved
+        webgl.shadowMap.autoUpdate = false
         webgl.toneMapping = THREE.ACESFilmicToneMapping
         webgl.toneMappingExposure = 1.1
         webgl.domElement.style.position = 'absolute'
@@ -141,7 +150,7 @@ export default function CrtScene({
         scene = new THREE.Scene()
         scene.background = new THREE.Color('#0a0908')
         // gentle enough that the far corners of the room survive a walk-around
-        scene.fog = new THREE.Fog('#0a0908', 9, 22)
+        scene.fog = new THREE.Fog('#0a0908', 10, 27)
 
         const floor = new THREE.Mesh(
           new THREE.PlaneGeometry(30, 30),
@@ -159,7 +168,7 @@ export default function CrtScene({
         scene.add(wall)
 
         // the rest of the shell, so standing up reveals a room and not a void
-        const ROOM = { minX: -6, maxX: 6, minZ: -1.75, maxZ: 7.5, h: 6 }
+        const ROOM = { minX: -7.6, maxX: 7.6, minZ: -1.75, maxZ: 10.5, h: 6 }
         const shell = (
           w: number,
           h: number,
@@ -183,10 +192,25 @@ export default function CrtScene({
         shell(ROOM.maxX - ROOM.minX, ROOM.h, [0, ROOM.h / 2, ROOM.maxZ], [0, Math.PI], '#50412f')
         shell(ROOM.maxX - ROOM.minX, depth, [0, ROOM.h, midZ], [Math.PI / 2, 0], '#3a3129')
 
+        // skirting boards: bare planes meeting bare planes reads like a game
+        // box, a dark baseboard line grounds every wall
+        const skirtMat = new THREE.MeshStandardMaterial({ color: '#241c14', roughness: 0.9 })
+        const skirt = (w: number, x: number, z: number, rotY: number) => {
+          const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.17, 0.06), skirtMat)
+          m.position.set(x, 0.085, z)
+          m.rotation.y = rotY
+          m.receiveShadow = true
+          scene?.add(m)
+        }
+        skirt(ROOM.maxX - ROOM.minX, 0, ROOM.minZ + 0.035, 0)
+        skirt(ROOM.maxX - ROOM.minX, 0, ROOM.maxZ - 0.035, 0)
+        skirt(depth, ROOM.minX + 0.035, midZ, Math.PI / 2)
+        skirt(depth, ROOM.maxX - 0.035, midZ, Math.PI / 2)
+
         // the pendant lamp the room light actually comes from; its bulb
         // material glows once the roam fill ramps in
         lamp.scene.scale.setScalar(1.6)
-        lamp.scene.position.set(0, ROOM.h, 2.9)
+        lamp.scene.position.set(0, ROOM.h, 4.4)
         let bulbMat: THREE.MeshStandardMaterial | null = null
         lamp.scene.traverse((o) => {
           const mesh = o as THREE.Mesh
@@ -212,6 +236,66 @@ export default function CrtScene({
         })
         scene.add(desk.scene)
         const deskTop = new THREE.Box3().setFromObject(desk.scene).max.y
+        // solids that should block the first-person walk register an AABB here
+        const obstacles: THREE.Box3[] = []
+        const addObstacleFrom = (obj: THREE.Object3D, pad = 0.2) => {
+          obj.updateMatrixWorld(true)
+          obstacles.push(new THREE.Box3().setFromObject(obj).expandByScalar(pad))
+        }
+        const makeBox = (
+          w: number,
+          h: number,
+          d: number,
+          material: THREE.Material,
+          castShadow = true,
+        ) => {
+          const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material)
+          mesh.castShadow = castShadow
+          mesh.receiveShadow = true
+          return mesh
+        }
+        const makeRounded = (
+          w: number,
+          h: number,
+          d: number,
+          radius: number,
+          material: THREE.Material,
+          castShadow = true,
+        ) => {
+          const mesh = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 3, radius), material)
+          mesh.castShadow = castShadow
+          mesh.receiveShadow = true
+          return mesh
+        }
+        const darkWoodMat = new THREE.MeshStandardMaterial({ color: '#332417', roughness: 0.84 })
+        const warmWoodMat = new THREE.MeshStandardMaterial({ color: '#6a4a2f', roughness: 0.78 })
+        const paperMat = new THREE.MeshStandardMaterial({ color: '#d8c7a7', roughness: 0.86 })
+        const blackPlasticMat = new THREE.MeshStandardMaterial({
+          color: '#17191b',
+          roughness: 0.64,
+          metalness: 0.05,
+        })
+        const keycapMat = new THREE.MeshStandardMaterial({ color: '#d9d4c9', roughness: 0.58 })
+        const darkKeyMat = new THREE.MeshStandardMaterial({ color: '#3a3d40', roughness: 0.62 })
+        const accentKeyMat = new THREE.MeshStandardMaterial({ color: '#9d5542', roughness: 0.66 })
+        const chairMat = new THREE.MeshStandardMaterial({ color: '#243139', roughness: 0.8 })
+        const chairMetalMat = new THREE.MeshStandardMaterial({
+          color: '#74716a',
+          roughness: 0.35,
+          metalness: 0.55,
+        })
+        const rugMat = new THREE.MeshStandardMaterial({ color: '#56382e', roughness: 0.92 })
+        const rugTrimMat = new THREE.MeshStandardMaterial({ color: '#b18b5b', roughness: 0.9 })
+        const glassBlueMat = new THREE.MeshStandardMaterial({
+          color: '#203654',
+          roughness: 0.28,
+          metalness: 0,
+          emissive: new THREE.Color('#152944'),
+          emissiveIntensity: 0.08,
+        })
+        const bookMats = ['#b75b4e', '#4e6f8f', '#d0a64f', '#59784f', '#6c537b'].map(
+          (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.78 }),
+        )
 
         computer.scene.scale.setScalar(16)
         computer.scene.position.set(0, deskTop, 0.05)
@@ -259,7 +343,87 @@ export default function CrtScene({
           })
           scene.add(group)
         }
-        swapIn(keyboard.scene, oldKeyboard, 0, 1.0)
+        const buildKeyboard = (old: THREE.Mesh | null) => {
+          if (!old || !scene) return
+          const oldBox = new THREE.Box3().setFromObject(old)
+          const oldSize = oldBox.getSize(new THREE.Vector3())
+          const oldCenter = oldBox.getCenter(new THREE.Vector3())
+          old.visible = false
+
+          const width = oldSize.x * 1.12
+          const depth = oldSize.z * 1.16
+          const baseH = Math.max(0.07, Math.min(0.14, oldSize.y * 0.55))
+          const keyH = baseH * 0.48
+          const group = new THREE.Group()
+          const base = makeRounded(width, baseH, depth, baseH * 0.45, blackPlasticMat)
+          base.position.y = baseH / 2
+          group.add(base)
+
+          const padX = width * 0.08
+          const padZ = depth * 0.15
+          const stepX = (width - padX * 2) / 14
+          const stepZ = (depth - padZ * 2) / 5
+          const keyW = stepX * 0.78
+          const keyD = stepZ * 0.64
+          const rows = [
+            { count: 14, shift: 0 },
+            { count: 14, shift: 0.08 },
+            { count: 13, shift: 0.22 },
+            { count: 12, shift: 0.38 },
+          ]
+          const standardKeys: Array<[number, number, number]> = []
+          rows.forEach((row, rowIndex) => {
+            const startX = -((row.count - 1) * stepX) / 2 + row.shift * stepX
+            const z = -depth / 2 + padZ + stepZ * (rowIndex + 0.5)
+            for (let i = 0; i < row.count; i++) {
+              standardKeys.push([startX + i * stepX, baseH + keyH / 2, z])
+            }
+          })
+          const capGeo = new RoundedBoxGeometry(keyW, keyH, keyD, 3, Math.min(keyW, keyD) * 0.18)
+          const capMesh = new THREE.InstancedMesh(capGeo, keycapMat, standardKeys.length)
+          const capMatrix = new THREE.Matrix4()
+          standardKeys.forEach(([x, y, z], i) => {
+            capMatrix.makeTranslation(x, y, z)
+            capMesh.setMatrixAt(i, capMatrix)
+          })
+          capMesh.instanceMatrix.needsUpdate = true
+          capMesh.receiveShadow = true
+          group.add(capMesh)
+
+          const addKey = (
+            x: number,
+            z: number,
+            w: number,
+            material: THREE.Material,
+            d = keyD,
+          ) => {
+            const key = makeRounded(w, keyH, d, Math.min(w, d) * 0.16, material, false)
+            key.position.set(x, baseH + keyH / 2, z)
+            group.add(key)
+          }
+          const bottomZ = -depth / 2 + padZ + stepZ * 4.45
+          addKey(-width * 0.39, bottomZ, keyW * 1.25, darkKeyMat)
+          addKey(-width * 0.27, bottomZ, keyW * 1.1, darkKeyMat)
+          addKey(-width * 0.04, bottomZ, keyW * 4.1, keycapMat)
+          addKey(width * 0.24, bottomZ, keyW * 1.2, darkKeyMat)
+          addKey(width * 0.36, bottomZ, keyW * 1.2, darkKeyMat)
+          addKey(-width * 0.45, -depth / 2 + padZ + stepZ * 0.5, keyW, accentKeyMat)
+
+          const ledGeo = new THREE.SphereGeometry(Math.max(0.018, keyW * 0.1), 10, 6)
+          ;[
+            [-width * 0.39, -depth * 0.41],
+            [-width * 0.34, -depth * 0.41],
+          ].forEach(([x, z]) => {
+            const led = new THREE.Mesh(ledGeo, glassBlueMat)
+            led.position.set(x, baseH + keyH * 1.15, z)
+            group.add(led)
+          })
+
+          group.position.set(oldCenter.x, deskTop + 0.008, oldCenter.z)
+          group.updateMatrixWorld(true)
+          scene.add(group)
+        }
+        buildKeyboard(oldKeyboard)
         // The standalone mouse's button end is +Z; on the desk it should face
         // the monitor, which sits behind the keyboard on -Z.
         swapIn(mouse.scene, oldMouse, Math.PI, 1.0)
@@ -305,6 +469,8 @@ export default function CrtScene({
         cssObj.position.copy(front).add(normal.clone().multiplyScalar(0.002))
         cssObj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal)
         cssScene.add(cssObj)
+        cssScene.updateMatrixWorld(true)
+        cssObj.matrixAutoUpdate = false // the glass never moves, only the camera
         setScreenEl(el)
 
         mug.scene.scale.setScalar(0.85)
@@ -322,20 +488,244 @@ export default function CrtScene({
         })
         scene.add(plant.scene)
 
-        // seated, the desk spot is the whole show; walking needs the rest of
-        // the room readable, so these two swell while roaming and ebb back
+        const rug = new THREE.Group()
+        const rugBase = new THREE.Mesh(new THREE.PlaneGeometry(4.9, 3.25), rugMat)
+        rugBase.rotation.x = -Math.PI / 2
+        rugBase.position.set(0.25, 0.012, 4.55)
+        rugBase.receiveShadow = true
+        rug.add(rugBase)
+        const rugTrim = [
+          [4.9, 0.025, 0.07, 0.25, 0.024, 2.95],
+          [4.9, 0.025, 0.07, 0.25, 0.024, 6.15],
+          [0.07, 0.025, 3.25, -2.2, 0.024, 4.55],
+          [0.07, 0.025, 3.25, 2.7, 0.024, 4.55],
+        ] as const
+        rugTrim.forEach(([w, h, d, x, y, z]) => {
+          const trim = makeBox(w, h, d, rugTrimMat, false)
+          trim.position.set(x, y, z)
+          rug.add(trim)
+        })
+        scene.add(rug)
+
+        const chair = new THREE.Group()
+        const seat = makeRounded(1.22, 0.18, 1.02, 0.08, chairMat)
+        seat.position.set(0, 0.78, 0)
+        chair.add(seat)
+        const back = makeRounded(1.2, 1.15, 0.16, 0.07, chairMat)
+        back.position.set(0, 1.38, 0.55)
+        back.rotation.x = -0.12
+        chair.add(back)
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.72, 16), chairMetalMat)
+        post.position.y = 0.4
+        post.castShadow = true
+        post.receiveShadow = true
+        chair.add(post)
+        for (let i = 0; i < 5; i++) {
+          const a = (i / 5) * Math.PI * 2
+          const leg = makeBox(0.68, 0.055, 0.085, chairMetalMat)
+          leg.position.set(Math.cos(a) * 0.28, 0.14, Math.sin(a) * 0.28)
+          leg.rotation.y = -a
+          chair.add(leg)
+          const caster = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 6), blackPlasticMat)
+          caster.scale.y = 0.55
+          caster.position.set(Math.cos(a) * 0.62, 0.08, Math.sin(a) * 0.62)
+          caster.castShadow = true
+          caster.receiveShadow = true
+          chair.add(caster)
+        }
+        chair.position.set(-0.15, 0, 3.05)
+        chair.rotation.y = -0.03
+        scene.add(chair)
+        addObstacleFrom(chair, 0.18)
+
+        const windowFrame = new THREE.Group()
+        const pane = makeBox(1.85, 1.22, 0.035, glassBlueMat, false)
+        windowFrame.add(pane)
+        ;[
+          [2.03, 0.1, 0.08, 0, 0.66, 0.035],
+          [2.03, 0.1, 0.08, 0, -0.66, 0.035],
+          [0.1, 1.42, 0.08, -1.01, 0, 0.035],
+          [0.1, 1.42, 0.08, 1.01, 0, 0.035],
+          [0.08, 1.22, 0.07, 0, 0, 0.05],
+          [1.85, 0.07, 0.07, 0, 0, 0.055],
+        ].forEach(([w, h, d, x, y, z]) => {
+          const rail = makeBox(w, h, d, darkWoodMat, false)
+          rail.position.set(x, y, z)
+          windowFrame.add(rail)
+        })
+        windowFrame.position.set(ROOM.minX + 0.045, 3.3, 5.75)
+        windowFrame.rotation.y = Math.PI / 2
+        scene.add(windowFrame)
+
+        const shelf = new THREE.Group()
+        const shelfHeights = [0.38, 0.88, 1.38, 1.88]
+        const shelfParts = [
+          makeBox(0.42, 2.35, 0.08, darkWoodMat),
+          makeBox(0.42, 2.35, 0.08, darkWoodMat),
+          makeBox(0.06, 2.35, 2.82, darkWoodMat),
+        ]
+        shelfParts[0].position.set(0, 1.18, -1.4)
+        shelfParts[1].position.set(0, 1.18, 1.4)
+        shelfParts[2].position.set(0.24, 1.18, 0)
+        shelfParts.forEach((part) => shelf.add(part))
+        shelfHeights.forEach((y) => {
+          const board = makeBox(0.48, 0.08, 2.9, warmWoodMat)
+          board.position.set(0, y, 0)
+          shelf.add(board)
+        })
+        shelfHeights.slice(0, -1).forEach((y, row) => {
+          for (let i = 0; i < 12; i++) {
+            const bookH = 0.28 + ((i + row) % 5) * 0.035
+            const book = makeBox(0.22, bookH, 0.055, bookMats[(i + row) % bookMats.length], false)
+            book.position.set(-0.03, y + 0.06 + bookH / 2, -1.16 + i * 0.18)
+            book.rotation.x = ((i % 3) - 1) * 0.035
+            shelf.add(book)
+          }
+        })
+        shelf.position.set(ROOM.maxX - 0.38, 0, 6.45)
+        scene.add(shelf)
+        addObstacleFrom(shelf, 0.2)
+
+        const cork = new THREE.Group()
+        const corkMat = new THREE.MeshStandardMaterial({ color: '#6a432c', roughness: 0.92 })
+        const pinMat = new THREE.MeshStandardMaterial({
+          color: '#d3a34f',
+          roughness: 0.38,
+          metalness: 0.25,
+        })
+        const board = makeBox(2.5, 1.48, 0.04, corkMat, false)
+        cork.add(board)
+        ;[
+          [2.66, 0.09, 0.08, 0, 0.78, 0.04],
+          [2.66, 0.09, 0.08, 0, -0.78, 0.04],
+          [0.09, 1.56, 0.08, -1.33, 0, 0.04],
+          [0.09, 1.56, 0.08, 1.33, 0, 0.04],
+        ].forEach(([w, h, d, x, y, z]) => {
+          const rail = makeBox(w, h, d, darkWoodMat, false)
+          rail.position.set(x, y, z)
+          cork.add(rail)
+        })
+        const pinGeo = new THREE.SphereGeometry(0.035, 12, 8)
+        const pinPoints: THREE.Vector3[] = []
+        const notes: Array<{
+          x: number
+          y: number
+          w: number
+          h: number
+          rot: number
+          material: THREE.Material
+        }> = [
+          { x: -0.62, y: 0.3, w: 0.48, h: 0.36, rot: -0.06, material: paperMat },
+          { x: 0.16, y: 0.34, w: 0.38, h: 0.5, rot: 0.035, material: bookMats[2] },
+          { x: 0.72, y: -0.08, w: 0.5, h: 0.35, rot: -0.025, material: paperMat },
+          { x: -0.12, y: -0.3, w: 0.6, h: 0.28, rot: 0.02, material: bookMats[1] },
+        ]
+        notes.forEach((noteDef) => {
+          const note = makeBox(noteDef.w, noteDef.h, 0.03, noteDef.material, false)
+          note.position.set(noteDef.x, noteDef.y, 0.06)
+          note.rotation.z = noteDef.rot
+          cork.add(note)
+          const pin = new THREE.Mesh(pinGeo, pinMat)
+          pin.position.set(noteDef.x - noteDef.w * 0.34, noteDef.y + noteDef.h * 0.34, 0.095)
+          pin.castShadow = false
+          pin.receiveShadow = true
+          pinPoints.push(pin.position.clone())
+          cork.add(pin)
+        })
+        const stringMat = new THREE.MeshStandardMaterial({ color: '#c28f5a', roughness: 0.72 })
+        const addString = (a: THREE.Vector3, b: THREE.Vector3) => {
+          const mid = a.clone().lerp(b, 0.5)
+          mid.y -= 0.05
+          const string = new THREE.Mesh(
+            new THREE.TubeGeometry(new THREE.CatmullRomCurve3([a, mid, b]), 8, 0.006, 4, false),
+            stringMat,
+          )
+          string.castShadow = false
+          cork.add(string)
+        }
+        addString(pinPoints[0], pinPoints[1])
+        addString(pinPoints[1], pinPoints[3])
+        cork.position.set(-2.95, 3.15, ROOM.maxZ - 0.045)
+        cork.rotation.y = Math.PI
+        scene.add(cork)
+
+        const lowTable = new THREE.Group()
+        const tableTop = makeBox(1.15, 0.12, 0.72, warmWoodMat)
+        tableTop.position.y = 0.58
+        lowTable.add(tableTop)
+        ;[
+          [-0.46, 0.28],
+          [0.46, 0.28],
+          [-0.46, -0.28],
+          [0.46, -0.28],
+        ].forEach(([x, z]) => {
+          const leg = makeBox(0.08, 0.58, 0.08, darkWoodMat)
+          leg.position.set(x, 0.29, z)
+          lowTable.add(leg)
+        })
+        const stackA = makeBox(0.44, 0.055, 0.32, paperMat, false)
+        stackA.position.set(-0.18, 0.68, -0.05)
+        lowTable.add(stackA)
+        const stackB = makeBox(0.39, 0.05, 0.28, bookMats[0], false)
+        stackB.position.set(-0.16, 0.735, -0.03)
+        lowTable.add(stackB)
+        lowTable.position.set(ROOM.minX + 1.05, 0, 3.2)
+        lowTable.rotation.y = 0.15
+        scene.add(lowTable)
+        addObstacleFrom(lowTable, 0.18)
+
+        const deskStack = new THREE.Group()
+        let stackY = 0.012
+        ;[
+          [0.55, 0.055, 0.38, paperMat],
+          [0.5, 0.05, 0.34, bookMats[3]],
+          [0.45, 0.045, 0.32, bookMats[4]],
+        ].forEach(([w, h, d, material]) => {
+          const item = makeBox(w as number, h as number, d as number, material as THREE.Material, false)
+          item.position.y = stackY + (h as number) / 2
+          stackY += h as number
+          deskStack.add(item)
+        })
+        deskStack.position.set(-1.55, deskTop, -0.42)
+        deskStack.rotation.y = -0.18
+        scene.add(deskStack)
+
+        // seated, the desk spot is the whole show; walking wakes a real light
+        // rig instead of the old flat hemisphere flood: a shadow-casting
+        // pendant downlight pools on the floor, a small omni at the bulb
+        // catches the ceiling, cool moonlight leans in from the window wall,
+        // and just enough ambient keeps the corners legible
         const hemi = new THREE.HemisphereLight('#5a6678', '#241d16', 0.55)
         scene.add(hemi)
         const roomGlow = new THREE.PointLight('#8a7a64', 0, 0, 1.2)
         // parked just under the pendant's bulb so the light has a source
-        roomGlow.position.set(0, 4.75, 2.9)
+        roomGlow.position.set(0, 4.75, 4.4)
         scene.add(roomGlow)
+        const pendant = new THREE.SpotLight('#ffd9ae', 0, 0, 1.05, 0.85, 1.5)
+        pendant.position.set(0, 5.45, 4.4)
+        pendant.target.position.set(0, 0, 4.4)
+        pendant.castShadow = true
+        pendant.shadow.mapSize.set(1024, 1024)
+        pendant.shadow.bias = -0.00005
+        pendant.shadow.normalBias = 0.025
+        pendant.shadow.radius = 2
+        pendant.shadow.blurSamples = 4
+        pendant.shadow.camera.near = 0.5
+        scene.add(pendant, pendant.target)
+        const moon = new THREE.DirectionalLight('#8fa6d4', 0)
+        moon.position.set(ROOM.minX - 4, 4.6, 5.5)
+        moon.target.position.set(0, 0.6, 4.5)
+        scene.add(moon, moon.target)
         const HEMI_SEATED = 0.55
-        const HEMI_ROAM = 4.2
-        const GLOW_ROAM = 18
+        const HEMI_ROAM = 1.5
+        const GLOW_ROAM = 7
+        const PEND_ROAM = 75
+        const MOON_ROAM = 0.8
         const roomLight = (k: number) => {
           hemi.intensity = HEMI_SEATED + (HEMI_ROAM - HEMI_SEATED) * k
           roomGlow.intensity = GLOW_ROAM * k
+          pendant.intensity = PEND_ROAM * k
+          moon.intensity = MOON_ROAM * k
           if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
         }
         const key = new THREE.SpotLight('#ffd9a0', 60, 0, 0.55, 0.6, 1.6)
@@ -343,9 +733,10 @@ export default function CrtScene({
         key.target.position.set(0.3, deskTop, 0)
         key.castShadow = true
         key.shadow.mapSize.set(2048, 2048)
-        key.shadow.bias = -0.0001
-        key.shadow.radius = 8
-        key.shadow.blurSamples = 16
+        key.shadow.bias = -0.00005
+        key.shadow.normalBias = 0.025
+        key.shadow.radius = 2
+        key.shadow.blurSamples = 4
         key.shadow.camera.near = 2
         scene.add(key, key.target)
         const rim = new THREE.DirectionalLight('#7e8ea8', 0.5)
@@ -355,6 +746,14 @@ export default function CrtScene({
         const spill = new THREE.PointLight('#9db4e8', 0, 2.0, 1.8)
         spill.position.copy(front).add(new THREE.Vector3(0, -0.12, 0.75))
         scene.add(spill)
+
+        // everything placed so far is furniture: bake world matrices once and
+        // stop re-walking the whole static graph every frame (the player body
+        // joins the scene later and keeps its auto-update)
+        scene.updateMatrixWorld(true)
+        scene.traverse((o) => {
+          o.matrixAutoUpdate = false
+        })
 
         const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 40)
         camera.rotation.order = 'YXZ' // yaw/pitch compose FPS-style while walking
@@ -394,6 +793,7 @@ export default function CrtScene({
           }
           raf = requestAnimationFrame(introTick)
         }
+        webgl.shadowMap.needsUpdate = true // first bake; frozen from here on
         raf = requestAnimationFrame(introTick)
 
         outroRef.current = () => {
@@ -432,15 +832,27 @@ export default function CrtScene({
         const gaze = new THREE.Vector3()
         const toScreen = new THREE.Vector3()
         const EYE = deskTop + 2.0 // standing eye height over this desk's scale
-        const SPAWN = new THREE.Vector3(1.3, EYE, 4.2)
+        const SPAWN = new THREE.Vector3(1.15, EYE, 2.55)
         const SPEED = 3.4
+        const RUN_SPEED = 5.9
+        const CROUCH_SPEED = 1.7
+        const CROUCH_DROP = 0.85 // how far the eye sinks at full crouch
+        const FOV = 38
+        let crouchK = 0 // 0 standing .. 1 crouched, smoothed
+        // adaptive resolution: if the walk can't hold frame rate, step the
+        // pixel ratio down (never back up mid-roam, so it can't oscillate);
+        // each roam and each sit-down restores full crispness
+        let pr = PR_CAP
+        let emaMs = 16
+        let prWait = 1.5
 
         // the first-person body: Quaternius' little robot trailing the
         // camera, so looking down shows your own stubby legs (and one day,
         // other people's robots); the head is collapsed into the neck so the
         // goggle dome never clips the lens
         const body = player.scene
-        body.scale.setScalar(EYE / 4.3) // head top floats just above the lens
+        const BODY_S = EYE / 4.3
+        body.scale.setScalar(BODY_S) // head top floats just above the lens
         body.visible = false
         body.traverse((o) => {
           if ((o as THREE.Mesh).isMesh) {
@@ -460,37 +872,67 @@ export default function CrtScene({
         idleAct?.play()
         walkAct?.play()
         const BODY_BACK = 0.38 // eye sits ahead of the spine; keeps the chest out of frame
-        // walkable area sits inside the shell with some shoulder room; the
-        // desk blocks a strip that runs all the way back to the wall
+        // walkable area sits inside the shell with some shoulder room; every
+        // solid in the room registers an AABB here, and a hit pushes you out
+        // along whichever face is closest, so you slide naturally along edges
         const deskBlock = new THREE.Box3().setFromObject(desk.scene).expandByScalar(0.35)
-        deskBlock.min.z = -10
+        deskBlock.min.z = -10 // the desk strip runs all the way back to the wall
+        obstacles.push(deskBlock)
         const collide = (p: THREE.Vector3) => {
-          p.x = THREE.MathUtils.clamp(p.x, -5.5, 5.5)
-          p.z = THREE.MathUtils.clamp(p.z, -0.8, 7.0)
-          if (p.x > deskBlock.min.x && p.x < deskBlock.max.x && p.z < deskBlock.max.z) {
-            const left = p.x - deskBlock.min.x
-            const right = deskBlock.max.x - p.x
-            const out = deskBlock.max.z - p.z
-            if (left <= right && left <= out) p.x = deskBlock.min.x
-            else if (right <= out) p.x = deskBlock.max.x
-            else p.z = deskBlock.max.z
+          p.x = THREE.MathUtils.clamp(p.x, ROOM.minX + 0.5, ROOM.maxX - 0.5)
+          p.z = THREE.MathUtils.clamp(p.z, -0.8, ROOM.maxZ - 0.5)
+          for (const b of obstacles) {
+            if (p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z) {
+              const exitL = p.x - b.min.x
+              const exitR = b.max.x - p.x
+              const exitN = p.z - b.min.z
+              const exitF = b.max.z - p.z
+              const m = Math.min(exitL, exitR, exitN, exitF)
+              if (m === exitL) p.x = b.min.x
+              else if (m === exitR) p.x = b.max.x
+              else if (m === exitN) p.z = b.min.z
+              else p.z = b.max.z
+            }
           }
         }
 
         const setCursor = (c: string) => {
           if (webgl) webgl.domElement.style.cursor = c
         }
+        const lookAngles = (from: THREE.Vector3, target: THREE.Vector3) => {
+          const dir = target.clone().sub(from).normalize()
+          return {
+            pitch: Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1)),
+            yaw: Math.atan2(-dir.x, -dir.z),
+          }
+        }
 
         const walkTick = (now: number) => {
           if (disposed || !roaming) return
-          const dt = Math.min(0.05, (now - lastT) / 1000)
+          const rawMs = now - lastT
+          const dt = Math.min(0.05, rawMs / 1000)
           lastT = now
+          // frame-time governor: a smoothed frame cost over ~22ms means the
+          // GPU can't keep up at this resolution, so shed a pixel-ratio step
+          emaMs = emaMs * 0.93 + Math.min(100, rawMs) * 0.07
+          prWait -= rawMs / 1000
+          if (prWait <= 0 && emaMs > 22 && pr > 1) {
+            pr = Math.max(1, pr - 0.25)
+            webgl?.setPixelRatio(pr)
+            prWait = 1.2
+          }
           const fwd =
             (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
             (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
           const side =
             (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) -
             (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0)
+          // shift sprints, ctrl (or c) crouches; crouching wins the argument
+          const duck =
+            keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')
+          const run = !duck && (keys.has('ShiftLeft') || keys.has('ShiftRight'))
+          const speed = duck ? CROUCH_SPEED : run ? RUN_SPEED : SPEED
+          crouchK += ((duck ? 1 : 0) - crouchK) * (1 - Math.exp(-11 * dt))
           want.set(0, 0, 0)
           if (fwd || side) {
             want
@@ -500,7 +942,7 @@ export default function CrtScene({
                 -Math.cos(yaw) * fwd - Math.sin(yaw) * side,
               )
               .normalize()
-              .multiplyScalar(SPEED)
+              .multiplyScalar(speed)
           }
           // ease the velocity so steps start and stop with a little weight
           vel.lerp(want, 1 - Math.exp(-10 * dt))
@@ -509,10 +951,22 @@ export default function CrtScene({
           // a faint footstep bob, scaled by how fast you actually move
           const planar = Math.hypot(vel.x, vel.z)
           bobT += planar * dt * 0.55
-          camera.position.y = EYE + Math.sin(bobT * Math.PI * 2) * 0.028 * Math.min(1, planar / SPEED)
+          const gait = Math.min(1, planar / speed)
+          camera.position.y =
+            EYE -
+            crouchK * CROUCH_DROP +
+            Math.sin(bobT * Math.PI * 2) * (run ? 0.038 : 0.028) * gait
           camera.rotation.x = pitch
           camera.rotation.y = yaw
           camera.rotation.z = 0
+          // a sprint widens the lens a touch; the projection only re-bakes
+          // on frames where the value actually moved
+          const fovWant =
+            FOV + 5 * Math.max(0, Math.min(1, (planar - SPEED) / (RUN_SPEED - SPEED)))
+          if (Math.abs(camera.fov - fovWant) > 0.02) {
+            camera.fov += (fovWant - camera.fov) * (1 - Math.exp(-8 * dt))
+            camera.updateProjectionMatrix()
+          }
           // the body plants its feet under the camera and faces the walk
           body.position.set(
             camera.position.x + Math.sin(yaw) * BODY_BACK,
@@ -520,11 +974,15 @@ export default function CrtScene({
             camera.position.z + Math.cos(yaw) * BODY_BACK,
           )
           body.rotation.y = yaw + Math.PI
-          const gait = Math.min(1, planar / SPEED)
+          body.scale.y = BODY_S * (1 - 0.25 * crouchK) // the robot squats along
           idleAct?.setEffectiveWeight(1 - gait)
           walkAct?.setEffectiveWeight(gait)
           walkAct?.setEffectiveTimeScale(0.5 + gait * 0.7)
           mixer.update(dt)
+          // the player is the only moving shadow caster: re-bake the maps
+          // only while actually moving, they stay frozen the rest of the time
+          if (webgl && (planar > 0.05 || Math.abs((duck ? 1 : 0) - crouchK) > 0.02))
+            webgl.shadowMap.needsUpdate = true
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
@@ -548,21 +1006,28 @@ export default function CrtScene({
           setCursor('grab')
           // with the OS still running the tube keeps spilling light
           spill.intensity = liveRef.current ? 1.0 : 0
-          // push back from the desk and rise to standing height
+          // fresh roam, fresh resolution budget
+          pr = PR_CAP
+          emaMs = 16
+          prWait = 1.5
+          webgl.setPixelRatio(pr)
+          // push back from the desk and rise to standing height: kept short,
+          // lingering here made standing up feel mushy
           const s0 = performance.now()
           const from = camera.position.clone()
           const standTick = () => {
             if (disposed || !roaming) return
-            const t = Math.min(1, (performance.now() - s0) / 1250)
+            const t = Math.min(1, (performance.now() - s0) / 620)
             camera.position.lerpVectors(from, SPAWN, EASE(t))
-            camera.lookAt(front)
+            const aim = lookAngles(camera.position, front)
+            camera.rotation.set(aim.pitch, aim.yaw, 0)
             roomLight(EASE(t))
             render()
             if (t >= 1) {
-              // hand the camera to the FPS controls, keeping the current gaze
-              const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
-              yaw = e.y
-              pitch = e.x
+              // hand the camera to the FPS controls with the exact same yaw
+              // and pitch used by the stand-up glide; no second-frame snap
+              yaw = aim.yaw
+              pitch = aim.pitch
               fps = true
               // the body materializes behind the lens, feet on the floor
               body.position.set(
@@ -572,6 +1037,7 @@ export default function CrtScene({
               )
               body.rotation.y = yaw + Math.PI
               body.visible = true
+              if (webgl) webgl.shadowMap.needsUpdate = true // the body just appeared
               // grab the mouse like a game; if the browser refuses (no fresh
               // gesture), the click-to-grab path below still gets you there
               try {
@@ -595,7 +1061,15 @@ export default function CrtScene({
           fps = false
           keys.clear()
           vel.set(0, 0, 0)
+          crouchK = 0
           body.visible = false
+          body.scale.y = BODY_S
+          if (webgl) {
+            webgl.shadowMap.needsUpdate = true // bake the body's shadow away
+            // sit back down at full resolution; the governor only runs walking
+            pr = PR_CAP
+            webgl.setPixelRatio(pr)
+          }
           nearNow = false
           setWalking(false)
           setNear(false)
@@ -615,8 +1089,10 @@ export default function CrtScene({
           const from = camera.position.clone()
           const lookFrom = camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(3).add(from)
           const look = new THREE.Vector3()
-          const delay = live ? 0.1 : 0.35
-          const dur = live ? 1.4 : 1.9
+          const fovFrom = camera.fov // a sprint into the chair leaves the lens wide
+          // quick: a slow sink into the chair felt wrong every single time
+          const delay = live ? 0.05 : 0.3
+          const dur = live ? 0.8 : 1.35
           const flyTick = () => {
             if (disposed) return
             const t = (performance.now() - f0) / 1000
@@ -633,6 +1109,10 @@ export default function CrtScene({
             const zoom = Math.min(1, Math.max(0, (t - delay) / dur))
             camera.position.lerpVectors(from, camEnd, EASE(zoom))
             camera.lookAt(look.lerpVectors(lookFrom, front, EASE(zoom)))
+            if (fovFrom !== FOV) {
+              camera.fov = fovFrom + (FOV - fovFrom) * EASE(zoom)
+              camera.updateProjectionMatrix()
+            }
             roomLight(1 - EASE(zoom))
             render()
             if (zoom >= 1) {
@@ -666,6 +1146,15 @@ export default function CrtScene({
           'ArrowLeft',
           'ArrowRight',
         ])
+        // sprint and crouch modifiers; c is a crouch alias for anyone wary of
+        // the browser eating ctrl chords
+        const MOD_KEYS = new Set([
+          'ShiftLeft',
+          'ShiftRight',
+          'ControlLeft',
+          'ControlRight',
+          'KeyC',
+        ])
         const turn = (dx: number, dy: number, sign: number) => {
           yaw += sign * dx * 0.0019
           pitch = THREE.MathUtils.clamp(pitch + sign * dy * 0.0019, -1.35, 1.35)
@@ -675,12 +1164,16 @@ export default function CrtScene({
           if (MOVE_KEYS.has(e.code)) {
             keys.add(e.code)
             e.preventDefault()
+          } else if (MOD_KEYS.has(e.code)) {
+            keys.add(e.code)
           } else if (e.code === 'KeyE' && nearNow) {
             e.preventDefault()
             interactRef.current()
           }
         }
         const onKeyUp = (e: KeyboardEvent) => keys.delete(e.code)
+        // alt-tabbing away mid-stride must not leave a key latched down
+        const onBlur = () => keys.clear()
         const onLockChange = () => {
           isLocked = document.pointerLockElement === webgl?.domElement
           setLocked(isLocked)
@@ -712,6 +1205,7 @@ export default function CrtScene({
         }
         window.addEventListener('keydown', onKeyDown)
         window.addEventListener('keyup', onKeyUp)
+        window.addEventListener('blur', onBlur)
         document.addEventListener('pointerlockchange', onLockChange)
         webgl.domElement.addEventListener('pointerdown', onPtrDown)
         webgl.domElement.addEventListener('pointermove', onPtrMove)
@@ -740,6 +1234,7 @@ export default function CrtScene({
           stopRoam()
           window.removeEventListener('keydown', onKeyDown)
           window.removeEventListener('keyup', onKeyUp)
+          window.removeEventListener('blur', onBlur)
           document.removeEventListener('pointerlockchange', onLockChange)
           webgl?.domElement.removeEventListener('pointerdown', onPtrDown)
           webgl?.domElement.removeEventListener('pointermove', onPtrMove)
@@ -792,7 +1287,7 @@ export default function CrtScene({
       {roam && walking && (
         <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
           {locked
-            ? 'wasd to move · esc to free the mouse'
+            ? 'wasd move · shift run · ctrl crouch · esc frees the mouse'
             : 'wasd to move · click to grab the mouse · esc to leave'}
         </p>
       )}
