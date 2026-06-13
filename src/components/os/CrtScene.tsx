@@ -44,6 +44,8 @@ const MODELS = [
   '/os/models/plant.glb',
   '/os/models/keyboard.glb',
   '/os/models/mouse.glb',
+  '/os/models/lamp.glb',
+  '/os/models/player.glb',
 ]
 /** fraction of the viewport height the glass fills once parked */
 const FILL = 0.86
@@ -99,12 +101,12 @@ export default function CrtScene({
 
     const loader = new GLTFLoader()
     const load = (url: string) =>
-      new Promise<{ scene: THREE.Group }>((resolve, reject) =>
+      new Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }>((resolve, reject) =>
         loader.load(url, resolve, undefined, reject),
       )
 
     Promise.all(MODELS.map(load))
-      .then(([computer, desk, mug, plant, keyboard, mouse]) => {
+      .then(([computer, desk, mug, plant, keyboard, mouse, lamp, player]) => {
         clearTimeout(bail)
         if (disposed) return
 
@@ -180,6 +182,26 @@ export default function CrtScene({
         shell(depth, ROOM.h, [ROOM.maxX, ROOM.h / 2, midZ], [0, -Math.PI / 2], '#4a3d30')
         shell(ROOM.maxX - ROOM.minX, ROOM.h, [0, ROOM.h / 2, ROOM.maxZ], [0, Math.PI], '#50412f')
         shell(ROOM.maxX - ROOM.minX, depth, [0, ROOM.h, midZ], [Math.PI / 2, 0], '#3a3129')
+
+        // the pendant lamp the room light actually comes from; its bulb
+        // material glows once the roam fill ramps in
+        lamp.scene.scale.setScalar(1.6)
+        lamp.scene.position.set(0, ROOM.h, 2.9)
+        let bulbMat: THREE.MeshStandardMaterial | null = null
+        lamp.scene.traverse((o) => {
+          const mesh = o as THREE.Mesh
+          if (!mesh.isMesh) return
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+          for (const m of mats) {
+            const std = m as THREE.MeshStandardMaterial
+            if (std.name === 'Light') {
+              std.emissive = new THREE.Color('#ffe0b0')
+              std.emissiveIntensity = 0
+              bulbMat = std
+            }
+          }
+        })
+        scene.add(lamp.scene)
 
         desk.scene.scale.setScalar(2.0)
         desk.scene.traverse((o) => {
@@ -305,7 +327,8 @@ export default function CrtScene({
         const hemi = new THREE.HemisphereLight('#5a6678', '#241d16', 0.55)
         scene.add(hemi)
         const roomGlow = new THREE.PointLight('#8a7a64', 0, 0, 1.2)
-        roomGlow.position.set(0, 5.6, 2.9)
+        // parked just under the pendant's bulb so the light has a source
+        roomGlow.position.set(0, 4.75, 2.9)
         scene.add(roomGlow)
         const HEMI_SEATED = 0.55
         const HEMI_ROAM = 4.2
@@ -313,6 +336,7 @@ export default function CrtScene({
         const roomLight = (k: number) => {
           hemi.intensity = HEMI_SEATED + (HEMI_ROAM - HEMI_SEATED) * k
           roomGlow.intensity = GLOW_ROAM * k
+          if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
         }
         const key = new THREE.SpotLight('#ffd9a0', 60, 0, 0.55, 0.6, 1.6)
         key.position.set(-3.2, 5.2, 2.8)
@@ -410,6 +434,32 @@ export default function CrtScene({
         const EYE = deskTop + 2.0 // standing eye height over this desk's scale
         const SPAWN = new THREE.Vector3(1.3, EYE, 4.2)
         const SPEED = 3.4
+
+        // the first-person body: Quaternius' little robot trailing the
+        // camera, so looking down shows your own stubby legs (and one day,
+        // other people's robots); the head is collapsed into the neck so the
+        // goggle dome never clips the lens
+        const body = player.scene
+        body.scale.setScalar(EYE / 4.3) // head top floats just above the lens
+        body.visible = false
+        body.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) {
+            o.castShadow = true
+            o.frustumCulled = false // skinned bounds lag the rig; never blink out
+          }
+        })
+        body.getObjectByName('Head')?.scale.setScalar(0.001)
+        scene.add(body)
+        const mixer = new THREE.AnimationMixer(body)
+        const clipOf = (suffix: string) => {
+          const clip = player.animations.find((c) => c.name.endsWith(suffix))
+          return clip ? mixer.clipAction(clip) : null
+        }
+        const idleAct = clipOf('Robot_Idle')
+        const walkAct = clipOf('Robot_Walking')
+        idleAct?.play()
+        walkAct?.play()
+        const BODY_BACK = 0.38 // eye sits ahead of the spine; keeps the chest out of frame
         // walkable area sits inside the shell with some shoulder room; the
         // desk blocks a strip that runs all the way back to the wall
         const deskBlock = new THREE.Box3().setFromObject(desk.scene).expandByScalar(0.35)
@@ -427,24 +477,8 @@ export default function CrtScene({
           }
         }
 
-        const wakeTargets = [computer.scene, keyboard.scene, mouse.scene]
-        const caster = new THREE.Raycaster()
-        const ndc = new THREE.Vector2()
         const setCursor = (c: string) => {
           if (webgl) webgl.domElement.style.cursor = c
-        }
-        /** ray through the pointer, or through the crosshair when locked */
-        const machineHit = (e?: PointerEvent) => {
-          if (!webgl) return false
-          if (e) {
-            const r = webgl.domElement.getBoundingClientRect()
-            ndc.set(
-              ((e.clientX - r.left) / r.width) * 2 - 1,
-              -((e.clientY - r.top) / r.height) * 2 + 1,
-            )
-          } else ndc.set(0, 0)
-          caster.setFromCamera(ndc, camera)
-          return caster.intersectObjects(wakeTargets, true).length > 0
         }
 
         const walkTick = (now: number) => {
@@ -479,6 +513,18 @@ export default function CrtScene({
           camera.rotation.x = pitch
           camera.rotation.y = yaw
           camera.rotation.z = 0
+          // the body plants its feet under the camera and faces the walk
+          body.position.set(
+            camera.position.x + Math.sin(yaw) * BODY_BACK,
+            0,
+            camera.position.z + Math.cos(yaw) * BODY_BACK,
+          )
+          body.rotation.y = yaw + Math.PI
+          const gait = Math.min(1, planar / SPEED)
+          idleAct?.setEffectiveWeight(1 - gait)
+          walkAct?.setEffectiveWeight(gait)
+          walkAct?.setEffectiveTimeScale(0.5 + gait * 0.7)
+          mixer.update(dt)
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
@@ -518,6 +564,22 @@ export default function CrtScene({
               yaw = e.y
               pitch = e.x
               fps = true
+              // the body materializes behind the lens, feet on the floor
+              body.position.set(
+                camera.position.x + Math.sin(yaw) * BODY_BACK,
+                0,
+                camera.position.z + Math.cos(yaw) * BODY_BACK,
+              )
+              body.rotation.y = yaw + Math.PI
+              body.visible = true
+              // grab the mouse like a game; if the browser refuses (no fresh
+              // gesture), the click-to-grab path below still gets you there
+              try {
+                const got = webgl?.domElement.requestPointerLock() as unknown
+                ;(got as Promise<void> | undefined)?.catch?.(() => {})
+              } catch {
+                /* stay unlocked; clicking locks */
+              }
               setWalking(true)
               lastT = performance.now()
               raf = requestAnimationFrame(walkTick)
@@ -533,6 +595,7 @@ export default function CrtScene({
           fps = false
           keys.clear()
           vel.set(0, 0, 0)
+          body.visible = false
           nearNow = false
           setWalking(false)
           setNear(false)
@@ -591,7 +654,8 @@ export default function CrtScene({
         }
 
         // mouse-look: pointer lock steers directly, an unlocked drag grabs
-        // the world instead; a still click locks, or interacts on the machine
+        // the world instead; a still click only (re)grabs the mouse — sitting
+        // down is always deliberate, via E or the prompt button
         const MOVE_KEYS = new Set([
           'KeyW',
           'KeyA',
@@ -603,8 +667,8 @@ export default function CrtScene({
           'ArrowRight',
         ])
         const turn = (dx: number, dy: number, sign: number) => {
-          yaw += sign * dx * 0.0023
-          pitch = THREE.MathUtils.clamp(pitch + sign * dy * 0.0023, -1.35, 1.35)
+          yaw += sign * dx * 0.0019
+          pitch = THREE.MathUtils.clamp(pitch + sign * dy * 0.0019, -1.35, 1.35)
         }
         const onKeyDown = (e: KeyboardEvent) => {
           if (!roaming || !fps) return
@@ -635,18 +699,16 @@ export default function CrtScene({
           } else if (downPt) {
             turn(e.movementX, e.movementY, 1)
             downPt.moved += Math.hypot(e.movementX, e.movementY)
-          } else {
-            setCursor(machineHit(e) ? 'pointer' : 'grab')
           }
         }
-        const onPtrUp = (e: PointerEvent) => {
+        const onPtrUp = () => {
           if (!roaming || !fps || !downPt) return
           const clicked = downPt.moved < 6
           downPt = null
-          if (!isLocked) setCursor('grab')
-          if (!clicked) return
-          if (machineHit(isLocked ? undefined : e)) interactRef.current()
-          else if (!isLocked) webgl?.domElement.requestPointerLock()
+          if (!isLocked) {
+            setCursor('grab')
+            if (clicked) webgl?.domElement.requestPointerLock()
+          }
         }
         window.addEventListener('keydown', onKeyDown)
         window.addEventListener('keyup', onKeyUp)
@@ -731,7 +793,7 @@ export default function CrtScene({
         <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
           {locked
             ? 'wasd to move · esc to free the mouse'
-            : 'wasd to move · click to look around · esc to leave'}
+            : 'wasd to move · click to grab the mouse · esc to leave'}
         </p>
       )}
       {roam && walking && locked && (

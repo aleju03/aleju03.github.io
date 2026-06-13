@@ -20,7 +20,7 @@ import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT } from '../../events'
 import { lockPageForOverlay } from '../../overlay'
 import { APPS, glyphFor, isAppId } from './apps'
-import { preloadXpIcons, xpIcon } from './xpIcon'
+import { preloadImage, preloadXpIcons, xpIcon } from './xpIcon'
 import type { AppId } from './apps'
 import { Window } from './Window'
 import type { WinState } from './Window'
@@ -305,31 +305,32 @@ function BootScreen() {
     <div className="relative flex h-full flex-col items-center justify-center bg-black">
       <div>
         <FlagLogo size={88} className="ml-14" />
-        <p className="mt-1 font-display text-[44px] leading-none font-semibold text-white">
+        <p className="font-xp mt-1 text-[44px] leading-none font-semibold text-white">
           AlejOS
           <sup className="ml-1 align-super text-lg font-bold text-orange-500">v2</sup>
         </p>
       </div>
-      <div className="mt-16 h-[18px] w-52 rounded-[9px] border-2 border-stone-400/90 p-[2px]">
-        <div className="h-full overflow-hidden rounded-[5px]">
+      <div className="mt-16 h-[15px] w-48 rounded-[4px] border border-[#b5b5b5] p-[2px] shadow-[0_0_3px_rgba(180,200,255,0.35)]">
+        <div className="h-full overflow-hidden rounded-[1px]">
           <motion.div
-            className="flex h-full gap-[3px]"
-            animate={{ x: [-42, 208] }}
-            transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
+            className="flex h-full gap-[2px]"
+            animate={{ x: [-32, 192] }}
+            transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
           >
             {[0, 1, 2].map((i) => (
               <span
                 key={i}
-                className="h-full w-2.5 shrink-0 rounded-[2px]"
+                className="h-full w-2 shrink-0 rounded-[1px]"
                 style={{
-                  background: 'linear-gradient(180deg, #8fa7f8 0%, #3e63e8 45%, #2746c6 100%)',
+                  background:
+                    'linear-gradient(180deg, #9cb8f8 0%, #5f7ff2 30%, #2e4fd8 60%, #2138b8 100%)',
                 }}
               />
             ))}
           </motion.div>
         </div>
       </div>
-      <p className="absolute bottom-4 left-5 text-[11px] text-stone-400">
+      <p className="absolute bottom-4 left-5 text-[11px] text-stone-400 [font-family:Tahoma,Verdana,sans-serif]">
         Copyright © 2003 AJU Corporation
       </p>
       <p className="absolute right-5 bottom-4 font-mono text-[11px] text-stone-600">esc to skip</p>
@@ -358,7 +359,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
   const [marquee, setMarquee] = useState<Rect | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; icon: string | null } | null>(null)
   const [renamingIcon, setRenamingIcon] = useState<string | null>(null)
-  const [iconsReady, setIconsReady] = useState(false)
+  const [desktopReady, setDesktopReady] = useState(false)
   const [iconPos, setIconPos] = useState<Record<string, Cell>>(loadIconPos)
   const [grid, setGrid] = useState({ cols: 8, rows: 8 })
   const phaseRef = useRef(phase)
@@ -371,11 +372,17 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     awayRef.current = away
   }, [phase, away])
 
-  const warmDesktopIcons = useCallback(() => {
-    void preloadXpIcons().then(() => setIconsReady(true))
-  }, [])
-
   const wallpaper = wallpaperById(useSyncExternalStore(subscribeWallpaper, getWallpaperId))
+
+  // warm everything the desktop's first frame needs: the icon set and the
+  // wallpaper. without the wallpaper the boot splash would hand off to a
+  // black desktop for the moment the background image spends in flight.
+  const warmDesktop = useCallback(() => {
+    void Promise.all([
+      preloadXpIcons(),
+      wallpaper.src ? preloadImage(wallpaper.src) : Promise.resolve(),
+    ]).then(() => setDesktopReady(true))
+  }, [wallpaper.src])
   const onLightWallpaper = Boolean(wallpaper.light)
   useSyncExternalStore(subscribeFs, getFsVersion)
   const desktopNodes = listDir(DESKTOP)
@@ -383,7 +390,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
 
   // how many icon cells fit on this screen; re-measured when the CRT resizes
   useLayoutEffect(() => {
-    if (phase !== 'on' || !iconsReady) return
+    if (phase !== 'on' || !desktopReady) return
     const el = desktopRef.current
     if (!el) return
     const measure = () =>
@@ -396,7 +403,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [phase, iconsReady])
+  }, [phase, desktopReady])
 
   const iconIds = [
     'my-computer',
@@ -462,9 +469,9 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
   const wake = useCallback(() => {
     if (phaseRef.current !== 'room') return
     sounds.click()
-    warmDesktopIcons()
+    warmDesktop()
     setPhase('post')
-  }, [warmDesktopIcons])
+  }, [warmDesktop])
 
   /** push back from the desk mid-session; the desktop stays on the tube */
   const standUp = useCallback(() => {
@@ -500,7 +507,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
   const boot = useCallback((e?: Event) => {
     if (phaseRef.current !== 'off') return
     sounds.click()
-    warmDesktopIcons()
+    warmDesktop()
     // the boot event's detail can name an app to open once someone logs in;
     // the contact section uses this to land visitors straight in the chat
     const want = (e as CustomEvent<{ app?: string }> | undefined)?.detail?.app
@@ -514,7 +521,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     setPhase(fancy ? 'post' : 'boot')
     // make the session shareable: the OS owns /alejOS while it runs
     if (!isOsUrl()) history.pushState({ alejos: true }, '', OS_PATH)
-  }, [warmDesktopIcons])
+  }, [warmDesktop])
 
   useEffect(() => {
     if (!initialBoot) return
@@ -553,9 +560,9 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
 
   useEffect(() => {
     if (phase === 'post' || phase === 'boot' || phase === 'login' || phase === 'on') {
-      warmDesktopIcons()
+      warmDesktop()
     }
-  }, [phase, warmDesktopIcons])
+  }, [phase, warmDesktop])
 
   useEffect(() => {
     if (phase === 'off') return
@@ -1013,7 +1020,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
               exit={{ opacity: 0, y: 8 }}
               transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
               aria-label="Start menu"
-              className="absolute bottom-13 left-1.5 z-[5000] w-72 overflow-hidden rounded-lg border border-blue-900 bg-stone-50 shadow-2xl shadow-stone-950/50"
+              className="absolute bottom-12 left-0 z-[5000] w-72 overflow-hidden rounded-t-lg border border-blue-900 bg-stone-50 shadow-2xl shadow-stone-950/50"
             >
               <div className="flex items-center gap-3 bg-gradient-to-b from-blue-600 to-blue-700 px-4 py-3">
                 <span className="flex size-9 items-center justify-center rounded-full bg-white/20 font-mono text-sm font-bold text-white">
@@ -1097,48 +1104,42 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       </AnimatePresence>
 
       {/* taskbar */}
-      <div className="absolute inset-x-0 bottom-0 z-[4000] flex h-12 items-stretch border-t border-blue-500/60 bg-gradient-to-b from-blue-700 to-blue-800">
+      <div className="os-taskbar absolute inset-x-0 bottom-0 z-[4000] flex h-12 items-stretch">
         <button
           type="button"
           aria-label="Start"
+          data-open={startOpen}
           onClick={() => {
             sounds.click()
             setMenu(null)
             setStartOpen((o) => !o)
           }}
-          className={`m-1.5 flex cursor-pointer items-center gap-2 rounded-md px-4 font-display text-sm font-semibold text-white transition-colors ${
-            startOpen ? 'bg-white/30' : 'bg-white/15 hover:bg-white/25'
-          }`}
+          className="os-start font-xp flex shrink-0 cursor-pointer items-center gap-1.5 pr-7 pl-2 text-xl font-semibold text-white italic"
         >
-          <span className="flex size-5 items-center justify-center rounded-sm bg-white font-mono text-[11px] font-bold text-blue-700">
-            aj
-          </span>
+          <FlagLogo size={30} outlined />
           start
         </button>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-[5px]">
           {wins.map((w) => (
             <button
               key={w.id}
               type="button"
               onClick={() => onTaskButton(w)}
-              className={`flex h-full min-w-0 max-w-44 cursor-pointer items-center gap-2 rounded-md px-3 text-xs text-white transition-colors ${
-                activeId === w.id && !w.minimized
-                  ? 'bg-white/30 shadow-[inset_0_1px_3px_rgba(0,0,0,0.25)]'
-                  : 'bg-white/10 hover:bg-white/20'
-              }`}
+              data-active={activeId === w.id && !w.minimized}
+              className="os-task flex h-full min-w-0 max-w-44 cursor-pointer items-center gap-1.5 px-2 text-xs text-white"
             >
-              <span className="shrink-0">{w.icon}</span>
+              <span className="shrink-0 drop-shadow-[1px_1px_1px_rgba(0,0,0,0.4)]">{w.icon}</span>
               <span className="truncate">{w.title.split(' - ')[0]}</span>
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-2 border-l border-white/20 px-3">
+        <div className="os-tray flex items-center gap-2 pr-2.5 pl-3.5">
           <Clock />
           <button
             type="button"
             onClick={() => shutdown()}
             aria-label="Shut down AlejOS"
-            className="cursor-pointer rounded-md p-1.5 text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+            className="cursor-pointer rounded-md p-1.5 text-white/85 transition-colors hover:bg-white/20 hover:text-white"
           >
             <PowerIcon size={15} weight="bold" />
           </button>
@@ -1188,7 +1189,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       // the tube is cold; the room outside is the show now
       <div className="h-full bg-stone-950" />
     ) : (
-      iconsReady ? desktop : <BootScreen />
+      desktopReady ? desktop : <BootScreen />
     )
 
   // Chromium refuses to compositor-scroll DOM that lives under the CSS3D

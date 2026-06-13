@@ -13,3 +13,7 @@ Used in the AlejOS power-on scene (`src/components/os/CrtScene.tsx`).
 - `desk.glb` is "Desk" by Quaternius (https://poly.pizza/m/V86Go2rlnq), CC0.
 - `mug.glb` is "Mug" by Kenney (https://poly.pizza/m/fis2ugeLbn), CC0.
 - `plant.glb` is "Houseplant" by Quaternius (https://poly.pizza/m/bfLOqIV5uP), CC0.
+- `lamp.glb` is "Light Ceiling" by Quaternius (https://poly.pizza/m/S3HkX8iTl2), CC0.
+  Bulb material made emissive at runtime.
+- `player.glb` is "Robot" by Quaternius (https://poly.pizza/m/QCm7qe9uNJ), CC0.
+  Head bone collapsed at runtime for the first-person view.
