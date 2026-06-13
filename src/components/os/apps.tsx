@@ -128,10 +128,10 @@ export const APPS: Record<AppId, AppDef> = {
   paint: {
     name: 'Paint',
     glyph: (s) => xpIcon('paint', s),
-    w: 640,
-    h: 490,
+    w: 750,
+    h: 580,
     single: true,
-    render: () => <PaintApp />,
+    render: (ctx) => <PaintApp close={ctx.close} setTitle={ctx.setTitle} />,
   },
   display: {
     name: 'Display Properties',

@@ -7,8 +7,11 @@ import {
   ClockCounterClockwiseIcon,
   GlobeIcon,
   HouseIcon,
+  LinkedinLogoIcon,
+  MapPinIcon,
+  StarIcon,
 } from '@phosphor-icons/react'
-import { showcase, github } from '../../data/projects'
+import { showcase, github, linkedin } from '../../data/projects'
 import { sounds } from './sounds'
 
 /*
@@ -17,7 +20,9 @@ import { sounds } from './sounds'
   an iframe for the actual web. Plenty of 2026 sites refuse to be framed, so
   the toolbar offers two outs: open in a real tab, or "time travel" — load
   the page through the Wayback Machine circa 2003, which embeds happily and
-  matches the period furniture.
+  matches the period furniture. GitHub and LinkedIn refuse frames outright,
+  so the browser renders its own period-correct pages for them instead;
+  the GitHub ones pull live data from the public API.
 */
 
 const HOME = 'aleju://home'
@@ -78,6 +83,245 @@ function displayUrl(url: string): string {
   return m ? m[1] : url
 }
 
+// ------------------------------------------------- in-house github & linkedin
+
+type InternalPage =
+  | { type: 'github'; user: string; repo?: string }
+  | { type: 'linkedin' }
+
+/** pages we render ourselves because the real site refuses to be framed */
+function internalPage(url: string): InternalPage | null {
+  if (url.includes('web.archive.org')) return null
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  const host = u.hostname.replace(/^www\./, '')
+  const segs = u.pathname.split('/').filter(Boolean)
+  if (host === 'github.com' && segs.length >= 1) {
+    return { type: 'github', user: segs[0], repo: segs[1] }
+  }
+  if (host === 'linkedin.com') return { type: 'linkedin' }
+  return null
+}
+
+interface GhUser {
+  login: string
+  name: string | null
+  avatar_url: string
+  bio: string | null
+  location: string | null
+  public_repos: number
+  followers: number
+}
+
+interface GhRepo {
+  name: string
+  description: string | null
+  stargazers_count: number
+  language: string | null
+  fork: boolean
+}
+
+// one fetch per url per session; the api allows 60 requests an hour
+const ghCache = new Map<string, unknown>()
+
+async function ghFetch<T>(path: string): Promise<T> {
+  if (ghCache.has(path)) return ghCache.get(path) as T
+  const res = await fetch(`https://api.github.com${path}`, {
+    headers: { Accept: 'application/vnd.github+json' },
+  })
+  if (!res.ok) throw new Error(String(res.status))
+  const data = (await res.json()) as T
+  ghCache.set(path, data)
+  return data
+}
+
+const retroCard = 'rounded-md border border-stone-300 bg-white p-3 shadow-sm'
+
+function GithubPage({ user, repo, go }: { user: string; repo?: string; go: (url: string) => void }) {
+  const [profile, setProfile] = useState<GhUser | null>(null)
+  const [repos, setRepos] = useState<GhRepo[] | null>(null)
+  const [one, setOne] = useState<GhRepo | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    if (repo) {
+      ghFetch<GhRepo>(`/repos/${user}/${repo}`)
+        .then((r) => alive && setOne(r))
+        .catch(() => alive && setFailed(true))
+    } else {
+      Promise.all([
+        ghFetch<GhUser>(`/users/${user}`),
+        ghFetch<GhRepo[]>(`/users/${user}/repos?sort=updated&per_page=12`),
+      ])
+        .then(([u, rs]) => {
+          if (!alive) return
+          setProfile(u)
+          setRepos(rs)
+        })
+        .catch(() => alive && setFailed(true))
+    }
+    return () => {
+      alive = false
+    }
+  }, [user, repo])
+
+  const outUrl = repo ? `https://github.com/${user}/${repo}` : `https://github.com/${user}`
+
+  return (
+    <div className="h-full overflow-y-auto bg-stone-50">
+      <div className="border-b border-stone-300 bg-stone-800 px-5 py-3">
+        <p className="font-display text-xl font-semibold text-white">
+          git<span className="text-stone-400">hub</span>
+          <span className="ml-2 text-xs font-normal text-stone-400">the place where the code lives</span>
+        </p>
+      </div>
+      <div className="mx-auto max-w-xl p-5">
+        {failed && (
+          <div className={retroCard}>
+            <p className="text-sm text-stone-700">
+              GitHub is not answering right now, probably too many curious visitors this hour.
+            </p>
+            <a href={outUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-700 underline decoration-dotted underline-offset-2">
+              Open {displayUrl(outUrl)} in a new tab <ArrowSquareOutIcon size={12} />
+            </a>
+          </div>
+        )}
+
+        {!failed && repo && !one && <p className="text-xs text-stone-500">Dialing up github.com…</p>}
+        {!failed && repo && one && (
+          <div className={retroCard}>
+            <button
+              type="button"
+              onClick={() => go(`https://github.com/${user}`)}
+              className="cursor-pointer text-xs text-blue-700 underline decoration-dotted underline-offset-2"
+            >
+              {user}
+            </button>
+            <span className="text-xs text-stone-400"> / </span>
+            <span className="text-sm font-semibold text-stone-800">{one.name}</span>
+            <p className="mt-1.5 text-sm text-stone-600">{one.description ?? 'No description, the code speaks for itself.'}</p>
+            <p className="mt-2 flex items-center gap-3 text-xs text-stone-500">
+              {one.language && <span>{one.language}</span>}
+              <span className="flex items-center gap-1">
+                <StarIcon size={12} /> {one.stargazers_count}
+              </span>
+            </p>
+            <a href={outUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-xs text-blue-700 underline decoration-dotted underline-offset-2">
+              Browse the full repository in a new tab <ArrowSquareOutIcon size={12} />
+            </a>
+          </div>
+        )}
+
+        {!failed && !repo && !profile && <p className="text-xs text-stone-500">Dialing up github.com…</p>}
+        {!failed && !repo && profile && (
+          <>
+            <div className={`${retroCard} flex items-center gap-4`}>
+              <img
+                src={profile.avatar_url}
+                alt=""
+                width={64}
+                height={64}
+                className="size-16 rounded-md border border-stone-300"
+              />
+              <div className="min-w-0">
+                <p className="truncate text-base font-semibold text-stone-800">{profile.name ?? profile.login}</p>
+                <p className="text-xs text-stone-500">@{profile.login}</p>
+                {profile.bio && <p className="mt-1 text-xs text-stone-600">{profile.bio}</p>}
+                <p className="mt-1 flex items-center gap-3 text-xs text-stone-500">
+                  <span>{profile.public_repos} repositories</span>
+                  <span>{profile.followers} followers</span>
+                  {profile.location && (
+                    <span className="flex items-center gap-0.5">
+                      <MapPinIcon size={11} /> {profile.location}
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+            <p className="mt-4 mb-2 text-xs font-semibold tracking-wide text-stone-500 uppercase">Repositories</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(repos ?? [])
+                .filter((r) => !r.fork)
+                .map((r) => (
+                  <button
+                    key={r.name}
+                    type="button"
+                    onClick={() => {
+                      sounds.open()
+                      go(`https://github.com/${user}/${r.name}`)
+                    }}
+                    className={`${retroCard} cursor-pointer text-left transition hover:border-blue-600 hover:shadow`}
+                  >
+                    <p className="flex items-center gap-1.5 text-sm font-medium text-blue-700 underline decoration-dotted underline-offset-2">
+                      {r.name}
+                      <span className="ml-auto flex items-center gap-0.5 text-[10px] text-stone-400 no-underline">
+                        <StarIcon size={10} /> {r.stargazers_count}
+                      </span>
+                    </p>
+                    <p className="mt-0.5 line-clamp-2 text-xs text-stone-500">
+                      {r.description ?? r.language ?? 'No description yet.'}
+                    </p>
+                  </button>
+                ))}
+            </div>
+            <a href={outUrl} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-1 text-xs text-blue-700 underline decoration-dotted underline-offset-2">
+              Visit the real profile in a new tab <ArrowSquareOutIcon size={12} />
+            </a>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function LinkedinPage() {
+  return (
+    <div className="h-full overflow-y-auto bg-stone-50">
+      <div className="border-b border-stone-300 bg-[#0a66c2] px-5 py-3">
+        <p className="flex items-center gap-1.5 font-display text-xl font-semibold text-white">
+          Linked<span className="rounded-sm bg-white px-1 text-[#0a66c2]">in</span>
+          <span className="ml-2 text-xs font-normal text-blue-100">the office floor of the internet</span>
+        </p>
+      </div>
+      <div className="mx-auto max-w-xl p-5">
+        <div className={retroCard}>
+          <div className="h-14 rounded-t-sm bg-gradient-to-r from-blue-200 to-blue-100" />
+          <div className="px-2 pb-1">
+            <div className="-mt-7 flex size-14 items-center justify-center rounded-full border-2 border-white bg-blue-700 text-lg font-semibold text-white">
+              AJ
+            </div>
+            <p className="mt-2 text-base font-semibold text-stone-800">Alejandro Jiménez</p>
+            <p className="text-sm text-stone-600">Full-stack developer</p>
+            <p className="mt-0.5 flex items-center gap-1 text-xs text-stone-500">
+              <MapPinIcon size={11} /> Costa Rica
+            </p>
+            <p className="mt-3 text-xs text-stone-600">
+              React frontends, Node backends, and the server they run on. The rest of this machine is the
+              portfolio, so the interesting part is one window away.
+            </p>
+            <a
+              href={linkedin}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#0a66c2] px-4 py-1.5 text-xs font-medium text-white transition hover:bg-blue-800"
+            >
+              <LinkedinLogoIcon size={14} /> View the full profile in a new tab
+            </a>
+            <p className="mt-2 text-[10px] text-stone-400">
+              LinkedIn wants a sign-in before it shows anything in here, so this is the lobby version.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 interface BrowserProps {
   url?: string
   setTitle: (t: string) => void
@@ -86,7 +330,7 @@ interface BrowserProps {
 export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
   const [url, setUrl] = useState(() => (initialUrl ? normalize(initialUrl) : HOME))
   const [address, setAddress] = useState(() => displayUrl(url))
-  const [loading, setLoading] = useState(() => url !== HOME)
+  const [loading, setLoading] = useState(() => url !== HOME && !internalPage(url))
   const [back, setBack] = useState<string[]>([])
   const [fwd, setFwd] = useState<string[]>([])
   // remount the iframe on reload even when the url is unchanged
@@ -101,6 +345,8 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
     }
   }, [url])
 
+  const internal = useMemo(() => (url === HOME ? null : internalPage(url)), [url])
+
   useEffect(() => {
     setTitle(`${host} - Internet Explorer`)
   }, [host, setTitle])
@@ -114,9 +360,10 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
 
   const go = (raw: string, fromHistory = false) => {
     const next = normalize(raw)
+    const framed = next !== HOME && !internalPage(next)
     if (next === url) {
       setFrameKey((k) => k + 1)
-      setLoading(next !== HOME)
+      setLoading(framed)
       return
     }
     if (!fromHistory) {
@@ -125,7 +372,7 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
     }
     setUrl(next)
     setAddress(displayUrl(next))
-    setLoading(next !== HOME)
+    setLoading(framed)
   }
 
   const goBack = () => {
@@ -164,7 +411,7 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
           onClick={() => {
             sounds.click()
             setFrameKey((k) => k + 1)
-            setLoading(url !== HOME)
+            setLoading(url !== HOME && !internal)
           }}
         >
           <ArrowClockwiseIcon size={15} weight="bold" />
@@ -292,19 +539,32 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
                     <p className="mt-0.5 line-clamp-2 text-xs text-stone-500">{b.blurb}</p>
                   </button>
                 ))}
-                <a
-                  href={github}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-md border border-stone-300 bg-white p-3 text-left shadow-sm transition hover:border-blue-600 hover:shadow"
+                <button
+                  type="button"
+                  onClick={() => {
+                    sounds.open()
+                    go(github)
+                  }}
+                  className="cursor-pointer rounded-md border border-stone-300 bg-white p-3 text-left shadow-sm transition hover:border-blue-600 hover:shadow"
                 >
-                  <p className="flex items-center gap-1 text-sm font-medium text-blue-700 underline decoration-dotted underline-offset-2">
-                    github.com/aleju03 <ArrowSquareOutIcon size={12} />
+                  <p className="text-sm font-medium text-blue-700 underline decoration-dotted underline-offset-2">
+                    github.com/aleju03
                   </p>
-                  <p className="mt-0.5 text-xs text-stone-500">
-                    the source of everything here (GitHub refuses frames, opens in a tab)
+                  <p className="mt-0.5 text-xs text-stone-500">the source of everything here</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    sounds.open()
+                    go(linkedin)
+                  }}
+                  className="cursor-pointer rounded-md border border-stone-300 bg-white p-3 text-left shadow-sm transition hover:border-blue-600 hover:shadow"
+                >
+                  <p className="text-sm font-medium text-blue-700 underline decoration-dotted underline-offset-2">
+                    linkedin.com/in/alejandro
                   </p>
-                </a>
+                  <p className="mt-0.5 text-xs text-stone-500">the version with a collared shirt</p>
+                </button>
               </div>
 
               <p className="mt-6 mb-2 text-xs font-semibold tracking-wide text-stone-500 uppercase">
@@ -334,6 +594,19 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
               </p>
             </div>
           </div>
+        ) : internal ? (
+          <div key={frameKey} className="h-full">
+            {internal.type === 'github' ? (
+              <GithubPage
+                key={`${internal.user}/${internal.repo ?? ''}`}
+                user={internal.user}
+                repo={internal.repo}
+                go={go}
+              />
+            ) : (
+              <LinkedinPage />
+            )}
+          </div>
         ) : (
           <>
             <iframe
@@ -357,7 +630,11 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
       {/* status bar */}
       <div className="flex items-center gap-2 border-t border-stone-300 bg-stone-200 px-3 py-1 text-xs text-stone-500">
         <span className="truncate">
-          {loading ? `Opening ${host}…` : url === HOME ? 'Done' : `${host} (blank page? the site refuses frames; try ↗ or time travel)`}
+          {loading
+            ? `Opening ${host}…`
+            : url === HOME || internal
+              ? 'Done'
+              : `${host} (blank page? the site refuses frames; try ↗ or time travel)`}
         </span>
         <span className="ml-auto hidden shrink-0 items-center gap-1 sm:flex">
           <GlobeIcon size={12} /> Internet zone

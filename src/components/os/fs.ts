@@ -147,7 +147,8 @@ function projectFolder(p: AnyProject): FsNode {
     ),
   ]
   if (p.live) children.push(link(`${p.liveLabel ?? p.name} (live)`, p.live, true))
-  children.push(link('source code', p.repo))
+  // github refuses frames, but the AlejOS browser renders its own page for it
+  children.push(link('source code', p.repo, true))
   if (p.image) children.push(image('screenshot.png', p.image))
   return folder(p.name, children)
 }
@@ -316,6 +317,16 @@ export function writeText(path: string, content: string): FsResult {
   if (!node || node.kind !== 'text') return { ok: false, error: 'The file does not exist.' }
   if (node.system) return { ok: false, error: 'Access is denied. The file is read-only.' }
   node.content = content
+  node.modified = Date.now()
+  bump()
+  return { ok: true, name: node.name }
+}
+
+export function writeImage(path: string, src: string): FsResult {
+  const node = getNode(path)
+  if (!node || node.kind !== 'image') return { ok: false, error: 'The file does not exist.' }
+  if (node.system) return { ok: false, error: 'Access is denied. The file is read-only.' }
+  node.src = src
   node.modified = Date.now()
   bump()
   return { ok: true, name: node.name }

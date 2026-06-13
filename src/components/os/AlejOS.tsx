@@ -10,7 +10,6 @@ import {
 } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
-  ArrowSquareOutIcon,
   CrownSimpleIcon,
   GithubLogoIcon,
   LinkedinLogoIcon,
@@ -344,6 +343,9 @@ const sameSet = (a: Set<string>, b: Set<string>) =>
 export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unknown } }) {
   const [phase, setPhase] = useState<Phase>('off')
   const [mode, setMode] = useState<Mode>('flat')
+  // standing up mid-session: the OS keeps running and the tube stays lit
+  // while you walk the room; sitting back down resumes where you left off
+  const [away, setAway] = useState(false)
   const [downMsg, setDownMsg] = useState(false)
   // the screen the shutdown started from, so the CRT-off collapse plays over
   // what was actually showing (turning off at login must not flash the desktop)
@@ -360,12 +362,14 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
   const [iconPos, setIconPos] = useState<Record<string, Cell>>(loadIconPos)
   const [grid, setGrid] = useState({ cols: 8, rows: 8 })
   const phaseRef = useRef(phase)
+  const awayRef = useRef(away)
   const pendingAppRef = useRef<AppId | null>(null)
   const desktopRef = useRef<HTMLDivElement>(null)
   const marqueeOriginRef = useRef<{ x: number; y: number } | null>(null)
   useEffect(() => {
     phaseRef.current = phase
-  }, [phase])
+    awayRef.current = away
+  }, [phase, away])
 
   const warmDesktopIcons = useCallback(() => {
     void preloadXpIcons().then(() => setIconsReady(true))
@@ -440,7 +444,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
           setSelected(new Set())
           setSession(null)
           if (mode === '3d' && !toSite) {
-            // the machine is dark but the desk is still there: free-look time
+            // the machine is dark but the room is still there: walk it
             setPhase('room')
           } else {
             setPhase('off')
@@ -454,7 +458,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     [mode, phase],
   )
 
-  /** clicked the dark machine while roaming: boot it again */
+  /** interacted with the dark machine while roaming: boot it again */
   const wake = useCallback(() => {
     if (phaseRef.current !== 'room') return
     sounds.click()
@@ -462,12 +466,33 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     setPhase('post')
   }, [warmDesktopIcons])
 
+  /** push back from the desk mid-session; the desktop stays on the tube */
+  const standUp = useCallback(() => {
+    if (phaseRef.current !== 'on' || awayRef.current) return
+    // WASD must steer the walk, not type into whatever app had focus
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    setStartOpen(false)
+    setMenu(null)
+    setAway(true)
+  }, [])
+
+  /** interacted with the machine while it was still running: sit back down */
+  const sitDown = useCallback(() => {
+    sounds.click()
+    setAway(false)
+  }, [])
+
   /** the "Back to site" icon: straight out, no detour through the dark room */
   const exitToSite = useCallback(() => shutdown(true), [shutdown])
 
-  /** leave the roam scene for the site proper */
+  /** leave the roam scene for the site proper, dropping any live session */
   const leaveRoom = useCallback(() => {
-    if (phaseRef.current !== 'room') return
+    if (phaseRef.current !== 'room' && !awayRef.current) return
+    setAway(false)
+    setWins([])
+    setActiveId('')
+    setSelected(new Set())
+    setSession(null)
     setPhase('off')
     if (isOsUrl()) history.pushState(null, '', '/')
   }, [])
@@ -503,7 +528,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     // browser navigation works like a power switch
     const onPop = () => {
       if (isOsUrl() && phaseRef.current === 'off') boot()
-      else if (!isOsUrl() && phaseRef.current === 'room') leaveRoom()
+      else if (!isOsUrl() && (phaseRef.current === 'room' || awayRef.current)) leaveRoom()
       else if (!isOsUrl() && phaseRef.current !== 'off' && phaseRef.current !== 'down')
         shutdown(true)
     }
@@ -546,8 +571,11 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       } else if (phaseRef.current === 'room') {
         leaveRoom()
       } else if (phaseRef.current === 'on') {
-        if (startOpen) setStartOpen(false)
+        if (awayRef.current) leaveRoom()
+        else if (startOpen) setStartOpen(false)
         else if (menu) setMenu(null)
+        // in the room, esc means stand up; shutting down lives in the start menu
+        else if (mode === '3d') standUp()
         else shutdown()
       }
     }
@@ -556,7 +584,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       unlock()
       window.removeEventListener('keydown', onKey)
     }
-  }, [phase, startOpen, menu, shutdown, leaveRoom])
+  }, [phase, startOpen, menu, mode, shutdown, leaveRoom, standUp])
 
   const topZ = (list: OsWin[]) => list.reduce((max, w) => Math.max(max, w.z), 10)
 
@@ -1031,16 +1059,14 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
                   { label: 'LinkedIn', href: linkedin, icon: <LinkedinLogoIcon size={18} /> },
                 ].map((item) => (
                   <li key={item.label}>
-                    <a
-                      href={item.href}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-stone-700 hover:bg-blue-600/10"
+                    <button
+                      type="button"
+                      onClick={() => openApp('browser', { url: item.href })}
+                      className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
                     >
                       <span className="text-blue-700">{item.icon}</span>
                       {item.label}
-                      <ArrowSquareOutIcon size={13} className="ml-auto text-stone-400" />
-                    </a>
+                    </button>
                   </li>
                 ))}
                 <li aria-hidden className="mx-3 my-1.5 border-t border-stone-200" />
@@ -1202,8 +1228,9 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
           <Suspense fallback={null}>
             <CrtScene
               off={phase === 'down'}
-              roam={phase === 'room'}
-              onWake={wake}
+              roam={phase === 'room' || away}
+              screenLive={away}
+              onInteract={away ? sitDown : wake}
               onFail={() => setMode('flat')}
             >
               <div className="relative h-full w-full" onWheel={onScreenWheel}>

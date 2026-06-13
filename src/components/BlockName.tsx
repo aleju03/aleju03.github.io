@@ -4,9 +4,9 @@ import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
 import type { HeroNameFontPreset } from './heroNameFonts'
-import { BOOT_OS_EVENT } from '../events'
 import { isCoarsePointer } from '../device'
 import { onOverlayChange, overlayIsOpen } from '../overlay'
+import { provideWarpOrigin, warpToOs } from '../warp'
 import { THEME_FADE_MS } from '../theme'
 
 /*
@@ -45,8 +45,10 @@ import { THEME_FADE_MS } from '../theme'
   computer (the AJU 700FD from CrtScene) lying tilted above the footer,
   mapped onto a stage element that Contact renders. A terminal cursor
   blinks in the corner of its dead screen (faster under a hover, while the
-  whole thing perks up a little), and flying the plane into the glass
-  boots AlejOS — the same trip as clicking it.
+  whole thing perks up a little). Flying the plane into the glass wakes a
+  suction: fight it and you can boost back out, hold course for about a
+  second and the screen reels the plane down a spiral and swallows it,
+  warping into AlejOS — the same wormhole a click on the wreck opens.
 */
 
 const LINES = [
@@ -512,7 +514,14 @@ export default function BlockName({
       let layoutWreck = () => {}
       const wreckScreen = new THREE.Vector2()
       let wreckScreenR = 0
-      let planeInScreen = false
+      // the screen's pull on the plane: wreckSuck ramps toward 1 while the
+      // plane fights the gravity well (still escapable), wreckCapture is the
+      // scripted spiral once the screen wins, wreckSwallowed marks the plane
+      // as living inside the OS until that session ends
+      let wreckSuck = 0
+      let wreckCapture: { t: number; ang: number; rad: number; warped: boolean } | null = null
+      let wreckSwallowed = false
+      let wreckSawOverlay = false
       let wreckHover = 0
       let wreckHoverTarget = 0
       let wreckCursor: THREE.Mesh | null = null
@@ -618,6 +627,24 @@ export default function BlockName({
             wreckScreenR = Math.max(gs.x, gs.y) * 0.62 + 1.4 * planeScale
           }
           layoutWreck()
+          // the warp overlay irises out of the glass: hand it the live
+          // viewport spot and size so the hole opens exactly where the
+          // plane gets pulled in, at the size of the actual screen
+          disposers.push(
+            provideWarpOrigin(() => ({
+              x: (wreckScreen.x + holder.position.x) / view.wpp + view.W / 2,
+              y: view.H / 2 - (wreckScreen.y + holder.position.y) / view.wpp - window.scrollY,
+              r: wreckScreenR / view.wpp,
+            })),
+          )
+          // a swallowed plane only comes back once the OS it fed has opened
+          // and closed again (the boot lags the warp's cover by a beat, so
+          // polling overlayIsOpen inside tick() could miss the whole session)
+          disposers.push(
+            onOverlayChange((open) => {
+              if (open && wreckSwallowed) wreckSawOverlay = true
+            }),
+          )
         })
       }
 
@@ -1200,28 +1227,106 @@ export default function BlockName({
         } else trailBreak()
         trailFade(dt)
 
-        // the wreck's body language: it perks up a touch under a hover while
-        // the cursor on its dead screen keeps its steady terminal blink
+        // the wreck's body language: it perks up a touch under a hover (and
+        // fully while it reels the plane in), and the cursor on its dead
+        // screen trades its steady terminal blink for a hungry racing one
         if (wreckNode) {
-          wreckHover += (wreckHoverTarget - wreckHover) * 0.08
+          const pulling = wreckSuck > 0 || wreckCapture !== null
+          wreckHover += (Math.max(wreckHoverTarget, pulling ? 1 : 0) - wreckHover) * 0.08
           wreckNode.rotation.z = WRECK_TILT_Z * (1 - wreckHover * 0.45)
-          if (wreckCursor) wreckCursor.visible = t % 1.06 < 0.58
+          if (wreckCursor) wreckCursor.visible = pulling ? t % 0.3 < 0.17 : t % 1.06 < 0.58
         }
-        // fly into the dead screen and the machine wakes: crossing into the
-        // glass radius at speed boots AlejOS, same trip as clicking the
-        // wreck. Edge-triggered so the plane left parked on the screen after
-        // a shutdown doesn't boot it straight back up.
-        if (wreckScreenR > 0) {
+        // fly into the dead screen and the machine PULLS: crossing into the
+        // glass radius at speed starts a suction the plane can still boost
+        // out of. Hold course for about a second and the screen wins — a
+        // scripted spiral reels the plane in, it shrinks into the glass, and
+        // the warp swallows the page on the way into AlejOS (the same trip
+        // as clicking the wreck). A plane parked on the glass is safe: only
+        // a real hit at speed wakes the pull.
+        if (overlayIsOpen()) {
+          if (wreckSwallowed) wreckSawOverlay = true
+          // a capture that never fired its warp was orphaned by the OS
+          // booting some other way; put the plane back to normal
+          if (wreckCapture && !wreckCapture.warped) {
+            wreckCapture = null
+            wreckSuck = 0
+            plane.scale.setScalar(planeScale)
+          }
+        } else if (wreckSwallowed) {
+          if (wreckSawOverlay) {
+            // the OS shut down with the plane still inside: it pops back
+            // out, parked on the dead glass like a crash-landing always left it
+            wreckSwallowed = false
+            wreckSawOverlay = false
+            plane.visible = true
+            plane.scale.setScalar(planeScale)
+            planePos.set(wreckScreen.x, wreckScreen.y)
+            planeVel.set(0, 0)
+            trailBreak()
+          }
+        } else if (wreckCapture) {
+          // past the point of no return: wind the plane down a tightening
+          // spiral, still inking the contrail so the dashes draw the swirl
+          wreckCapture.t = Math.min(1, wreckCapture.t + dt / 0.7)
+          const e = 1 - Math.pow(1 - wreckCapture.t, 3)
+          wreckCapture.ang += (6 + 10 * e) * dt
+          const rad = wreckCapture.rad * (1 - e)
+          planePos.set(
+            wreckScreen.x + Math.cos(wreckCapture.ang) * rad,
+            wreckScreen.y + Math.sin(wreckCapture.ang) * rad,
+          )
+          planeVel.set(0, 0)
+          heading = wreckCapture.ang + Math.PI / 2
+          plane.scale.setScalar(planeScale * Math.max(0.001, 1 - e))
+          if (rad > planeScale) {
+            trailStamp(
+              trails[0],
+              planePos.x - Math.cos(heading) * 2.3 * planeScale * (1 - e),
+              planePos.y - Math.sin(heading) * 2.3 * planeScale * (1 - e),
+              0.8,
+            )
+          }
+          // open the hole while the last loops play out, so the plane
+          // visibly vanishes into it
+          if (!wreckCapture.warped && wreckCapture.t >= 0.7) {
+            wreckCapture.warped = true
+            warpToOs()
+          }
+          if (wreckCapture.t >= 1) {
+            plane.visible = false
+            wreckCapture = null
+            wreckSuck = 0
+            wreckSwallowed = true
+            trailBreak()
+          }
+        } else if (wreckScreenR > 0) {
           const wdx = planePos.x - wreckScreen.x
           const wdy = planePos.y - wreckScreen.y
-          const inside = wdx * wdx + wdy * wdy < wreckScreenR * wreckScreenR
-          if (inside && !planeInScreen && spd > 4 && !overlayIsOpen()) {
-            planeVel.set(0, 0)
-            keys.clear()
-            trailBreak()
-            window.dispatchEvent(new Event(BOOT_OS_EVENT))
+          const wd = Math.hypot(wdx, wdy)
+          if (wd < wreckScreenR && (wreckSuck > 0 || spd > 4)) {
+            wreckSuck = Math.min(1, wreckSuck + dt / 0.55)
+            // the gravity well: gentle enough at first that boosting away
+            // breaks free, then decisive; the sideways tug winds up the
+            // orbit that the capture spiral inherits
+            const inv = 1 / Math.max(wd, 0.001)
+            const g = (30 + 230 * wreckSuck * wreckSuck) * dt
+            planeVel.x -= wdx * inv * g
+            planeVel.y -= wdy * inv * g
+            const swirl = 70 * wreckSuck * dt
+            planeVel.x += -wdy * inv * swirl
+            planeVel.y += wdx * inv * swirl
+            if (wreckSuck >= 1) {
+              wreckCapture = {
+                t: 0,
+                ang: Math.atan2(wdy, wdx),
+                rad: Math.min(wd, wreckScreenR),
+                warped: false,
+              }
+              keys.clear()
+            }
+          } else {
+            wreckSuck = Math.max(0, wreckSuck - dt * 3)
           }
-          planeInScreen = inside
         }
 
         // while the plane is actually being flown, scroll the page along with

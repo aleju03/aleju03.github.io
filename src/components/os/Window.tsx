@@ -1,7 +1,6 @@
 import { useRef } from 'react'
 import type { ReactNode } from 'react'
 import { motion } from 'motion/react'
-import { CopyIcon, MinusIcon, SquareIcon, XIcon } from '@phosphor-icons/react'
 import { sounds } from './sounds'
 
 /*
@@ -81,8 +80,14 @@ export function Window({
     ? { left: 0, top: 0, width: '100%', height: '100%' }
     : { left: win.x, top: win.y, width: win.w, height: win.h }
 
-  const buttonCls =
-    'flex size-6 cursor-pointer items-center justify-center rounded-sm bg-white/15 text-white transition-colors hover:bg-white/30'
+  // the Luna title bar buttons: glossy blue rounded squares with a thin
+  // light border, the close one in red, grayed out on inactive windows
+  const xpBtn = (red = false) =>
+    `flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[5px] border transition hover:brightness-115 active:brightness-90 ${
+      red
+        ? 'border-white/70 bg-[radial-gradient(circle_at_30%_25%,#f4ab90_0%,#e0563a_50%,#a92c10_100%)] shadow-[inset_0_1px_1px_rgba(255,255,255,0.55),inset_0_-2px_3px_rgba(255,180,150,0.35)]'
+        : 'border-white/70 bg-[radial-gradient(circle_at_30%_25%,#9fbbf2_0%,#4a78d8_52%,#2b55b6_100%)] shadow-[inset_0_1px_1px_rgba(255,255,255,0.55),inset_0_-2px_3px_rgba(160,200,255,0.4)]'
+    } ${active ? '' : 'opacity-70 saturate-[0.3]'}`
 
   return (
     <motion.section
@@ -118,9 +123,11 @@ export function Window({
             onMinimize()
           }}
           onPointerDown={(e) => e.stopPropagation()}
-          className={buttonCls}
+          className={xpBtn()}
         >
-          <MinusIcon size={12} weight="bold" />
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+            <rect x="2" y="8.5" width="6" height="2.5" fill="white" />
+          </svg>
         </button>
         <button
           type="button"
@@ -130,18 +137,32 @@ export function Window({
             onToggleMaximize()
           }}
           onPointerDown={(e) => e.stopPropagation()}
-          className={buttonCls}
+          className={xpBtn()}
         >
-          {win.maximized ? <CopyIcon size={12} weight="bold" /> : <SquareIcon size={12} weight="bold" />}
+          {win.maximized ? (
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+              <path d="M4 1.5h6.5V8H8.5" fill="none" stroke="white" strokeWidth="1.3" />
+              <rect x="4" y="1.5" width="6.5" height="1.8" fill="white" />
+              <rect x="1.5" y="4.5" width="6" height="6" fill="none" stroke="white" strokeWidth="1.3" />
+              <rect x="1.5" y="4.5" width="6" height="1.8" fill="white" />
+            </svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+              <rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="white" strokeWidth="1.3" />
+              <rect x="1.5" y="1.5" width="9" height="2.2" fill="white" />
+            </svg>
+          )}
         </button>
         <button
           type="button"
           aria-label="Close"
           onClick={onClose}
           onPointerDown={(e) => e.stopPropagation()}
-          className={`${buttonCls} hover:bg-stone-950/40`}
+          className={xpBtn(true)}
         >
-          <XIcon size={12} weight="bold" />
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+            <path d="M2.8 2.8 L9.2 9.2 M9.2 2.8 L2.8 9.2" stroke="white" strokeWidth="1.7" strokeLinecap="round" />
+          </svg>
         </button>
       </header>
       <div className="min-h-0 flex-1 overflow-auto">{children}</div>

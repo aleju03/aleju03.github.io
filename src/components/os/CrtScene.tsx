@@ -3,7 +3,6 @@ import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
 
 /*
@@ -14,8 +13,10 @@ import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer
   the WebGL canvas to the DOM behind it (the Henry Heffernan / ryOS-style
   trick). The camera pushes in on power-on, pulls back on shutdown, and while
   you use the OS nothing 3D renders at all: the loop is suspended and the
-  screen is plain DOM. After a shutdown the room stays up in roam mode: an
-  orbit around the desk, and a click on the machine boots it again.
+  screen is plain DOM. The desk lives in a small enclosed room: in roam mode
+  you stand up from the chair and walk it first-person, WASD to move, mouse
+  to look (pointer lock on click, drag works too), and an interact prompt at
+  the machine sits you back down, booting it first if the tube is cold.
 
   Models are CC assets, see public/os/models/LICENSE.md (computer by Charlie
   CC BY 3.0, desk/mug/plant by Quaternius and Kenney CC0). If WebGL or the
@@ -25,10 +26,12 @@ import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer
 interface CrtSceneProps {
   /** true once the OS is shutting down: plays the camera pull-back */
   off: boolean
-  /** the machine is off and the room is free to orbit */
+  /** standing up: the room is walkable first-person */
   roam: boolean
-  /** the machine was clicked while roaming: power it back on */
-  onWake: () => void
+  /** roaming with the OS still running, so the tube stays lit and glowing */
+  screenLive: boolean
+  /** pressed the interact key at the machine: sit down (and boot if cold) */
+  onInteract: () => void
   onFail: () => void
   children: ReactNode
 }
@@ -46,17 +49,31 @@ const MODELS = [
 const FILL = 0.86
 const INTRO_S = 2.6
 
-export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSceneProps) {
+export default function CrtScene({
+  off,
+  roam,
+  screenLive,
+  onInteract,
+  onFail,
+  children,
+}: CrtSceneProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [screenEl, setScreenEl] = useState<HTMLDivElement | null>(null)
   const [intro, setIntro] = useState(true)
+  // walking = first-person controls are live (the stand-up glide is done),
+  // near = close enough to the machine for the interact prompt
+  const [walking, setWalking] = useState(false)
+  const [near, setNear] = useState(false)
+  const [locked, setLocked] = useState(false)
   const outroRef = useRef<(() => void) | null>(null)
   const roamRef = useRef<((on: boolean) => void) | null>(null)
   const failRef = useRef(onFail)
-  const wakeRef = useRef(onWake)
+  const interactRef = useRef(onInteract)
+  const liveRef = useRef(screenLive)
   useEffect(() => {
     failRef.current = onFail
-    wakeRef.current = onWake
+    interactRef.current = onInteract
+    liveRef.current = screenLive
   })
 
   useEffect(() => {
@@ -121,7 +138,8 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
 
         scene = new THREE.Scene()
         scene.background = new THREE.Color('#0a0908')
-        scene.fog = new THREE.Fog('#0a0908', 8, 16)
+        // gentle enough that the far corners of the room survive a walk-around
+        scene.fog = new THREE.Fog('#0a0908', 9, 22)
 
         const floor = new THREE.Mesh(
           new THREE.PlaneGeometry(30, 30),
@@ -137,6 +155,31 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
         wall.position.set(0, 6, -1.75)
         wall.receiveShadow = true
         scene.add(wall)
+
+        // the rest of the shell, so standing up reveals a room and not a void
+        const ROOM = { minX: -6, maxX: 6, minZ: -1.75, maxZ: 7.5, h: 6 }
+        const shell = (
+          w: number,
+          h: number,
+          pos: [number, number, number],
+          rot: [number, number],
+          color: string,
+        ) => {
+          const m = new THREE.Mesh(
+            new THREE.PlaneGeometry(w, h),
+            new THREE.MeshStandardMaterial({ color, roughness: 1 }),
+          )
+          m.position.set(...pos)
+          m.rotation.set(rot[0], rot[1], 0)
+          m.receiveShadow = true
+          scene?.add(m)
+        }
+        const depth = ROOM.maxZ - ROOM.minZ
+        const midZ = (ROOM.minZ + ROOM.maxZ) / 2
+        shell(depth, ROOM.h, [ROOM.minX, ROOM.h / 2, midZ], [0, Math.PI / 2], '#4a3d30')
+        shell(depth, ROOM.h, [ROOM.maxX, ROOM.h / 2, midZ], [0, -Math.PI / 2], '#4a3d30')
+        shell(ROOM.maxX - ROOM.minX, ROOM.h, [0, ROOM.h / 2, ROOM.maxZ], [0, Math.PI], '#50412f')
+        shell(ROOM.maxX - ROOM.minX, depth, [0, ROOM.h, midZ], [Math.PI / 2, 0], '#3a3129')
 
         desk.scene.scale.setScalar(2.0)
         desk.scene.traverse((o) => {
@@ -257,7 +300,20 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
         })
         scene.add(plant.scene)
 
-        scene.add(new THREE.HemisphereLight('#5a6678', '#241d16', 0.55))
+        // seated, the desk spot is the whole show; walking needs the rest of
+        // the room readable, so these two swell while roaming and ebb back
+        const hemi = new THREE.HemisphereLight('#5a6678', '#241d16', 0.55)
+        scene.add(hemi)
+        const roomGlow = new THREE.PointLight('#8a7a64', 0, 0, 1.2)
+        roomGlow.position.set(0, 5.6, 2.9)
+        scene.add(roomGlow)
+        const HEMI_SEATED = 0.55
+        const HEMI_ROAM = 4.2
+        const GLOW_ROAM = 18
+        const roomLight = (k: number) => {
+          hemi.intensity = HEMI_SEATED + (HEMI_ROAM - HEMI_SEATED) * k
+          roomGlow.intensity = GLOW_ROAM * k
+        }
         const key = new THREE.SpotLight('#ffd9a0', 60, 0, 0.55, 0.6, 1.6)
         key.position.set(-3.2, 5.2, 2.8)
         key.target.position.set(0.3, deskTop, 0)
@@ -277,6 +333,7 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
         scene.add(spill)
 
         const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 40)
+        camera.rotation.order = 'YXZ' // yaw/pitch compose FPS-style while walking
         const tanHalf = Math.tan(THREE.MathUtils.degToRad(38 / 2))
         const camStart = new THREE.Vector3(2.4, 2.9, 4.5)
         const camEndFor = (h: number) =>
@@ -334,24 +391,105 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
           raf = requestAnimationFrame(outroTick)
         }
 
-        // --- roam: with the machine off, the room itself is the scene -------
-        // orbit around the desk; clicking the computer (or its keyboard or
-        // mouse) powers it back on and the camera flies back into the glass
-        let controls: OrbitControls | null = null
+        // --- roam: stand up from the desk and walk the room first-person ----
+        // WASD moves, the mouse looks (pointer lock on click, drag works too),
+        // and an interact prompt at the machine sits you back down
         let roaming = false
-        const roamTarget = new THREE.Vector3(0, deskTop + 0.35, 0)
+        let fps = false // controls live, i.e. the stand-up glide has finished
+        let nearNow = false
+        let isLocked = false
+        let yaw = 0
+        let pitch = 0
+        let lastT = 0
+        let bobT = 0
+        const keys = new Set<string>()
+        const vel = new THREE.Vector3()
+        const want = new THREE.Vector3()
+        const gaze = new THREE.Vector3()
+        const toScreen = new THREE.Vector3()
+        const EYE = deskTop + 2.0 // standing eye height over this desk's scale
+        const SPAWN = new THREE.Vector3(1.3, EYE, 4.2)
+        const SPEED = 3.4
+        // walkable area sits inside the shell with some shoulder room; the
+        // desk blocks a strip that runs all the way back to the wall
+        const deskBlock = new THREE.Box3().setFromObject(desk.scene).expandByScalar(0.35)
+        deskBlock.min.z = -10
+        const collide = (p: THREE.Vector3) => {
+          p.x = THREE.MathUtils.clamp(p.x, -5.5, 5.5)
+          p.z = THREE.MathUtils.clamp(p.z, -0.8, 7.0)
+          if (p.x > deskBlock.min.x && p.x < deskBlock.max.x && p.z < deskBlock.max.z) {
+            const left = p.x - deskBlock.min.x
+            const right = deskBlock.max.x - p.x
+            const out = deskBlock.max.z - p.z
+            if (left <= right && left <= out) p.x = deskBlock.min.x
+            else if (right <= out) p.x = deskBlock.max.x
+            else p.z = deskBlock.max.z
+          }
+        }
+
         const wakeTargets = [computer.scene, keyboard.scene, mouse.scene]
         const caster = new THREE.Raycaster()
         const ndc = new THREE.Vector2()
         const setCursor = (c: string) => {
           if (webgl) webgl.domElement.style.cursor = c
         }
-        const machineHit = (e: PointerEvent) => {
+        /** ray through the pointer, or through the crosshair when locked */
+        const machineHit = (e?: PointerEvent) => {
           if (!webgl) return false
-          const r = webgl.domElement.getBoundingClientRect()
-          ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
+          if (e) {
+            const r = webgl.domElement.getBoundingClientRect()
+            ndc.set(
+              ((e.clientX - r.left) / r.width) * 2 - 1,
+              -((e.clientY - r.top) / r.height) * 2 + 1,
+            )
+          } else ndc.set(0, 0)
           caster.setFromCamera(ndc, camera)
           return caster.intersectObjects(wakeTargets, true).length > 0
+        }
+
+        const walkTick = (now: number) => {
+          if (disposed || !roaming) return
+          const dt = Math.min(0.05, (now - lastT) / 1000)
+          lastT = now
+          const fwd =
+            (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
+            (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
+          const side =
+            (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) -
+            (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0)
+          want.set(0, 0, 0)
+          if (fwd || side) {
+            want
+              .set(
+                -Math.sin(yaw) * fwd + Math.cos(yaw) * side,
+                0,
+                -Math.cos(yaw) * fwd - Math.sin(yaw) * side,
+              )
+              .normalize()
+              .multiplyScalar(SPEED)
+          }
+          // ease the velocity so steps start and stop with a little weight
+          vel.lerp(want, 1 - Math.exp(-10 * dt))
+          camera.position.addScaledVector(vel, dt)
+          collide(camera.position)
+          // a faint footstep bob, scaled by how fast you actually move
+          const planar = Math.hypot(vel.x, vel.z)
+          bobT += planar * dt * 0.55
+          camera.position.y = EYE + Math.sin(bobT * Math.PI * 2) * 0.028 * Math.min(1, planar / SPEED)
+          camera.rotation.x = pitch
+          camera.rotation.y = yaw
+          camera.rotation.z = 0
+          // close to the tube and facing it: offer the interact prompt
+          toScreen.subVectors(gCenter, camera.position)
+          const dist = toScreen.length()
+          camera.getWorldDirection(gaze)
+          const isNear = dist < 3.4 && gaze.dot(toScreen.normalize()) > 0.35
+          if (isNear !== nearNow) {
+            nearNow = isNear
+            setNear(isNear)
+          }
+          render()
+          raf = requestAnimationFrame(walkTick)
         }
 
         const startRoam = () => {
@@ -359,54 +497,80 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
           roaming = true
           parked = false
           cancelAnimationFrame(raf)
+          setIntro(false) // in case the intro flight was still going
           webgl.domElement.style.pointerEvents = 'auto'
           setCursor('grab')
-          controls = new OrbitControls(camera, webgl.domElement)
-          controls.target.copy(roamTarget)
-          controls.enableDamping = true
-          controls.dampingFactor = 0.08
-          controls.enablePan = false
-          controls.minDistance = 1.6
-          controls.maxDistance = 7.5
-          controls.minPolarAngle = 0.2
-          controls.maxPolarAngle = Math.PI / 2 - 0.06
-          // the wall and floor are one-sided planes: keep the orbit in front
-          controls.minAzimuthAngle = -1.2
-          controls.maxAzimuthAngle = 1.2
-          const roamTick = () => {
+          // with the OS still running the tube keeps spilling light
+          spill.intensity = liveRef.current ? 1.0 : 0
+          // push back from the desk and rise to standing height
+          const s0 = performance.now()
+          const from = camera.position.clone()
+          const standTick = () => {
             if (disposed || !roaming) return
-            controls?.update()
+            const t = Math.min(1, (performance.now() - s0) / 1250)
+            camera.position.lerpVectors(from, SPAWN, EASE(t))
+            camera.lookAt(front)
+            roomLight(EASE(t))
             render()
-            raf = requestAnimationFrame(roamTick)
+            if (t >= 1) {
+              // hand the camera to the FPS controls, keeping the current gaze
+              const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
+              yaw = e.y
+              pitch = e.x
+              fps = true
+              setWalking(true)
+              lastT = performance.now()
+              raf = requestAnimationFrame(walkTick)
+              return
+            }
+            raf = requestAnimationFrame(standTick)
           }
-          raf = requestAnimationFrame(roamTick)
+          raf = requestAnimationFrame(standTick)
         }
 
         const stopRoam = () => {
           roaming = false
-          controls?.dispose()
-          controls = null
+          fps = false
+          keys.clear()
+          vel.set(0, 0, 0)
+          nearNow = false
+          setWalking(false)
+          setNear(false)
+          if (document.pointerLockElement) document.exitPointerLock()
           if (webgl) {
             webgl.domElement.style.pointerEvents = 'none'
             setCursor('')
           }
         }
 
-        // power back on from wherever the orbit left the camera
-        const flyIn = () => {
+        // sit back down from wherever the walk left the camera; a live tube
+        // skips the power-on flicker and just glides in
+        const flyIn = (live: boolean) => {
           cancelAnimationFrame(raf)
           leaving = false
           const f0 = performance.now()
           const from = camera.position.clone()
+          const lookFrom = camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(3).add(from)
           const look = new THREE.Vector3()
+          const delay = live ? 0.1 : 0.35
+          const dur = live ? 1.4 : 1.9
           const flyTick = () => {
             if (disposed) return
             const t = (performance.now() - f0) / 1000
             // same flicker as the intro, in sync with the POST screen waking
-            spill.intensity = t < 0.45 ? 0 : t < 0.85 ? (Math.sin(t * 50) > -0.3 ? 0.9 : 0.2) : 1.0
-            const zoom = Math.min(1, Math.max(0, (t - 0.35) / 1.9))
+            spill.intensity = live
+              ? 1.0
+              : t < 0.45
+                ? 0
+                : t < 0.85
+                  ? Math.sin(t * 50) > -0.3
+                    ? 0.9
+                    : 0.2
+                  : 1.0
+            const zoom = Math.min(1, Math.max(0, (t - delay) / dur))
             camera.position.lerpVectors(from, camEnd, EASE(zoom))
-            camera.lookAt(look.lerpVectors(roamTarget, front, EASE(zoom)))
+            camera.lookAt(look.lerpVectors(lookFrom, front, EASE(zoom)))
+            roomLight(1 - EASE(zoom))
             render()
             if (zoom >= 1) {
               parked = true
@@ -420,29 +584,73 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
         roamRef.current = (on) => {
           if (on) startRoam()
           else if (roaming) {
+            const live = liveRef.current
             stopRoam()
-            flyIn()
+            flyIn(live)
           }
         }
 
-        // a still click on the machine wakes it; a drag is just the orbit
-        let downPt: { x: number; y: number } | null = null
-        const onPtrDown = (e: PointerEvent) => {
-          if (!roaming) return
-          downPt = { x: e.clientX, y: e.clientY }
-          setCursor('grabbing')
+        // mouse-look: pointer lock steers directly, an unlocked drag grabs
+        // the world instead; a still click locks, or interacts on the machine
+        const MOVE_KEYS = new Set([
+          'KeyW',
+          'KeyA',
+          'KeyS',
+          'KeyD',
+          'ArrowUp',
+          'ArrowDown',
+          'ArrowLeft',
+          'ArrowRight',
+        ])
+        const turn = (dx: number, dy: number, sign: number) => {
+          yaw += sign * dx * 0.0023
+          pitch = THREE.MathUtils.clamp(pitch + sign * dy * 0.0023, -1.35, 1.35)
+        }
+        const onKeyDown = (e: KeyboardEvent) => {
+          if (!roaming || !fps) return
+          if (MOVE_KEYS.has(e.code)) {
+            keys.add(e.code)
+            e.preventDefault()
+          } else if (e.code === 'KeyE' && nearNow) {
+            e.preventDefault()
+            interactRef.current()
+          }
+        }
+        const onKeyUp = (e: KeyboardEvent) => keys.delete(e.code)
+        const onLockChange = () => {
+          isLocked = document.pointerLockElement === webgl?.domElement
+          setLocked(isLocked)
+          setCursor(isLocked ? 'none' : 'grab')
+        }
+        let downPt: { moved: number } | null = null
+        const onPtrDown = () => {
+          if (!roaming || !fps) return
+          downPt = { moved: 0 }
+          if (!isLocked) setCursor('grabbing')
         }
         const onPtrMove = (e: PointerEvent) => {
-          if (!roaming || downPt) return
-          setCursor(machineHit(e) ? 'pointer' : 'grab')
+          if (!roaming || !fps) return
+          if (isLocked) {
+            turn(e.movementX, e.movementY, -1)
+          } else if (downPt) {
+            turn(e.movementX, e.movementY, 1)
+            downPt.moved += Math.hypot(e.movementX, e.movementY)
+          } else {
+            setCursor(machineHit(e) ? 'pointer' : 'grab')
+          }
         }
         const onPtrUp = (e: PointerEvent) => {
-          if (!roaming || !downPt) return
-          const moved = Math.hypot(e.clientX - downPt.x, e.clientY - downPt.y)
+          if (!roaming || !fps || !downPt) return
+          const clicked = downPt.moved < 6
           downPt = null
-          setCursor('grab')
-          if (moved < 6 && machineHit(e)) wakeRef.current()
+          if (!isLocked) setCursor('grab')
+          if (!clicked) return
+          if (machineHit(isLocked ? undefined : e)) interactRef.current()
+          else if (!isLocked) webgl?.domElement.requestPointerLock()
         }
+        window.addEventListener('keydown', onKeyDown)
+        window.addEventListener('keyup', onKeyUp)
+        document.addEventListener('pointerlockchange', onLockChange)
         webgl.domElement.addEventListener('pointerdown', onPtrDown)
         webgl.domElement.addEventListener('pointermove', onPtrMove)
         webgl.domElement.addEventListener('pointerup', onPtrUp)
@@ -468,6 +676,9 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
         cleanupDom = () => {
           removeResize()
           stopRoam()
+          window.removeEventListener('keydown', onKeyDown)
+          window.removeEventListener('keyup', onKeyUp)
+          document.removeEventListener('pointerlockchange', onLockChange)
           webgl?.domElement.removeEventListener('pointerdown', onPtrDown)
           webgl?.domElement.removeEventListener('pointermove', onPtrMove)
           webgl?.domElement.removeEventListener('pointerup', onPtrUp)
@@ -516,10 +727,30 @@ export default function CrtScene({ off, roam, onWake, onFail, children }: CrtSce
           esc to skip
         </p>
       )}
-      {roam && (
+      {roam && walking && (
         <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
-          drag to look around · click the machine to power it on · esc to leave
+          {locked
+            ? 'wasd to move · esc to free the mouse'
+            : 'wasd to move · click to look around · esc to leave'}
         </p>
+      )}
+      {roam && walking && locked && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 left-1/2 z-10 size-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-stone-400/70"
+        />
+      )}
+      {roam && walking && near && (
+        <button
+          type="button"
+          onClick={() => onInteract()}
+          className="absolute bottom-14 left-1/2 z-10 -translate-x-1/2 cursor-pointer rounded-md border border-stone-700 bg-stone-950/80 px-3 py-1.5 font-mono text-[12px] text-stone-300 backdrop-blur-sm transition-colors hover:border-stone-500 hover:text-white"
+        >
+          <kbd className="mr-2 rounded border border-stone-600 bg-stone-800 px-1.5 py-0.5 text-[10px] text-stone-200">
+            E
+          </kbd>
+          {screenLive ? 'sit back down' : 'power it on'}
+        </button>
       )}
     </div>
   )

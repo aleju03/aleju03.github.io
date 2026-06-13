@@ -1,6 +1,7 @@
 import { ArrowUpRightIcon, GithubLogoIcon, LinkedinLogoIcon } from '@phosphor-icons/react'
 import { email, github, linkedin } from '../data/projects'
 import { BOOT_OS_EVENT } from '../events'
+import { warpToOs } from '../warp'
 import { Reveal } from './Reveal'
 import { useI18n } from '../i18n'
 
@@ -66,7 +67,7 @@ export function Contact() {
           <button
             type="button"
             style={{ display: 'none' }}
-            onClick={() => window.dispatchEvent(new Event(BOOT_OS_EVENT))}
+            onClick={() => warpToOs()}
             aria-label={t.contact.wreckAria}
             className="mt-10 flex cursor-pointer flex-col items-center lg:absolute lg:right-8 lg:bottom-0 lg:mt-0"
           >
