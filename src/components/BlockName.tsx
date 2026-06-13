@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -8,6 +8,7 @@ import { isCoarsePointer } from '../device'
 import { onOverlayChange, overlayIsOpen } from '../overlay'
 import { provideWarpOrigin, warpToOs } from '../warp'
 import { THEME_FADE_MS } from '../theme'
+import { useI18n } from '../i18n'
 
 /*
   The hero name as chunky 3D letter blocks. The canvas covers the WHOLE hero
@@ -91,9 +92,11 @@ export default function BlockName({
   onActive,
   onScrambled,
 }: BlockNameProps) {
+  const { t } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const hintRef = useRef<HTMLSpanElement>(null)
   const padRef = useRef<HTMLDivElement>(null)
+  const [canFly, setCanFly] = useState(true)
 
   useEffect(() => {
     const el = ref.current
@@ -106,11 +109,11 @@ export default function BlockName({
     // maxTouchPoints catches mobile emulators that report a fine pointer
     const hintEl = hintRef.current
     const coarse = isCoarsePointer()
-    const canFly =
+    const canFlyControls =
       !coarse &&
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
       navigator.maxTouchPoints === 0
-    if (hintEl && !canFly) hintEl.textContent = 'tap the plane to fly'
+    setCanFly(canFlyControls)
 
     let disposed = false
     const disposers: (() => void)[] = []
@@ -520,6 +523,7 @@ export default function BlockName({
       // as living inside the OS until that session ends
       let wreckSuck = 0
       let wreckCapture: { t: number; ang: number; rad: number; warped: boolean } | null = null
+      let wreckWasInside = false
       let wreckSwallowed = false
       let wreckSawOverlay = false
       let wreckHover = 0
@@ -1262,6 +1266,7 @@ export default function BlockName({
             plane.scale.setScalar(planeScale)
             planePos.set(wreckScreen.x, wreckScreen.y)
             planeVel.set(0, 0)
+            wreckWasInside = true
             trailBreak()
           }
         } else if (wreckCapture) {
@@ -1303,7 +1308,9 @@ export default function BlockName({
           const wdx = planePos.x - wreckScreen.x
           const wdy = planePos.y - wreckScreen.y
           const wd = Math.hypot(wdx, wdy)
-          if (wd < wreckScreenR && (wreckSuck > 0 || spd > 4)) {
+          const insideWreckScreen = wd < wreckScreenR
+          const enteredWreckScreen = insideWreckScreen && !wreckWasInside
+          if (insideWreckScreen && (wreckSuck > 0 || (enteredWreckScreen && spd > 4))) {
             wreckSuck = Math.min(1, wreckSuck + dt / 0.55)
             // the gravity well: gentle enough at first that boosting away
             // breaks free, then decisive; the sideways tug winds up the
@@ -1327,6 +1334,7 @@ export default function BlockName({
           } else {
             wreckSuck = Math.max(0, wreckSuck - dt * 3)
           }
+          wreckWasInside = insideWreckScreen
         }
 
         // while the plane is actually being flown, scroll the page along with
@@ -1447,7 +1455,7 @@ export default function BlockName({
           ref={hintRef}
           className="absolute top-0 left-0 text-center font-mono text-xs leading-5 whitespace-pre text-stone-400 opacity-0 transition-opacity duration-700 dark:text-stone-600"
         >
-          {'wasd to fly\nshift boost\nspace swoop'}
+          {canFly ? t.hero.flightHint.desktop : t.hero.flightHint.touch}
         </span>
       </div>
       {/* touch controls, toggled by tapping the plane; the joystick under the
@@ -1464,7 +1472,7 @@ export default function BlockName({
       >
         <div
           data-joystick
-          aria-label="Flight joystick"
+          aria-label={t.hero.flightHint.joystick}
           className="pointer-events-auto relative h-32 w-32 touch-none rounded-full border border-stone-300 bg-white/50 shadow-sm backdrop-blur-sm select-none [-webkit-touch-callout:none] dark:border-stone-600 dark:bg-stone-900/50"
         >
           {/* centered with negative margins, NOT translate utilities: the
@@ -1477,11 +1485,11 @@ export default function BlockName({
           />
         </div>
         <div className="flex flex-col items-end gap-3">
-          <PadButton k="shift" label="Speed boost">
-            boost
+          <PadButton k="shift" label={t.hero.flightHint.boostAria}>
+            {t.hero.flightHint.boost}
           </PadButton>
-          <PadButton k=" " label="Swoop">
-            swoop
+          <PadButton k=" " label={t.hero.flightHint.swoopAria}>
+            {t.hero.flightHint.swoop}
           </PadButton>
         </div>
       </div>

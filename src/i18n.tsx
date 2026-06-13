@@ -28,6 +28,15 @@ const dictionaries = {
       intro:
         'Full-stack developer from Costa Rica. I build web apps end to end, from React frontends to the servers behind them.',
       viewWork: 'View work',
+      flightHint: {
+        desktop: 'wasd to fly\nshift boost\nspace swoop',
+        touch: 'tap the plane to fly',
+        joystick: 'Flight joystick',
+        boostAria: 'Speed boost',
+        swoopAria: 'Swoop',
+        boost: 'boost',
+        swoop: 'swoop',
+      },
     },
     sections: {
       selectedWork: 'Selected work',
@@ -102,6 +111,15 @@ const dictionaries = {
       intro:
         'Desarrollador full-stack de Costa Rica. Construyo aplicaciones web completas, desde el frontend en React hasta el servidor donde corren.',
       viewWork: 'Ver proyectos',
+      flightHint: {
+        desktop: 'wasd para volar\nshift impulso\nespacio derrape',
+        touch: 'toca el avión para volar',
+        joystick: 'Joystick de vuelo',
+        boostAria: 'Impulso de velocidad',
+        swoopAria: 'Derrape',
+        boost: 'impulso',
+        swoop: 'derrape',
+      },
     },
     sections: {
       selectedWork: 'Proyectos destacados',
@@ -204,7 +222,7 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
   },
   'Wallpaper Archive': {
     description:
-      'Explora, descarga y rankea wallpapers, con un modo Arena donde duelos uno a uno deciden cuáles son los mejores fondos. Una API en Fastify guarda los rankings en Turso y sirve las imágenes desde Cloudflare R2.',
+      'Explora, descarga y rankea wallpapers. En el modo Arena eliges entre dos fondos y cada voto actualiza el ranking. Una API en Fastify guarda los rankings en Turso y sirve las imágenes desde Cloudflare R2.',
     imageAlt: 'Galería de Wallpaper Archive',
     details: {
       story: [
