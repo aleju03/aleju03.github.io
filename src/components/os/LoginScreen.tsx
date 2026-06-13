@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { motion } from 'motion/react'
 import { sounds } from './sounds'
 import { authRequest } from './chatRooms'
-import { FlagLogo } from './FlagLogo'
+import { AlejLogo } from './AlejLogo'
 import { xpIcon } from './xpIcon'
 import type { Session } from './osContext'
 
@@ -141,7 +141,7 @@ export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
         <div className="relative grid w-full max-w-2xl items-center gap-8 sm:grid-cols-[1fr_auto_1fr]">
           <div className="flex flex-col items-center sm:items-end">
             <div className="flex items-center gap-3">
-              <FlagLogo size={64} />
+              <AlejLogo size={64} />
               <p className="font-xp text-4xl leading-none font-semibold text-white">AlejOS</p>
             </div>
             <p className="font-xp mt-5 text-lg font-medium text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.35)]">

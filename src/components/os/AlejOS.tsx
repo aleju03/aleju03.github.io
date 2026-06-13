@@ -27,7 +27,7 @@ import type { WinState } from './Window'
 import { sounds } from './sounds'
 import { getWallpaperId, subscribeWallpaper, wallpaperById } from './wallpapers'
 import { BiosScreen } from './BiosScreen'
-import { FlagLogo } from './FlagLogo'
+import { AlejLogo } from './AlejLogo'
 import { ScreenEffects } from './ScreenEffects'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
@@ -304,7 +304,7 @@ function BootScreen() {
   return (
     <div className="relative flex h-full flex-col items-center justify-center bg-black">
       <div>
-        <FlagLogo size={88} className="ml-14" />
+        <AlejLogo size={88} className="mx-auto" />
         <p className="font-xp mt-1 text-[44px] leading-none font-semibold text-white">
           AlejOS
           <sup className="ml-1 align-super text-lg font-bold text-orange-500">v2</sup>
@@ -1116,7 +1116,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
           }}
           className="os-start font-xp flex shrink-0 cursor-pointer items-center gap-1.5 pr-7 pl-2 text-xl font-semibold text-white italic"
         >
-          <FlagLogo size={30} outlined />
+          <AlejLogo size={30} outlined />
           start
         </button>
         <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-[5px]">
@@ -1230,7 +1230,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
             <CrtScene
               off={phase === 'down'}
               roam={phase === 'room' || away}
-              screenLive={away}
+              screenLive={phase === 'on'}
               onInteract={away ? sitDown : wake}
               onFail={() => setMode('flat')}
             >
