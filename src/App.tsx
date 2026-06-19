@@ -1,97 +1,106 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react'
-import { Nav } from './components/Nav'
-import { Progress } from './components/Progress'
-import { CommandPalette } from './components/CommandPalette'
-import { Hero } from './components/Hero'
-import { WorkGrid } from './components/WorkGrid'
-import { MoreProjects } from './components/MoreProjects'
-import { Experience } from './components/Experience'
-import { About } from './components/About'
-import { Contact } from './components/Contact'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { I18nProvider } from './i18n'
-import { BOOT_OS_EVENT, OPEN_TERMINAL_EVENT } from './events'
+import { VersionChooser } from './components/VersionChooser'
+import {
+  matchProjectSlug,
+  persistVersion,
+  readInitialVersion,
+  readQueryVersion,
+  stripVersionParam,
+  type PortfolioVersion,
+} from './version'
+import { NAVIGATE_EVENT, OPEN_CHOOSER_EVENT } from './events'
 
-const Terminal = lazy(() => import('./components/Terminal').then((m) => ({ default: m.Terminal })))
-const AlejOS = lazy(() => import('./components/os/AlejOS'))
+const FullPortfolio = lazy(() => import('./components/FullPortfolio'))
+const SimplePortfolio = lazy(() => import('./components/simple/SimplePortfolio'))
 
-function TerminalLoader() {
-  const [active, setActive] = useState(false)
-  const activeRef = useRef(false)
+// blank cream panel while a portfolio chunk loads, so there is no flash of the
+// wrong color before the lazy bundle resolves
+const fallback = <div className="min-h-dvh bg-stone-50 dark:bg-stone-950" />
 
+function VersionRouter() {
+  const [pathname, setPathname] = useState(() => window.location.pathname)
+  const [version, setVersion] = useState<PortfolioVersion | null>(
+    // a direct /projects/<slug> link is inherently the simple version, so the
+    // "back to overview" link lands on the simple home instead of the chooser
+    () => readInitialVersion() ?? (matchProjectSlug() ? 'simple' : null),
+  )
+  const [chooserOpen, setChooserOpen] = useState(false)
+
+  // consume a ?v= deep link once: remember it, then tidy the address bar
   useEffect(() => {
-    const activate = () => {
-      if (activeRef.current) return
-      activeRef.current = true
-      setActive(true)
+    const queryVersion = readQueryVersion()
+    if (queryVersion) {
+      persistVersion(queryVersion)
+      stripVersionParam()
     }
+  }, [])
 
-    const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === '`') {
-        e.preventDefault()
-        activate()
-      }
-    }
-
-    window.addEventListener(OPEN_TERMINAL_EVENT, activate)
-    window.addEventListener('keydown', onKey)
+  // follow back/forward and in-app (pushState) navigation
+  useEffect(() => {
+    const sync = () => setPathname(window.location.pathname)
+    window.addEventListener('popstate', sync)
+    window.addEventListener(NAVIGATE_EVENT, sync)
     return () => {
-      window.removeEventListener(OPEN_TERMINAL_EVENT, activate)
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('popstate', sync)
+      window.removeEventListener(NAVIGATE_EVENT, sync)
     }
   }, [])
 
-  if (!active) return null
-
-  return (
-    <Suspense fallback={null}>
-      <Terminal initialOpen />
-    </Suspense>
-  )
-}
-
-function AlejOSLoader() {
-  const [bootRequest, setBootRequest] = useState<{ detail?: unknown } | null>(() =>
-    window.location.pathname === '/alejOS' ? {} : null,
-  )
-  const active = bootRequest !== null
-  const activeRef = useRef(active)
-
+  // re-open the chooser from anywhere (footer link, command palette)
   useEffect(() => {
-    const activate = (e: Event) => {
-      if (activeRef.current) return
-      activeRef.current = true
-      setBootRequest({ detail: e instanceof CustomEvent ? e.detail : undefined })
-    }
-
-    window.addEventListener(BOOT_OS_EVENT, activate)
-    return () => window.removeEventListener(BOOT_OS_EVENT, activate)
+    const open = () => setChooserOpen(true)
+    window.addEventListener(OPEN_CHOOSER_EVENT, open)
+    return () => window.removeEventListener(OPEN_CHOOSER_EVENT, open)
   }, [])
 
-  if (!active) return null
+  const projectSlug = matchProjectSlug(pathname)
+  const forceFull = pathname.startsWith('/alejOS')
+
+  const choose = (next: PortfolioVersion) => {
+    persistVersion(next)
+    setVersion(next)
+    setChooserOpen(false)
+  }
+
+  // /alejOS always boots the full site, skipping the chooser entirely
+  if (forceFull) {
+    return (
+      <Suspense fallback={fallback}>
+        <FullPortfolio />
+      </Suspense>
+    )
+  }
+
+  const showSimple = projectSlug !== null || version === 'simple'
+  const showChooser = chooserOpen || (version === null && projectSlug === null)
 
   return (
-    <Suspense fallback={null}>
-      <AlejOS initialBoot={bootRequest} />
-    </Suspense>
+    <>
+      {showSimple ? (
+        <Suspense fallback={fallback}>
+          <SimplePortfolio slug={projectSlug} />
+        </Suspense>
+      ) : version === 'full' ? (
+        <Suspense fallback={fallback}>
+          <FullPortfolio />
+        </Suspense>
+      ) : null}
+      {showChooser && (
+        <VersionChooser
+          current={version}
+          onChoose={choose}
+          onDismiss={version !== null ? () => setChooserOpen(false) : undefined}
+        />
+      )}
+    </>
   )
 }
 
 function App() {
   return (
     <I18nProvider>
-      <Progress />
-      <Nav />
-      <CommandPalette />
-      <TerminalLoader />
-      <AlejOSLoader />
-      <main>
-        <Hero />
-        <WorkGrid />
-        <MoreProjects />
-        <Experience />
-        <About />
-      </main>
-      <Contact />
+      <VersionRouter />
     </I18nProvider>
   )
 }

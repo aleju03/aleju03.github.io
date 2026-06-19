@@ -1,6 +1,6 @@
 import { ArrowUpRightIcon, GithubLogoIcon, LinkedinLogoIcon } from '@phosphor-icons/react'
 import { email, github, linkedin } from '../data/projects'
-import { BOOT_OS_EVENT } from '../events'
+import { BOOT_OS_EVENT, OPEN_CHOOSER_EVENT } from '../events'
 import { warpToOs } from '../warp'
 import { Reveal } from './Reveal'
 import { useI18n } from '../i18n'
@@ -77,7 +77,16 @@ export function Contact() {
       </div>
       <footer className="border-t border-stone-200 dark:border-stone-800">
         <div className="mx-auto grid max-w-6xl gap-3 px-5 py-6 sm:px-8 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-center">
-          <p className="text-sm text-stone-500 md:justify-self-start">{t.contact.footer}</p>
+          <div className="md:justify-self-start">
+            <p className="text-sm text-stone-500">{t.contact.footer}</p>
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new Event(OPEN_CHOOSER_EVENT))}
+              className="mt-1 cursor-pointer font-mono text-xs text-stone-400 underline decoration-stone-300 decoration-dotted underline-offset-4 transition-colors hover:text-stone-700 dark:decoration-stone-700 dark:hover:text-stone-300"
+            >
+              {t.nav.switchVersion}
+            </button>
+          </div>
           <p
             className="text-base font-medium text-stone-600 italic md:translate-x-6 md:justify-self-center dark:text-stone-400"
             style={{ fontFamily: "Georgia, 'Times New Roman', Times, serif" }}

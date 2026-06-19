@@ -22,6 +22,7 @@ const dictionaries = {
       switchLight: 'Switch to light theme',
       switchDark: 'Switch to dark theme',
       language: 'Language',
+      switchVersion: 'Switch version',
     },
     hero: {
       fixName: 'fix my name',
@@ -64,6 +65,7 @@ const dictionaries = {
       paragraphs: [
         "I'm a full-stack developer who likes shipping things end to end: the interface, the API behind it, and the server it all runs on.",
         'Most of my work runs on React and TypeScript up front, with Python or Node.js behind it. I deploy on Vercel for frontends and run my own server for the always-on pieces.',
+        "I've followed AI development closely since before ChatGPT, back in the text-davinci-002 days, and these days it's part of how I build. I lean on agent workflows and custom skills I write myself to move faster on whatever I'm working on, whatever the stack.",
         "More than any of that, I care about how things feel. Whatever I ship should look good and feel good to use, whether you're on a phone or a big screen.",
       ],
     },
@@ -91,6 +93,32 @@ const dictionaries = {
       close: 'Close command palette',
       noMatches: 'Nothing matches',
     },
+    versions: {
+      full: {
+        title: 'The full site',
+        blurb: 'The whole thing, made to be explored.',
+      },
+      simple: {
+        title: 'the quick read',
+        blurb: 'Everything that matters, on one page.',
+      },
+    },
+    chooser: {
+      greeting: "Hey, I'm Alejandro.",
+      lead: 'I built this two ways. Take your pick.',
+      note: 'You can switch anytime.',
+      keep: 'Keep this one',
+      current: "You're here",
+    },
+    simple: {
+      role: 'Full-stack developer',
+      location: 'Costa Rica',
+      skills: 'Skills',
+      viewProject: 'View project',
+      live: 'Live',
+      back: 'Back to overview',
+      otherVersion: 'See the other version',
+    },
   },
   es: {
     nav: {
@@ -105,6 +133,7 @@ const dictionaries = {
       switchLight: 'Cambiar a tema claro',
       switchDark: 'Cambiar a tema oscuro',
       language: 'Idioma',
+      switchVersion: 'Cambiar versión',
     },
     hero: {
       fixName: 'arreglar mi nombre',
@@ -147,6 +176,7 @@ const dictionaries = {
       paragraphs: [
         'Soy un desarrollador full-stack al que le gusta construir las cosas completas: la interfaz, la API detrás y el servidor donde corre todo.',
         'Casi todo lo que hago usa React y TypeScript en el frontend, con Python o Node.js en el backend. Los frontends los despliego en Vercel, y tengo mi propio servidor para lo que necesita estar corriendo todo el tiempo.',
+        'Sigo de cerca el desarrollo de la IA desde antes de ChatGPT, en la época de text-davinci-002, y hoy es parte de cómo construyo. Me apoyo en flujos de trabajo con agentes y en skills que yo mismo escribo para avanzar más rápido en lo que sea que esté haciendo, sin importar el stack.',
         'Pero más que todo eso, me importa cómo se siente lo que hago. Quiero que todo se vea bien y sea agradable de usar, igual en el teléfono que en una pantalla grande.',
       ],
     },
@@ -173,6 +203,32 @@ const dictionaries = {
       placeholder: 'Buscar proyectos, secciones, acciones',
       close: 'Cerrar paleta de comandos',
       noMatches: 'Sin resultados para',
+    },
+    versions: {
+      full: {
+        title: 'El sitio completo',
+        blurb: 'Todo el sitio, hecho para explorarse.',
+      },
+      simple: {
+        title: 'la versión rápida',
+        blurb: 'Todo lo importante, en una página.',
+      },
+    },
+    chooser: {
+      greeting: 'Hola, soy Alejandro.',
+      lead: 'Hice esto de dos formas. Elige la que quieras.',
+      note: 'Puedes cambiar cuando quieras.',
+      keep: 'Dejar esta',
+      current: 'Estás aquí',
+    },
+    simple: {
+      role: 'Desarrollador full-stack',
+      location: 'Costa Rica',
+      skills: 'Habilidades',
+      viewProject: 'Ver proyecto',
+      live: 'En vivo',
+      back: 'Volver al inicio',
+      otherVersion: 'Ver la otra versión',
     },
   },
 }

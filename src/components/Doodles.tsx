@@ -114,6 +114,41 @@ export function BlocksDoodle({ className }: DoodleProps) {
   )
 }
 
+/** A single sheet of paper, lightly tilted, with ruled lines and one cobalt
+ *  heading line — the résumé, in the same marker-stroke language as the rest */
+export function PageDoodle({ className }: DoodleProps) {
+  return (
+    <svg viewBox="0 0 240 240" fill="none" aria-hidden="true" className={className}>
+      <defs>
+        <RoughFilter id="rough-page" />
+      </defs>
+      <g
+        filter="url(#rough-page)"
+        stroke="currentColor"
+        strokeWidth={4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <g transform="rotate(-3 120 120)">
+          {/* sheet */}
+          <rect x={68} y={42} width={104} height={156} rx={8} className="fill-stone-100 dark:fill-stone-800" />
+          {/* cobalt heading line */}
+          <path
+            d="M 88 78 L 150 75"
+            strokeWidth={6}
+            className="stroke-blue-600 dark:stroke-blue-500"
+          />
+          {/* ruled body lines */}
+          <path d="M 88 102 L 154 99" />
+          <path d="M 88 122 L 150 119" />
+          <path d="M 88 142 L 140 140" />
+          <path d="M 88 162 L 152 159" />
+        </g>
+      </g>
+    </svg>
+  )
+}
+
 /** Dotted path winding up a hill to a cobalt flag */
 export function FlagDoodle({ className }: DoodleProps) {
   return (

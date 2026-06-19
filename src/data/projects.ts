@@ -14,6 +14,8 @@ export interface ProjectDetails {
 
 export interface ShowcaseProject {
   name: string
+  /** url slug for the simple version's standalone project page (/projects/<slug>) */
+  slug: string
   description: string
   tech: string[]
   image: string
@@ -48,6 +50,7 @@ export interface SmallProject {
 export const showcase: ShowcaseProject[] = [
   {
     name: 'Mania Tracker',
+    slug: 'mania-tracker',
     description:
       'Country rankings, live score tracking, top plays, and a replay viewer for osu!mania. A TanStack Start frontend with a Node service behind it that ingests scores and streams updates to the browser over SSE.',
     tech: ['TypeScript', 'React 19', 'TanStack Start', 'Node.js', 'SQLite', 'Caddy', 'Hetzner'],
@@ -95,6 +98,7 @@ export const showcase: ShowcaseProject[] = [
   },
   {
     name: 'Wallpaper Archive',
+    slug: 'wallpaper-archive',
     description:
       'Browse, download, and rank wallpapers, with an Arena mode where head-to-head votes decide the best backgrounds. A Fastify API keeps rankings in Turso and serves images from Cloudflare R2.',
     tech: ['JavaScript', 'React', 'Fastify', 'Turso', 'Cloudflare R2'],
@@ -135,6 +139,7 @@ export const showcase: ShowcaseProject[] = [
   },
   {
     name: 'HealthFlow',
+    slug: 'healthflow',
     description:
       'Personal health dashboard tracking weight, body composition, hydration, steps, and exercise, with historical views and period summaries.',
     tech: ['React', 'FastAPI', 'SQLite', 'Recharts', 'shadcn/ui'],
@@ -179,6 +184,7 @@ export const showcase: ShowcaseProject[] = [
   },
   {
     name: 'Pokémon TCG Searcher',
+    slug: 'pokemon-tcg',
     description:
       'Android app for searching Pokémon cards, browsing sets, and checking market prices, built on the pokemontcg.io API.',
     tech: ['Flutter', 'Dart', 'Firebase'],
@@ -223,6 +229,7 @@ export const showcase: ShowcaseProject[] = [
   },
   {
     name: 'Aula',
+    slug: 'aula',
     description:
       'Mobile app for schools where teachers create assignments, message students, and manage their class groups, with separate interfaces for teachers and administrators.',
     tech: ['React Native', 'Expo', 'Firebase', 'Redux Toolkit', 'React Native Paper'],
