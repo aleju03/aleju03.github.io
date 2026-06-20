@@ -49,7 +49,7 @@ export const STOPS: Stop[] = [
     role: 'Software development intern',
     period: 'Oct - Nov 2025',
     detail:
-      'Contributed to a Next.js and Firebase app, mostly the admin authentication, dashboard, and navigation, plus route and session security, following SOLID principles.',
+      'Contributed to a Next.js and Firebase app, mostly admin authentication, dashboard, and navigation, plus route and session security, following SOLID principles.',
     url: 'https://www.bufost.com',
     logo: { src: '/experience/bufost.png', alt: 'Bufost logo', tile: 'full' },
     translations: {

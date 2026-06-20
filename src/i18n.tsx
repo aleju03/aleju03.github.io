@@ -95,19 +95,19 @@ const dictionaries = {
     },
     versions: {
       full: {
-        title: 'The full site',
+        title: 'Look around',
         blurb: 'The whole thing, made to be explored.',
       },
       simple: {
-        title: 'the quick read',
-        blurb: 'Everything that matters, on one page.',
+        title: 'just the résumé',
+        blurb: 'The short version, made to be skimmed.',
       },
     },
     chooser: {
       greeting: "Hey, I'm Alejandro.",
-      lead: 'I built this two ways. Take your pick.',
-      note: 'You can switch anytime.',
-      keep: 'Keep this one',
+      lead: 'I built this two ways.',
+      note: 'Switch whenever.',
+      keep: 'Stay here',
       current: "You're here",
     },
     simple: {
@@ -206,19 +206,19 @@ const dictionaries = {
     },
     versions: {
       full: {
-        title: 'El sitio completo',
+        title: 'Date una vuelta',
         blurb: 'Todo el sitio, hecho para explorarse.',
       },
       simple: {
-        title: 'la versión rápida',
-        blurb: 'Todo lo importante, en una página.',
+        title: 'solo el cv',
+        blurb: 'La versión corta, hecha para hojearse.',
       },
     },
     chooser: {
       greeting: 'Hola, soy Alejandro.',
-      lead: 'Hice esto de dos formas. Elige la que quieras.',
-      note: 'Puedes cambiar cuando quieras.',
-      keep: 'Dejar esta',
+      lead: 'Hice esto de dos formas.',
+      note: 'Cambia cuando quieras.',
+      keep: 'Me quedo aquí',
       current: 'Estás aquí',
     },
     simple: {
