@@ -10,6 +10,7 @@ const STORAGE_KEY = 'portfolio-language'
 
 const dictionaries = {
   en: {
+    localTime: 'Local time in Costa Rica',
     nav: {
       work: 'Work',
       experience: 'Experience',
@@ -121,6 +122,7 @@ const dictionaries = {
     },
   },
   es: {
+    localTime: 'Hora local en Costa Rica',
     nav: {
       work: 'Proyectos',
       experience: 'Experiencia',

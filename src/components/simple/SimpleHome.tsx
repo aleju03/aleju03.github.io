@@ -10,6 +10,7 @@ import { SKILLS } from '../../data/skills'
 import { STOPS, type Stop } from '../../data/experience'
 import { useI18n } from '../../i18n'
 import { projectPath } from '../../version'
+import { LocalTime } from '../LocalTime'
 import { Link } from './Link'
 
 function SectionLabel({ children }: { children: string }) {
@@ -52,8 +53,11 @@ export function SimpleHome() {
         <h1 className="text-3xl font-semibold tracking-tight text-stone-900 sm:text-4xl dark:text-stone-50">
           Alejandro Jiménez
         </h1>
-        <p className="mt-2 font-mono text-sm text-stone-500">
-          {t.simple.role} · {t.simple.location}
+        <p className="mt-2 flex flex-wrap items-center gap-x-1.5 font-mono text-sm text-stone-500">
+          <span>
+            {t.simple.role} · {t.simple.location} ·
+          </span>
+          <LocalTime />
         </p>
         <div className="mt-6 space-y-4 text-[15px] leading-relaxed text-stone-600 dark:text-stone-400">
           {t.about.paragraphs.map((paragraph) => (

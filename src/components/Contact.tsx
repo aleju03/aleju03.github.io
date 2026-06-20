@@ -2,6 +2,7 @@ import { ArrowUpRightIcon, GithubLogoIcon, LinkedinLogoIcon } from '@phosphor-ic
 import { email, github, linkedin } from '../data/projects'
 import { BOOT_OS_EVENT, OPEN_CHOOSER_EVENT } from '../events'
 import { warpToOs } from '../warp'
+import { LocalTime } from './LocalTime'
 import { Reveal } from './Reveal'
 import { useI18n } from '../i18n'
 
@@ -78,7 +79,10 @@ export function Contact() {
       <footer className="border-t border-stone-200 dark:border-stone-800">
         <div className="mx-auto grid max-w-6xl gap-3 px-5 py-6 sm:px-8 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-center">
           <div className="md:justify-self-start">
-            <p className="text-sm text-stone-500">{t.contact.footer}</p>
+            <p className="flex flex-wrap items-center gap-x-1.5 text-sm text-stone-500">
+              <span>{t.contact.footer} ·</span>
+              <LocalTime className="font-mono" />
+            </p>
             <button
               type="button"
               onClick={() => window.dispatchEvent(new Event(OPEN_CHOOSER_EVENT))}
