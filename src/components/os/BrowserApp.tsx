@@ -47,16 +47,6 @@ const webBookmarks: Bookmark[] = [
     url: 'https://web.archive.org/web/2001/https://www.google.com/',
     blurb: 'the web, before the web got heavy',
   },
-  {
-    label: 'Space Jam (1996)',
-    url: 'https://web.archive.org/web/1996/http://www.spacejam.com/',
-    blurb: 'still the greatest website ever shipped',
-  },
-  {
-    label: 'GeoCities vibes',
-    url: 'https://web.archive.org/web/1999/http://www.geocities.com/',
-    blurb: 'under construction, forever',
-  },
 ]
 
 function normalize(raw: string): string {
