@@ -49,20 +49,20 @@ export interface SmallProject {
 
 export const showcase: ShowcaseProject[] = [
   {
-    name: 'Mania Tracker',
+    name: 'Live Score Tracker',
     slug: 'mania-tracker',
     description:
-      'Country rankings, live score tracking, top plays, and a replay viewer for osu!mania. A TanStack Start frontend with a Node service behind it that ingests scores and streams updates to the browser over SSE.',
+      'Country rankings, top plays, and a replay viewer for osu!mania, a competitive rhythm game, plus a live feed that streams new scores the moment they land. A TanStack Start frontend with a Node service behind it that ingests scores and pushes updates to the browser over SSE.',
     tech: ['TypeScript', 'React 19', 'TanStack Start', 'Node.js', 'SQLite', 'Caddy', 'Hetzner'],
     image: '/projects/mania-hub.png',
-    imageAlt: 'Mania Tracker home dashboard with rankings and live scores',
+    imageAlt: 'Home dashboard with country rankings, recent top plays, and a live score feed',
     imageKind: 'wide',
     live: 'https://mania-tracker.com',
     liveLabel: 'mania-tracker.com',
     repo: 'https://github.com/aleju03/mania-hub',
     details: {
       story: [
-        'Mania Tracker follows the competitive scene of a rhythm game, tracking who is climbing the rankings, who just set a big score, and what everyone is playing. A TanStack Start frontend sits on top of an always-on Node service that does the heavy lifting.',
+        'Live Score Tracker follows the competitive scene of a rhythm game, watching who is climbing the rankings, who just set a big score, and what everyone is playing. A TanStack Start frontend sits on top of an always-on Node service that does the heavy lifting.',
         'The interesting problems were all in the real-time pipeline. The service ingests scores from a community feed, keeps durable projections in SQLite, and pushes everything else, like enrichment, leaderboards, and replay rendering, through a database-backed job queue. Browsers fetch a snapshot on page load and subscribe to a Server-Sent Events stream, and if the connection drops the client replays exactly the events it missed.',
         'The frontend lives on Vercel, while the live service and its database run on a Hetzner VPS I manage myself, with Caddy in front and several cache layers between the upstream API and the browser so pages stay instant without burning through API quotas.',
       ],
@@ -75,7 +75,7 @@ export const showcase: ShowcaseProject[] = [
       gallery: [
         {
           src: '/projects/mania-hub.png',
-          alt: 'Mania Tracker home dashboard with rankings and live scores',
+          alt: 'Home dashboard with country rankings, recent top plays, and a live score feed',
           caption: 'The home dashboard with rankings, recent top plays, and the live score feed.',
         },
         {

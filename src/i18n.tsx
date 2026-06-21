@@ -238,13 +238,13 @@ const dictionaries = {
 type Dictionary = typeof dictionaries.en
 
 const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<ShowcaseProject['details']> }> = {
-  'Mania Tracker': {
+  'Live Score Tracker': {
     description:
-      'Rankings por país, seguimiento de puntajes en vivo, mejores jugadas y un visor de repeticiones para osu!mania. El frontend usa TanStack Start, y detrás hay un servicio en Node que procesa los puntajes y manda las actualizaciones al navegador por SSE.',
-    imageAlt: 'Panel principal de Mania Tracker con rankings y puntajes en vivo',
+      'Rankings por país, mejores jugadas y un visor de repeticiones para osu!mania, un juego de ritmo competitivo, además de un feed en vivo que transmite los puntajes apenas se registran. El frontend usa TanStack Start, y detrás hay un servicio en Node que procesa los puntajes y manda las actualizaciones al navegador por SSE.',
+    imageAlt: 'Panel principal con rankings por país, mejores jugadas recientes y un feed de puntajes en vivo',
     details: {
       story: [
-        'Mania Tracker sigue la escena competitiva de un juego de ritmo: quién sube en los rankings, quién acaba de hacer una gran jugada y qué está jugando la comunidad. El frontend está hecho con TanStack Start, y detrás hay un servicio en Node siempre encendido que hace el trabajo pesado.',
+        'Live Score Tracker sigue la escena competitiva de un juego de ritmo: quién sube en los rankings, quién acaba de hacer una gran jugada y qué está jugando la comunidad. El frontend está hecho con TanStack Start, y detrás hay un servicio en Node siempre encendido que hace el trabajo pesado.',
         'Lo más interesante fue el pipeline en tiempo real. El servicio recibe los puntajes desde un feed de la comunidad, los guarda en SQLite y maneja el enriquecimiento de datos, las tablas de posiciones y el renderizado de repeticiones con una cola de trabajos sobre esa misma base de datos. El navegador carga una foto inicial del estado y se suscribe a un stream de Server-Sent Events, y si la conexión se cae, el cliente recupera exactamente los eventos que se perdió.',
         'El frontend corre en Vercel, y el servicio en vivo con su base de datos vive en un VPS de Hetzner que yo administro, con Caddy al frente y varias capas de caché entre la API externa y el navegador para que las páginas se mantengan rápidas sin gastarse las cuotas.',
       ],
@@ -257,7 +257,7 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
       gallery: [
         {
           src: '/projects/mania-hub.png',
-          alt: 'Panel principal de Mania Tracker con rankings y puntajes en vivo',
+          alt: 'Panel principal con rankings por país, mejores jugadas recientes y un feed de puntajes en vivo',
           caption: 'El panel principal con rankings, mejores jugadas recientes y el feed de puntajes en vivo.',
         },
         {
