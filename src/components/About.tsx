@@ -1,5 +1,6 @@
 import { Reveal } from './Reveal'
 import { ToolsGrid } from './ToolsGrid'
+import { linkifyBio } from './linkifyBio'
 import { useI18n } from '../i18n'
 
 export function About() {
@@ -15,7 +16,7 @@ export function About() {
             </h2>
             <div className="mt-6 max-w-[65ch] space-y-4 leading-relaxed text-stone-600 dark:text-stone-400">
               {t.about.paragraphs.map((paragraph) => (
-                <p key={paragraph}>{paragraph}</p>
+                <p key={paragraph}>{linkifyBio(paragraph)}</p>
               ))}
             </div>
           </Reveal>

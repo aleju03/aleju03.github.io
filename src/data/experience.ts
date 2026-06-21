@@ -46,7 +46,7 @@ export const STOPS: Stop[] = [
   },
   {
     org: 'Bufost',
-    role: 'Software development intern',
+    role: 'Full-stack intern',
     period: 'Oct - Nov 2025',
     detail:
       'Contributed to a Next.js and Firebase app, mostly admin authentication, dashboard, and navigation, plus route and session security, following SOLID principles.',
@@ -54,7 +54,7 @@ export const STOPS: Stop[] = [
     logo: { src: '/experience/bufost.png', alt: 'Bufost logo', tile: 'full' },
     translations: {
       es: {
-        role: 'Practicante de desarrollo de software',
+        role: 'Practicante full-stack',
         period: 'Oct - Nov 2025',
         detail:
           'Colaboré en una app en Next.js y Firebase, sobre todo en la autenticación, el panel de administración y la navegación, además de la seguridad de rutas y sesiones, siguiendo los principios SOLID.',

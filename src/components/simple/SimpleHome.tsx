@@ -11,6 +11,7 @@ import { STOPS, type Stop } from '../../data/experience'
 import { useI18n } from '../../i18n'
 import { projectPath } from '../../version'
 import { LocalTime } from '../LocalTime'
+import { linkifyBio } from '../linkifyBio'
 import { Link } from './Link'
 
 function SectionLabel({ children }: { children: string }) {
@@ -61,7 +62,7 @@ export function SimpleHome() {
         </p>
         <div className="mt-6 space-y-4 text-[15px] leading-relaxed text-stone-600 dark:text-stone-400">
           {t.about.paragraphs.map((paragraph) => (
-            <p key={paragraph}>{paragraph}</p>
+            <p key={paragraph}>{linkifyBio(paragraph)}</p>
           ))}
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm font-medium">
