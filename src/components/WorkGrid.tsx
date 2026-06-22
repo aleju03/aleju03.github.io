@@ -62,7 +62,9 @@ function WorkCard({
         className={`relative border-b border-stone-200 bg-stone-100 p-4 dark:border-stone-800 dark:bg-stone-950/60 ${wide ? 'md:flex md:w-[55%] md:shrink-0 md:items-center md:border-r md:border-b-0' : ''}`}
       >
         {/* whole thumbnail, never cropped */}
-        <div className={`flex aspect-[16/10] w-full items-center justify-center ${phoneShots ? 'gap-3 sm:gap-4' : ''}`}>
+        {/* isolate so the middle phone's z-10 stays local and the paper plane
+            (a fixed z-10 canvas) flies in front of the mockups, not behind */}
+        <div className={`flex aspect-[16/10] w-full items-center justify-center ${phoneShots ? 'isolate gap-3 sm:gap-4' : ''}`}>
           {phoneShots ? (
             phoneShots.map((shot, i) => (
               /* real iPhone frame (PommePlate, CC0) with the screen punched out;

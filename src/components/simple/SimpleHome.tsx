@@ -6,7 +6,7 @@ import {
   LinkedinLogoIcon,
 } from '@phosphor-icons/react'
 import { email, github, linkedin } from '../../data/projects'
-import { SKILLS } from '../../data/skills'
+import { SKILL_GROUPS } from '../../data/skills'
 import { STOPS, type Stop } from '../../data/experience'
 import { useI18n } from '../../i18n'
 import { projectPath } from '../../version'
@@ -197,21 +197,30 @@ export function SimpleHome() {
       {/* skills */}
       <section className="mt-14">
         <SectionLabel>{t.simple.skills}</SectionLabel>
-        <p className="mt-3 font-mono text-sm leading-relaxed text-stone-500">
-          {SKILLS.map((skill, i) => (
-            <span key={skill.name}>
-              {i > 0 && <span className="text-stone-300 dark:text-stone-700"> · </span>}
-              <a
-                href={skill.url}
-                target="_blank"
-                rel="noreferrer"
-                className="transition-colors hover:text-stone-900 dark:hover:text-stone-100"
-              >
-                {skill.name}
-              </a>
-            </span>
+        <dl className="mt-4 flex flex-col gap-3">
+          {SKILL_GROUPS.map((group) => (
+            <div key={group.label} className="flex flex-col gap-1 sm:flex-row sm:gap-5">
+              <dt className="shrink-0 font-mono text-xs text-stone-400 sm:w-20 sm:pt-0.5 dark:text-stone-500">
+                {group.label}
+              </dt>
+              <dd className="font-mono text-sm leading-relaxed text-stone-500">
+                {group.items.map((skill, i) => (
+                  <span key={skill.name}>
+                    {i > 0 && <span className="text-stone-300 dark:text-stone-700"> · </span>}
+                    <a
+                      href={skill.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="transition-colors hover:text-stone-900 dark:hover:text-stone-100"
+                    >
+                      {skill.name}
+                    </a>
+                  </span>
+                ))}
+              </dd>
+            </div>
           ))}
-        </p>
+        </dl>
       </section>
     </main>
   )

@@ -7,7 +7,7 @@ import { Link } from './Link'
 import { SimpleHome } from './SimpleHome'
 import { SimpleProject } from './SimpleProject'
 
-const BASE_TITLE = 'Alejandro Jiménez, Full-Stack Developer'
+const BASE_TITLE = 'Alejandro Jiménez - Software Engineer'
 
 export default function SimplePortfolio({ slug }: { slug: string | null }) {
   const { t, projects } = useI18n()

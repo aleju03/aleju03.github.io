@@ -3,6 +3,7 @@ import type { ShowcaseProject } from '../../data/projects'
 import { useI18n } from '../../i18n'
 import { HOME_PATH } from '../../version'
 import { Link } from './Link'
+import { ProjectGallery } from './ProjectGallery'
 
 function SectionLabel({ children }: { children: string }) {
   return <h2 className="font-mono text-xs tracking-wide text-stone-500">{children}</h2>
@@ -70,24 +71,7 @@ export function SimpleProject({ project }: { project: ShowcaseProject }) {
         </section>
 
         {/* screenshots */}
-        <section className="mt-10 flex flex-col gap-6">
-          {gallery.map((shot) => (
-            <figure key={shot.src}>
-              <div className="flex items-center justify-center rounded-xl border border-stone-200 bg-stone-100 p-3 dark:border-stone-800 dark:bg-stone-950/60">
-                <img
-                  src={shot.src}
-                  alt={shot.alt}
-                  loading="lazy"
-                  decoding="async"
-                  className="max-h-[70vh] max-w-full rounded-lg border border-stone-200 object-contain dark:border-stone-800"
-                />
-              </div>
-              <figcaption className="mt-2 text-xs text-stone-500 dark:text-stone-400">
-                {shot.caption}
-              </figcaption>
-            </figure>
-          ))}
-        </section>
+        <ProjectGallery gallery={gallery} kind={project.imageKind} />
 
         {/* what I learned */}
         <section className="mt-10 flex flex-col gap-3">

@@ -45,7 +45,7 @@ const dictionaries = {
       moreProjects: 'More projects',
       experience: 'Experience',
       about: 'About',
-      tools: 'Tools I work with',
+      tools: 'Tools I’ve worked with',
       contact: 'Get in touch',
       allRepositories: 'All repositories',
     },
@@ -59,6 +59,9 @@ const dictionaries = {
       learned: 'What I learned',
       close: 'Close project details',
       screenshot: 'Show screenshot',
+      prev: 'Previous screenshot',
+      next: 'Next screenshot',
+      gallery: 'Project screenshots',
     },
     about: {
       imageAlt:
@@ -157,7 +160,7 @@ const dictionaries = {
       moreProjects: 'Más proyectos',
       experience: 'Experiencia',
       about: 'Sobre mí',
-      tools: 'Herramientas que uso',
+      tools: 'Herramientas con las que he trabajado',
       contact: 'Hablemos',
       allRepositories: 'Todos los repositorios',
     },
@@ -171,6 +174,9 @@ const dictionaries = {
       learned: 'Qué aprendí',
       close: 'Cerrar detalles del proyecto',
       screenshot: 'Mostrar captura',
+      prev: 'Captura anterior',
+      next: 'Captura siguiente',
+      gallery: 'Capturas del proyecto',
     },
     about: {
       imageAlt:
