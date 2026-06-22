@@ -12,20 +12,27 @@ import {
   siFlutter,
   siHetzner,
   siJavascript,
+  siNextdotjs,
   siNodedotjs,
+  siPostgresql,
   siPython,
   siReact,
   siRedis,
   siSqlite,
+  siSupabase,
   siTailwindcss,
   siTanstack,
   siTurso,
   siTypescript,
+  siUnity,
   siVercel,
   siVite,
 } from 'simple-icons'
-// simple-icons no longer ships Microsoft brands; devicon covers Azure DevOps
+// devicon fills the simple-icons gaps: Azure DevOps + SQL Server (no Microsoft
+// brands) and Java (only the black OpenJDK mark ships, not the classic cup)
 import azureDevopsIcon from 'devicon/icons/azuredevops/azuredevops-original.svg'
+import sqlServerIcon from 'devicon/icons/microsoftsqlserver/microsoftsqlserver-original.svg'
+import javaIcon from 'devicon/icons/java/java-original.svg'
 
 interface Tool {
   name: string
@@ -48,12 +55,18 @@ const CATEGORIES: { label: string; tools: Tool[] }[] = [
         icon: siJavascript,
       },
       { name: 'Python', url: 'https://www.python.org', icon: siPython },
+      {
+        name: 'Java',
+        url: 'https://www.java.com',
+        img: { src: javaIcon, hex: '#0074BD' },
+      },
     ],
   },
   {
     label: 'Frontend',
     tools: [
       { name: 'React', url: 'https://react.dev', icon: siReact },
+      { name: 'Next.js', url: 'https://nextjs.org', icon: siNextdotjs, mono: true },
       { name: 'TanStack', url: 'https://tanstack.com', icon: siTanstack, mono: true },
       { name: 'Vite', url: 'https://vite.dev', icon: siVite },
       { name: 'Tailwind CSS', url: 'https://tailwindcss.com', icon: siTailwindcss },
@@ -74,9 +87,16 @@ const CATEGORIES: { label: string; tools: Tool[] }[] = [
     label: 'Data',
     tools: [
       { name: 'SQLite', url: 'https://sqlite.org', icon: siSqlite, mono: true },
+      { name: 'PostgreSQL', url: 'https://www.postgresql.org', icon: siPostgresql },
+      {
+        name: 'SQL Server',
+        url: 'https://www.microsoft.com/en-us/sql-server',
+        img: { src: sqlServerIcon, hex: '#CC2927' },
+      },
       { name: 'Turso', url: 'https://turso.tech', icon: siTurso },
-      { name: 'Redis', url: 'https://redis.io', icon: siRedis },
+      { name: 'Supabase', url: 'https://supabase.com', icon: siSupabase },
       { name: 'Firebase', url: 'https://firebase.google.com', icon: siFirebase },
+      { name: 'Redis', url: 'https://redis.io', icon: siRedis },
     ],
   },
   {
@@ -93,6 +113,10 @@ const CATEGORIES: { label: string; tools: Tool[] }[] = [
       { name: 'Vercel', url: 'https://vercel.com', icon: siVercel, mono: true },
       { name: 'Hetzner', url: 'https://www.hetzner.com', icon: siHetzner },
     ],
+  },
+  {
+    label: 'Game',
+    tools: [{ name: 'Unity', url: 'https://unity.com', icon: siUnity, mono: true }],
   },
 ]
 

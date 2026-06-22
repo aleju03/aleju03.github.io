@@ -15,12 +15,14 @@ export const SKILL_GROUPS: { label: string; items: Skill[] }[] = [
       { name: 'TypeScript', url: 'https://www.typescriptlang.org' },
       { name: 'JavaScript', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript' },
       { name: 'Python', url: 'https://www.python.org' },
+      { name: 'Java', url: 'https://www.java.com' },
     ],
   },
   {
     label: 'Frontend',
     items: [
       { name: 'React', url: 'https://react.dev' },
+      { name: 'Next.js', url: 'https://nextjs.org' },
       { name: 'TanStack', url: 'https://tanstack.com' },
       { name: 'Vite', url: 'https://vite.dev' },
       { name: 'Tailwind CSS', url: 'https://tailwindcss.com' },
@@ -41,9 +43,12 @@ export const SKILL_GROUPS: { label: string; items: Skill[] }[] = [
     label: 'Data',
     items: [
       { name: 'SQLite', url: 'https://sqlite.org' },
+      { name: 'PostgreSQL', url: 'https://www.postgresql.org' },
+      { name: 'SQL Server', url: 'https://www.microsoft.com/en-us/sql-server' },
       { name: 'Turso', url: 'https://turso.tech' },
-      { name: 'Redis', url: 'https://redis.io' },
+      { name: 'Supabase', url: 'https://supabase.com' },
       { name: 'Firebase', url: 'https://firebase.google.com' },
+      { name: 'Redis', url: 'https://redis.io' },
     ],
   },
   {
@@ -56,6 +61,10 @@ export const SKILL_GROUPS: { label: string; items: Skill[] }[] = [
       { name: 'Vercel', url: 'https://vercel.com' },
       { name: 'Hetzner', url: 'https://www.hetzner.com' },
     ],
+  },
+  {
+    label: 'Game',
+    items: [{ name: 'Unity', url: 'https://unity.com' }],
   },
 ]
 
