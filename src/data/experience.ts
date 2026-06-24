@@ -33,14 +33,16 @@ export const STOPS: Stop[] = [
     org: 'Hackathon 4.0 COL-CR',
     role: 'Participant',
     period: 'May 2024',
-    detail: 'International hackathon held with Universidad Javeriana in Colombia.',
+    detail:
+      'Co-built Trappi, a smart-tourism app that turns traveler preferences and budget into personalized, all-in-one travel itineraries, contributing across research, product requirements, and an interactive prototype.',
     url: 'https://ingenieria.javeriana.edu.co/hackathon',
     logo: { src: '/experience/hackathon.png', alt: 'Hackathon 4.0 COL-CR logo', tile: 'light' },
     translations: {
       es: {
         role: 'Participante',
         period: 'Mayo 2024',
-        detail: 'Hackathon internacional realizado con la Universidad Javeriana en Colombia.',
+        detail:
+          'Co-creé Trappi, una app de turismo inteligente que convierte las preferencias y el presupuesto del viajero en itinerarios personalizados y todo en uno, aportando en la investigación, los requisitos del producto y un prototipo interactivo.',
       },
     },
   },
