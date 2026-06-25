@@ -25,3 +25,6 @@ dist-ssr
 
 # Claude Code local files
 .claude/
+
+# Demo apps for portfolio links — independent git clones, deployed to Vercel separately
+demos/

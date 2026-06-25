@@ -21,7 +21,7 @@ export default function SimplePortfolio({ slug }: { slug: string | null }) {
   // each page starts at the top and titles itself for shareable links
   useEffect(() => {
     window.scrollTo({ top: 0 })
-    document.title = project ? `${project.name} — ${BASE_TITLE}` : BASE_TITLE
+    document.title = project ? `${project.name} - ${BASE_TITLE}` : BASE_TITLE
     return () => {
       document.title = BASE_TITLE
     }
