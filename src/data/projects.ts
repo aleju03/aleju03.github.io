@@ -148,7 +148,7 @@ export const showcase: ShowcaseProject[] = [
     imageKind: 'wide',
     imagePos: 'left-top',
     live: 'https://aleju-healthflow.vercel.app',
-    liveLabel: 'aleju-healthflow.vercel.app',
+    liveLabel: 'Demo',
     repo: 'https://github.com/aleju03/HealthFlow',
     details: {
       story: [
@@ -194,7 +194,7 @@ export const showcase: ShowcaseProject[] = [
     imageAlt: 'Pokémon TCG Searcher card search screen',
     imageKind: 'phone',
     live: 'https://aleju-pokemon-tcg.vercel.app',
-    liveLabel: 'aleju-pokemon-tcg.vercel.app',
+    liveLabel: 'Demo',
     repo: 'https://github.com/aleju03/pokemon_tcg_app',
     details: {
       story: [
@@ -241,7 +241,7 @@ export const showcase: ShowcaseProject[] = [
     imageAlt: 'Aula teacher home screen with class groups overview',
     imageKind: 'phone',
     live: 'https://aleju-aula.vercel.app',
-    liveLabel: 'aleju-aula.vercel.app',
+    liveLabel: 'Demo',
     repo: 'https://github.com/aleju03/Aula',
     details: {
       story: [
