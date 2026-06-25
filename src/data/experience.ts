@@ -18,14 +18,14 @@ export const STOPS: Stop[] = [
     org: 'Tecnológico de Costa Rica',
     role: 'Computer Engineering student',
     period: '2021 - present',
-    detail: 'Studying at the San Carlos campus, graduating in October 2026.',
+    detail: 'Graduating in October 2026.',
     url: 'https://www.tec.ac.cr',
     logo: { src: '/experience/tec.png', alt: 'Tecnológico de Costa Rica logo', tile: 'light' },
     translations: {
       es: {
         role: 'Estudiante de Ingeniería en Computación',
         period: '2021 - presente',
-        detail: 'Estudiando en la sede San Carlos, con graduación prevista para octubre de 2026.',
+        detail: 'Con graduación prevista para octubre de 2026.',
       },
     },
   },
