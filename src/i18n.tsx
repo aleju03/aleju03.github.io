@@ -62,6 +62,8 @@ const dictionaries = {
       prev: 'Previous screenshot',
       next: 'Next screenshot',
       gallery: 'Project screenshots',
+      expand: 'View full size',
+      closeZoom: 'Close full-size view',
     },
     about: {
       imageAlt:
@@ -177,6 +179,8 @@ const dictionaries = {
       prev: 'Captura anterior',
       next: 'Captura siguiente',
       gallery: 'Capturas del proyecto',
+      expand: 'Ver a tamaño completo',
+      closeZoom: 'Cerrar vista a tamaño completo',
     },
     about: {
       imageAlt:
@@ -292,6 +296,7 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
       story: [
         'Empezó como una forma más rápida de ver y descargar wallpapers para mi propio uso, y terminó convirtiéndose en una galería pública con un modo Arena, donde dos fondos compiten y un rating Elo decide cuáles son los mejores de todos los tiempos.',
         'La mayor parte del trabajo real está en el pipeline de imágenes. A cada wallpaper se le generan miniaturas, se le extraen metadatos y se revisa por hash que no esté repetido, para que la misma imagen sacada de dos fuentes distintas aparezca solo una vez. Una API en Fastify guarda los rankings y metadatos en Turso, y los originales se sirven desde Cloudflare R2.',
+        'También hay un panel de administración privado desde el que manejo todo el archivo, con un dashboard de almacenamiento, un cargador que importa desde archivos locales o un repo de GitHub, un buscador de duplicados que usa esos mismos hashes de imagen, y estadísticas de cada proveedor, resolución y carpeta de la colección.',
       ],
       learned: [
         'Servir miles de imágenes de forma barata desde object storage',
@@ -315,6 +320,31 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
           caption: 'Campeones de Arena, ordenados por rating, batallas y porcentaje de victorias.',
         },
       ],
+      extra: {
+        label: 'El panel de administración',
+        gallery: [
+          {
+            src: '/projects/wallpaper-admin.png',
+            alt: 'Dashboard de administración con estadísticas de la colección y los archivos más pesados',
+            caption: 'El dashboard, siguiendo el almacenamiento y los archivos más pesados de la colección.',
+          },
+          {
+            src: '/projects/wallpaper-admin-upload.png',
+            alt: 'Pantalla de carga importando wallpapers desde archivos locales o GitHub',
+            caption: 'El cargador, importando wallpapers nuevos desde archivos locales o un repo de GitHub.',
+          },
+          {
+            src: '/projects/wallpaper-admin-duplicates.png',
+            alt: 'Buscador de duplicados agrupando wallpapers casi idénticos por similitud',
+            caption: 'El buscador de duplicados, agrupando imágenes casi idénticas por similitud de hash.',
+          },
+          {
+            src: '/projects/wallpaper-admin-stats.png',
+            alt: 'Estadísticas desglosadas por proveedor, categoría, resolución y tamaño de archivo',
+            caption: 'Estadísticas de la colección, desglosadas por proveedor, categoría, resolución y tamaño.',
+          },
+        ],
+      },
     },
   },
   HealthFlow: {
@@ -478,6 +508,14 @@ function localizeShowcase(language: Language) {
         ...project.details,
         ...translation.details,
         gallery: mergeGallery(project.details.gallery, translation.details.gallery),
+        extra: project.details.extra && {
+          ...project.details.extra,
+          ...translation.details.extra,
+          gallery: mergeGallery(
+            project.details.extra.gallery,
+            translation.details.extra?.gallery,
+          ),
+        },
       },
     }
   })

@@ -11,7 +11,7 @@ function SectionLabel({ children }: { children: string }) {
 
 export function SimpleProject({ project }: { project: ShowcaseProject }) {
   const { t } = useI18n()
-  const { story, learned, gallery } = project.details
+  const { story, learned, gallery, extra } = project.details
 
   return (
     <main className="mx-auto max-w-2xl px-5 pb-20 sm:px-6">
@@ -72,6 +72,14 @@ export function SimpleProject({ project }: { project: ShowcaseProject }) {
 
         {/* screenshots */}
         <ProjectGallery gallery={gallery} kind={project.imageKind} />
+
+        {/* a companion piece (e.g. an admin tool), kept apart from the main shots */}
+        {extra && (
+          <section className="mt-12 flex flex-col gap-3 border-t border-stone-200 pt-8 dark:border-stone-800">
+            <SectionLabel>{extra.label}</SectionLabel>
+            <ProjectGallery gallery={extra.gallery} kind={extra.kind ?? 'wide'} className="mt-1" />
+          </section>
+        )}
 
         {/* what I learned */}
         <section className="mt-10 flex flex-col gap-3">

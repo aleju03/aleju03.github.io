@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { CaretLeftIcon, CaretRightIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, CaretRightIcon, MagnifyingGlassPlusIcon } from '@phosphor-icons/react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import type { Variants } from 'motion/react'
 import type { GalleryImage, ShowcaseProject } from '../../data/projects'
 import { useI18n } from '../../i18n'
+import { Lightbox } from '../Lightbox'
 
 // screen cutout of the iPhone frame PNG (matches WorkGrid's PommePlate frame)
 const SCREEN = { left: '6.71%', top: '3.09%', width: '86.73%', height: '93.94%' }
@@ -14,14 +15,17 @@ const navButton =
 export function ProjectGallery({
   gallery,
   kind,
+  className = 'mt-10',
 }: {
   gallery: GalleryImage[]
   kind: ShowcaseProject['imageKind']
+  className?: string
 }) {
   const { t } = useI18n()
   const reduce = useReducedMotion()
   const [active, setActive] = useState(0)
   const [dir, setDir] = useState(0)
+  const [zoomed, setZoomed] = useState(false)
 
   // preload every shot so swapping never flashes a blank frame
   useEffect(() => {
@@ -87,6 +91,15 @@ export function ProjectGallery({
           className={`absolute inset-0 h-full w-full select-none object-contain ${isPhone ? '' : 'p-3'}`}
         />
       </AnimatePresence>
+      <button
+        type="button"
+        onClick={() => setZoomed(true)}
+        onPointerDown={(e) => e.stopPropagation()}
+        aria-label={t.modal.expand}
+        className="absolute top-2 right-2 z-10 flex h-8 w-8 cursor-zoom-in items-center justify-center rounded-full bg-stone-950/55 text-white opacity-70 backdrop-blur transition hover:scale-105 hover:opacity-100 active:scale-95"
+      >
+        <MagnifyingGlassPlusIcon size={15} weight="bold" />
+      </button>
     </motion.div>
   )
 
@@ -113,7 +126,7 @@ export function ProjectGallery({
 
   return (
     <figure
-      className="mt-10"
+      className={className}
       aria-roledescription="carousel"
       aria-label={t.modal.gallery}
       onKeyDown={(e) => {
@@ -171,6 +184,16 @@ export function ProjectGallery({
           </span>
         )}
       </figcaption>
+
+      {zoomed && (
+        <Lightbox
+          src={shot.src}
+          alt={shot.alt}
+          caption={shot.caption}
+          closeLabel={t.modal.closeZoom}
+          onClose={() => setZoomed(false)}
+        />
+      )}
     </figure>
   )
 }

@@ -5,12 +5,14 @@ import {
   ArrowUpRightIcon,
   ChartLineUpIcon,
   GithubLogoIcon,
+  MagnifyingGlassPlusIcon,
   XIcon,
 } from '@phosphor-icons/react'
 import type { CSSProperties } from 'react'
-import type { ShowcaseProject } from '../data/projects'
+import type { ProjectExtra, ShowcaseProject } from '../data/projects'
 import { lockPageForOverlay } from '../overlay'
 import { techBrands } from '../data/techBrands'
+import { Lightbox } from './Lightbox'
 
 function TechBadge({ name }: { name: string }) {
   const brand = techBrands[name]
@@ -56,6 +58,88 @@ function SectionLabel({ children }: { children: string }) {
   return <h3 className="font-mono text-xs text-stone-500">{children}</h3>
 }
 
+// a companion gallery (e.g. an admin tool) shown apart from the main shots, with its own state
+function ExtraGallery({
+  group,
+  labels,
+}: {
+  group: ProjectExtra
+  labels: { screenshot: string; expand: string; closeZoom: string }
+}) {
+  const reduce = useReducedMotion()
+  const [active, setActive] = useState(0)
+  const [zoomed, setZoomed] = useState(false)
+  const shot = group.gallery[active]
+
+  return (
+    <section className="flex flex-col gap-2.5 border-t border-stone-200 pt-7 dark:border-stone-800">
+      <SectionLabel>{group.label}</SectionLabel>
+      <div className="rounded-xl border border-stone-200 bg-stone-100 p-3 dark:border-stone-800 dark:bg-stone-950/60">
+        <div className="relative flex aspect-[16/10] items-center justify-center">
+          <button
+            type="button"
+            onClick={() => setZoomed(true)}
+            aria-label={labels.expand}
+            className="group flex h-full w-full cursor-zoom-in items-center justify-center"
+          >
+            <motion.img
+              key={shot.src}
+              src={shot.src}
+              alt={shot.alt}
+              decoding="async"
+              loading="lazy"
+              initial={reduce ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.3 }}
+              className="max-h-full max-w-full rounded-lg border border-stone-200 object-contain dark:border-stone-800"
+            />
+            <span className="pointer-events-none absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-stone-950/55 text-white opacity-0 backdrop-blur transition group-hover:opacity-100 group-focus-visible:opacity-100">
+              <MagnifyingGlassPlusIcon size={15} weight="bold" />
+            </span>
+          </button>
+        </div>
+        <p className="mt-3 text-center text-xs text-stone-500 dark:text-stone-400">{shot.caption}</p>
+        {group.gallery.length > 1 && (
+          <div className="mt-3 flex justify-center gap-2 overflow-x-auto pb-1">
+            {group.gallery.map((img, i) => (
+              <button
+                key={img.src}
+                type="button"
+                onClick={() => setActive(i)}
+                aria-label={`${labels.screenshot} ${i + 1}: ${img.alt}`}
+                aria-current={i === active}
+                className={`flex h-14 w-[5.5rem] shrink-0 items-center justify-center overflow-hidden rounded-md border transition ${
+                  i === active
+                    ? 'border-blue-500 opacity-100'
+                    : 'border-stone-200 opacity-75 hover:opacity-100 dark:border-stone-800'
+                }`}
+              >
+                <img
+                  src={img.src}
+                  alt=""
+                  decoding="async"
+                  loading="lazy"
+                  className="max-h-full max-w-full object-contain"
+                />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {zoomed && (
+        <Lightbox
+          src={shot.src}
+          alt={shot.alt}
+          caption={shot.caption}
+          closeLabel={labels.closeZoom}
+          onClose={() => setZoomed(false)}
+        />
+      )}
+    </section>
+  )
+}
+
 export function ProjectModal({
   project,
   labels,
@@ -69,6 +153,8 @@ export function ProjectModal({
     learned: string
     close: string
     screenshot: string
+    expand: string
+    closeZoom: string
   }
   sourceLabel: string
   onClose: () => void
@@ -76,7 +162,8 @@ export function ProjectModal({
   const reduce = useReducedMotion()
   const panelRef = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(0)
-  const { gallery, story, learned } = project.details
+  const [zoomed, setZoomed] = useState(false)
+  const { gallery, story, learned, extra } = project.details
   const shot = gallery[active]
 
   // scroll lock + focus hand-off for the dialog's lifetime
@@ -145,18 +232,28 @@ export function ProjectModal({
         >
           {/* gallery */}
           <div className="border-b border-stone-200 bg-stone-100 p-4 dark:border-stone-800 dark:bg-stone-950/60">
-            <div className="flex aspect-[16/10] items-center justify-center">
-              <motion.img
-                key={shot.src}
-                src={shot.src}
-                alt={shot.alt}
-                decoding="async"
-                loading="eager"
-                initial={reduce ? false : { opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.3 }}
-                className="max-h-full max-w-full rounded-lg border border-stone-200 object-contain dark:border-stone-800"
-              />
+            <div className="relative flex aspect-[16/10] items-center justify-center">
+              <button
+                type="button"
+                onClick={() => setZoomed(true)}
+                aria-label={labels.expand}
+                className="group flex h-full w-full cursor-zoom-in items-center justify-center"
+              >
+                <motion.img
+                  key={shot.src}
+                  src={shot.src}
+                  alt={shot.alt}
+                  decoding="async"
+                  loading="eager"
+                  initial={reduce ? false : { opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.3 }}
+                  className="max-h-full max-w-full rounded-lg border border-stone-200 object-contain dark:border-stone-800"
+                />
+                <span className="pointer-events-none absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-stone-950/55 text-white opacity-0 backdrop-blur transition group-hover:opacity-100 group-focus-visible:opacity-100">
+                  <MagnifyingGlassPlusIcon size={15} weight="bold" />
+                </span>
+              </button>
             </div>
             <p className="mt-3 text-center text-xs text-stone-500 dark:text-stone-400">
               {shot.caption}
@@ -247,6 +344,17 @@ export function ProjectModal({
                 ))}
               </ul>
             </section>
+
+            {extra && (
+              <ExtraGallery
+                group={extra}
+                labels={{
+                  screenshot: labels.screenshot,
+                  expand: labels.expand,
+                  closeZoom: labels.closeZoom,
+                }}
+              />
+            )}
           </div>
         </div>
 
@@ -259,6 +367,16 @@ export function ProjectModal({
           <XIcon size={18} weight="bold" />
         </button>
       </motion.div>
+
+      {zoomed && (
+        <Lightbox
+          src={shot.src}
+          alt={shot.alt}
+          caption={shot.caption}
+          closeLabel={labels.closeZoom}
+          onClose={() => setZoomed(false)}
+        />
+      )}
     </div>,
     document.body,
   )

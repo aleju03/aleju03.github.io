@@ -4,12 +4,23 @@ export interface GalleryImage {
   caption: string
 }
 
+/** a companion set of shots (e.g. an internal admin tool) shown apart from the main gallery */
+export interface ProjectExtra {
+  /** short heading shown above the shots, e.g. "Admin panel" */
+  label: string
+  gallery: GalleryImage[]
+  /** how to frame the shots; defaults to 'wide' */
+  kind?: ShowcaseProject['imageKind']
+}
+
 export interface ProjectDetails {
   /** first-person paragraphs about the experience of building it */
   story: string[]
   learned: string[]
   /** modal gallery; the first entry doubles as the opening shot */
   gallery: GalleryImage[]
+  /** an extra, separately-labeled gallery for a companion piece that isn't its own project */
+  extra?: ProjectExtra
 }
 
 export interface ShowcaseProject {
@@ -112,6 +123,7 @@ export const showcase: ShowcaseProject[] = [
       story: [
         'It started as a faster way to browse and download wallpapers for myself, then grew into a public gallery with an Arena mode, where wallpapers go head-to-head and an Elo rating decides the all-time best.',
         'Most of the real work lives in the image pipeline. Every wallpaper gets thumbnails, extracted metadata, and a hash-based duplicate check, so the same image scraped from two sources only shows up once. A Fastify API keeps rankings and metadata in Turso while the originals are served from Cloudflare R2.',
+        'There is also a private admin panel where I run the whole archive, with a storage dashboard, an uploader that imports from local files or a GitHub repo, a duplicate finder built on those same image hashes, and stats on every provider, resolution, and folder in the collection.',
       ],
       learned: [
         'Serving thousands of images cheaply from object storage',
@@ -135,6 +147,31 @@ export const showcase: ShowcaseProject[] = [
           caption: 'Arena champions, ranked by rating, battles, and win rate.',
         },
       ],
+      extra: {
+        label: 'The admin panel',
+        gallery: [
+          {
+            src: '/projects/wallpaper-admin.png',
+            alt: 'Admin dashboard with collection stats and the largest files in storage',
+            caption: 'The dashboard, tracking storage and the largest files in the collection.',
+          },
+          {
+            src: '/projects/wallpaper-admin-upload.png',
+            alt: 'Admin upload screen importing wallpapers from local files or GitHub',
+            caption: 'The uploader, importing new wallpapers from local files or a GitHub repo.',
+          },
+          {
+            src: '/projects/wallpaper-admin-duplicates.png',
+            alt: 'Admin duplicate finder grouping near-identical wallpapers by similarity',
+            caption: 'The duplicate finder, grouping near-identical images by hash similarity.',
+          },
+          {
+            src: '/projects/wallpaper-admin-stats.png',
+            alt: 'Admin statistics broken down by provider, category, resolution, and file size',
+            caption: 'Collection stats, broken down by provider, category, resolution, and file size.',
+          },
+        ],
+      },
     },
   },
   {
