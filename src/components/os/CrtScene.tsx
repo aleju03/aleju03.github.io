@@ -5,6 +5,8 @@ import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
+import { buildHouse, CEIL_H, HOUSE, YARD } from './houseWorld'
+import type { HouseModels } from './houseWorld'
 
 /*
   The physical machine, for real this time: a WebGL night-desk scene and a
@@ -47,122 +49,21 @@ const MODELS = [
   '/os/models/lamp.glb',
   '/os/models/player.glb',
 ]
+// the rest of the house streams in behind the intro; the walls never wait
+const HOUSE_MODEL_KEYS = [
+  'bed', 'nightstand', 'dresser', 'closet', 'curtains', 'alarmclock',
+  'officechair', 'bathtub', 'toilet', 'bathsink', 'mirror', 'towelrack',
+  'toiletpaper', 'rug', 'tvcabinet', 'tv', 'sofa', 'loveseat', 'coffeetable',
+  'roundrug', 'bookcase', 'floorlamp', 'diningtable', 'chair', 'kfridge',
+  'kstove', 'ksink', 'kdrawer', 'kupper', 'kupperl', 'toaster', 'washer',
+  'microwave', 'ceilinglight', 'fence', 'tree', 'bush', 'bushflower',
+  'hedge', 'bench', 'lantern',
+] as const
 /** fraction of the viewport height the glass fills once parked */
 const FILL = 0.86
 const INTRO_S = 2.6
 const WINDOW_CENTER_Y = 3.3
 const WINDOW_CENTER_Z = 5.75
-const WINDOW_HOLE_W = 1.78
-const WINDOW_HOLE_H = 1.14
-
-const seeded = (seed: number) => () => {
-  seed = (seed * 1664525 + 1013904223) >>> 0
-  return seed / 0x100000000
-}
-
-const makeExteriorTexture = () => {
-  const canvas = document.createElement('canvas')
-  canvas.width = 512
-  canvas.height = 256
-  const ctx = canvas.getContext('2d')
-  if (ctx) {
-    const w = canvas.width
-    const h = canvas.height
-    const rand = seeded(0x51d3)
-    const sky = ctx.createLinearGradient(0, 0, 0, h)
-    sky.addColorStop(0, '#071125')
-    sky.addColorStop(0.46, '#172b49')
-    sky.addColorStop(0.74, '#43516c')
-    sky.addColorStop(1, '#1b2638')
-    ctx.fillStyle = sky
-    ctx.fillRect(0, 0, w, h)
-
-    const moon = ctx.createRadialGradient(390, 58, 2, 390, 58, 72)
-    moon.addColorStop(0, 'rgba(242,232,193,0.95)')
-    moon.addColorStop(0.12, 'rgba(242,232,193,0.4)')
-    moon.addColorStop(1, 'rgba(242,232,193,0)')
-    ctx.fillStyle = moon
-    ctx.fillRect(300, 0, 200, 150)
-    ctx.fillStyle = 'rgba(245,236,207,0.8)'
-    ctx.beginPath()
-    ctx.arc(390, 58, 15, 0, Math.PI * 2)
-    ctx.fill()
-
-    for (let i = 0; i < 90; i++) {
-      const x = rand() * w
-      const y = rand() * h * 0.55
-      const a = 0.18 + rand() * 0.62
-      ctx.fillStyle = `rgba(224,236,255,${a})`
-      ctx.fillRect(x, y, rand() < 0.08 ? 2 : 1, 1)
-    }
-
-    const drawRidge = (base: number, amp: number, color: string, points: number) => {
-      ctx.beginPath()
-      ctx.moveTo(0, h)
-      ctx.lineTo(0, base)
-      for (let i = 0; i <= points; i++) {
-        const x = (i / points) * w
-        const y =
-          base -
-          Math.sin(i * 0.85 + 0.6) * amp * 0.42 -
-          rand() * amp
-        ctx.lineTo(x, y)
-      }
-      ctx.lineTo(w, h)
-      ctx.closePath()
-      ctx.fillStyle = color
-      ctx.fill()
-    }
-    drawRidge(166, 23, '#1f3149', 14)
-    drawRidge(184, 16, '#142338', 18)
-
-    const glow = ctx.createLinearGradient(0, 122, 0, 224)
-    glow.addColorStop(0, 'rgba(243,170,92,0)')
-    glow.addColorStop(0.52, 'rgba(243,170,92,0.16)')
-    glow.addColorStop(1, 'rgba(243,170,92,0)')
-    ctx.fillStyle = glow
-    ctx.fillRect(0, 122, w, 102)
-
-    ctx.fillStyle = '#0b1525'
-    for (let x = -10; x < w; x += 24 + rand() * 18) {
-      const bw = 16 + rand() * 26
-      const bh = 28 + rand() * 72
-      ctx.fillRect(x, 198 - bh, bw, bh)
-      if (rand() > 0.62) ctx.fillRect(x + bw * 0.4, 198 - bh - 12, bw * 0.2, 12)
-      ctx.fillStyle = `rgba(246,205,128,${0.35 + rand() * 0.34})`
-      for (let wx = x + 4; wx < x + bw - 3; wx += 7) {
-        for (let wy = 198 - bh + 7; wy < 191; wy += 10) {
-          if (rand() > 0.7) ctx.fillRect(wx, wy, 2, 3)
-        }
-      }
-      ctx.fillStyle = '#0b1525'
-    }
-
-    ctx.fillStyle = '#0a1020'
-    ctx.beginPath()
-    ctx.moveTo(0, 207)
-    ctx.bezierCurveTo(90, 202, 148, 217, 225, 209)
-    ctx.bezierCurveTo(320, 197, 406, 213, 512, 203)
-    ctx.lineTo(512, 256)
-    ctx.lineTo(0, 256)
-    ctx.closePath()
-    ctx.fill()
-
-    ctx.strokeStyle = 'rgba(141,172,211,0.23)'
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.moveTo(36, 252)
-    ctx.bezierCurveTo(155, 222, 307, 232, 484, 210)
-    ctx.stroke()
-  }
-
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.colorSpace = THREE.SRGBColorSpace
-  texture.generateMipmaps = false
-  texture.minFilter = THREE.LinearFilter
-  texture.magFilter = THREE.LinearFilter
-  return texture
-}
 
 const makeMoonSpillTexture = () => {
   const canvas = document.createElement('canvas')
@@ -202,165 +103,6 @@ const makeMoonSpillTexture = () => {
   texture.minFilter = THREE.LinearFilter
   texture.magFilter = THREE.LinearFilter
   return texture
-}
-
-const addExteriorWorld = (
-  windowFrame: THREE.Group,
-  trackDisposable: (disposable: { dispose: () => void }) => void,
-  trackTexture: (texture: THREE.Texture) => void,
-) => {
-  const backdropTexture = makeExteriorTexture()
-  trackDisposable(backdropTexture)
-  trackTexture(backdropTexture)
-
-  const backdropMat = new THREE.MeshBasicMaterial({
-    map: backdropTexture,
-    fog: false,
-    side: THREE.FrontSide,
-  })
-  const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(7.8, 4.3), backdropMat)
-  backdrop.position.set(0, 0.32, -5.8)
-  backdrop.renderOrder = 1
-  windowFrame.add(backdrop)
-
-  const tmpMatrix = new THREE.Matrix4()
-  const tmpPos = new THREE.Vector3()
-  const tmpScale = new THREE.Vector3()
-  const tmpQuat = new THREE.Quaternion()
-  const tmpEuler = new THREE.Euler()
-  const setPlane = (
-    mesh: THREE.InstancedMesh,
-    i: number,
-    x: number,
-    y: number,
-    z: number,
-    sx: number,
-    sy: number,
-    rot = 0,
-  ) => {
-    tmpPos.set(x, y, z)
-    tmpScale.set(sx, sy, 1)
-    tmpQuat.setFromEuler(tmpEuler.set(0, 0, rot))
-    mesh.setMatrixAt(i, tmpMatrix.compose(tmpPos, tmpQuat, tmpScale))
-  }
-  const setBox = (
-    mesh: THREE.InstancedMesh,
-    i: number,
-    x: number,
-    y: number,
-    z: number,
-    sx: number,
-    sy: number,
-    sz: number,
-    rotY = 0,
-  ) => {
-    tmpPos.set(x, y, z)
-    tmpScale.set(sx, sy, sz)
-    tmpQuat.setFromEuler(tmpEuler.set(0, rotY, 0))
-    mesh.setMatrixAt(i, tmpMatrix.compose(tmpPos, tmpQuat, tmpScale))
-  }
-
-  const rand = seeded(0xa11e)
-  const planeGeo = new THREE.PlaneGeometry(1, 1)
-  const boxGeo = new THREE.BoxGeometry(1, 1, 1)
-  const farMat = new THREE.MeshStandardMaterial({
-    color: '#09182a',
-    roughness: 0.9,
-    emissive: '#050c16',
-    emissiveIntensity: 0.45,
-    fog: false,
-  })
-  const midMat = new THREE.MeshStandardMaterial({
-    color: '#112b46',
-    roughness: 0.86,
-    emissive: '#081523',
-    emissiveIntensity: 0.5,
-    fog: false,
-  })
-  const buildingDefs: Array<{
-    x: number
-    y: number
-    z: number
-    w: number
-    h: number
-    d: number
-    mat: 0 | 1 | 2
-  }> = []
-
-  for (let i = 0; i < 18; i++) {
-    const z = -13 + rand() * 3.2
-    const w = 0.65 + rand() * 1.05
-    const h = 1.3 + rand() * 2.1
-    buildingDefs.push({
-      x: -7.2 + i * 0.84 + (rand() - 0.5) * 0.38,
-      y: -0.72 + h / 2,
-      z,
-      w,
-      h,
-      d: 0.6 + rand() * 1.0,
-      mat: 0,
-    })
-  }
-  for (let i = 0; i < 12; i++) {
-    const z = -8.4 + rand() * 1.8
-    const w = 0.46 + rand() * 0.76
-    const h = 0.95 + rand() * 1.75
-    buildingDefs.push({
-      x: -5 + i * 0.86 + (rand() - 0.5) * 0.25,
-      y: -0.78 + h / 2,
-      z,
-      w,
-      h,
-      d: 0.5 + rand() * 0.85,
-      mat: 1,
-    })
-  }
-  const mats = [farMat, midMat]
-  mats.forEach((mat, matIndex) => {
-    const defs = buildingDefs.filter((b) => b.mat === matIndex)
-    const buildings = new THREE.InstancedMesh(boxGeo, mat, defs.length)
-    defs.forEach((b, i) => setBox(buildings, i, b.x, b.y, b.z, b.w, b.h, b.d, (rand() - 0.5) * 0.08))
-    buildings.instanceMatrix.needsUpdate = true
-    buildings.renderOrder = 2 + matIndex
-    windowFrame.add(buildings)
-  })
-
-  const windowMat = new THREE.MeshBasicMaterial({
-    color: '#ffc96d',
-    fog: false,
-    transparent: true,
-    opacity: 0.86,
-    depthWrite: false,
-  })
-  const lightSlots: Array<{ x: number; y: number; z: number; sx: number; sy: number }> = []
-  buildingDefs.forEach((b) => {
-    const cols = Math.max(1, Math.floor(b.w / 0.12))
-    const rows = Math.max(1, Math.floor(b.h / 0.16))
-    for (let cx = 0; cx < cols; cx++) {
-      for (let cy = 0; cy < rows; cy++) {
-        if (rand() < 0.62) continue
-        lightSlots.push({
-          x: b.x - b.w * 0.34 + (cols === 1 ? 0 : (cx / (cols - 1)) * b.w * 0.68),
-          y: b.y - b.h * 0.38 + (rows === 1 ? 0 : (cy / (rows - 1)) * b.h * 0.7),
-          z: b.z + b.d / 2 + 0.012,
-          sx: 0.032 + rand() * 0.02,
-          sy: 0.04 + rand() * 0.03,
-        })
-      }
-    }
-  })
-  const lights = new THREE.InstancedMesh(planeGeo, windowMat, Math.min(150, lightSlots.length))
-  for (let i = 0; i < lights.count; i++) {
-    const light = lightSlots[i]
-    setPlane(lights, i, light.x, light.y, light.z, light.sx, light.sy)
-  }
-  lights.instanceMatrix.needsUpdate = true
-  lights.renderOrder = 6
-  windowFrame.add(lights)
-
-  windowFrame.traverse((o) => {
-    if (o !== windowFrame) o.frustumCulled = false
-  })
 }
 
 export default function CrtScene({
@@ -438,9 +180,10 @@ export default function CrtScene({
         // PCFSoft is less prone to the blotchy VSM halos that show up around
         // thin desk legs and chair casters on the dark floor.
         webgl.shadowMap.type = THREE.PCFSoftShadowMap
-        // the scene is static except the player body, so shadow maps are baked
-        // once and re-rendered only on frames where a caster actually moved
-        webgl.shadowMap.autoUpdate = false
+        // the scene is static except the player body, so every light's map is
+        // baked once (light.shadow.autoUpdate = false) and re-rendered only
+        // for the light near the player on frames where a caster moved
+        webgl.shadowMap.autoUpdate = true
         webgl.toneMapping = THREE.ACESFilmicToneMapping
         webgl.toneMappingExposure = 1.1
         webgl.domElement.style.position = 'absolute'
@@ -463,81 +206,14 @@ export default function CrtScene({
 
         scene = new THREE.Scene()
         scene.background = new THREE.Color('#0a0908')
-        // gentle enough that the far corners of the room survive a walk-around
-        scene.fog = new THREE.Fog('#0a0908', 10, 27)
-
-        const floor = new THREE.Mesh(
-          new THREE.PlaneGeometry(30, 30),
-          new THREE.MeshStandardMaterial({ color: '#2a2018', roughness: 0.95 }),
-        )
-        floor.rotation.x = -Math.PI / 2
-        floor.receiveShadow = true
-        scene.add(floor)
-        const wall = new THREE.Mesh(
-          new THREE.PlaneGeometry(30, 12),
-          new THREE.MeshStandardMaterial({ color: '#3d3328', roughness: 1 }),
-        )
-        wall.position.set(0, 6, -1.75)
-        wall.receiveShadow = true
-        scene.add(wall)
-
-        // the rest of the shell, so standing up reveals a room and not a void
-        const ROOM = { minX: -7.6, maxX: 7.6, minZ: -1.75, maxZ: 10.5, h: 6 }
-        const shell = (
-          w: number,
-          h: number,
-          pos: [number, number, number],
-          rot: [number, number],
-          color: string,
-        ) => {
-          const m = new THREE.Mesh(
-            new THREE.PlaneGeometry(w, h),
-            new THREE.MeshStandardMaterial({ color, roughness: 1 }),
-          )
-          m.position.set(...pos)
-          m.rotation.set(rot[0], rot[1], 0)
-          m.receiveShadow = true
-          scene?.add(m)
-        }
-        const depth = ROOM.maxZ - ROOM.minZ
-        const midZ = (ROOM.minZ + ROOM.maxZ) / 2
-        const windowCut = {
-          z0: WINDOW_CENTER_Z - WINDOW_HOLE_W / 2,
-          z1: WINDOW_CENTER_Z + WINDOW_HOLE_W / 2,
-          y0: WINDOW_CENTER_Y - WINDOW_HOLE_H / 2,
-          y1: WINDOW_CENTER_Y + WINDOW_HOLE_H / 2,
-        }
-        const leftWall = (z0: number, z1: number, y0: number, y1: number) => {
-          if (z1 <= z0 || y1 <= y0) return
-          shell(z1 - z0, y1 - y0, [ROOM.minX, (y0 + y1) / 2, (z0 + z1) / 2], [0, Math.PI / 2], '#4a3d30')
-        }
-        leftWall(ROOM.minZ, ROOM.maxZ, 0, windowCut.y0)
-        leftWall(ROOM.minZ, ROOM.maxZ, windowCut.y1, ROOM.h)
-        leftWall(ROOM.minZ, windowCut.z0, windowCut.y0, windowCut.y1)
-        leftWall(windowCut.z1, ROOM.maxZ, windowCut.y0, windowCut.y1)
-        shell(depth, ROOM.h, [ROOM.maxX, ROOM.h / 2, midZ], [0, -Math.PI / 2], '#4a3d30')
-        shell(ROOM.maxX - ROOM.minX, ROOM.h, [0, ROOM.h / 2, ROOM.maxZ], [0, Math.PI], '#50412f')
-        shell(ROOM.maxX - ROOM.minX, depth, [0, ROOM.h, midZ], [Math.PI / 2, 0], '#3a3129')
-
-        // skirting boards: bare planes meeting bare planes reads like a game
-        // box, a dark baseboard line grounds every wall
-        const skirtMat = new THREE.MeshStandardMaterial({ color: '#241c14', roughness: 0.9 })
-        const skirt = (w: number, x: number, z: number, rotY: number) => {
-          const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.17, 0.06), skirtMat)
-          m.position.set(x, 0.085, z)
-          m.rotation.y = rotY
-          m.receiveShadow = true
-          scene?.add(m)
-        }
-        skirt(ROOM.maxX - ROOM.minX, 0, ROOM.minZ + 0.035, 0)
-        skirt(ROOM.maxX - ROOM.minX, 0, ROOM.maxZ - 0.035, 0)
-        skirt(depth, ROOM.minX + 0.035, midZ, Math.PI / 2)
-        skirt(depth, ROOM.maxX - 0.035, midZ, Math.PI / 2)
+        // gentle: deep enough to swallow the yard's far corners at night
+        // without murdering the living room seen from the bedroom door
+        scene.fog = new THREE.Fog('#0a0908', 14, 75)
 
         // the pendant lamp the room light actually comes from; its bulb
         // material glows once the roam fill ramps in
         lamp.scene.scale.setScalar(1.6)
-        lamp.scene.position.set(0, ROOM.h, 4.4)
+        lamp.scene.position.set(0, CEIL_H, 4.4)
         let bulbMat: THREE.MeshStandardMaterial | null = null
         lamp.scene.traverse((o) => {
           const mesh = o as THREE.Mesh
@@ -605,12 +281,6 @@ export default function CrtScene({
         const keycapMat = new THREE.MeshStandardMaterial({ color: '#d9d4c9', roughness: 0.58 })
         const darkKeyMat = new THREE.MeshStandardMaterial({ color: '#3a3d40', roughness: 0.62 })
         const accentKeyMat = new THREE.MeshStandardMaterial({ color: '#9d5542', roughness: 0.66 })
-        const chairMat = new THREE.MeshStandardMaterial({ color: '#243139', roughness: 0.8 })
-        const chairMetalMat = new THREE.MeshStandardMaterial({
-          color: '#74716a',
-          roughness: 0.35,
-          metalness: 0.55,
-        })
         const rugMat = new THREE.MeshStandardMaterial({ color: '#56382e', roughness: 0.92 })
         const rugTrimMat = new THREE.MeshStandardMaterial({ color: '#b18b5b', roughness: 0.9 })
         const glassBlueMat = new THREE.MeshStandardMaterial({
@@ -634,6 +304,18 @@ export default function CrtScene({
         const bookMats = ['#b75b4e', '#4e6f8f', '#d0a64f', '#59784f', '#6c537b'].map(
           (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.78 }),
         )
+
+        // the whole house around this room — walls, doors, windows, yard,
+        // sky — is procedural and stands immediately; furniture streams in
+        const house = buildHouse({
+          scene,
+          obstacles,
+          darkWoodMat,
+          windowGlassMat,
+          lamp,
+          trackTexture: (t) => runtimeTextures.push(t),
+          trackDisposable: (d) => runtimeDisposables.push(d),
+        })
 
         computer.scene.scale.setScalar(16)
         computer.scene.position.set(0, deskTop, 0.05)
@@ -845,61 +527,9 @@ export default function CrtScene({
         })
         scene.add(rug)
 
-        const chair = new THREE.Group()
-        const seat = makeRounded(1.22, 0.18, 1.02, 0.08, chairMat)
-        seat.position.set(0, 0.78, 0)
-        chair.add(seat)
-        const back = makeRounded(1.2, 1.15, 0.16, 0.07, chairMat)
-        back.position.set(0, 1.38, 0.55)
-        back.rotation.x = -0.12
-        chair.add(back)
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.72, 16), chairMetalMat)
-        post.position.y = 0.4
-        post.castShadow = true
-        post.receiveShadow = true
-        chair.add(post)
-        for (let i = 0; i < 5; i++) {
-          const a = (i / 5) * Math.PI * 2
-          const leg = makeBox(0.68, 0.055, 0.085, chairMetalMat)
-          leg.position.set(Math.cos(a) * 0.28, 0.14, Math.sin(a) * 0.28)
-          leg.rotation.y = -a
-          chair.add(leg)
-          const caster = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 6), blackPlasticMat)
-          caster.scale.y = 0.55
-          caster.position.set(Math.cos(a) * 0.62, 0.08, Math.sin(a) * 0.62)
-          caster.castShadow = true
-          caster.receiveShadow = true
-          chair.add(caster)
-        }
-        chair.position.set(-0.15, 0, 3.05)
-        chair.rotation.y = -0.03
-        scene.add(chair)
-        addObstacleFrom(chair, 0.18)
-
-        const windowFrame = new THREE.Group()
-        const pane = makeBox(1.85, 1.22, 0.035, windowGlassMat, false)
-        pane.renderOrder = 8
-        windowFrame.add(pane)
-        addExteriorWorld(
-          windowFrame,
-          (disposable) => runtimeDisposables.push(disposable),
-          (texture) => runtimeTextures.push(texture),
-        )
-        ;[
-          [2.03, 0.1, 0.08, 0, 0.66, 0.035],
-          [2.03, 0.1, 0.08, 0, -0.66, 0.035],
-          [0.1, 1.42, 0.08, -1.01, 0, 0.035],
-          [0.1, 1.42, 0.08, 1.01, 0, 0.035],
-          [0.08, 1.22, 0.07, 0, 0, 0.05],
-          [1.85, 0.07, 0.07, 0, 0, 0.055],
-        ].forEach(([w, h, d, x, y, z]) => {
-          const rail = makeBox(w, h, d, darkWoodMat, false)
-          rail.position.set(x, y, z)
-          windowFrame.add(rail)
-        })
-        windowFrame.position.set(ROOM.minX + 0.045, WINDOW_CENTER_Y, WINDOW_CENTER_Z)
-        windowFrame.rotation.y = Math.PI / 2
-        scene.add(windowFrame)
+        // (the desk chair, the bedroom window and everything past that wall
+        // are the house module's business now — the chair itself arrives as
+        // a real model with the streamed furniture)
 
         const moonSpillTexture = makeMoonSpillTexture()
         runtimeDisposables.push(moonSpillTexture)
@@ -913,19 +543,18 @@ export default function CrtScene({
           side: THREE.DoubleSide,
           fog: false,
         })
-        const moonPool = new THREE.Mesh(new THREE.PlaneGeometry(4.9, 2.15), moonSpillMat)
+        // scooted east so the bed along that wall doesn't swallow the patch
+        const moonPool = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 2.05), moonSpillMat)
         moonPool.rotation.x = -Math.PI / 2
         moonPool.rotation.z = -0.13
-        moonPool.position.set(ROOM.minX + 2.72, 0.028, WINDOW_CENTER_Z + 0.03)
+        moonPool.position.set(-3.6, 0.028, WINDOW_CENTER_Z + 0.1)
         moonPool.renderOrder = 12
         moonPool.frustumCulled = false
         scene.add(moonPool)
         const windowSpill = new THREE.SpotLight('#9dbfff', 0, 8, 0.6, 0.78, 1.6)
-        windowSpill.position.set(ROOM.minX + 0.06, WINDOW_CENTER_Y + 0.08, WINDOW_CENTER_Z + 0.05)
-        windowSpill.target.position.set(ROOM.minX + 4.6, 0.55, WINDOW_CENTER_Z - 0.22)
-        const windowWash = new THREE.PointLight('#7faeff', 0, 5.5, 1.75)
-        windowWash.position.set(ROOM.minX + 0.55, WINDOW_CENTER_Y - 0.05, WINDOW_CENTER_Z)
-        scene.add(windowSpill, windowSpill.target, windowWash)
+        windowSpill.position.set(HOUSE.minX + 0.06, WINDOW_CENTER_Y + 0.08, WINDOW_CENTER_Z + 0.05)
+        windowSpill.target.position.set(HOUSE.minX + 4.6, 0.55, WINDOW_CENTER_Z - 0.22)
+        scene.add(windowSpill, windowSpill.target)
 
         const shelf = new THREE.Group()
         const shelfHeights = [0.38, 0.88, 1.38, 1.88]
@@ -952,7 +581,7 @@ export default function CrtScene({
             shelf.add(book)
           }
         })
-        shelf.position.set(ROOM.maxX - 0.38, 0, 6.45)
+        shelf.position.set(HOUSE.maxX - 0.38, 0, 6.45)
         scene.add(shelf)
         addObstacleFrom(shelf, 0.2)
 
@@ -1015,7 +644,8 @@ export default function CrtScene({
         }
         addString(pinPoints[0], pinPoints[1])
         addString(pinPoints[1], pinPoints[3])
-        cork.position.set(-2.95, 3.15, ROOM.maxZ - 0.045)
+        // scooted toward the door: the bed's wall real estate is spoken for
+        cork.position.set(0.2, 3.15, 10.5 - 0.045)
         cork.rotation.y = Math.PI
         scene.add(cork)
 
@@ -1039,7 +669,7 @@ export default function CrtScene({
         const stackB = makeBox(0.39, 0.05, 0.28, bookMats[0], false)
         stackB.position.set(-0.16, 0.735, -0.03)
         lowTable.add(stackB)
-        lowTable.position.set(ROOM.minX + 1.05, 0, 3.2)
+        lowTable.position.set(HOUSE.minX + 1.05, 0, 3.2)
         lowTable.rotation.y = 0.15
         scene.add(lowTable)
         addObstacleFrom(lowTable, 0.18)
@@ -1081,9 +711,10 @@ export default function CrtScene({
         pendant.shadow.radius = 2
         pendant.shadow.blurSamples = 4
         pendant.shadow.camera.near = 0.5
+        pendant.shadow.autoUpdate = false // baked; re-flagged only when dirty
         scene.add(pendant, pendant.target)
         const moon = new THREE.DirectionalLight('#8fa6d4', 0)
-        moon.position.set(ROOM.minX - 4, 4.6, 5.5)
+        moon.position.set(HOUSE.minX - 4, 4.6, 5.5)
         moon.target.position.set(0, 0.6, 4.5)
         scene.add(moon, moon.target)
         const HEMI_SEATED = 0.55
@@ -1098,9 +729,9 @@ export default function CrtScene({
           pendant.intensity = PEND_ROAM * k
           moon.intensity = MOON_ROAM * k
           windowSpill.intensity = WINDOW_SPILL_ROAM * (0.25 + k * 0.75)
-          windowWash.intensity = 2.5 * (0.35 + k * 0.65)
           moonSpillMat.opacity = 0.13 * (0.45 + k * 0.7)
           if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
+          house.setRoamLight(k)
         }
         const key = new THREE.SpotLight('#ffd9a0', 60, 0, 0.55, 0.6, 1.6)
         key.position.set(-3.2, 5.2, 2.8)
@@ -1112,7 +743,16 @@ export default function CrtScene({
         key.shadow.radius = 2
         key.shadow.blurSamples = 4
         key.shadow.camera.near = 2
+        key.shadow.autoUpdate = false
         scene.add(key, key.target)
+        // every shadow map is hand-baked: this re-renders them all once
+        const bakeShadows = () => {
+          pendant.shadow.needsUpdate = true
+          key.shadow.needsUpdate = true
+          house.shadowLights.forEach((l) => {
+            l.shadow.needsUpdate = true
+          })
+        }
         const rim = new THREE.DirectionalLight('#7e8ea8', 0.5)
         rim.position.set(2.5, 3, -2)
         scene.add(rim)
@@ -1123,13 +763,15 @@ export default function CrtScene({
 
         // everything placed so far is furniture: bake world matrices once and
         // stop re-walking the whole static graph every frame (the player body
-        // joins the scene later and keeps its auto-update)
+        // joins the scene later and keeps its auto-update; the house flags
+        // its door pivots dynamic so they keep easing open)
         scene.updateMatrixWorld(true)
         scene.traverse((o) => {
-          o.matrixAutoUpdate = false
+          if (!o.userData.dynamic) o.matrixAutoUpdate = false
         })
 
-        const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 40)
+        // far plane reaches the star dome and the skyline ring now
+        const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 400)
         camera.rotation.order = 'YXZ' // yaw/pitch compose FPS-style while walking
         const tanHalf = Math.tan(THREE.MathUtils.degToRad(38 / 2))
         const camStart = new THREE.Vector3(2.4, 2.9, 4.5)
@@ -1140,6 +782,27 @@ export default function CrtScene({
         // the window during roam does not hitch while the GPU compiles it.
         runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
         webgl.compile(scene, camera)
+
+        // stream the furniture and yard models in behind the intro; the
+        // house is fully walkable before any of them land, and a prop that
+        // fails to download is just a gap, never a failure
+        Promise.all(
+          HOUSE_MODEL_KEYS.map((key) =>
+            load(`/os/models/${key}.glb`).then(
+              (gltf) => [key, gltf] as const,
+              () => null,
+            ),
+          ),
+        ).then((entries) => {
+          if (disposed || !webgl || !scene) return
+          const models: HouseModels = { plant, mug }
+          for (const e of entries) if (e) models[e[0]] = e[1]
+          house.furnish(models)
+          // pay the new shaders/textures now, not on the first look around
+          runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
+          webgl.compile(scene, camera)
+          bakeShadows()
+        })
 
         const render = () => {
           if (!webgl || !scene) return
@@ -1171,7 +834,7 @@ export default function CrtScene({
           }
           raf = requestAnimationFrame(introTick)
         }
-        webgl.shadowMap.needsUpdate = true // first bake; frozen from here on
+        bakeShadows() // first bake; each map stays frozen until re-flagged
         raf = requestAnimationFrame(introTick)
 
         outroRef.current = () => {
@@ -1257,8 +920,9 @@ export default function CrtScene({
         deskBlock.min.z = -10 // the desk strip runs all the way back to the wall
         obstacles.push(deskBlock)
         const collide = (p: THREE.Vector3) => {
-          p.x = THREE.MathUtils.clamp(p.x, ROOM.minX + 0.5, ROOM.maxX - 0.5)
-          p.z = THREE.MathUtils.clamp(p.z, -0.8, ROOM.maxZ - 0.5)
+          // hard bounds are the yard fence now; walls are obstacle boxes
+          p.x = THREE.MathUtils.clamp(p.x, YARD.minX + 0.55, YARD.maxX - 0.55)
+          p.z = THREE.MathUtils.clamp(p.z, -0.8, YARD.maxZ - 0.55)
           for (const b of obstacles) {
             if (p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z) {
               const exitL = p.x - b.min.x
@@ -1357,10 +1021,17 @@ export default function CrtScene({
           walkAct?.setEffectiveWeight(gait)
           walkAct?.setEffectiveTimeScale(0.5 + gait * 0.7)
           mixer.update(dt)
-          // the player is the only moving shadow caster: re-bake the maps
-          // only while actually moving, they stay frozen the rest of the time
-          if (webgl && (planar > 0.05 || Math.abs((duck ? 1 : 0) - crouchK) > 0.02))
-            webgl.shadowMap.needsUpdate = true
+          // doors easing, fireflies drifting, the bathroom mirror waking
+          house.update(dt, camera.position)
+          // the player is the only moving shadow caster: re-bake just the
+          // lights that can see them, only on frames where they moved
+          if (planar > 0.05 || Math.abs((duck ? 1 : 0) - crouchK) > 0.02) {
+            // generous regions: a map must keep re-baking until the player is
+            // fully out of its light's frustum, or their shadow strands there
+            if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
+            if (camera.position.z < 7) key.shadow.needsUpdate = true
+            house.flagShadows(camera.position)
+          }
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
@@ -1415,7 +1086,7 @@ export default function CrtScene({
               )
               body.rotation.y = yaw + Math.PI
               body.visible = true
-              if (webgl) webgl.shadowMap.needsUpdate = true // the body just appeared
+              bakeShadows() // the body just appeared
               // grab the mouse like a game; if the browser refuses (no fresh
               // gesture), the click-to-grab path below still gets you there
               try {
@@ -1443,7 +1114,7 @@ export default function CrtScene({
           body.visible = false
           body.scale.y = BODY_S
           if (webgl) {
-            webgl.shadowMap.needsUpdate = true // bake the body's shadow away
+            bakeShadows() // bake the body's shadow away
             // sit back down at full resolution; the governor only runs walking
             pr = PR_CAP
             webgl.setPixelRatio(pr)
