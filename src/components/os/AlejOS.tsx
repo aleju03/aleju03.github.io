@@ -17,10 +17,11 @@ import {
   UserIcon,
 } from '@phosphor-icons/react'
 import { github, linkedin } from '../../data/projects'
-import { BOOT_OS_EVENT } from '../../events'
+import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT } from '../../events'
 import { lockPageForOverlay } from '../../overlay'
 import { APPS, glyphFor, isAppId } from './apps'
 import { preloadImage, preloadXpIcons, xpIcon } from './xpIcon'
+import type { XpIconName } from './xpIcon'
 import type { AppId } from './apps'
 import { Window } from './Window'
 import type { WinState } from './Window'
@@ -72,13 +73,18 @@ type Mode = 'flat' | '3d'
 const OS_PATH = '/alejOS'
 const isOsUrl = () => location.pathname.toLowerCase() === '/alejos'
 
-const START_ITEMS: { app: AppId; label?: string; props?: Record<string, unknown> }[] = [
-  { app: 'explorer', label: 'My Computer', props: { path: MY_COMPUTER } },
+const START_ITEMS: {
+  app: AppId
+  label?: string
+  icon?: XpIconName
+  props?: Record<string, unknown>
+}[] = [
+  { app: 'explorer', label: 'My Computer', icon: 'my-computer', props: { path: MY_COMPUTER } },
   { app: 'browser' },
   { app: 'chat' },
   { app: 'notepad' },
   { app: 'paint' },
-  { app: 'minesweeper' },
+  { app: 'explorer', label: 'Games', icon: 'games', props: { path: 'C:\\Desktop\\Games' } },
   { app: 'terminal' },
   { app: 'display' },
 ]
@@ -545,6 +551,14 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       window.removeEventListener('popstate', onPop)
     }
   }, [boot, shutdown, leaveRoom])
+
+  // the flat bezel has no scene to build: the warp tunnel can open its exit
+  // as soon as the screen exists (this also covers the 3D-failed fallback,
+  // where the tunnel is still holding for a room that will never come)
+  useEffect(() => {
+    if (phase === 'off' || mode !== 'flat') return
+    window.dispatchEvent(new Event(OS_SCENE_READY_EVENT))
+  }, [phase, mode])
 
   useEffect(() => {
     if (phase !== 'post') return
@@ -1050,11 +1064,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
                       className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
                     >
                       <span className="text-blue-700 [&_svg]:size-5">
-                        {item.label === 'My Computer' ? (
-                          xpIcon('my-computer', 20)
-                        ) : (
-                          APPS[item.app].glyph(20)
-                        )}
+                        {item.icon ? xpIcon(item.icon, 20) : APPS[item.app].glyph(20)}
                       </span>
                       {item.label ?? APPS[item.app].name}
                     </button>

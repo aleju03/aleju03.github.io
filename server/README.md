@@ -1,6 +1,6 @@
 # AlejOS chat server
 
-Self-hosted WebSocket server behind the AlejOS login screen and Chat Rooms app. Visitors register real accounts (stored in SQLite, scrypt-hashed passwords) or chat as guests, then talk in shared rooms — `#general`, `#projects`, `#random`. Room history persists so late joiners see the conversation. Plain Node 22 ESM, no build step; dependencies are `ws` and `better-sqlite3` only.
+Self-hosted WebSocket server behind the AlejOS login screen, the Chat Rooms app and the Games folder. Visitors register real accounts (stored in SQLite, scrypt-hashed passwords) or chat as guests, then talk in shared rooms — `#general`, `#projects`, `#random`. Room history persists so late joiners see the conversation. The same socket carries the arcade: shared per-game leaderboards (one best row per player per game) and Mine Duel, a turn-based 1v1 minesweeper with server-side matchmaking and game logic. Plain Node 22 ESM, no build step; dependencies are `ws` and `better-sqlite3` only.
 
 v2 replaced the old 1:1 messenger protocol entirely — deploy the server and the frontend together.
 
@@ -26,6 +26,15 @@ Everything is JSON over `/ws`. First message must be `hello`:
 - `{type:'typing', room}` → forwarded to the room, throttled
 
 Messages carry `{from, admin, registered, text, at}` so the client can render badges. Admin sessions resume from in-memory tokens only; a restart logs the admin out. Registered-user session tokens expire after 90 days; expired rows are swept hourly.
+
+Arcade messages, same socket after `hello`:
+
+- `{type:'score-submit', game, score}` → `{type:'score-ok', game, best, improved, rank}`. Games and their caps live in `GAMES`; time-based games sort ascending. The `duel` board rejects submits — the match engine writes wins itself.
+- `{type:'score-top', game}` → `{type:'score-top', game, top: [...25], you: {score, rank} | null}`
+- `{type:'duel-queue'}` → `duel-queued`, then `duel-start {seat, players, size, mines, lives, deadline}` once paired
+- `{type:'duel-plant', cells: [5 indices]}` during the blind phase → `duel-planted` per seat (with `auto: true` plus your cells if the 45s clock planted for you), then `duel-phase {turn, deadline}`
+- `{type:'duel-dig', cell}` on your turn → `duel-dug {cell, by, mine, count, lives, turn, deadline}` to both; a 20s turn timeout digs a random tile for the staller. Numbers count both players' mines (duplicates included); any mine costs the digger a life, their own included
+- `duel-over {winner, reason, lives, mines}` reveals both minefields; `{type:'duel-rematch'}` from both seats restarts, `{type:'duel-leave'}` forfeits
 
 ## Run locally
 

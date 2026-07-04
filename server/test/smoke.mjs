@@ -175,7 +175,92 @@ async function main() {
   assert.equal(nickOk.name, 'wanderer');
   console.log('8. nick protection works, free nicks accepted');
 
-  for (const c of [guest, alice, alice2, dup, late]) c.ws.close();
+  // 9. Leaderboards: best-only upserts, ranks, asc games treat lower as better.
+  alice2.send({ type: 'score-submit', game: 'snake', score: 12 });
+  const s1 = await alice2.nextOf('score-ok', 'first snake score');
+  assert.equal(s1.best, 12);
+  assert.equal(s1.improved, true);
+  assert.equal(s1.rank, 1);
+  alice2.send({ type: 'score-submit', game: 'snake', score: 8 });
+  const s2 = await alice2.nextOf('score-ok', 'worse snake score');
+  assert.equal(s2.best, 12);
+  assert.equal(s2.improved, false);
+  guest.send({ type: 'score-submit', game: 'snake', score: 20 });
+  await guest.nextOf('score-ok', 'guest snake score');
+  alice2.send({ type: 'score-top', game: 'snake' });
+  const top = await alice2.nextOf('score-top', 'snake top');
+  assert.equal(top.top.length, 2);
+  assert.equal(top.top[0].score, 20);
+  assert.equal(top.you.score, 12);
+  assert.equal(top.you.rank, 2);
+  alice2.send({ type: 'score-submit', game: 'mine-beginner', score: 45000 });
+  await alice2.nextOf('score-ok', 'first time');
+  alice2.send({ type: 'score-submit', game: 'mine-beginner', score: 30000 });
+  const t2 = await alice2.nextOf('score-ok', 'better time');
+  assert.equal(t2.best, 30000);
+  assert.equal(t2.improved, true);
+  console.log('9. leaderboards keep bests and rank both directions');
+
+  // 10. Mine Duel: queue two players and play a whole match.
+  const p1 = connect(url);
+  const p2 = connect(url);
+  await p1.opened;
+  await p2.opened;
+  p1.send({ type: 'hello' });
+  await p1.nextOf('hello-ok', 'p1 hello');
+  p2.send({ type: 'hello' });
+  await p2.nextOf('hello-ok', 'p2 hello');
+  p1.send({ type: 'duel-queue' });
+  await p1.nextOf('duel-queued', 'p1 queued');
+  p2.send({ type: 'duel-queue' });
+  const start1 = await p1.nextOf('duel-start', 'p1 start');
+  const start2 = await p2.nextOf('duel-start', 'p2 start');
+  assert.equal(start1.phase, 'plant');
+  assert.notEqual(start1.seat, start2.seat);
+  const bySeat = (seat) => (start1.seat === seat ? p1 : p2);
+
+  p1.send({ type: 'duel-plant', cells: [0, 1, 2, 3, 4] });
+  p2.send({ type: 'duel-plant', cells: [5, 6, 7, 8, 9] });
+  const phase1 = await p1.nextOf('duel-phase', 'dig phase');
+  assert.equal(phase1.phase, 'dig');
+
+  // cell 99 sits far from every mine: safe, and its count must be zero
+  bySeat(phase1.turn).send({ type: 'duel-dig', cell: 99 });
+  const dug1 = await p1.nextOf('duel-dug', 'dig 99');
+  assert.equal(dug1.mine, false);
+  assert.equal(dug1.count, 0);
+
+  // digging out of turn is rejected
+  bySeat(phase1.turn).send({ type: 'duel-dig', cell: 98 });
+  const offTurn = await bySeat(phase1.turn).nextOf('error', 'off-turn dig');
+  assert.equal(offTurn.code, 'bad_request');
+
+  // three mine hits drain the duel: 2-1, then 1-1, then 1-0 ends it
+  bySeat(dug1.turn).send({ type: 'duel-dig', cell: 0 });
+  const dug2 = await p1.nextOf('duel-dug', 'dig mine 0');
+  assert.equal(dug2.mine, true);
+  assert.equal(dug2.lives[dug1.turn], 1);
+  bySeat(dug2.turn).send({ type: 'duel-dig', cell: 1 });
+  const dug3 = await p1.nextOf('duel-dug', 'dig mine 1');
+  assert.equal(dug3.mine, true);
+  bySeat(dug3.turn).send({ type: 'duel-dig', cell: 2 });
+  await p1.nextOf('duel-dug', 'dig mine 2');
+  // hits landed on the 2nd, 1st, 2nd digger: the opening digger survives
+  const over = await p1.nextOf('duel-over', 'duel over');
+  assert.equal(over.reason, 'lives');
+  assert.equal(over.winner, phase1.turn);
+  assert.equal(over.mines[start1.seat].length, 5);
+  await p2.nextOf('duel-over', 'p2 sees over');
+  console.log('10. duel plays out: plant, turn order, lives, board reveal');
+
+  // 11. The win landed on the duel board.
+  p1.send({ type: 'score-top', game: 'duel' });
+  const duelTop = await p1.nextOf('score-top', 'duel top');
+  assert.equal(duelTop.top.length, 1);
+  assert.equal(duelTop.top[0].score, 1);
+  console.log('11. duel win recorded on the shared board');
+
+  for (const c of [guest, alice, alice2, dup, late, p1, p2]) c.ws.close();
   child.kill('SIGTERM');
   await new Promise((resolve) => child.on('exit', resolve));
   fs.rmSync(tmpDir, { recursive: true, force: true });

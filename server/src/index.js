@@ -32,6 +32,42 @@ if (!ADMIN_TOKEN) {
 
 export const ROOMS = ['general', 'projects', 'random'];
 
+// Arcade leaderboards: every game in the AlejOS Games folder posts scores
+// here so visitors compete on shared boards. One best row per (game, name);
+// 'asc' games are times (lower is better). Caps keep obviously-forged
+// values out of the boards — real anticheat is not worth it for a portfolio.
+export const GAMES = {
+  pong: { order: 'desc', max: 999 },
+  snake: { order: 'desc', max: 500 },
+  memory: { order: 'asc', min: 3_000, max: 3_600_000 }, // ms to clear the board
+  2048: { order: 'desc', max: 4_000_000 },
+  whack: { order: 'desc', max: 999 },
+  flappy: { order: 'desc', max: 9_999 },
+  'vsrg-boot': { order: 'desc', max: 2_000_000 },
+  'vsrg-dialup': { order: 'desc', max: 2_000_000 },
+  'vsrg-overclock': { order: 'desc', max: 2_000_000 },
+  'mine-beginner': { order: 'asc', min: 1_000, max: 3_599_000 }, // ms
+  'mine-intermediate': { order: 'asc', min: 3_000, max: 3_599_000 },
+  'mine-expert': { order: 'asc', min: 8_000, max: 3_599_000 },
+  // duel is server-scored: wins are recorded by the match engine only
+  duel: { order: 'desc', managed: true },
+};
+const SCORE_TOP_LIMIT = 25;
+const SCORE_RATE_MAX = 10; // submissions per window per connection
+const SCORE_RATE_WINDOW_MS = 60_000;
+
+// Mine Duel: 1v1 minesweeper where both players secretly plant mines on one
+// shared board, then take turns digging it. Inspired by the Squidcraft Games
+// duel: numbers count BOTH players' mines around a tile, and digging any
+// mine — including your own — costs the digger a life.
+const DUEL_SIZE = 10;
+const DUEL_CELLS = DUEL_SIZE * DUEL_SIZE;
+const DUEL_MINES = 5;
+const DUEL_LIVES = 2;
+const DUEL_PLANT_MS = 45_000;
+const DUEL_TURN_MS = 20_000;
+const DUEL_REMATCH_MS = 60_000;
+
 const MAX_TEXT_LEN = 600;
 const HISTORY_LIMIT = 60;
 const MAX_MESSAGES_PER_ROOM = 500;
@@ -81,6 +117,18 @@ db.exec(`
     at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_room_messages ON room_messages(room, id);
+  CREATE TABLE IF NOT EXISTS scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game TEXT NOT NULL,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    is_registered INTEGER NOT NULL DEFAULT 0,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    score INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    UNIQUE(game, name_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_scores_board ON scores(game, score);
 `);
 
 const stmt = {
@@ -106,6 +154,29 @@ const stmt = {
       SELECT * FROM room_messages WHERE room = ? ORDER BY id DESC LIMIT ?
     ) ORDER BY id ASC
   `),
+  scoreGet: db.prepare('SELECT score FROM scores WHERE game = ? AND name_key = ?'),
+  scoreUpsert: db.prepare(`
+    INSERT INTO scores (game, name, name_key, is_registered, is_admin, score, at)
+    VALUES (@game, @name, @nameKey, @registered, @admin, @score, @at)
+    ON CONFLICT(game, name_key) DO UPDATE SET
+      name = excluded.name, is_registered = excluded.is_registered,
+      is_admin = excluded.is_admin, score = excluded.score, at = excluded.at
+  `),
+  scoreAddWin: db.prepare(`
+    INSERT INTO scores (game, name, name_key, is_registered, is_admin, score, at)
+    VALUES ('duel', @name, @nameKey, @registered, @admin, 1, @at)
+    ON CONFLICT(game, name_key) DO UPDATE SET
+      name = excluded.name, is_registered = excluded.is_registered,
+      is_admin = excluded.is_admin, score = scores.score + 1, at = excluded.at
+  `),
+  scoreTopDesc: db.prepare(
+    'SELECT name, is_registered, is_admin, score, at FROM scores WHERE game = ? ORDER BY score DESC, at ASC LIMIT ?'
+  ),
+  scoreTopAsc: db.prepare(
+    'SELECT name, is_registered, is_admin, score, at FROM scores WHERE game = ? ORDER BY score ASC, at ASC LIMIT ?'
+  ),
+  scoreRankDesc: db.prepare('SELECT COUNT(*) AS n FROM scores WHERE game = ? AND score > ?'),
+  scoreRankAsc: db.prepare('SELECT COUNT(*) AS n FROM scores WHERE game = ? AND score < ?'),
 };
 
 // Startup maintenance: drop expired sessions and any history overflow left
@@ -305,6 +376,368 @@ function storeMessage(room, ws, text) {
   };
 }
 
+// ---------------------------------------------------------------- scores
+
+const scoreRateByConn = new WeakMap(); // ws -> [timestamps]
+
+function allowScore(ws) {
+  const now = Date.now();
+  const hits = recentHits(scoreRateByConn.get(ws) ?? [], now, SCORE_RATE_WINDOW_MS);
+  scoreRateByConn.set(ws, hits);
+  if (hits.length >= SCORE_RATE_MAX) return false;
+  hits.push(now);
+  return true;
+}
+
+function scoreRow(row) {
+  return {
+    name: row.name,
+    registered: Boolean(row.is_registered),
+    admin: Boolean(row.is_admin),
+    score: row.score,
+    at: row.at,
+  };
+}
+
+function rankFor(game, score) {
+  const rank = GAMES[game].order === 'asc' ? stmt.scoreRankAsc : stmt.scoreRankDesc;
+  return rank.get(game, score).n + 1;
+}
+
+function handleScoreSubmit(ws, msg) {
+  const game = typeof msg.game === 'string' ? msg.game : '';
+  const cfg = GAMES[game];
+  if (!cfg || cfg.managed) {
+    strike(ws);
+    return;
+  }
+  const score = msg.score;
+  if (!Number.isInteger(score) || score < (cfg.min ?? 1) || score > cfg.max) {
+    strike(ws);
+    return;
+  }
+  if (!allowScore(ws)) {
+    sendError(ws, 'rate');
+    return;
+  }
+  const name = displayName(ws);
+  const nameKey = name.toLowerCase();
+  const prev = stmt.scoreGet.get(game, nameKey);
+  const improved = !prev || (cfg.order === 'asc' ? score < prev.score : score > prev.score);
+  if (improved) {
+    stmt.scoreUpsert.run({
+      game,
+      name,
+      nameKey,
+      registered: ws.user ? 1 : 0,
+      admin: ws.isAdmin ? 1 : 0,
+      score,
+      at: Date.now(),
+    });
+  }
+  const best = improved ? score : prev.score;
+  send(ws, { type: 'score-ok', game, best, improved, rank: rankFor(game, best) });
+}
+
+function handleScoreTop(ws, msg) {
+  const game = typeof msg.game === 'string' ? msg.game : '';
+  const cfg = GAMES[game];
+  if (!cfg) {
+    strike(ws);
+    return;
+  }
+  const top = (cfg.order === 'asc' ? stmt.scoreTopAsc : stmt.scoreTopDesc)
+    .all(game, SCORE_TOP_LIMIT)
+    .map(scoreRow);
+  const mine = stmt.scoreGet.get(game, displayName(ws).toLowerCase());
+  send(ws, {
+    type: 'score-top',
+    game,
+    top,
+    you: mine ? { score: mine.score, rank: rankFor(game, mine.score) } : null,
+  });
+}
+
+// ---------------------------------------------------------------- mine duel
+
+let duelSeq = 1;
+const duelQueue = new Set(); // sockets waiting for an opponent
+
+function duelNeighbors(i) {
+  const row = Math.floor(i / DUEL_SIZE);
+  const col = i % DUEL_SIZE;
+  const out = [];
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const r = row + dr;
+      const c = col + dc;
+      if (r >= 0 && r < DUEL_SIZE && c >= 0 && c < DUEL_SIZE) out.push(r * DUEL_SIZE + c);
+    }
+  }
+  return out;
+}
+
+function randomCells(count) {
+  const pool = Array.from({ length: DUEL_CELLS }, (_, i) => i);
+  const out = [];
+  for (let k = 0; k < count; k++) {
+    const j = k + Math.floor(Math.random() * (pool.length - k));
+    [pool[k], pool[j]] = [pool[j], pool[k]];
+    out.push(pool[k]);
+  }
+  return out;
+}
+
+function duelSend(match, payload) {
+  for (const ws of match.players) send(ws, payload);
+}
+
+function otherSeat(seat) {
+  return seat === 0 ? 1 : 0;
+}
+
+function startDuel(a, b) {
+  const match = {
+    id: duelSeq++,
+    players: [a, b],
+    names: [userPayload(a), userPayload(b)],
+    mines: [new Set(), new Set()],
+    planted: [false, false],
+    revealed: new Map(), // cell -> adjacent mine count (both players, duplicates count)
+    exploded: new Set(),
+    lives: [DUEL_LIVES, DUEL_LIVES],
+    turn: Math.random() < 0.5 ? 0 : 1,
+    phase: 'plant',
+    deadline: Date.now() + DUEL_PLANT_MS,
+    timer: null,
+    rematch: [false, false],
+  };
+  a.duel = { match, seat: 0 };
+  b.duel = { match, seat: 1 };
+  match.players.forEach((ws, seat) =>
+    send(ws, {
+      type: 'duel-start',
+      seat,
+      players: match.names,
+      size: DUEL_SIZE,
+      mines: DUEL_MINES,
+      lives: DUEL_LIVES,
+      phase: 'plant',
+      deadline: match.deadline,
+    })
+  );
+  match.timer = setTimeout(() => autoPlant(match), DUEL_PLANT_MS);
+}
+
+function beginDig(match) {
+  clearTimeout(match.timer);
+  match.phase = 'dig';
+  match.deadline = Date.now() + DUEL_TURN_MS;
+  duelSend(match, { type: 'duel-phase', phase: 'dig', turn: match.turn, deadline: match.deadline });
+  match.timer = setTimeout(() => autoDig(match), DUEL_TURN_MS);
+}
+
+// the placement deadline passed: anyone who never committed gets a random
+// minefield (and is told which cells, since they have to memorize them)
+function autoPlant(match) {
+  if (match.phase !== 'plant') return;
+  for (const seat of [0, 1]) {
+    if (match.planted[seat]) continue;
+    match.mines[seat] = new Set(randomCells(DUEL_MINES));
+    match.planted[seat] = true;
+    send(match.players[seat], {
+      type: 'duel-planted',
+      seat,
+      auto: true,
+      cells: [...match.mines[seat]],
+    });
+    send(match.players[otherSeat(seat)], { type: 'duel-planted', seat, auto: true });
+  }
+  beginDig(match);
+}
+
+function minedCellCount(match) {
+  return new Set([...match.mines[0], ...match.mines[1]]).size;
+}
+
+function digCell(match, seat, cell, auto = false) {
+  clearTimeout(match.timer);
+  const hits = (match.mines[0].has(cell) ? 1 : 0) + (match.mines[1].has(cell) ? 1 : 0);
+  let count = null;
+  if (hits > 0) {
+    // any mine detonates on the digger, including their own
+    match.exploded.add(cell);
+    match.lives[seat] -= 1;
+  } else {
+    count = 0;
+    for (const n of duelNeighbors(cell)) {
+      if (match.mines[0].has(n)) count += 1;
+      if (match.mines[1].has(n)) count += 1;
+    }
+    match.revealed.set(cell, count);
+  }
+  match.turn = otherSeat(seat);
+  match.deadline = Date.now() + DUEL_TURN_MS;
+  duelSend(match, {
+    type: 'duel-dug',
+    cell,
+    by: seat,
+    auto,
+    mine: hits > 0,
+    count,
+    lives: match.lives,
+    turn: match.turn,
+    deadline: match.deadline,
+  });
+  if (match.lives[seat] <= 0) {
+    finishDuel(match, otherSeat(seat), 'lives');
+    return;
+  }
+  if (match.revealed.size >= DUEL_CELLS - minedCellCount(match)) {
+    const [la, lb] = match.lives;
+    finishDuel(match, la === lb ? -1 : la > lb ? 0 : 1, 'board');
+    return;
+  }
+  match.timer = setTimeout(() => autoDig(match), DUEL_TURN_MS);
+}
+
+// the turn clock ran out: the server digs a random hidden tile for the
+// staller — mines included, so stalling is never the safe play
+function autoDig(match) {
+  if (match.phase !== 'dig') return;
+  const hidden = [];
+  for (let i = 0; i < DUEL_CELLS; i++) {
+    if (!match.revealed.has(i) && !match.exploded.has(i)) hidden.push(i);
+  }
+  if (hidden.length === 0) return;
+  digCell(match, match.turn, hidden[Math.floor(Math.random() * hidden.length)], true);
+}
+
+function finishDuel(match, winner, reason) {
+  clearTimeout(match.timer);
+  match.phase = 'over';
+  if (winner >= 0) {
+    const name = match.names[winner];
+    stmt.scoreAddWin.run({
+      name: name.name,
+      nameKey: name.name.toLowerCase(),
+      registered: name.registered ? 1 : 0,
+      admin: name.admin ? 1 : 0,
+      at: Date.now(),
+    });
+  }
+  duelSend(match, {
+    type: 'duel-over',
+    winner,
+    reason,
+    lives: match.lives,
+    mines: [[...match.mines[0]], [...match.mines[1]]],
+  });
+  // seats stay warm for a rematch window, then the match is forgotten
+  match.timer = setTimeout(() => {
+    for (const ws of match.players) {
+      if (ws.duel?.match === match) ws.duel = null;
+    }
+  }, DUEL_REMATCH_MS);
+}
+
+function leaveDuel(ws, reason) {
+  duelQueue.delete(ws);
+  const d = ws.duel;
+  if (!d) return;
+  ws.duel = null;
+  const match = d.match;
+  if (match.phase === 'over') {
+    // no rematch coming; tell the other side if they are still around
+    const other = match.players[otherSeat(d.seat)];
+    if (other.duel?.match === match) send(other, { type: 'duel-opponent-left' });
+    return;
+  }
+  finishDuel(match, otherSeat(d.seat), reason);
+}
+
+function handleDuelQueue(ws) {
+  if (duelQueue.has(ws)) return;
+  if (ws.duel && ws.duel.match.phase !== 'over') {
+    sendError(ws, 'bad_request');
+    return;
+  }
+  if (ws.duel) leaveDuel(ws, 'left');
+  for (const other of duelQueue) {
+    duelQueue.delete(other);
+    startDuel(other, ws);
+    return;
+  }
+  duelQueue.add(ws);
+  send(ws, { type: 'duel-queued' });
+}
+
+function handleDuelPlant(ws, msg) {
+  const d = ws.duel;
+  if (!d || d.match.phase !== 'plant' || d.match.planted[d.seat]) {
+    sendError(ws, 'bad_request');
+    return;
+  }
+  const cells = Array.isArray(msg.cells) ? msg.cells : null;
+  if (!cells || cells.length !== DUEL_MINES) {
+    strike(ws);
+    return;
+  }
+  const set = new Set();
+  for (const c of cells) {
+    if (!Number.isInteger(c) || c < 0 || c >= DUEL_CELLS) {
+      strike(ws);
+      return;
+    }
+    set.add(c);
+  }
+  if (set.size !== DUEL_MINES) {
+    strike(ws);
+    return;
+  }
+  const match = d.match;
+  match.mines[d.seat] = set;
+  match.planted[d.seat] = true;
+  duelSend(match, { type: 'duel-planted', seat: d.seat });
+  if (match.planted[0] && match.planted[1]) beginDig(match);
+}
+
+function handleDuelDig(ws, msg) {
+  const d = ws.duel;
+  if (!d || d.match.phase !== 'dig' || d.match.turn !== d.seat) {
+    sendError(ws, 'bad_request');
+    return;
+  }
+  const cell = msg.cell;
+  if (!Number.isInteger(cell) || cell < 0 || cell >= DUEL_CELLS) {
+    strike(ws);
+    return;
+  }
+  if (d.match.revealed.has(cell) || d.match.exploded.has(cell)) {
+    sendError(ws, 'bad_request');
+    return;
+  }
+  digCell(d.match, d.seat, cell);
+}
+
+function handleDuelRematch(ws) {
+  const d = ws.duel;
+  if (!d || d.match.phase !== 'over') {
+    sendError(ws, 'bad_request');
+    return;
+  }
+  const match = d.match;
+  if (match.rematch[d.seat]) return;
+  match.rematch[d.seat] = true;
+  send(match.players[otherSeat(d.seat)], { type: 'duel-rematch', seat: d.seat });
+  if (match.rematch[0] && match.rematch[1]) {
+    clearTimeout(match.timer);
+    const [a, b] = match.players;
+    if (a.readyState === WebSocket.OPEN && b.readyState === WebSocket.OPEN) startDuel(a, b);
+  }
+}
+
 // ---------------------------------------------------------------- handlers
 
 async function handleRegister(ws, msg) {
@@ -497,6 +930,27 @@ function handleMessage(ws, msg) {
       broadcastRoom(ws.room, { type: 'typing', room: ws.room, from: displayName(ws) }, ws);
       return;
     }
+    case 'score-submit':
+      handleScoreSubmit(ws, msg);
+      return;
+    case 'score-top':
+      handleScoreTop(ws, msg);
+      return;
+    case 'duel-queue':
+      handleDuelQueue(ws);
+      return;
+    case 'duel-leave':
+      leaveDuel(ws, 'forfeit');
+      return;
+    case 'duel-plant':
+      handleDuelPlant(ws, msg);
+      return;
+    case 'duel-dig':
+      handleDuelDig(ws, msg);
+      return;
+    case 'duel-rematch':
+      handleDuelRematch(ws);
+      return;
     default:
       strike(ws);
   }
@@ -547,6 +1001,7 @@ wss.on('connection', (ws, req) => {
   ws.isAdmin = false;
   ws.nick = `guest-${crypto.randomBytes(2).toString('hex')}`;
   ws.room = null;
+  ws.duel = null;
   ws.strikes = 0;
   ws.isAlive = true;
   ws.missedPongs = 0;
@@ -581,6 +1036,7 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     leaveRoom(ws);
+    leaveDuel(ws, 'left');
   });
 
   ws.on('error', () => ws.terminate());

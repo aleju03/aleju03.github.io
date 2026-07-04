@@ -26,6 +26,8 @@ export interface FsNode {
   /** links: destination url; embed means "open in the AlejOS browser" */
   url?: string
   embed?: boolean
+  /** folders may carry a custom desktop icon (the Games folder's joystick) */
+  icon?: string
   /** read-only: ships with the OS, cannot be renamed/deleted/edited */
   system?: boolean
   /** created by the visitor; these persist to localStorage */
@@ -137,6 +139,20 @@ interface AnyProject {
 
 const allProjects: AnyProject[] = [...showcase, ...secondary, ...more]
 
+// the Games folder ships on the desktop AND in Program Files, XP style;
+// fresh arrays each call so no node ends up in the tree twice
+const gameShortcuts = (): FsNode[] => [
+  appShortcut('Minesweeper', 'minesweeper'),
+  appShortcut('Mine Duel', 'mineduel'),
+  appShortcut('Pong', 'pong'),
+  appShortcut('Snake', 'snake'),
+  appShortcut('Memory Match', 'memory'),
+  appShortcut('2048', '2048'),
+  appShortcut('Whack-A-Mole', 'whack'),
+  appShortcut('Flappy Bird', 'flappy'),
+  appShortcut('Rhythm Keys', 'vsrg'),
+]
+
 function projectFolder(p: AnyProject): FsNode {
   const children: FsNode[] = [
     text(
@@ -161,7 +177,7 @@ function buildSystemTree(): FsNode {
       appShortcut('Chat Rooms', 'chat'),
       text('about.txt', ABOUT_TXT),
       appShortcut('Terminal', 'terminal'),
-      appShortcut('Minesweeper', 'minesweeper'),
+      { ...folder('Games', gameShortcuts()), icon: 'games' },
       appShortcut('Paint', 'paint'),
     ]),
     folder('Documents', [text('about.txt', ABOUT_TXT), text('readme.txt', README_TXT)]),
@@ -178,7 +194,7 @@ function buildSystemTree(): FsNode {
       appShortcut('Chat Rooms', 'chat'),
       appShortcut('Notepad', 'notepad'),
       appShortcut('Paint', 'paint'),
-      appShortcut('Minesweeper', 'minesweeper'),
+      { ...folder('Games', gameShortcuts()), icon: 'games' },
       appShortcut('Terminal', 'terminal'),
       appShortcut('Display Properties', 'display'),
     ]),

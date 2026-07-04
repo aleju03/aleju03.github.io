@@ -7,6 +7,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
 import { buildHouse, CEIL_H, HOUSE, YARD } from './houseWorld'
 import type { HouseModels } from './houseWorld'
+import { OS_SCENE_READY_EVENT } from '../../events'
 
 /*
   The physical machine, for real this time: a WebGL night-desk scene and a
@@ -813,6 +814,7 @@ export default function CrtScene({
         // intro: drift, then push into the glass; afterwards the loop stops
         let parked = false
         let leaving = false
+        let announced = false
         const t0 = performance.now()
         const drifted = new THREE.Vector3()
         const introTick = () => {
@@ -827,6 +829,21 @@ export default function CrtScene({
           camera.position.lerpVectors(drifted, camEnd, EASE(zoom))
           camera.lookAt(front)
           render()
+          if (!announced) {
+            // first real frame is up: tell the warp tunnel it can open its
+            // exit, and where the glass sits on the viewport so the mouth
+            // tears open right on the machine
+            announced = true
+            const c = front.clone().project(camera)
+            const top = front.clone().setY(front.y + gSize.y / 2).project(camera)
+            const cx = ((c.x + 1) / 2) * W
+            const cy = ((1 - c.y) / 2) * H
+            window.dispatchEvent(
+              new CustomEvent(OS_SCENE_READY_EVENT, {
+                detail: { x: cx, y: cy, r: Math.max(40, Math.abs(((1 - top.y) / 2) * H - cy)) },
+              }),
+            )
+          }
           if (zoom >= 1) {
             parked = true
             setIntro(false)

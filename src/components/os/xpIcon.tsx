@@ -31,9 +31,22 @@ export const XP_ICON_NAMES = [
   'hard-drive',
   'floppy',
   'cd-drive',
+  'games',
+  'pong',
+  'snake',
+  'memory',
+  '2048',
+  'whack',
+  'flappy',
+  'vsrg',
+  'mine-duel',
 ] as const
 
 export type XpIconName = (typeof XP_ICON_NAMES)[number]
+
+export function isXpIconName(name: string | undefined): name is XpIconName {
+  return Boolean(name && (XP_ICON_NAMES as readonly string[]).includes(name))
+}
 
 const XP_ICON_PIXEL_SIZES = [16, 48] as const
 

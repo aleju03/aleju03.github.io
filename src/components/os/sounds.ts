@@ -98,4 +98,33 @@ export const sounds = {
       { freq: 233.08, dur: 0.22, type: 'square', gain: 0.025 },
     ])
   },
+  // --- the arcade voices, shared by everything in the Games folder ---
+  /** short hop/flap/bounce blip */
+  blip() {
+    play([{ freq: 520, dur: 0.07, type: 'triangle', gain: 0.05, to: 780 }])
+  },
+  /** a point scored: quick bright pair */
+  point() {
+    play([
+      { freq: 880, dur: 0.06, gain: 0.045 },
+      { freq: 1318.51, at: 0.05, dur: 0.1, gain: 0.045 },
+    ])
+  },
+  /** low impact for hits, merges and landings */
+  thud() {
+    play([{ freq: 160, dur: 0.1, type: 'triangle', gain: 0.06, to: 70 }])
+  },
+  /** something went wrong in a game (a crash, a miss), softer than error() */
+  miss() {
+    play([{ freq: 330, dur: 0.16, type: 'triangle', gain: 0.045, to: 165 }])
+  },
+  /** a whole game won: small rising fanfare from the boot chime's family */
+  fanfare() {
+    play([
+      { freq: 523.25, dur: 0.14, gain: 0.05 },
+      { freq: 659.25, at: 0.11, dur: 0.14, gain: 0.05 },
+      { freq: 783.99, at: 0.22, dur: 0.2, gain: 0.05 },
+      { freq: 1046.5, at: 0.34, dur: 0.4, gain: 0.055 },
+    ])
+  },
 }
