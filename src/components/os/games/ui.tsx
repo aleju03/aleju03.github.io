@@ -24,7 +24,9 @@ export function Led({ value, label }: { value: string; label: string }) {
   return (
     <span
       aria-label={label}
-      className="rounded-sm bg-stone-900 px-1.5 py-0.5 font-mono text-sm font-bold tabular-nums text-red-500"
+      // ligatures off: fancy monospace fonts fuse "---" placeholders into
+      // one long dash glyph that hangs out of the box
+      className="inline-block rounded-sm bg-stone-900 px-1.5 py-0.5 text-center font-mono text-sm font-bold tabular-nums text-red-500 [font-variant-ligatures:none]"
     >
       {value}
     </span>

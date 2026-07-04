@@ -150,7 +150,7 @@ export function MemoryApp() {
       <span className="text-[10px] text-stone-500">moves</span>
       <Led value={String(Math.min(99, moves)).padStart(2, '0')} label="Moves" />
       <span className="text-[10px] text-stone-500">best</span>
-      <Led value={best !== null ? formatScore('memory', best) : '--'} label="Personal best" />
+      <Led value={best !== null ? formatScore('memory', best) : '---'} label="Personal best" />
       <button
         type="button"
         onClick={newGame}
@@ -180,6 +180,10 @@ export function MemoryApp() {
               onClick={() => flip(i)}
               className={`relative [perspective:600px] ${up ? 'cursor-default' : 'cursor-pointer'}`}
             >
+              {/* no backface-visibility here: inside the 3D CRT the OS DOM
+                  lives under CSS3D matrix transforms that flip which side
+                  counts as the front, which showed every card face-up.
+                  instead each face swaps visibility at the flip midpoint. */}
               <span
                 className={`absolute inset-0 block transition-transform duration-200 [transform-style:preserve-3d] ${
                   pop
@@ -189,10 +193,14 @@ export function MemoryApp() {
                       : ''
                 }`}
               >
-                <span className="absolute inset-0 rounded-sm border border-blue-400 bg-gradient-to-br from-blue-600 to-blue-800 shadow-[0_1px_0_rgba(255,255,255,0.35)_inset] [backface-visibility:hidden]">
+                <span
+                  className={`absolute inset-0 rounded-sm border border-blue-400 bg-gradient-to-br from-blue-600 to-blue-800 shadow-[0_1px_0_rgba(255,255,255,0.35)_inset] transition-[visibility] duration-0 delay-100 ${up ? 'invisible' : 'visible'}`}
+                >
                   <span className="absolute inset-0 rounded-sm bg-[linear-gradient(135deg,rgba(255,255,255,0.2)_0%,rgba(255,255,255,0)_45%)]" />
                 </span>
-                <span className="absolute inset-0 flex items-center justify-center rounded-sm border border-stone-400 bg-stone-50 shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)] [backface-visibility:hidden] [transform:rotateY(180deg)]">
+                <span
+                  className={`absolute inset-0 flex items-center justify-center rounded-sm border border-stone-400 bg-stone-50 shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)] [transform:rotateY(180deg)] transition-[visibility] duration-0 delay-100 ${up ? 'visible' : 'invisible'}`}
+                >
                   {xpIcon(icon, 32)}
                 </span>
               </span>

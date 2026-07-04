@@ -149,7 +149,7 @@ const gameShortcuts = (): FsNode[] => [
   appShortcut('Memory Match', 'memory'),
   appShortcut('2048', '2048'),
   appShortcut('Whack-A-Mole', 'whack'),
-  appShortcut('Flappy Bird', 'flappy'),
+  appShortcut('Tappy Plane', 'flappy'),
   appShortcut('Rhythm Keys', 'vsrg'),
 ]
 

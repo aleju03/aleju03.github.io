@@ -7,14 +7,13 @@ import { formatScore, localBest, useArcade, useLeaderboard } from './arcade'
 import type { GameId } from './arcade'
 
 /*
-  Rhythm Keys, the Games folder's four-lane note game. Everything is
-  synthesized inside this file: three fixed tracks whose note patterns come
-  from a seeded generator (every visitor plays the exact same notes, so the
-  boards stay fair), a WebAudio backing band fed by a lookahead scheduler,
-  and melody keysounds that only ring out when the player actually hits a
-  note, the way the 2000s arcade machines wired it. A full clean run plays
-  the complete song. The judgment clock is the AudioContext itself, so the
-  audio and the timing can never drift apart.
+  Rhythm Keys, the Games folder's four-lane note game. Three real songs
+  with real community 4K charts (public/os/games/vsrg, credits in
+  NOTICE.txt): the mp3 plays through WebAudio and the AudioContext is the
+  judgment clock, so audio and timing can never drift apart. Charts were
+  converted from osu!mania beatmaps; long notes became taps at their head,
+  the game is tap-only on purpose. Long intros are skipped to two bars
+  before the first note, and a count-in ticks the player into the song.
 */
 
 // ---------------------------------------------------------------- tuning
@@ -26,405 +25,154 @@ const GREAT = 0.09
 const LANE_KEYS = ['D', 'F', 'J', 'K']
 const LANE_CODE: Record<string, number | undefined> = { KeyD: 0, KeyF: 1, KeyJ: 2, KeyK: 3 }
 
-const SPEEDS = { slow: 280, normal: 400, fast: 540 } as const
-type SpeedId = keyof typeof SPEEDS
-const SPEED_IDS = ['slow', 'normal', 'fast'] as const
+/**
+ * osu!mania style scroll speed, 1..40. speed S means a note travels from
+ * the top of the playfield to the judge line in 10/S seconds, so 20 shows
+ * a note for half a second and 40 for a quarter
+ */
+const SPEED_MIN = 1
+const SPEED_MAX = 40
+const SPEED_DEFAULT = 20
 const SPEED_KEY = 'alejos-vsrg-speed'
+const SYNC_KEY = 'alejos-vsrg-sync'
 
-function readSpeed(): SpeedId {
+function readSpeed(): number {
   try {
-    const s = localStorage.getItem(SPEED_KEY)
-    if (s === 'slow' || s === 'normal' || s === 'fast') return s
+    const v = Number(localStorage.getItem(SPEED_KEY))
+    if (Number.isFinite(v) && v >= SPEED_MIN && v <= SPEED_MAX) return Math.round(v)
   } catch {
     /* storage unavailable, fall through to the default */
   }
-  return 'normal'
+  return SPEED_DEFAULT
 }
 
-function storeSpeed(s: SpeedId) {
+function storeSpeed(v: number) {
   try {
-    localStorage.setItem(SPEED_KEY, s)
+    localStorage.setItem(SPEED_KEY, String(v))
   } catch {
     /* fine without persistence */
   }
 }
 
-// ---------------------------------------------------------------- prng
-
-/** mulberry32: tiny, fast, and identical on every machine for a given seed */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) | 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+/** the player's audio sync nudge in ms; positive means notes judge later */
+function readSync(): number {
+  try {
+    const v = Number(localStorage.getItem(SYNC_KEY))
+    if (Number.isFinite(v)) return Math.max(-60, Math.min(60, Math.round(v)))
+  } catch {
+    /* storage unavailable */
   }
+  return 0
 }
 
-// ---------------------------------------------------------------- music theory
-
-/** natural minor, the whole game lives in one key per track */
-const SCALE = [0, 2, 3, 5, 7, 8, 10]
-
-/** the i - VI - III - VII loop, one chord per bar, endlessly cycling */
-const PROG = [
-  { semis: 0, minor: true },
-  { semis: 8, minor: false },
-  { semis: 3, minor: false },
-  { semis: 10, minor: false },
-]
-
-/** scale degree of each chord root, used to anchor the melody per bar */
-const CHORD_ROOT_DEG = [0, 5, 2, 6]
-
-function midiToFreq(m: number): number {
-  return 440 * 2 ** ((m - 69) / 12)
-}
-
-function degreeToMidi(root: number, deg: number): number {
-  return root + 12 * Math.floor(deg / 7) + SCALE[((deg % 7) + 7) % 7]
+function storeSync(v: number) {
+  try {
+    localStorage.setItem(SYNC_KEY, String(v))
+  } catch {
+    /* fine without persistence */
+  }
 }
 
 // ---------------------------------------------------------------- tracks
 
-type Archetype = 'rest' | 'calm' | 'stairs' | 'burst' | 'chords' | 'stream' | 'jacks'
-
 interface TrackDef {
   id: GameId
-  label: string
+  title: string
+  artist: string
+  /** the chart's own name and its mapper */
+  credit: string
   blurb: string
   stars: number
   bpm: number
-  bars: number
-  /** fixed literal seed so the chart is identical for everyone */
-  seed: number
-  /** midi note of the scale root, the bottom of the melody's range */
-  root: number
-  /** how full the plain eighth-note bars are */
-  calmDensity: number
-  /** whether stair patterns may run on sixteenths */
-  sixteenthStairs: boolean
-  weights: [Archetype, number][]
+  seconds: number
+  noteCount: number
+  dir: string
 }
 
 const TRACKS: TrackDef[] = [
   {
-    id: 'vsrg-boot',
-    label: 'Boot',
-    blurb: 'steady and warm, with room to breathe',
+    id: 'vsrg-badapple',
+    title: 'Bad Apple!!',
+    artist: 'Masayoshi Minoshima ft. nomico',
+    credit: '[Normal] charted by salodtg',
+    blurb: 'the one every rhythm game ends up with sooner or later',
     stars: 1,
-    bpm: 90,
-    bars: 22,
-    seed: 0xb001,
-    root: 57,
-    calmDensity: 0.7,
-    sixteenthStairs: false,
-    weights: [
-      ['calm', 6],
-      ['stairs', 2],
-      ['rest', 2],
-    ],
+    bpm: 138,
+    seconds: 196,
+    noteCount: 456,
+    dir: 'badapple',
   },
   {
-    id: 'vsrg-dialup',
-    label: 'Dial-Up',
-    blurb: 'quick bursts over a rolling beat',
+    id: 'vsrg-madeoffire',
+    title: 'Made of Fire',
+    artist: 'Niko',
+    credit: "[Can't get a comfortable spot for my right hand] by Utiba",
+    blurb: 'yes, that is the real difficulty name',
     stars: 2,
-    bpm: 120,
-    bars: 37,
-    seed: 0xd1a1,
-    root: 52,
-    calmDensity: 0.75,
-    sixteenthStairs: false,
-    weights: [
-      ['calm', 3],
-      ['burst', 4],
-      ['stairs', 2],
-      ['chords', 2],
-      ['rest', 1],
-    ],
+    bpm: 163,
+    seconds: 78,
+    noteCount: 928,
+    dir: 'madeoffire',
   },
   {
-    id: 'vsrg-overclock',
-    label: 'Overclock',
-    blurb: 'runs hot, dense and relentless',
+    id: 'vsrg-freedomdive',
+    title: 'FREEDOM DiVE',
+    artist: 'xi',
+    credit: "[C.Star's 4K Hyper] from Kuo Kyoka's set",
+    blurb: 'the 222 bpm rite of passage, full length',
     stars: 3,
-    bpm: 150,
-    bars: 56,
-    seed: 0x0c8a,
-    root: 50,
-    calmDensity: 0.8,
-    sixteenthStairs: true,
-    weights: [
-      ['stream', 5],
-      ['stairs', 3],
-      ['chords', 3],
-      ['burst', 2],
-      ['jacks', 2],
-      ['rest', 1],
-    ],
+    bpm: 222,
+    seconds: 257,
+    noteCount: 2296,
+    dir: 'freedomdive',
   },
 ]
 
-function trackSeconds(track: TrackDef): number {
-  return (track.bars * 4 * 60) / track.bpm
-}
-
-function fmtDur(track: TrackDef): string {
-  const s = Math.round(trackSeconds(track))
+function fmtDur(seconds: number): string {
+  const s = Math.round(seconds)
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-// ---------------------------------------------------------------- chart generation
+// ---------------------------------------------------------------- song loading
 
 interface ChartNote {
-  /** seconds from song start */
+  /** seconds from audio start */
   t: number
   lane: number
-  /** the melody pitch this note plays when hit */
-  midi: number
 }
 
-/*
-  charts are built bar by bar. each bar of 16 sixteenths gets a pattern
-  archetype drawn from the track's weights, and the melody walks a contour
-  (mostly steps to neighboring scale degrees) whose direction also drags the
-  lane choice, so runs feel like runs instead of white noise. every bar
-  starts by re-anchoring the melody on the current chord's root, which keeps
-  the keysounds agreeing with the backing band.
-*/
-function generateChart(track: TrackDef): ChartNote[] {
-  const rand = mulberry32(track.seed)
-  const spb = 60 / track.bpm
-  const sixteenth = spb / 4
-  // same-lane spacing: an eighth apart normally, a sixteenth inside a jack
-  const minGap = spb / 2 - 1e-4
-  const jackGap = spb / 4 - 1e-4
-  const laneLast = [-Infinity, -Infinity, -Infinity, -Infinity]
-  const notes: ChartNote[] = []
-  let degree = 7
-  let lane = 1
+interface SongData {
+  notes: ChartNote[]
+  bpm: number
+  audio: ArrayBuffer
+}
 
-  const totalWeight = track.weights.reduce((sum, [, w]) => sum + w, 0)
-  const pickArchetype = (): Archetype => {
-    let r = rand() * totalWeight
-    for (const [a, w] of track.weights) {
-      r -= w
-      if (r <= 0) return a
-    }
-    return track.weights[0][0]
+// compressed audio and parsed charts cache per track; decoded PCM does not,
+// a three-minute song decodes to tens of megabytes
+const songCache = new Map<string, Promise<Omit<SongData, 'audio'> & { raw: ArrayBuffer }>>()
+
+function fetchSong(dir: string) {
+  let cached = songCache.get(dir)
+  if (!cached) {
+    cached = (async () => {
+      const base = `/os/games/vsrg/${dir}`
+      const [chartRes, audioRes] = await Promise.all([
+        fetch(`${base}/chart.json`),
+        fetch(`${base}/song.mp3`),
+      ])
+      if (!chartRes.ok || !audioRes.ok) throw new Error('song fetch failed')
+      const chart = (await chartRes.json()) as { bpm: number; notes: [number, number][] }
+      const raw = await audioRes.arrayBuffer()
+      const notes = chart.notes.map(([ms, lane]) => ({ t: ms / 1000, lane }))
+      return { notes, bpm: chart.bpm, raw }
+    })()
+    cached.catch(() => songCache.delete(dir))
+    songCache.set(dir, cached)
   }
-
-  const emit = (t: number, l: number, midi: number) => {
-    notes.push({ t, lane: l, midi })
-    laneLast[l] = t
-  }
-
-  const pickLane = (t: number, want: number, gap: number): number => {
-    const cands = [0, 1, 2, 3]
-      .map((l) => ({ l, d: Math.abs(l - want) + rand() * 0.4 }))
-      .sort((a, b) => a.d - b.d)
-    for (const c of cands) {
-      if (t - laneLast[c.l] >= gap) return c.l
-    }
-    return -1
-  }
-
-  const stepDegree = (): number => {
-    const r = rand()
-    const delta =
-      r < 0.3 ? -1 : r < 0.6 ? 1 : r < 0.72 ? -2 : r < 0.84 ? 2 : r < 0.92 ? 0 : r < 0.96 ? 3 : -3
-    degree = Math.max(0, Math.min(13, degree + delta))
-    return delta
-  }
-
-  // one melodic note: walk the contour, drift the lane the same direction
-  const contourNote = (t: number): ChartNote | null => {
-    const delta = stepDegree()
-    let want = lane + Math.sign(delta)
-    if (delta === 0 && rand() < 0.5) want = lane + (rand() < 0.5 ? 1 : -1)
-    if (Math.abs(delta) >= 2 && rand() < 0.45) want += Math.sign(delta)
-    // reflect off the walls instead of clamping so we never camp an edge
-    if (want < 0) want = -want - 1
-    if (want > 3) want = 7 - want
-    const l = pickLane(t, Math.max(0, Math.min(3, want)), minGap)
-    if (l < 0) return null
-    lane = l
-    emit(t, l, degreeToMidi(track.root, degree))
-    return notes[notes.length - 1]
-  }
-
-  // a second note under the melody, preferring the other hand for comfort
-  const addChordTone = (t: number, mel: ChartNote, chordIdx: number) => {
-    const pref = mel.lane <= 1 ? [2, 3, mel.lane === 0 ? 1 : 0] : [1, 0, mel.lane === 2 ? 3 : 2]
-    let pick = -1
-    for (const c of pref) {
-      if (t - laneLast[c] >= minGap) {
-        pick = c
-        break
-      }
-    }
-    if (pick < 0) return
-    let midi = track.root + PROG[chordIdx].semis
-    while (midi >= mel.midi) midi -= 12
-    while (midi < track.root - 12) midi += 12
-    if (midi >= mel.midi) return
-    emit(t, pick, midi)
-  }
-
-  for (let bar = 0; bar < track.bars; bar++) {
-    const barT = bar * 4 * spb
-    const chordIdx = bar % 4
-
-    // land each bar on its chord so the hit melody agrees with the backing
-    const anchor = CHORD_ROOT_DEG[chordIdx]
-    degree = Math.abs(anchor - degree) <= Math.abs(anchor + 7 - degree) ? anchor : anchor + 7
-
-    if (bar === track.bars - 1) {
-      // resolve home on a single closing note
-      degree = degree >= 4 ? 7 : 0
-      const l = pickLane(barT, lane, minGap)
-      if (l >= 0) emit(barT, l, degreeToMidi(track.root, degree))
-      continue
-    }
-
-    const arch: Archetype = bar === 0 ? 'rest' : pickArchetype()
-
-    switch (arch) {
-      case 'rest': {
-        contourNote(barT)
-        if (rand() < 0.6) contourNote(barT + 8 * sixteenth)
-        break
-      }
-      case 'calm': {
-        for (let p = 0; p < 16; p += 2) {
-          if (p !== 0 && rand() > track.calmDensity) continue
-          contourNote(barT + p * sixteenth)
-        }
-        break
-      }
-      case 'stairs': {
-        const stepN = track.sixteenthStairs && rand() < 0.7 ? 1 : 2
-        let dir = rand() < 0.5 ? 1 : -1
-        let l = dir > 0 ? 0 : 3
-        for (let p = 0; p < 16; p += stepN) {
-          const t = barT + p * sixteenth
-          degree = Math.max(0, Math.min(13, degree + dir))
-          if (t - laneLast[l] >= minGap) {
-            emit(t, l, degreeToMidi(track.root, degree))
-            lane = l
-          }
-          l += dir
-          if (l > 3) {
-            l = 2
-            dir = -1
-          } else if (l < 0) {
-            l = 1
-            dir = 1
-          }
-        }
-        break
-      }
-      case 'burst': {
-        const burstAt = 4 + 2 * Math.floor(rand() * 5)
-        for (let p = 0; p < 16; p++) {
-          const t = barT + p * sixteenth
-          if (p >= burstAt && p < burstAt + 4) {
-            contourNote(t)
-            continue
-          }
-          if (p % 2 !== 0) continue
-          if (p !== 0 && rand() > 0.65) continue
-          contourNote(t)
-        }
-        break
-      }
-      case 'chords': {
-        const every = track.stars >= 3 ? 4 : 8
-        for (let p = 0; p < 16; p += 2) {
-          const t = barT + p * sixteenth
-          if (p % every === 0) {
-            const mel = contourNote(t)
-            if (mel) addChordTone(t, mel, chordIdx)
-          } else if (rand() < 0.45) {
-            contourNote(t)
-          }
-        }
-        break
-      }
-      case 'stream': {
-        for (let p = 0; p < 16; p++) {
-          // tiny gaps off the downbeats so the stream can breathe
-          if (p % 4 !== 0 && rand() < 0.12) continue
-          contourNote(barT + p * sixteenth)
-        }
-        break
-      }
-      case 'jacks': {
-        let prevJack = -1
-        for (const p of [0, 4, 8, 12]) {
-          const t = barT + p * sixteenth
-          const cands = [0, 1, 2, 3].filter((l) => l !== prevJack && t - laneLast[l] >= minGap)
-          if (cands.length > 0) {
-            const l = cands[Math.floor(rand() * cands.length)]
-            stepDegree()
-            // a jack repeats its pitch too, one key hammering one sound
-            const midi = degreeToMidi(track.root, degree)
-            emit(t, l, midi)
-            const t2 = t + sixteenth
-            if (t2 - laneLast[l] >= jackGap) emit(t2, l, midi)
-            lane = l
-            prevJack = l
-          }
-          if (rand() < 0.4) contourNote(t + 2 * sixteenth)
-        }
-        break
-      }
-    }
-  }
-
-  notes.sort((a, b) => a.t - b.t || a.lane - b.lane)
-  return notes
+  return cached
 }
 
 // ---------------------------------------------------------------- audio engine
-
-interface BackingEvent {
-  t: number
-  kind: 'tick' | 'kick' | 'hat' | 'bass' | 'pad'
-  midi?: number
-  chord?: number
-}
-
-function buildBacking(track: TrackDef): BackingEvent[] {
-  const spb = 60 / track.bpm
-  const events: BackingEvent[] = []
-  // count-in ticks land on the three beats before the song
-  for (let k = 3; k >= 1; k--) {
-    events.push({ t: -k * spb, kind: 'tick', midi: track.root + 24 + (k === 1 ? 7 : 0) })
-  }
-  let bassRoot = track.root - 24
-  while (bassRoot < 31) bassRoot += 12
-  for (let bar = 0; bar < track.bars; bar++) {
-    const barT = bar * 4 * spb
-    const chord = bar % 4
-    events.push({ t: barT, kind: 'pad', chord })
-    for (let b = 0; b < 4; b++) {
-      const t = barT + b * spb
-      events.push({ t, kind: 'kick' })
-      events.push({ t: t + spb / 2, kind: 'hat' })
-      events.push({ t, kind: 'bass', midi: bassRoot + PROG[chord].semis + (b === 3 ? 7 : 0) })
-    }
-  }
-  // one last downbeat so the song lands instead of just stopping
-  const endT = track.bars * 4 * spb
-  events.push({ t: endT, kind: 'kick' })
-  events.push({ t: endT, kind: 'pad', chord: 0 })
-  events.push({ t: endT, kind: 'bass', midi: bassRoot })
-  events.sort((a, b) => a.t - b.t)
-  return events
-}
 
 // the game's own AudioContext, separate from the OS chrome sounds. lazy so
 // it is only ever created from a user gesture, suspended when the window
@@ -446,186 +194,114 @@ function suspendAudio() {
 }
 
 /*
-  one engine per run. the backing band (kick, hats, bass, pads) is booked
-  ahead of time by a lookahead scheduler: a 25ms interval that schedules
-  everything inside a 120ms horizon, so tab jank never smears the beat.
-  keysounds are different on purpose: they play the moment the player hits,
-  which is what makes clean play sound like the finished song.
+  one player per run. the song is a single BufferSource started a count-in
+  after "now"; suspending the context freezes both the music and the clock,
+  which is what makes pausing free. hits get a soft tick so play feels
+  tactile without stepping on the song.
 */
-class SongEngine {
+class SongPlayer {
   readonly ctx: AudioContext
-  private master: GainNode
-  private backing: GainNode
-  private keys: GainNode
-  private noise: AudioBuffer
-  private events: BackingEvent[] = []
-  private next = 0
-  private timer = 0
-  private padDur = 1
-  private root = 57
+  /** where the chart clock starts: song time = ctx.currentTime - songStart */
   private songStart = 0
+  private master: GainNode
+  private ticks: GainNode
+  private noise: AudioBuffer
+  private source: AudioBufferSourceNode | null = null
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx
-    // a gentle compressor keeps chords from spiking above the OS's voice
     const comp = ctx.createDynamicsCompressor()
-    comp.threshold.value = -18
-    comp.knee.value = 24
-    comp.ratio.value = 4
+    comp.threshold.value = -14
+    comp.knee.value = 20
+    comp.ratio.value = 3
     comp.connect(ctx.destination)
     this.master = ctx.createGain()
-    this.master.gain.value = 0.5
+    // real mp3s come in mastered loud; sit them well under the OS's voice
+    this.master.gain.value = 0.3
     this.master.connect(comp)
-    this.backing = ctx.createGain()
-    this.backing.connect(this.master)
-    this.keys = ctx.createGain()
-    this.keys.connect(this.master)
-    // one short white-noise buffer feeds every hi-hat
-    const len = Math.floor(ctx.sampleRate * 0.06)
+    this.ticks = ctx.createGain()
+    this.ticks.gain.value = 1
+    this.ticks.connect(this.master)
+    const len = Math.floor(ctx.sampleRate * 0.03)
     this.noise = ctx.createBuffer(1, len, ctx.sampleRate)
     const data = this.noise.getChannelData(0)
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1
   }
 
-  start(track: TrackDef) {
-    const spb = 60 / track.bpm
-    this.events = buildBacking(track)
-    this.next = 0
-    this.padDur = spb * 4
-    this.root = track.root
-    // the song begins exactly three beats after the anchor, one per count
-    this.songStart = this.ctx.currentTime + 0.12 + 3 * spb
-    this.timer = window.setInterval(() => this.pump(), 25)
-    this.pump()
-  }
-
-  /** song time in seconds, negative during the count-in. this is the clock */
-  now(): number {
-    return this.ctx.currentTime - this.songStart
-  }
-
-  private pump() {
-    const horizon = this.ctx.currentTime + 0.12
-    while (this.next < this.events.length) {
-      const ev = this.events[this.next]
-      const at = this.songStart + ev.t
-      if (at > horizon) break
-      this.next += 1
-      switch (ev.kind) {
-        case 'tick':
-          this.voice({ freq: midiToFreq(ev.midi ?? 81), at, dur: 0.09, type: 'sine', peak: 0.07 })
-          break
-        case 'kick':
-          this.voice({ freq: 150, to: 50, at, dur: 0.13, type: 'sine', peak: 0.3, attack: 0.004 })
-          break
-        case 'hat':
-          this.hat(at)
-          break
-        case 'bass':
-          this.voice({
-            freq: midiToFreq(ev.midi ?? 45),
-            at,
-            dur: 0.32,
-            type: 'triangle',
-            peak: 0.1,
-          })
-          break
-        case 'pad':
-          this.pad(ev.chord ?? 0, at)
-          break
-      }
+  /**
+   * begins the run: audio starts `lead` seconds from now at `skip` seconds
+   * into the file, with count-in ticks on the three beats before it
+   */
+  start(buffer: AudioBuffer, skip: number, bpm: number) {
+    const spb = 60 / bpm
+    const lead = Math.max(3 * spb, 1.1) + 0.15
+    const t0 = this.ctx.currentTime
+    this.songStart = t0 + lead - skip
+    const src = this.ctx.createBufferSource()
+    src.buffer = buffer
+    src.connect(this.master)
+    src.start(t0 + lead, skip)
+    this.source = src
+    for (let k = 3; k >= 1; k--) {
+      this.tick(t0 + lead - k * spb, k === 1 ? 1320 : 880)
     }
   }
 
-  /** the keysound: fires the moment a note is judged as hit, never before */
-  hit(midi: number) {
-    const at = this.ctx.currentTime
-    const f = midiToFreq(midi)
-    this.voice({
-      freq: f,
-      at,
-      dur: 0.34,
-      type: 'triangle',
-      peak: 0.16,
-      attack: 0.004,
-      dest: this.keys,
-    })
-    this.voice({
-      freq: f * 2,
-      at,
-      dur: 0.14,
-      type: 'square',
-      peak: 0.025,
-      attack: 0.004,
-      dest: this.keys,
-    })
+  /**
+   * song time in seconds, negative-to-skip during the count-in. what the
+   * player hears runs behind ctx.currentTime by the hardware output
+   * latency, so judging against the raw clock reads every hit as late;
+   * subtracting the reported latency lines the clock up with the ears
+   */
+  now(): number {
+    const ctx = this.ctx as AudioContext & { outputLatency?: number }
+    const latency = ctx.outputLatency || ctx.baseLatency || 0
+    return this.ctx.currentTime - this.songStart - latency
   }
 
-  /** stop scheduling and fade out; safe to call more than once */
-  stop(release = 0.08) {
-    window.clearInterval(this.timer)
-    const master = this.master
-    master.gain.setTargetAtTime(0, this.ctx.currentTime, release)
-    window.setTimeout(() => master.disconnect(), 400 + release * 3000)
-  }
-
-  private voice(v: {
-    freq: number
-    at: number
-    dur: number
-    type: OscillatorType
-    peak: number
-    to?: number
-    attack?: number
-    dest?: GainNode
-  }) {
+  private tick(at: number, freq: number) {
     const osc = this.ctx.createOscillator()
     const g = this.ctx.createGain()
-    osc.type = v.type
-    osc.frequency.setValueAtTime(v.freq, v.at)
-    if (v.to !== undefined) osc.frequency.exponentialRampToValueAtTime(v.to, v.at + v.dur)
-    g.gain.setValueAtTime(0, v.at)
-    g.gain.linearRampToValueAtTime(v.peak, v.at + (v.attack ?? 0.008))
-    g.gain.exponentialRampToValueAtTime(0.0008, v.at + v.dur)
-    osc.connect(g).connect(v.dest ?? this.backing)
-    osc.start(v.at)
-    osc.stop(v.at + v.dur + 0.05)
+    osc.type = 'sine'
+    osc.frequency.value = freq
+    g.gain.setValueAtTime(0, at)
+    g.gain.linearRampToValueAtTime(0.09, at + 0.004)
+    g.gain.exponentialRampToValueAtTime(0.0008, at + 0.09)
+    osc.connect(g).connect(this.ticks)
+    osc.start(at)
+    osc.stop(at + 0.12)
   }
 
-  private hat(at: number) {
+  /** the soft hit tick, fired the moment a note is judged as hit */
+  hit() {
+    const at = this.ctx.currentTime
     const src = this.ctx.createBufferSource()
     src.buffer = this.noise
     const hp = this.ctx.createBiquadFilter()
     hp.type = 'highpass'
-    hp.frequency.value = 6500
+    hp.frequency.value = 3200
     const g = this.ctx.createGain()
-    g.gain.setValueAtTime(0.055, at)
-    g.gain.exponentialRampToValueAtTime(0.0008, at + 0.04)
-    src.connect(hp).connect(g).connect(this.backing)
+    g.gain.setValueAtTime(0.05, at)
+    g.gain.exponentialRampToValueAtTime(0.0008, at + 0.025)
+    src.connect(hp).connect(g).connect(this.ticks)
     src.start(at)
-    src.stop(at + 0.06)
+    src.stop(at + 0.03)
   }
 
-  private pad(chordIdx: number, at: number) {
-    const c = PROG[chordIdx]
-    const base = this.root - 12 + c.semis
-    const intervals = c.minor ? [0, 3, 7] : [0, 4, 7]
-    for (let i = 0; i < intervals.length; i++) {
-      const osc = this.ctx.createOscillator()
-      const g = this.ctx.createGain()
-      osc.type = 'triangle'
-      osc.frequency.value = midiToFreq(base + intervals[i])
-      // a few cents of detune keeps the pad from sounding like a test tone
-      osc.detune.value = (i - 1) * 5
-      const dur = this.padDur
-      g.gain.setValueAtTime(0.0001, at)
-      g.gain.linearRampToValueAtTime(0.02, at + 0.35)
-      g.gain.setValueAtTime(0.02, at + dur - 0.3)
-      g.gain.linearRampToValueAtTime(0.0001, at + dur)
-      osc.connect(g).connect(this.backing)
-      osc.start(at)
-      osc.stop(at + dur + 0.05)
-    }
+  /** stop the music and fade out; safe to call more than once */
+  stop(release = 0.15) {
+    const master = this.master
+    master.gain.setTargetAtTime(0, this.ctx.currentTime, release)
+    const src = this.source
+    this.source = null
+    window.setTimeout(() => {
+      try {
+        src?.stop()
+      } catch {
+        /* already stopped */
+      }
+      master.disconnect()
+    }, 400 + release * 3000)
   }
 }
 
@@ -643,6 +319,8 @@ interface Run {
   /** per-lane note indices in time order, with a head pointer per lane */
   laneNotes: number[][]
   heads: number[]
+  /** seconds into the audio where playback begins (long intros skipped) */
+  skip: number
   duration: number
   beat: number
   keysDown: boolean[]
@@ -762,68 +440,60 @@ function buildResult(run: Run): RunResult {
 
 // ---------------------------------------------------------------- painting
 
-function drawNote(
-  g: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  laneIdx: number,
-) {
-  // the classic scheme: stone-white outside, xp blue inside
+function drawNote(g: CanvasRenderingContext2D, cx: number, cy: number, r: number, laneIdx: number) {
+  // the classic scheme: stone-white outside lanes, xp blue inside
   const inner = laneIdx === 1 || laneIdx === 2
-  const grad = g.createLinearGradient(0, y, 0, y + h)
+  const grad = g.createRadialGradient(cx - r * 0.35, cy - r * 0.4, r * 0.15, cx, cy, r)
   if (inner) {
-    grad.addColorStop(0, '#8db8f8')
-    grad.addColorStop(0.45, '#3a72d4')
-    grad.addColorStop(1, '#26509f')
+    grad.addColorStop(0, '#a9c8fa')
+    grad.addColorStop(0.55, '#3a72d4')
+    grad.addColorStop(1, '#1e4390')
   } else {
     grad.addColorStop(0, '#ffffff')
-    grad.addColorStop(0.45, '#dbd8d3')
-    grad.addColorStop(1, '#b6b1aa')
+    grad.addColorStop(0.55, '#dbd8d3')
+    grad.addColorStop(1, '#a8a29b')
   }
   g.fillStyle = grad
   g.beginPath()
-  g.roundRect(x, y, w, h, 3)
+  g.arc(cx, cy, r, 0, Math.PI * 2)
   g.fill()
-  g.fillStyle = 'rgba(255,255,255,0.45)'
-  g.beginPath()
-  g.roundRect(x + 2, y + 1.5, w - 4, 3.5, 1.75)
-  g.fill()
+  g.strokeStyle = inner ? 'rgba(9,25,60,0.65)' : 'rgba(50,46,40,0.55)'
+  g.lineWidth = 1.25
+  g.stroke()
 }
 
 function drawReceptor(
   g: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
+  cx: number,
+  cy: number,
+  r: number,
   letter: string,
   pressed: boolean,
 ) {
-  const grad = g.createLinearGradient(0, y, 0, y + h)
   if (pressed) {
-    grad.addColorStop(0, '#9ec5fa')
+    const grad = g.createRadialGradient(cx, cy, r * 0.2, cx, cy, r)
+    grad.addColorStop(0, '#bcd7fc')
     grad.addColorStop(1, '#3d74d8')
+    g.fillStyle = grad
+    g.beginPath()
+    g.arc(cx, cy, r, 0, Math.PI * 2)
+    g.fill()
   } else {
-    grad.addColorStop(0, '#3b64b4')
-    grad.addColorStop(1, '#23408a')
+    g.fillStyle = 'rgba(30,48,96,0.55)'
+    g.beginPath()
+    g.arc(cx, cy, r, 0, Math.PI * 2)
+    g.fill()
   }
-  g.fillStyle = grad
+  g.strokeStyle = pressed ? '#dbeafe' : 'rgba(148,178,235,0.8)'
+  g.lineWidth = 2
   g.beginPath()
-  g.roundRect(x, y, w, h, 4)
-  g.fill()
-  g.strokeStyle = 'rgba(0,0,0,0.5)'
-  g.lineWidth = 1
+  g.arc(cx, cy, r - 1, 0, Math.PI * 2)
   g.stroke()
-  // the xp bevel: a bright lip along the top edge
-  g.fillStyle = pressed ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.3)'
-  g.fillRect(x + 3, y + 2, w - 6, 2)
   g.fillStyle = pressed ? '#1e3a8a' : 'rgba(255,255,255,0.85)'
   g.font = 'bold 12px ui-monospace, monospace'
   g.textAlign = 'center'
   g.textBaseline = 'middle'
-  g.fillText(letter, x + w / 2, y + h / 2 + 1)
+  g.fillText(letter, cx, cy + 1)
 }
 
 function drawFrame(
@@ -833,7 +503,7 @@ function drawFrame(
   dpr: number,
   run: Run,
   now: number,
-  pxPerSec: number,
+  speed: number,
 ) {
   g.setTransform(dpr, 0, 0, dpr, 0, 0)
   g.fillStyle = '#101014'
@@ -843,7 +513,9 @@ function drawFrame(
   const fieldW = laneW * 4
   const x0 = Math.round((w - fieldW) / 2)
   const receptorY = h - 78
-  const noteH = 13
+  const noteR = Math.min(30, Math.floor(laneW * 0.4))
+  // osu!mania speed: top of the field to the line in 10/speed seconds
+  const pxPerSec = (receptorY * speed) / 10
 
   // the playfield well and its lane separators
   g.fillStyle = '#17181d'
@@ -859,11 +531,11 @@ function drawFrame(
   }
 
   // faint beat grid scrolling at note speed
-  const tTop = now + (receptorY + noteH) / pxPerSec
+  const tTop = now + (receptorY + noteR) / pxPerSec
   const tBottom = now - (h - receptorY) / pxPerSec
   for (let k = Math.ceil(tBottom / run.beat); k * run.beat <= tTop; k++) {
     const bt = k * run.beat
-    if (bt < -3 * run.beat || bt > run.duration) continue
+    if (bt < run.skip - 3 * run.beat || bt > run.duration) continue
     const y = Math.round(receptorY - (bt - now) * pxPerSec)
     g.fillStyle = k % 4 === 0 ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.035)'
     g.fillRect(x0, y, fieldW, 1)
@@ -885,25 +557,24 @@ function drawFrame(
   g.fillStyle = 'rgba(255,255,255,0.22)'
   g.fillRect(x0, receptorY, fieldW, 1)
 
+  for (let l = 0; l < 4; l++) {
+    drawReceptor(
+      g,
+      x0 + l * laneW + laneW / 2,
+      receptorY,
+      noteR + 2,
+      LANE_KEYS[l],
+      run.keysDown[l],
+    )
+  }
+
   // notes, centered on their moment in time
   for (const n of run.notes) {
     if (n.t > tTop) break
     if (n.state !== 0) continue
     const y = receptorY - (n.t - now) * pxPerSec
-    if (y < -noteH || y > h + noteH) continue
-    drawNote(g, x0 + n.lane * laneW + 4, y - noteH / 2, laneW - 8, noteH, n.lane)
-  }
-
-  for (let l = 0; l < 4; l++) {
-    drawReceptor(
-      g,
-      x0 + l * laneW + 3,
-      receptorY - 14,
-      laneW - 6,
-      28,
-      LANE_KEYS[l],
-      run.keysDown[l],
-    )
+    if (y < -noteR || y > h + noteR) continue
+    drawNote(g, x0 + n.lane * laneW + laneW / 2, y, noteR, n.lane)
   }
 
   // the last judgment, popping briefly above the receptors
@@ -951,13 +622,13 @@ function drawFrame(
   g.globalAlpha = 1
 
   // thin song progress along the top
-  const p = Math.max(0, Math.min(1, now / run.duration))
+  const p = Math.max(0, Math.min(1, (now - run.skip) / (run.duration - run.skip)))
   g.fillStyle = '#3b82f6'
   g.fillRect(x0, 0, fieldW * p, 3)
 
-  // count-in, one number per beat before the song
-  if (now < 0) {
-    const n = Math.min(3, Math.ceil(-now / run.beat))
+  // count-in, one number per beat before the music lands
+  if (now < run.skip) {
+    const n = Math.min(3, Math.ceil((run.skip - now) / run.beat))
     g.fillStyle = 'rgba(255,255,255,0.95)'
     g.font = 'bold 44px ui-monospace, monospace'
     g.textAlign = 'center'
@@ -973,7 +644,10 @@ function drawFrame(
 
 interface GameplayProps {
   track: TrackDef
-  pxPerSec: number
+  /** osu!mania style scroll speed, 1..40 */
+  speed: number
+  /** the player's sync nudge in ms; positive judges notes later */
+  syncMs: number
   onStats: (s: Stats) => void
   onFinish: (r: RunResult) => void
   onQuit: () => void
@@ -981,7 +655,8 @@ interface GameplayProps {
 
 const Gameplay = memo(function Gameplay({
   track,
-  pxPerSec,
+  speed,
+  syncMs,
   onStats,
   onFinish,
   onQuit,
@@ -990,13 +665,14 @@ const Gameplay = memo(function Gameplay({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1 })
   const runRef = useRef<Run | null>(null)
-  const engineRef = useRef<SongEngine | null>(null)
+  const engineRef = useRef<SongPlayer | null>(null)
   const pausedRef = useRef(false)
   const [paused, setPaused] = useState(false)
-  const [noAudio, setNoAudio] = useState(false)
+  const [problem, setProblem] = useState<'audio' | 'load' | null>(null)
+  const [loading, setLoading] = useState(true)
 
   // suspending the context freezes its clock, so a pause costs nothing:
-  // judgment, notes and backing all wake up exactly where they stopped
+  // judgment, notes and music all wake up exactly where they stopped
   const doPause = useCallback(() => {
     const run = runRef.current
     const engine = engineRef.current
@@ -1023,37 +699,15 @@ const Gameplay = memo(function Gameplay({
     const g = cv.getContext('2d')
     const ac = getAudio()
     if (!g || !ac) {
-      setNoAudio(true)
+      setProblem('audio')
+      setLoading(false)
       return
     }
 
-    const chart = generateChart(track)
-    const spb = 60 / track.bpm
-    const run: Run = {
-      notes: chart.map((n) => ({ ...n, state: 0 })),
-      laneNotes: [[], [], [], []],
-      heads: [0, 0, 0, 0],
-      duration: track.bars * 4 * spb,
-      beat: spb,
-      keysDown: [false, false, false, false],
-      flashAt: [-1, -1, -1, -1],
-      lastJudge: null,
-      errs: [],
-      perfect: 0,
-      great: 0,
-      miss: 0,
-      combo: 0,
-      maxCombo: 0,
-      errSum: 0,
-      hitCount: 0,
-      finished: false,
-    }
-    run.notes.forEach((n, i) => run.laneNotes[n.lane].push(i))
-    runRef.current = run
-
-    const engine = new SongEngine(ac)
-    engineRef.current = engine
-    engine.start(track)
+    let alive = true
+    let raf = 0
+    let engine: SongPlayer | null = null
+    const syncSec = syncMs / 1000
 
     const applySize = () => {
       const rect = wrap.getBoundingClientRect()
@@ -1066,24 +720,75 @@ const Gameplay = memo(function Gameplay({
     ro.observe(wrap)
     applySize()
 
-    let raf = 0
-    const frame = () => {
-      const now = engine.now()
-      if (!pausedRef.current && !run.finished) {
-        if (sweepMisses(run, now)) onStats(currentStats(run))
-        if (now > run.duration + 1.2) {
-          run.finished = true
-          engine.stop(0.3)
-          onFinish(buildResult(run))
-          return
+    void (async () => {
+      let buffer: AudioBuffer
+      let notes: ChartNote[]
+      let bpm: number
+      try {
+        const song = await fetchSong(track.dir)
+        // decodeAudioData detaches the buffer it is given, so decode a copy
+        buffer = await ac.decodeAudioData(song.raw.slice(0))
+        notes = song.notes
+        bpm = song.bpm
+      } catch {
+        if (alive) {
+          setProblem('load')
+          setLoading(false)
         }
+        return
       }
-      const { w, h, dpr } = sizeRef.current
-      if (w > 0 && h > 0) drawFrame(g, w, h, dpr, run, now, pxPerSec)
+      if (!alive) return
+      setLoading(false)
+
+      const spb = 60 / bpm
+      // long silent intros bore visitors: begin two bars before the action
+      const skip = Math.max(0, notes[0].t - 8 * spb)
+      const run: Run = {
+        notes: notes.map((n) => ({ ...n, state: 0 })),
+        laneNotes: [[], [], [], []],
+        heads: [0, 0, 0, 0],
+        skip,
+        duration: notes[notes.length - 1].t + 1.2,
+        beat: spb,
+        keysDown: [false, false, false, false],
+        flashAt: [-1, -1, -1, -1],
+        lastJudge: null,
+        errs: [],
+        perfect: 0,
+        great: 0,
+        miss: 0,
+        combo: 0,
+        maxCombo: 0,
+        errSum: 0,
+        hitCount: 0,
+        finished: false,
+      }
+      run.notes.forEach((n, i) => run.laneNotes[n.lane].push(i))
+      runRef.current = run
+
+      engine = new SongPlayer(ac)
+      engineRef.current = engine
+      engine.start(buffer, skip, bpm)
+
+      const frame = () => {
+        if (!engine) return
+        const now = engine.now() - syncSec
+        if (!pausedRef.current && !run.finished) {
+          if (sweepMisses(run, now)) onStats(currentStats(run))
+          if (now > run.duration + 0.8) {
+            run.finished = true
+            engine.stop(0.5)
+            onFinish(buildResult(run))
+            return
+          }
+        }
+        const { w, h, dpr } = sizeRef.current
+        if (w > 0 && h > 0) drawFrame(g, w, h, dpr, run, now, speed)
+        raf = requestAnimationFrame(frame)
+      }
       raf = requestAnimationFrame(frame)
-    }
-    raf = requestAnimationFrame(frame)
-    wrap.focus()
+      wrap.focus()
+    })()
 
     const onWinBlur = () => doPause()
     const onVis = () => {
@@ -1093,17 +798,18 @@ const Gameplay = memo(function Gameplay({
     document.addEventListener('visibilitychange', onVis)
 
     return () => {
+      alive = false
       cancelAnimationFrame(raf)
       ro.disconnect()
       window.removeEventListener('blur', onWinBlur)
       document.removeEventListener('visibilitychange', onVis)
-      engine.stop()
+      engine?.stop()
       engineRef.current = null
       runRef.current = null
       // a run abandoned mid-pause must not leave the context asleep
       if (ac.state === 'suspended') void ac.resume()
     }
-  }, [track, pxPerSec, onStats, onFinish, doPause])
+  }, [track, speed, syncMs, onStats, onFinish, doPause])
 
   const handleKey = (e: KeyboardEvent<HTMLDivElement>, down: boolean) => {
     const laneIdx = LANE_CODE[e.code]
@@ -1118,11 +824,10 @@ const Gameplay = memo(function Gameplay({
     }
     if (e.repeat || run.finished || pausedRef.current) return
     run.keysDown[laneIdx] = true
-    const now = engine.now()
+    const now = engine.now() - syncMs / 1000
     sweepMisses(run, now)
     const hit = judgePress(run, laneIdx, now)
-    // the melody sounds when the player plays it; misses stay silent
-    if (hit) engine.hit(hit.midi)
+    if (hit) engine.hit()
     onStats(currentStats(run))
   }
 
@@ -1149,6 +854,15 @@ const Gameplay = memo(function Gameplay({
       >
         quit
       </button>
+      {loading && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-[#101014]">
+          <MusicNotesIcon size={28} weight="fill" className="animate-pulse text-blue-400" />
+          <p className="text-xs text-stone-300">
+            loading {track.title}
+            <span className="animate-pulse">...</span>
+          </p>
+        </div>
+      )}
       {paused && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/60">
           <p className="text-sm font-semibold text-white">paused</p>
@@ -1161,10 +875,12 @@ const Gameplay = memo(function Gameplay({
           </button>
         </div>
       )}
-      {noAudio && (
+      {problem && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/70 px-6 text-center">
           <p className="text-xs text-stone-200">
-            The game keeps time by sound, and this browser will not start the audio.
+            {problem === 'audio'
+              ? 'The game keeps time by sound, and this browser will not start the audio.'
+              : 'The song did not load. Check the connection and try again.'}
           </p>
           <button
             type="button"
@@ -1245,7 +961,7 @@ function Results({
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-4">
       <p className="text-[11px] text-stone-500">
-        {track.label} · {'★'.repeat(track.stars)}
+        {track.title} · {'★'.repeat(track.stars)}
       </p>
       <div className={`text-5xl leading-none font-bold ${GRADE_COLOR[grade]}`}>{grade}</div>
       <Led value={String(result.score).padStart(7, '0')} label="Final score" />
@@ -1271,7 +987,7 @@ function Results({
           onClick={onSelect}
           className={`${XP_BTN} px-4 py-1.5 text-xs font-medium text-stone-700`}
         >
-          Track select
+          Song select
         </button>
       </div>
     </div>
@@ -1283,17 +999,21 @@ function Results({
 function TrackSelect({
   speed,
   onSpeed,
+  syncMs,
+  onSync,
   onPlay,
 }: {
-  speed: SpeedId
-  onSpeed: (s: SpeedId) => void
+  speed: number
+  onSpeed: (s: number) => void
+  syncMs: number
+  onSync: (v: number) => void
   onPlay: (t: TrackDef) => void
 }) {
   return (
     <div className="flex h-full flex-col gap-2 overflow-y-auto p-3">
       <p className="text-xs text-stone-500">
-        Notes fall down four lanes. Press the matching key as each one reaches the line, and every
-        clean hit plays its piece of the melody.
+        Notes fall down four lanes. Press the matching key as each one crosses the line. Real
+        songs, real charts from the community.
       </p>
       {TRACKS.map((t) => {
         const best = localBest(t.id)
@@ -1306,14 +1026,17 @@ function TrackSelect({
           >
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
-                <span className="text-sm font-semibold text-stone-800">{t.label}</span>
+                <span className="text-sm font-semibold text-stone-800">{t.title}</span>
                 <span className="text-[11px] tracking-wide text-amber-600">
                   {'★'.repeat(t.stars)}
                 </span>
               </div>
-              <p className="text-[11px] text-stone-500">{t.blurb}</p>
+              <p className="truncate text-[11px] text-stone-600">{t.artist}</p>
+              <p className="truncate text-[11px] text-stone-500">
+                {t.blurb} · {t.credit}
+              </p>
               <p className="font-mono text-[11px] tabular-nums text-stone-500">
-                {t.bpm} bpm · {fmtDur(t)} ·{' '}
+                {t.bpm} bpm · {fmtDur(t.seconds)} · {t.noteCount} notes ·{' '}
                 {best !== null ? `best ${formatScore(t.id, best)}` : 'no score yet'}
               </p>
             </div>
@@ -1323,21 +1046,49 @@ function TrackSelect({
       })}
       <div className="mt-auto flex items-center gap-1.5 pt-1">
         <span className="text-[11px] text-stone-500">scroll speed</span>
+        <button
+          type="button"
+          aria-label="Slower scroll"
+          onClick={() => onSpeed(Math.max(SPEED_MIN, speed - 1))}
+          className={`${XP_BTN} px-1.5 py-0.5 text-[11px] text-stone-600`}
+        >
+          -
+        </button>
+        <span className="w-6 text-center font-mono text-[11px] tabular-nums text-stone-700">
+          {speed}
+        </span>
+        <button
+          type="button"
+          aria-label="Faster scroll"
+          onClick={() => onSpeed(Math.min(SPEED_MAX, speed + 1))}
+          className={`${XP_BTN} px-1.5 py-0.5 text-[11px] text-stone-600`}
+        >
+          +
+        </button>
         <span className="flex-1" />
-        {SPEED_IDS.map((s) => (
-          <button
-            key={s}
-            type="button"
-            onClick={() => onSpeed(s)}
-            className={
-              s === speed
-                ? 'cursor-pointer rounded-sm border border-blue-600 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800'
-                : `${XP_BTN} px-2 py-0.5 text-[11px] text-stone-600`
-            }
-          >
-            {s}
-          </button>
-        ))}
+        <span className="text-[11px] text-stone-500" title="shift note timing to match your setup">
+          sync
+        </span>
+        <button
+          type="button"
+          aria-label="Notes judge earlier"
+          onClick={() => onSync(Math.max(-60, syncMs - 5))}
+          className={`${XP_BTN} px-1.5 py-0.5 text-[11px] text-stone-600`}
+        >
+          -
+        </button>
+        <span className="w-11 text-center font-mono text-[11px] tabular-nums text-stone-600">
+          {syncMs >= 0 ? '+' : ''}
+          {syncMs} ms
+        </span>
+        <button
+          type="button"
+          aria-label="Notes judge later"
+          onClick={() => onSync(Math.min(60, syncMs + 5))}
+          className={`${XP_BTN} px-1.5 py-0.5 text-[11px] text-stone-600`}
+        >
+          +
+        </button>
       </div>
     </div>
   )
@@ -1350,12 +1101,13 @@ type Screen =
   | { kind: 'play'; track: TrackDef; nonce: number }
   | { kind: 'result'; track: TrackDef; result: RunResult }
 
-const TABS = TRACKS.map((t) => ({ id: t.id, label: t.label }))
+const TABS = TRACKS.map((t) => ({ id: t.id, label: t.title }))
 
 export function VsrgApp() {
   const { name } = useArcade()
   const [screen, setScreen] = useState<Screen>({ kind: 'select' })
-  const [speed, setSpeedState] = useState<SpeedId>(readSpeed)
+  const [speed, setSpeedState] = useState<number>(readSpeed)
+  const [syncMs, setSyncState] = useState<number>(readSync)
   const [stats, setStats] = useState<Stats>(START_STATS)
 
   // the game's context naps when the window closes, ready for next time
@@ -1377,10 +1129,16 @@ export function VsrgApp() {
     setScreen({ kind: 'play', track, nonce: Date.now() })
   }
 
-  const setSpeed = (s: SpeedId) => {
+  const setSpeed = (s: number) => {
     sounds.click()
     setSpeedState(s)
     storeSpeed(s)
+  }
+
+  const setSync = (v: number) => {
+    sounds.click()
+    setSyncState(v)
+    storeSync(v)
   }
 
   const header =
@@ -1402,13 +1160,20 @@ export function VsrgApp() {
   return (
     <GameShell tabs={TABS} you={name} header={header} hint="d f j k hit the notes as they land">
       {screen.kind === 'select' && (
-        <TrackSelect speed={speed} onSpeed={setSpeed} onPlay={startTrack} />
+        <TrackSelect
+          speed={speed}
+          onSpeed={setSpeed}
+          syncMs={syncMs}
+          onSync={setSync}
+          onPlay={startTrack}
+        />
       )}
       {screen.kind === 'play' && (
         <Gameplay
           key={screen.nonce}
           track={screen.track}
-          pxPerSec={SPEEDS[speed]}
+          speed={speed}
+          syncMs={syncMs}
           onStats={onStats}
           onFinish={onFinish}
           onQuit={onQuit}

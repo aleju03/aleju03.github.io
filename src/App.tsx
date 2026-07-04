@@ -1,10 +1,13 @@
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { I18nProvider } from './i18n'
 import { VersionChooser } from './components/VersionChooser'
+import { VersionNudge } from './components/VersionNudge'
 import {
   matchProjectSlug,
+  persistNudgeDismissed,
   persistVersion,
   readInitialVersion,
+  readNudgeDismissed,
   readQueryVersion,
   stripVersionParam,
   type PortfolioVersion,
@@ -26,6 +29,7 @@ function VersionRouter() {
     () => readInitialVersion() ?? (matchProjectSlug() ? 'simple' : null),
   )
   const [chooserOpen, setChooserOpen] = useState(false)
+  const [nudgeDismissed, setNudgeDismissed] = useState(readNudgeDismissed)
 
   // consume a ?v= deep link once: remember it, then tidy the address bar
   useEffect(() => {
@@ -47,7 +51,7 @@ function VersionRouter() {
     }
   }, [])
 
-  // re-open the chooser from anywhere (footer link, command palette)
+  // open the chooser from anywhere (footer link, command palette)
   useEffect(() => {
     const open = () => setChooserOpen(true)
     window.addEventListener(OPEN_CHOOSER_EVENT, open)
@@ -63,7 +67,12 @@ function VersionRouter() {
     setChooserOpen(false)
   }
 
-  // /alejOS always boots the full site, skipping the chooser entirely
+  const dismissNudge = () => {
+    persistNudgeDismissed()
+    setNudgeDismissed(true)
+  }
+
+  // /alejOS always boots the full site, with no nudge or chooser on top
   if (forceFull) {
     return (
       <Suspense fallback={fallback}>
@@ -72,8 +81,10 @@ function VersionRouter() {
     )
   }
 
+  // the full site is the default landing; no explicit choice just means the
+  // résumé nudge floats over it until it's followed or waved away
   const showSimple = projectSlug !== null || version === 'simple'
-  const showChooser = chooserOpen || (version === null && projectSlug === null)
+  const showNudge = version === null && projectSlug === null && !nudgeDismissed
 
   return (
     <>
@@ -81,16 +92,17 @@ function VersionRouter() {
         <Suspense fallback={fallback}>
           <SimplePortfolio slug={projectSlug} />
         </Suspense>
-      ) : version === 'full' ? (
+      ) : (
         <Suspense fallback={fallback}>
           <FullPortfolio />
         </Suspense>
-      ) : null}
-      {showChooser && (
+      )}
+      {showNudge && <VersionNudge onAccept={() => choose('simple')} onDismiss={dismissNudge} />}
+      {chooserOpen && (
         <VersionChooser
-          current={version}
+          current={showSimple ? 'simple' : 'full'}
           onChoose={choose}
-          onDismiss={version !== null ? () => setChooserOpen(false) : undefined}
+          onDismiss={() => setChooserOpen(false)}
         />
       )}
     </>

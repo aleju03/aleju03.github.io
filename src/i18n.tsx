@@ -3,8 +3,9 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { showcase, secondary, more } from './data/projects'
 import type { GalleryImage, SecondaryProject, ShowcaseProject, SmallProject } from './data/projects'
+import type { Language } from './language'
 
-export type Language = 'en' | 'es'
+export type { Language }
 
 const STORAGE_KEY = 'portfolio-language'
 
@@ -115,6 +116,10 @@ const dictionaries = {
       note: 'Switch whenever.',
       keep: 'Stay here',
       current: "You're here",
+    },
+    nudge: {
+      lead: 'Prefer a quick read?',
+      dismiss: 'Hide this note',
     },
     simple: {
       role: 'Full-stack developer',
@@ -232,6 +237,10 @@ const dictionaries = {
       note: 'Cambia cuando quieras.',
       keep: 'Me quedo aquí',
       current: 'Estás aquí',
+    },
+    nudge: {
+      lead: '¿Prefieres algo más corto?',
+      dismiss: 'Ocultar esta nota',
     },
     simple: {
       role: 'Desarrollador full-stack',

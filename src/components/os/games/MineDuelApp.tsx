@@ -6,18 +6,26 @@ import {
   FlagPennantIcon,
   HeartIcon,
   LightningIcon,
+  RobotIcon,
 } from '@phosphor-icons/react'
 import { sounds } from '../sounds'
 import { GameShell, XP_BTN, XP_WELL } from './ui'
 import { arcadeConfigured, useDuelChannel } from './arcade'
+import { createBotDuel } from './duelBot'
+import type { LocalDuel } from './duelBot'
 
 /*
-  Mine Duel: 1v1 minesweeper over the chat server, in the spirit of the
-  Squidcraft Games duel. One shared 10x10 board; each player secretly buries
-  five mines, then the digging is turn-based. A number counts EVERY mine
-  around the tile, yours and theirs together, and digging any mine costs the
-  digger a life — your own included, so you memorize your five. Two lives
-  each; slow turns get dug by the server, so stalling is never safe.
+  Mine Duel: 1v1 minesweeper in the spirit of the Squidcraft Games duel.
+  One shared 10x10 board; each player secretly buries five mines, then the
+  digging is turn-based. A number counts EVERY mine around the tile, yours
+  and theirs together, and digging any mine costs the digger a life — your
+  own included, so you memorize your five. Two lives each; slow turns get
+  dug by the clock, so stalling is never safe.
+
+  The default opponent is the bot from duelBot.ts, which runs entirely in
+  the browser and speaks the same duel-* protocol as the chat server, so
+  everything below the idle screen is one code path. Queuing for a real
+  visitor over the WebSocket is the optional mode.
 */
 
 const SIZE = 10
@@ -29,10 +37,13 @@ interface Opponent {
   name: string
   registered: boolean
   admin: boolean
+  bot?: boolean
 }
 
 interface Duel {
   stage: Stage
+  /** the current match is against the local bot, not the server */
+  vsBot: boolean
   seat: 0 | 1
   players: Opponent[]
   minesPerPlayer: number
@@ -60,6 +71,7 @@ interface Duel {
 
 const freshDuel = (): Duel => ({
   stage: 'idle',
+  vsBot: false,
   seat: 0,
   players: [],
   minesPerPlayer: 5,
@@ -164,6 +176,7 @@ export function MineDuelApp() {
           return {
             ...freshDuel(),
             stage: 'plant',
+            vsBot: Boolean(msg.bot),
             seat: msg.seat as 0 | 1,
             players: (msg.players as Opponent[]) ?? [],
             minesPerPlayer: Number(msg.mines ?? 5),
@@ -251,11 +264,40 @@ export function MineDuelApp() {
     })
   }, [])
 
-  const { status, name, send } = useDuelChannel(onMessage)
+  const { status, name, send: sendWire } = useDuelChannel(onMessage)
 
+  // the local bot match, when one is running; commands route to it instead
+  // of the WebSocket, and everything downstream stays identical
+  const botRef = useRef<LocalDuel | null>(null)
+  useEffect(
+    () => () => {
+      botRef.current?.dispose()
+      botRef.current = null
+    },
+    [],
+  )
+  const send = useCallback(
+    (payload: Record<string, unknown>) => {
+      if (botRef.current) botRef.current.send(payload)
+      else sendWire(payload)
+    },
+    [sendWire],
+  )
+
+  const playBot = () => {
+    sounds.click()
+    botRef.current?.dispose()
+    // walk away from any server queue or stale online match first
+    sendWire({ type: 'duel-leave' })
+    setFlags(new Set())
+    botRef.current = createBotDuel(name, onMessage)
+  }
   const queue = () => {
     sounds.click()
-    send({ type: 'duel-queue' })
+    botRef.current?.dispose()
+    botRef.current = null
+    setDuel(freshDuel())
+    sendWire({ type: 'duel-queue' })
   }
   const cancelQueue = () => {
     sounds.click()
@@ -427,28 +469,18 @@ export function MineDuelApp() {
         {p?.name ?? '...'}
         {isMe && ' (you)'}
       </span>
+      {p?.bot && <RobotIcon size={12} weight="fill" className="text-stone-500" />}
       {p?.admin && <CrownSimpleIcon size={11} weight="fill" className="text-amber-600" />}
       <Hearts lives={lives} max={duel.maxLives} />
     </div>
   )
 
   let body: ReactNode
-  if (!arcadeConfigured()) {
-    body = (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-        <BombIcon size={40} weight="duotone" className="text-stone-400" />
-        <p className="text-sm font-semibold text-stone-700">Mine Duel needs the game server</p>
-        <p className="text-xs text-stone-500">
-          This build has no server configured, so there is nobody to duel. The other games in the
-          folder work fine offline.
-        </p>
-      </div>
-    )
-  } else if (duel.stage === 'idle' || duel.stage === 'queued') {
+  if (duel.stage === 'idle' || duel.stage === 'queued') {
     body = (
       <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center">
         <BombIcon size={40} weight="duotone" className="text-stone-600" />
-        <p className="text-sm font-semibold text-stone-700">Minesweeper, against a real person</p>
+        <p className="text-sm font-semibold text-stone-700">Minesweeper, turned into a duel</p>
         <div
           className={`${XP_WELL} max-w-sm px-4 py-3 text-left text-xs leading-relaxed text-stone-600`}
         >
@@ -462,14 +494,26 @@ export function MineDuelApp() {
           </p>
         </div>
         {duel.stage === 'idle' ? (
-          <button
-            type="button"
-            onClick={queue}
-            disabled={status !== 'online'}
-            className={`${XP_BTN} px-5 py-2 text-sm font-medium text-stone-800 disabled:cursor-default disabled:opacity-50`}
-          >
-            Find an opponent
-          </button>
+          <div className="flex flex-col items-center gap-2">
+            <button
+              type="button"
+              onClick={playBot}
+              className={`${XP_BTN} flex items-center gap-2 px-5 py-2 text-sm font-medium text-stone-800`}
+            >
+              <RobotIcon size={16} weight="fill" className="text-stone-600" />
+              Challenge digby
+            </button>
+            {arcadeConfigured() && (
+              <button
+                type="button"
+                onClick={queue}
+                disabled={status !== 'online'}
+                className={`${XP_BTN} px-3 py-1.5 text-xs text-stone-700 disabled:cursor-default disabled:opacity-50`}
+              >
+                Find a real opponent
+              </button>
+            )}
+          </div>
         ) : (
           <div className="flex flex-col items-center gap-2">
             <p className="animate-pulse text-xs text-stone-500">
@@ -484,13 +528,15 @@ export function MineDuelApp() {
             </button>
           </div>
         )}
-        {status !== 'online' && (
-          <p className="text-[11px] text-stone-400">
-            {status === 'connecting'
-              ? 'reaching the server...'
-              : 'the game server is unreachable right now'}
-          </p>
-        )}
+        <p className="max-w-xs text-[11px] text-stone-400">
+          {!arcadeConfigured()
+            ? 'digby lives in this window, so he works offline. real opponents need the game server, which this build goes without.'
+            : status === 'online'
+              ? 'digby buries and digs like a person. he memorizes his five, and so should you.'
+              : status === 'connecting'
+                ? 'reaching the server... digby plays either way.'
+                : 'the game server is unreachable right now, so digby it is.'}
+        </p>
       </div>
     )
   } else {
@@ -572,13 +618,25 @@ export function MineDuelApp() {
                     ? 'Waiting...'
                     : 'Rematch'}
               </button>
-              <button
-                type="button"
-                onClick={queue}
-                className={`${XP_BTN} px-4 py-1.5 text-xs text-stone-700`}
-              >
-                New opponent
-              </button>
+              {!duel.vsBot && (
+                <button
+                  type="button"
+                  onClick={playBot}
+                  className={`${XP_BTN} px-4 py-1.5 text-xs text-stone-700`}
+                >
+                  Challenge digby
+                </button>
+              )}
+              {arcadeConfigured() && (
+                <button
+                  type="button"
+                  onClick={queue}
+                  disabled={status !== 'online'}
+                  className={`${XP_BTN} px-4 py-1.5 text-xs text-stone-700 disabled:cursor-default disabled:opacity-50`}
+                >
+                  {duel.vsBot ? 'Find a real opponent' : 'New opponent'}
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -595,7 +653,7 @@ export function MineDuelApp() {
           ? 'click to bury · click again to move it'
           : duel.stage === 'dig'
             ? 'click digs on your turn · right click marks a suspicion'
-            : 'wins land on the shared board'
+            : 'wins against real people land on the shared board'
       }
     >
       {body}

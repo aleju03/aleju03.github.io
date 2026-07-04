@@ -198,7 +198,7 @@ export const APPS: Record<AppId, AppDef> = {
     render: () => <WhackApp />,
   },
   flappy: {
-    name: 'Flappy Bird',
+    name: 'Tappy Plane',
     glyph: (s) => xpIcon('flappy', s),
     w: 420,
     h: 560,

@@ -378,8 +378,28 @@ button:not(:disabled),
     transform: none;
   }
 }
+/* the first-visit résumé nudge shares the fade-up, held back a beat so the
+   hero lands first, and leaves on its own with the same motion reversed */
+.nudge-in {
+  animation: chooser-in 0.5s ease-out 1.4s both;
+}
+@keyframes nudge-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+.nudge-out {
+  animation: nudge-out 0.4s ease-in both;
+}
 @media (prefers-reduced-motion: reduce) {
-  .chooser-in {
+  .chooser-in,
+  .nudge-in,
+  .nudge-out {
     animation: none !important;
   }
 }

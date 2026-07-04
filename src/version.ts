@@ -1,9 +1,12 @@
 import { NAVIGATE_EVENT } from './events'
 
 /**
- * The portfolio ships more than one rendering of the same content. A first-visit
- * chooser (not a navbar toggle) picks one, so this can scale to many versions
- * over time. Precedence for the initial pick: ?v= query param -> stored -> none.
+ * The portfolio ships more than one rendering of the same content. The full
+ * site is the default landing, so first visits (and anything that reads the
+ * page, like crawlers) go straight to content; a dismissible nudge offers the
+ * short version until a choice is made, and the full-screen chooser switches
+ * versions any time from the footer or command palette. Precedence for the
+ * initial pick: ?v= query param -> stored choice -> the full-site default.
  *
  * To add a version: add an id here + a `versions.<id>` copy block (title/blurb/
  * tag) to both en/es in i18n.tsx, build its component, and branch it in App's
@@ -51,6 +54,22 @@ export function persistVersion(version: PortfolioVersion) {
     localStorage.setItem(STORAGE_KEY, version)
   } catch {
     /* private mode / storage disabled — choice just won't persist */
+  }
+}
+
+const NUDGE_KEY = 'portfolio-nudge'
+
+/** whether the first-visit résumé nudge was waved away on an earlier visit */
+export function readNudgeDismissed(): boolean {
+  if (typeof localStorage === 'undefined') return false
+  return localStorage.getItem(NUDGE_KEY) === 'dismissed'
+}
+
+export function persistNudgeDismissed() {
+  try {
+    localStorage.setItem(NUDGE_KEY, 'dismissed')
+  } catch {
+    /* private mode / storage disabled — the nudge will just show again */
   }
 }
 

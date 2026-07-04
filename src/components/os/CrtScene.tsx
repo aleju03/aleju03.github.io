@@ -121,9 +121,12 @@ export default function CrtScene({
   // near = close enough to the machine for the interact prompt
   const [walking, setWalking] = useState(false)
   const [near, setNear] = useState(false)
+  // a house door in reach while walking; which verb its prompt should show
+  const [doorVerb, setDoorVerb] = useState<'open' | 'close' | null>(null)
   const [locked, setLocked] = useState(false)
   const outroRef = useRef<(() => void) | null>(null)
   const roamRef = useRef<((on: boolean) => void) | null>(null)
+  const doorRef = useRef<(() => void) | null>(null)
   const failRef = useRef(onFail)
   const interactRef = useRef(onInteract)
   const liveRef = useRef(screenLive)
@@ -803,6 +806,9 @@ export default function CrtScene({
           runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
           webgl.compile(scene, camera)
           bakeShadows()
+          // the bathroom mirror's first reflection pass happens here too,
+          // instead of as a stutter the first time someone steps in
+          house.prewarmMirror(webgl)
         })
 
         const render = () => {
@@ -879,6 +885,7 @@ export default function CrtScene({
         let roaming = false
         let fps = false // controls live, i.e. the stand-up glide has finished
         let nearNow = false
+        let doorVerbNow: 'open' | 'close' | null = null
         let isLocked = false
         let yaw = 0
         let pitch = 0
@@ -1058,6 +1065,12 @@ export default function CrtScene({
             nearNow = isNear
             setNear(isNear)
           }
+          // a door in reach offers its own prompt; the machine's wins
+          const verb = isNear ? null : house.doorPrompt(camera.position, gaze)
+          if (verb !== doorVerbNow) {
+            doorVerbNow = verb
+            setDoorVerb(verb)
+          }
           render()
           raf = requestAnimationFrame(walkTick)
         }
@@ -1137,8 +1150,10 @@ export default function CrtScene({
             webgl.setPixelRatio(pr)
           }
           nearNow = false
+          doorVerbNow = null
           setWalking(false)
           setNear(false)
+          setDoorVerb(null)
           if (document.pointerLockElement) document.exitPointerLock()
           if (webgl) {
             webgl.domElement.style.pointerEvents = 'none'
@@ -1198,6 +1213,11 @@ export default function CrtScene({
             flyIn(live)
           }
         }
+        // the door prompt button routes here (E does the same in onKeyDown)
+        doorRef.current = () => {
+          camera.getWorldDirection(gaze)
+          house.useDoor(camera.position, gaze)
+        }
 
         // mouse-look: pointer lock steers directly, an unlocked drag grabs
         // the world instead; a still click only (re)grabs the mouse — sitting
@@ -1232,9 +1252,15 @@ export default function CrtScene({
             e.preventDefault()
           } else if (MOD_KEYS.has(e.code)) {
             keys.add(e.code)
-          } else if (e.code === 'KeyE' && nearNow) {
-            e.preventDefault()
-            interactRef.current()
+          } else if (e.code === 'KeyE') {
+            if (nearNow) {
+              e.preventDefault()
+              interactRef.current()
+            } else if (doorVerbNow) {
+              e.preventDefault()
+              camera.getWorldDirection(gaze)
+              house.useDoor(camera.position, gaze)
+            }
           }
         }
         const onKeyUp = (e: KeyboardEvent) => keys.delete(e.code)
@@ -1319,6 +1345,7 @@ export default function CrtScene({
       cancelAnimationFrame(raf)
       outroRef.current = null
       roamRef.current = null
+      doorRef.current = null
       if (scene) {
         scene.traverse((o) => {
           const mesh = o as THREE.Mesh
@@ -1374,6 +1401,18 @@ export default function CrtScene({
             E
           </kbd>
           {screenLive ? 'sit back down' : 'power it on'}
+        </button>
+      )}
+      {roam && walking && !near && doorVerb && (
+        <button
+          type="button"
+          onClick={() => doorRef.current?.()}
+          className="absolute bottom-14 left-1/2 z-10 -translate-x-1/2 cursor-pointer rounded-md border border-stone-700 bg-stone-950/80 px-3 py-1.5 font-mono text-[12px] text-stone-300 backdrop-blur-sm transition-colors hover:border-stone-500 hover:text-white"
+        >
+          <kbd className="mr-2 rounded border border-stone-600 bg-stone-800 px-1.5 py-0.5 text-[10px] text-stone-200">
+            E
+          </kbd>
+          {doorVerb === 'open' ? 'open the door' : 'close the door'}
         </button>
       )}
     </div>

@@ -20,19 +20,19 @@ const serif: CSSProperties = {
 }
 
 /**
- * Full-screen first-visit picker. Dependency-light (no motion) since it sits in
- * the initial bundle ahead of either lazy portfolio. Reopened over an
- * already-chosen version, `onDismiss` lets the visitor keep it; the first visit
- * is a required choice (nothing underneath to reveal).
+ * Full-screen version switcher, opened from the footer links and the command
+ * palette over whichever version is on screen; `current` tags that one and
+ * `onDismiss` keeps it. Dependency-light (no motion) since it sits in the
+ * initial bundle ahead of either lazy portfolio.
  */
 export function VersionChooser({
   current,
   onChoose,
   onDismiss,
 }: {
-  current: PortfolioVersion | null
+  current: PortfolioVersion
   onChoose: (version: PortfolioVersion) => void
-  onDismiss?: () => void
+  onDismiss: () => void
 }) {
   const { t } = useI18n()
   const panelRef = useRef<HTMLDivElement>(null)
@@ -54,7 +54,7 @@ export function VersionChooser({
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        dismissRef.current?.()
+        dismissRef.current()
         return
       }
       if (e.key !== 'Tab' || !panelRef.current) return
@@ -159,15 +159,13 @@ export function VersionChooser({
             <p id="chooser-note" className="font-mono text-xs text-stone-400 dark:text-stone-500">
               {t.chooser.note}
             </p>
-            {onDismiss && (
-              <button
-                type="button"
-                onClick={onDismiss}
-                className="font-mono text-xs text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-4 transition-colors hover:text-stone-900 dark:decoration-stone-600 dark:hover:text-stone-100"
-              >
-                {t.chooser.keep}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="font-mono text-xs text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-4 transition-colors hover:text-stone-900 dark:decoration-stone-600 dark:hover:text-stone-100"
+            >
+              {t.chooser.keep}
+            </button>
           </div>
         </div>
       </div>

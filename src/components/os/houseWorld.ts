@@ -22,8 +22,10 @@ export interface ModelLike {
   Walls are built per room: every room lays down its own full perimeter with
   door/window holes cut out, and every solid segment registers a thick AABB
   obstacle (0.8 deep — a sprinting step is ~0.3, so nobody tunnels through a
-  wall face). Doors are hinge pivots that ease open when you walk up to them
-  and close behind you; they cast no shadows so the baked maps stay valid.
+  wall face). Doors are hinge pivots worked with the interact key: a closed
+  one swings away from whichever side the player stands on, an open one pulls
+  shut, and the doorway itself is an obstacle while the leaf is in the way.
+  They cast no shadows so the baked maps stay valid.
 */
 
 export interface HouseModels {
@@ -34,6 +36,13 @@ export interface HouseHandles {
   root: THREE.Group
   /** door easing, firefly drift, bathroom-mirror gating; call every roam frame */
   update: (dt: number, p: THREE.Vector3) => void
+  /** the door within reach the player is looking at: which verb to prompt */
+  doorPrompt: (p: THREE.Vector3, gaze: THREE.Vector3) => 'open' | 'close' | null
+  /** work that door; a closed leaf swings away from the player's side */
+  useDoor: (p: THREE.Vector3, gaze: THREE.Vector3) => boolean
+  /** render the bathroom mirror once into a scratch target so its shader and
+      reflection buffer are paid during load, not as a hitch on first entry */
+  prewarmMirror: (renderer: THREE.WebGLRenderer) => void
   /** 0 seated .. 1 walking: ramps every house light with the room rig */
   setRoamLight: (k: number) => void
   /** mark the shadow maps near the player dirty (call only while moving) */
@@ -247,10 +256,22 @@ const flyS = new THREE.Vector3(1, 1, 1)
 
 interface Door {
   pivot: THREE.Group
+  axis: 'x' | 'z'
+  /** the wall-plane coordinate; which side the player is on picks the swing */
+  at: number
+  /** hinge multiplier: the leaf runs along +u (1, hinge u0) or -u (-1, u1) */
+  dir: 1 | -1
   cx: number
   cz: number
-  openAngle: number
+  /** how far the leaf swings, magnitude only; sign is chosen per use */
+  swing: number
   angle: number
+  target: number
+  /** blocks the doorway while the leaf is in the way; emptied once clear */
+  block: THREE.Box3
+  closedMin: THREE.Vector3
+  closedMax: THREE.Vector3
+  solid: boolean
 }
 
 export function buildHouse(opts: BuildOpts): HouseHandles {
@@ -423,7 +444,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     u0: number,
     u1: number,
     hinge: 'u0' | 'u1',
-    openAngle: number,
+    swing: number,
     glass = false,
   ) => {
     const w = u1 - u0
@@ -451,16 +472,20 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     const slab = new THREE.Group()
     const slabMat = new THREE.MeshStandardMaterial({ color: '#4f3a26', roughness: 0.72 })
     trackDisposable(slabMat)
+    // the leaf runs a touch wider and taller than the opening so it laps the
+    // jambs and header when shut: no lit slivers around a closed door
+    const leafW = w + 0.08
+    const leafH = DOOR_H + 0.01
     if (glass) {
       // stile-and-rail glass door onto the porch
       const railH = 0.5
       const stileW = 0.24
       const parts: Array<[number, number, number, number]> = [
-        [w - 0.06, railH, 0, railH / 2 + 0.02],
-        [w - 0.06, railH * 1.6, 0, DOOR_H - railH * 0.8 - 0.05],
-        [w - 0.06, railH, 0, DOOR_H * 0.45],
-        [stileW, DOOR_H - 0.04, -(w - 0.06) / 2 + stileW / 2, DOOR_H / 2],
-        [stileW, DOOR_H - 0.04, (w - 0.06) / 2 - stileW / 2, DOOR_H / 2],
+        [leafW, railH, 0, railH / 2 + 0.02],
+        [leafW, railH * 1.6, 0, DOOR_H - railH * 0.8 - 0.05],
+        [leafW, railH, 0, DOOR_H * 0.45],
+        [stileW, leafH, -leafW / 2 + stileW / 2, leafH / 2],
+        [stileW, leafH, leafW / 2 - stileW / 2, leafH / 2],
       ]
       parts.forEach(([pw, ph, x, y]) => {
         const m = new THREE.Mesh(new THREE.BoxGeometry(pw, ph, 0.09), slabMat)
@@ -479,8 +504,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         slab.add(pane)
       })
     } else {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w - 0.06, DOOR_H - 0.04, 0.09), slabMat)
-      m.position.set(0, (DOOR_H - 0.04) / 2, 0)
+      const m = new THREE.Mesh(new THREE.BoxGeometry(leafW, leafH, 0.09), slabMat)
+      m.position.set(0, leafH / 2, 0)
       m.castShadow = false
       m.receiveShadow = true
       slab.add(m)
@@ -508,7 +533,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       slab.add(knob)
     })
     // a real gap under the leaf, so it sweeps over rugs instead of through
-    slab.position.set(dir * (w / 2 - 0.03), 0.055, 0)
+    slab.position.set(dir * (w / 2), 0.055, 0)
     pivot.add(slab)
     // for x-walls the leaf's local +x must run along +z (hinge toward latch)
     pivot.rotation.y = axis === 'x' ? -Math.PI / 2 : 0
@@ -518,7 +543,19 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     const center = axis === 'x'
       ? { cx: at, cz: (u0 + u1) / 2 }
       : { cx: (u0 + u1) / 2, cz: at }
-    doors.push({ pivot, ...center, openAngle, angle: 0 })
+    // a shut door is a wall: block the doorway until the leaf swings clear
+    const closedMin = axis === 'x'
+      ? new THREE.Vector3(at - 0.35, 0, u0)
+      : new THREE.Vector3(u0, 0, at - 0.35)
+    const closedMax = axis === 'x'
+      ? new THREE.Vector3(at + 0.35, CEIL_H, u1)
+      : new THREE.Vector3(u1, CEIL_H, at + 0.35)
+    const block = new THREE.Box3(closedMin.clone(), closedMax.clone())
+    obstacles.push(block)
+    doors.push({
+      pivot, axis, at, dir, ...center, swing,
+      angle: 0, target: 0, block, closedMin, closedMax, solid: true,
+    })
   }
 
   /* ------------------------------------------------------- floor planes -- */
@@ -637,10 +674,11 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   archHeader.castShadow = false
   root.add(archHeader)
 
-  // -- doors (bedroom + bath swing into the hall, back door onto the porch)
+  // -- doors; each swings away from whoever opens it, so no fixed side here
   doorUnit('z', 10.5, BED_DOOR.u0, BED_DOOR.u1, 'u1', Math.PI * 0.56)
-  doorUnit('x', BATH.maxX, BATH_DOOR.u0, BATH_DOOR.u1, 'u0', Math.PI * 0.56)
-  doorUnit('z', HOUSE.maxZ, BACK_DOOR.u0, BACK_DOOR.u1, 'u0', -Math.PI * 0.58, true)
+  // the bath leaf stops shy of a right angle so it clears the pedestal sink
+  doorUnit('x', BATH.maxX, BATH_DOOR.u0, BATH_DOOR.u1, 'u0', Math.PI * 0.44)
+  doorUnit('z', HOUSE.maxZ, BACK_DOOR.u0, BACK_DOOR.u1, 'u0', Math.PI * 0.58, true)
 
   /* ============================================================ EXTERIOR */
 
@@ -1005,10 +1043,12 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     g.rotation.y = rotY
     root.add(g)
   }
-  // the hall gallery, and the OS wallpaper joke framed above the bed
-  frameArt('/os/wallpapers/autumn.webp', 1.15, 0.85, 4.55, 3.35, 13.94, Math.PI)
-  frameArt('/os/wallpapers/stonehenge.webp', 1.15, 0.85, 5.95, 3.35, 13.94, Math.PI)
-  frameArt('/os/wallpapers/azul.webp', 1.15, 0.85, 7.35, 3.35, 13.94, Math.PI)
+  // the hall gallery, and the OS wallpaper joke framed above the bed;
+  // the trio sits inside the solid span between the arch casing (~3.52)
+  // and the east-wall corner at 7.6 — frames are w+0.18 wide overall
+  frameArt('/os/wallpapers/autumn.webp', 1.0, 0.75, 4.2, 3.35, 13.94, Math.PI)
+  frameArt('/os/wallpapers/stonehenge.webp', 1.0, 0.75, 5.55, 3.35, 13.94, Math.PI)
+  frameArt('/os/wallpapers/azul.webp', 1.0, 0.75, 6.9, 3.35, 13.94, Math.PI)
   frameArt('/os/wallpapers/bliss.webp', 2.2, 1.4, -5.7, 4.5, 10.44, Math.PI)
 
   /* ----------------------------------------------------------- furnish -- */
@@ -1073,7 +1113,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     const HPI = Math.PI / 2
 
     /* bedroom */
-    put(models.bed, 1.15, 0, -5.72, 8.03, { pad: 0.12 })
+    // headboard to the hall wall, pillows beside the nightstand
+    put(models.bed, 1.15, Math.PI, -5.72, 8.03, { pad: 0.12 })
     const nstand = put(models.nightstand, 1.63, Math.PI, -3.2, 9.62, { pad: 0.08 })
     if (nstand) {
       put(models.alarmclock, 2.3, Math.PI - 0.3, -3.32, 9.58, { y: nstand.box.max.y })
@@ -1280,15 +1321,22 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   })
 
   const update = (dt: number, p: THREE.Vector3) => {
-    // doors ease open near the player and shut after them
+    // doors ease toward wherever the interact key last put them
     for (const d of doors) {
-      const dx = p.x - d.cx
-      const dz = p.z - d.cz
-      const target = dx * dx + dz * dz < 8.4 ? d.openAngle : 0
-      const next = d.angle + (target - d.angle) * (1 - Math.exp(-5.5 * dt))
+      const next = d.angle + (d.target - d.angle) * (1 - Math.exp(-5.5 * dt))
       if (Math.abs(next - d.angle) > 0.00012) {
         d.angle = next
         d.pivot.rotation.y = (d.pivot.userData.baseRotY as number) + next
+      }
+      // the doorway stays solid until the leaf is well out of the way
+      const solid = Math.abs(d.angle) < d.swing * 0.45
+      if (solid !== d.solid) {
+        d.solid = solid
+        if (solid) d.block.set(d.closedMin, d.closedMax)
+        else {
+          d.block.min.set(0, 0, 0)
+          d.block.max.set(0, 0, 0)
+        }
       }
     }
     // fireflies
@@ -1314,6 +1362,66 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     }
   }
 
+  /** the closest door in reach; past arm's length it must be in view too */
+  const findDoor = (p: THREE.Vector3, gaze: THREE.Vector3): Door | null => {
+    let best: Door | null = null
+    let bestD = 6.76 // 2.6 units of reach, squared
+    const planarGaze = Math.hypot(gaze.x, gaze.z)
+    for (const d of doors) {
+      const dx = d.cx - p.x
+      const dz = d.cz - p.z
+      const dd = dx * dx + dz * dz
+      if (dd >= bestD) continue
+      if (dd > 1.44 && planarGaze > 0.001) {
+        const facing = (gaze.x * dx + gaze.z * dz) / (Math.sqrt(dd) * planarGaze)
+        if (facing < 0.35) continue
+      }
+      bestD = dd
+      best = d
+    }
+    return best
+  }
+
+  const doorPrompt = (p: THREE.Vector3, gaze: THREE.Vector3) => {
+    const d = findDoor(p, gaze)
+    return d ? (d.target === 0 ? ('open' as const) : ('close' as const)) : null
+  }
+
+  const useDoor = (p: THREE.Vector3, gaze: THREE.Vector3) => {
+    const d = findDoor(p, gaze)
+    if (!d) return false
+    if (d.target !== 0) {
+      d.target = 0
+    } else {
+      // swing toward the far side of the wall from where the player stands;
+      // which rotation sign that is depends on the wall axis and hinge side
+      const side = (d.axis === 'z' ? p.z : p.x) < d.at ? 1 : -1
+      d.target = (d.axis === 'z' ? -d.dir : d.dir) * side * d.swing
+    }
+    return true
+  }
+
+  let mirrorWarmed = false
+  const prewarmMirror = (renderer: THREE.WebGLRenderer) => {
+    if (!mirrorSurface || mirrorWarmed) return
+    mirrorWarmed = true
+    // one throwaway frame from inside the bathroom, aimed at the glass, into
+    // a scratch target: the reflector compiles its shader, allocates its
+    // reflection buffer and runs its first scene pass here, off screen
+    const cam = new THREE.PerspectiveCamera(55, 1, 0.1, 60)
+    cam.position.set(-4.55, 3.1, 13.4)
+    cam.lookAt(mirrorSurface.position.x, mirrorSurface.position.y, mirrorSurface.position.z)
+    cam.updateMatrixWorld(true)
+    const scratch = new THREE.WebGLRenderTarget(64, 64)
+    const prevTarget = renderer.getRenderTarget()
+    mirrorSurface.visible = true
+    renderer.setRenderTarget(scratch)
+    renderer.render(scene, cam)
+    renderer.setRenderTarget(prevTarget)
+    mirrorSurface.visible = false
+    scratch.dispose()
+  }
+
   const setRoamLight = (k: number) => {
     for (const { light, on } of lights) light.intensity = on * k
     for (const { mat, on } of bulbs) mat.emissiveIntensity = on * k
@@ -1326,7 +1434,10 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     if (p.z > 10.2 && p.z < HOUSE.maxZ + 3) livkPendant.shadow.needsUpdate = true
   }
 
-  return { root, update, setRoamLight, flagShadows, shadowLights, furnish }
+  return {
+    root, update, doorPrompt, useDoor, prewarmMirror,
+    setRoamLight, flagShadows, shadowLights, furnish,
+  }
 }
 
 /** minimal two-geometry merge (positions/normals/uvs), avoids the utils dep */
