@@ -448,7 +448,9 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       setDownMsg(false)
       setPhase('down')
       // the picture collapses to a bright line first, then the farewell text;
-      // in 3D mode the camera also needs time to retreat from the glass
+      // in 3D mode the camera retreat from the glass lands at ~2.1s, and the
+      // room phase must take over right then — any later is dead air spent
+      // staring at a frozen frame before the stand-up glide begins
       setTimeout(() => setDownMsg(true), 650)
       setTimeout(
         () => {
@@ -465,7 +467,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
             if (isOsUrl()) history.pushState(null, '', '/')
           }
         },
-        mode === '3d' ? 2900 : 2200,
+        mode === '3d' ? 2150 : 2200,
       )
     },
     [mode, phase],
@@ -580,7 +582,8 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
 
   useEffect(() => {
     if (phase === 'off') return
-    const unlock = lockPageForOverlay()
+    // opaque and fullscreen: the site underneath pauses its scenes
+    const unlock = lockPageForOverlay(true)
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (phaseRef.current === 'post') {

@@ -782,34 +782,23 @@ export default function CrtScene({
         const camEndFor = (h: number) =>
           front.clone().add(normal.clone().multiplyScalar((gSize.y * h) / (divH * 2 * tanHalf)))
         let camEnd = camEndFor(H)
-        // Warm every static shader/texture path now, so the first look toward
-        // the window during roam does not hitch while the GPU compiles it.
+        // Warm every static texture now and let the drivers link the shader
+        // pile in parallel: the old synchronous compile() blocked the main
+        // thread for its whole duration, which froze the warp tunnel's canvas
+        // mid-ride. The intro flight lifts off once this resolves (below).
         runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
-        webgl.compile(scene, camera)
+        const firstCompile = webgl.compileAsync(scene, camera).catch(() => {})
 
-        // stream the furniture and yard models in behind the intro; the
-        // house is fully walkable before any of them land, and a prop that
-        // fails to download is just a gap, never a failure
-        Promise.all(
+        // start the furniture and yard downloads now; the attach itself waits
+        // (at the bottom of this block) for a quiet moment in the intro
+        const housePromise = Promise.all(
           HOUSE_MODEL_KEYS.map((key) =>
             load(`/os/models/${key}.glb`).then(
               (gltf) => [key, gltf] as const,
               () => null,
             ),
           ),
-        ).then((entries) => {
-          if (disposed || !webgl || !scene) return
-          const models: HouseModels = { plant, mug }
-          for (const e of entries) if (e) models[e[0]] = e[1]
-          house.furnish(models)
-          // pay the new shaders/textures now, not on the first look around
-          runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
-          webgl.compile(scene, camera)
-          bakeShadows()
-          // the bathroom mirror's first reflection pass happens here too,
-          // instead of as a stutter the first time someone steps in
-          house.prewarmMirror(webgl)
-        })
+        )
 
         const render = () => {
           if (!webgl || !scene) return
@@ -821,7 +810,7 @@ export default function CrtScene({
         let parked = false
         let leaving = false
         let announced = false
-        const t0 = performance.now()
+        let t0 = performance.now()
         const drifted = new THREE.Vector3()
         const introTick = () => {
           if (disposed) return
@@ -857,8 +846,8 @@ export default function CrtScene({
           }
           raf = requestAnimationFrame(introTick)
         }
-        bakeShadows() // first bake; each map stays frozen until re-flagged
-        raf = requestAnimationFrame(introTick)
+        // lift-off happens at the bottom of this block, once the shaders
+        // have linked — the warp tunnel holds for the first frame's announce
 
         outroRef.current = () => {
           leaving = true
@@ -1116,7 +1105,12 @@ export default function CrtScene({
               )
               body.rotation.y = yaw + Math.PI
               body.visible = true
-              bakeShadows() // the body just appeared
+              // the body just appeared: refresh only the maps that can see
+              // it (same regions walkTick uses) — a full bakeShadows() here
+              // re-rendered every map in one frame and stalled the handoff
+              if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
+              if (camera.position.z < 7) key.shadow.needsUpdate = true
+              house.flagShadows(camera.position)
               // grab the mouse like a game; if the browser refuses (no fresh
               // gesture), the click-to-grab path below still gets you there
               try {
@@ -1144,7 +1138,10 @@ export default function CrtScene({
           body.visible = false
           body.scale.y = BODY_S
           if (webgl) {
-            bakeShadows() // bake the body's shadow away
+            // bake the body's shadow away; sitting down only happens at the
+            // machine, so only the desk-area maps can still be holding it
+            pendant.shadow.needsUpdate = true
+            key.shadow.needsUpdate = true
             // sit back down at full resolution; the governor only runs walking
             pr = PR_CAP
             webgl.setPixelRatio(pr)
@@ -1246,13 +1243,15 @@ export default function CrtScene({
           pitch = THREE.MathUtils.clamp(pitch + sign * dy * 0.0019, -1.35, 1.35)
         }
         const onKeyDown = (e: KeyboardEvent) => {
-          if (!roaming || !fps) return
+          if (!roaming) return
+          // movement keys register during the stand-up glide too, so a held
+          // W starts the walk the very frame the controls go live
           if (MOVE_KEYS.has(e.code)) {
             keys.add(e.code)
             e.preventDefault()
           } else if (MOD_KEYS.has(e.code)) {
             keys.add(e.code)
-          } else if (e.code === 'KeyE') {
+          } else if (e.code === 'KeyE' && fps) {
             if (nearNow) {
               e.preventDefault()
               interactRef.current()
@@ -1333,6 +1332,44 @@ export default function CrtScene({
           webgl?.domElement.removeEventListener('pointerup', onPtrUp)
           prevCleanup?.()
         }
+
+        // lift-off: the flight starts once every program has linked, so its
+        // first frame renders (and bakes the shadow maps) without a compile
+        // stall; the tunnel is still holding for that frame's announce
+        void firstCompile.then(() => {
+          if (disposed || roaming || leaving) return
+          bakeShadows() // first bake; each map stays frozen until re-flagged
+          t0 = performance.now()
+          raf = requestAnimationFrame(introTick)
+        })
+
+        // stream the furniture and yard models in behind the intro; the
+        // house is fully walkable before any of them land, and a prop that
+        // fails to download is just a gap, never a failure
+        void housePromise.then(async (entries) => {
+          if (disposed || !webgl || !scene) return
+          const models: HouseModels = { plant, mug }
+          for (const e of entries) if (e) models[e[0]] = e[1]
+          // hold the attach until the camera parks (or the walk begins):
+          // the clone + compile burst used to land mid-flight and hitch the
+          // intro and the warp exit right on top of each other
+          while (!disposed && !parked && !roaming && !leaving) {
+            await new Promise((r) => setTimeout(r, 120))
+          }
+          if (disposed || !webgl || !scene) return
+          house.furnish(models)
+          runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
+          // pay the new shaders/textures now, not on the first look around
+          await webgl.compileAsync(scene, camera).catch(() => {})
+          if (disposed || !webgl) return
+          bakeShadows()
+          // parked, the loop is suspended: draw one frame so the bake is
+          // paid now and the furniture joins the standing image
+          if (parked && !leaving) render()
+          // the bathroom mirror's first reflection pass happens here too,
+          // instead of as a stutter the first time someone steps in
+          house.prewarmMirror(webgl)
+        })
       })
       .catch(() => {
         clearTimeout(bail)

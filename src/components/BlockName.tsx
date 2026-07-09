@@ -5,7 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
 import type { HeroNameFontPreset } from './heroNameFonts'
 import { isCoarsePointer } from '../device'
-import { onOverlayChange, overlayIsOpen } from '../overlay'
+import { onOverlayChange, overlayIsOpen, pageIsCovered } from '../overlay'
 import { provideWarpOrigin, warpToOs } from '../warp'
 import { THEME_FADE_MS } from '../theme'
 import { useI18n } from '../i18n'
@@ -117,7 +117,7 @@ export default function BlockName({
 
     let disposed = false
     const disposers: (() => void)[] = []
-    let paused = coarse && overlayIsOpen()
+    let paused = coarse ? overlayIsOpen() : pageIsCovered()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
@@ -1419,14 +1419,15 @@ export default function BlockName({
           raf = requestAnimationFrame(tick)
         }
       }
-      if (coarse) {
-        disposers.push(
-          onOverlayChange((open) => {
-            paused = open
-            resumeIfReady()
-          }),
-        )
-      }
+      // touch screens pause for any overlay; a fine pointer only when the
+      // page is fully hidden (AlejOS) — partial overlays like the palette
+      // keep the plane and letters alive behind them
+      disposers.push(
+        onOverlayChange((open, covered) => {
+          paused = coarse ? open : covered
+          resumeIfReady()
+        }),
+      )
       raf = requestAnimationFrame(tick)
       disposers.push(() => cancelAnimationFrame(raf))
     })

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { isCoarsePointer } from '../device'
-import { onOverlayChange, overlayIsOpen } from '../overlay'
+import { onOverlayChange, overlayIsOpen, pageIsCovered } from '../overlay'
 import { THEME_FADE_MS } from '../theme'
 
 /*
@@ -17,7 +17,7 @@ export default function HeroScene() {
     if (!el) return
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const coarse = isCoarsePointer()
-    let paused = coarse && overlayIsOpen()
+    let paused = coarse ? overlayIsOpen() : pageIsCovered()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
@@ -232,8 +232,10 @@ export default function HeroScene() {
         raf = requestAnimationFrame(tick)
       }
     }
-    const offOverlay = onOverlayChange((open) => {
-      paused = coarse && open
+    // like the name scene: touch pauses for any overlay, a fine pointer
+    // only once the page is fully hidden behind AlejOS
+    const offOverlay = onOverlayChange((open, covered) => {
+      paused = coarse ? open : covered
       resumeIfReady()
     })
 
