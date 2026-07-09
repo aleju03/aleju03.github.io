@@ -7,6 +7,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
 import { buildHouse, CEIL_H, HOUSE, YARD } from './houseWorld'
 import type { HouseModels } from './houseWorld'
+import { buildPlayerBody } from './playerBody'
 import { OS_SCENE_READY_EVENT } from '../../events'
 
 /*
@@ -36,6 +37,8 @@ interface CrtSceneProps {
   screenLive: boolean
   /** pressed the interact key at the machine: sit down (and boot if cold) */
   onInteract: () => void
+  /** the pause menu's way out of the room entirely (what esc used to do) */
+  onLeave?: () => void
   onFail: () => void
   children: ReactNode
 }
@@ -48,18 +51,35 @@ const MODELS = [
   '/os/models/plant.glb',
   '/os/models/mouse.glb',
   '/os/models/lamp.glb',
-  '/os/models/player.glb',
 ]
 // the rest of the house streams in behind the intro; the walls never wait
 const HOUSE_MODEL_KEYS = [
   'bed', 'nightstand', 'dresser', 'closet', 'curtains', 'alarmclock',
-  'officechair', 'bathtub', 'toilet', 'bathsink', 'mirror', 'towelrack',
+  'officechair', 'bathtub', 'toilet', 'bathsink', 'towelrack',
   'toiletpaper', 'rug', 'tvcabinet', 'tv', 'sofa', 'loveseat', 'coffeetable',
   'roundrug', 'bookcase', 'floorlamp', 'diningtable', 'chair', 'kfridge',
   'kstove', 'ksink', 'kdrawer', 'kupper', 'kupperl', 'toaster', 'washer',
   'microwave', 'ceilinglight', 'fence', 'tree', 'bush', 'bushflower',
   'hedge', 'bench', 'lantern',
 ] as const
+/** walk-mode preferences the pause menu edits; the seated view stays fixed */
+const PREFS_KEY = 'alejos-roam-prefs'
+const PREFS_DEFAULT = { fov: 60, sens: 1 }
+const loadPrefs = () => {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY)
+    if (raw) {
+      const p = JSON.parse(raw) as { fov?: number; sens?: number }
+      return {
+        fov: Math.min(80, Math.max(30, Number(p.fov) || PREFS_DEFAULT.fov)),
+        sens: Math.min(3, Math.max(0.3, Number(p.sens) || PREFS_DEFAULT.sens)),
+      }
+    }
+  } catch {
+    /* fall through to defaults */
+  }
+  return { ...PREFS_DEFAULT }
+}
 /** fraction of the viewport height the glass fills once parked */
 const FILL = 0.86
 const INTRO_S = 2.6
@@ -111,6 +131,7 @@ export default function CrtScene({
   roam,
   screenLive,
   onInteract,
+  onLeave,
   onFail,
   children,
 }: CrtSceneProps) {
@@ -124,17 +145,30 @@ export default function CrtScene({
   // a house door in reach while walking; which verb its prompt should show
   const [doorVerb, setDoorVerb] = useState<'open' | 'close' | null>(null)
   const [locked, setLocked] = useState(false)
+  // esc mid-walk frees the mouse and raises the pause menu
+  const [paused, setPaused] = useState(false)
+  const [prefs, setPrefs] = useState(loadPrefs)
   const outroRef = useRef<(() => void) | null>(null)
   const roamRef = useRef<((on: boolean) => void) | null>(null)
   const doorRef = useRef<(() => void) | null>(null)
+  const resumeRef = useRef<(() => void) | null>(null)
   const failRef = useRef(onFail)
   const interactRef = useRef(onInteract)
   const liveRef = useRef(screenLive)
+  const prefsRef = useRef(prefs)
   useEffect(() => {
     failRef.current = onFail
     interactRef.current = onInteract
     liveRef.current = screenLive
+    prefsRef.current = prefs
   })
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
+    } catch {
+      /* private mode; the session still gets the values via prefsRef */
+    }
+  }, [prefs])
 
   useEffect(() => {
     if (off) outroRef.current?.()
@@ -166,7 +200,7 @@ export default function CrtScene({
       )
 
     Promise.all(MODELS.map(load))
-      .then(([computer, desk, mug, plant, mouse, lamp, player]) => {
+      .then(([computer, desk, mug, plant, mouse, lamp]) => {
         clearTimeout(bail)
         if (disposed) return
 
@@ -876,6 +910,7 @@ export default function CrtScene({
         let nearNow = false
         let doorVerbNow: 'open' | 'close' | null = null
         let isLocked = false
+        let pausedNow = false
         let yaw = 0
         let pitch = 0
         let lastT = 0
@@ -891,6 +926,8 @@ export default function CrtScene({
         const RUN_SPEED = 5.9
         const CROUCH_SPEED = 1.7
         const CROUCH_DROP = 0.85 // how far the eye sinks at full crouch
+        // the seated framing math (camEndFor, tanHalf) is baked around this;
+        // the walk uses the adjustable prefs fov and flyIn eases back here
         const FOV = 38
         let crouchK = 0 // 0 standing .. 1 crouched, smoothed
         // adaptive resolution: if the walk can't hold frame rate, step the
@@ -900,31 +937,14 @@ export default function CrtScene({
         let emaMs = 16
         let prWait = 1.5
 
-        // the first-person body: Quaternius' little robot trailing the
-        // camera, so looking down shows your own stubby legs (and one day,
-        // other people's robots); the head is collapsed into the neck so the
-        // goggle dome never clips the lens
-        const body = player.scene
-        const BODY_S = EYE / 4.3
-        body.scale.setScalar(BODY_S) // head top floats just above the lens
+        // the first-person body: a little robot built in code (playerBody.ts)
+        // trailing the camera, so looking down shows your own stubby legs —
+        // head included this time, sized to ride under the lens instead of
+        // clipping it, so the shadow finally has one too
+        const rig = buildPlayerBody(EYE)
+        const body = rig.group
         body.visible = false
-        body.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) {
-            o.castShadow = true
-            o.frustumCulled = false // skinned bounds lag the rig; never blink out
-          }
-        })
-        body.getObjectByName('Head')?.scale.setScalar(0.001)
         scene.add(body)
-        const mixer = new THREE.AnimationMixer(body)
-        const clipOf = (suffix: string) => {
-          const clip = player.animations.find((c) => c.name.endsWith(suffix))
-          return clip ? mixer.clipAction(clip) : null
-        }
-        const idleAct = clipOf('Robot_Idle')
-        const walkAct = clipOf('Robot_Walking')
-        idleAct?.play()
-        walkAct?.play()
         const BODY_BACK = 0.38 // eye sits ahead of the spine; keeps the chest out of frame
         // walkable area sits inside the shell with some shoulder room; every
         // solid in the room registers an AABB here, and a hit pushes you out
@@ -953,6 +973,22 @@ export default function CrtScene({
 
         const setCursor = (c: string) => {
           if (webgl) webgl.domElement.style.cursor = c
+        }
+        // grab the mouse like a game; if the browser refuses (no fresh
+        // gesture, or the post-esc cooldown), clicking the room still locks
+        const tryLock = () => {
+          try {
+            const got = webgl?.domElement.requestPointerLock() as unknown
+            ;(got as Promise<void> | undefined)?.catch?.(() => {})
+          } catch {
+            /* stay unlocked; clicking locks */
+          }
+        }
+        const setPauseNow = (on: boolean) => {
+          if (pausedNow === on) return
+          pausedNow = on
+          if (on) keys.clear() // nothing stays latched under the menu
+          setPaused(on)
         }
         const lookAngles = (from: THREE.Vector3, target: THREE.Vector3) => {
           const dir = target.clone().sub(from).normalize()
@@ -1014,10 +1050,11 @@ export default function CrtScene({
           camera.rotation.x = pitch
           camera.rotation.y = yaw
           camera.rotation.z = 0
-          // a sprint widens the lens a touch; the projection only re-bakes
-          // on frames where the value actually moved
+          // the walk fov is the player's setting; a sprint widens the lens a
+          // touch on top, and the projection only re-bakes when it moved
           const fovWant =
-            FOV + 5 * Math.max(0, Math.min(1, (planar - SPEED) / (RUN_SPEED - SPEED)))
+            prefsRef.current.fov +
+            5 * Math.max(0, Math.min(1, (planar - SPEED) / (RUN_SPEED - SPEED)))
           if (Math.abs(camera.fov - fovWant) > 0.02) {
             camera.fov += (fovWant - camera.fov) * (1 - Math.exp(-8 * dt))
             camera.updateProjectionMatrix()
@@ -1029,13 +1066,9 @@ export default function CrtScene({
             camera.position.z + Math.cos(yaw) * BODY_BACK,
           )
           body.rotation.y = yaw + Math.PI
-          body.scale.y = BODY_S * (1 - 0.25 * crouchK) // the robot squats along
-          idleAct?.setEffectiveWeight(1 - gait)
-          walkAct?.setEffectiveWeight(gait)
-          walkAct?.setEffectiveTimeScale(0.5 + gait * 0.7)
-          mixer.update(dt)
-          // doors easing, fireflies drifting, the bathroom mirror waking
-          house.update(dt, camera.position)
+          rig.update(dt, bobT, gait, crouchK) // legs scissor in step with the bob
+          // doors easing, fireflies drifting
+          house.update(dt)
           // the player is the only moving shadow caster: re-bake just the
           // lights that can see them, only on frames where they moved
           if (planar > 0.05 || Math.abs((duck ? 1 : 0) - crouchK) > 0.02) {
@@ -1111,14 +1144,7 @@ export default function CrtScene({
               if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
               if (camera.position.z < 7) key.shadow.needsUpdate = true
               house.flagShadows(camera.position)
-              // grab the mouse like a game; if the browser refuses (no fresh
-              // gesture), the click-to-grab path below still gets you there
-              try {
-                const got = webgl?.domElement.requestPointerLock() as unknown
-                ;(got as Promise<void> | undefined)?.catch?.(() => {})
-              } catch {
-                /* stay unlocked; clicking locks */
-              }
+              tryLock()
               setWalking(true)
               lastT = performance.now()
               raf = requestAnimationFrame(walkTick)
@@ -1132,11 +1158,11 @@ export default function CrtScene({
         const stopRoam = () => {
           roaming = false
           fps = false
+          setPauseNow(false)
           keys.clear()
           vel.set(0, 0, 0)
           crouchK = 0
           body.visible = false
-          body.scale.y = BODY_S
           if (webgl) {
             // bake the body's shadow away; sitting down only happens at the
             // machine, so only the desk-area maps can still be holding it
@@ -1215,6 +1241,11 @@ export default function CrtScene({
           camera.getWorldDirection(gaze)
           house.useDoor(camera.position, gaze)
         }
+        // the pause menu's resume button (esc does the same in onKeyDown)
+        resumeRef.current = () => {
+          setPauseNow(false)
+          tryLock()
+        }
 
         // mouse-look: pointer lock steers directly, an unlocked drag grabs
         // the world instead; a still click only (re)grabs the mouse — sitting
@@ -1239,11 +1270,25 @@ export default function CrtScene({
           'KeyC',
         ])
         const turn = (dx: number, dy: number, sign: number) => {
-          yaw += sign * dx * 0.0019
-          pitch = THREE.MathUtils.clamp(pitch + sign * dy * 0.0019, -1.35, 1.35)
+          const k = 0.0019 * prefsRef.current.sens
+          yaw += sign * dx * k
+          pitch = THREE.MathUtils.clamp(pitch + sign * dy * k, -1.35, 1.35)
         }
         const onKeyDown = (e: KeyboardEvent) => {
           if (!roaming) return
+          if (e.code === 'Escape') {
+            // esc while locked never reaches the page (the browser spends it
+            // on the unlock, which raises the menu via onLockChange); esc
+            // with the menu up resumes — and must not bubble on to the OS
+            // shell, whose own esc handler would leave the room
+            if (pausedNow && fps) {
+              e.stopImmediatePropagation()
+              setPauseNow(false)
+              tryLock()
+            }
+            return
+          }
+          if (pausedNow) return // the world ignores the keyboard under the menu
           // movement keys register during the stand-up glide too, so a held
           // W starts the walk the very frame the controls go live
           if (MOVE_KEYS.has(e.code)) {
@@ -1269,6 +1314,10 @@ export default function CrtScene({
           isLocked = document.pointerLockElement === webgl?.domElement
           setLocked(isLocked)
           setCursor(isLocked ? 'none' : 'grab')
+          // losing the lock mid-walk is esc: pause. (sitting down drops the
+          // lock too, but stopRoam clears `roaming` before that lands here)
+          if (isLocked) setPauseNow(false)
+          else if (roaming && fps) setPauseNow(true)
         }
         let downPt: { moved: number } | null = null
         const onPtrDown = () => {
@@ -1294,7 +1343,9 @@ export default function CrtScene({
             if (clicked) webgl?.domElement.requestPointerLock()
           }
         }
-        window.addEventListener('keydown', onKeyDown)
+        // capture phase: the pause menu's esc must win over the OS shell's
+        // window-level esc handler regardless of registration order
+        window.addEventListener('keydown', onKeyDown, true)
         window.addEventListener('keyup', onKeyUp)
         window.addEventListener('blur', onBlur)
         document.addEventListener('pointerlockchange', onLockChange)
@@ -1323,7 +1374,7 @@ export default function CrtScene({
         cleanupDom = () => {
           removeResize()
           stopRoam()
-          window.removeEventListener('keydown', onKeyDown)
+          window.removeEventListener('keydown', onKeyDown, true)
           window.removeEventListener('keyup', onKeyUp)
           window.removeEventListener('blur', onBlur)
           document.removeEventListener('pointerlockchange', onLockChange)
@@ -1366,9 +1417,6 @@ export default function CrtScene({
           // parked, the loop is suspended: draw one frame so the bake is
           // paid now and the furniture joins the standing image
           if (parked && !leaving) render()
-          // the bathroom mirror's first reflection pass happens here too,
-          // instead of as a stutter the first time someone steps in
-          house.prewarmMirror(webgl)
         })
       })
       .catch(() => {
@@ -1383,6 +1431,7 @@ export default function CrtScene({
       outroRef.current = null
       roamRef.current = null
       doorRef.current = null
+      resumeRef.current = null
       if (scene) {
         scene.traverse((o) => {
           const mesh = o as THREE.Mesh
@@ -1415,10 +1464,10 @@ export default function CrtScene({
           esc to skip
         </p>
       )}
-      {roam && walking && (
+      {roam && walking && !paused && (
         <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
           {locked
-            ? 'wasd move · shift run · ctrl crouch · esc frees the mouse'
+            ? 'wasd move · shift run · ctrl crouch · esc pauses'
             : 'wasd to move · click to grab the mouse · esc to leave'}
         </p>
       )}
@@ -1428,7 +1477,66 @@ export default function CrtScene({
           className="pointer-events-none absolute top-1/2 left-1/2 z-10 size-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-stone-400/70"
         />
       )}
-      {roam && walking && near && (
+      {roam && walking && paused && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+          <div aria-hidden className="absolute inset-0 bg-stone-950/40" />
+          <div className="pointer-events-auto relative w-72 rounded-lg border border-stone-700 bg-stone-950/85 p-4 font-mono backdrop-blur-sm">
+            <div className="flex items-baseline justify-between">
+              <p className="text-[13px] text-stone-200">paused</p>
+              <p className="text-[10px] text-stone-600">esc resumes</p>
+            </div>
+            <label className="mt-4 block text-[11px] text-stone-400">
+              <span className="flex justify-between">
+                <span>field of view</span>
+                <span className="text-stone-500">{prefs.fov}°</span>
+              </span>
+              <input
+                type="range"
+                min={30}
+                max={80}
+                step={1}
+                value={prefs.fov}
+                onChange={(e) => setPrefs((p) => ({ ...p, fov: Number(e.target.value) }))}
+                className="mt-1.5 w-full cursor-pointer accent-stone-400"
+              />
+            </label>
+            <label className="mt-3 block text-[11px] text-stone-400">
+              <span className="flex justify-between">
+                <span>mouse sensitivity</span>
+                <span className="text-stone-500">{prefs.sens.toFixed(2)}x</span>
+              </span>
+              <input
+                type="range"
+                min={0.3}
+                max={3}
+                step={0.05}
+                value={prefs.sens}
+                onChange={(e) => setPrefs((p) => ({ ...p, sens: Number(e.target.value) }))}
+                className="mt-1.5 w-full cursor-pointer accent-stone-400"
+              />
+            </label>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                onClick={() => resumeRef.current?.()}
+                className="flex-1 cursor-pointer rounded-md border border-stone-600 bg-stone-800/70 px-3 py-1.5 text-[12px] text-stone-200 transition-colors hover:border-stone-400 hover:text-white"
+              >
+                resume
+              </button>
+              {onLeave && (
+                <button
+                  type="button"
+                  onClick={onLeave}
+                  className="flex-1 cursor-pointer rounded-md border border-stone-800 px-3 py-1.5 text-[12px] text-stone-500 transition-colors hover:border-stone-600 hover:text-stone-300"
+                >
+                  leave the room
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {roam && walking && !paused && near && (
         <button
           type="button"
           onClick={() => onInteract()}
@@ -1440,7 +1548,7 @@ export default function CrtScene({
           {screenLive ? 'sit back down' : 'power it on'}
         </button>
       )}
-      {roam && walking && !near && doorVerb && (
+      {roam && walking && !paused && !near && doorVerb && (
         <button
           type="button"
           onClick={() => doorRef.current?.()}

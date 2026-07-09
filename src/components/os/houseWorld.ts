@@ -1,5 +1,4 @@
 import * as THREE from 'three'
-import { Reflector } from 'three/addons/objects/Reflector.js'
 
 /** anything with a .scene group — a GLTFLoader result or a slice of one */
 export interface ModelLike {
@@ -34,15 +33,12 @@ export interface HouseModels {
 
 export interface HouseHandles {
   root: THREE.Group
-  /** door easing, firefly drift, bathroom-mirror gating; call every roam frame */
-  update: (dt: number, p: THREE.Vector3) => void
+  /** door easing and firefly drift; call every roam frame */
+  update: (dt: number) => void
   /** the door within reach the player is looking at: which verb to prompt */
   doorPrompt: (p: THREE.Vector3, gaze: THREE.Vector3) => 'open' | 'close' | null
   /** work that door; a closed leaf swings away from the player's side */
   useDoor: (p: THREE.Vector3, gaze: THREE.Vector3) => boolean
-  /** render the bathroom mirror once into a scratch target so its shader and
-      reflection buffer are paid during load, not as a hitch on first entry */
-  prewarmMirror: (renderer: THREE.WebGLRenderer) => void
   /** 0 seated .. 1 walking: ramps every house light with the room rig */
   setRoamLight: (k: number) => void
   /** mark the shadow maps near the player dirty (call only while moving) */
@@ -67,16 +63,16 @@ interface BuildOpts {
 
 /* ---------------------------------------------------------------- plan --
    Bedroom (existing): x -7.6..7.6, z -1.75..10.5. Door in its north wall.
-   Bath:  x -7.6..-3.0, z 10.5..15.6   (door from the hall's west end)
-   Hall:  x -3.0..7.6,  z 10.5..14.0   (arch opening to the living room)
+   Bath:  x -7.6..-2.4, z 10.5..16.6   (door from the hall's west end)
+   Hall:  x -2.4..7.6,  z 10.5..14.0   (arch opening to the living room)
    Living+kitchen: x -7.6..7.6, z 14..24.5 minus the bath block corner.
    Yard: fenced x ±13.5 out to z 38.5; back door + porch on the north wall.
 ------------------------------------------------------------------------- */
 export const CEIL_H = 6
 export const HOUSE = { minX: -7.6, maxX: 7.6, minZ: -1.75, maxZ: 24.5 }
 export const YARD = { minX: -13.5, maxX: 13.5, minZ: -4, maxZ: 38.5 }
-const BATH = { minX: -7.6, maxX: -3.0, minZ: 10.5, maxZ: 15.6 }
-const HALL = { minX: -3.0, maxX: 7.6, minZ: 10.5, maxZ: 14.0 }
+const BATH = { minX: -7.6, maxX: -2.4, minZ: 10.5, maxZ: 16.6 }
+const HALL = { minX: BATH.maxX, maxX: 7.6, minZ: 10.5, maxZ: 14.0 }
 const DOOR_H = 4.7
 const BED_DOOR = { u0: 2.5, u1: 4.6 } // in the z=10.5 wall
 const BATH_DOOR = { u0: 11.6, u1: 13.7 } // in the x=-3 wall
@@ -674,6 +670,20 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   archHeader.castShadow = false
   root.add(archHeader)
 
+  // the bath block's two outside corners: the one-sided wall planes sit a
+  // hair off the mathematical corner, so the bare edge shows a sliver of the
+  // room behind it at grazing angles — a slim post seals each seam
+  ;[
+    [BATH.maxX, HALL.maxZ],
+    [BATH.maxX, BATH.maxZ],
+  ].forEach(([x, z]) => {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, CEIL_H, 0.18), wallMat('#4d4136'))
+    post.position.set(x, CEIL_H / 2, z)
+    post.castShadow = false
+    post.receiveShadow = true
+    root.add(post)
+  })
+
   // -- doors; each swings away from whoever opens it, so no fixed side here
   doorUnit('z', 10.5, BED_DOOR.u0, BED_DOOR.u1, 'u1', Math.PI * 0.56)
   // the bath leaf stops shy of a right angle so it clears the pedestal sink
@@ -957,7 +967,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   const hallLight = addLight(new THREE.PointLight('#ffd9ae', 0, 9.5, 1.8), 8)
   hallLight.position.set(2.3, 5.1, 12.25)
   const bathLight = addLight(new THREE.PointLight('#dce8ff', 0, 8.5, 1.8), 7)
-  bathLight.position.set(-5.3, 5.05, 13.0)
+  bathLight.position.set(-5.0, 5.05, 13.55)
   const floorLampLight = addLight(new THREE.PointLight('#ffc98a', 0, 7, 1.7), 6)
   floorLampLight.position.set(7.0, 2.95, 21.2)
   const porchLight = addLight(new THREE.PointLight('#ffb869', 0, 10, 1.7), 6.5)
@@ -1104,7 +1114,6 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     })
   }
 
-  let mirrorSurface: Reflector | null = null
   let furnished = false
 
   const furnish = (models: HouseModels) => {
@@ -1124,33 +1133,13 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     put(models.curtains, 0.82, HPI, -7.38, 5.75, { y: 0.86 })
     put(models.officechair, 2.05, Math.PI - 0.03, -0.15, 3.05, { pad: 0.16 })
 
-    /* bath */
-    put(models.bathtub, 4.1, HPI, -6.35, 13.0, { pad: 0.08 })
-    put(models.toilet, 0.94, 0, -4.05, 14.72, { pad: 0.08 })
+    /* bath: tub along the west wall, sink by the door, toilet on the far
+       wall — respaced when the room grew, so nothing crowds anything */
+    put(models.bathtub, 4.1, HPI, -6.35, 13.55, { pad: 0.08 })
+    put(models.toilet, 0.94, 0, -4.05, 15.72, { pad: 0.08 })
     put(models.bathsink, 1.35, Math.PI, -4.55, 11.14, { pad: 0.08 })
-    const mirror = put(models.mirror, 3.4, Math.PI, -4.55, 10.78, { y: 2.5 })
-    if (mirror) {
-      mirrorSurface = new Reflector(new THREE.PlaneGeometry(0.86, 1.28), {
-        textureWidth: 384,
-        textureHeight: 512,
-        color: '#9aa5ad',
-        clipBias: 0.003,
-      })
-      mirrorSurface.position.set(
-        -4.55,
-        (mirror.box.min.y + mirror.box.max.y) / 2 + 0.04,
-        mirror.box.max.z + 0.012,
-      )
-      mirrorSurface.visible = false
-      root.add(mirrorSurface)
-      trackDisposable({
-        dispose: () => {
-          mirrorSurface?.getRenderTarget().dispose()
-        },
-      })
-    }
-    put(models.towelrack, 1.8, -HPI, -3.22, 14.55, { y: 2.05 })
-    put(models.toiletpaper, 1.4, -HPI, -3.2, 13.95, { y: 1.45 })
+    put(models.towelrack, 1.8, -HPI, -2.62, 14.9, { y: 2.05 })
+    put(models.toiletpaper, 1.4, -HPI, -2.6, 15.6, { y: 1.45 })
 
     /* hall */
     put(models.rug, [0.8, 1, 2.0], HPI, 2.2, 12.25, { y: 0.012 })
@@ -1181,13 +1170,13 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     const ctable = put(models.coffeetable, 4.4, 0, 4.9, 17.15, { pad: 0.08 })
     put(models.bookcase, 1.31, -HPI, 7.12, 23.1, { pad: 0.1 })
     put(models.floorlamp, 4.4, 0, 7.05, 21.2, { pad: 0.08 })
-    put(models.plant, 1.35, 2.6, -2.0, 14.9, { pad: 0.1 })
+    put(models.plant, 1.35, 2.6, -1.7, 15.0, { pad: 0.1 })
 
-    /* dining */
+    /* dining: chairs tucked in facing the table, not fleeing it */
     put(models.diningtable, 3.6, 0, -2.1, 19.8, { pad: 0.1 })
-    put(models.chair, 1.25, 0, -2.9, 21.15, { pad: 0.05 })
-    put(models.chair, 1.25, 0.12, -1.25, 21.15, { pad: 0.05 })
-    put(models.chair, 1.25, Math.PI + 0.2, -2.05, 18.45, { pad: 0.05 })
+    put(models.chair, 1.25, Math.PI, -2.9, 21.15, { pad: 0.05 })
+    put(models.chair, 1.25, Math.PI + 0.12, -1.25, 21.15, { pad: 0.05 })
+    put(models.chair, 1.25, 0.2, -2.05, 18.45, { pad: 0.05 })
 
     /* kitchen run along the west wall, fronts facing +x */
     put(models.kfridge, 4.4, -HPI, -6.55, 17.45, { pad: 0.08 })
@@ -1235,7 +1224,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       root.add(fixture)
     }
     dome(2.3, 12.25, 0.95, true)
-    dome(-5.3, 13.0, 0.9, false)
+    dome(-5.0, 13.55, 0.9, false)
     dome(-6.3, 20.5, 0.9, true)
 
     /* yard */
@@ -1306,7 +1295,6 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     doors.forEach((d) => {
       d.pivot.matrixAutoUpdate = true
     })
-    if (mirrorSurface) mirrorSurface.matrixAutoUpdate = true
   }
 
   /* ------------------------------------------------------------ runtime -- */
@@ -1320,7 +1308,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     d.pivot.matrixAutoUpdate = true
   })
 
-  const update = (dt: number, p: THREE.Vector3) => {
+  const update = (dt: number) => {
     // doors ease toward wherever the interact key last put them
     for (const d of doors) {
       const next = d.angle + (d.target - d.angle) * (1 - Math.exp(-5.5 * dt))
@@ -1355,11 +1343,6 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       flies.setMatrixAt(i, flyM)
     }
     flies.instanceMatrix.needsUpdate = true
-    // the bathroom mirror only pays for itself while someone can see it
-    if (mirrorSurface) {
-      const inBath = p.x < BATH.maxX + 1 && p.z > BATH.minZ - 1 && p.z < BATH.maxZ
-      if (mirrorSurface.visible !== inBath) mirrorSurface.visible = inBath
-    }
   }
 
   /** the closest door in reach; past arm's length it must be in view too */
@@ -1401,27 +1384,6 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     return true
   }
 
-  let mirrorWarmed = false
-  const prewarmMirror = (renderer: THREE.WebGLRenderer) => {
-    if (!mirrorSurface || mirrorWarmed) return
-    mirrorWarmed = true
-    // one throwaway frame from inside the bathroom, aimed at the glass, into
-    // a scratch target: the reflector compiles its shader, allocates its
-    // reflection buffer and runs its first scene pass here, off screen
-    const cam = new THREE.PerspectiveCamera(55, 1, 0.1, 60)
-    cam.position.set(-4.55, 3.1, 13.4)
-    cam.lookAt(mirrorSurface.position.x, mirrorSurface.position.y, mirrorSurface.position.z)
-    cam.updateMatrixWorld(true)
-    const scratch = new THREE.WebGLRenderTarget(64, 64)
-    const prevTarget = renderer.getRenderTarget()
-    mirrorSurface.visible = true
-    renderer.setRenderTarget(scratch)
-    renderer.render(scene, cam)
-    renderer.setRenderTarget(prevTarget)
-    mirrorSurface.visible = false
-    scratch.dispose()
-  }
-
   const setRoamLight = (k: number) => {
     for (const { light, on } of lights) light.intensity = on * k
     for (const { mat, on } of bulbs) mat.emissiveIntensity = on * k
@@ -1435,7 +1397,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   }
 
   return {
-    root, update, doorPrompt, useDoor, prewarmMirror,
+    root, update, doorPrompt, useDoor,
     setRoamLight, flagShadows, shadowLights, furnish,
   }
 }

@@ -1245,6 +1245,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
               roam={phase === 'room' || away}
               screenLive={phase === 'on'}
               onInteract={away ? sitDown : wake}
+              onLeave={leaveRoom}
               onFail={() => setMode('flat')}
             >
               <div className="relative h-full w-full" onWheel={onScreenWheel}>
