@@ -6,10 +6,10 @@ export interface ModelLike {
 }
 
 /*
-  The rest of the house around the bedroom/office, plus the world outside it:
-  hallway, bathroom, open living room + kitchen, a fenced back yard, and a
-  night exterior (star dome, moon, distant lit skyline) that all the windows
-  really look out on — no more painted backdrop behind the glass.
+  The rest of the house around the bedroom/office: hallway, bathroom, open
+  living room + kitchen, and a fenced yard with a front gate onto the street.
+  Everything past the fence — sky, sun and moon, the city, the neighborhood —
+  lives in outsideWorld.ts; this module owns the property line inward.
 
   Two phases so the boot flow never waits on furniture:
   - buildHouse() is procedural architecture only (walls, floors, ceilings,
@@ -41,6 +41,8 @@ export interface HouseHandles {
   useDoor: (p: THREE.Vector3, gaze: THREE.Vector3) => boolean
   /** 0 seated .. 1 walking: ramps every house light with the room rig */
   setRoamLight: (k: number) => void
+  /** 0 night .. 1 day: fades fireflies and the curtained-window glow out */
+  setDay: (day: number) => void
   /** mark the shadow maps near the player dirty (call only while moving) */
   flagShadows: (p: THREE.Vector3) => void
   /** shadow-casting lights owned by the house (for full re-bakes) */
@@ -71,6 +73,8 @@ interface BuildOpts {
 export const CEIL_H = 6
 export const HOUSE = { minX: -7.6, maxX: 7.6, minZ: -1.75, maxZ: 24.5 }
 export const YARD = { minX: -13.5, maxX: 13.5, minZ: -4, maxZ: 38.5 }
+/** gap in the front fence: the way out to the street */
+export const GATE = { x0: -1.3, x1: 1.3 }
 const BATH = { minX: -7.6, maxX: -2.4, minZ: 10.5, maxZ: 16.6 }
 const HALL = { minX: BATH.maxX, maxX: 7.6, minZ: 10.5, maxZ: 14.0 }
 const DOOR_H = 4.7
@@ -83,14 +87,14 @@ const SINK_WIN = { u0: 20.5, u1: 22.1, y0: 2.9, y1: 4.3 }
 const BATH_WIN = { u0: 12.5, u1: 13.7, y0: 3.3, y1: 4.5 }
 const BEDROOM_WIN = { u0: 4.86, u1: 6.64, y0: 2.73, y1: 3.87 }
 
-const seeded = (seed: number) => () => {
+export const seeded = (seed: number) => () => {
   seed = (seed * 1664525 + 1013904223) >>> 0
   return seed / 0x100000000
 }
 
 /* ------------------------------------------------------- canvas textures */
 
-const canvasTexture = (
+export const canvasTexture = (
   size: [number, number],
   draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void,
   repeat?: [number, number],
@@ -188,33 +192,7 @@ const makeGrassTexture = () =>
     }
   })
 
-const makeStarTexture = () =>
-  canvasTexture([1024, 512], (ctx, w, h) => {
-    const rand = seeded(0x57a2)
-    const sky = ctx.createLinearGradient(0, 0, 0, h)
-    sky.addColorStop(0, '#04070f')
-    sky.addColorStop(0.55, '#070d1a')
-    sky.addColorStop(0.8, '#0d1524')
-    sky.addColorStop(0.92, '#1a2030')
-    sky.addColorStop(1, '#241f23')
-    ctx.fillStyle = sky
-    ctx.fillRect(0, 0, w, h)
-    // faint city glow bleeding up from the horizon band
-    const glow = ctx.createLinearGradient(0, h * 0.78, 0, h)
-    glow.addColorStop(0, 'rgba(220,150,80,0)')
-    glow.addColorStop(1, 'rgba(220,150,80,0.14)')
-    ctx.fillStyle = glow
-    ctx.fillRect(0, h * 0.78, w, h * 0.22)
-    for (let i = 0; i < 900; i++) {
-      const y = rand() * h * 0.82
-      const a = 0.25 + rand() * 0.65
-      const big = rand() < 0.05
-      ctx.fillStyle = `rgba(${big ? '255,246,220' : '224,236,255'},${a})`
-      ctx.fillRect(rand() * w, y, big ? 2 : 1, big ? 2 : 1)
-    }
-  })
-
-const makeGlowTexture = (inner: string, outer: string) =>
+export const makeGlowTexture = (inner: string, outer: string) =>
   canvasTexture([128, 128], (ctx, w, h) => {
     const g = ctx.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2)
     g.addColorStop(0, inner)
@@ -720,13 +698,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   fascia(0.5, HOUSE.maxZ - HOUSE.minZ + 0.6, HOUSE.minX - 0.05, (HOUSE.minZ + HOUSE.maxZ) / 2)
   fascia(0.5, HOUSE.maxZ - HOUSE.minZ + 0.6, HOUSE.maxX + 0.05, (HOUSE.minZ + HOUSE.maxZ) / 2)
 
-  // -- ground: dark field far out, mowed lawn inside the property
-  const fieldMat = new THREE.MeshStandardMaterial({ color: '#11170e', roughness: 1, fog: false })
-  trackDisposable(fieldMat)
-  const field = new THREE.Mesh(new THREE.CircleGeometry(240, 40), fieldMat)
-  field.rotation.x = -Math.PI / 2
-  field.position.y = -0.06
-  root.add(field)
+  // -- ground: mowed lawn inside the property (the meadow beyond the fence
+  // is outsideWorld's business now)
   const lawnMat = new THREE.MeshStandardMaterial({ roughness: 1, map: grassTex })
   trackDisposable(lawnMat)
   grassTex.repeat.set(9, 14)
@@ -763,119 +736,83 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   stones.receiveShadow = true
   root.add(stones)
 
-  /* ------------------------------------------------------- sky and city -- */
+  /* ---------------------------------------------------- street face -- */
 
-  const starTex = track(makeStarTexture())
-  const skyMat = new THREE.MeshBasicMaterial({
-    map: starTex, side: THREE.BackSide, fog: false, depthWrite: false,
+  // the front of the house is on the walk to the gate now, so it has to
+  // read like a home from the road: a proper (never-opening) front door
+  // and two curtained windows glowing from rooms the floor plan keeps to
+  // itself — the oldest trick in the level-design book
+  const frontZ = HOUSE.minZ - 0.14
+  const frontDoorMat = new THREE.MeshStandardMaterial({ color: '#43301e', roughness: 0.7 })
+  trackDisposable(frontDoorMat)
+  const frontDoor = new THREE.Mesh(new THREE.BoxGeometry(2.1, DOOR_H, 0.14), frontDoorMat)
+  frontDoor.position.set(0, DOOR_H / 2, frontZ - 0.06)
+  frontDoor.castShadow = false
+  frontDoor.receiveShadow = true
+  root.add(frontDoor)
+  ;[-1.12, 1.12].forEach((x) => {
+    const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.16, DOOR_H + 0.14, 0.22), trimMat)
+    jamb.position.set(x, (DOOR_H + 0.14) / 2, frontZ - 0.04)
+    jamb.castShadow = false
+    root.add(jamb)
   })
-  trackDisposable(skyMat)
-  const sky = new THREE.Mesh(new THREE.SphereGeometry(230, 32, 16), skyMat)
-  sky.renderOrder = -10
-  sky.frustumCulled = false
-  root.add(sky)
-
-  const moonGlowTex = track(makeGlowTexture('rgba(238,232,205,0.85)', 'rgba(238,232,205,0)'))
-  const moon = new THREE.Group()
-  const moonDisc = new THREE.Mesh(
-    new THREE.CircleGeometry(6.2, 24),
-    new THREE.MeshBasicMaterial({ color: '#f2e9c9', fog: false }),
+  const frontHeader = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.18, 0.22), trimMat)
+  frontHeader.position.set(0, DOOR_H + 0.1, frontZ - 0.04)
+  frontHeader.castShadow = false
+  root.add(frontHeader)
+  const frontKnob = new THREE.Mesh(
+    new THREE.SphereGeometry(0.085, 10, 8),
+    new THREE.MeshStandardMaterial({ color: '#b8a26a', roughness: 0.35, metalness: 0.6 }),
   )
-  trackDisposable(moonDisc.material as THREE.Material)
-  const moonHalo = new THREE.Mesh(
-    new THREE.PlaneGeometry(34, 34),
-    new THREE.MeshBasicMaterial({
-      map: moonGlowTex, transparent: true, opacity: 0.55, fog: false,
-      depthWrite: false, blending: THREE.AdditiveBlending,
-    }),
-  )
-  trackDisposable(moonHalo.material as THREE.Material)
-  moonHalo.position.z = -0.5
-  moon.add(moonHalo, moonDisc)
-  moon.position.set(-186, 82, 34)
-  moon.lookAt(0, 2, 8)
-  moon.renderOrder = -9
-  root.add(moon)
+  trackDisposable(frontKnob.material as THREE.Material)
+  frontKnob.position.set(0.72, 2.2, frontZ - 0.16)
+  frontKnob.castShadow = false
+  root.add(frontKnob)
 
-  // distant skyline: one instanced mesh of towers, one of lit windows
-  const cityRand = seeded(0xc17e)
-  const towerDefs: Array<{ x: number; z: number; w: number; h: number; d: number; a: number }> = []
-  for (let i = 0; i < 64; i++) {
-    const a = (i / 64) * Math.PI * 2 + (cityRand() - 0.5) * 0.06
-    const r = 88 + cityRand() * 46
-    const h = 9 + cityRand() * (cityRand() < 0.16 ? 34 : 17)
-    towerDefs.push({
-      x: Math.cos(a) * r,
-      z: Math.sin(a) * r + 16, // ring biased away from the front of the house
-      w: 5 + cityRand() * 9,
-      h,
-      d: 5 + cityRand() * 8,
-      a: -a + Math.PI / 2,
+  const curtainMats: THREE.MeshStandardMaterial[] = []
+  const curtainWindow = (cx: number, y0: number, y1: number, w: number) => {
+    const mat = new THREE.MeshStandardMaterial({
+      color: '#4a3b28', roughness: 1,
+      emissive: new THREE.Color('#ffc98a'), emissiveIntensity: 1.1,
     })
+    trackDisposable(mat)
+    curtainMats.push(mat)
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(w, y1 - y0), mat)
+    pane.position.set(cx, (y0 + y1) / 2, frontZ - 0.02)
+    pane.rotation.y = Math.PI
+    root.add(pane)
+    const rail = (rw: number, rh: number, x: number, y: number) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(rw, rh, 0.1), trimMat)
+      m.position.set(x, y, frontZ - 0.05)
+      m.castShadow = false
+      root.add(m)
+    }
+    rail(w + 0.22, 0.11, cx, y1 + 0.05)
+    rail(w + 0.22, 0.13, cx, y0 - 0.05)
+    rail(0.11, y1 - y0 + 0.22, cx - w / 2 - 0.05, (y0 + y1) / 2)
+    rail(0.11, y1 - y0 + 0.22, cx + w / 2 + 0.05, (y0 + y1) / 2)
+    rail(0.07, y1 - y0, cx, (y0 + y1) / 2)
   }
-  const towerMat = new THREE.MeshBasicMaterial({ color: '#0c1420', fog: false })
-  trackDisposable(towerMat)
-  const towers = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), towerMat, towerDefs.length)
-  const tm = new THREE.Matrix4()
-  const tq = new THREE.Quaternion()
-  const te = new THREE.Euler()
-  towerDefs.forEach((t, i) => {
-    tq.setFromEuler(te.set(0, t.a, 0))
-    tm.compose(tmpVec.set(t.x, t.h / 2 - 0.2, t.z), tq, new THREE.Vector3(t.w, t.h, t.d))
-    towers.setMatrixAt(i, tm)
-  })
-  towers.frustumCulled = false
-  root.add(towers)
+  curtainWindow(-4.3, 2.5, 4.1, 1.8)
+  curtainWindow(4.3, 2.5, 4.1, 1.8)
 
-  const cityWinMat = new THREE.MeshBasicMaterial({
-    color: '#ffc96d', fog: false, transparent: true, opacity: 0.85, depthWrite: false,
+  // stoop + a straight concrete walk from the front door to the gate
+  const stoop = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.16, 0.9), concreteMat)
+  stoop.position.set(0, 0.08, HOUSE.minZ - 0.6)
+  stoop.receiveShadow = true
+  root.add(stoop)
+  // spans the gap between the stoop's front edge (z -2.8) and the gate
+  const frontWalk = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.07, -2.8 - YARD.minZ), concreteMat)
+  frontWalk.position.set(0, 0.035, (-2.8 + YARD.minZ) / 2)
+  frontWalk.receiveShadow = true
+  root.add(frontWalk)
+  // gate posts cap the fence ends at the gap
+  ;[GATE.x0 - 0.09, GATE.x1 + 0.09].forEach((x) => {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.2, 2.1, 0.2), darkWoodMat)
+    post.position.set(x, 1.05, YARD.minZ)
+    post.castShadow = false
+    root.add(post)
   })
-  trackDisposable(cityWinMat)
-  const winSlots: Array<{ t: (typeof towerDefs)[0]; lx: number; ly: number }> = []
-  towerDefs.forEach((t) => {
-    const cols = Math.max(2, Math.floor(t.w / 1.1))
-    const rows = Math.max(3, Math.floor(t.h / 1.5))
-    for (let cx = 0; cx < cols; cx++)
-      for (let cy = 0; cy < rows; cy++) {
-        if (cityRand() < 0.72) continue
-        winSlots.push({
-          t,
-          lx: -t.w * 0.36 + (cx / Math.max(1, cols - 1)) * t.w * 0.72,
-          ly: -t.h * 0.42 + (cy / Math.max(1, rows - 1)) * t.h * 0.84,
-        })
-      }
-  })
-  const cityWins = new THREE.InstancedMesh(
-    new THREE.PlaneGeometry(1, 1), cityWinMat, Math.min(520, winSlots.length))
-  for (let i = 0; i < cityWins.count; i++) {
-    const { t, lx, ly } = winSlots[i]
-    // push the quad just outside the tower face that looks at the house
-    tq.setFromEuler(te.set(0, t.a, 0))
-    const off = tmpVec.set(lx, 0, t.d / 2 + 0.08).applyQuaternion(tq)
-    tm.compose(
-      new THREE.Vector3(t.x + off.x, t.h / 2 - 0.2 + ly, t.z + off.z),
-      tq,
-      new THREE.Vector3(0.34 + cityRand() * 0.2, 0.42 + cityRand() * 0.28, 1),
-    )
-    cityWins.setMatrixAt(i, tm)
-  }
-  cityWins.frustumCulled = false
-  // after the towers, so the depth-test keeps the lit windows on their faces
-  cityWins.renderOrder = 1
-  root.add(cityWins)
-
-  // amber haze hugging the horizon behind the towers
-  const hazeTex = track(makeGlowTexture('rgba(230,150,70,0.35)', 'rgba(230,150,70,0)'))
-  const hazeMat = new THREE.MeshBasicMaterial({
-    map: hazeTex, transparent: true, fog: false, depthWrite: false,
-    blending: THREE.AdditiveBlending, side: THREE.BackSide,
-  })
-  trackDisposable(hazeMat)
-  const haze = new THREE.Mesh(new THREE.CylinderGeometry(150, 150, 26, 48, 1, true), hazeMat)
-  haze.position.y = 6
-  haze.renderOrder = -9
-  haze.frustumCulled = false
-  root.add(haze)
 
   /* --------------------------------------------------------------- yard -- */
 
@@ -890,6 +827,10 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   fenceBlock(YARD.minX, YARD.maxZ, YARD.maxX, YARD.maxZ)
   fenceBlock(YARD.minX, HOUSE.maxZ, HOUSE.minX, HOUSE.maxZ)
   fenceBlock(HOUSE.maxX, HOUSE.maxZ, YARD.maxX, HOUSE.maxZ)
+  // the front line blocks too now that the world continues past it — in two
+  // pieces, leaving the gate gap open onto the street
+  fenceBlock(YARD.minX, YARD.minZ, GATE.x0, YARD.minZ)
+  fenceBlock(GATE.x1, YARD.minZ, YARD.maxX, YARD.minZ)
 
   // grass tufts: one instanced mesh of crossed alpha quads
   const tuftTex = track(makeTuftTexture())
@@ -921,6 +862,14 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   // the side strip the bedroom window looks onto
   for (let i = 0; i < 60; i++)
     tuftSpot(YARD.minX + 0.8 + tuftRand() * 4.6, -2 + tuftRand() * 24)
+  // the east strip and the front yard, on the walk around to the gate
+  for (let i = 0; i < 40; i++)
+    tuftSpot(HOUSE.maxX + 0.7 + tuftRand() * 4.9, -2 + tuftRand() * 24)
+  for (let i = 0; i < 36; i++) {
+    const x = YARD.minX + 0.8 + tuftRand() * (YARD.maxX - YARD.minX - 1.6)
+    if (Math.abs(x) < 1.4) continue // keep the front walk clear
+    tuftSpot(x, YARD.minZ + 0.5 + tuftRand() * 1.4)
+  }
   const tufts = new THREE.InstancedMesh(tuftGeo, tuftMat, tuftMats.length)
   tuftMats.forEach((m, i) => tufts.setMatrixAt(i, m))
   tufts.castShadow = false
@@ -1136,8 +1085,9 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     /* bath: tub along the west wall, sink by the door, toilet on the far
        wall — respaced when the room grew, so nothing crowds anything */
     put(models.bathtub, 4.1, HPI, -6.35, 13.55, { pad: 0.08 })
-    put(models.toilet, 0.94, 0, -4.05, 15.72, { pad: 0.08 })
-    put(models.bathsink, 1.35, Math.PI, -4.55, 11.14, { pad: 0.08 })
+    // both back up against their walls: bowl and basin open into the room
+    put(models.toilet, 0.94, Math.PI, -4.05, 15.72, { pad: 0.08 })
+    put(models.bathsink, 1.35, 0, -4.55, 11.14, { pad: 0.08 })
     put(models.towelrack, 1.8, -HPI, -2.62, 14.9, { y: 2.05 })
     put(models.toiletpaper, 1.4, -HPI, -2.6, 15.6, { y: 1.45 })
 
@@ -1254,7 +1204,9 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       run(YARD.minX, YARD.maxZ, YARD.maxX, YARD.maxZ)
       run(YARD.minX, HOUSE.maxZ, HOUSE.minX - 0.1, HOUSE.maxZ)
       run(HOUSE.maxX + 0.1, HOUSE.maxZ, YARD.maxX, HOUSE.maxZ)
-      run(YARD.minX, YARD.minZ, YARD.maxX, YARD.minZ)
+      // front line parts at the gate
+      run(YARD.minX, YARD.minZ, GATE.x0, YARD.minZ)
+      run(GATE.x1, YARD.minZ, YARD.maxX, YARD.minZ)
       instancedFromGLB(models.fence, mats)
     }
     put(models.tree, 4.6, 0, -7.5, 33.0, { pad: -0.8 })
@@ -1389,6 +1341,15 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     for (const { mat, on } of bulbs) mat.emissiveIntensity = on * k
   }
 
+  // daylight puts the fireflies to bed and washes out the curtain glow
+  const setDay = (day: number) => {
+    flyMat.opacity = Math.max(0, 1 - day * 1.6)
+    const glow = 1.1 * (1 - day * 0.92)
+    for (const m of curtainMats) {
+      if (m.emissiveIntensity !== glow) m.emissiveIntensity = glow
+    }
+  }
+
   const flagShadows = (p: THREE.Vector3) => {
     // only the living-room pendant is house-owned; its wide cone reaches the
     // hall through the arch, so keep re-baking anywhere past the bedroom —
@@ -1398,12 +1359,12 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   return {
     root, update, doorPrompt, useDoor,
-    setRoamLight, flagShadows, shadowLights, furnish,
+    setRoamLight, setDay, flagShadows, shadowLights, furnish,
   }
 }
 
 /** minimal two-geometry merge (positions/normals/uvs), avoids the utils dep */
-function mergeGeoms(a: THREE.BufferGeometry, b: THREE.BufferGeometry) {
+export function mergeGeoms(a: THREE.BufferGeometry, b: THREE.BufferGeometry) {
   const out = new THREE.BufferGeometry()
   const attrs: Array<'position' | 'normal' | 'uv'> = ['position', 'normal', 'uv']
   for (const name of attrs) {

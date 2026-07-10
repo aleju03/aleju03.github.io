@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import {
   ArrowClockwiseIcon,
   ArrowLeftIcon,
@@ -13,14 +13,16 @@ import {
 } from '@phosphor-icons/react'
 import { showcase, github, linkedin } from '../../data/projects'
 import { sounds } from './sounds'
+import { getOsYear, subscribeOsYear } from './osYear'
 
 /*
   Internet Explorer, AlejOS edition. Address bar plus back/forward/home, a
   retro portal home page (aleju://home) with the live projects as tiles, and
   an iframe for the actual web. Plenty of 2026 sites refuse to be framed, so
   the toolbar offers two outs: open in a real tab, or "time travel" — load
-  the page through the Wayback Machine circa 2003, which embeds happily and
-  matches the period furniture. GitHub and LinkedIn refuse frames outright,
+  the page through the Wayback Machine at whatever year the taskbar clock is
+  set to (2003 by default), which embeds happily and matches the period
+  furniture. GitHub and LinkedIn refuse frames outright,
   so the browser renders its own period-correct pages for them instead;
   the GitHub ones pull live data from the public API.
 */
@@ -56,12 +58,12 @@ function normalize(raw: string): string {
   if (/^https?:\/\//i.test(t)) return t
   if (/^[\w-]+(\.[\w-]+)+/.test(t)) return `https://${t}`
   // not a url: pretend we are a search engine and ask the wayback machine
-  return `https://web.archive.org/web/2003/https://www.google.com/search?q=${encodeURIComponent(t)}`
+  return `https://web.archive.org/web/${getOsYear()}/https://www.google.com/search?q=${encodeURIComponent(t)}`
 }
 
 function timeTravel(url: string): string {
   if (url.includes('web.archive.org')) return url
-  return `https://web.archive.org/web/2003/${url}`
+  return `https://web.archive.org/web/${getOsYear()}/${url}`
 }
 
 // what the address bar admits to: time travel happens through the Wayback
@@ -325,6 +327,17 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
   const [fwd, setFwd] = useState<string[]>([])
   // remount the iframe on reload even when the url is unchanged
   const [frameKey, setFrameKey] = useState(0)
+  const year = useSyncExternalStore(subscribeOsYear, getOsYear)
+
+  // the taskbar clock changed the year: pages already viewed through the
+  // Wayback Machine jump to the new destination in time
+  useEffect(
+    () =>
+      subscribeOsYear(() => {
+        setUrl((u) => u.replace(/(\/\/web\.archive\.org\/web\/)\d+\//, `$1${getOsYear()}/`))
+      }),
+    [],
+  )
 
   const host = useMemo(() => {
     if (url === HOME) return 'home'
@@ -449,7 +462,7 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
             <button
               type="button"
               aria-label="Time travel via the Wayback Machine"
-              title="Load this page as it looked circa 2003"
+              title={`Load this page as it looked circa ${year}`}
               className={toolBtn}
               disabled={url.includes('web.archive.org')}
               onClick={() => {
@@ -497,7 +510,7 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
                 <input
                   name="q"
                   data-no-focus-ring
-                  placeholder="Search the web (of 2003)"
+                  placeholder={`Search the web (of ${year})`}
                   aria-label="Search"
                   className="min-w-0 flex-1 rounded-sm border border-stone-400 bg-white px-3 py-1.5 text-sm text-stone-700 shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)]"
                 />

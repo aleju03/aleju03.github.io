@@ -10,6 +10,8 @@ import {
 } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
+  CaretLeftIcon,
+  CaretRightIcon,
   CrownSimpleIcon,
   GithubLogoIcon,
   LinkedinLogoIcon,
@@ -27,6 +29,15 @@ import { Window } from './Window'
 import type { WinState } from './Window'
 import { sounds } from './sounds'
 import { getWallpaperId, subscribeWallpaper, wallpaperById } from './wallpapers'
+import {
+  DEFAULT_OS_YEAR,
+  MAX_OS_YEAR,
+  MIN_OS_YEAR,
+  getOsYear,
+  osDate,
+  setOsYear,
+  subscribeOsYear,
+} from './osYear'
 import { BiosScreen } from './BiosScreen'
 import { AlejLogo } from './AlejLogo'
 import { ScreenEffects } from './ScreenEffects'
@@ -98,16 +109,115 @@ interface Rect {
 
 type OsWin = WinState & { app: AppId; props: Record<string, unknown> }
 
-function Clock() {
+// the tray clock keeps real hours but lives in the pretend year (2003 by
+// default, this machine's vintage), so the date line is the giveaway
+function Clock({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const [now, setNow] = useState(() => new Date())
+  const year = useSyncExternalStore(subscribeOsYear, getOsYear)
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 10_000)
     return () => clearInterval(id)
   }, [])
+  const then = new Date(now)
+  then.setFullYear(year)
   return (
-    <time className="font-mono text-xs text-white tabular-nums">
-      {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-    </time>
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label="Date and Time"
+      aria-expanded={open}
+      data-open={open}
+      title={then.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      })}
+      className="cursor-pointer rounded-md px-1.5 py-0.5 text-right leading-tight transition-colors hover:bg-white/20 data-[open=true]:bg-white/20"
+    >
+      <time className="block font-mono text-xs text-white tabular-nums">
+        {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </time>
+      <span className="block font-mono text-[10px] text-white/75 tabular-nums">
+        {then.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}
+      </span>
+    </button>
+  )
+}
+
+// the flyout the clock opens: Date and Time Properties, AlejOS edition. Only
+// the year is up for grabs, and Internet Explorer time-travels along with it.
+function ClockFlyout() {
+  const year = useSyncExternalStore(subscribeOsYear, getOsYear)
+  const then = osDate()
+  const stepBtn =
+    'flex size-7 cursor-pointer items-center justify-center rounded-sm border border-stone-400 bg-stone-200 text-stone-700 shadow-[0_1px_0_rgba(255,255,255,0.8)_inset] transition active:scale-[0.98] hover:border-blue-600 hover:bg-stone-50 disabled:cursor-default disabled:opacity-40 disabled:hover:border-stone-400 disabled:hover:bg-stone-200'
+  const pick = (y: number) => {
+    sounds.click()
+    setOsYear(y)
+  }
+  return (
+    <>
+      <div className="bg-gradient-to-b from-blue-600 to-blue-700 px-4 py-3">
+        <p className="text-sm font-medium text-white">Date and Time</p>
+        <p className="text-[11px] text-blue-100/80">
+          {then.toLocaleDateString('en-US', {
+            weekday: 'long',
+            month: 'long',
+            day: 'numeric',
+            year: 'numeric',
+          })}
+        </p>
+      </div>
+      <div className="p-4">
+        <div className="flex items-center justify-center gap-2">
+          <button
+            type="button"
+            aria-label="Previous year"
+            className={stepBtn}
+            disabled={year <= MIN_OS_YEAR}
+            onClick={() => pick(year - 1)}
+          >
+            <CaretLeftIcon size={13} weight="bold" />
+          </button>
+          <select
+            value={year}
+            aria-label="Year"
+            onChange={(e) => pick(Number(e.target.value))}
+            className="cursor-pointer appearance-none rounded-sm border border-stone-400 bg-white px-4 py-1 text-center font-mono text-lg text-stone-800 tabular-nums shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)] hover:border-blue-600"
+          >
+            {Array.from({ length: MAX_OS_YEAR - MIN_OS_YEAR + 1 }, (_, i) => MAX_OS_YEAR - i).map(
+              (y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ),
+            )}
+          </select>
+          <button
+            type="button"
+            aria-label="Next year"
+            className={stepBtn}
+            disabled={year >= MAX_OS_YEAR}
+            onClick={() => pick(year + 1)}
+          >
+            <CaretRightIcon size={13} weight="bold" />
+          </button>
+        </div>
+        <p className="mt-3 text-center text-[11px] leading-relaxed text-stone-500">
+          Internet Explorer follows this calendar and loads pages the way they looked back then.
+        </p>
+        {year !== DEFAULT_OS_YEAR && (
+          <button
+            type="button"
+            onClick={() => pick(DEFAULT_OS_YEAR)}
+            className="mx-auto mt-2 block cursor-pointer text-[11px] text-blue-700 underline-offset-2 hover:underline"
+          >
+            Take me back to {DEFAULT_OS_YEAR}
+          </button>
+        )}
+      </div>
+    </>
   )
 }
 
@@ -123,6 +233,9 @@ const ICON_POS_KEY = 'alejos-icon-pos'
 const CELL_W = 102
 const CELL_H = 78
 const GRID_PAD = 12
+// narrow screens shrink cells down to this so the columns that visibly fit
+// actually exist (a 390px phone packs four columns instead of three)
+const MIN_CELL_W = 84
 
 const isCell = (value: unknown): value is Cell => {
   if (!value || typeof value !== 'object') return false
@@ -196,6 +309,8 @@ interface DesktopIconProps {
   label: string
   glyph: React.ReactNode
   cell: Cell
+  /** cell width in px; narrow screens pack tighter than CELL_W */
+  cw: number
   selected: boolean
   renaming?: boolean
   /** light wallpapers use darker hover treatment; labels keep XP-style contrast */
@@ -210,7 +325,7 @@ interface DesktopIconProps {
 // single click selects like a real desktop; double click (or tap, where
 // there is no hover) opens. data-icon makes the marquee hit-test find it.
 // holding and moving past a small threshold picks the icon up instead.
-function DesktopIcon({ id, label, glyph, cell, selected, renaming, onLight, onSelect, onOpen, onRename, onDragEnd }: DesktopIconProps) {
+function DesktopIcon({ id, label, glyph, cell, cw, selected, renaming, onLight, onSelect, onOpen, onRename, onDragEnd }: DesktopIconProps) {
   const dragRef = useRef<{ px: number; py: number; scale: number; moved: boolean } | null>(null)
   const suppressClick = useRef(false)
   const [lift, setLift] = useState<{ x: number; y: number } | null>(null)
@@ -274,11 +389,12 @@ function DesktopIcon({ id, label, glyph, cell, selected, renaming, onLight, onSe
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       style={{
-        left: GRID_PAD + cell.col * CELL_W,
+        left: GRID_PAD + cell.col * cw,
         top: GRID_PAD + cell.row * CELL_H,
+        width: cw - 6,
         ...(lift && { transform: `translate(${lift.x}px, ${lift.y}px)`, zIndex: 3000 }),
       }}
-      className={`pointer-events-auto absolute flex w-24 cursor-pointer touch-none flex-col items-center gap-1 rounded-md p-2 ${
+      className={`pointer-events-auto absolute flex cursor-pointer touch-none flex-col items-center gap-1 rounded-md p-2 ${
         lift ? 'opacity-75' : ''
       } ${selected ? 'bg-blue-700/30' : onLight ? 'hover:bg-stone-950/10' : 'hover:bg-white/15'}`}
     >
@@ -311,10 +427,7 @@ function BootScreen() {
     <div className="relative flex h-full flex-col items-center justify-center bg-black">
       <div>
         <AlejLogo size={88} className="mx-auto" />
-        <p className="font-xp mt-1 text-[44px] leading-none font-semibold text-white">
-          AlejOS
-          <sup className="ml-1 align-super text-lg font-bold text-orange-500">v2</sup>
-        </p>
+        <p className="font-xp mt-1 text-[44px] leading-none font-semibold text-white">AlejOS</p>
       </div>
       <div className="mt-16 h-[15px] w-48 rounded-[4px] border border-[#b5b5b5] p-[2px] shadow-[0_0_3px_rgba(180,200,255,0.35)]">
         <div className="h-full overflow-hidden rounded-[1px]">
@@ -361,13 +474,18 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
   const [wins, setWins] = useState<OsWin[]>([])
   const [activeId, setActiveId] = useState('')
   const [startOpen, setStartOpen] = useState(false)
+  const [clockOpen, setClockOpen] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [marquee, setMarquee] = useState<Rect | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; icon: string | null } | null>(null)
   const [renamingIcon, setRenamingIcon] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
   const [desktopReady, setDesktopReady] = useState(false)
   const [iconPos, setIconPos] = useState<Record<string, Cell>>(loadIconPos)
-  const [grid, setGrid] = useState({ cols: 8, rows: 8 })
+  const [grid, setGrid] = useState({ cols: 8, rows: 8, cw: CELL_W })
+  // true when this boot was the wreck swallowing the hero's paper plane:
+  // the 3D room lays the dart on the bedroom rug as the other end of the trip
+  const [planeInRoom, setPlaneInRoom] = useState(false)
   const phaseRef = useRef(phase)
   const awayRef = useRef(away)
   const pendingAppRef = useRef<AppId | null>(null)
@@ -399,12 +517,19 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     if (phase !== 'on' || !desktopReady) return
     const el = desktopRef.current
     if (!el) return
-    const measure = () =>
+    const measure = () => {
+      const avail = el.clientWidth - GRID_PAD
+      const cw =
+        el.clientWidth < 640
+          ? Math.min(CELL_W, Math.floor(avail / Math.max(1, Math.floor(avail / MIN_CELL_W))))
+          : CELL_W
       setGrid({
-        cols: Math.max(1, Math.floor((el.clientWidth - GRID_PAD) / CELL_W)),
+        cols: Math.max(1, Math.floor(avail / cw)),
         // leave the taskbar (h-12) plus a little breathing room at the bottom
         rows: Math.max(1, Math.floor((el.clientHeight - GRID_PAD - 56) / CELL_H)),
+        cw,
       })
+    }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
@@ -426,7 +551,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
 
   const moveIcon = (id: string, dx: number, dy: number) => {
     const from = iconCells[id]
-    const col = Math.min(grid.cols - 1, Math.max(0, Math.round(from.col + dx / CELL_W)))
+    const col = Math.min(grid.cols - 1, Math.max(0, Math.round(from.col + dx / grid.cw)))
     const row = Math.min(grid.rows - 1, Math.max(0, Math.round(from.row + dy / CELL_H)))
     if (col === from.col && row === from.row) return
     // freeze the whole current layout, then swap with whoever holds the cell
@@ -518,8 +643,11 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     warmDesktop()
     // the boot event's detail can name an app to open once someone logs in;
     // the contact section uses this to land visitors straight in the chat
-    const want = (e as CustomEvent<{ app?: string }> | undefined)?.detail?.app
+    const detail = (e as CustomEvent<{ app?: string; via?: string }> | undefined)?.detail
+    const want = detail?.app
     pendingAppRef.current = isAppId(want) ? want : null
+    // a plane-triggered boot carries the dart into the room with it
+    setPlaneInRoom(detail?.via === 'plane')
     // the 3D session only where it can land: mouse, big screen, motion ok
     const fancy =
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
@@ -527,6 +655,10 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       window.innerWidth >= 640
     setMode(fancy ? '3d' : 'flat')
     setPhase(fancy ? 'post' : 'boot')
+    // advance the ref NOW, not at commit: this boot pushes /alejOS below, so
+    // the deep-link check in the next effect would otherwise boot a second
+    // time in the same pass (still seeing 'off') and wipe this call's detail
+    phaseRef.current = fancy ? 'post' : 'boot'
     // make the session shareable: the OS owns /alejOS while it runs
     if (!isOsUrl()) history.pushState({ alejos: true }, '', OS_PATH)
   }, [warmDesktop])
@@ -597,6 +729,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       } else if (phaseRef.current === 'on') {
         if (awayRef.current) leaveRoom()
         else if (startOpen) setStartOpen(false)
+        else if (clockOpen) setClockOpen(false)
         else if (menu) setMenu(null)
         // in the room, esc means stand up; shutting down lives in the start menu
         else if (mode === '3d') standUp()
@@ -608,7 +741,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       unlock()
       window.removeEventListener('keydown', onKey)
     }
-  }, [phase, startOpen, menu, mode, shutdown, leaveRoom, standUp])
+  }, [phase, startOpen, clockOpen, menu, mode, shutdown, leaveRoom, standUp])
 
   const topZ = (list: OsWin[]) => list.reduce((max, w) => Math.max(max, w.z), 10)
 
@@ -810,6 +943,18 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     commitIconPos(nextPos)
   }
 
+  // the whole point of Refresh is the blink: the icons vanish for a beat and
+  // come back, which somehow proves the computer is fine
+  useEffect(() => {
+    if (!refreshing) return
+    const id = window.setTimeout(() => setRefreshing(false), 100)
+    return () => window.clearTimeout(id)
+  }, [refreshing])
+  const refreshDesktop = () => {
+    sounds.click()
+    setRefreshing(true)
+  }
+
   // --- context menus --------------------------------------------------------
   const desktopMenuItems = (): MenuItem[] => [
     {
@@ -821,7 +966,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
         { label: 'Modified', onClick: () => { commitIconPos({}); sortChildren(DESKTOP, 'modified') } },
       ],
     },
-    { label: 'Refresh', onClick: () => sounds.click() },
+    { label: 'Refresh', onClick: refreshDesktop },
     { divider: true },
     { label: 'Paste', disabled: true },
     { label: 'Paste Shortcut', disabled: true },
@@ -919,13 +1064,15 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
       />
 
       {/* desktop icons: My Computer, then C:\Desktop, then the bin. each one
-          sits on its grid cell; the layer itself must not eat desktop clicks */}
-      <div className="pointer-events-none absolute inset-0 bottom-12">
+          sits on its grid cell; the layer itself must not eat desktop clicks.
+          Refresh blanks the whole layer for a beat, XP style */}
+      <div className="pointer-events-none absolute inset-0 bottom-12" style={refreshing ? { visibility: 'hidden' } : undefined}>
         <DesktopIcon
           id="my-computer"
           label="My Computer"
           glyph={xpIcon('my-computer', 34)}
           cell={iconCells['my-computer']}
+          cw={grid.cw}
           selected={selected.has('my-computer')}
           onLight={onLightWallpaper}
           onSelect={() => setSelected(new Set(['my-computer']))}
@@ -941,6 +1088,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
               label={node.name}
               glyph={glyphFor(node, 34)}
               cell={iconCells[id]}
+          cw={grid.cw}
               selected={selected.has(id)}
               renaming={renamingIcon === id}
               onLight={onLightWallpaper}
@@ -956,6 +1104,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
           label={binCount > 0 ? `Recycle Bin (${binCount})` : 'Recycle Bin'}
           glyph={xpIcon(binCount > 0 ? 'recycle-full' : 'recycle-empty', 34)}
           cell={iconCells['recycle-bin']}
+          cw={grid.cw}
           selected={selected.has('recycle-bin')}
           onLight={onLightWallpaper}
           onSelect={() => setSelected(new Set(['recycle-bin']))}
@@ -967,6 +1116,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
           label="Back to site"
           glyph={xpIcon('exit', 34)}
           cell={iconCells['exit']}
+          cw={grid.cw}
           selected={selected.has('exit')}
           onLight={onLightWallpaper}
           onSelect={() => setSelected(new Set(['exit']))}
@@ -1116,6 +1266,31 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
         )}
       </AnimatePresence>
 
+      {/* clock flyout */}
+      <AnimatePresence>
+        {clockOpen && (
+          <>
+            <button
+              type="button"
+              aria-label="Close Date and Time"
+              onClick={() => setClockOpen(false)}
+              className="absolute inset-0 cursor-default"
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+              role="dialog"
+              aria-label="Date and Time"
+              className="absolute right-0 bottom-12 z-[5000] w-72 overflow-hidden rounded-t-lg border border-blue-900 bg-stone-50 shadow-2xl shadow-stone-950/50"
+            >
+              <ClockFlyout />
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
       {/* taskbar */}
       <div className="os-taskbar absolute inset-x-0 bottom-0 z-[4000] flex h-12 items-stretch">
         <button
@@ -1125,6 +1300,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
           onClick={() => {
             sounds.click()
             setMenu(null)
+            setClockOpen(false)
             setStartOpen((o) => !o)
           }}
           className="os-start font-xp flex shrink-0 cursor-pointer items-center gap-1.5 pr-7 pl-2 text-xl font-semibold text-white italic"
@@ -1147,7 +1323,15 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
           ))}
         </div>
         <div className="os-tray flex items-center gap-2 pr-2.5 pl-3.5">
-          <Clock />
+          <Clock
+            open={clockOpen}
+            onToggle={() => {
+              sounds.click()
+              setStartOpen(false)
+              setMenu(null)
+              setClockOpen((o) => !o)
+            }}
+          />
           <button
             type="button"
             onClick={() => shutdown()}
@@ -1244,6 +1428,7 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
               off={phase === 'down'}
               roam={phase === 'room' || away}
               screenLive={phase === 'on'}
+              paperPlane={planeInRoom}
               onInteract={away ? sitDown : wake}
               onLeave={leaveRoom}
               onFail={() => setMode('flat')}

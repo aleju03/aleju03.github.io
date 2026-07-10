@@ -56,7 +56,7 @@ const INK = '#0c0a09' // stone-950, same night the OS overlay sits on
 const STONE = '168,162,158' // stone-400
 const ACCENT = '96,165,250' // blue-400, the plane's contrail blue
 
-export function warpToOs(detail?: { app?: string }) {
+export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
   if (running) return
   // the ride hides the heavy lifting: start pulling the OS chunk now, and
   // the 3D scene too on the screens that will actually mount it, so the

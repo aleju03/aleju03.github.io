@@ -5,7 +5,9 @@ import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
-import { buildHouse, CEIL_H, HOUSE, YARD } from './houseWorld'
+import { buildHouse, CEIL_H, HOUSE } from './houseWorld'
+import { buildOutsideWorld, WORLD } from './outsideWorld'
+import { buildPaperPlane } from './paperPlane'
 import type { HouseModels } from './houseWorld'
 import { buildPlayerBody } from './playerBody'
 import { OS_SCENE_READY_EVENT } from '../../events'
@@ -35,6 +37,9 @@ interface CrtSceneProps {
   roam: boolean
   /** roaming with the OS still running, so the tube stays lit and glowing */
   screenLive: boolean
+  /** this boot came from the wreck swallowing the hero's paper plane, so
+      the dart lies landed on the bedroom rug */
+  paperPlane?: boolean
   /** pressed the interact key at the machine: sit down (and boot if cold) */
   onInteract: () => void
   /** the pause menu's way out of the room entirely (what esc used to do) */
@@ -130,6 +135,7 @@ export default function CrtScene({
   off,
   roam,
   screenLive,
+  paperPlane,
   onInteract,
   onLeave,
   onFail,
@@ -156,11 +162,13 @@ export default function CrtScene({
   const interactRef = useRef(onInteract)
   const liveRef = useRef(screenLive)
   const prefsRef = useRef(prefs)
+  const paperPlaneRef = useRef(paperPlane)
   useEffect(() => {
     failRef.current = onFail
     interactRef.current = onInteract
     liveRef.current = screenLive
     prefsRef.current = prefs
+    paperPlaneRef.current = paperPlane
   })
   useEffect(() => {
     try {
@@ -351,6 +359,15 @@ export default function CrtScene({
           darkWoodMat,
           windowGlassMat,
           lamp,
+          trackTexture: (t) => runtimeTextures.push(t),
+          trackDisposable: (d) => runtimeDisposables.push(d),
+        })
+        // ...and past the fence: sky, sun and moon on the day cycle, the
+        // street, the neighbors, the city rings. update() runs per rendered
+        // frame and hands back the fog/hemisphere targets for right now.
+        const outside = buildOutsideWorld({
+          scene,
+          obstacles,
           trackTexture: (t) => runtimeTextures.push(t),
           trackDisposable: (d) => runtimeDisposables.push(d),
         })
@@ -565,6 +582,16 @@ export default function CrtScene({
         })
         scene.add(rug)
 
+        // if this boot was the wreck swallowing the hero's paper plane, the
+        // dart made the trip too: it lies landed on the rug behind the
+        // chair, nose pointed into the room like it glided out of the screen
+        if (paperPlaneRef.current) {
+          const dart = buildPaperPlane()
+          dart.position.set(1.6, 0.02, 4.2)
+          dart.rotation.y = -1.05
+          scene.add(dart)
+        }
+
         // (the desk chair, the bedroom window and everything past that wall
         // are the house module's business now — the chair itself arrives as
         // a real model with the streamed furniture)
@@ -761,15 +788,13 @@ export default function CrtScene({
         const PEND_ROAM = 75
         const MOON_ROAM = 0.8
         const WINDOW_SPILL_ROAM = 8
+        // the roam ramp is one input to the lighting now; the day cycle is
+        // the other. roomLight() stores the ramp and applyLight() composes
+        // both every rendered frame (render() calls it), so the sky, fog and
+        // fills all track the clock even mid-stand-up or mid-walk.
+        let roamK = 0
         const roomLight = (k: number) => {
-          hemi.intensity = HEMI_SEATED + (HEMI_ROAM - HEMI_SEATED) * k
-          roomGlow.intensity = GLOW_ROAM * k
-          pendant.intensity = PEND_ROAM * k
-          moon.intensity = MOON_ROAM * k
-          windowSpill.intensity = WINDOW_SPILL_ROAM * (0.25 + k * 0.75)
-          moonSpillMat.opacity = 0.13 * (0.45 + k * 0.7)
-          if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
-          house.setRoamLight(k)
+          roamK = k
         }
         const key = new THREE.SpotLight('#ffd9a0', 60, 0, 0.55, 0.6, 1.6)
         key.position.set(-3.2, 5.2, 2.8)
@@ -834,8 +859,39 @@ export default function CrtScene({
           ),
         )
 
+        // compose the roam ramp with the day cycle: every rendered frame
+        // re-reads the clock, so dawn keeps breaking mid-walk (and while
+        // parked nothing renders, so nothing is spent)
+        const spillNight = new THREE.Color('#9dbfff')
+        const spillDay = new THREE.Color('#ffe9c4')
+        const sceneFog = scene.fog as THREE.Fog
+        const sceneBg = scene.background as THREE.Color
+        const applyLight = () => {
+          const sky = outside.update(camera.position)
+          const k = roamK
+          hemi.color.copy(sky.hemiSky)
+          hemi.groundColor.copy(sky.hemiGround)
+          hemi.intensity = (HEMI_SEATED + (HEMI_ROAM - HEMI_SEATED) * k) * sky.dayBoost
+          roomGlow.intensity = GLOW_ROAM * k
+          pendant.intensity = PEND_ROAM * k
+          // the cool window lean-in is moonlight; it sets with the moon
+          moon.intensity = MOON_ROAM * k * sky.moonUp * sky.night
+          windowSpill.intensity =
+            WINDOW_SPILL_ROAM * (0.25 + k * 0.75) * (1 - 0.55 * sky.day)
+          windowSpill.color.lerpColors(spillNight, spillDay, sky.day)
+          moonSpillMat.opacity = 0.13 * (0.45 + k * 0.7) * sky.moonUp * sky.night
+          if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
+          house.setRoamLight(k)
+          house.setDay(sky.day)
+          sceneFog.color.copy(sky.fogColor)
+          sceneFog.near = sky.fogNear
+          sceneFog.far = sky.fogFar
+          sceneBg.copy(sky.fogColor)
+        }
+
         const render = () => {
           if (!webgl || !scene) return
+          applyLight()
           webgl.render(scene, camera)
           css3d.render(cssScene, camera)
         }
@@ -926,10 +982,17 @@ export default function CrtScene({
         const RUN_SPEED = 5.9
         const CROUCH_SPEED = 1.7
         const CROUCH_DROP = 0.85 // how far the eye sinks at full crouch
+        // space hops: heavy-ish gravity so it stays a hop, not a moon walk
+        // (apex ≈ v²/2g ≈ 1.6 units, about knee height on this world scale)
+        const JUMP_V = 10.4
+        const GRAV = 34
         // the seated framing math (camEndFor, tanHalf) is baked around this;
         // the walk uses the adjustable prefs fov and flyIn eases back here
         const FOV = 38
         let crouchK = 0 // 0 standing .. 1 crouched, smoothed
+        let jumpY = 0 // feet height over the ground while airborne
+        let vy = 0
+        let grounded = true
         // adaptive resolution: if the walk can't hold frame rate, step the
         // pixel ratio down (never back up mid-roam, so it can't oscillate);
         // each roam and each sit-down restores full crispness
@@ -953,9 +1016,10 @@ export default function CrtScene({
         deskBlock.min.z = -10 // the desk strip runs all the way back to the wall
         obstacles.push(deskBlock)
         const collide = (p: THREE.Vector3) => {
-          // hard bounds are the yard fence now; walls are obstacle boxes
-          p.x = THREE.MathUtils.clamp(p.x, YARD.minX + 0.55, YARD.maxX - 0.55)
-          p.z = THREE.MathUtils.clamp(p.z, -0.8, YARD.maxZ - 0.55)
+          // hard bounds are the edge of the neighborhood now; the fences,
+          // walls and everything else in between are obstacle boxes
+          p.x = THREE.MathUtils.clamp(p.x, WORLD.minX + 0.55, WORLD.maxX - 0.55)
+          p.z = THREE.MathUtils.clamp(p.z, WORLD.minZ + 0.55, WORLD.maxZ - 0.55)
           for (const b of obstacles) {
             if (p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z) {
               const exitL = p.x - b.min.x
@@ -1039,14 +1103,29 @@ export default function CrtScene({
           vel.lerp(want, 1 - Math.exp(-10 * dt))
           camera.position.addScaledVector(vel, dt)
           collide(camera.position)
-          // a faint footstep bob, scaled by how fast you actually move
+          // space jumps; holding it bunny-hops off each landing
+          if (keys.has('Space') && grounded && !duck) {
+            grounded = false
+            vy = JUMP_V
+          }
+          if (!grounded) {
+            vy -= GRAV * dt
+            jumpY = Math.max(0, jumpY + vy * dt)
+            if (jumpY === 0 && vy < 0) {
+              grounded = true
+              vy = 0
+            }
+          }
+          // a faint footstep bob, scaled by how fast you actually move;
+          // suspended in the air, where nobody is stepping on anything
           const planar = Math.hypot(vel.x, vel.z)
-          bobT += planar * dt * 0.55
+          if (grounded) bobT += planar * dt * 0.55
           const gait = Math.min(1, planar / speed)
           camera.position.y =
-            EYE -
+            EYE +
+            jumpY -
             crouchK * CROUCH_DROP +
-            Math.sin(bobT * Math.PI * 2) * (run ? 0.038 : 0.028) * gait
+            (grounded ? Math.sin(bobT * Math.PI * 2) * (run ? 0.038 : 0.028) * gait : 0)
           camera.rotation.x = pitch
           camera.rotation.y = yaw
           camera.rotation.z = 0
@@ -1060,9 +1139,10 @@ export default function CrtScene({
             camera.updateProjectionMatrix()
           }
           // the body plants its feet under the camera and faces the walk
+          // (or hangs from it, mid-hop)
           body.position.set(
             camera.position.x + Math.sin(yaw) * BODY_BACK,
-            0,
+            jumpY,
             camera.position.z + Math.cos(yaw) * BODY_BACK,
           )
           body.rotation.y = yaw + Math.PI
@@ -1071,7 +1151,7 @@ export default function CrtScene({
           house.update(dt)
           // the player is the only moving shadow caster: re-bake just the
           // lights that can see them, only on frames where they moved
-          if (planar > 0.05 || Math.abs((duck ? 1 : 0) - crouchK) > 0.02) {
+          if (planar > 0.05 || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02) {
             // generous regions: a map must keep re-baking until the player is
             // fully out of its light's frustum, or their shadow strands there
             if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
@@ -1162,6 +1242,9 @@ export default function CrtScene({
           keys.clear()
           vel.set(0, 0, 0)
           crouchK = 0
+          jumpY = 0
+          vy = 0
+          grounded = true
           body.visible = false
           if (webgl) {
             // bake the body's shadow away; sitting down only happens at the
@@ -1259,6 +1342,7 @@ export default function CrtScene({
           'ArrowDown',
           'ArrowLeft',
           'ArrowRight',
+          'Space', // jump; preventDefault also keeps the page from scrolling
         ])
         // sprint and crouch modifiers; c is a crouch alias for anyone wary of
         // the browser eating ctrl chords
@@ -1409,6 +1493,7 @@ export default function CrtScene({
           }
           if (disposed || !webgl || !scene) return
           house.furnish(models)
+          outside.furnish(models) // borrows the tree/bush GLBs for the block
           runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
           // pay the new shaders/textures now, not on the first look around
           await webgl.compileAsync(scene, camera).catch(() => {})
@@ -1435,7 +1520,7 @@ export default function CrtScene({
       if (scene) {
         scene.traverse((o) => {
           const mesh = o as THREE.Mesh
-          if (!mesh.isMesh) return
+          if (!mesh.isMesh && !(o as unknown as THREE.Line).isLine) return
           mesh.geometry.dispose()
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
           mats.forEach((m) => m.dispose())
@@ -1467,7 +1552,7 @@ export default function CrtScene({
       {roam && walking && !paused && (
         <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
           {locked
-            ? 'wasd move · shift run · ctrl crouch · esc pauses'
+            ? 'wasd move · space jump · shift run · ctrl crouch · esc pauses'
             : 'wasd to move · click to grab the mouse · esc to leave'}
         </p>
       )}

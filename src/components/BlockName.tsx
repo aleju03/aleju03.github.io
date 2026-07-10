@@ -1292,10 +1292,11 @@ export default function BlockName({
             )
           }
           // open the hole while the last loops play out, so the plane
-          // visibly vanishes into it
+          // visibly vanishes into it; the via tag tells the room on the far
+          // side that the dart came along for the ride
           if (!wreckCapture.warped && wreckCapture.t >= 0.7) {
             wreckCapture.warped = true
-            warpToOs()
+            warpToOs({ via: 'plane' })
           }
           if (wreckCapture.t >= 1) {
             plane.visible = false
