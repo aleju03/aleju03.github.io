@@ -1,4 +1,7 @@
 import * as THREE from 'three'
+import { seeded } from '../core/rand'
+import { canvasTexture, makeGlowTexture } from '../core/textures'
+import { mergeGeoms } from '../core/geometry'
 
 /** anything with a .scene group — a GLTFLoader result or a slice of one */
 export interface ModelLike {
@@ -91,32 +94,7 @@ const SINK_WIN = { u0: 20.5, u1: 22.1, y0: 2.9, y1: 4.3 }
 const BATH_WIN = { u0: 12.5, u1: 13.7, y0: 3.3, y1: 4.5 }
 const BEDROOM_WIN = { u0: 4.86, u1: 6.64, y0: 2.73, y1: 3.87 }
 
-export const seeded = (seed: number) => () => {
-  seed = (seed * 1664525 + 1013904223) >>> 0
-  return seed / 0x100000000
-}
-
 /* ------------------------------------------------------- canvas textures */
-
-export const canvasTexture = (
-  size: [number, number],
-  draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void,
-  repeat?: [number, number],
-) => {
-  const canvas = document.createElement('canvas')
-  canvas.width = size[0]
-  canvas.height = size[1]
-  const ctx = canvas.getContext('2d')
-  if (ctx) draw(ctx, size[0], size[1])
-  const tex = new THREE.CanvasTexture(canvas)
-  tex.colorSpace = THREE.SRGBColorSpace
-  if (repeat) {
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-    tex.repeat.set(repeat[0], repeat[1])
-  }
-  tex.anisotropy = 4
-  return tex
-}
 
 /** wood planks running along x; two palettes keep bedroom and living apart */
 const makePlankTexture = (base: string, seam: string, seed: number) =>
@@ -194,15 +172,6 @@ const makeGrassTexture = () =>
       ctx.fillStyle = grad
       ctx.fillRect(0, 0, w, h)
     }
-  })
-
-export const makeGlowTexture = (inner: string, outer: string) =>
-  canvasTexture([128, 128], (ctx, w, h) => {
-    const g = ctx.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2)
-    g.addColorStop(0, inner)
-    g.addColorStop(1, outer)
-    ctx.fillStyle = g
-    ctx.fillRect(0, 0, w, h)
   })
 
 const makeTuftTexture = () =>
@@ -1388,26 +1357,3 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   }
 }
 
-/** minimal two-geometry merge (positions/normals/uvs), avoids the utils dep */
-export function mergeGeoms(a: THREE.BufferGeometry, b: THREE.BufferGeometry) {
-  const out = new THREE.BufferGeometry()
-  const attrs: Array<'position' | 'normal' | 'uv'> = ['position', 'normal', 'uv']
-  for (const name of attrs) {
-    const aa = a.getAttribute(name)
-    const ba = b.getAttribute(name)
-    const merged = new Float32Array(aa.array.length + ba.array.length)
-    merged.set(aa.array as Float32Array, 0)
-    merged.set(ba.array as Float32Array, aa.array.length)
-    out.setAttribute(name, new THREE.BufferAttribute(merged, aa.itemSize))
-  }
-  const ai = a.getIndex()
-  const bi = b.getIndex()
-  if (ai && bi) {
-    const offset = a.getAttribute('position').count
-    const idx = new Uint16Array(ai.count + bi.count)
-    idx.set(ai.array as unknown as Uint16Array, 0)
-    for (let i = 0; i < bi.count; i++) idx[ai.count + i] = (bi.array[i] as number) + offset
-    out.setIndex(new THREE.BufferAttribute(idx, 1))
-  }
-  return out
-}

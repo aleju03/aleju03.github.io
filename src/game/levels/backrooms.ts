@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
-import { canvasTexture, seeded, HOUSE, NOCLIP } from './houseWorld'
+import { HOUSE, NOCLIP } from './houseWorld'
+import { seeded } from '../core/rand'
+import { canvasTexture } from '../core/textures'
 
 /*
   The backrooms. A span of the living room's east wall renders like wall but

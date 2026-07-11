@@ -2,15 +2,21 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import * as THREE from 'three'
-import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
-import { buildHouse, CEIL_H, HOUSE } from './houseWorld'
-import { buildOutsideWorld, WORLD } from './outsideWorld'
-import { buildPaperPlane } from './paperPlane'
-import type { HouseModels } from './houseWorld'
-import { buildPlayerBody } from './playerBody'
-import { buildBackrooms, BR } from './backrooms'
+import { buildHouse, CEIL_H, HOUSE } from '../../game/levels/houseWorld'
+import { buildOutsideWorld } from '../../game/levels/outsideWorld'
+import { buildBackrooms } from '../../game/levels/backrooms'
+import { buildDeskRoom } from '../../game/levels/deskRoom'
+import { makeHomeLevels } from '../../game/levels/homeLevels'
+import { createLevelSystem } from '../../game/levels/levelSystem'
+import type { LevelLightRig } from '../../game/levels/types'
+import { buildPaperPlane } from '../../game/props/paperPlane'
+import type { HouseModels } from '../../game/levels/houseWorld'
+import { buildPlayerBody } from '../../game/player/playerBody'
+import { createWalkController } from '../../game/player/walkController'
+import { createRoamInput } from '../../game/core/input'
+import { createDisposer } from '../../game/core/disposer'
 import { OS_SCENE_READY_EVENT } from '../../events'
 
 /*
@@ -21,10 +27,16 @@ import { OS_SCENE_READY_EVENT } from '../../events'
   the WebGL canvas to the DOM behind it (the Henry Heffernan / ryOS-style
   trick). The camera pushes in on power-on, pulls back on shutdown, and while
   you use the OS nothing 3D renders at all: the loop is suspended and the
-  screen is plain DOM. The desk lives in a small enclosed room: in roam mode
-  you stand up from the chair and walk it first-person, WASD to move, mouse
-  to look (pointer lock on click, drag works too), and an interact prompt at
-  the machine sits you back down, booting it first if the tube is cold.
+  screen is plain DOM.
+
+  This component is the presentation shell over the game runtime in
+  src/game/: it owns the renderer, the screen glass, the camera cinematics
+  (intro flight, outro, stand-up, sit-down), the desk-room light rig and
+  the HUD. The simulation is delegated — input events to game/core/input,
+  FPS movement and collision to game/player/walkController +
+  game/physics/collision, and which world is live (house/yard vs the
+  backrooms, including the noclip cut between them) to game/levels. The
+  walkTick below is just the per-frame conductor calling each in order.
 
   Models are CC assets, see public/os/models/LICENSE.md (computer by Charlie
   CC BY 3.0, desk/mug/plant by Quaternius and Kenney CC0). If WebGL or the
@@ -195,8 +207,7 @@ export default function CrtScene({
     let webgl: THREE.WebGLRenderer | null = null
     let scene: THREE.Scene | null = null
     let cleanupDom: (() => void) | null = null
-    const runtimeDisposables: Array<{ dispose: () => void }> = []
-    const runtimeTextures: THREE.Texture[] = []
+    const disposer = createDisposer()
 
     const bail = setTimeout(() => {
       if (!webgl) failRef.current()
@@ -263,6 +274,12 @@ export default function CrtScene({
         // without murdering the living room seen from the bedroom door
         scene.fog = new THREE.Fog('#0a0908', 14, 75)
 
+        // high-level mode flags, shared by the cinematics and the walk loop
+        let roaming = false
+        let fps = false // controls live, i.e. the stand-up glide has finished
+        let parked = false
+        let leaving = false
+
         // the pendant lamp the room light actually comes from; its bulb
         // material glows once the roam fill ramps in
         lamp.scene.scale.setScalar(1.6)
@@ -283,80 +300,18 @@ export default function CrtScene({
         })
         scene.add(lamp.scene)
 
-        desk.scene.scale.setScalar(2.0)
-        desk.scene.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) {
-            o.castShadow = true
-            o.receiveShadow = true
-          }
-        })
-        scene.add(desk.scene)
-        const deskTop = new THREE.Box3().setFromObject(desk.scene).max.y
-        // solids that should block the first-person walk register an AABB here
+        // solids that should block the first-person walk register an AABB
+        // here; the overworld level claims this list as its collision set
         const obstacles: THREE.Box3[] = []
-        const addObstacleFrom = (obj: THREE.Object3D, pad = 0.2) => {
-          obj.updateMatrixWorld(true)
-          obstacles.push(new THREE.Box3().setFromObject(obj).expandByScalar(pad))
-        }
-        const makeBox = (
-          w: number,
-          h: number,
-          d: number,
-          material: THREE.Material,
-          castShadow = true,
-        ) => {
-          const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material)
-          mesh.castShadow = castShadow
-          mesh.receiveShadow = true
-          return mesh
-        }
-        const makeRounded = (
-          w: number,
-          h: number,
-          d: number,
-          radius: number,
-          material: THREE.Material,
-          castShadow = true,
-        ) => {
-          const mesh = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 3, radius), material)
-          mesh.castShadow = castShadow
-          mesh.receiveShadow = true
-          return mesh
-        }
-        const darkWoodMat = new THREE.MeshStandardMaterial({ color: '#332417', roughness: 0.84 })
-        const warmWoodMat = new THREE.MeshStandardMaterial({ color: '#6a4a2f', roughness: 0.78 })
-        const paperMat = new THREE.MeshStandardMaterial({ color: '#d8c7a7', roughness: 0.86 })
-        const blackPlasticMat = new THREE.MeshStandardMaterial({
-          color: '#17191b',
-          roughness: 0.64,
-          metalness: 0.05,
-        })
-        const keycapMat = new THREE.MeshStandardMaterial({ color: '#d9d4c9', roughness: 0.58 })
-        const darkKeyMat = new THREE.MeshStandardMaterial({ color: '#3a3d40', roughness: 0.62 })
-        const accentKeyMat = new THREE.MeshStandardMaterial({ color: '#9d5542', roughness: 0.66 })
-        const rugMat = new THREE.MeshStandardMaterial({ color: '#56382e', roughness: 0.92 })
-        const rugTrimMat = new THREE.MeshStandardMaterial({ color: '#b18b5b', roughness: 0.9 })
-        const glassBlueMat = new THREE.MeshStandardMaterial({
-          color: '#203654',
-          roughness: 0.28,
-          metalness: 0,
-          emissive: new THREE.Color('#152944'),
-          emissiveIntensity: 0.08,
-        })
-        const windowGlassMat = new THREE.MeshStandardMaterial({
-          color: '#8fb4d8',
-          roughness: 0.16,
-          metalness: 0,
-          emissive: new THREE.Color('#28415e'),
-          emissiveIntensity: 0.18,
-          transparent: true,
-          opacity: 0.34,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        })
-        const bookMats = ['#b75b4e', '#4e6f8f', '#d0a64f', '#59784f', '#6c537b'].map(
-          (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.78 }),
-        )
+
+        // the desk and everything dressed around it (rug, shelf, cork board,
+        // code-built keyboard); also the shared materials the house reuses.
+        // Its solids go in a side list appended after the walls: resolveXZ
+        // is a single sequential pass where the last overlapping box wins,
+        // and the desk strip overlaps the bedroom wall boxes
+        const deskObstacles: THREE.Box3[] = []
+        const deskRoom = buildDeskRoom({ scene, obstacles: deskObstacles, desk, mug, plant })
+        const { deskTop, darkWoodMat, windowGlassMat } = deskRoom
 
         // the whole house around this room — walls, doors, windows, yard,
         // sky — is procedural and stands immediately; furniture streams in
@@ -366,8 +321,8 @@ export default function CrtScene({
           darkWoodMat,
           windowGlassMat,
           lamp,
-          trackTexture: (t) => runtimeTextures.push(t),
-          trackDisposable: (d) => runtimeDisposables.push(d),
+          trackTexture: disposer.texture,
+          trackDisposable: disposer.add,
         })
         // ...and past the fence: sky, sun and moon on the day cycle, the
         // street, the neighbors, the city rings. update() runs per rendered
@@ -375,17 +330,18 @@ export default function CrtScene({
         const outside = buildOutsideWorld({
           scene,
           obstacles,
-          trackTexture: (t) => runtimeTextures.push(t),
-          trackDisposable: (d) => runtimeDisposables.push(d),
+          trackTexture: disposer.texture,
+          trackDisposable: disposer.add,
         })
         // ...and the easter egg far beneath both: level 0 waits behind a
         // doctored span of the living room's east wall (houseWorld cuts the
         // hole; backrooms.ts owns the level, the hum and the way back)
         const backrooms = buildBackrooms({
           scene,
-          trackTexture: (t) => runtimeTextures.push(t),
-          trackDisposable: (d) => runtimeDisposables.push(d),
+          trackTexture: disposer.texture,
+          trackDisposable: disposer.add,
         })
+        obstacles.push(...deskObstacles)
 
         computer.scene.scale.setScalar(16)
         computer.scene.position.set(0, deskTop, 0.05)
@@ -411,112 +367,9 @@ export default function CrtScene({
         if (!screenGlass) throw new Error('screen mesh missing')
         const glass: THREE.Mesh = screenGlass
 
-        // the keyboard and mouse baked into the computer model are featureless
-        // slabs; swap each for a proper standalone model on the same footprint
-        const swapIn = (group: THREE.Group, old: THREE.Mesh | null, rotY: number, grow: number) => {
-          if (!old || !scene) return
-          const oldBox = new THREE.Box3().setFromObject(old)
-          const oldSize = oldBox.getSize(new THREE.Vector3())
-          old.visible = false
-          const size = new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3())
-          group.scale.setScalar(
-            (grow * Math.max(oldSize.x, oldSize.z)) / Math.max(size.x, size.z),
-          )
-          group.rotation.y = rotY
-          group.updateMatrixWorld(true)
-          const box = new THREE.Box3().setFromObject(group)
-          const c = oldBox.getCenter(new THREE.Vector3())
-          const nc = box.getCenter(new THREE.Vector3())
-          group.position.set(c.x - nc.x, deskTop - box.min.y, c.z - nc.z)
-          group.traverse((o) => {
-            if ((o as THREE.Mesh).isMesh) o.castShadow = true
-          })
-          scene.add(group)
-        }
-        const buildKeyboard = (old: THREE.Mesh | null) => {
-          if (!old || !scene) return
-          const oldBox = new THREE.Box3().setFromObject(old)
-          const oldSize = oldBox.getSize(new THREE.Vector3())
-          const oldCenter = oldBox.getCenter(new THREE.Vector3())
-          old.visible = false
-
-          const width = oldSize.x * 1.12
-          const depth = oldSize.z * 1.16
-          const baseH = Math.max(0.07, Math.min(0.14, oldSize.y * 0.55))
-          const keyH = baseH * 0.48
-          const group = new THREE.Group()
-          const base = makeRounded(width, baseH, depth, baseH * 0.45, blackPlasticMat)
-          base.position.y = baseH / 2
-          group.add(base)
-
-          const padX = width * 0.08
-          const padZ = depth * 0.15
-          const stepX = (width - padX * 2) / 14
-          const stepZ = (depth - padZ * 2) / 5
-          const keyW = stepX * 0.78
-          const keyD = stepZ * 0.64
-          const rows = [
-            { count: 14, shift: 0 },
-            { count: 14, shift: 0.08 },
-            { count: 13, shift: 0.22 },
-            { count: 12, shift: 0.38 },
-          ]
-          const standardKeys: Array<[number, number, number]> = []
-          rows.forEach((row, rowIndex) => {
-            const startX = -((row.count - 1) * stepX) / 2 + row.shift * stepX
-            const z = -depth / 2 + padZ + stepZ * (rowIndex + 0.5)
-            for (let i = 0; i < row.count; i++) {
-              standardKeys.push([startX + i * stepX, baseH + keyH / 2, z])
-            }
-          })
-          const capGeo = new RoundedBoxGeometry(keyW, keyH, keyD, 3, Math.min(keyW, keyD) * 0.18)
-          const capMesh = new THREE.InstancedMesh(capGeo, keycapMat, standardKeys.length)
-          const capMatrix = new THREE.Matrix4()
-          standardKeys.forEach(([x, y, z], i) => {
-            capMatrix.makeTranslation(x, y, z)
-            capMesh.setMatrixAt(i, capMatrix)
-          })
-          capMesh.instanceMatrix.needsUpdate = true
-          capMesh.receiveShadow = true
-          group.add(capMesh)
-
-          const addKey = (
-            x: number,
-            z: number,
-            w: number,
-            material: THREE.Material,
-            d = keyD,
-          ) => {
-            const key = makeRounded(w, keyH, d, Math.min(w, d) * 0.16, material, false)
-            key.position.set(x, baseH + keyH / 2, z)
-            group.add(key)
-          }
-          const bottomZ = -depth / 2 + padZ + stepZ * 4.45
-          addKey(-width * 0.39, bottomZ, keyW * 1.25, darkKeyMat)
-          addKey(-width * 0.27, bottomZ, keyW * 1.1, darkKeyMat)
-          addKey(-width * 0.04, bottomZ, keyW * 4.1, keycapMat)
-          addKey(width * 0.24, bottomZ, keyW * 1.2, darkKeyMat)
-          addKey(width * 0.36, bottomZ, keyW * 1.2, darkKeyMat)
-          addKey(-width * 0.45, -depth / 2 + padZ + stepZ * 0.5, keyW, accentKeyMat)
-
-          const ledGeo = new THREE.SphereGeometry(Math.max(0.018, keyW * 0.1), 10, 6)
-          ;[
-            [-width * 0.39, -depth * 0.41],
-            [-width * 0.34, -depth * 0.41],
-          ].forEach(([x, z]) => {
-            const led = new THREE.Mesh(ledGeo, glassBlueMat)
-            led.position.set(x, baseH + keyH * 1.15, z)
-            group.add(led)
-          })
-
-          group.position.set(oldCenter.x, deskTop + 0.008, oldCenter.z)
-          group.updateMatrixWorld(true)
-          scene.add(group)
-        }
-        buildKeyboard(oldKeyboard)
-        // The standalone mouse's button end is +Z; on the desk it should face
-        // the monitor, which sits behind the keyboard on -Z.
-        swapIn(mouse.scene, oldMouse, Math.PI, 1.0)
+        // the keyboard and mouse baked into the computer model are
+        // featureless slabs; the desk room seats proper ones in their place
+        deskRoom.swapPeripherals(oldKeyboard, oldMouse, mouse)
 
         // the punch-through: NoBlending writes a near-zero alpha straight into
         // the canvas, opening a tinted window onto the CSS3D layer behind
@@ -563,40 +416,6 @@ export default function CrtScene({
         cssObj.matrixAutoUpdate = false // the glass never moves, only the camera
         setScreenEl(el)
 
-        mug.scene.scale.setScalar(0.85)
-        mug.scene.position.set(-1.25, deskTop, 0.45)
-        mug.scene.rotation.y = 2.4
-        mug.scene.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) o.castShadow = true
-        })
-        scene.add(mug.scene)
-        plant.scene.scale.setScalar(0.5)
-        plant.scene.position.set(1.05, deskTop, 0.62)
-        plant.scene.rotation.y = -0.6
-        plant.scene.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) o.castShadow = true
-        })
-        scene.add(plant.scene)
-
-        const rug = new THREE.Group()
-        const rugBase = new THREE.Mesh(new THREE.PlaneGeometry(4.9, 3.25), rugMat)
-        rugBase.rotation.x = -Math.PI / 2
-        rugBase.position.set(0.25, 0.012, 4.55)
-        rugBase.receiveShadow = true
-        rug.add(rugBase)
-        const rugTrim = [
-          [4.9, 0.025, 0.07, 0.25, 0.024, 2.95],
-          [4.9, 0.025, 0.07, 0.25, 0.024, 6.15],
-          [0.07, 0.025, 3.25, -2.2, 0.024, 4.55],
-          [0.07, 0.025, 3.25, 2.7, 0.024, 4.55],
-        ] as const
-        rugTrim.forEach(([w, h, d, x, y, z]) => {
-          const trim = makeBox(w, h, d, rugTrimMat, false)
-          trim.position.set(x, y, z)
-          rug.add(trim)
-        })
-        scene.add(rug)
-
         // if this boot was the wreck swallowing the hero's paper plane, the
         // dart made the trip too: it lies landed on the rug behind the
         // chair, nose pointed into the room like it glided out of the screen
@@ -607,13 +426,7 @@ export default function CrtScene({
           scene.add(dart)
         }
 
-        // (the desk chair, the bedroom window and everything past that wall
-        // are the house module's business now — the chair itself arrives as
-        // a real model with the streamed furniture)
-
-        const moonSpillTexture = makeMoonSpillTexture()
-        runtimeDisposables.push(moonSpillTexture)
-        runtimeTextures.push(moonSpillTexture)
+        const moonSpillTexture = disposer.texture(makeMoonSpillTexture())
         const moonSpillMat = new THREE.MeshBasicMaterial({
           map: moonSpillTexture,
           transparent: true,
@@ -635,140 +448,6 @@ export default function CrtScene({
         windowSpill.position.set(HOUSE.minX + 0.06, WINDOW_CENTER_Y + 0.08, WINDOW_CENTER_Z + 0.05)
         windowSpill.target.position.set(HOUSE.minX + 4.6, 0.55, WINDOW_CENTER_Z - 0.22)
         scene.add(windowSpill, windowSpill.target)
-
-        const shelf = new THREE.Group()
-        const shelfHeights = [0.38, 0.88, 1.38, 1.88]
-        const shelfParts = [
-          makeBox(0.42, 2.35, 0.08, darkWoodMat),
-          makeBox(0.42, 2.35, 0.08, darkWoodMat),
-          makeBox(0.06, 2.35, 2.82, darkWoodMat),
-        ]
-        shelfParts[0].position.set(0, 1.18, -1.4)
-        shelfParts[1].position.set(0, 1.18, 1.4)
-        shelfParts[2].position.set(0.24, 1.18, 0)
-        shelfParts.forEach((part) => shelf.add(part))
-        shelfHeights.forEach((y) => {
-          const board = makeBox(0.48, 0.08, 2.9, warmWoodMat)
-          board.position.set(0, y, 0)
-          shelf.add(board)
-        })
-        shelfHeights.slice(0, -1).forEach((y, row) => {
-          for (let i = 0; i < 12; i++) {
-            const bookH = 0.28 + ((i + row) % 5) * 0.035
-            const book = makeBox(0.22, bookH, 0.055, bookMats[(i + row) % bookMats.length], false)
-            book.position.set(-0.03, y + 0.06 + bookH / 2, -1.16 + i * 0.18)
-            book.rotation.x = ((i % 3) - 1) * 0.035
-            shelf.add(book)
-          }
-        })
-        shelf.position.set(HOUSE.maxX - 0.38, 0, 6.45)
-        scene.add(shelf)
-        addObstacleFrom(shelf, 0.2)
-
-        const cork = new THREE.Group()
-        const corkMat = new THREE.MeshStandardMaterial({ color: '#6a432c', roughness: 0.92 })
-        const pinMat = new THREE.MeshStandardMaterial({
-          color: '#d3a34f',
-          roughness: 0.38,
-          metalness: 0.25,
-        })
-        const board = makeBox(2.5, 1.48, 0.04, corkMat, false)
-        cork.add(board)
-        ;[
-          [2.66, 0.09, 0.08, 0, 0.78, 0.04],
-          [2.66, 0.09, 0.08, 0, -0.78, 0.04],
-          [0.09, 1.56, 0.08, -1.33, 0, 0.04],
-          [0.09, 1.56, 0.08, 1.33, 0, 0.04],
-        ].forEach(([w, h, d, x, y, z]) => {
-          const rail = makeBox(w, h, d, darkWoodMat, false)
-          rail.position.set(x, y, z)
-          cork.add(rail)
-        })
-        const pinGeo = new THREE.SphereGeometry(0.035, 12, 8)
-        const pinPoints: THREE.Vector3[] = []
-        const notes: Array<{
-          x: number
-          y: number
-          w: number
-          h: number
-          rot: number
-          material: THREE.Material
-        }> = [
-          { x: -0.62, y: 0.3, w: 0.48, h: 0.36, rot: -0.06, material: paperMat },
-          { x: 0.16, y: 0.34, w: 0.38, h: 0.5, rot: 0.035, material: bookMats[2] },
-          { x: 0.72, y: -0.08, w: 0.5, h: 0.35, rot: -0.025, material: paperMat },
-          { x: -0.12, y: -0.3, w: 0.6, h: 0.28, rot: 0.02, material: bookMats[1] },
-        ]
-        notes.forEach((noteDef) => {
-          const note = makeBox(noteDef.w, noteDef.h, 0.03, noteDef.material, false)
-          note.position.set(noteDef.x, noteDef.y, 0.06)
-          note.rotation.z = noteDef.rot
-          cork.add(note)
-          const pin = new THREE.Mesh(pinGeo, pinMat)
-          pin.position.set(noteDef.x - noteDef.w * 0.34, noteDef.y + noteDef.h * 0.34, 0.095)
-          pin.castShadow = false
-          pin.receiveShadow = true
-          pinPoints.push(pin.position.clone())
-          cork.add(pin)
-        })
-        const stringMat = new THREE.MeshStandardMaterial({ color: '#c28f5a', roughness: 0.72 })
-        const addString = (a: THREE.Vector3, b: THREE.Vector3) => {
-          const mid = a.clone().lerp(b, 0.5)
-          mid.y -= 0.05
-          const string = new THREE.Mesh(
-            new THREE.TubeGeometry(new THREE.CatmullRomCurve3([a, mid, b]), 8, 0.006, 4, false),
-            stringMat,
-          )
-          string.castShadow = false
-          cork.add(string)
-        }
-        addString(pinPoints[0], pinPoints[1])
-        addString(pinPoints[1], pinPoints[3])
-        // scooted toward the door: the bed's wall real estate is spoken for
-        cork.position.set(0.2, 3.15, 10.5 - 0.045)
-        cork.rotation.y = Math.PI
-        scene.add(cork)
-
-        const lowTable = new THREE.Group()
-        const tableTop = makeBox(1.15, 0.12, 0.72, warmWoodMat)
-        tableTop.position.y = 0.58
-        lowTable.add(tableTop)
-        ;[
-          [-0.46, 0.28],
-          [0.46, 0.28],
-          [-0.46, -0.28],
-          [0.46, -0.28],
-        ].forEach(([x, z]) => {
-          const leg = makeBox(0.08, 0.58, 0.08, darkWoodMat)
-          leg.position.set(x, 0.29, z)
-          lowTable.add(leg)
-        })
-        const stackA = makeBox(0.44, 0.055, 0.32, paperMat, false)
-        stackA.position.set(-0.18, 0.68, -0.05)
-        lowTable.add(stackA)
-        const stackB = makeBox(0.39, 0.05, 0.28, bookMats[0], false)
-        stackB.position.set(-0.16, 0.735, -0.03)
-        lowTable.add(stackB)
-        lowTable.position.set(HOUSE.minX + 1.05, 0, 3.2)
-        lowTable.rotation.y = 0.15
-        scene.add(lowTable)
-        addObstacleFrom(lowTable, 0.18)
-
-        const deskStack = new THREE.Group()
-        let stackY = 0.012
-        ;[
-          [0.55, 0.055, 0.38, paperMat],
-          [0.5, 0.05, 0.34, bookMats[3]],
-          [0.45, 0.045, 0.32, bookMats[4]],
-        ].forEach(([w, h, d, material]) => {
-          const item = makeBox(w as number, h as number, d as number, material as THREE.Material, false)
-          item.position.y = stackY + (h as number) / 2
-          stackY += h as number
-          deskStack.add(item)
-        })
-        deskStack.position.set(-1.55, deskTop, -0.42)
-        deskStack.rotation.y = -0.18
-        scene.add(deskStack)
 
         // seated, the desk spot is the whole show; walking wakes a real light
         // rig instead of the old flat hemisphere flood: a shadow-casting
@@ -828,10 +507,10 @@ export default function CrtScene({
         // render, so no single frame carries every map — the all-at-once
         // bake was the warp ride's one visible hitch, worst on cold iGPUs
         // where the shadow-depth programs also link inside that frame
-        const bakeShadowsStaggered = async (bail: () => boolean) => {
+        const bakeShadowsStaggered = async (bailOut: () => boolean) => {
           const lights = [pendant, key, ...house.shadowLights]
           for (let i = 0; i < lights.length; i += 1) {
-            if (bail()) {
+            if (bailOut()) {
               // interrupted: flag the rest in one go — whoever took over
               // (walk, outro) renders every frame and pays it on the next
               for (; i < lights.length; i += 1) lights[i].shadow.needsUpdate = true
@@ -871,30 +550,141 @@ export default function CrtScene({
         // pile in parallel: the old synchronous compile() blocked the main
         // thread for its whole duration, which froze the warp tunnel's canvas
         // mid-ride. The intro flight lifts off once this resolves (below).
-        runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
+        disposer.textures.forEach((texture) => webgl?.initTexture(texture))
         const firstCompile = webgl.compileAsync(scene, camera).catch(() => {})
 
         // start the furniture and yard downloads now; the attach itself waits
         // (at the bottom of this block) for a quiet moment in the intro
         const housePromise = Promise.all(
-          HOUSE_MODEL_KEYS.map((key) =>
-            load(`/os/models/${key}.glb`).then(
-              (gltf) => [key, gltf] as const,
+          HOUSE_MODEL_KEYS.map((k) =>
+            load(`/os/models/${k}.glb`).then(
+              (gltf) => [k, gltf] as const,
               () => null,
             ),
           ),
         )
 
+        // --- the game runtime: walker, input, levels ------------------------
+        const EYE = deskTop + 2.0 // standing eye height over this desk's scale
+        const SPAWN = new THREE.Vector3(1.15, EYE, 2.55)
+        // the seated framing math (camEndFor, tanHalf) is baked around this;
+        // the walk uses the adjustable prefs fov and flyIn eases back here
+        const FOV = 38
+        const walk = createWalkController(camera, {
+          eye: EYE,
+          speed: 3.4,
+          runSpeed: 5.9,
+          crouchSpeed: 1.7,
+          crouchDrop: 0.85, // how far the eye sinks at full crouch
+          // space hops: heavy-ish gravity so it stays a hop, not a moon walk
+          jumpV: 10.4,
+          grav: 34,
+        })
+
+        // the first-person body: a little robot built in code (playerBody.ts)
+        // trailing the camera, so looking down shows your own stubby legs
+        const rig = buildPlayerBody(EYE)
+        const body = rig.group
+        body.visible = false
+        scene.add(body)
+        const BODY_BACK = 0.38 // eye sits ahead of the spine; keeps the chest out of frame
+        const poseBody = () => {
+          body.position.set(
+            camera.position.x + Math.sin(walk.yaw) * BODY_BACK,
+            levels.current.groundY + walk.airY,
+            camera.position.z + Math.cos(walk.yaw) * BODY_BACK,
+          )
+          body.rotation.y = walk.yaw + Math.PI
+        }
+
+        // prompt bookkeeping mirrored into React state only on change
+        let nearNow = false
+        let doorVerbNow: 'open' | 'close' | null = null
+        let pausedNow = false
+        const gazeVec = new THREE.Vector3()
+        const toScreen = new THREE.Vector3()
+
+        const setPauseNow = (on: boolean) => {
+          if (pausedNow === on) return
+          pausedNow = on
+          if (on) input.clearKeys() // nothing stays latched under the menu
+          setPaused(on)
+        }
+
+        const input = createRoamInput({
+          dom: webgl.domElement,
+          isActive: () => roaming,
+          isLive: () => fps,
+          isPaused: () => pausedNow,
+          onTurn: (dx, dy, sign) => walk.turn(dx, dy, sign, prefsRef.current.sens),
+          // E: the machine's prompt wins over a door's
+          onUse: () => {
+            if (nearNow) {
+              interactRef.current()
+              return true
+            }
+            if (doorVerbNow) {
+              camera.getWorldDirection(gazeVec)
+              house.useDoor(camera.position, gazeVec)
+              return true
+            }
+            return false
+          },
+          onEscResume: () => {
+            setPauseNow(false)
+            input.tryLock()
+          },
+          onLock: (isLocked) => {
+            setLocked(isLocked)
+            // losing the lock mid-walk is esc: pause. (sitting down drops the
+            // lock too, but stopRoam clears `roaming` before that lands here)
+            if (isLocked) setPauseNow(false)
+            else if (roaming && fps) setPauseNow(true)
+          },
+        })
+
+        // the two levels and the noclip cut between them; the scene's share
+        // of a swap is the blackout card and the shadow-map hygiene
+        const levels = createLevelSystem({
+          levels: makeHomeLevels(house, backrooms, obstacles),
+          home: 'overworld',
+          onCover: (on) => {
+            blackout.style.transition = on ? 'opacity 130ms' : 'opacity 650ms'
+            blackout.style.opacity = on ? '1' : '0'
+          },
+          onCutStart: () => {
+            walk.haltPlanar()
+            backrooms.noclipSound()
+          },
+          onSwapped: (level, spawn) => {
+            walk.resetMotion()
+            walk.spawnAt(spawn.x, spawn.z, spawn.yaw, level.groundY)
+            if (level.id === 'overworld') house.flagShadows(camera.position)
+            // either side of the cut, the body's old shadow may still be
+            // baked into the desk-area maps: re-render them without it
+            pendant.shadow.needsUpdate = true
+            key.shadow.needsUpdate = true
+          },
+        })
+
         // compose the roam ramp with the day cycle: every rendered frame
         // re-reads the clock, so dawn keeps breaking mid-walk (and while
-        // parked nothing renders, so nothing is spent)
-        // whether the walk is currently down in the backrooms; flipped by
-        // the noclip state machine inside walkTick
-        let inBackrooms = false
+        // parked nothing renders, so nothing is spent). The current level
+        // gets the last word (the backrooms kill the sky entirely).
         const spillNight = new THREE.Color('#9dbfff')
         const spillDay = new THREE.Color('#ffe9c4')
         const sceneFog = scene.fog as THREE.Fog
         const sceneBg = scene.background as THREE.Color
+        const lightRig: LevelLightRig = {
+          hemi,
+          moon,
+          windowSpill,
+          setMoonPool: (o) => {
+            moonSpillMat.opacity = o
+          },
+          fog: sceneFog,
+          bg: sceneBg,
+        }
         const applyLight = () => {
           const sky = outside.update(camera.position)
           const k = roamK
@@ -905,8 +695,7 @@ export default function CrtScene({
           pendant.intensity = PEND_ROAM * k
           // the cool window lean-in is moonlight; it sets with the moon
           moon.intensity = MOON_ROAM * k * sky.moonUp * sky.night
-          windowSpill.intensity =
-            WINDOW_SPILL_ROAM * (0.25 + k * 0.75) * (1 - 0.55 * sky.day)
+          windowSpill.intensity = WINDOW_SPILL_ROAM * (0.25 + k * 0.75) * (1 - 0.55 * sky.day)
           windowSpill.color.lerpColors(spillNight, spillDay, sky.day)
           moonSpillMat.opacity = 0.13 * (0.45 + k * 0.7) * sky.moonUp * sky.night
           if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
@@ -916,18 +705,7 @@ export default function CrtScene({
           sceneFog.near = sky.fogNear
           sceneFog.far = sky.fogFar
           sceneBg.copy(sky.fogColor)
-          if (inBackrooms) {
-            // level 0 brings its own light rig (inside its root); kill the
-            // sky, moon and window spills, pin the fog close and sour
-            hemi.intensity = 0
-            moon.intensity = 0
-            windowSpill.intensity = 0
-            moonSpillMat.opacity = 0
-            sceneFog.color.set(BR.fog)
-            sceneFog.near = BR.fogNear
-            sceneFog.far = BR.fogFar
-            sceneBg.copy(sceneFog.color)
-          }
+          levels.current.overrideLight?.(lightRig)
         }
 
         const render = () => {
@@ -938,8 +716,6 @@ export default function CrtScene({
         }
 
         // intro: drift, then push into the glass; afterwards the loop stops
-        let parked = false
-        let leaving = false
         let announced = false
         let t0 = performance.now()
         const drifted = new THREE.Vector3()
@@ -999,49 +775,10 @@ export default function CrtScene({
           raf = requestAnimationFrame(outroTick)
         }
 
-        // --- roam: stand up from the desk and walk the room first-person ----
-        // WASD moves, the mouse looks (pointer lock on click, drag works too),
-        // and an interact prompt at the machine sits you back down
-        let roaming = false
-        let fps = false // controls live, i.e. the stand-up glide has finished
-        let nearNow = false
-        let doorVerbNow: 'open' | 'close' | null = null
-        let isLocked = false
-        let pausedNow = false
-        let yaw = 0
-        let pitch = 0
+        // --- roam: stand up from the desk and walk the world first-person ---
+        // the conductor: input and physics live in src/game, levels decide
+        // where you are; this loop just calls each in order and renders
         let lastT = 0
-        let bobT = 0
-        const keys = new Set<string>()
-        const vel = new THREE.Vector3()
-        const want = new THREE.Vector3()
-        const gaze = new THREE.Vector3()
-        const toScreen = new THREE.Vector3()
-        const EYE = deskTop + 2.0 // standing eye height over this desk's scale
-        const SPAWN = new THREE.Vector3(1.15, EYE, 2.55)
-        const SPEED = 3.4
-        const RUN_SPEED = 5.9
-        const CROUCH_SPEED = 1.7
-        const CROUCH_DROP = 0.85 // how far the eye sinks at full crouch
-        // space hops: heavy-ish gravity so it stays a hop, not a moon walk
-        // (apex ≈ v²/2g ≈ 1.6 units, about knee height on this world scale)
-        const JUMP_V = 10.4
-        const GRAV = 34
-        // the seated framing math (camEndFor, tanHalf) is baked around this;
-        // the walk uses the adjustable prefs fov and flyIn eases back here
-        const FOV = 38
-        let crouchK = 0 // 0 standing .. 1 crouched, smoothed
-        let jumpY = 0 // feet height over the ground while airborne
-        let vy = 0
-        let grounded = true
-        // the backrooms swap: feet elevation, and the noclip cut in flight
-        let groundY = 0
-        let noclip: {
-          t0: number
-          dir: 'in' | 'out'
-          swapped: boolean
-          fading: boolean
-        } | null = null
         // adaptive resolution: if the walk can't hold frame rate, step the
         // pixel ratio down (never back up mid-roam, so it can't oscillate);
         // each roam and each sit-down restores full crispness
@@ -1049,68 +786,6 @@ export default function CrtScene({
         let emaMs = 16
         let prWait = 1.5
 
-        // the first-person body: a little robot built in code (playerBody.ts)
-        // trailing the camera, so looking down shows your own stubby legs —
-        // head included this time, sized to ride under the lens instead of
-        // clipping it, so the shadow finally has one too
-        const rig = buildPlayerBody(EYE)
-        const body = rig.group
-        body.visible = false
-        scene.add(body)
-        const BODY_BACK = 0.38 // eye sits ahead of the spine; keeps the chest out of frame
-        // walkable area sits inside the shell with some shoulder room; every
-        // solid in the room registers an AABB here, and a hit pushes you out
-        // along whichever face is closest, so you slide naturally along edges
-        const deskBlock = new THREE.Box3().setFromObject(desk.scene).expandByScalar(0.35)
-        deskBlock.min.z = -10 // the desk strip runs all the way back to the wall
-        obstacles.push(deskBlock)
-        // which collision set is live flips with the world (see backrooms)
-        let activeObstacles = obstacles
-        const collide = (p: THREE.Vector3) => {
-          if (inBackrooms) {
-            // no edges down there; the cap is just floating-point hygiene
-            p.x = THREE.MathUtils.clamp(p.x, -2000, 2000)
-            p.z = THREE.MathUtils.clamp(p.z, -2000, 2000)
-          } else {
-            // hard bounds are the edge of the neighborhood now; the fences,
-            // walls and everything else in between are obstacle boxes
-            p.x = THREE.MathUtils.clamp(p.x, WORLD.minX + 0.55, WORLD.maxX - 0.55)
-            p.z = THREE.MathUtils.clamp(p.z, WORLD.minZ + 0.55, WORLD.maxZ - 0.55)
-          }
-          for (const b of activeObstacles) {
-            if (p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z) {
-              const exitL = p.x - b.min.x
-              const exitR = b.max.x - p.x
-              const exitN = p.z - b.min.z
-              const exitF = b.max.z - p.z
-              const m = Math.min(exitL, exitR, exitN, exitF)
-              if (m === exitL) p.x = b.min.x
-              else if (m === exitR) p.x = b.max.x
-              else if (m === exitN) p.z = b.min.z
-              else p.z = b.max.z
-            }
-          }
-        }
-
-        const setCursor = (c: string) => {
-          if (webgl) webgl.domElement.style.cursor = c
-        }
-        // grab the mouse like a game; if the browser refuses (no fresh
-        // gesture, or the post-esc cooldown), clicking the room still locks
-        const tryLock = () => {
-          try {
-            const got = webgl?.domElement.requestPointerLock() as unknown
-            ;(got as Promise<void> | undefined)?.catch?.(() => {})
-          } catch {
-            /* stay unlocked; clicking locks */
-          }
-        }
-        const setPauseNow = (on: boolean) => {
-          if (pausedNow === on) return
-          pausedNow = on
-          if (on) keys.clear() // nothing stays latched under the menu
-          setPaused(on)
-        }
         const lookAngles = (from: THREE.Vector3, target: THREE.Vector3) => {
           const dir = target.clone().sub(from).normalize()
           return {
@@ -1133,151 +808,29 @@ export default function CrtScene({
             webgl?.setPixelRatio(pr)
             prWait = 1.2
           }
-          // mid-noclip: the black card is up (or on its way), movement is
-          // frozen, and at the cut point the world swaps underneath it
-          if (noclip) {
-            const t = now - noclip.t0
-            if (!noclip.swapped && t >= 220) {
-              noclip.swapped = true
-              vel.set(0, 0, 0)
-              jumpY = 0
-              vy = 0
-              grounded = true
-              crouchK = 0
-              bobT = 0
-              if (noclip.dir === 'in') {
-                inBackrooms = true
-                groundY = BR.y
-                activeObstacles = backrooms.obstacles
-                backrooms.enter()
-                camera.position.set(BR.spawn.x, BR.y + EYE, BR.spawn.z)
-                yaw = BR.spawn.yaw
-                pitch = 0
-              } else {
-                inBackrooms = false
-                groundY = 0
-                activeObstacles = obstacles
-                backrooms.leave()
-                camera.position.set(backrooms.exitSpot.x, EYE, backrooms.exitSpot.z)
-                yaw = backrooms.exitSpot.yaw
-                pitch = 0
-                house.flagShadows(camera.position)
-              }
-              // either side of the cut, the body's old shadow may still be
-              // baked into the desk-area maps: re-render them without it
-              pendant.shadow.needsUpdate = true
-              key.shadow.needsUpdate = true
-            }
-            if (noclip.swapped && !noclip.fading && t >= 560) {
-              noclip.fading = true
-              blackout.style.transition = 'opacity 650ms'
-              blackout.style.opacity = '0'
-            }
-            if (t >= 1300) noclip = null
-          }
-          const frozen = noclip !== null
-          const fwd = frozen
-            ? 0
-            : (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
-              (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
-          const side = frozen
-            ? 0
-            : (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) -
-              (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0)
-          // shift sprints, ctrl (or c) crouches; crouching wins the argument
-          const duck =
-            keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')
-          const run = !duck && (keys.has('ShiftLeft') || keys.has('ShiftRight'))
-          const speed = duck ? CROUCH_SPEED : run ? RUN_SPEED : SPEED
-          crouchK += ((duck ? 1 : 0) - crouchK) * (1 - Math.exp(-11 * dt))
-          want.set(0, 0, 0)
-          if (fwd || side) {
-            want
-              .set(
-                -Math.sin(yaw) * fwd + Math.cos(yaw) * side,
-                0,
-                -Math.cos(yaw) * fwd - Math.sin(yaw) * side,
-              )
-              .normalize()
-              .multiplyScalar(speed)
-          }
-          // ease the velocity so steps start and stop with a little weight
-          vel.lerp(want, 1 - Math.exp(-10 * dt))
-          camera.position.addScaledVector(vel, dt)
-          collide(camera.position)
-          // the noclip seams: stepping into the doctored wall span (either
-          // side) freezes the walk and cuts to black; the state machine
-          // above swaps the worlds under the cover
-          if (fps && !noclip) {
-            const dir =
-              !inBackrooms && backrooms.overEntry(camera.position)
-                ? ('in' as const)
-                : inBackrooms && backrooms.overExit(camera.position)
-                  ? ('out' as const)
-                  : null
-            if (dir) {
-              noclip = { t0: now, dir, swapped: false, fading: false }
-              vel.set(0, 0, 0)
-              blackout.style.transition = 'opacity 130ms'
-              blackout.style.opacity = '1'
-              backrooms.noclipSound()
-            }
-          }
-          // space jumps; holding it bunny-hops off each landing
-          if (!frozen && keys.has('Space') && grounded && !duck) {
-            grounded = false
-            vy = JUMP_V
-          }
-          if (!grounded) {
-            vy -= GRAV * dt
-            jumpY = Math.max(0, jumpY + vy * dt)
-            if (jumpY === 0 && vy < 0) {
-              grounded = true
-              vy = 0
-            }
-          }
-          // a faint footstep bob, scaled by how fast you actually move;
-          // suspended in the air, where nobody is stepping on anything
-          const planar = Math.hypot(vel.x, vel.z)
-          if (grounded) bobT += planar * dt * 0.55
-          const gait = Math.min(1, planar / speed)
-          camera.position.y =
-            groundY +
-            EYE +
-            jumpY -
-            crouchK * CROUCH_DROP +
-            (grounded ? Math.sin(bobT * Math.PI * 2) * (run ? 0.038 : 0.028) * gait : 0)
-          camera.rotation.x = pitch
-          camera.rotation.y = yaw
-          camera.rotation.z = 0
-          // the walk fov is the player's setting; a sprint widens the lens a
-          // touch on top, and the projection only re-bakes when it moved
-          const fovWant =
-            prefsRef.current.fov +
-            5 * Math.max(0, Math.min(1, (planar - SPEED) / (RUN_SPEED - SPEED)))
-          if (Math.abs(camera.fov - fovWant) > 0.02) {
-            camera.fov += (fovWant - camera.fov) * (1 - Math.exp(-8 * dt))
-            camera.updateProjectionMatrix()
-          }
+          // seams and the noclip cut: stepping into the doctored wall span
+          // freezes the walk and cuts to black; the level system swaps the
+          // worlds under the cover (no seams during the stand-up glide)
+          levels.tick(now, camera.position, fps)
+          const level = levels.current
+          const step = walk.update({
+            dt,
+            keys: input.keys,
+            frozen: levels.frozen,
+            groundY: level.groundY,
+            collision: level.collision,
+            fovBase: prefsRef.current.fov,
+          })
           // the body plants its feet under the camera and faces the walk
-          // (or hangs from it, mid-hop)
-          body.position.set(
-            camera.position.x + Math.sin(yaw) * BODY_BACK,
-            groundY + jumpY,
-            camera.position.z + Math.cos(yaw) * BODY_BACK,
-          )
-          body.rotation.y = yaw + Math.PI
-          rig.update(dt, bobT, gait, crouchK) // legs scissor in step with the bob
-          // doors easing, fireflies drifting
-          house.update(dt)
-          // chunk streaming, flicker and hum below; the seam's whisper above
-          backrooms.update(dt, camera.position, inBackrooms)
+          // (or hangs from it, mid-hop); legs scissor in step with the bob
+          poseBody()
+          rig.update(dt, walk.bobT, step.gait, walk.crouchK)
+          // doors easing upstairs, chunks streaming below — whichever side
+          // the player is on, both worlds keep their pulse
+          level.update(dt, camera.position)
           // the player is the only moving shadow caster: re-bake just the
           // lights that can see them, only on frames where they moved
-          if (
-            !inBackrooms &&
-            (planar > 0.05 || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02)
-          ) {
+          if (level.id === 'overworld' && step.moved) {
             // generous regions: a map must keep re-baking until the player is
             // fully out of its light's frustum, or their shadow strands there
             if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
@@ -1287,15 +840,16 @@ export default function CrtScene({
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
-          camera.getWorldDirection(gaze)
-          const isNear = dist < 3.4 && gaze.dot(toScreen.normalize()) > 0.35
+          camera.getWorldDirection(gazeVec)
+          const isNear = dist < 3.4 && gazeVec.dot(toScreen.normalize()) > 0.35
           if (isNear !== nearNow) {
             nearNow = isNear
             setNear(isNear)
           }
           // a door in reach offers its own prompt; the machine's wins (and
           // level 0 has no doors, whatever its x/z coordinates suggest)
-          const verb = isNear || inBackrooms ? null : house.doorPrompt(camera.position, gaze)
+          const verb =
+            isNear || level.id !== 'overworld' ? null : house.doorPrompt(camera.position, gazeVec)
           if (verb !== doorVerbNow) {
             doorVerbNow = verb
             setDoorVerb(verb)
@@ -1311,7 +865,7 @@ export default function CrtScene({
           cancelAnimationFrame(raf)
           setIntro(false) // in case the intro flight was still going
           webgl.domElement.style.pointerEvents = 'auto'
-          setCursor('grab')
+          input.setCursor('grab')
           // with the OS still running the tube keeps spilling light
           spill.intensity = liveRef.current ? 1.0 : 0
           // fresh roam, fresh resolution budget
@@ -1334,16 +888,11 @@ export default function CrtScene({
             if (t >= 1) {
               // hand the camera to the FPS controls with the exact same yaw
               // and pitch used by the stand-up glide; no second-frame snap
-              yaw = aim.yaw
-              pitch = aim.pitch
+              walk.yaw = aim.yaw
+              walk.pitch = aim.pitch
               fps = true
               // the body materializes behind the lens, feet on the floor
-              body.position.set(
-                camera.position.x + Math.sin(yaw) * BODY_BACK,
-                0,
-                camera.position.z + Math.cos(yaw) * BODY_BACK,
-              )
-              body.rotation.y = yaw + Math.PI
+              poseBody()
               body.visible = true
               // the body just appeared: refresh only the maps that can see
               // it (same regions walkTick uses) — a full bakeShadows() here
@@ -1351,7 +900,7 @@ export default function CrtScene({
               if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
               if (camera.position.z < 7) key.shadow.needsUpdate = true
               house.flagShadows(camera.position)
-              tryLock()
+              input.tryLock()
               setWalking(true)
               lastT = performance.now()
               raf = requestAnimationFrame(walkTick)
@@ -1366,22 +915,14 @@ export default function CrtScene({
           roaming = false
           fps = false
           setPauseNow(false)
-          keys.clear()
-          vel.set(0, 0, 0)
-          crouchK = 0
-          jumpY = 0
-          vy = 0
-          grounded = true
-          if (inBackrooms) {
-            // sitting down (or leaving) always hauls you back through the
-            // seam first, so the chair never has to fly up from level 0
-            inBackrooms = false
-            groundY = 0
-            activeObstacles = obstacles
-            backrooms.leave()
-            camera.position.set(backrooms.exitSpot.x, EYE, backrooms.exitSpot.z)
+          input.clearKeys()
+          walk.resetMotion()
+          // sitting down (or leaving) always hauls you back through the
+          // seam first, so the chair never has to fly up from level 0
+          const homed = levels.reset()
+          if (homed) {
+            walk.spawnAt(homed.spawn.x, homed.spawn.z, walk.yaw, homed.groundY)
           }
-          noclip = null
           blackout.style.transition = ''
           blackout.style.opacity = '0'
           backrooms.sleep()
@@ -1400,10 +941,10 @@ export default function CrtScene({
           setWalking(false)
           setNear(false)
           setDoorVerb(null)
-          if (document.pointerLockElement) document.exitPointerLock()
+          input.releaseLock()
           if (webgl) {
             webgl.domElement.style.pointerEvents = 'none'
-            setCursor('')
+            input.setCursor('')
           }
         }
 
@@ -1459,123 +1000,16 @@ export default function CrtScene({
             flyIn(live)
           }
         }
-        // the door prompt button routes here (E does the same in onKeyDown)
+        // the door prompt button routes here (E does the same via input)
         doorRef.current = () => {
-          camera.getWorldDirection(gaze)
-          house.useDoor(camera.position, gaze)
+          camera.getWorldDirection(gazeVec)
+          house.useDoor(camera.position, gazeVec)
         }
-        // the pause menu's resume button (esc does the same in onKeyDown)
+        // the pause menu's resume button (esc does the same via input)
         resumeRef.current = () => {
           setPauseNow(false)
-          tryLock()
+          input.tryLock()
         }
-
-        // mouse-look: pointer lock steers directly, an unlocked drag grabs
-        // the world instead; a still click only (re)grabs the mouse — sitting
-        // down is always deliberate, via E or the prompt button
-        const MOVE_KEYS = new Set([
-          'KeyW',
-          'KeyA',
-          'KeyS',
-          'KeyD',
-          'ArrowUp',
-          'ArrowDown',
-          'ArrowLeft',
-          'ArrowRight',
-          'Space', // jump; preventDefault also keeps the page from scrolling
-        ])
-        // sprint and crouch modifiers; c is a crouch alias for anyone wary of
-        // the browser eating ctrl chords
-        const MOD_KEYS = new Set([
-          'ShiftLeft',
-          'ShiftRight',
-          'ControlLeft',
-          'ControlRight',
-          'KeyC',
-        ])
-        const turn = (dx: number, dy: number, sign: number) => {
-          const k = 0.0019 * prefsRef.current.sens
-          yaw += sign * dx * k
-          pitch = THREE.MathUtils.clamp(pitch + sign * dy * k, -1.35, 1.35)
-        }
-        const onKeyDown = (e: KeyboardEvent) => {
-          if (!roaming) return
-          if (e.code === 'Escape') {
-            // esc while locked never reaches the page (the browser spends it
-            // on the unlock, which raises the menu via onLockChange); esc
-            // with the menu up resumes — and must not bubble on to the OS
-            // shell, whose own esc handler would leave the room
-            if (pausedNow && fps) {
-              e.stopImmediatePropagation()
-              setPauseNow(false)
-              tryLock()
-            }
-            return
-          }
-          if (pausedNow) return // the world ignores the keyboard under the menu
-          // movement keys register during the stand-up glide too, so a held
-          // W starts the walk the very frame the controls go live
-          if (MOVE_KEYS.has(e.code)) {
-            keys.add(e.code)
-            e.preventDefault()
-          } else if (MOD_KEYS.has(e.code)) {
-            keys.add(e.code)
-          } else if (e.code === 'KeyE' && fps) {
-            if (nearNow) {
-              e.preventDefault()
-              interactRef.current()
-            } else if (doorVerbNow) {
-              e.preventDefault()
-              camera.getWorldDirection(gaze)
-              house.useDoor(camera.position, gaze)
-            }
-          }
-        }
-        const onKeyUp = (e: KeyboardEvent) => keys.delete(e.code)
-        // alt-tabbing away mid-stride must not leave a key latched down
-        const onBlur = () => keys.clear()
-        const onLockChange = () => {
-          isLocked = document.pointerLockElement === webgl?.domElement
-          setLocked(isLocked)
-          setCursor(isLocked ? 'none' : 'grab')
-          // losing the lock mid-walk is esc: pause. (sitting down drops the
-          // lock too, but stopRoam clears `roaming` before that lands here)
-          if (isLocked) setPauseNow(false)
-          else if (roaming && fps) setPauseNow(true)
-        }
-        let downPt: { moved: number } | null = null
-        const onPtrDown = () => {
-          if (!roaming || !fps) return
-          downPt = { moved: 0 }
-          if (!isLocked) setCursor('grabbing')
-        }
-        const onPtrMove = (e: PointerEvent) => {
-          if (!roaming || !fps) return
-          if (isLocked) {
-            turn(e.movementX, e.movementY, -1)
-          } else if (downPt) {
-            turn(e.movementX, e.movementY, 1)
-            downPt.moved += Math.hypot(e.movementX, e.movementY)
-          }
-        }
-        const onPtrUp = () => {
-          if (!roaming || !fps || !downPt) return
-          const clicked = downPt.moved < 6
-          downPt = null
-          if (!isLocked) {
-            setCursor('grab')
-            if (clicked) webgl?.domElement.requestPointerLock()
-          }
-        }
-        // capture phase: the pause menu's esc must win over the OS shell's
-        // window-level esc handler regardless of registration order
-        window.addEventListener('keydown', onKeyDown, true)
-        window.addEventListener('keyup', onKeyUp)
-        window.addEventListener('blur', onBlur)
-        document.addEventListener('pointerlockchange', onLockChange)
-        webgl.domElement.addEventListener('pointerdown', onPtrDown)
-        webgl.domElement.addEventListener('pointermove', onPtrMove)
-        webgl.domElement.addEventListener('pointerup', onPtrUp)
 
         const onResize = () => {
           if (!webgl) return
@@ -1598,13 +1032,7 @@ export default function CrtScene({
         cleanupDom = () => {
           removeResize()
           stopRoam()
-          window.removeEventListener('keydown', onKeyDown, true)
-          window.removeEventListener('keyup', onKeyUp)
-          window.removeEventListener('blur', onBlur)
-          document.removeEventListener('pointerlockchange', onLockChange)
-          webgl?.domElement.removeEventListener('pointerdown', onPtrDown)
-          webgl?.domElement.removeEventListener('pointermove', onPtrMove)
-          webgl?.domElement.removeEventListener('pointerup', onPtrUp)
+          input.dispose()
           prevCleanup?.()
         }
 
@@ -1641,7 +1069,7 @@ export default function CrtScene({
           if (disposed || !webgl || !scene) return
           house.furnish(models)
           outside.furnish(models) // borrows the tree/bush GLBs for the block
-          runtimeTextures.forEach((texture) => webgl?.initTexture(texture))
+          disposer.textures.forEach((texture) => webgl?.initTexture(texture))
           // pay the new shaders/textures now, not on the first look around
           await webgl.compileAsync(scene, camera).catch(() => {})
           if (disposed || !webgl) return
@@ -1673,7 +1101,7 @@ export default function CrtScene({
         })
       }
       webgl?.dispose()
-      runtimeDisposables.forEach((d) => d.dispose())
+      disposer.disposeAll()
       cleanupDom?.()
       setScreenEl(null)
     }

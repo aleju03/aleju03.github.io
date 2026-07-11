@@ -1,8 +1,9 @@
 import * as THREE from 'three'
-import {
-  HOUSE, YARD, GATE, canvasTexture, seeded, makeGlowTexture, mergeGeoms,
-} from './houseWorld'
+import { HOUSE, YARD, GATE } from './houseWorld'
 import type { HouseModels, ModelLike } from './houseWorld'
+import { seeded } from '../core/rand'
+import { canvasTexture, makeGlowTexture } from '../core/textures'
+import { mergeGeoms } from '../core/geometry'
 
 /*
   Everything past the property line, plus the sky above all of it:
