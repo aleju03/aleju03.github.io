@@ -106,12 +106,12 @@ export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
   const maxR = Math.hypot(Math.max(o.x, W - o.x), Math.max(o.y, H - o.y)) * 1.06
   // stray matter caught in the pull: each speck loops from the rim down to
   // the center of the tunnel, swirling tighter the closer it gets
-  const specks = Array.from({ length: 70 }, () => ({
+  const specks = Array.from({ length: 90 }, () => ({
     ang: Math.random() * Math.PI * 2,
     r: Math.random(),
     fall: 0.35 + Math.random() * 0.5,
     swirl: 0.4 + Math.random() * 1.2,
-    blue: Math.random() < 0.22,
+    blue: Math.random() < 0.3,
   }))
 
   // the far side fills these in: its first rendered frame says "open here"
@@ -163,7 +163,18 @@ export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
     }
     // cruise builds after the tear; the opening exit slings you out faster
     const cruise = Math.min(1, Math.max(0, (t - COVER_S) / 0.9))
-    travel += dt * (0.5 + cruise * 1.0 + q * 1.6)
+    travel += dt * (0.5 + cruise * 1.35 + q * 1.6)
+
+    // once the page is consumed the mouth no longer has to anchor the
+    // wreck: the whole vortex glides toward where the far side will tear
+    // open, so the exit rips out of the drain's own eye instead of a
+    // second, disconnected spot
+    if (p >= 1) {
+      const target = exit ?? { x: W / 2, y: H / 2 }
+      const k = Math.min(1, dt * 5)
+      o.x += (target.x - o.x) * k
+      o.y += (target.y - o.y) * k
+    }
 
     ctx.clearRect(0, 0, W, H)
 
@@ -195,28 +206,39 @@ export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
     ctx.arc(o.x, o.y, discR, 0, Math.PI * 2)
     if (holeR > 0) ctx.arc(ex.x, ex.y, holeR, 0, Math.PI * 2)
     ctx.clip('evenodd')
+    // the engine glow: a breathing blue core at the drain, so the ride
+    // reads as alive even on displays that swallow the dim rings
+    const breathe = (0.3 + 0.12 * Math.sin(t * 5.2)) * (1 - q)
+    const coreR = Math.max(60, discR * 0.5)
+    const core = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, coreR)
+    core.addColorStop(0, `rgba(${ACCENT},${breathe})`)
+    core.addColorStop(0.4, `rgba(${ACCENT},${breathe * 0.35})`)
+    core.addColorStop(1, `rgba(${ACCENT},0)`)
+    ctx.fillStyle = core
+    circle(o.x, o.y, coreR)
+    ctx.fill()
     // tunnel rings falling toward the center; the pow spacing fakes depth
-    for (let i = 0; i < 16; i++) {
-      const ph = (((i / 16 - travel) % 1) + 1) % 1
+    for (let i = 0; i < 22; i++) {
+      const ph = (((i / 22 - travel) % 1) + 1) % 1
       const r = discR * Math.pow(ph, 2.3)
       if (r < 2) continue
-      const a = (1 - ph) * 0.3 * (1 - q)
-      ctx.strokeStyle = i % 5 === 0 ? `rgba(${ACCENT},${a})` : `rgba(${STONE},${a * 0.7})`
-      ctx.lineWidth = 1 + (1 - ph) * 1.6
+      const a = (1 - ph) * 0.75 * (1 - q)
+      ctx.strokeStyle = i % 5 === 0 ? `rgba(${ACCENT},${a})` : `rgba(214,211,209,${a * 0.7})`
+      ctx.lineWidth = 1.4 + (1 - ph) * 2.6
       circle(o.x, o.y, r)
       ctx.stroke()
     }
-    // the infalling specks, drawn as short streaks pointing down the drain
-    ctx.lineWidth = 1.1
+    // the infalling specks, drawn as streaks pointing down the drain
+    ctx.lineWidth = 1.6
     for (const s of specks) {
       const ph = (((s.r - travel * s.fall * 2) % 1) + 1) % 1
       const ang = s.ang + travel * s.swirl * 2 + (1 - ph) * 2.2
       const r = discR * Math.pow(ph, 1.7)
-      const a = (1 - ph) * 0.55 * (1 - q)
-      ctx.strokeStyle = s.blue ? `rgba(${ACCENT},${a})` : `rgba(214,211,209,${a * 0.6})`
+      const a = (1 - ph) * 0.85 * (1 - q)
+      ctx.strokeStyle = s.blue ? `rgba(${ACCENT},${a})` : `rgba(231,229,228,${a * 0.75})`
       ctx.beginPath()
       ctx.moveTo(o.x + Math.cos(ang) * r, o.y + Math.sin(ang) * r)
-      ctx.lineTo(o.x + Math.cos(ang - 0.06) * (r * 1.08 + 6), o.y + Math.sin(ang - 0.06) * (r * 1.08 + 6))
+      ctx.lineTo(o.x + Math.cos(ang - 0.06) * (r * 1.16 + 14), o.y + Math.sin(ang - 0.06) * (r * 1.16 + 14))
       ctx.stroke()
     }
     ctx.restore()

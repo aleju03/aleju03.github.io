@@ -808,13 +808,24 @@ export default function CrtScene({
         key.shadow.camera.near = 2
         key.shadow.autoUpdate = false
         scene.add(key, key.target)
-        // every shadow map is hand-baked: this re-renders them all once
-        const bakeShadows = () => {
-          pendant.shadow.needsUpdate = true
-          key.shadow.needsUpdate = true
-          house.shadowLights.forEach((l) => {
-            l.shadow.needsUpdate = true
-          })
+        // every shadow map is hand-baked, and the bake is paid in
+        // installments: flag one light per frame, each consumed by its own
+        // render, so no single frame carries every map — the all-at-once
+        // bake was the warp ride's one visible hitch, worst on cold iGPUs
+        // where the shadow-depth programs also link inside that frame
+        const bakeShadowsStaggered = async (bail: () => boolean) => {
+          const lights = [pendant, key, ...house.shadowLights]
+          for (let i = 0; i < lights.length; i += 1) {
+            if (bail()) {
+              // interrupted: flag the rest in one go — whoever took over
+              // (walk, outro) renders every frame and pays it on the next
+              for (; i < lights.length; i += 1) lights[i].shadow.needsUpdate = true
+              return
+            }
+            lights[i].shadow.needsUpdate = true
+            if (!roaming) render() // the walk loop already renders per frame
+            await new Promise((r) => requestAnimationFrame(r))
+          }
         }
         const rim = new THREE.DirectionalLight('#7e8ea8', 0.5)
         rim.position.set(2.5, 3, -2)
@@ -1469,11 +1480,18 @@ export default function CrtScene({
         }
 
         // lift-off: the flight starts once every program has linked, so its
-        // first frame renders (and bakes the shadow maps) without a compile
-        // stall; the tunnel is still holding for that frame's announce
-        void firstCompile.then(() => {
+        // first frame renders without a compile stall; the tunnel is still
+        // holding for that frame's announce. The heavy first frame is paid
+        // in installments under the cover: one plain render (first-draw
+        // buffer and texture costs), then one shadow map per frame
+        void firstCompile.then(async () => {
           if (disposed || roaming || leaving) return
-          bakeShadows() // first bake; each map stays frozen until re-flagged
+          camera.position.copy(camStart)
+          camera.lookAt(front)
+          render()
+          await new Promise((r) => requestAnimationFrame(r))
+          await bakeShadowsStaggered(() => disposed || roaming || leaving)
+          if (disposed || roaming || leaving) return
           t0 = performance.now()
           raf = requestAnimationFrame(introTick)
         })
@@ -1498,10 +1516,9 @@ export default function CrtScene({
           // pay the new shaders/textures now, not on the first look around
           await webgl.compileAsync(scene, camera).catch(() => {})
           if (disposed || !webgl) return
-          bakeShadows()
-          // parked, the loop is suspended: draw one frame so the bake is
-          // paid now and the furniture joins the standing image
-          if (parked && !leaving) render()
+          // re-bake in installments; parked, each step draws its own frame,
+          // so the furniture joins the standing image without one big hitch
+          await bakeShadowsStaggered(() => disposed || !webgl)
         })
       })
       .catch(() => {
