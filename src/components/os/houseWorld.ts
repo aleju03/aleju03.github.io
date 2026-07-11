@@ -75,6 +75,10 @@ export const HOUSE = { minX: -7.6, maxX: 7.6, minZ: -1.75, maxZ: 24.5 }
 export const YARD = { minX: -13.5, maxX: 13.5, minZ: -4, maxZ: 38.5 }
 /** gap in the front fence: the way out to the street */
 export const GATE = { x0: -1.3, x1: 1.3 }
+/** the backrooms seam: this span of the east living-room wall is dressed
+    like wall but never blocks — walking into it noclips you into level 0
+    (backrooms.ts owns everything past the paint) */
+export const NOCLIP = { z0: 16.0, z1: 17.8 }
 const BATH = { minX: -7.6, maxX: -2.4, minZ: 10.5, maxZ: 16.6 }
 const HALL = { minX: BATH.maxX, maxX: 7.6, minZ: 10.5, maxZ: 14.0 }
 const DOOR_H = 4.7
@@ -626,13 +630,34 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     { u0: BACK_DOOR.u0, u1: BACK_DOOR.u1, y0: 0, y1: DOOR_H },
     { u0: BACK_WIN.u0, u1: BACK_WIN.u1, y0: BACK_WIN.y0, y1: BACK_WIN.y1 },
   ])
-  wall('x', HOUSE.maxX, 14, HOUSE.maxZ, -1, '#4d4136')
+  wall('x', HOUSE.maxX, 14, HOUSE.maxZ, -1, '#4d4136', [
+    // the backrooms seam: a full-height floor cut, so no panel and no
+    // obstacle span it — the disguise below makes it read as wall anyway
+    { u0: NOCLIP.z0, u1: NOCLIP.z1, y0: 0, y1: CEIL_H },
+  ])
   floorPlane(HOUSE.minX, HOUSE.maxX, BATH.maxZ, HOUSE.maxZ, plankLivTex, 3.4)
   floorPlane(HALL.minX, HOUSE.maxX, 14, BATH.maxZ, plankLivTex, 3.4)
   ceiling(HOUSE.minX, HOUSE.maxX, BATH.maxZ, HOUSE.maxZ, '#3a332b')
   ceiling(HALL.minX, HOUSE.maxX, 14, BATH.maxZ, '#3a332b')
   windowUnit('x', HOUSE.minX + 0.045, SINK_WIN.u0, SINK_WIN.u1, SINK_WIN.y0, SINK_WIN.y1)
   windowUnit('z', HOUSE.maxZ - 0.045, BACK_WIN.u0, BACK_WIN.u1, BACK_WIN.y0, BACK_WIN.y1)
+
+  // dress the backrooms seam as wall again: same paint, same baseboard,
+  // recessed a couple of centimeters so it can't z-fight its neighbors —
+  // the hairline shadow around it is the only visual tell (that, and the
+  // damp stain backrooms.ts hangs on it)
+  const slip = new THREE.Mesh(
+    new THREE.PlaneGeometry(NOCLIP.z1 - NOCLIP.z0, CEIL_H), wallMat('#4d4136'))
+  slip.position.set(HOUSE.maxX + 0.01, CEIL_H / 2, (NOCLIP.z0 + NOCLIP.z1) / 2)
+  slip.rotation.y = -Math.PI / 2
+  slip.receiveShadow = true
+  root.add(slip)
+  const slipBase = new THREE.Mesh(
+    new THREE.BoxGeometry(NOCLIP.z1 - NOCLIP.z0, 0.17, 0.06), skirtMat)
+  slipBase.position.set(HOUSE.maxX - 0.05, 0.085, (NOCLIP.z0 + NOCLIP.z1) / 2)
+  slipBase.rotation.y = Math.PI / 2
+  slipBase.receiveShadow = true
+  root.add(slipBase)
 
   // arch casing between hall and living room
   ;[ARCH.u0 - 0.05, ARCH.u1 + 0.05].forEach((x) => {

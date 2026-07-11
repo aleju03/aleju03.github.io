@@ -10,6 +10,7 @@ import { buildOutsideWorld, WORLD } from './outsideWorld'
 import { buildPaperPlane } from './paperPlane'
 import type { HouseModels } from './houseWorld'
 import { buildPlayerBody } from './playerBody'
+import { buildBackrooms, BR } from './backrooms'
 import { OS_SCENE_READY_EVENT } from '../../events'
 
 /*
@@ -245,7 +246,13 @@ export default function CrtScene({
         // DOM order: CSS3D below, WebGL canvas above with a hole in the glass
         mount.appendChild(css3d.domElement)
         mount.appendChild(webgl.domElement)
+        // dead-black card over everything, for the backrooms noclip cut
+        const blackout = document.createElement('div')
+        blackout.style.cssText =
+          'position:absolute;inset:0;background:#000;opacity:0;pointer-events:none'
+        mount.appendChild(blackout)
         cleanupDom = () => {
+          if (blackout.parentElement === mount) mount.removeChild(blackout)
           if (css3d.domElement.parentElement === mount) mount.removeChild(css3d.domElement)
           if (webgl && webgl.domElement.parentElement === mount) mount.removeChild(webgl.domElement)
         }
@@ -368,6 +375,14 @@ export default function CrtScene({
         const outside = buildOutsideWorld({
           scene,
           obstacles,
+          trackTexture: (t) => runtimeTextures.push(t),
+          trackDisposable: (d) => runtimeDisposables.push(d),
+        })
+        // ...and the easter egg far beneath both: level 0 waits behind a
+        // doctored span of the living room's east wall (houseWorld cuts the
+        // hole; backrooms.ts owns the level, the hum and the way back)
+        const backrooms = buildBackrooms({
+          scene,
           trackTexture: (t) => runtimeTextures.push(t),
           trackDisposable: (d) => runtimeDisposables.push(d),
         })
@@ -873,6 +888,9 @@ export default function CrtScene({
         // compose the roam ramp with the day cycle: every rendered frame
         // re-reads the clock, so dawn keeps breaking mid-walk (and while
         // parked nothing renders, so nothing is spent)
+        // whether the walk is currently down in the backrooms; flipped by
+        // the noclip state machine inside walkTick
+        let inBackrooms = false
         const spillNight = new THREE.Color('#9dbfff')
         const spillDay = new THREE.Color('#ffe9c4')
         const sceneFog = scene.fog as THREE.Fog
@@ -898,6 +916,18 @@ export default function CrtScene({
           sceneFog.near = sky.fogNear
           sceneFog.far = sky.fogFar
           sceneBg.copy(sky.fogColor)
+          if (inBackrooms) {
+            // level 0 brings its own light rig (inside its root); kill the
+            // sky, moon and window spills, pin the fog close and sour
+            hemi.intensity = 0
+            moon.intensity = 0
+            windowSpill.intensity = 0
+            moonSpillMat.opacity = 0
+            sceneFog.color.set(BR.fog)
+            sceneFog.near = BR.fogNear
+            sceneFog.far = BR.fogFar
+            sceneBg.copy(sceneFog.color)
+          }
         }
 
         const render = () => {
@@ -1004,6 +1034,14 @@ export default function CrtScene({
         let jumpY = 0 // feet height over the ground while airborne
         let vy = 0
         let grounded = true
+        // the backrooms swap: feet elevation, and the noclip cut in flight
+        let groundY = 0
+        let noclip: {
+          t0: number
+          dir: 'in' | 'out'
+          swapped: boolean
+          fading: boolean
+        } | null = null
         // adaptive resolution: if the walk can't hold frame rate, step the
         // pixel ratio down (never back up mid-roam, so it can't oscillate);
         // each roam and each sit-down restores full crispness
@@ -1026,12 +1064,20 @@ export default function CrtScene({
         const deskBlock = new THREE.Box3().setFromObject(desk.scene).expandByScalar(0.35)
         deskBlock.min.z = -10 // the desk strip runs all the way back to the wall
         obstacles.push(deskBlock)
+        // which collision set is live flips with the world (see backrooms)
+        let activeObstacles = obstacles
         const collide = (p: THREE.Vector3) => {
-          // hard bounds are the edge of the neighborhood now; the fences,
-          // walls and everything else in between are obstacle boxes
-          p.x = THREE.MathUtils.clamp(p.x, WORLD.minX + 0.55, WORLD.maxX - 0.55)
-          p.z = THREE.MathUtils.clamp(p.z, WORLD.minZ + 0.55, WORLD.maxZ - 0.55)
-          for (const b of obstacles) {
+          if (inBackrooms) {
+            // no edges down there; the cap is just floating-point hygiene
+            p.x = THREE.MathUtils.clamp(p.x, -2000, 2000)
+            p.z = THREE.MathUtils.clamp(p.z, -2000, 2000)
+          } else {
+            // hard bounds are the edge of the neighborhood now; the fences,
+            // walls and everything else in between are obstacle boxes
+            p.x = THREE.MathUtils.clamp(p.x, WORLD.minX + 0.55, WORLD.maxX - 0.55)
+            p.z = THREE.MathUtils.clamp(p.z, WORLD.minZ + 0.55, WORLD.maxZ - 0.55)
+          }
+          for (const b of activeObstacles) {
             if (p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z) {
               const exitL = p.x - b.min.x
               const exitR = b.max.x - p.x
@@ -1087,12 +1133,57 @@ export default function CrtScene({
             webgl?.setPixelRatio(pr)
             prWait = 1.2
           }
-          const fwd =
-            (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
-            (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
-          const side =
-            (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) -
-            (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0)
+          // mid-noclip: the black card is up (or on its way), movement is
+          // frozen, and at the cut point the world swaps underneath it
+          if (noclip) {
+            const t = now - noclip.t0
+            if (!noclip.swapped && t >= 220) {
+              noclip.swapped = true
+              vel.set(0, 0, 0)
+              jumpY = 0
+              vy = 0
+              grounded = true
+              crouchK = 0
+              bobT = 0
+              if (noclip.dir === 'in') {
+                inBackrooms = true
+                groundY = BR.y
+                activeObstacles = backrooms.obstacles
+                backrooms.enter()
+                camera.position.set(BR.spawn.x, BR.y + EYE, BR.spawn.z)
+                yaw = BR.spawn.yaw
+                pitch = 0
+              } else {
+                inBackrooms = false
+                groundY = 0
+                activeObstacles = obstacles
+                backrooms.leave()
+                camera.position.set(backrooms.exitSpot.x, EYE, backrooms.exitSpot.z)
+                yaw = backrooms.exitSpot.yaw
+                pitch = 0
+                house.flagShadows(camera.position)
+              }
+              // either side of the cut, the body's old shadow may still be
+              // baked into the desk-area maps: re-render them without it
+              pendant.shadow.needsUpdate = true
+              key.shadow.needsUpdate = true
+            }
+            if (noclip.swapped && !noclip.fading && t >= 560) {
+              noclip.fading = true
+              blackout.style.transition = 'opacity 650ms'
+              blackout.style.opacity = '0'
+            }
+            if (t >= 1300) noclip = null
+          }
+          const frozen = noclip !== null
+          const fwd = frozen
+            ? 0
+            : (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
+              (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
+          const side = frozen
+            ? 0
+            : (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) -
+              (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0)
           // shift sprints, ctrl (or c) crouches; crouching wins the argument
           const duck =
             keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')
@@ -1114,8 +1205,26 @@ export default function CrtScene({
           vel.lerp(want, 1 - Math.exp(-10 * dt))
           camera.position.addScaledVector(vel, dt)
           collide(camera.position)
+          // the noclip seams: stepping into the doctored wall span (either
+          // side) freezes the walk and cuts to black; the state machine
+          // above swaps the worlds under the cover
+          if (fps && !noclip) {
+            const dir =
+              !inBackrooms && backrooms.overEntry(camera.position)
+                ? ('in' as const)
+                : inBackrooms && backrooms.overExit(camera.position)
+                  ? ('out' as const)
+                  : null
+            if (dir) {
+              noclip = { t0: now, dir, swapped: false, fading: false }
+              vel.set(0, 0, 0)
+              blackout.style.transition = 'opacity 130ms'
+              blackout.style.opacity = '1'
+              backrooms.noclipSound()
+            }
+          }
           // space jumps; holding it bunny-hops off each landing
-          if (keys.has('Space') && grounded && !duck) {
+          if (!frozen && keys.has('Space') && grounded && !duck) {
             grounded = false
             vy = JUMP_V
           }
@@ -1133,6 +1242,7 @@ export default function CrtScene({
           if (grounded) bobT += planar * dt * 0.55
           const gait = Math.min(1, planar / speed)
           camera.position.y =
+            groundY +
             EYE +
             jumpY -
             crouchK * CROUCH_DROP +
@@ -1153,16 +1263,21 @@ export default function CrtScene({
           // (or hangs from it, mid-hop)
           body.position.set(
             camera.position.x + Math.sin(yaw) * BODY_BACK,
-            jumpY,
+            groundY + jumpY,
             camera.position.z + Math.cos(yaw) * BODY_BACK,
           )
           body.rotation.y = yaw + Math.PI
           rig.update(dt, bobT, gait, crouchK) // legs scissor in step with the bob
           // doors easing, fireflies drifting
           house.update(dt)
+          // chunk streaming, flicker and hum below; the seam's whisper above
+          backrooms.update(dt, camera.position, inBackrooms)
           // the player is the only moving shadow caster: re-bake just the
           // lights that can see them, only on frames where they moved
-          if (planar > 0.05 || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02) {
+          if (
+            !inBackrooms &&
+            (planar > 0.05 || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02)
+          ) {
             // generous regions: a map must keep re-baking until the player is
             // fully out of its light's frustum, or their shadow strands there
             if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
@@ -1178,8 +1293,9 @@ export default function CrtScene({
             nearNow = isNear
             setNear(isNear)
           }
-          // a door in reach offers its own prompt; the machine's wins
-          const verb = isNear ? null : house.doorPrompt(camera.position, gaze)
+          // a door in reach offers its own prompt; the machine's wins (and
+          // level 0 has no doors, whatever its x/z coordinates suggest)
+          const verb = isNear || inBackrooms ? null : house.doorPrompt(camera.position, gaze)
           if (verb !== doorVerbNow) {
             doorVerbNow = verb
             setDoorVerb(verb)
@@ -1256,6 +1372,19 @@ export default function CrtScene({
           jumpY = 0
           vy = 0
           grounded = true
+          if (inBackrooms) {
+            // sitting down (or leaving) always hauls you back through the
+            // seam first, so the chair never has to fly up from level 0
+            inBackrooms = false
+            groundY = 0
+            activeObstacles = obstacles
+            backrooms.leave()
+            camera.position.set(backrooms.exitSpot.x, EYE, backrooms.exitSpot.z)
+          }
+          noclip = null
+          blackout.style.transition = ''
+          blackout.style.opacity = '0'
+          backrooms.sleep()
           body.visible = false
           if (webgl) {
             // bake the body's shadow away; sitting down only happens at the
