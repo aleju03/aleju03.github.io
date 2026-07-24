@@ -59,6 +59,13 @@ export interface WalkStep {
   run: boolean
   /** anything about the pose changed enough that shadow maps should re-bake */
   moved: boolean
+  /** world velocity, units/s — what the body rig leans and swings from */
+  vx: number
+  vz: number
+  /** vertical velocity while airborne (+ up), 0 on the ground */
+  vy: number
+  /** downward speed a touchdown absorbed this tick, else 0 (landing weight) */
+  landing: number
 }
 
 export interface WalkController {
@@ -74,6 +81,9 @@ export interface WalkController {
   turn: (dx: number, dy: number, sign: 1 | -1, sens: number) => void
   /** hard-place the player (level spawn): position, heading, level floor */
   spawnAt: (x: number, z: number, yaw: number, groundY: number) => void
+  /** move the feet without touching yaw/pitch (standing up where a ragdoll
+      came to rest) */
+  teleport: (x: number, z: number, groundY: number) => void
   /** kill planar velocity only (the moment a level cut triggers) */
   haltPlanar: () => void
   /** zero all motion state (level swap, sitting down) */
@@ -100,7 +110,10 @@ export function createWalkController(
   const vel = new THREE.Vector3()
   const want = new THREE.Vector3()
   // reused across ticks: the walk loop runs at 60Hz and shouldn't feed the GC
-  const step: WalkStep = { planar: 0, gait: 0, grounded: true, duck: false, run: false, moved: false }
+  const step: WalkStep = {
+    planar: 0, gait: 0, grounded: true, duck: false, run: false, moved: false,
+    vx: 0, vz: 0, vy: 0, landing: 0,
+  }
 
   return {
     get yaw() {
@@ -133,6 +146,9 @@ export function createWalkController(
       rig.position.set(x, groundY + tune.eye, z)
       yaw = yawTo
       pitch = 0
+    },
+    teleport: (x, z, groundY) => {
+      rig.position.set(x, groundY + tune.eye, z)
     },
     haltPlanar: () => {
       vel.set(0, 0, 0)
@@ -179,6 +195,7 @@ export function createWalkController(
         grounded = false
         vy = tune.jumpV
       }
+      step.landing = 0
       if (!grounded) {
         vy -= tune.grav * dt
         jumpY = Math.max(0, jumpY + vy * dt)
@@ -193,6 +210,7 @@ export function createWalkController(
         }
         if (jumpY === 0 && vy < 0) {
           grounded = true
+          step.landing = -vy // the impact the body rig folds its knees over
           vy = 0
         }
       }
@@ -224,6 +242,9 @@ export function createWalkController(
       step.grounded = grounded
       step.duck = duck
       step.run = run
+      step.vx = vel.x
+      step.vz = vel.z
+      step.vy = grounded ? 0 : vy
       step.moved = planar > 0.05 || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02
       return step
     },

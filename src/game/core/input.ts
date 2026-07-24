@@ -25,8 +25,17 @@ const MOVE_KEYS = new Set([
   'Space', // jump; preventDefault also keeps the page from scrolling
 ])
 // sprint and crouch modifiers; c is a crouch alias for anyone wary of
-// the browser eating ctrl chords
-const MOD_KEYS = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'KeyC'])
+// the browser eating ctrl chords. v and x ride along so the scene can
+// edge-detect the camera toggle and the ragdoll flop off the same set
+const MOD_KEYS = new Set([
+  'ShiftLeft',
+  'ShiftRight',
+  'ControlLeft',
+  'ControlRight',
+  'KeyC',
+  'KeyV',
+  'KeyX',
+])
 
 export interface RoamInputOpts {
   /** the WebGL canvas: lock target, pointer events, cursor */

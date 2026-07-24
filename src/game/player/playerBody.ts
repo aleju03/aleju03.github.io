@@ -1,28 +1,134 @@
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
+import { createRagdoll, type RagdollEnv } from './ragdoll'
 
 /*
-  The first-person body: a stubby little service robot built from rounded
-  primitives right here, replacing the old skinned GLB. Owning the mesh means
-  the head can stay on — the old model's goggle dome clipped the lens, so its
-  head was collapsed to nothing and every shadow walked around decapitated.
-  This one is proportioned so the head top rides just under and behind the
-  camera instead. The walk is hand-animated off the same clock as the
-  camera's footstep bob, so the legs scissor exactly in step with the view.
+  The player's body: the same stubby service robot as before, but rebuilt as
+  a real articulated skeleton — pelvis/torso/head chain, two-segment arms
+  and legs — so it reads as a creature from any angle, not just as scenery
+  under a first-person lens. The pose is kinetic, derived from what the sim
+  actually did this frame rather than which keys are down: it leans into
+  acceleration and banks into turns, angles its hips toward the direction it
+  strafes, tucks in a rising jump and reaches on the fall, and lands on a
+  damped spring that folds the knees in proportion to the impact. The legs
+  aren't a canned cycle: each sole is planted at a fixed world point, steps
+  trigger on distance actually covered, the airborne foot glides to a spot
+  predicted along the real velocity, and two-bone IK folds each leg over its
+  foot — so side-steps, diagonals and backpedals step where the body is
+  truly going, and feet never slide; ankle pivots keep the soles level with
+  the floor whatever the shins are doing. The arms aren't keyframed either:
+  each joint rides an underdamped spring toward its gait target, fed the
+  body's own accelerations, so they lag, overshoot and settle — with the
+  elbows chasing the shoulders one beat behind — and the head and chest's
+  look-tracking rides the same springs, so a whipped mouse is followed with
+  weight, never a snap. The showy
+  parts of that layer (lean, head pitch-follow) scale with pose.show, so a
+  chase camera or another player sees the full performance while the
+  first-person lens keeps a level, out-of-frame head. Crouch is
+  analytic two-bone IK (cosine law), so the feet stay planted while the hips
+  drop. The same skeleton doubles as the ragdoll: flop() hands every joint
+  to the verlet sim in ragdoll.ts, update() fits the bones back over the
+  particles each frame, and beginRecover() blends the crumpled pose back
+  into the stance over half a second. Everything is smoothed and allocation-
+  free per frame; the whole rig is ~30 small meshes over six materials.
 */
+
+export interface PlayerPose {
+  dt: number
+  /** 0..1, planar speed over the current cap */
+  gait: number
+  crouchK: number
+  grounded: boolean
+  run: boolean
+  yaw: number
+  pitch: number
+  /** world planar velocity, units/s */
+  vx: number
+  vz: number
+  /** vertical velocity while airborne (+ up) */
+  vy: number
+  /** downward speed absorbed by a touchdown this tick, else 0 */
+  landing: number
+  /** 0 under the first-person lens .. 1 watched from outside. Scales the
+      cinematic layer — speed lean and head pitch-follow — which reads great
+      from a chase camera or another player but, with the lens riding the
+      head, shoves your own crown into the look-down frame */
+  show: number
+}
 
 export interface PlayerRig {
   group: THREE.Group
-  /** drive the limbs each roam frame; bobT is the shared footstep clock,
-      gait 0..1 blends idle into walk, crouchK 0..1 squashes the robot */
-  update: (dt: number, bobT: number, gait: number, crouchK: number) => void
+  /** drive the skeleton one frame; env is only consulted while ragdolling */
+  update: (pose: PlayerPose, env: RagdollEnv) => void
+  /** hand the skeleton to the verlet sim, thrown with this velocity */
+  flop: (vx: number, vy: number, vz: number) => void
+  /** start blending back to the stance. The caller must have already moved
+      `group` to the get-up spot (and updated its world matrix): the blend
+      source is re-fitted against the group's new frame right here */
+  beginRecover: () => void
+  /** ragdolling or mid-recovery: movement input is forfeit */
+  readonly down: boolean
+  /** strictly particle-driven, i.e. the caller must not re-pose the group */
+  readonly ragdolling: boolean
+  /** the ragdoll has tumbled to rest long enough that a get-up looks right */
+  readonly settled: boolean
+  /** camera target while down: the chest particle, world space */
+  focus: (out: THREE.Vector3) => THREE.Vector3
+  /** where the feet should stand after a get-up (pelvis rest x/z, world) */
+  getupSpot: (out: THREE.Vector3) => THREE.Vector3
+  /** the body moved on its own (ragdoll, blend, landing spring): shadows
+      near it should re-bake even though the walker reports standing still */
+  unrest: () => boolean
+  /** the yaw the body actually faces — it lags the camera while standing
+      (the head covers the gap) and only pivots after a big enough turn.
+      The scene orients the group with this, not the raw camera yaw */
+  readonly facing: number
+  /** hard-set the facing (roam start, level spawn): no lazy pivot */
+  face: (yaw: number) => void
+  /** report the group's cosmetic offset from the walker's true position
+      (first-person trail, pitch back-slide) each frame BEFORE update: the
+      planted feet ride along with its changes instead of being stretched */
+  trackSlide: (x: number, z: number) => void
+  /** cancel any ragdoll/blend and zero the smoothed pose (level swap) */
+  reset: () => void
 }
 
 /** the eye height the proportions below were drawn for; the group scales
     itself so any actual camera height maps onto them */
 const DESIGN_EYE = 3.5
 
-export function buildPlayerBody(eye: number): PlayerRig {
+// skeleton dimensions, design units, feet at y = 0
+const THIGH = 0.68
+const SHIN = 0.66
+const HIP_Y = THIGH + SHIN
+const HIP_X = 0.28
+const WAIST_OFF = 0.22 // pelvis origin (hip line) up to the torso bone
+const SHOULDER_X = 0.64
+const SHOULDER_OFF = 0.48 // torso origin up to the shoulder line
+const NECK_OFF = 0.72 // torso origin up to the head bone
+const UARM = 0.48
+const FARM = 0.46
+
+// ragdoll particle indices
+const P_PELV = 0
+const P_CHEST = 1
+const P_HEAD = 2
+const P_SHL = 3
+const P_SHR = 4
+const P_ELL = 5
+const P_ELR = 6
+const P_HANDL = 7
+const P_HANDR = 8
+const P_KNEEL = 9
+const P_KNEER = 10
+const P_FOOTL = 11
+const P_FOOTR = 12
+const P_COUNT = 13
+
+const RISE_TIME = 0.55 // get-up blend, seconds
+const EASE = (t: number) => 1 - Math.pow(1 - t, 3)
+
+export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
   const group = new THREE.Group()
   group.userData.dynamic = true // never caught by the static matrix freeze
 
@@ -51,96 +157,723 @@ export function buildPlayerBody(eye: number): PlayerRig {
     parent.add(m)
     return m
   }
+  const bone = (parent: THREE.Object3D, x: number, y: number, z: number) => {
+    const b = new THREE.Group()
+    b.position.set(x, y, z)
+    parent.add(b)
+    return b
+  }
+
+  // --- skeleton -----------------------------------------------------------
+  // limbs hang along local -Y from their joint; torso/head grow along +Y
+  const pelvis = bone(group, 0, HIP_Y, 0)
+  const torso = bone(pelvis, 0, WAIST_OFF, 0)
+  const head = bone(torso, 0, NECK_OFF, 0)
+  const uarmL = bone(torso, SHOULDER_X, SHOULDER_OFF, 0)
+  const farmL = bone(uarmL, 0, -UARM, 0)
+  const uarmR = bone(torso, -SHOULDER_X, SHOULDER_OFF, 0)
+  const farmR = bone(uarmR, 0, -UARM, 0)
+  const thighL = bone(pelvis, HIP_X, 0, 0)
+  const shinL = bone(thighL, 0, -THIGH, 0)
+  const thighR = bone(pelvis, -HIP_X, 0, 0)
+  const shinR = bone(thighR, 0, -THIGH, 0)
+
+  // pelvis: the dark hip block the legs plug into
+  part(new RoundedBoxGeometry(0.92, 0.36, 0.58, 3, 0.12), darkMat, pelvis).position.set(0, 0.08, 0)
 
   // torso: cream shell, dark belly screen, one status dot (faces +z)
-  const torso = part(new RoundedBoxGeometry(1.1, 1.2, 0.72, 3, 0.18), bodyMat, group)
-  torso.position.set(0, 1.62, 0)
-  const belly = part(new RoundedBoxGeometry(0.5, 0.42, 0.1, 3, 0.06), visorMat, group)
-  belly.position.set(0, 1.52, 0.33)
-  const dot = part(new THREE.SphereGeometry(0.05, 10, 8), tipMat, group)
-  dot.position.set(0.3, 1.98, 0.35)
+  part(new RoundedBoxGeometry(1.08, 0.8, 0.68, 3, 0.16), bodyMat, torso).position.set(0, 0.34, 0)
+  part(new RoundedBoxGeometry(0.5, 0.4, 0.1, 3, 0.06), visorMat, torso).position.set(0, 0.28, 0.31)
+  part(new THREE.SphereGeometry(0.05, 10, 8), tipMat, torso).position.set(0.3, 0.6, 0.32)
 
-  // arms swing from shoulder pivots; accent ball joints cover the seams
-  const armGeo = new RoundedBoxGeometry(0.24, 0.9, 0.28, 3, 0.11)
-  const handGeo = new THREE.SphereGeometry(0.15, 12, 10)
-  const shoulderGeo = new THREE.SphereGeometry(0.17, 12, 10)
-  const armPivot = (side: 1 | -1) => {
-    const p = new THREE.Group()
-    p.position.set(side * 0.66, 2.02, 0)
-    part(shoulderGeo, accentMat, p)
-    const arm = part(armGeo, darkMat, p)
-    arm.position.set(side * 0.04, -0.46, 0)
-    const hand = part(handGeo, bodyMat, p)
-    hand.position.set(side * 0.04, -0.94, 0)
-    group.add(p)
-    return p
+  // arms: accent ball shoulders, dark segments, cream hands
+  const uarmGeo = new RoundedBoxGeometry(0.22, 0.52, 0.26, 3, 0.1)
+  const farmGeo = new RoundedBoxGeometry(0.2, 0.48, 0.24, 3, 0.09)
+  const armPair = (ua: THREE.Group, fa: THREE.Group) => {
+    part(new THREE.SphereGeometry(0.17, 12, 10), accentMat, ua)
+    part(uarmGeo, darkMat, ua).position.set(0, -0.24, 0)
+    part(new THREE.SphereGeometry(0.12, 10, 8), darkMat, fa)
+    part(farmGeo, darkMat, fa).position.set(0, -0.2, 0)
+    const hand = part(new THREE.SphereGeometry(0.15, 12, 10), bodyMat, fa)
+    hand.position.set(0, -FARM, 0)
+    return hand
   }
-  const armL = armPivot(1)
-  const armR = armPivot(-1)
+  const handL = armPair(uarmL, farmL)
+  const handR = armPair(uarmR, farmR)
 
-  // stubby legs from hip pivots, cream toe caps out front
-  const legGeo = new RoundedBoxGeometry(0.36, 1.06, 0.44, 3, 0.13)
-  const toeGeo = new RoundedBoxGeometry(0.38, 0.2, 0.52, 3, 0.08)
-  const legPivot = (side: 1 | -1) => {
-    const p = new THREE.Group()
-    p.position.set(side * 0.28, 1.08, 0)
-    const leg = part(legGeo, darkMat, p)
-    leg.position.set(0, -0.56, 0)
-    const toe = part(toeGeo, bodyMat, p)
-    toe.position.set(0, -1.0, 0.08)
-    group.add(p)
-    return p
+  // legs: dark segments, accent knee, cream toe cap out front
+  const thighGeo = new RoundedBoxGeometry(0.34, 0.66, 0.4, 3, 0.12)
+  const shinGeo = new RoundedBoxGeometry(0.3, 0.56, 0.36, 3, 0.1)
+  const toeGeo = new RoundedBoxGeometry(0.34, 0.2, 0.5, 3, 0.08)
+  const legPair = (th: THREE.Group, sh: THREE.Group) => {
+    part(thighGeo, darkMat, th).position.set(0, -0.32, 0)
+    part(new THREE.SphereGeometry(0.14, 10, 8), accentMat, sh)
+    part(shinGeo, darkMat, sh).position.set(0, -0.3, 0)
+    // the toe cap hangs from its own ankle pivot so the sole can stay
+    // level with the floor whatever the shin is doing
+    const ankle = new THREE.Group()
+    ankle.position.set(0, -SHIN + 0.08, 0)
+    sh.add(ankle)
+    part(toeGeo, bodyMat, ankle).position.set(0, 0.02, 0.09)
+    const foot = new THREE.Object3D() // ragdoll anchor at the sole
+    foot.position.set(0, -SHIN, 0)
+    sh.add(foot)
+    return { ankle, foot }
   }
-  const legL = legPivot(1)
-  const legR = legPivot(-1)
+  const { ankle: ankleL, foot: footL } = legPair(thighL, shinL)
+  const { ankle: ankleR, foot: footR } = legPair(thighR, shinR)
 
-  // the head, on its own pivot for the idle bob; small and set back so it
-  // stays out of the first-person frustum instead of being amputated
-  const neck = part(new THREE.CylinderGeometry(0.13, 0.15, 0.18, 12), darkMat, group)
-  neck.position.set(0, 2.28, -0.04)
-  const headPivot = new THREE.Group()
-  const HEAD_Y = 2.36
-  headPivot.position.set(0, HEAD_Y, 0)
-  const head = part(new RoundedBoxGeometry(0.8, 0.62, 0.7, 3, 0.17), bodyMat, headPivot)
-  head.position.set(0, 0.33, -0.08)
-  const visor = part(new RoundedBoxGeometry(0.56, 0.3, 0.12, 3, 0.06), visorMat, headPivot)
-  visor.position.set(0, 0.36, 0.24)
+  // the head: small and set back to mostly dodge the first-person frustum;
+  // the headSkin toggle below finishes the job without amputating shadows
+  part(new THREE.CylinderGeometry(0.13, 0.15, 0.18, 12), darkMat, head).position.set(0, 0, -0.04)
+  const skull = part(new RoundedBoxGeometry(0.8, 0.62, 0.7, 3, 0.17), bodyMat, head)
+  skull.position.set(0, 0.41, -0.08)
+  part(new RoundedBoxGeometry(0.56, 0.3, 0.12, 3, 0.06), visorMat, head).position.set(0, 0.44, 0.24)
   ;[0.14, -0.14].forEach((x) => {
-    const eyeLight = part(new RoundedBoxGeometry(0.11, 0.15, 0.04, 2, 0.02), eyeMat, headPivot)
-    eyeLight.position.set(x, 0.36, 0.295)
+    part(new RoundedBoxGeometry(0.11, 0.15, 0.04, 2, 0.02), eyeMat, head).position.set(x, 0.44, 0.295)
   })
   const earGeo = new THREE.CylinderGeometry(0.13, 0.13, 0.1, 12)
   ;[1, -1].forEach((side) => {
-    const ear = part(earGeo, darkMat, headPivot)
+    const ear = part(earGeo, darkMat, head)
     ear.rotation.z = Math.PI / 2
-    ear.position.set(side * 0.44, 0.36, -0.08)
+    ear.position.set(side * 0.44, 0.44, -0.08)
   })
-  const mast = part(new THREE.CylinderGeometry(0.028, 0.028, 0.3, 8), darkMat, headPivot)
-  mast.position.set(0.18, 0.75, -0.22)
-  const tip = part(new THREE.SphereGeometry(0.07, 10, 8), tipMat, headPivot)
-  tip.position.set(0.18, 0.93, -0.22)
-  group.add(headPivot)
+  part(new THREE.CylinderGeometry(0.028, 0.028, 0.3, 8), darkMat, head).position.set(0.18, 0.83, -0.22)
+  part(new THREE.SphereGeometry(0.07, 10, 8), tipMat, head).position.set(0.18, 1.01, -0.22)
+
+  // the head always casts shadows but must never block the lens riding it:
+  // steeply pitched down, the frame bottom looks down-backward and finds
+  // the crown. Its meshes get private material clones whose color/depth
+  // writes switch off while pose.show says the camera is home — invisible
+  // to the lens, still solid to every shadow map's depth pass
+  const headSkin: THREE.Material[] = []
+  head.traverse((o) => {
+    const m = o as THREE.Mesh
+    if (!m.isMesh) return
+    m.material = (m.material as THREE.Material).clone()
+    headSkin.push(m.material as THREE.Material)
+  })
+  let headShown = true
+  const showHead = (v: boolean) => {
+    if (headShown === v) return
+    headShown = v
+    headSkin.forEach((mat) => {
+      mat.colorWrite = v
+      mat.depthWrite = v
+    })
+  }
 
   const S = eye / DESIGN_EYE
   group.scale.setScalar(S)
 
-  let t = 0
-  const update = (dt: number, bobT: number, gait: number, crouchK: number) => {
-    t += dt
-    // the camera bobs once per step and a leg cycle is two steps, so the
-    // stride runs at half the bob frequency
-    const stride = Math.sin(bobT * Math.PI) * 0.6 * gait
-    const breathe = Math.sin(t * 1.9) * (1 - gait)
-    legL.rotation.x = stride
-    legR.rotation.x = -stride
-    armL.rotation.x = -stride * 0.8
-    armR.rotation.x = stride * 0.8
-    armL.rotation.z = 0.06 + breathe * 0.03 // arms drift out on the inhale
-    armR.rotation.z = -0.06 - breathe * 0.03
-    headPivot.position.y = HEAD_Y + breathe * 0.02
-    headPivot.rotation.x = 0.08 * gait // leans the gaze into the walk
-    group.scale.y = S * (1 - 0.25 * crouchK) // squats along with the camera
+  // --- ragdoll ------------------------------------------------------------
+  // one anchor object per particle; radii in world units (hence the S)
+  const anchors: THREE.Object3D[] = []
+  anchors[P_PELV] = pelvis
+  anchors[P_CHEST] = head // the bone origin is the neck base
+  anchors[P_HEAD] = skull
+  anchors[P_SHL] = uarmL
+  anchors[P_SHR] = uarmR
+  anchors[P_ELL] = farmL
+  anchors[P_ELR] = farmR
+  anchors[P_HANDL] = handL
+  anchors[P_HANDR] = handR
+  anchors[P_KNEEL] = shinL
+  anchors[P_KNEER] = shinR
+  anchors[P_FOOTL] = footL
+  anchors[P_FOOTR] = footR
+  const radii = [0.3, 0.3, 0.32, 0.18, 0.18, 0.12, 0.12, 0.14, 0.14, 0.15, 0.15, 0.16, 0.16].map(
+    (r) => r * S,
+  )
+  const rag = createRagdoll(radii, [
+    // bone edges
+    { a: P_PELV, b: P_CHEST },
+    { a: P_CHEST, b: P_HEAD },
+    { a: P_CHEST, b: P_SHL },
+    { a: P_CHEST, b: P_SHR },
+    { a: P_SHL, b: P_ELL },
+    { a: P_SHR, b: P_ELR },
+    { a: P_ELL, b: P_HANDL },
+    { a: P_ELR, b: P_HANDR },
+    { a: P_PELV, b: P_KNEEL },
+    { a: P_PELV, b: P_KNEER },
+    { a: P_KNEEL, b: P_FOOTL },
+    { a: P_KNEER, b: P_FOOTR },
+    // braces: a rigid torso box, a neck that resists folding flat, and
+    // soft spacers that keep the legs from scissoring into a split
+    { a: P_SHL, b: P_SHR },
+    { a: P_PELV, b: P_SHL },
+    { a: P_PELV, b: P_SHR },
+    { a: P_HEAD, b: P_SHL, stiff: 0.5 },
+    { a: P_HEAD, b: P_SHR, stiff: 0.5 },
+    { a: P_KNEEL, b: P_KNEER, stiff: 0.25 },
+    { a: P_FOOTL, b: P_FOOTR, stiff: 0.12 },
+    { a: P_CHEST, b: P_KNEEL, stiff: 0.08 },
+    { a: P_CHEST, b: P_KNEER, stiff: 0.08 },
+  ], grav)
+
+  // --- state --------------------------------------------------------------
+  type Mode = 'up' | 'down' | 'rising'
+  let mode: Mode = 'up'
+  let downTime = 0
+  let riseT = 0
+  let flops = 0
+
+  // smoothed kinetics
+  let fwdS = 0 // forward speed, local
+  let sideS = 0
+  let accF = 0 // forward acceleration
+  let accS = 0 // sideways acceleration
+  let lastFwd = 0
+  let lastSide = 0
+  let lastYaw = 0
+  let yawRateS = 0
+  let strafeYaw = 0
+  let airK = 0
+  let fallK = 0 // within air: 0 rising .. 1 falling
+  let springP = 0 // landing spring on the pelvis, design units (<= 0)
+  let springV = 0
+  let idleT = 0
+
+  // the stepper: feet live in world space and only move when a step moves
+  // them, so nothing ever slides. stepT advances with distance actually
+  // covered — its integer part names the swinging foot, its fraction is the
+  // swing phase — which makes stride direction follow the real velocity:
+  // side-steps, diagonals and backpedals all step where the body is going
+  let stepT = 0
+  let strideNow = 1.0 // design units; sprint stretches it a little
+  let needReplant = true
+  let wasGrounded = true
+  let mCos = 1 // smoothed travel direction in the body frame (arm swing)
+  let mSin = 0
+  // the body faces where it last committed, not the camera: standing, the
+  // gaze wanders freely and only past ~40° do the feet pivot after it
+  let facing = 0
+  let facingSet = false
+  let turnActive = false
+  // cosmetic offsets (first-person trail, pitch back-slide) the planted
+  // feet must ride along with — only real movement leaves them behind
+  let slideX = 0
+  let slideZ = 0
+  let slideSet = false
+  const plantedL = new THREE.Vector3() // current sole positions, world
+  const plantedR = new THREE.Vector3()
+  const swingFrom = new THREE.Vector3()
+  const swingTarget = new THREE.Vector3()
+
+  // scratch (per-frame math stays allocation-free)
+  const jointW = Array.from({ length: P_COUNT }, () => new THREE.Vector3())
+  const lp = Array.from({ length: P_COUNT }, () => new THREE.Vector3())
+  const groupInv = new THREE.Matrix4()
+  const mTmp = new THREE.Matrix4()
+  const xA = new THREE.Vector3()
+  const yA = new THREE.Vector3()
+  const zA = new THREE.Vector3()
+  const vTmp = new THREE.Vector3()
+  const dirTmp = new THREE.Vector3()
+  const refX = new THREE.Vector3()
+  const qPelv = new THREE.Quaternion()
+  const qSeg = new THREE.Quaternion()
+  const qInv = new THREE.Quaternion()
+  const qUpper = new THREE.Quaternion()
+  const qLower = new THREE.Quaternion()
+  const qGroupInv = new THREE.Quaternion()
+  const qIK = new THREE.Quaternion()
+  const qAir = new THREE.Quaternion()
+  const eTmp = new THREE.Euler()
+  const vHip = new THREE.Vector3()
+  const vFoot = new THREE.Vector3()
+  const vKnee = new THREE.Vector3()
+  const vPole = new THREE.Vector3()
+  const vRest = new THREE.Vector3()
+  const vVel = new THREE.Vector3()
+  const velTmp = new THREE.Vector3()
+
+  const BONES = [
+    pelvis, torso, head, uarmL, farmL, uarmR, farmR,
+    thighL, shinL, ankleL, thighR, shinR, ankleR,
+  ]
+  const capQ = BONES.map(() => new THREE.Quaternion())
+  const capPelvPos = new THREE.Vector3()
+
+  // the damped springs everything expressive rides on — position at even
+  // indices, velocity at odd. Semi-implicit Euler, with a clamp as
+  // insurance against a pathological frame time.
+  // 0..11: arms ([shoulderX, shoulderZ, elbow] × L/R)
+  // 12: chest look-yaw · 14: head look-yaw · 16: head look-pitch
+  const sprS = new Float64Array(18)
+  const spring = (i: number, target: number, K: number, C: number, force: number, dt: number) => {
+    sprS[i + 1] += ((target - sprS[i]) * K - C * sprS[i + 1] + force) * dt
+    sprS[i + 1] = THREE.MathUtils.clamp(sprS[i + 1], -22, 22)
+    sprS[i] = THREE.MathUtils.clamp(sprS[i] + sprS[i + 1] * dt, -2.6, 2.6)
+    return sprS[i]
   }
 
-  return { group, update }
+  const basisQuat = (q: THREE.Quaternion, x: THREE.Vector3, y: THREE.Vector3, z: THREE.Vector3) => {
+    mTmp.makeBasis(x, y, z)
+    q.setFromRotationMatrix(mTmp)
+  }
+  /** orientation whose local -Y runs along dir, twist steadied by refX */
+  const limbQuat = (q: THREE.Quaternion, dir: THREE.Vector3, refX: THREE.Vector3) => {
+    yA.copy(dir).negate()
+    zA.crossVectors(refX, yA)
+    if (zA.lengthSq() < 1e-8) zA.set(0, 0, 1)
+    zA.normalize()
+    xA.crossVectors(yA, zA).normalize()
+    basisQuat(q, xA, yA, zA)
+  }
+
+  /** drape the rigid skeleton over the particle cloud (group-local space) */
+  const fitFromParticles = () => {
+    group.updateMatrixWorld(true)
+    groupInv.copy(group.matrixWorld).invert()
+    for (let i = 0; i < P_COUNT; i++) lp[i].copy(rag.pts[i]).applyMatrix4(groupInv)
+
+    // torso frame: spine up, shoulder bar sideways (braces keep it rigid)
+    const up = yA.copy(lp[P_CHEST]).sub(lp[P_PELV]).normalize()
+    const xa = xA.copy(lp[P_SHL]).sub(lp[P_SHR]).normalize()
+    const za = zA.crossVectors(xa, up).normalize()
+    xa.crossVectors(up, za).normalize()
+    basisQuat(qPelv, xa, up, za)
+    pelvis.position.copy(lp[P_PELV])
+    pelvis.quaternion.copy(qPelv)
+    torso.position.set(0, WAIST_OFF, 0)
+    torso.quaternion.identity()
+    qInv.copy(qPelv).invert()
+
+    // head grows +Y toward its particle
+    dirTmp.copy(lp[P_HEAD]).sub(lp[P_CHEST]).normalize()
+    zA.crossVectors(xa, dirTmp)
+    if (zA.lengthSq() < 1e-8) zA.set(0, 0, 1)
+    zA.normalize()
+    xA.crossVectors(dirTmp, zA).normalize()
+    basisQuat(qSeg, xA, dirTmp, zA)
+    head.quaternion.copy(qInv).multiply(qSeg)
+
+    // a limb segment: point it from one particle at the next, convert to the
+    // parent's frame, and hand the group-space quat on for its own child
+    const fitLimb = (
+      seg: THREE.Object3D,
+      from: THREE.Vector3,
+      to: THREE.Vector3,
+      parentQ: THREE.Quaternion,
+      out: THREE.Quaternion,
+    ) => {
+      dirTmp.copy(to).sub(from).normalize()
+      refX.set(1, 0, 0).applyQuaternion(parentQ)
+      limbQuat(qSeg, dirTmp, refX)
+      out.copy(qSeg)
+      seg.quaternion.copy(parentQ).invert().multiply(qSeg)
+    }
+    fitLimb(uarmL, lp[P_SHL], lp[P_ELL], qPelv, qUpper)
+    fitLimb(farmL, lp[P_ELL], lp[P_HANDL], qUpper, qLower)
+    fitLimb(uarmR, lp[P_SHR], lp[P_ELR], qPelv, qUpper)
+    fitLimb(farmR, lp[P_ELR], lp[P_HANDR], qUpper, qLower)
+    // legs from the pelvis frame's hip sockets
+    vTmp.set(HIP_X, 0, 0).applyQuaternion(qPelv).add(lp[P_PELV])
+    fitLimb(thighL, vTmp, lp[P_KNEEL], qPelv, qUpper)
+    fitLimb(shinL, lp[P_KNEEL], lp[P_FOOTL], qUpper, qLower)
+    vTmp.set(-HIP_X, 0, 0).applyQuaternion(qPelv).add(lp[P_PELV])
+    fitLimb(thighR, vTmp, lp[P_KNEER], qPelv, qUpper)
+    fitLimb(shinR, lp[P_KNEER], lp[P_FOOTR], qUpper, qLower)
+    // a crumpled body's toes hang relaxed, not frozen in the last stride
+    ankleL.rotation.set(0.2, 0, 0)
+    ankleR.rotation.set(0.2, 0, 0)
+  }
+
+  // --- the kinetic stance -------------------------------------------------
+  const animate = (pose: PlayerPose, groundY: number) => {
+    const { dt, gait } = pose
+    idleT += dt
+    const ease = (k: number) => 1 - Math.exp(-k * dt)
+
+    // local-space kinematics: forward/side speed, forward accel, yaw rate
+    const fwd = pose.vx * -Math.sin(pose.yaw) + pose.vz * -Math.cos(pose.yaw)
+    const side = pose.vx * Math.cos(pose.yaw) - pose.vz * Math.sin(pose.yaw)
+    fwdS += (fwd - fwdS) * ease(10)
+    sideS += (side - sideS) * ease(10)
+    accF += ((fwd - lastFwd) / Math.max(dt, 1e-4) - accF) * ease(6)
+    accS += ((side - lastSide) / Math.max(dt, 1e-4) - accS) * ease(6)
+    lastFwd = fwd
+    lastSide = side
+    let dYaw = pose.yaw - lastYaw
+    if (dYaw > Math.PI) dYaw -= Math.PI * 2
+    else if (dYaw < -Math.PI) dYaw += Math.PI * 2
+    yawRateS += (dYaw / Math.max(dt, 1e-4) - yawRateS) * ease(8)
+    lastYaw = pose.yaw
+
+    // lazy facing: moving (or airborne) the body turns with the camera;
+    // standing it holds its ground until the gaze is ~40° away, then
+    // pivots after it (the feet shuffle home through the settle below).
+    // whatever gap remains, the head and chest counter-rotate to cover
+    if (!facingSet) {
+      facing = pose.yaw
+      facingSet = true
+    }
+    const speedNow = Math.hypot(pose.vx, pose.vz)
+    let dFace = Math.atan2(Math.sin(pose.yaw - facing), Math.cos(pose.yaw - facing))
+    if (speedNow > 0.5 || !pose.grounded) {
+      facing += dFace * ease(10)
+      turnActive = false
+    } else {
+      if (Math.abs(dFace) > 0.7) turnActive = true
+      if (turnActive) {
+        facing += dFace * ease(6)
+        if (Math.abs(dFace) < 0.06) turnActive = false
+      }
+    }
+    dFace = Math.atan2(Math.sin(pose.yaw - facing), Math.cos(pose.yaw - facing))
+    // the look-tracking rides springs too: whip the mouse and the chest
+    // catches up a beat late, the head a shade quicker — never a snap
+    const chestLook = spring(12, THREE.MathUtils.clamp(dFace * 0.35, -0.5, 0.5), 60, 10, 0, dt)
+    const headLook = spring(
+      14,
+      THREE.MathUtils.clamp((dFace - chestLook) * 0.85, -1.0, 1.0),
+      90, 11, 0, dt,
+    )
+
+    // landing spring: the touchdown kicks it, it argues its way back
+    if (pose.landing > 0) springV -= Math.min(pose.landing, 14) * 0.055
+    springV += (-90 * springP - 13 * springV) * dt
+    springP = Math.max(-0.42, springP + springV * dt)
+
+    airK += ((pose.grounded ? 0 : 1) - airK) * ease(pose.grounded ? 14 : 9)
+    fallK += ((pose.vy < 0 ? 1 : 0) - fallK) * ease(7)
+
+    // hips angle toward where the feet are actually going; chest holds the
+    // camera line, so strafing reads as stepping sideways, not gliding
+    // (|fwd| so a straight backpedal keeps the hips square)
+    const moveAng = gait > 0.12 ? Math.atan2(sideS, Math.abs(fwdS) + 0.5) : 0
+    const strafeWant = THREE.MathUtils.clamp(moveAng * 0.6, -0.6, 0.6) * Math.min(1, gait * 2)
+    strafeYaw += (strafeWant - strafeYaw) * ease(7)
+
+    const runK = pose.run ? 1 : 0
+    const breathe = Math.sin(idleT * 1.9) * (1 - gait)
+    const speed = Math.hypot(pose.vx, pose.vz)
+
+    // the step clock ticks on distance covered, not on time: the integer
+    // part says which foot is airborne, the fraction is its swing phase
+    strideNow += (1.0 + 0.35 * runK - strideNow) * ease(4)
+    const prevStep = Math.floor(stepT)
+    if (pose.grounded) {
+      stepT += (speed * dt) / (strideNow * S)
+      // a step begun must finish even if the walker stops mid-swing
+      const frac = stepT - Math.floor(stepT)
+      if (speed < 0.4 && frac > 0.02) stepT = Math.min(Math.floor(stepT) + 1, stepT + dt * 3)
+    }
+    const stepS = Math.sin(Math.PI * stepT)
+
+    // crouch + landing spring both lower the hips; the leg IK below folds
+    // the knees exactly enough that the planted feet stay on the floor
+    const drop = pose.crouchK * 0.85 - springP
+    const hipH = THREE.MathUtils.clamp(HIP_Y - drop, Math.abs(THIGH - SHIN) + 0.06, HIP_Y)
+
+    // pelvis: root motion — gait dip, crouch, spring; lean and bank on top
+    // (the lean is outside-viewer flair: pose.show zeroes it under the lens)
+    const dip = -Math.abs(stepS) * (0.045 + 0.03 * runK) * gait
+    pelvis.position.set(0, hipH + dip, 0)
+    const lean =
+      (THREE.MathUtils.clamp(fwdS * 0.02 + accF * 0.02, -0.3, 0.34) + pose.crouchK * 0.24) *
+      pose.show
+    const bank = THREE.MathUtils.clamp(-yawRateS * 0.05 - sideS * 0.012, -0.22, 0.22)
+    pelvis.rotation.set(lean * 0.55, strafeYaw + stepS * 0.1 * gait, bank * 0.45)
+    torso.position.set(0, WAIST_OFF, 0)
+    torso.rotation.set(
+      lean * 0.45 + airK * 0.12 * fallK,
+      chestLook - strafeYaw * 0.55 - stepS * 0.12 * gait,
+      bank * 0.55,
+    )
+
+    // head: keeps the gaze on the camera line and takes half the pitch —
+    // for outside viewers only; under the first-person lens the head stays
+    // level, or a look down finds the crown of its own head in frame.
+    // the pitch-follow is sprung like the yaw, so nods carry weight
+    const pitchLook = spring(
+      16,
+      pose.pitch * (pose.pitch < 0 ? 0.18 : 0.5) * pose.show,
+      90, 11, 0, dt,
+    )
+    head.rotation.set(
+      pitchLook + 0.08 * gait - airK * 0.1 + breathe * 0.015,
+      headLook - strafeYaw * 0.4 + stepS * 0.06 * gait,
+      -bank * 0.3,
+    )
+    head.position.set(0, NECK_OFF + breathe * 0.018, 0)
+
+    // --- feet: world-planted, distance-triggered, solved with 2-bone IK --
+    // a planted sole is a fixed world point (nothing slides); the swinging
+    // foot glides to a landing spot predicted along the real velocity
+    qGroupInv.copy(group.quaternion).invert()
+    const socketWorld = (side: 1 | -1, out: THREE.Vector3) => {
+      out.set(side * HIP_X, 0, 0).applyQuaternion(pelvis.quaternion).add(pelvis.position)
+      out.multiplyScalar(S).applyQuaternion(group.quaternion).add(group.position)
+      out.y = groundY
+      return out
+    }
+    if (pose.grounded) {
+      if (!wasGrounded || needReplant) {
+        socketWorld(1, plantedL)
+        socketWorld(-1, plantedR)
+        stepT = Math.ceil(stepT) // no half-finished swing survives a replant
+        swingFrom.copy(Math.floor(stepT) % 2 === 0 ? plantedL : plantedR)
+        needReplant = false
+      } else if (Math.floor(stepT) !== prevStep) {
+        // footfall: the old swinger lands on its target, the other takes off
+        ;(prevStep % 2 === 0 ? plantedL : plantedR).copy(swingTarget)
+        swingFrom.copy(Math.floor(stepT) % 2 === 0 ? plantedL : plantedR)
+      }
+      const idx = Math.floor(stepT) % 2 // 0: left is airborne, 1: right
+      const frac = stepT - Math.floor(stepT)
+      if (speed >= 0.4 || frac > 0.02) {
+        const side: 1 | -1 = idx === 0 ? 1 : -1
+        const swing = idx === 0 ? plantedL : plantedR
+        socketWorld(side, vRest)
+        vVel.set(pose.vx, 0, pose.vz)
+        // land where the hip socket will be at touchdown, plus a reach of
+        // roughly half a stride further along the travel direction
+        swingTarget.copy(vRest)
+        if (speed > 0.3) {
+          swingTarget.addScaledVector(vVel, ((1 - frac) * strideNow * S) / speed)
+          swingTarget.addScaledVector(vVel, (0.42 * strideNow * S) / speed)
+        }
+        swingTarget.y = groundY
+        const k = frac * frac * (3 - 2 * frac)
+        swing.lerpVectors(swingFrom, swingTarget, k)
+        swing.y = groundY + Math.sin(frac * Math.PI) * (0.09 + 0.07 * runK) * S * Math.min(1, speed)
+      } else {
+        // standing: a foot left far from its socket (turning on the spot,
+        // a step that ended wide) shuffles home; otherwise feet stay put
+        const settle = (foot: THREE.Vector3, side: 1 | -1) => {
+          socketWorld(side, vRest)
+          vTmp.subVectors(vRest, foot)
+          vTmp.y = 0
+          const d = vTmp.length()
+          if (d < 0.03 * S) {
+            foot.y = groundY
+            return
+          }
+          if (d > 0.26 * S) {
+            foot.addScaledVector(vTmp.normalize(), Math.min(d, 2.6 * S * dt))
+            foot.y = groundY + Math.min(0.05 * S, d * 0.2) // a tiny shuffle hop
+          }
+        }
+        settle(plantedL, 1)
+        settle(plantedR, -1)
+        swingFrom.copy(idx === 0 ? plantedL : plantedR)
+      }
+    }
+
+    // two-bone IK per leg in the pelvis frame; airborne it crossfades to a
+    // tuck on the rise and a reach on the fall
+    const tuckThigh = -0.75 + fallK * 0.55
+    const tuckShin = 1.25 - fallK * 0.9
+    qInv.copy(pelvis.quaternion).invert()
+    const solveLeg = (
+      thigh: THREE.Group,
+      shin: THREE.Group,
+      ankle: THREE.Group,
+      foot: THREE.Vector3,
+      side: 1 | -1,
+      airThighX: number,
+      airShinX: number,
+    ) => {
+      // foot: world → body → pelvis frame
+      vFoot.copy(foot).sub(group.position).applyQuaternion(qGroupInv).multiplyScalar(1 / S)
+      vFoot.sub(pelvis.position).applyQuaternion(qInv)
+      vHip.set(side * HIP_X, 0, 0)
+      dirTmp.subVectors(vFoot, vHip)
+      const L = THREE.MathUtils.clamp(dirTmp.length(), 0.25, THIGH + SHIN - 0.01)
+      dirTmp.normalize()
+      // knee pole: forward with a nudge outward, kept off the leg axis
+      vPole.set(side * 0.12, 0, 1)
+      vPole.addScaledVector(dirTmp, -vPole.dot(dirTmp))
+      if (vPole.lengthSq() < 1e-6) vPole.set(0, 0, 1)
+      vPole.normalize()
+      const cosHip = THREE.MathUtils.clamp(
+        (THIGH * THIGH + L * L - SHIN * SHIN) / (2 * THIGH * L), -1, 1,
+      )
+      const sinHip = Math.sqrt(1 - cosHip * cosHip)
+      vKnee.copy(vHip).addScaledVector(dirTmp, THIGH * cosHip).addScaledVector(vPole, THIGH * sinHip)
+      vTmp.subVectors(vKnee, vHip).normalize()
+      limbQuat(qIK, vTmp, refX.set(1, 0, 0))
+      qAir.setFromEuler(eTmp.set(airThighX, 0, side * 0.02))
+      thigh.quaternion.copy(qIK).slerp(qAir, airK)
+      // shin: from the knee toward the (possibly clamped) foot
+      vTmp.copy(vHip).addScaledVector(dirTmp, L).sub(vKnee).normalize()
+      refX.set(1, 0, 0).applyQuaternion(qIK)
+      limbQuat(qSeg, vTmp, refX)
+      qSeg.premultiply(qIK.invert()) // shin local = thigh⁻¹ · shin(pelvis)
+      qAir.setFromEuler(eTmp.set(airShinX, 0, 0))
+      shin.quaternion.copy(qSeg).slerp(qAir, airK)
+      // ankle: counter most of the shin's sagittal tilt so the sole stays
+      // level on the ground; airborne the toes droop instead of digging
+      const tilt = Math.atan2(vTmp.z, -vTmp.y) // vTmp still holds the shin dir
+      ankle.rotation.set(tilt * 0.85 * (1 - airK) + 0.45 * airK, 0, 0)
+    }
+    solveLeg(thighL, shinL, ankleL, plantedL, 1, tuckThigh, tuckShin)
+    solveLeg(thighR, shinR, ankleR, plantedR, -1, tuckThigh * 0.85, tuckShin)
+    wasGrounded = pose.grounded
+
+    // arms: the targets below say where the arms WANT to be — counter-swing
+    // along the travel direction, elbows pumped by a sprint, thrown out by
+    // a fall — but nothing is assigned directly. Every joint rides an
+    // underdamped spring toward its target, fed the body's own inertia:
+    // a sprint start drags the arms back, a hard stop lets them swing
+    // through and settle, a turn slings them to the outside, a landing
+    // jolts them — and the elbows chase the shoulders' actual (sprung)
+    // angle one beat behind, which is the follow-through
+    const mag = Math.hypot(fwdS, sideS)
+    if (mag > 0.5) {
+      mCos += (fwdS / mag - mCos) * ease(6)
+      mSin += (sideS / mag - mSin) * ease(6)
+    } else {
+      mCos += (1 - mCos) * ease(3)
+      mSin += (0 - mSin) * ease(3)
+    }
+    const swingAmt = stepS * (0.55 + 0.3 * runK) * gait
+    const swingF = swingAmt * mCos
+    const swingS = swingAmt * mSin * 0.7
+    const elbowBase = 0.2 + 0.6 * runK * gait
+    const spread = 0.07 + breathe * 0.03 + airK * (0.2 + fallK * 0.35)
+    const airX = airK * (0.5 - fallK * 0.25)
+    // idle micro-sway: incommensurate sines, phased so the arms never
+    // mirror each other exactly — stillness reads as breathing, not parking
+    const idleK = 1 - gait
+    const swayLX = (Math.sin(idleT * 1.7) * 0.022 + Math.sin(idleT * 0.83 + 1.3) * 0.014) * idleK
+    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.02 + Math.sin(idleT * 0.94 + 2.1) * 0.015) * idleK
+    const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.016 * idleK
+    const swayRZ = Math.sin(idleT * 1.31 + 2.6) * 0.016 * idleK
+    // inertial forces on the springs
+    const throwX = accF * 0.05
+    const slingZ = -yawRateS * 0.35 - accS * 0.045
+    if (pose.landing > 0) {
+      const jolt = Math.min(pose.landing, 12) * 0.06
+      sprS[1] -= jolt
+      sprS[7] -= jolt * 0.85
+      sprS[3] += jolt * 0.35
+      sprS[9] += jolt * 0.35
+      sprS[17] -= jolt * 0.5 // the head nods into a hard landing
+    }
+    const KS = 70
+    const CS = 9 // underdamped on purpose: the overshoot is the liveliness
+    const KE = 52
+    const CE = 7.5
+    const shLX = spring(0, -swingF - airX + swayLX, KS, CS, throwX, dt)
+    const shLZ = spring(2, spread + swingS + swayLZ, KS, CS, slingZ, dt)
+    const elL = spring(4, -(elbowBase + Math.max(0, -shLX) * 0.75 + airK * 0.35), KE, CE, 0, dt)
+    const shRX = spring(6, swingF * 0.93 - airX + swayRX, KS, CS, throwX, dt)
+    const shRZ = spring(8, -spread + swingS + swayRZ, KS, CS, slingZ, dt)
+    const elR = spring(10, -(elbowBase + 0.03 + Math.max(0, shRX) * 0.75 + airK * 0.35), KE, CE, 0, dt)
+    uarmL.rotation.set(shLX, 0, shLZ)
+    farmL.rotation.set(elL, 0, 0)
+    uarmR.rotation.set(shRX, 0, shRZ)
+    farmR.rotation.set(elR, 0, 0)
+  }
+
+  const captureBlendSource = () => {
+    BONES.forEach((b, i) => capQ[i].copy(b.quaternion))
+    capPelvPos.copy(pelvis.position)
+  }
+  const applyBlend = (k: number) => {
+    BONES.forEach((b, i) => {
+      qSeg.copy(b.quaternion)
+      b.quaternion.slerpQuaternions(capQ[i], qSeg, k)
+    })
+    pelvis.position.lerpVectors(capPelvPos, pelvis.position, k)
+  }
+
+  return {
+    group,
+    get down() {
+      return mode !== 'up'
+    },
+    get ragdolling() {
+      return mode === 'down'
+    },
+    get settled() {
+      return mode === 'down' && downTime > 0.65 && rag.motion() < 0.9
+    },
+    focus: (out) => out.copy(rag.pts[P_CHEST]),
+    getupSpot: (out) => out.copy(rag.pts[P_PELV]),
+    unrest: () =>
+      mode !== 'up' || Math.abs(springP) > 0.004 || Math.abs(springV) > 0.05 || airK > 0.02,
+    get facing() {
+      return facing
+    },
+    face: (yaw) => {
+      facing = yaw
+      facingSet = true
+      turnActive = false
+    },
+    trackSlide: (x, z) => {
+      if (slideSet && mode !== 'down') {
+        const dx = x - slideX
+        const dz = z - slideZ
+        if (dx !== 0 || dz !== 0) {
+          plantedL.x += dx
+          plantedL.z += dz
+          plantedR.x += dx
+          plantedR.z += dz
+          swingFrom.x += dx
+          swingFrom.z += dz
+          swingTarget.x += dx
+          swingTarget.z += dz
+        }
+      }
+      slideX = x
+      slideZ = z
+      slideSet = true
+    },
+    flop: (vx, vy, vz) => {
+      group.updateMatrixWorld(true)
+      for (let i = 0; i < P_COUNT; i++) anchors[i].getWorldPosition(jointW[i])
+      rag.start(jointW, velTmp.set(vx, vy, vz), 0x51ab0 + flops++)
+      mode = 'down'
+      downTime = 0
+    },
+    beginRecover: () => {
+      if (mode !== 'down') return
+      fitFromParticles() // against the group's new frame — see the interface
+      captureBlendSource()
+      mode = 'rising'
+      riseT = 0
+      needReplant = true // fresh footing under the get-up spot
+    },
+    reset: () => {
+      mode = 'up'
+      downTime = 0
+      springP = 0
+      springV = 0
+      airK = 0
+      fallK = 0
+      fwdS = 0
+      sideS = 0
+      accF = 0
+      lastFwd = 0
+      yawRateS = 0
+      strafeYaw = 0
+      accS = 0
+      lastSide = 0
+      sprS.fill(0)
+      needReplant = true // the body teleported; feet must not IK across it
+      facingSet = false
+      turnActive = false
+      slideSet = false
+    },
+    update: (pose, env) => {
+      showHead(pose.show > 0.12)
+      if (mode === 'down') {
+        downTime += pose.dt
+        rag.step(pose.dt, env)
+        fitFromParticles()
+        return
+      }
+      animate(pose, env.groundY)
+      if (mode === 'rising') {
+        riseT += pose.dt / RISE_TIME
+        if (riseT >= 1) mode = 'up'
+        else applyBlend(EASE(riseT))
+      }
+    },
+  }
 }

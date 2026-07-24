@@ -23,7 +23,14 @@ physics/
 player/
   walkController.ts  createWalkController() — the FPS movement sim (velocity,
                      gravity/jump/crouch, footstep bob, sprint fov)
-  playerBody.ts      buildPlayerBody() — the code-built robot the camera drags
+  playerBody.ts      buildPlayerBody() — the articulated robot: kinetic stance
+                     (accel lean, turn bank, landing spring), world-planted
+                     stepping feet solved with two-bone IK, and the ragdoll
+                     fit/recovery over the same skeleton
+  ragdoll.ts         createRagdoll() — verlet particles + constraints against
+                     the level's floor and collision boxes
+  chaseCam.ts        createChaseCam() — the third-person boom (v), collision-
+                     clamped, which also frames a downed body
 levels/
   types.ts           the Level contract (collision, spawn, seams, light override)
   levelSystem.ts     createLevelSystem() — which level is live + the noclip cut

@@ -13,9 +13,12 @@ import { createLevelSystem } from '../../game/levels/levelSystem'
 import type { LevelLightRig } from '../../game/levels/types'
 import { buildPaperPlane } from '../../game/props/paperPlane'
 import type { HouseModels } from '../../game/levels/houseWorld'
-import { buildPlayerBody } from '../../game/player/playerBody'
+import { buildPlayerBody, type PlayerPose } from '../../game/player/playerBody'
+import type { RagdollEnv } from '../../game/player/ragdoll'
+import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
 import { createWalkController } from '../../game/player/walkController'
 import { createRoamInput } from '../../game/core/input'
+import { makeCollisionSet } from '../../game/physics/collision'
 import { createDisposer } from '../../game/core/disposer'
 import { OS_SCENE_READY_EVENT } from '../../events'
 
@@ -590,21 +593,57 @@ export default function CrtScene({
           grav: 34,
         })
 
-        // the first-person body: a little robot built in code (playerBody.ts)
-        // trailing the camera, so looking down shows your own stubby legs
-        const rig = buildPlayerBody(EYE)
+        // the player's body: the articulated robot in playerBody.ts. In first
+        // person it trails the camera so looking down shows your own legs; in
+        // third person (v) the chase boom in chaseCam.ts backs the lens off
+        // it, and a flop (x) hands the whole skeleton to the ragdoll
+        const rig = buildPlayerBody(EYE, 34) // same gravity as the walk tune
         const body = rig.group
         body.visible = false
         scene.add(body)
+        const chase = createChaseCam()
         const BODY_BACK = 0.38 // eye sits ahead of the spine; keeps the chest out of frame
         const poseBody = () => {
+          // the trailing offset fades with the real boom length, not the mode:
+          // a wall that crushes the boom flat leaves a first-person body.
+          // Pitching down slides the body a bit further back (quadratically,
+          // so level walking never feels it) — a steep look-down then reads
+          // as your chest and legs, not the top slab of your own torso
+          const fp = 1 - Math.min(1, chase.dist / 1.2)
+          const down = Math.max(0, -walk.pitch) / 1.35
+          const back = (BODY_BACK + 0.55 * down * down) * fp
+          const ox = Math.sin(walk.yaw) * back
+          const oz = Math.cos(walk.yaw) * back
+          // the offset is presentation, not travel: the rig shifts its
+          // planted feet along with it so the legs never stretch after it
+          rig.trackSlide(ox, oz)
           body.position.set(
-            camera.position.x + Math.sin(walk.yaw) * BODY_BACK,
+            camera.position.x + ox,
             levels.current.groundY + walk.airY,
-            camera.position.z + Math.cos(walk.yaw) * BODY_BACK,
+            camera.position.z + oz,
           )
-          body.rotation.y = walk.yaw + Math.PI
+          // the body faces where the rig says it faces — standing, that
+          // lags the camera and the head covers the gap (no statue-spin)
+          body.rotation.y = rig.facing + Math.PI
         }
+        // reused every tick; the rig and boom read them, never keep them
+        const rigPose: PlayerPose = {
+          dt: 0, gait: 0, crouchK: 0, grounded: true, run: false,
+          yaw: 0, pitch: 0, vx: 0, vz: 0, vy: 0, landing: 0, show: 0,
+        }
+        // collision is re-pointed at the live level's set every tick
+        const bootSet = makeCollisionSet(
+          { minX: -1e3, maxX: 1e3, minZ: -1e3, maxZ: 1e3 },
+          obstacles,
+        )
+        const rigEnv: RagdollEnv = { groundY: 0, ceilingY: undefined, collision: bootSet }
+        const chaseEnv: ChaseEnv = {
+          collision: bootSet, groundY: 0, ceilingY: undefined, yaw: 0, pitch: 0, focus: null,
+        }
+        const focusPt = new THREE.Vector3()
+        const getupPt = new THREE.Vector3()
+        let vHeld = false
+        let xHeld = false
 
         // prompt bookkeeping mirrored into React state only on change
         let nearNow = false
@@ -667,6 +706,9 @@ export default function CrtScene({
           },
           onSwapped: (level, spawn) => {
             walk.resetMotion()
+            rig.reset() // a ragdoll must not straddle a level swap
+            rig.face(spawn.yaw)
+            chase.drop()
             walk.spawnAt(spawn.x, spawn.z, spawn.yaw, level.groundY)
             if (level.id === 'overworld') house.flagShadows(camera.position)
             // either side of the cut, the body's old shadow may still be
@@ -817,6 +859,9 @@ export default function CrtScene({
             webgl?.setPixelRatio(pr)
             prWait = 1.2
           }
+          // the boom hands the camera back to the head before anything reads
+          // or integrates it; it takes it again just before render below
+          chase.restore(camera)
           // seams and the noclip cut: stepping into the doctored wall span
           // freezes the walk and cuts to black; the level system swaps the
           // worlds under the cover (no seams during the stand-up glide)
@@ -825,22 +870,65 @@ export default function CrtScene({
           const step = walk.update({
             dt,
             keys: input.keys,
-            frozen: levels.frozen,
+            // a downed body forfeits movement until it has stood back up
+            frozen: levels.frozen || rig.down,
             groundY: level.groundY,
             ceilingY: level.ceilingY,
             collision: level.collision,
             fovBase: prefsRef.current.fov,
           })
+          // v flips the lens between the eyes and the chase boom; x flops —
+          // and once the ragdoll settles, x or any move key stands back up
+          const vNow = input.keys.has('KeyV')
+          if (vNow && !vHeld && !levels.frozen) chase.third = !chase.third
+          vHeld = vNow
+          const xNow = input.keys.has('KeyX')
+          const wantsUp =
+            rig.ragdolling &&
+            rig.settled &&
+            ((xNow && !xHeld) ||
+              ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].some((k) => input.keys.has(k)))
+          if (xNow && !xHeld && !rig.down && !levels.frozen) {
+            // thrown with the walk's momentum plus a hop so it always tumbles
+            rig.flop(step.vx, step.vy + 1.6, step.vz)
+          } else if (wantsUp) {
+            // stand up where the body came to rest: move the walker there
+            // first so the recovery blend is fitted against the new frame
+            rig.getupSpot(getupPt)
+            walk.teleport(getupPt.x, getupPt.z, level.groundY)
+            poseBody()
+            rig.beginRecover()
+          }
+          xHeld = xNow
           // the body plants its feet under the camera and faces the walk
-          // (or hangs from it, mid-hop); legs scissor in step with the bob
-          poseBody()
-          rig.update(dt, walk.bobT, step.gait, walk.crouchK)
+          // (or hangs from it, mid-hop) — unless the ragdoll owns it
+          if (!rig.ragdolling) poseBody()
+          rigPose.dt = dt
+          rigPose.gait = step.gait
+          rigPose.crouchK = walk.crouchK
+          rigPose.grounded = step.grounded
+          rigPose.run = step.run
+          rigPose.yaw = walk.yaw
+          rigPose.pitch = walk.pitch
+          rigPose.vx = step.vx
+          rigPose.vz = step.vz
+          rigPose.vy = step.vy
+          rigPose.landing = step.landing
+          // same factor as poseBody's trailing offset: a crushed boom means
+          // the lens is back on the head, so the flair fades out with it
+          rigPose.show = Math.min(1, chase.dist / 1.2)
+          rigEnv.groundY = level.groundY
+          rigEnv.ceilingY = level.ceilingY
+          rigEnv.collision = level.collision
+          rig.update(rigPose, rigEnv)
           // doors easing upstairs, chunks streaming below — whichever side
           // the player is on, both worlds keep their pulse
           level.update(dt, camera.position)
           // the player is the only moving shadow caster: re-bake just the
-          // lights that can see them, only on frames where they moved
-          if (level.id === 'overworld' && step.moved) {
+          // lights that can see them, only on frames where they moved (the
+          // rig speaks up for motion the walker can't see: ragdoll, springs)
+          const bodyMoved = step.moved || rig.unrest()
+          if (level.id === 'overworld' && bodyMoved) {
             // generous regions: a map must keep re-baking until the player is
             // fully out of its light's frustum, or their shadow strands there
             if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
@@ -851,7 +939,8 @@ export default function CrtScene({
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
           camera.getWorldDirection(gazeVec)
-          const isNear = dist < 3.4 && gazeVec.dot(toScreen.normalize()) > 0.35
+          // no prompts while the body is a heap on the floor
+          const isNear = !rig.down && dist < 3.4 && gazeVec.dot(toScreen.normalize()) > 0.35
           if (isNear !== nearNow) {
             nearNow = isNear
             setNear(isNear)
@@ -859,11 +948,22 @@ export default function CrtScene({
           // a door in reach offers its own prompt; the machine's wins (and
           // level 0 has no doors, whatever its x/z coordinates suggest)
           const verb =
-            isNear || level.id !== 'overworld' ? null : house.doorPrompt(camera.position, gazeVec)
+            isNear || rig.down || level.id !== 'overworld'
+              ? null
+              : house.doorPrompt(camera.position, gazeVec)
           if (verb !== doorVerbNow) {
             doorVerbNow = verb
             setDoorVerb(verb)
           }
+          // every gameplay read above used the head; only now does the boom
+          // borrow the camera (third person, or orbiting a downed body)
+          chaseEnv.collision = level.collision
+          chaseEnv.groundY = level.groundY
+          chaseEnv.ceilingY = level.ceilingY
+          chaseEnv.yaw = walk.yaw
+          chaseEnv.pitch = walk.pitch
+          chaseEnv.focus = rig.ragdolling ? rig.focus(focusPt) : null
+          chase.apply(camera, dt, chaseEnv)
           render()
           raf = requestAnimationFrame(walkTick)
         }
@@ -902,6 +1002,7 @@ export default function CrtScene({
               walk.pitch = aim.pitch
               fps = true
               // the body materializes behind the lens, feet on the floor
+              rig.face(aim.yaw)
               poseBody()
               body.visible = true
               // the body just appeared: refresh only the maps that can see
@@ -927,6 +1028,8 @@ export default function CrtScene({
           setPauseNow(false)
           input.clearKeys()
           walk.resetMotion()
+          rig.reset()
+          chase.drop() // the sit-down glide starts from wherever the lens is
           // sitting down (or leaving) always hauls you back through the
           // seam first, so the chair never has to fly up from level 0
           const homed = levels.reset()
@@ -1136,7 +1239,7 @@ export default function CrtScene({
       {roam && walking && !paused && (
         <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
           {locked
-            ? 'wasd move · space jump · shift run · ctrl crouch · esc pauses'
+            ? 'wasd move · space jump · shift run · ctrl crouch · v camera · x flop · esc pauses'
             : 'wasd to move · click to grab the mouse · esc to leave'}
         </p>
       )}
