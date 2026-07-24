@@ -22,7 +22,7 @@ function renderLlmsTxt(): string {
   parts.push(
     `This is the plain-text rendering of ${SITE}, a client-side React app. ` +
       `A skimmable HTML résumé lives at ${SITE}/?v=simple and each showcase project below has its own page. ` +
-      `The default site is an interactive playground with a draggable 3D name, a flyable paper plane, and a retro OS at ${SITE}/alejOS.`,
+      `The default site is an interactive playground with a draggable 3D name, a flyable paper plane, and a retro OS at ${SITE}/alejOS, which also opens without any of the 3D at ${SITE}/pc.`,
   )
 
   parts.push('## Selected work')

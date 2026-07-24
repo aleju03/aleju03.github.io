@@ -20,6 +20,7 @@ import {
 } from '@phosphor-icons/react'
 import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT } from '../../events'
+import { HOME_PATH, OS_PATH, PC_PATH, isOsPath, isPcPath } from '../../version'
 import { lockPageForOverlay } from '../../overlay'
 import { APPS, glyphFor, isAppId } from './apps'
 import { preloadImage, preloadXpIcons, xpIcon } from './xpIcon'
@@ -74,6 +75,14 @@ import type { FsNode } from './fs'
   the filesystem: icons are C:\Desktop, Explorer walks the whole tree, and
   the right-click menu carries the full XP kit. On capable screens CrtScene
   maps the live DOM onto a 3D CRT; Esc always backs out.
+
+  Two renderings, one desktop. The 3D one is the default where it can land,
+  but a boot can ask for the flat bezel outright (`{ flat: true }` on the boot
+  event, or the /pc route) — same OS, none of the three.js. That request also
+  picks which URL the session owns, so the two stay distinguishable on a
+  reload or a trip through the back button: a device that merely fell back to
+  flat still reads /alejOS, while someone who asked for the machine keeps a
+  shareable /pc (which re-derives the request through isPcPath on re-entry).
 */
 
 const CrtScene = lazy(() => import('./CrtScene'))
@@ -81,8 +90,7 @@ const CrtScene = lazy(() => import('./CrtScene'))
 type Phase = 'off' | 'post' | 'boot' | 'login' | 'on' | 'down' | 'room'
 type Mode = 'flat' | '3d'
 
-const OS_PATH = '/alejOS'
-const isOsUrl = () => location.pathname.toLowerCase() === '/alejos'
+const isOsUrl = () => isOsPath()
 
 const START_ITEMS: {
   app: AppId
@@ -460,7 +468,14 @@ function BootScreen() {
 const sameSet = (a: Set<string>, b: Set<string>) =>
   a.size === b.size && [...a].every((v) => b.has(v))
 
-export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unknown } }) {
+export default function AlejOS({
+  initialBoot,
+  onPowerOff,
+}: {
+  initialBoot?: { detail?: unknown }
+  /** the OS gave the address bar back to the site; /pc uses this to bow out */
+  onPowerOff?: () => void
+}) {
   const [phase, setPhase] = useState<Phase>('off')
   const [mode, setMode] = useState<Mode>('flat')
   // standing up mid-session: the OS keeps running and the tube stays lit
@@ -563,6 +578,16 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     sounds.click()
   }
 
+  /**
+   * The machine is off for good: hand the address bar back to the site. On
+   * /pc there is no site mounted underneath to hand it to, so the host is
+   * told to swap the portfolio in where the desktop was.
+   */
+  const returnToSite = useCallback(() => {
+    if (isOsUrl()) history.pushState(null, '', HOME_PATH)
+    onPowerOff?.()
+  }, [onPowerOff])
+
   /** power off; in 3D mode the room stays up to roam unless toSite is set */
   const shutdown = useCallback(
     (toSite = false) => {
@@ -588,14 +613,13 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
             setPhase('room')
           } else {
             setPhase('off')
-            // hand the address bar back to the site
-            if (isOsUrl()) history.pushState(null, '', '/')
+            returnToSite()
           }
         },
         mode === '3d' ? 2150 : 2200,
       )
     },
-    [mode, phase],
+    [mode, phase, returnToSite],
   )
 
   /** interacted with the dark machine while roaming: boot it again */
@@ -634,8 +658,8 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     setSelected(new Set())
     setSession(null)
     setPhase('off')
-    if (isOsUrl()) history.pushState(null, '', '/')
-  }, [])
+    returnToSite()
+  }, [returnToSite])
 
   const boot = useCallback((e?: Event) => {
     if (phaseRef.current !== 'off') return
@@ -643,13 +667,18 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     warmDesktop()
     // the boot event's detail can name an app to open once someone logs in;
     // the contact section uses this to land visitors straight in the chat
-    const detail = (e as CustomEvent<{ app?: string; via?: string }> | undefined)?.detail
+    const detail = (e as CustomEvent<{ app?: string; via?: string; flat?: boolean }> | undefined)
+      ?.detail
     const want = detail?.app
     pendingAppRef.current = isAppId(want) ? want : null
     // a plane-triggered boot carries the dart into the room with it
     setPlaneInRoom(detail?.via === 'plane')
+    // someone asked for the machine and not the room — either through the
+    // palette/terminal or by landing on /pc
+    const flatOnly = detail?.flat === true || isPcPath()
     // the 3D session only where it can land: mouse, big screen, motion ok
     const fancy =
+      !flatOnly &&
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
       !window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
       window.innerWidth >= 640
@@ -659,8 +688,12 @@ export default function AlejOS({ initialBoot }: { initialBoot?: { detail?: unkno
     // the deep-link check in the next effect would otherwise boot a second
     // time in the same pass (still seeing 'off') and wipe this call's detail
     phaseRef.current = fancy ? 'post' : 'boot'
-    // make the session shareable: the OS owns /alejOS while it runs
-    if (!isOsUrl()) history.pushState({ alejos: true }, '', OS_PATH)
+    // make the session shareable: the OS owns its route while it runs, and
+    // which route says how you got in — /pc stays /pc when shared, while a
+    // phone that merely fell back to the flat bezel still reads /alejOS
+    const path = flatOnly ? PC_PATH : OS_PATH
+    if (location.pathname.toLowerCase() !== path.toLowerCase())
+      history.pushState({ alejos: true }, '', path)
   }, [warmDesktop])
 
   useEffect(() => {

@@ -646,7 +646,7 @@ export default function CrtScene({
         // the two levels and the noclip cut between them; the scene's share
         // of a swap is the blackout card and the shadow-map hygiene
         const levels = createLevelSystem({
-          levels: makeHomeLevels(house, backrooms, obstacles),
+          levels: makeHomeLevels(house, outside, backrooms, obstacles),
           home: 'overworld',
           onCover: (on) => {
             blackout.style.transition = on ? 'opacity 130ms' : 'opacity 650ms'

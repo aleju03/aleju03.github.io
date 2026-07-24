@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { HouseHandles } from './houseWorld'
 import type { BackroomsHandles } from './backrooms'
 import { BR } from './backrooms'
+import type { OutsideHandles } from './outsideWorld'
 import { WORLD } from './outsideWorld'
 import { makeCollisionSet } from '../physics/collision'
 import type { Level } from './types'
@@ -17,6 +18,15 @@ import type { Level } from './types'
     obstacle set (chunk-streamed), a floor far below the world, and a light
     override that kills the sky while you're down there.
 
+  Depth alone doesn't separate them: the outside world's domes and celestial
+  bodies are drawn with fog off and frustum culling off, and the star dome's
+  230-unit radius still swallows a camera 120 below. So level 0 hides the
+  whole outside root while you're in it — otherwise every sight line that
+  escapes the streamed chunk ring (a band of near-horizontal rays that miss
+  both the chunk floor and its ceiling) frames a rectangle of night sky in
+  the fog. With the sky gone those pixels fall through to the scene
+  background, which the light override has already pinned to the fog color.
+
   Both keep the house and the backrooms modules ticking every frame no
   matter which side you're on: doors keep easing shut upstairs while you're
   below, and the seam keeps whispering upstairs while you're not.
@@ -24,6 +34,7 @@ import type { Level } from './types'
 
 export function makeHomeLevels(
   house: HouseHandles,
+  outside: OutsideHandles,
   backrooms: BackroomsHandles,
   sharedObstacles: THREE.Box3[],
 ): Level[] {
@@ -61,8 +72,16 @@ export function makeHomeLevels(
       backrooms.obstacles,
     ),
     spawn: BR.spawn,
-    enter: () => backrooms.enter(),
-    leave: () => backrooms.leave(),
+    // the sky goes with the lights: hidden, its domes can't paint through
+    // the gaps in the fog (and the neighborhood stops costing draw calls)
+    enter: () => {
+      outside.root.visible = false
+      backrooms.enter()
+    },
+    leave: () => {
+      backrooms.leave()
+      outside.root.visible = true
+    },
     update: (dt, p) => {
       house.update(dt)
       backrooms.update(dt, p, true) // chunk streaming, flicker and hum

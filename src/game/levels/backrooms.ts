@@ -9,7 +9,8 @@ import { canvasTexture } from '../core/textures'
   never got a collision box (houseWorld cuts the hole and dresses it over);
   walk into it and you noclip out of the house into level 0 — mono-yellow
   wallpaper, damp carpet, drop ceiling, fluorescent hum — built far below
-  the neighborhood so the two worlds can never catch each other in a frame.
+  the neighborhood, whose sky homeLevels hides while you're down here so
+  the two worlds can never catch each other in a frame.
 
   The level is chunked and deterministic: each 40-unit chunk seeds its own
   RNG from its coordinates, partitions itself into rooms whose every wall

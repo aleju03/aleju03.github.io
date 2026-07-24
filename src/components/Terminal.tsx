@@ -56,6 +56,7 @@ const HELP: [string, string][] = [
   ['neofetch', 'system info'],
   ['theme', 'toggle light/dark'],
   ['boot', 'start AlejOS'],
+  ['pc', 'AlejOS, no 3D'],
   ['sudo hire-me', 'try it'],
   ['clear', 'clear screen (ctrl+l)'],
   ['exit', 'close terminal'],
@@ -112,7 +113,7 @@ export function TerminalView({ onExit, insideOS }: TerminalViewProps) {
       case 'help':
         print(
           <div className="grid grid-cols-[10rem_1fr] gap-x-4">
-            {HELP.filter(([c]) => !(insideOS && c === 'boot')).map(([c, desc]) => (
+            {HELP.filter(([c]) => !(insideOS && (c === 'boot' || c === 'pc'))).map(([c, desc]) => (
               <div key={c} className="contents">
                 <span className="text-blue-400">{c}</span>
                 <span className="text-stone-400">{desc}</span>
@@ -210,16 +211,22 @@ export function TerminalView({ onExit, insideOS }: TerminalViewProps) {
         break
       case 'boot':
       case 'alejos':
+      case 'pc': {
         if (insideOS) {
           print(<p className="text-stone-400">AlejOS is already running</p>)
           break
         }
-        print(<p className="text-stone-300">booting AlejOS...</p>)
+        // `pc` and `boot flat` skip the 3D room and go straight to the desktop
+        const flat = head === 'pc' || arg === 'flat'
+        print(
+          <p className="text-stone-300">booting AlejOS{flat ? ' (no 3D)' : ''}...</p>,
+        )
         setTimeout(() => {
-          window.dispatchEvent(new Event(BOOT_OS_EVENT))
+          window.dispatchEvent(new CustomEvent(BOOT_OS_EVENT, { detail: { flat } }))
           onExit?.()
         }, 500)
         break
+      }
       case 'sudo':
         if (arg === 'hire-me' || arg === 'hire me') {
           print(

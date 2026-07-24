@@ -93,6 +93,29 @@ export function projectPath(slug: string) {
 
 export const HOME_PATH = '/'
 
+/**
+ * AlejOS owns the address bar while it runs, and it has two entrances.
+ * `/alejOS` is the full session: the desktop on a CRT inside the 3D room you
+ * can stand up and walk. `/pc` is the machine on its own — the same desktop
+ * in its flat bezel, with no CrtScene, no game runtime, and no portfolio page
+ * mounted behind it, so nothing three.js-shaped ever loads. Small/touch/
+ * reduced-motion devices land in that same flat rendering from `/alejOS` too;
+ * `/pc` is the way to ask for it deliberately.
+ */
+export const OS_PATH = '/alejOS'
+export const PC_PATH = '/pc'
+
+/** true on either AlejOS entrance */
+export function isOsPath(pathname: string = window.location.pathname): boolean {
+  const path = pathname.toLowerCase()
+  return path === OS_PATH.toLowerCase() || path === PC_PATH
+}
+
+/** true only on the flat entrance */
+export function isPcPath(pathname: string = window.location.pathname): boolean {
+  return pathname.toLowerCase() === PC_PATH
+}
+
 /** client-side navigation for the simple version's real URLs */
 export function navigate(to: string) {
   if (to === window.location.pathname) {

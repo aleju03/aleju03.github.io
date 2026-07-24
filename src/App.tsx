@@ -1,8 +1,9 @@
-import { Suspense, lazy, useEffect, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { I18nProvider } from './i18n'
 import { VersionChooser } from './components/VersionChooser'
 import { VersionNudge } from './components/VersionNudge'
 import {
+  isPcPath,
   matchProjectSlug,
   persistNudgeDismissed,
   persistVersion,
@@ -16,10 +17,16 @@ import { NAVIGATE_EVENT, OPEN_CHOOSER_EVENT } from './events'
 
 const FullPortfolio = lazy(() => import('./components/FullPortfolio'))
 const SimplePortfolio = lazy(() => import('./components/simple/SimplePortfolio'))
+const AlejOS = lazy(() => import('./components/os/AlejOS'))
 
 // blank cream panel while a portfolio chunk loads, so there is no flash of the
 // wrong color before the lazy bundle resolves
 const fallback = <div className="min-h-dvh bg-stone-50 dark:bg-stone-950" />
+// the OS boots onto a dark screen from the first frame, cream would flash
+const osFallback = <div className="min-h-dvh bg-stone-950" />
+// module-level so its identity is stable: AlejOS re-runs its boot effect
+// whenever this object changes
+const PC_BOOT = { detail: { flat: true } }
 
 function VersionRouter() {
   const [pathname, setPathname] = useState(() => window.location.pathname)
@@ -58,8 +65,13 @@ function VersionRouter() {
     return () => window.removeEventListener(OPEN_CHOOSER_EVENT, open)
   }, [])
 
+  // the /pc desktop powered off and pushed '/': re-read it and render the site
+  // where the machine was. Stable identity — AlejOS keys effects off this.
+  const leavePc = useCallback(() => setPathname(window.location.pathname), [])
+
   const projectSlug = matchProjectSlug(pathname)
   const forceFull = pathname.startsWith('/alejOS')
+  const forcePc = isPcPath(pathname)
 
   const choose = (next: PortfolioVersion) => {
     persistVersion(next)
@@ -70,6 +82,19 @@ function VersionRouter() {
   const dismissNudge = () => {
     persistNudgeDismissed()
     setNudgeDismissed(true)
+  }
+
+  // /pc: the machine on its own. The portfolio never mounts behind it, so the
+  // hero's 3D blocks stay unloaded, and AlejOS is asked for its flat bezel
+  // instead of the CRT in the room — this route pulls in no three.js at all.
+  // Powering off hands the URL back to '/', and re-reading it here swaps the
+  // real site in without a reload.
+  if (forcePc) {
+    return (
+      <Suspense fallback={osFallback}>
+        <AlejOS initialBoot={PC_BOOT} onPowerOff={leavePc} />
+      </Suspense>
+    )
   }
 
   // /alejOS always boots the full site, with no nudge or chooser on top
