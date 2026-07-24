@@ -39,6 +39,9 @@ export interface WalkStepOpts {
   frozen: boolean
   /** the current level's floor height under the feet */
   groundY: number
+  /** the flat ceiling over it, where the level has one: the hop bonks off it
+      instead of carrying the lens through */
+  ceilingY?: number
   collision: CollisionSet
   /** the player's fov preference; sprinting stretches it slightly */
   fovBase: number
@@ -78,6 +81,10 @@ export interface WalkController {
   /** one physics tick; moves and orients the rig, returns what happened */
   update: (o: WalkStepOpts) => WalkStep
 }
+
+/** clearance the eye keeps under a ceiling: enough that the near plane (0.1)
+    never crosses it, and a jump into a low one reads as bumping your head */
+const CROWN = 0.4
 
 export function createWalkController(
   rig: THREE.PerspectiveCamera,
@@ -138,7 +145,7 @@ export function createWalkController(
       grounded = true
       bobT = 0
     },
-    update: ({ dt, keys, frozen, groundY, collision, fovBase }) => {
+    update: ({ dt, keys, frozen, groundY, ceilingY, collision, fovBase }) => {
       const fwd = frozen
         ? 0
         : (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
@@ -175,6 +182,15 @@ export function createWalkController(
       if (!grounded) {
         vy -= tune.grav * dt
         jumpY = Math.max(0, jumpY + vy * dt)
+        // a low ceiling stops the rise: the lens keeps CROWN under it, which
+        // is what stands between a hop and a look through the tiles
+        if (ceilingY !== undefined) {
+          const headroom = ceilingY - CROWN - tune.eye - groundY
+          if (jumpY > headroom) {
+            jumpY = Math.max(0, headroom)
+            if (vy > 0) vy = 0
+          }
+        }
         if (jumpY === 0 && vy < 0) {
           grounded = true
           vy = 0

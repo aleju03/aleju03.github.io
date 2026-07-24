@@ -33,6 +33,10 @@ export interface Level {
   id: string
   /** flat floor height under the player's feet */
   groundY: number
+  /** flat ceiling over it, for levels that are indoors everywhere; a jump
+      bonks off it rather than carrying the camera through. Levels that are
+      partly open sky (the overworld) simply leave it out. */
+  ceilingY?: number
   collision: CollisionSet
   /** default arrival point, used when a seam doesn't carry its own */
   spawn: LevelSpawn

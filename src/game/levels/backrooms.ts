@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { HOUSE, NOCLIP } from './houseWorld'
+import { buildBackroomsProps } from './backroomsProps'
 import { seeded } from '../core/rand'
 import { canvasTexture } from '../core/textures'
 
@@ -22,14 +23,17 @@ import { canvasTexture } from '../core/textures'
 
   Everything is synthesized on the spot, in the house style: canvas
   textures, merged-box geometry, WebAudio hum (mains harmonics plus a
-  bandpassed sizzle). No entities. No downloads. Just the yellow.
+  bandpassed sizzle). No entities. No downloads. Just the yellow — and the
+  little that got left behind in it, which backroomsProps.ts furnishes a
+  chunk at a time.
 */
 
 export const BR = {
   /** floor elevation, far enough down that no light or frustum crosses over */
   y: -120,
-  /** wall-to-ceiling height: office-low, oppressive under the house's 6 */
-  h: 5.2,
+  /** wall-to-ceiling height: office-low and still under the house's 6, but
+      clear of the jump arc (eye 3.5 + apex 1.6) with room to spare */
+  h: 5.8,
   /** where the fall drops you: inside the spawn alcove, facing out (-x) */
   spawn: { x: 20.4, z: 20, yaw: Math.PI / 2 },
   /** the haze the corridors dissolve into, well inside the streamed ring */
@@ -574,7 +578,10 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
   })
   const stainOutMat = stainMat.clone()
   stainOutMat.opacity = 1
-  ;[paperMat, carpetMat, ceilMat, panelMat, flickMat, stainMat, stainOutMat].forEach((m) =>
+  // every prop in a chunk shares this one untextured material and carries
+  // its color in the vertex stream, so the whole lot is a single draw
+  const propMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 })
+  ;[paperMat, carpetMat, ceilMat, panelMat, flickMat, stainMat, stainOutMat, propMat].forEach((m) =>
     trackDisposable(m),
   )
   trackDisposable({ dispose: stopAudio })
@@ -650,6 +657,27 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
         group.add(new THREE.Mesh(merged, paperMat))
       }
     }
+
+    // whatever got left in this chunk, on its own RNG stream so the maze
+    // above is unaffected by anything the furniture rolls
+    const props = buildBackroomsProps({
+      rng: seeded(hash2(cx, cz, 0x9105)),
+      ox: cx * CHUNK,
+      oz: cz * CHUNK,
+      chunk: CHUNK,
+      floorY: BR.y,
+      ceilY: BR.y + BR.h,
+      pieces,
+      wallTh: TH,
+      solids: boxes,
+      // you always arrive alone in an empty room; the stuff starts further out
+      keepClear: cx === 0 && cz === 0 ? { x: BR.spawn.x, z: BR.spawn.z, r: 7 } : undefined,
+    })
+    if (props.geometry) {
+      geos.push(props.geometry)
+      group.add(new THREE.Mesh(props.geometry, propMat))
+    }
+    boxes.push(...props.boxes)
 
     const mergePanels = (at: Array<[number, number]>) => {
       if (!at.length) return null

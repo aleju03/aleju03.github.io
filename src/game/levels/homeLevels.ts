@@ -66,6 +66,9 @@ export function makeHomeLevels(
   const level0: Level = {
     id: 'backrooms',
     groundY: BR.y,
+    // the drop ceiling is low enough to matter: without this a hop puts the
+    // camera through the tiles
+    ceilingY: BR.y + BR.h,
     // no edges down there; the cap is just floating-point hygiene
     collision: makeCollisionSet(
       { minX: -2000, maxX: 2000, minZ: -2000, maxZ: 2000 },

@@ -31,6 +31,7 @@ levels/
   houseWorld.ts      procedural house + yard; owns the property line inward
   outsideWorld.ts    sky, day cycle, street, city; returns per-frame light targets
   backrooms.ts       level 0 — deterministic chunk-streamed easter egg
+  backroomsProps.ts  the furniture left in it, one merged draw per chunk
   deskRoom.ts        the desk corner props + the shared house materials
 props/
   paperPlane.ts      the landed dart souvenir

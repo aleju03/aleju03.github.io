@@ -818,6 +818,7 @@ export default function CrtScene({
             keys: input.keys,
             frozen: levels.frozen,
             groundY: level.groundY,
+            ceilingY: level.ceilingY,
             collision: level.collision,
             fovBase: prefsRef.current.fov,
           })
