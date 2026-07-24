@@ -244,6 +244,15 @@ export default function CrtScene({
         webgl.shadowMap.autoUpdate = true
         webgl.toneMapping = THREE.ACESFilmicToneMapping
         webgl.toneMappingExposure = 1.1
+        // three only reads a program's link status when this is on, and that
+        // read (getProgramInfoLog/getShaderInfoLog) blocks the main thread
+        // until the driver has finished compiling — the exact stall
+        // compileAsync and KHR_parallel_shader_compile exist to avoid, paid
+        // on first use, i.e. inside the warp ride's first frame. Nothing here
+        // authors a shader, so the diagnostics only cost. Turn this back on
+        // if a ShaderMaterial or onBeforeCompile ever lands in the scene:
+        // without it a broken shader fails silently instead of logging.
+        webgl.debug.checkShaderErrors = false
         webgl.domElement.style.position = 'absolute'
         webgl.domElement.style.inset = '0'
         webgl.domElement.style.pointerEvents = 'none'

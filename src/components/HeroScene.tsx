@@ -20,6 +20,11 @@ export default function HeroScene() {
     let paused = coarse ? overlayIsOpen() : pageIsCovered()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    // three's shader-error check reads the program info log on first use, and
+    // that read blocks the main thread until the driver has finished compiling
+    // — here that lands in the page's first paint. Nothing on this canvas
+    // authors a shader; see the longer note in os/CrtScene.tsx
+    renderer.debug.checkShaderErrors = false
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
     renderer.setSize(el.clientWidth, el.clientHeight)
     el.appendChild(renderer.domElement)
