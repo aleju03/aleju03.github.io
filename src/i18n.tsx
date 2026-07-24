@@ -478,17 +478,17 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
 const secondaryEs: Record<string, Partial<SecondaryProject>> = {
   peeko: {
     description:
-      'Núcleo de analítica web self-hosted sobre SQLite, con la forma de PostHog para que un snippet de posthog-js existente funcione sin cambios: escrituras WAL por lotes, limpieza por retención, una API de lectura y un feed SSE en vivo.',
+      'Analítica web para alojar en tu propio servidor, con SQLite como única base de datos. Imita a PostHog, así que un snippet de posthog-js existente funciona sin cambios: escribe los eventos por lotes, limpia los datos antiguos automáticamente, y ofrece una API de lectura y un feed en vivo por SSE.',
     imageAlt: 'Mascota de peeko asomándose sobre una gráfica de analítica',
   },
   kewa: {
     description:
-      'Una cola de trabajos durable en una sola tabla de SQLite, sin broker que administrar: encolado con dedupe-merge, claims con leases y reintentos con backoff, lanes de workers y descarte de carga por presión.',
+      'Una cola de trabajos que cabe en una sola tabla de SQLite, sin broker aparte que administrar: fusiona trabajos duplicados al encolarlos, reintenta los fallidos con esperas crecientes, reparte los workers en carriles separados y descarta el exceso cuando se satura.',
     imageAlt: 'Mascota de kewa, una fila de blobs naranjas',
   },
   replayd: {
     description:
-      'Server-Sent Events reanudables sobre SQLite: un log de eventos durable donde Last-Event-ID se vuelve un cursor, así un navegador que se reconecta repite exactamente los eventos que se perdió.',
+      'Server-Sent Events que se pueden reanudar: cada evento queda guardado en SQLite, y cuando un navegador pierde la conexión y vuelve, retoma justo donde iba y recibe exactamente los eventos que se perdió.',
     imageAlt: 'Mascota de replayd, un botón de play envuelto en una flecha de replay',
   },
   SnakeDocker: {
