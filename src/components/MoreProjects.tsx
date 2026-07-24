@@ -20,17 +20,21 @@ export function MoreProjects() {
           </div>
         </Reveal>
 
-        <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2">
+        <div className="mt-10 grid grid-cols-1 gap-6 lg:grid-cols-2">
           {projects.secondary.map((project, i) => (
-            <Reveal key={project.name} delay={i * 0.08} className="h-full">
+            <Reveal
+              key={project.name}
+              delay={i * 0.08}
+              className="h-full lg:[&:nth-child(odd):last-child]:col-span-2"
+            >
               <a
                 href={project.repo}
                 target="_blank"
                 rel="noreferrer"
-                className="group flex h-full gap-5 rounded-xl border border-stone-200 bg-white p-5 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-stone-950/45"
+                className="group flex h-full flex-col gap-5 rounded-xl border border-stone-200 bg-white p-5 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-stone-900/10 sm:flex-row dark:border-stone-800 dark:bg-stone-900 dark:hover:shadow-stone-950/45"
               >
                 <div
-                  className={`flex w-28 shrink-0 items-center justify-center self-stretch rounded-lg p-3 sm:w-32 ${
+                  className={`flex h-28 w-full shrink-0 items-center justify-center rounded-lg p-3 sm:h-auto sm:w-32 sm:self-stretch ${
                     project.tile === 'dark' ? 'bg-zinc-900' : 'bg-stone-100 dark:bg-stone-800'
                   }`}
                 >
@@ -38,7 +42,7 @@ export function MoreProjects() {
                     src={project.image}
                     alt={project.imageAlt}
                     loading="lazy"
-                    className="max-h-14 w-auto max-w-full object-contain"
+                    className="max-h-28 w-auto max-w-full object-contain"
                   />
                 </div>
                 <div className="flex flex-col gap-2">

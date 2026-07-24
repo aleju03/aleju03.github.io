@@ -476,6 +476,21 @@ const showcaseEs: Record<string, Partial<ShowcaseProject> & { details: Partial<S
 }
 
 const secondaryEs: Record<string, Partial<SecondaryProject>> = {
+  peeko: {
+    description:
+      'Núcleo de analítica web self-hosted sobre SQLite, con la forma de PostHog para que un snippet de posthog-js existente funcione sin cambios: escrituras WAL por lotes, limpieza por retención, una API de lectura y un feed SSE en vivo.',
+    imageAlt: 'Mascota de peeko asomándose sobre una gráfica de analítica',
+  },
+  kewa: {
+    description:
+      'Una cola de trabajos durable en una sola tabla de SQLite, sin broker que administrar: encolado con dedupe-merge, claims con leases y reintentos con backoff, lanes de workers y descarte de carga por presión.',
+    imageAlt: 'Mascota de kewa, una fila de blobs naranjas',
+  },
+  replayd: {
+    description:
+      'Server-Sent Events reanudables sobre SQLite: un log de eventos durable donde Last-Event-ID se vuelve un cursor, así un navegador que se reconecta repite exactamente los eventos que se perdió.',
+    imageAlt: 'Mascota de replayd, un botón de play envuelto en una flecha de replay',
+  },
   SnakeDocker: {
     description:
       'Snake multijugador con procesamiento distribuido: workers especializados en Docker, balanceo dinámico de carga y juego por WebSockets.',

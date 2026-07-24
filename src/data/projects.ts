@@ -320,6 +320,36 @@ export const showcase: ShowcaseProject[] = [
 
 export const secondary: SecondaryProject[] = [
   {
+    name: 'peeko',
+    description:
+      'Self-hosted web analytics core on SQLite, shaped like PostHog so an existing posthog-js snippet works unchanged: batched WAL writes, retention pruning, a read API, and a live SSE feed.',
+    tech: ['TypeScript', 'Node.js', 'SQLite', 'SSE'],
+    image: '/projects/peeko.png',
+    imageAlt: 'peeko mascot peeking over an analytics chart',
+    tile: 'dark',
+    repo: 'https://github.com/aleju03/peeko',
+  },
+  {
+    name: 'kewa',
+    description:
+      'A durable job queue in one SQLite table, no broker to run: dedupe-merge enqueues, leased claims with retry backoff, worker lanes, and pressure-based load shedding.',
+    tech: ['TypeScript', 'Node.js', 'SQLite'],
+    image: '/projects/kewa.png',
+    imageAlt: 'kewa mascot, a queue of orange blobs',
+    tile: 'dark',
+    repo: 'https://github.com/aleju03/kewa',
+  },
+  {
+    name: 'replayd',
+    description:
+      'Resumable Server-Sent Events on SQLite: a durable event log where Last-Event-ID becomes a cursor, so a browser that reconnects replays exactly the events it missed.',
+    tech: ['TypeScript', 'Node.js', 'SQLite', 'SSE'],
+    image: '/projects/replayd.png',
+    imageAlt: 'replayd mascot, a play button wrapped in a replay arrow',
+    tile: 'dark',
+    repo: 'https://github.com/aleju03/replayd',
+  },
+  {
     name: 'SnakeDocker',
     description:
       'Multiplayer Snake with distributed processing: specialized Docker workers, dynamic load balancing, and WebSocket gameplay.',
