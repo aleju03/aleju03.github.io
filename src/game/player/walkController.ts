@@ -79,6 +79,9 @@ export interface WalkStep {
   landing: number
   /** the surface the feet are standing on (or falling toward) this tick */
   support: number
+  /** a sole landed this tick — one per bob cycle, at the bottom of the dip.
+      The sim only reports it; the scene decides what a step sounds like */
+  footfall: boolean
 }
 
 export interface WalkController {
@@ -121,12 +124,13 @@ export function createWalkController(
   let vy = 0
   let grounded = true
   let bobT = 0
+  let stride = 0 // which bob cycle the last voiced footfall belonged to
   const vel = new THREE.Vector3()
   const want = new THREE.Vector3()
   // reused across ticks: the walk loop runs at 60Hz and shouldn't feed the GC
   const step: WalkStep = {
     planar: 0, gait: 0, grounded: true, duck: false, run: false, moved: false,
-    vx: 0, vz: 0, vy: 0, landing: 0, support: 0,
+    vx: 0, vz: 0, vy: 0, landing: 0, support: 0, footfall: false,
   }
 
   return {
@@ -179,6 +183,7 @@ export function createWalkController(
       vy = 0
       grounded = true
       bobT = 0
+      stride = 0 // or the clock rewind reads as one phantom footfall
     },
     update: ({ dt, keys, frozen, groundY, ceilingY, collision, fovBase }) => {
       const fwd = frozen
@@ -265,6 +270,11 @@ export function createWalkController(
       // suspended in the air, where nobody is stepping on anything
       const planar = Math.hypot(vel.x, vel.z)
       if (grounded) bobT += planar * dt * 0.55
+      // a footfall each time the bob bottoms out (phase 0.75) — the tick the
+      // lens dips onto the planted sole, which is when a step should sound
+      const strideNow = Math.floor(bobT + 0.25)
+      step.footfall = grounded && strideNow !== stride
+      stride = strideNow
       const gait = Math.min(1, planar / speed)
       rig.position.y =
         feetY +

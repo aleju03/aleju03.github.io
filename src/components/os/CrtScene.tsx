@@ -21,6 +21,7 @@ import { createRoamInput } from '../../game/core/input'
 import { makeCollisionSet, supportY } from '../../game/physics/collision'
 import type { CollisionSet } from '../../game/physics/collision'
 import { createDisposer } from '../../game/core/disposer'
+import { footstep, landThump } from '../../game/core/sfx'
 import { OS_SCENE_READY_EVENT } from '../../events'
 
 /*
@@ -910,6 +911,17 @@ export default function CrtScene({
             collision: level.collision,
             fovBase: prefsRef.current.fov,
           })
+          // the sim reports footfalls and touchdowns; the level says what is
+          // underfoot (the backrooms are carpet wall to wall), and crouched
+          // steps land softer
+          if (step.footfall || step.landing > 3) {
+            const surface =
+              level.id === 'overworld'
+                ? house.surfaceAt(camera.position.x, camera.position.z)
+                : 'carpet'
+            if (step.landing > 3) landThump(surface, Math.min(1, (step.landing - 3) / 14))
+            else footstep(surface, step.gait * (1 - walk.crouchK * 0.65), step.run)
+          }
           // the view is a saved preference the pause menu also owns, so the
           // boom just follows it and v flips it; x flops — and once the
           // ragdoll settles, x or any move key stands back up

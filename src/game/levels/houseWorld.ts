@@ -3,6 +3,7 @@ import { seeded } from '../core/rand'
 import { canvasTexture, makeGlowTexture } from '../core/textures'
 import { mergeGeoms } from '../core/geometry'
 import { noStand, padXZ } from '../physics/collision'
+import { doorCreak, doorLatch, type StepSurface } from '../core/sfx'
 
 /** anything with a .scene group — a GLTFLoader result or a slice of one */
 export interface ModelLike {
@@ -28,7 +29,8 @@ export interface ModelLike {
   wall face). Doors are hinge pivots worked with the interact key: a closed
   one swings away from whichever side the player stands on, an open one pulls
   shut, and the doorway itself is an obstacle while the leaf is in the way.
-  They cast no shadows so the baked maps stay valid.
+  They cast no shadows so the baked maps stay valid. Working one creaks the
+  hinge (core/sfx.ts) and a closing leaf clicks its latch home as it seats.
 */
 
 export interface HouseModels {
@@ -43,6 +45,9 @@ export interface HouseHandles {
   doorPrompt: (p: THREE.Vector3, gaze: THREE.Vector3) => 'open' | 'close' | null
   /** work that door; a closed leaf swings away from the player's side */
   useDoor: (p: THREE.Vector3, gaze: THREE.Vector3) => boolean
+  /** what a footstep lands on here: plank floors inside the walls, the
+      concrete porch slab, grass everywhere else on the property */
+  surfaceAt: (x: number, z: number) => StepSurface
   /** 0 seated .. 1 walking: ramps every house light with the room rig */
   setRoamLight: (k: number) => void
   /** 0 night .. 1 day: fades fireflies and the curtained-window glow out */
@@ -1299,6 +1304,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     // doors ease toward wherever the interact key last put them
     for (const d of doors) {
       const next = d.angle + (d.target - d.angle) * (1 - Math.exp(-5.5 * dt))
+      // a closing leaf seating back into its frame is the audible full stop
+      if (d.target === 0 && Math.abs(d.angle) > 0.02 && Math.abs(next) <= 0.02) doorLatch()
       if (Math.abs(next - d.angle) > 0.00012) {
         d.angle = next
         d.pivot.rotation.y = (d.pivot.userData.baseRotY as number) + next
@@ -1362,14 +1369,24 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     if (!d) return false
     if (d.target !== 0) {
       d.target = 0
+      doorCreak(false)
     } else {
       // swing toward the far side of the wall from where the player stands;
       // which rotation sign that is depends on the wall axis and hinge side
       const side = (d.axis === 'z' ? p.z : p.x) < d.at ? 1 : -1
       d.target = (d.axis === 'z' ? -d.dir : d.dir) * side * d.swing
+      doorCreak(true)
     }
     return true
   }
+
+  // porch slab bounds mirror the concrete mesh poured above the back door
+  const surfaceAt = (x: number, z: number): StepSurface =>
+    x > HOUSE.minX && x < HOUSE.maxX && z > HOUSE.minZ && z < HOUSE.maxZ
+      ? 'wood'
+      : x > -5.45 && x < -1.65 && z > HOUSE.maxZ && z < HOUSE.maxZ + 2.85
+        ? 'stone'
+        : 'grass'
 
   const setRoamLight = (k: number) => {
     for (const { light, on } of lights) light.intensity = on * k
@@ -1393,7 +1410,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   }
 
   return {
-    root, update, doorPrompt, useDoor,
+    root, update, doorPrompt, useDoor, surfaceAt,
     setRoamLight, setDay, flagShadows, shadowLights, furnish,
   }
 }

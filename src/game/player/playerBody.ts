@@ -642,12 +642,21 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       (THREE.MathUtils.clamp(fwdS * 0.02 + accF * 0.02, -0.3, 0.34) + pose.crouchK * 0.24) *
         pose.show +
       riseFold * 0.5
-    const bank = THREE.MathUtils.clamp(-yawRateS * 0.05 - sideS * 0.012, -0.22, 0.22)
-    pelvis.rotation.set(lean * 0.55, strafeYaw + stepS * 0.1 * gait, bank * 0.45)
+    // centripetal lean: bank into a turn only as fast as the feet are
+    // actually carrying the body — a walking mouse-turn keeps the trunk
+    // upright, a sprint corner still lays it in
+    const bank = THREE.MathUtils.clamp(
+      -yawRateS * (0.015 + 0.035 * runK) * gait - sideS * 0.012,
+      -0.22, 0.22,
+    )
+    // gait twist: the pelvis rotates the swing-side hip forward (stepS > 0
+    // is the left foot airborne, and -y advances the +x hip); the shoulders
+    // counter-rotate over it and the head steadies the gaze on top
+    pelvis.rotation.set(lean * 0.55, strafeYaw - stepS * 0.1 * gait, bank * 0.45)
     torso.position.set(0, WAIST_OFF, 0)
     torso.rotation.set(
       lean * 0.45 + airK * 0.12 * fallK,
-      chestLook - strafeYaw * 0.55 - stepS * 0.12 * gait,
+      chestLook - strafeYaw * 0.55 + stepS * 0.12 * gait,
       bank * 0.55,
     )
 
@@ -664,7 +673,7 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       // the chin lifts out of the get-up hunch: the chest is folded 0.5 rad
       // over the knees, so a level gaze means countering most of it
       pitchLook + 0.08 * gait - airK * 0.1 + breathe * 0.015 - riseFold * 0.3,
-      headLook - strafeYaw * 0.4 + stepS * 0.06 * gait,
+      headLook - strafeYaw * 0.4 - stepS * 0.06 * gait,
       -bank * 0.3,
     )
     head.position.set(0, NECK_OFF + breathe * 0.018, 0)
@@ -862,7 +871,10 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
     // these are spring targets the arms swing there and settle rather than
     // snapping, which is what sells the shove
     const push = riseFold * 0.8
-    const shLX = spring(0, -swingF - airX + swayLX - push, KS, CS, throwX, dt, SH_X_LO, SH_X_HI)
+    // contralateral phase: stepS > 0 is the LEFT foot swinging forward, so
+    // the left arm's target goes back (+x) while the right one reaches
+    // forward (-x is forward — the elbows below only flex that way)
+    const shLX = spring(0, swingF - airX + swayLX - push, KS, CS, throwX, dt, SH_X_LO, SH_X_HI)
     const shLZ = spring(
       2, spread + swingS + swayLZ + riseFold * 0.14, KS, CS, slingZ, dt, -SH_Z, SH_Z,
     )
@@ -871,13 +883,13 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       KE, CE, 0, dt, EL_LO, EL_HI,
     )
     const shRX = spring(
-      6, swingF * 0.93 - airX + swayRX - push, KS, CS, throwX, dt, SH_X_LO, SH_X_HI,
+      6, -swingF * 0.93 - airX + swayRX - push, KS, CS, throwX, dt, SH_X_LO, SH_X_HI,
     )
     const shRZ = spring(
       8, -spread + swingS + swayRZ - riseFold * 0.14, KS, CS, slingZ, dt, -SH_Z, SH_Z,
     )
     const elR = spring(
-      10, -(elbowBase + 0.03 + Math.max(0, shRX) * 0.75 + airK * 0.35 + riseFold * 0.5),
+      10, -(elbowBase + 0.03 + Math.max(0, -shRX) * 0.75 + airK * 0.35 + riseFold * 0.5),
       KE, CE, 0, dt, EL_LO, EL_HI,
     )
     uarmL.rotation.set(shLX, 0, shLZ)
