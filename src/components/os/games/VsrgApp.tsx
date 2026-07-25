@@ -22,8 +22,80 @@ import type { GameId } from './arcade'
 const PERFECT = 0.045
 const GREAT = 0.09
 
-const LANE_KEYS = ['D', 'F', 'J', 'K']
-const LANE_CODE: Record<string, number | undefined> = { KeyD: 0, KeyF: 1, KeyJ: 2, KeyK: 3 }
+/*
+  Lane keys are the player's, not mine. Bindings are KeyboardEvent.code —
+  physical positions, so a chart plays the same on QWERTY, AZERTY or Dvorak —
+  and the labels drawn on the receptors are derived from those codes rather
+  than stored alongside them, so the two can never disagree.
+*/
+const KEYS_KEY = 'alejos-vsrg-keys'
+const DEFAULT_KEYS = ['KeyD', 'KeyF', 'KeyJ', 'KeyK']
+
+function readKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(KEYS_KEY)
+    if (raw) {
+      const v: unknown = JSON.parse(raw)
+      if (
+        Array.isArray(v) &&
+        v.length === 4 &&
+        v.every((c) => typeof c === 'string' && c.length > 0) &&
+        new Set(v).size === 4
+      ) {
+        return v as string[]
+      }
+    }
+  } catch {
+    /* unreadable or unavailable — fall back to the defaults */
+  }
+  return [...DEFAULT_KEYS]
+}
+
+function storeKeys(codes: string[]) {
+  try {
+    localStorage.setItem(KEYS_KEY, JSON.stringify(codes))
+  } catch {
+    /* storage unavailable — the binding lasts for this session */
+  }
+}
+
+const NAMED_KEYS: Record<string, string> = {
+  Space: 'space',
+  Semicolon: ';',
+  Quote: "'",
+  Comma: ',',
+  Period: '.',
+  Slash: '/',
+  Backslash: '\\',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Minus: '-',
+  Equal: '=',
+  Backquote: '`',
+  ShiftLeft: 'shift',
+  ShiftRight: 'shift',
+  ControlLeft: 'ctrl',
+  ControlRight: 'ctrl',
+  AltLeft: 'alt',
+  AltRight: 'alt',
+  Tab: 'tab',
+  Enter: 'enter',
+  ArrowLeft: '\u2190',
+  ArrowRight: '\u2192',
+  ArrowUp: '\u2191',
+  ArrowDown: '\u2193',
+}
+
+/** the short label a receptor wears, derived from the bound code */
+function keyLabel(code: string): string {
+  if (code.startsWith('Key')) return code.slice(3)
+  if (code.startsWith('Digit')) return code.slice(5)
+  if (code.startsWith('Numpad')) return `n${code.slice(6)}`
+  return NAMED_KEYS[code] ?? code
+}
+
+/** keys that belong to the OS, never to a lane */
+const RESERVED_KEYS = new Set(['Escape', 'F5', 'F11', 'F12'])
 
 /**
  * osu!mania style scroll speed, 1..40. speed S means a note travels from
@@ -504,6 +576,7 @@ function drawFrame(
   run: Run,
   now: number,
   speed: number,
+  labels: string[],
 ) {
   g.setTransform(dpr, 0, 0, dpr, 0, 0)
   g.fillStyle = '#101014'
@@ -563,7 +636,7 @@ function drawFrame(
       x0 + l * laneW + laneW / 2,
       receptorY,
       noteR + 2,
-      LANE_KEYS[l],
+      labels[l],
       run.keysDown[l],
     )
   }
@@ -651,6 +724,10 @@ interface GameplayProps {
   onStats: (s: Stats) => void
   onFinish: (r: RunResult) => void
   onQuit: () => void
+  /** restart this chart from the top */
+  onRetry: () => void
+  /** the four lane bindings, as KeyboardEvent.code */
+  keys: string[]
 }
 
 const Gameplay = memo(function Gameplay({
@@ -660,8 +737,17 @@ const Gameplay = memo(function Gameplay({
   onStats,
   onFinish,
   onQuit,
+  onRetry,
+  keys,
 }: GameplayProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
+  // read by the frame loop and the key handler, which both outlive a render
+  const labelsRef = useRef<string[]>(keys.map(keyLabel))
+  const laneOfRef = useRef<Map<string, number>>(new Map(keys.map((c, i) => [c, i])))
+  useEffect(() => {
+    labelsRef.current = keys.map(keyLabel)
+    laneOfRef.current = new Map(keys.map((c, i) => [c, i]))
+  }, [keys])
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1 })
   const runRef = useRef<Run | null>(null)
@@ -783,7 +869,7 @@ const Gameplay = memo(function Gameplay({
           }
         }
         const { w, h, dpr } = sizeRef.current
-        if (w > 0 && h > 0) drawFrame(g, w, h, dpr, run, now, speed)
+        if (w > 0 && h > 0) drawFrame(g, w, h, dpr, run, now, speed, labelsRef.current)
         raf = requestAnimationFrame(frame)
       }
       raf = requestAnimationFrame(frame)
@@ -812,7 +898,26 @@ const Gameplay = memo(function Gameplay({
   }, [track, speed, syncMs, onStats, onFinish, doPause])
 
   const handleKey = (e: KeyboardEvent<HTMLDivElement>, down: boolean) => {
-    const laneIdx = LANE_CODE[e.code]
+    // Escape belongs to the game while a run is up. Without stopping it here
+    // it reaches AlejOS's window-level handler, which reads it as "back out"
+    // and tears the whole desktop down mid-song.
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!down) return
+      if (pausedRef.current) resume()
+      else doPause()
+      return
+    }
+    // quick retry, osu! style: restart the chart from the top without going
+    // back through song select
+    if (e.key === 'r' || e.key === 'R') {
+      e.preventDefault()
+      e.stopPropagation()
+      if (down && !e.repeat) onRetry()
+      return
+    }
+    const laneIdx = laneOfRef.current.get(e.code)
     if (laneIdx === undefined) return
     e.preventDefault()
     const run = runRef.current
@@ -866,13 +971,26 @@ const Gameplay = memo(function Gameplay({
       {paused && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/60">
           <p className="text-sm font-semibold text-white">paused</p>
-          <button
-            type="button"
-            onClick={resume}
-            className={`${XP_BTN} px-3 py-1 text-xs font-medium text-stone-700`}
-          >
-            keep playing
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={resume}
+              className={`${XP_BTN} px-3 py-1 text-xs font-medium text-stone-700`}
+            >
+              keep playing
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                sounds.click()
+                onRetry()
+              }}
+              className={`${XP_BTN} px-3 py-1 text-xs font-medium text-stone-700`}
+            >
+              retry
+            </button>
+          </div>
+          <p className="text-[11px] text-white/60">esc resumes · r restarts</p>
         </div>
       )}
       {problem && (
@@ -994,6 +1112,71 @@ function Results({
   )
 }
 
+/*
+  Rebinding: click a lane, press a key. Listening on the window in capture
+  means the press is caught before anything else can act on it — Escape backs
+  out of the rebind instead of reaching the desktop, and binding a key that
+  happens to be a lane key does not also play a note.
+*/
+function KeyBinds({ keys, onKeys }: { keys: string[]; onKeys: (k: string[]) => void }) {
+  const [capturing, setCapturing] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (capturing === null) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.key === 'Escape' || RESERVED_KEYS.has(e.key)) {
+        setCapturing(null)
+        return
+      }
+      const next = [...keys]
+      // a code already used by another lane trades places with this one, so
+      // there is never a chart you cannot finish because two lanes share a key
+      const clash = next.indexOf(e.code)
+      if (clash !== -1) next[clash] = next[capturing]
+      next[capturing] = e.code
+      onKeys(next)
+      setCapturing(null)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [capturing, keys, onKeys])
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[11px] text-stone-500">keys</span>
+      {keys.map((code, i) => (
+        <button
+          key={i}
+          type="button"
+          aria-label={`Lane ${i + 1} key, currently ${keyLabel(code)}`}
+          onClick={() => {
+            sounds.click()
+            setCapturing(i)
+          }}
+          className={`${XP_BTN} min-w-7 px-1.5 py-0.5 font-mono text-[11px] ${
+            capturing === i ? 'text-blue-700' : 'text-stone-700'
+          }`}
+        >
+          {capturing === i ? '...' : keyLabel(code)}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={() => {
+          sounds.click()
+          setCapturing(null)
+          onKeys([...DEFAULT_KEYS])
+        }}
+        className={`${XP_BTN} px-1.5 py-0.5 text-[11px] text-stone-600`}
+      >
+        reset
+      </button>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------- track select
 
 function TrackSelect({
@@ -1002,12 +1185,16 @@ function TrackSelect({
   syncMs,
   onSync,
   onPlay,
+  keys,
+  onKeys,
 }: {
   speed: number
   onSpeed: (s: number) => void
   syncMs: number
   onSync: (v: number) => void
   onPlay: (t: TrackDef) => void
+  keys: string[]
+  onKeys: (k: string[]) => void
 }) {
   return (
     <div className="flex h-full flex-col gap-2 overflow-y-auto p-3">
@@ -1044,7 +1231,10 @@ function TrackSelect({
           </button>
         )
       })}
-      <div className="mt-auto flex items-center gap-1.5 pt-1">
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-1">
+        <KeyBinds keys={keys} onKeys={onKeys} />
+      </div>
+      <div className="flex items-center gap-1.5">
         <span className="text-[11px] text-stone-500">scroll speed</span>
         <button
           type="button"
@@ -1108,6 +1298,7 @@ export function VsrgApp() {
   const [screen, setScreen] = useState<Screen>({ kind: 'select' })
   const [speed, setSpeedState] = useState<number>(readSpeed)
   const [syncMs, setSyncState] = useState<number>(readSync)
+  const [keys, setKeysState] = useState<string[]>(readKeys)
   const [stats, setStats] = useState<Stats>(START_STATS)
 
   // the game's context naps when the window closes, ready for next time
@@ -1141,6 +1332,23 @@ export function VsrgApp() {
     storeSync(v)
   }
 
+  const setKeys = useCallback((next: string[]) => {
+    sounds.click()
+    setKeysState(next)
+    storeKeys(next)
+  }, [])
+
+  // retry restarts the same chart from the top; the nonce remounts Gameplay,
+  // which is what actually rebuilds the run
+  const retry = useCallback(() => {
+    setScreen((s) =>
+      s.kind === 'play' || s.kind === 'result'
+        ? { kind: 'play', track: s.track, nonce: Date.now() }
+        : s,
+    )
+    setStats(START_STATS)
+  }, [])
+
   const header =
     screen.kind === 'play' ? (
       <div className="flex items-center gap-2">
@@ -1158,7 +1366,7 @@ export function VsrgApp() {
     )
 
   return (
-    <GameShell tabs={TABS} you={name} header={header} hint="d f j k hit the notes as they land">
+    <GameShell tabs={TABS} you={name} header={header} hint={`${keys.map(keyLabel).join(' ')} hit the notes  ·  esc pauses  ·  r retries`}>
       {screen.kind === 'select' && (
         <TrackSelect
           speed={speed}
@@ -1166,6 +1374,8 @@ export function VsrgApp() {
           syncMs={syncMs}
           onSync={setSync}
           onPlay={startTrack}
+          keys={keys}
+          onKeys={setKeys}
         />
       )}
       {screen.kind === 'play' && (
@@ -1177,13 +1387,15 @@ export function VsrgApp() {
           onStats={onStats}
           onFinish={onFinish}
           onQuit={onQuit}
+          onRetry={retry}
+          keys={keys}
         />
       )}
       {screen.kind === 'result' && (
         <Results
           track={screen.track}
           result={screen.result}
-          onRetry={() => startTrack(screen.track)}
+          onRetry={retry}
           onSelect={() => {
             sounds.click()
             setScreen({ kind: 'select' })

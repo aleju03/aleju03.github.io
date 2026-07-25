@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useOs } from '../osContext'
 import type { Session } from '../osContext'
+import { sessionExpired } from '../session'
 
 /*
   The arcade wire. One shared WebSocket to the chat server carries everything
@@ -168,6 +169,10 @@ function onMessage(ev: MessageEvent) {
     retry = 0
     ready = true
     setStatus('online')
+    // The server did not know our token, so this socket is a guest no matter
+    // what the desktop says — and every score it posts would land on the board
+    // under a guest name. Say so instead of scoring as somebody else.
+    if (data.badToken) sessionExpired()
     while (sendQueue.length > 0) sendRaw(sendQueue.shift() as object)
     return
   }

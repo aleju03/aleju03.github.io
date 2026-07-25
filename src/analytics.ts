@@ -126,18 +126,37 @@ function baseProperties(): Record<string, unknown> {
   }
 }
 
+/**
+ * The browser's IANA timezone, appended to the capture URL so the server can
+ * resolve a country from it when nothing upstream sends a geo header.
+ *
+ * A query param specifically: sendBeacon cannot set headers, and a custom
+ * header would make capture a preflighted request — an extra round trip on
+ * every page for one string.
+ */
+function endpointWithZone(): string | null {
+  if (!ENDPOINT) return null
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return zone ? `${ENDPOINT}?tz=${encodeURIComponent(zone)}` : ENDPOINT
+  } catch {
+    return ENDPOINT
+  }
+}
+
 function send(body: string, beacon: boolean): void {
-  if (!ENDPOINT) return
+  const endpoint = endpointWithZone()
+  if (!endpoint) return
   // text/plain keeps this a CORS-simple request: no preflight round trip on
   // every page, and sendBeacon can only send safelisted types anyway. peeko
   // parses the body as JSON regardless of what the header claims.
   const type = 'text/plain;charset=UTF-8'
   try {
     if (beacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
-      navigator.sendBeacon(ENDPOINT, new Blob([body], { type }))
+      navigator.sendBeacon(endpoint, new Blob([body], { type }))
       return
     }
-    void fetch(ENDPOINT, {
+    void fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': type },
       body,

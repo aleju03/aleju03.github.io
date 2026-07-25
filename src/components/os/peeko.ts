@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Session } from './osContext'
+import { sessionExpired } from './session'
 
 /*
   Client for the analytics half of the chat server (server/src/analytics.js).
@@ -145,6 +146,9 @@ export function usePeeko(session: Session) {
             if (!(data.user as { admin?: boolean } | null)?.admin) {
               setStatus('denied')
               setLoading(false)
+              // a rejected token means the whole saved session is stale, not
+              // just this dashboard
+              if (data.badToken) sessionExpired()
               return
             }
             setStatus('online')

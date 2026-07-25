@@ -119,6 +119,16 @@ db.exec(`
     user_id INTEGER NOT NULL REFERENCES users(id),
     created_at INTEGER NOT NULL
   );
+  -- The admin has no users row (it authenticates against ADMIN_TOKEN, not the
+  -- database), so its sessions need their own table. They used to live only in
+  -- memory, which meant every deploy silently downgraded a still-logged-in
+  -- admin to a guest: the browser kept a session localStorage said was valid,
+  -- the server no longer recognised the token, and everything that socket did
+  -- afterwards — arcade scores especially — was recorded under a guest name.
+  CREATE TABLE IF NOT EXISTS admin_tokens (
+    token TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS room_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     room TEXT NOT NULL,
@@ -153,6 +163,9 @@ const stmt = {
     'SELECT u.*, t.created_at AS token_at FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?'
   ),
   deleteExpiredTokens: db.prepare('DELETE FROM tokens WHERE created_at < ?'),
+  insertAdminToken: db.prepare('INSERT INTO admin_tokens (token, created_at) VALUES (?, ?)'),
+  adminToken: db.prepare('SELECT created_at FROM admin_tokens WHERE token = ?'),
+  deleteExpiredAdminTokens: db.prepare('DELETE FROM admin_tokens WHERE created_at < ?'),
   insertMessage: db.prepare(
     'INSERT INTO room_messages (room, from_name, is_admin, is_registered, text, at) VALUES (?, ?, ?, ?, ?, ?)'
   ),
@@ -194,6 +207,7 @@ const stmt = {
 // Startup maintenance: drop expired sessions and any history overflow left
 // over from a previous run.
 stmt.deleteExpiredTokens.run(Date.now() - TOKEN_TTL_MS);
+stmt.deleteExpiredAdminTokens.run(Date.now() - TOKEN_TTL_MS);
 for (const room of ROOMS) stmt.trimMessages.run(room, room, MAX_MESSAGES_PER_ROOM);
 
 // ---------------------------------------------------------------- auth
@@ -888,9 +902,9 @@ async function handleLogin(ws, msg) {
     }
     ws.user = { id: 0, username: ADMIN_USERNAME };
     ws.isAdmin = true;
-    // admin sessions get a fresh ephemeral token bound to user id 0
     const token = crypto.randomBytes(24).toString('hex');
     adminTokens.add(token);
+    stmt.insertAdminToken.run(token, Date.now());
     send(ws, { type: 'auth-ok', token, user: userPayload(ws) });
     if (ws.room) broadcastRoomUsers(ws.room);
     return;
@@ -907,12 +921,21 @@ async function handleLogin(ws, msg) {
   if (ws.room) broadcastRoomUsers(ws.room);
 }
 
-// admin tokens live in memory only; a server restart logs the admin out
+// Admin sessions persist like everyone else's: same 90-day TTL, same hourly
+// sweep. The in-memory Set is just a read cache in front of admin_tokens.
 const adminTokens = new Set();
+
+function isAdminToken(token) {
+  if (adminTokens.has(token)) return true;
+  const row = stmt.adminToken.get(token);
+  if (!row || Date.now() - row.created_at > TOKEN_TTL_MS) return false;
+  adminTokens.add(token);
+  return true;
+}
 
 function resumeToken(ws, token) {
   if (typeof token !== 'string' || token.length > 64) return false;
-  if (adminTokens.has(token)) {
+  if (isAdminToken(token)) {
     ws.user = { id: 0, username: ADMIN_USERNAME };
     ws.isAdmin = true;
     return true;
@@ -1192,7 +1215,11 @@ const heartbeat = setInterval(() => {
 
 // Hourly sweep so the tokens table can't grow without bound.
 const tokenSweep = setInterval(() => {
-  stmt.deleteExpiredTokens.run(Date.now() - TOKEN_TTL_MS);
+  const cutoff = Date.now() - TOKEN_TTL_MS;
+  stmt.deleteExpiredTokens.run(cutoff);
+  stmt.deleteExpiredAdminTokens.run(cutoff);
+  // drop the read cache too, so a swept token cannot resume from memory
+  adminTokens.clear();
 }, TOKEN_SWEEP_MS);
 tokenSweep.unref();
 

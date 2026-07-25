@@ -19,7 +19,7 @@ import {
   UserIcon,
 } from '@phosphor-icons/react'
 import { github, linkedin } from '../../data/projects'
-import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT } from '../../events'
+import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT, SESSION_EXPIRED_EVENT } from '../../events'
 import { HOME_PATH, OS_PATH, PC_PATH, ROOM_PATH, isOsPath, isPcPath, isRoomPath } from '../../version'
 import { lockPageForOverlay } from '../../overlay'
 import { setViewer, track } from '../../analytics'
@@ -114,7 +114,7 @@ const START_ITEMS: {
 
 // Only the admin's Start menu carries these. Hiding them is presentation, not
 // protection — the server refuses the reads themselves to anyone else.
-const ADMIN_START_ITEMS: typeof START_ITEMS = [{ app: 'peeko', label: 'peeko — site traffic' }]
+const ADMIN_START_ITEMS: typeof START_ITEMS = [{ app: 'peeko', label: 'peeko site traffic' }]
 
 interface Rect {
   x: number
@@ -898,6 +898,20 @@ export default function AlejOS({
     setViewer(null)
     setPhase('login')
   }, [])
+
+  // A socket reported that the server does not recognise our token — the
+  // session is over whether or not the desktop knew it. Staying in it silently
+  // acts as a guest (arcade scores land on the boards under a guest name,
+  // peeko refuses to load), so hand back the login screen instead of showing a
+  // name the server will not use.
+  useEffect(() => {
+    const expire = () => {
+      if (phaseRef.current === 'off' || phaseRef.current === 'login') return
+      logOff()
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, expire)
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expire)
+  }, [logOff])
 
   const osApi: OsApi = {
     session: session ?? { kind: 'guest', name: 'guest' },

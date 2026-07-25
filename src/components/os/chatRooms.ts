@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Session } from './osContext'
+import { sessionExpired } from './session'
 
 /*
   Client for the AlejOS chat server v2 (server/ in this repo): registered
@@ -211,7 +212,10 @@ export function useRoomChat(session: Session, onIncoming?: () => void) {
             setStatus('online')
             setMe(String(data.you ?? session.name))
             setRooms((data.rooms as RoomInfo[]) ?? [])
-            if (data.badToken) setNotice('Your saved login expired. Chatting as guest.')
+            if (data.badToken) {
+              setNotice('Your saved login expired. Chatting as guest.')
+              sessionExpired()
+            }
             sendRaw({ type: 'join', room: roomRef.current })
             break
           }

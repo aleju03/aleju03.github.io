@@ -59,13 +59,13 @@ function connect(url) {
   return { ws, next, nextOf, opened, send: (obj) => ws.send(JSON.stringify(obj)) };
 }
 
-function startServer() {
+function startServer(port = '0') {
   return new Promise((resolve, reject) => {
     child = spawn(process.execPath, ['src/index.js'], {
       cwd: serverRoot,
       env: {
         ...process.env,
-        PORT: '0',
+        PORT: String(port),
         ADMIN_TOKEN,
         DB_PATH: path.join(tmpDir, 'chat.db'),
         // analytics against a throwaway local libsql file — the same code path
@@ -358,7 +358,67 @@ async function main() {
   assert.equal(rows[0].count, 2);
   console.log('16. breakdown aggregates a custom event property');
 
+  // 16b. Geo: with no edge header, the browser's timezone resolves the country.
+  await capture({
+    event: '$pageview',
+    distinct_id: 'tz-visitor',
+    properties: { $host: 'aleju.dev', $pathname: '/from-tz' },
+  });
+  const tzCapture = await fetch(`${httpBase}/peeko/capture?tz=${encodeURIComponent('America/Costa_Rica')}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin, 'user-agent': 'Mozilla/5.0 (smoke test)' },
+    body: JSON.stringify({
+      event: '$pageview',
+      distinct_id: 'tz-visitor-cr',
+      properties: { $host: 'aleju.dev', $pathname: '/from-tz' },
+    }),
+  });
+  assert.equal(tzCapture.status, 200);
+  let countries = [];
+  for (let i = 0; i < 20 && countries.length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    dup.send({ type: 'peeko-monitor', rangeHours: 24 });
+    countries = (await dup.nextOf('peeko-monitor', 'monitor for countries')).topCountries;
+  }
+  assert.ok(
+    countries.some((c) => c.country === 'CR'),
+    'America/Costa_Rica must resolve to CR'
+  );
+  console.log('16b. timezone resolves a country when no geo header is present');
+
+  // 17. An admin session survives a restart. It used to live only in memory,
+  //     so every deploy silently turned a still-logged-in admin into a guest:
+  //     the browser kept a session it believed in, and everything that socket
+  //     did afterwards — arcade scores especially — was filed under a guest
+  //     name while the desktop still said "administrator".
   for (const c of [guest, alice, alice2, dup, late, p1, p2]) c.ws.close();
+  const adminToken = adminOk.token;
+  child.kill('SIGTERM');
+  await new Promise((resolve) => child.on('exit', resolve));
+  await startServer(port);
+
+  const reborn = connect(url);
+  await reborn.opened;
+  reborn.send({ type: 'hello', token: adminToken });
+  const rebornHello = await reborn.nextOf('hello-ok', 'admin resume after restart');
+  assert.equal(rebornHello.badToken, false, 'admin token must outlive the process');
+  assert.equal(rebornHello.user.admin, true);
+  assert.equal(rebornHello.you, 'aleju');
+
+  // the visible symptom: the score has to carry the real name
+  reborn.send({ type: 'score-submit', game: 'pong', score: 42 });
+  await reborn.nextOf('score-ok', 'post-restart score');
+  reborn.send({ type: 'score-top', game: 'pong' });
+  const board = await reborn.nextOf('score-top', 'post-restart board');
+  assert.equal(board.top[0].name, 'aleju');
+  assert.equal(board.top[0].admin, true);
+
+  // and analytics still recognises it as the admin
+  reborn.send({ type: 'peeko-monitor', rangeHours: 24 });
+  await reborn.nextOf('peeko-monitor', 'admin monitor after restart');
+  console.log('17. admin session survives a restart: score keeps the real name');
+
+  reborn.ws.close();
   child.kill('SIGTERM');
   await new Promise((resolve) => child.on('exit', resolve));
   fs.rmSync(tmpDir, { recursive: true, force: true });

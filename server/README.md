@@ -48,6 +48,17 @@ A failing analytics store never takes chat down: a bad token or an unreachable
 database logs and leaves `analytics` null, and the dashboard reports
 `unavailable`.
 
+**Country data.** An edge geo header (`cf-ipcountry`, `x-vercel-ip-country`, …)
+wins whenever one is present. Behind a plain Caddy none is, so the browser
+sends its IANA timezone as `?tz=` on the capture request and the server maps it
+to a country with `src/timezones.js` — generated from the system tzdata by
+`node scripts/gen-timezones.mjs`. It is a query param rather than a header or a
+body field because it has to survive `sendBeacon` and must not turn capture
+into a preflighted request. No IP database: a licensed file to keep updated, or
+a third-party lookup in the capture path, is a lot of machinery for a flag on a
+personal dashboard. Put Cloudflare in front and the header takes over with no
+code change.
+
 Two deliberate departures from peeko's defaults, both in `analytics.js`:
 `feedExcludeRootPageview` is off (on this site `/` is the front page, not
 landing-page noise), and the paths panel is built from `getBreakdown` on
@@ -64,7 +75,9 @@ Everything is JSON over `/ws`. First message must be `hello`:
 - `{type:'msg', room, text, tmp}` → `{type:'ack', tmp, id, at}`; everyone else in the room gets `{type:'msg', room, message}`
 - `{type:'typing', room}` → forwarded to the room, throttled
 
-Messages carry `{from, admin, registered, text, at}` so the client can render badges. Admin sessions resume from in-memory tokens only; a restart logs the admin out. Registered-user session tokens expire after 90 days; expired rows are swept hourly.
+Messages carry `{from, admin, registered, text, at}` so the client can render badges. Session tokens — the admin's included — expire after 90 days and are swept hourly.
+
+The admin has no `users` row (it authenticates against `ADMIN_TOKEN`, not the database), so its sessions live in their own `admin_tokens` table. They used to be in-memory only, which meant **every restart silently downgraded a still-logged-in admin to a guest**: the browser kept a session localStorage said was valid, the server no longer knew the token, and everything that socket did afterwards — arcade scores especially — was recorded under a guest name while the desktop still said "administrator". Clients now treat `badToken` in `hello-ok` as "this session is over" and return to the login screen rather than acting as an anonymous guest under a signed-in name.
 
 Arcade messages, same socket after `hello`:
 

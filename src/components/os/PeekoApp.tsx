@@ -22,6 +22,36 @@ import { sounds } from './sounds'
 
 const number = new Intl.NumberFormat()
 
+// "CR" -> "Costa Rica". Built in, so no country-name table ships with this.
+const regionNames = (() => {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' })
+  } catch {
+    return null
+  }
+})()
+
+/**
+ * "CR" -> 🇨🇷. A flag emoji is just its two letters as regional indicator
+ * symbols, so there is no image to ship. Windows has no flag glyphs and will
+ * render the letters instead, which is why the code stays visible next to it
+ * rather than being replaced by the flag.
+ */
+function flagFor(code: string): string {
+  if (!/^[A-Za-z]{2}$/.test(code)) return ''
+  return String.fromCodePoint(
+    ...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65),
+  )
+}
+
+function countryName(code: string): string {
+  try {
+    return regionNames?.of(code.toUpperCase()) ?? code
+  } catch {
+    return code
+  }
+}
+
 function StatTile({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="min-w-0 flex-1 rounded-sm border border-stone-300 bg-white px-2.5 py-2 shadow-[inset_0_1px_2px_rgba(0,0,0,0.05)]">
@@ -37,6 +67,8 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
 interface BarRow {
   label: string
   count: number
+  /** optional leading glyph, e.g. a country flag */
+  icon?: string
 }
 
 /*
@@ -64,7 +96,14 @@ function BarList({ rows, empty }: { rows: BarRow[]; empty: string }) {
             style={{ width: `${Math.max(2, (row.count / max) * 100)}%` }}
           />
           <div className="relative flex h-full items-center justify-between gap-2 px-1.5">
-            <span className="truncate text-[11px] text-stone-700">{row.label}</span>
+            <span className="min-w-0 truncate text-[11px] text-stone-700">
+              {row.icon && (
+                <span aria-hidden className="mr-1.5">
+                  {row.icon}
+                </span>
+              )}
+              {row.label}
+            </span>
             <span className="shrink-0 text-[11px] font-medium tabular-nums text-stone-600">
               {number.format(row.count)}
             </span>
@@ -106,9 +145,13 @@ function LiveRow({ event }: { event: FeedEvent }) {
         {where}
       </span>
       <span className="shrink-0 text-[10px] text-stone-400">
-        {[event.country, event.deviceKind === 'unknown' ? null : event.deviceKind]
-          .filter(Boolean)
-          .join(' · ')}
+        {event.country && (
+          <span title={countryName(event.country)}>
+            <span aria-hidden>{flagFor(event.country)}</span> {event.country}
+            {event.deviceKind === 'unknown' ? '' : ' · '}
+          </span>
+        )}
+        {event.deviceKind === 'unknown' ? null : event.deviceKind}
       </span>
     </li>
   )
@@ -266,10 +309,11 @@ export function PeekoApp() {
             <Panel title="Countries">
               <BarList
                 rows={(monitor?.topCountries ?? []).map((c) => ({
-                  label: c.country,
+                  label: countryName(c.country),
+                  icon: flagFor(c.country),
                   count: c.count,
                 }))}
-                empty="No country data — the proxy sends no geo header."
+                empty="No country data yet."
               />
             </Panel>
 

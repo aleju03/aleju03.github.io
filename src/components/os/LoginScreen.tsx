@@ -5,6 +5,7 @@ import { authRequest } from './chatRooms'
 import { AlejLogo } from './AlejLogo'
 import { xpIcon } from './xpIcon'
 import type { Session } from './osContext'
+import { loadStoredSession, storeSession } from './session'
 
 /*
   The AlejOS welcome screen, in the spirit of the XP login: dark blue bands
@@ -13,33 +14,6 @@ import type { Session } from './osContext'
   yours in the chat rooms); Guest always works, server or no server. A
   previously signed-in user gets their tile back for one-click entry.
 */
-
-const SESSION_KEY = 'alejos-session'
-
-function loadStoredSession(): Session | null {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY)
-    if (!raw) return null
-    const v = JSON.parse(raw) as Session
-    if (v && v.kind === 'user' && typeof v.name === 'string' && typeof v.token === 'string')
-      return v
-  } catch {
-    /* corrupted or unavailable */
-  }
-  return null
-}
-
-function storeSession(session: Session | null) {
-  try {
-    if (session && session.kind === 'user') {
-      localStorage.setItem(SESSION_KEY, JSON.stringify(session))
-    } else {
-      localStorage.removeItem(SESSION_KEY)
-    }
-  } catch {
-    /* storage unavailable */
-  }
-}
 
 interface TileProps {
   /** a real XP account picture from public/os/pictures */

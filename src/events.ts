@@ -17,3 +17,8 @@ export const OS_SCENE_READY_EVENT = 'alejos-scene-ready'
 export const OPEN_CHOOSER_EVENT = 'open-version-chooser'
 // in-app (pushState) navigation; the version router re-reads location on this
 export const NAVIGATE_EVENT = 'app-navigate'
+// a socket said hello with the stored session token and the server did not
+// recognise it (expired, swept, or minted by a server that has since been
+// replaced). The saved session is a lie from that moment on, so AlejOS drops
+// back to the login screen instead of showing a name the server will not use
+export const SESSION_EXPIRED_EVENT = 'alejos-session-expired'

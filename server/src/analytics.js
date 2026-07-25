@@ -24,6 +24,7 @@
 // makes when VITE_CHAT_URL is missing.
 
 import { AnalyticsStore, createAnalyticsHandler, createDb } from '@aleju03/peeko';
+import { countryForTimeZone } from './timezones.js';
 
 const CAPTURE_PATH = '/peeko/capture';
 const CAPTURE_RATE_MAX = 120; // capture requests per window per ip (each may be a batch)
@@ -47,12 +48,27 @@ const COUNTRY_HEADERS = [
 // column, not a drop).
 const BOT_RE = /bot|crawler|spider|crawling|slurp|facebookexternalhit|headless|preview|monitor|curl|wget|python-requests|axios|scrapy|lighthouse|pingdom|semrush|ahrefs/i;
 
-function countryFor(req) {
+/**
+ * Where the visitor is, best effort, in order of trust:
+ *
+ * 1. An edge geo header, resolved from the client IP by something upstream
+ *    (Cloudflare, Vercel). Authoritative when present, absent behind a plain
+ *    Caddy, which is why there is a step 2.
+ * 2. The browser's own timezone, sent as ?tz= on the capture request. A query
+ *    param rather than a header or a body field because it must survive
+ *    sendBeacon (which can set neither) and must not turn capture into a
+ *    preflighted request.
+ *
+ * Never an IP database: a licensed 60MB file to keep updated, or a
+ * third-party lookup sitting in the capture path, is a lot of machinery for a
+ * flag on a personal dashboard.
+ */
+function countryFor(req, url) {
   for (const header of COUNTRY_HEADERS) {
     const value = req.headers[header];
     if (typeof value === 'string' && value.trim()) return value.trim();
   }
-  return null;
+  return countryForTimeZone(url.searchParams.get('tz'));
 }
 
 function clientIp(req) {
@@ -101,7 +117,7 @@ export async function createAnalytics(options) {
     store,
     captureToken: undefined,
     enrich: (req) => ({
-      geoCountry: countryFor(req),
+      geoCountry: countryFor(req, new URL(req.url ?? '/', 'http://localhost')),
       isBot: BOT_RE.test(req.headers['user-agent'] ?? ''),
     }),
   });
