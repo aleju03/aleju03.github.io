@@ -22,6 +22,7 @@ import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT } from '../../events'
 import { HOME_PATH, OS_PATH, PC_PATH, ROOM_PATH, isOsPath, isPcPath, isRoomPath } from '../../version'
 import { lockPageForOverlay } from '../../overlay'
+import { setViewer, track } from '../../analytics'
 import { APPS, glyphFor, isAppId } from './apps'
 import { preloadImage, preloadXpIcons, xpIcon } from './xpIcon'
 import type { XpIconName } from './xpIcon'
@@ -110,6 +111,10 @@ const START_ITEMS: {
   { app: 'terminal' },
   { app: 'display' },
 ]
+
+// Only the admin's Start menu carries these. Hiding them is presentation, not
+// protection — the server refuses the reads themselves to anyone else.
+const ADMIN_START_ITEMS: typeof START_ITEMS = [{ app: 'peeko', label: 'peeko — site traffic' }]
 
 interface Rect {
   x: number
@@ -798,6 +803,8 @@ export default function AlejOS({
     setWins((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)))
 
   const openApp = (app: AppId, props?: Record<string, unknown>) => {
+    // which of the desktop's toys people actually open, games included
+    track('app_open', { app })
     sounds.open()
     setStartOpen(false)
     setMenu(null)
@@ -888,6 +895,7 @@ export default function AlejOS({
     setMenu(null)
     setSelected(new Set())
     setSession(null)
+    setViewer(null)
     setPhase('login')
   }, [])
 
@@ -1253,7 +1261,7 @@ export default function AlejOS({
                 </div>
               </div>
               <ul className="p-1.5">
-                {START_ITEMS.map((item) => (
+                {(session?.admin ? [...START_ITEMS, ...ADMIN_START_ITEMS] : START_ITEMS).map((item) => (
                   <li key={item.label ?? item.app}>
                     <button
                       type="button"
@@ -1398,6 +1406,10 @@ export default function AlejOS({
       <LoginScreen
         onLogin={(s) => {
           setSession(s)
+          // registered visitors get their name on subsequent events; it is
+          // also how the server keeps my own testing out of the live feed
+          setViewer(s.kind === 'user' ? s.name : null)
+          track('os_login', { kind: s.kind, admin: Boolean(s.admin) })
           setPhase('on')
           const app = pendingAppRef.current
           pendingAppRef.current = null

@@ -12,6 +12,7 @@
     "test": "node test/smoke.mjs"
   },
   "dependencies": {
+    "@aleju03/peeko": "^0.1.0",
     "better-sqlite3": "^11.10.0",
     "ws": "^8.18.0"
   }

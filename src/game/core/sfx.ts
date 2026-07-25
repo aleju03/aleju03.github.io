@@ -1,12 +1,23 @@
 /*
-  One-shot movement and interaction sounds, synthesized like sounds.ts and
-  the backrooms hum: nothing shipped, nothing copyrighted. Footsteps are a
-  filtered noise scuff over a low heel thump, parameterized per surface so
-  wood knocks, grass swishes and the backrooms carpet swallows the step;
-  doors get a stick-slip hinge creak (a sawtooth juddered by a tremolo LFO)
-  and a latch click when the leaf seats. Everything here is fire-and-forget
-  — sources stop themselves, so there is nothing to dispose — and the lazy
-  AudioContext guards `window`, keeping the game runtime headless-safe.
+  One-shot movement and interaction sounds. Footsteps are a filtered noise
+  scuff over a low heel thump, parameterized per surface so wood knocks,
+  grass swishes and the backrooms carpet swallows the step — synthesized
+  like sounds.ts and the backrooms hum, nothing shipped, nothing
+  copyrighted. The house doors are the one exception on the whole site: a
+  hinge is stick-slip friction, and the sawtooth-through-a-tremolo version
+  of that (still below, and still what you hear on a cold load) never
+  stopped sounding like a synthesizer imitating a door. So they play nine
+  clips cut from CC BY recordings of four real doors — three voices each of
+  swing open, swing shut and leaf seating — credited in
+  public/os/sfx/LICENSE.md. Every clip is cut to start ON its onset and run
+  about as long as the leaf takes to swing: a recording that opens with a
+  quarter second of handle noise is heard as the game lagging, not as a
+  door. They are fetched when this module loads and decoded against the
+  first AudioContext, and every door sound falls back to its synthesized
+  voice until its buffer is ready, so nothing is ever silent waiting on a
+  download. Everything here is fire-and-forget — sources stop themselves,
+  so there is nothing to dispose — and both the lazy AudioContext and the
+  fetch guard `window`, keeping the game runtime headless-safe.
   Math.random() is deliberate: audio grain is cosmetic, not world state, so
   it stays outside the seeded determinism contract (core/rand.ts).
 */
@@ -19,10 +30,72 @@ const audio = (): AudioContext | null => {
   try {
     ac ??= new AudioContext()
     if (ac.state === 'suspended') void ac.resume()
+    if (pending.size) decodeClips(ac)
     return ac
   } catch {
     return null
   }
+}
+
+/* ---------------------------------------------------------- recorded -- */
+
+type Clip = `door-${'open' | 'close' | 'latch'}-${1 | 2 | 3}`
+/* three voices per event, cut from four different real doors. A clip is
+   chosen per swing rather than per door: the same door heard twice running
+   is the one repeat a player actually notices. The seat that lands half a
+   second after a close borrows that close's voice, so the two halves of
+   shutting a door stay one door. */
+const OPENS: Clip[] = ['door-open-1', 'door-open-2', 'door-open-3']
+const CLOSES: Clip[] = ['door-close-1', 'door-close-2', 'door-close-3']
+const LATCHES: Clip[] = ['door-latch-1', 'door-latch-2', 'door-latch-3']
+const CLIPS: Clip[] = [...OPENS, ...CLOSES, ...LATCHES]
+let openVoice = 0
+let closeVoice = 0
+/** step 1 or 2 places on: random, but never the voice that just played */
+const nextVoice = (last: number) => (last + 1 + Math.floor(Math.random() * 2)) % 3
+/** downloaded but not yet decoded; an entry is dropped on its one attempt.
+    A miss settles to null rather than rejecting: nothing handles these until
+    the first sound, which may never come (the flat OS bezel plays none) */
+const pending = new Map<Clip, Promise<ArrayBuffer | null>>()
+const decoded = new Map<Clip, AudioBuffer>()
+
+if (typeof window !== 'undefined') {
+  for (const c of CLIPS) {
+    pending.set(
+      c,
+      fetch(`/os/sfx/${c}.mp3`)
+        .then((r) => (r.ok ? r.arrayBuffer() : null))
+        .catch(() => null),
+    )
+  }
+}
+
+/** decoding needs a context, which needs a first sound; every failure just
+    leaves the clip out and the synthesized voice keeps the door audible */
+const decodeClips = (a: AudioContext) => {
+  for (const [clip, bytes] of pending) {
+    pending.delete(clip)
+    void bytes
+      .then((b) => (b ? a.decodeAudioData(b) : null))
+      .then((buf) => {
+        if (buf) decoded.set(clip, buf)
+      })
+      .catch(() => {})
+  }
+}
+
+/** play a recorded clip; false when its buffer isn't ready (or never will be) */
+const sample = (a: AudioContext, clip: Clip, gain: number, rate: number) => {
+  const buf = decoded.get(clip)
+  if (!buf) return false
+  const src = a.createBufferSource()
+  src.buffer = buf
+  src.playbackRate.value = rate
+  const g = a.createGain()
+  g.gain.value = gain
+  src.connect(g).connect(a.destination)
+  src.start()
+  return true
 }
 
 /** one second of shared white noise; bursts play random slices of it */
@@ -115,10 +188,26 @@ export const landThump = (surface: StepSurface, k: number) => {
   burst(a, now, 'bandpass', p.bp * 0.8, p.q, p.scuff * (0.8 + k), p.dur * 1.4)
 }
 
-/** the hinge working: stick-slip judder, gliding up opening and down shut */
+/** the hinge working: the recorded swing, or the stick-slip judder below
+    (gliding up opening and down shut) while that clip is still loading */
 export const doorCreak = (opening: boolean) => {
   const a = audio()
   if (!a) return
+  // a fresh voice each swing, plus a little rate jitter under it. The gains
+  // are matched to the synthesized creak below, which was tuned against the
+  // footsteps — a normalized clip runs ~4x hotter than anything else in this
+  // mix and walks all over them
+  if (opening) openVoice = nextVoice(openVoice)
+  else closeVoice = nextVoice(closeVoice)
+  if (
+    sample(
+      a,
+      opening ? OPENS[openVoice] : CLOSES[closeVoice],
+      opening ? 0.1 : 0.09,
+      0.96 + Math.random() * 0.08,
+    )
+  )
+    return
   const now = a.currentTime
   // opening starts at the handle: the latch pulls back with a click
   if (opening) burst(a, now, 'highpass', 2200, 0.7, 0.03, 0.03)
@@ -154,10 +243,13 @@ export const doorCreak = (opening: boolean) => {
   lfo.stop(at + dur + 0.02)
 }
 
-/** the leaf seating back into its frame: a wooden thud, then the latch snap */
+/** the leaf seating back into its frame: the recorded latch, or a wooden
+    thud and a synthesized snap until it lands */
 export const doorLatch = () => {
   const a = audio()
   if (!a) return
+  // the same door that just swung shut, not a fourth one
+  if (sample(a, LATCHES[closeVoice], 0.1, 0.97 + Math.random() * 0.06)) return
   const now = a.currentTime
   thump(a, now, 95, 0.05, 0.09)
   burst(a, now + 0.02, 'highpass', 2600, 0.7, 0.035, 0.025)

@@ -13,6 +13,45 @@ v2 replaced the old 1:1 messenger protocol entirely — deploy the server and th
 | `ADMIN_USERNAME` | no | `aleju` | Reserved username; logging in with it + `ADMIN_TOKEN` grants the admin badge. Nobody can register or nick it |
 | `ALLOWED_ORIGINS` | no | unset | Comma-separated list, e.g. `https://aleju.dev,http://localhost:4173`. If set, WebSocket upgrades with an Origin header not in the list are rejected |
 | `DB_PATH` | no | `./data/chat.db` | SQLite database path. The parent directory is created if missing |
+| `ANALYTICS_URL` | no | unset | libsql URL for the peeko analytics store (`libsql://…turso.io` or `file:./data/analytics.db`). **Unset disables analytics entirely** |
+| `ANALYTICS_AUTH_TOKEN` | no | unset | Turso database token; not needed for a `file:` URL |
+| `ANALYTICS_RETENTION_DAYS` | no | `180` | Rows older than this are pruned hourly |
+| `ANALYTICS_SITE_HOSTS` | no | unset | Comma-separated hosts that count as real traffic in the live feed, e.g. `aleju03.github.io`. Keeps localhost and preview deploys out |
+| `ANALYTICS_TIME_ZONE` | no | `UTC` | IANA zone for the feed's clock labels |
+
+## Analytics
+
+Traffic capture runs on [peeko](https://github.com/aleju03/peeko), in its own
+libsql/Turso database — never `chat.db`, since analytics rows are high-volume
+and would bloat the file chat reads from. `server/src/analytics.js` owns it.
+
+The split that matters is trust:
+
+- **`POST /peeko/capture` is public.** Browsers post to it cross-origin from the
+  static site, so it carries no token — a token shipped to a browser is not a
+  token. It is origin-checked against `ALLOWED_ORIGINS`, rate limited per IP,
+  and can only ever append events. This is the only analytics route served over
+  HTTP; `/peeko/monitor`, `/peeko/live` and the ticket routes are deliberately
+  **not** mounted.
+- **Reads are admin-only and ride the WebSocket.** The socket already
+  authenticated at login, so the dashboard asks over it instead of holding a
+  bearer token of its own.
+
+Analytics messages, same socket after `hello`, all refused with
+`{type:'error', code:'forbidden'}` unless the session is the admin:
+
+- `{type:'peeko-monitor', rangeHours}` → `{type:'peeko-monitor', rangeHours, overview, topPaths, topReferrers, topCountries, bounce, recent}`
+- `{type:'peeko-breakdown', event, prop, rangeHours, distinct?}` → `{type:'peeko-breakdown', event, prop, rows}` — top-N of any property in the props bag, which is how the site's custom events (`project_view`, `app_open`, `os_boot`) are read
+- `{type:'peeko-live', on}` → subscribes; each accepted event arrives as `{type:'peeko-event', event}`
+
+A failing analytics store never takes chat down: a bad token or an unreachable
+database logs and leaves `analytics` null, and the dashboard reports
+`unavailable`.
+
+Two deliberate departures from peeko's defaults, both in `analytics.js`:
+`feedExcludeRootPageview` is off (on this site `/` is the front page, not
+landing-page noise), and the paths panel is built from `getBreakdown` on
+`$pathname` rather than `getTopPaths`, which hardcodes `path != '/'`.
 
 ## Protocol sketch
 
@@ -60,6 +99,9 @@ Environment=PORT=8787
 Environment=ADMIN_TOKEN=change-me
 Environment=ALLOWED_ORIGINS=https://aleju.dev
 Environment=DB_PATH=/opt/portfolio-chat/data/chat.db
+Environment=ANALYTICS_URL=libsql://your-db.turso.io
+Environment=ANALYTICS_AUTH_TOKEN=change-me
+Environment=ANALYTICS_SITE_HOSTS=aleju03.github.io
 Restart=always
 User=www-data
 # Hard ceiling well above normal usage (~60MB); a runaway gets recycled.
@@ -79,6 +121,6 @@ chat.example.com {
 
 ## Frontend notes
 
-The frontend needs `VITE_CHAT_URL=wss://chat.example.com/ws` at build time. Without it, the AlejOS login screen still offers Guest and the Chat Rooms app falls back to the mail composer.
+The frontend needs `VITE_CHAT_URL=wss://chat.example.com/ws` at build time. Without it, the AlejOS login screen still offers Guest, the Chat Rooms app falls back to the mail composer, and analytics capture goes quiet — `src/analytics.ts` derives its capture endpoint from the same variable (`wss://…/ws` → `https://…/peeko/capture`), so there is no second URL to configure.
 
-To log in as admin, use the reserved username with `ADMIN_TOKEN` as the password on the AlejOS login screen.
+To log in as admin, use the reserved username with `ADMIN_TOKEN` as the password on the AlejOS login screen. That session, and only that one, gets the **peeko** entry in the Start menu — the traffic dashboard.

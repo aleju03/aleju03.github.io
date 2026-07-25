@@ -21,7 +21,7 @@ There is no frontend test suite; verification is typecheck + lint + build, then 
 Three independent packages:
 
 - **Root** — the portfolio SPA (React 19 + TypeScript + Vite + Tailwind v4 + Three.js). Deployed to GitHub Pages by `.github/workflows/deploy.yml` on push to main; `VITE_CHAT_URL` comes from a repo variable and, when unset, chat features degrade to email fallbacks (`.env.example`). The `404.html` copy is the SPA-route fallback for Pages.
-- **`server/`** — the AlejOS chat/arcade WebSocket server (Node 22 ESM, `ws` + `better-sqlite3`, no build step). Deployed separately to a VPS; the JSON protocol is sketched in `server/README.md`. Deploy server and frontend together — the protocol has no version negotiation.
+- **`server/`** — the AlejOS chat/arcade WebSocket server (Node 22 ESM, `ws` + `better-sqlite3`, no build step) **and the site's analytics backend** (`@aleju03/peeko` over `@libsql/client`, in its own Turso database — never `chat.db`). Deployed separately to a VPS; the JSON protocol is sketched in `server/README.md`. Deploy server and frontend together — the protocol has no version negotiation.
 - **`npx-card/`** — the `npx aleju` terminal business card, published to npm by hand.
 
 ## Architecture
@@ -42,13 +42,23 @@ Everything heavy is lazy and event-triggered, and Three.js is deliberately isola
 4. `CrtScene.tsx` — the presentation shell of the 3D world: renderer, screen glass, camera cinematics, light rig, HUD. The live AlejOS DOM stays interactive on the CRT via a CSS3D renderer sharing the WebGL camera; the glass mesh punches a hole through the canvas with a no-blending near-transparent material. While the camera is parked on the screen **nothing 3D renders at all**. Its `walkTick` is a thin per-frame conductor over the game runtime.
 5. `src/game/` — the React-free game runtime (see `src/game/README.md` for the map and the how-to-add-things guide). Input, FPS movement + collision, the Level system (the house/yard 'overworld' and the 'backrooms' easter egg, plus the noclip cut between them), the world builders (`levels/houseWorld.ts`, `levels/outsideWorld.ts`, `levels/backrooms.ts`), the player body, and the deterministic-procgen core (`core/rand.ts`, `core/textures.ts`). This is the long-term home of the open-world game the easter egg is growing into; new game systems go here, never inside React components.
 
+### Analytics
+
+Traffic is counted by [peeko](https://github.com/aleju03/peeko), my own self-hosted analytics core, wired up in three pieces:
+
+- `src/analytics.ts` — capture. Derives its endpoint from `VITE_CHAT_URL` (so there is no second env var), queues events and posts them in one batch, `sendBeacon` on hide. It subscribes to the `events.ts` spine, so the palette, terminal, chooser, navigation and every route into the OS are instrumented with **no call sites in those components** — add new site-wide instrumentation there first. Explicit `track()` calls exist only where the event has no window event behind it (project opened, contact clicked, app opened, login).
+- `server/src/analytics.js` — the store. Capture is a public, origin-checked, rate-limited HTTP route; every **read** is admin-only and travels over the already-authenticated chat WebSocket, so no dashboard token ever reaches a browser. peeko's own `/monitor` and `/live` routes are deliberately not mounted.
+- `src/components/os/PeekoApp.tsx` + `peeko.ts` — the dashboard, an AlejOS app that only appears in the admin's Start menu. Hiding it is presentation; the server refusing the reads is the actual gate.
+
+Anything beyond peeko's extracted columns rides in the props bag and is read back with `getBreakdown`, so new custom events need no server change. `src/game/` stays out of this — the runtime must keep running headless, so instrument from the React side (`CrtScene`), never from inside the sim.
+
 ### Data is the single source of truth
 
 `src/data/projects.ts` / `experience.ts` / `skills.ts` drive the React pages **and** `/llms.txt`, which a Vite plugin in `vite.config.ts` generates from the same modules so the plain-text rendering can't go stale. Content edits go in the data modules, not components.
 
 ## Conventions that matter
 
-- **Nothing shipped, nothing copyrighted**: sounds are synthesized with WebAudio (`sounds.ts`, `game/levels/backrooms.ts`), textures are drawn onto canvases at runtime (`canvasTexture` in `src/game/core/textures.ts`). Keep new assets procedural. The GLB models in `public/os/models/` are CC assets — additions must be credited in its `LICENSE.md`.
+- **Nothing shipped, nothing copyrighted**: sounds are synthesized with WebAudio (`sounds.ts`, `game/levels/backrooms.ts`), textures are drawn onto canvases at runtime (`canvasTexture` in `src/game/core/textures.ts`). Keep new assets procedural. Two exceptions, both CC and both credited in a `LICENSE.md` beside the files — additions there must be too: the GLB models in `public/os/models/`, and the three house-door clips in `public/os/sfx/` (`game/core/sfx.ts`, which still keeps a synthesized voice per clip as its cold-load fallback). A recorded one-shot must be peak-matched against the synthesized sounds before it ships; normalized clips run ~4x hotter than this mix.
 - **3D performance idioms** (the target is a cold iGPU): shadow maps are hand-baked (`shadow.autoUpdate = false`, flagged with `needsUpdate` only near a moving caster, staggered one light per frame); static scene graphs get `matrixAutoUpdate = false` after one `updateMatrixWorld(true)` — anything that must keep moving opts out via `userData.dynamic`; geometry is merged/instanced per chunk; models stream in behind the intro rather than blocking it. Follow these patterns when touching the scene or the frame loop pays for it.
 - **Module-header prose comments**: nearly every nontrivial module opens with a paragraph explaining what it owns and why it's shaped that way (see `game/levels/houseWorld.ts`, `warp.ts`, `CrtScene.tsx`). Keep them accurate when changing behavior, and write one for any new module.
 - Walk-mode collision is a flat `THREE.Box3[]` (`game/physics/collision.ts`), height-aware: a box blocks only where it overlaps the body, so a low enough top is a floor you climb (`supportY`) rather than a wall. Solids must register a box or the player walks through them (the backrooms entrance works by deliberately not registering one), **and must be marked `noStand()` unless their box top is somewhere a player could stand** — walls, fences, lamp poles and canopies are taller than the things they wrap, and the climbable furniture below them otherwise chains into a ladder onto the wall tops. Each level owns its CollisionSet; new areas implement the `Level` contract in `game/levels/types.ts`.

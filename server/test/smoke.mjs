@@ -68,6 +68,11 @@ function startServer() {
         PORT: '0',
         ADMIN_TOKEN,
         DB_PATH: path.join(tmpDir, 'chat.db'),
+        // analytics against a throwaway local libsql file — the same code path
+        // a Turso URL takes, without needing the network
+        ANALYTICS_URL: `file:${path.join(tmpDir, 'analytics.db')}`,
+        ANALYTICS_SITE_HOSTS: 'aleju.dev',
+        ALLOWED_ORIGINS: 'https://aleju.dev',
       },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
@@ -259,6 +264,99 @@ async function main() {
   assert.equal(duelTop.top.length, 1);
   assert.equal(duelTop.top[0].score, 1);
   console.log('11. duel win recorded on the shared board');
+
+  // 12. Analytics reads are admin-only, over the socket that already proved
+  //     who it is. alice2 is a registered non-admin.
+  const origin = 'https://aleju.dev';
+  const httpBase = `http://127.0.0.1:${port}`;
+  alice2.send({ type: 'peeko-monitor', rangeHours: 24 });
+  const forbidden = await alice2.nextOf('error', 'non-admin monitor');
+  assert.equal(forbidden.code, 'forbidden');
+  console.log('12. analytics reads refused to a non-admin socket');
+
+  // 13. Capture is public (browsers post to it cross-origin) but origin-checked.
+  const capture = (body, headers = {}) =>
+    fetch(`${httpBase}/peeko/capture`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin,
+        'user-agent': 'Mozilla/5.0 (smoke test)',
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    });
+
+  const preflight = await fetch(`${httpBase}/peeko/capture`, {
+    method: 'OPTIONS',
+    headers: { origin, 'access-control-request-method': 'POST' },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+
+  const badOrigin = await capture({ event: '$pageview' }, { origin: 'https://evil.example' });
+  assert.equal(badOrigin.status, 403);
+
+  // the dashboard's own read routes must not be reachable over HTTP at all
+  for (const route of ['/peeko/monitor?rangeHours=24', '/peeko/live-ticket']) {
+    const res = await fetch(httpBase + route, { headers: { origin } });
+    assert.equal(res.status, 404, `${route} must not be served`);
+  }
+  console.log('13. capture is origin-checked; monitor/live-ticket unreachable over http');
+
+  // 14. Admin subscribes to the live feed, then a capture arrives on it.
+  dup.send({ type: 'peeko-live', on: true });
+  const pageview = (distinctId, pathname) => ({
+    event: '$pageview',
+    distinct_id: distinctId,
+    timestamp: new Date().toISOString(),
+    properties: {
+      $host: 'aleju.dev',
+      $pathname: pathname,
+      $screen_width: 1920,
+      $referring_domain: 'google.com',
+    },
+  });
+  const accepted = await capture({ batch: [pageview('visitor-a', '/'), pageview('visitor-b', '/projects/aula')] });
+  assert.equal(accepted.status, 200);
+  assert.equal((await accepted.json()).accepted, 2);
+  const liveEvent = await dup.nextOf('peeko-event', 'live analytics event');
+  assert.equal(liveEvent.event.event, '$pageview');
+  assert.equal(liveEvent.event.deviceKind, 'desktop');
+  console.log('14. live feed pushes captured events to the admin socket');
+
+  // 15. The rollup sees them once the 1s write buffer flushes.
+  let monitor = null;
+  for (let i = 0; i < 20 && !(monitor?.overview.pageviews >= 2); i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    dup.send({ type: 'peeko-monitor', rangeHours: 24 });
+    monitor = await dup.nextOf('peeko-monitor', 'admin monitor');
+  }
+  assert.ok(monitor.overview.pageviews >= 2, 'pageviews landed in the store');
+  assert.ok(monitor.overview.uniqueVisitors >= 2, 'unique visitors counted');
+  // "/" must survive: peeko drops bare root pageviews by default and the
+  // portfolio's front page is exactly that
+  assert.ok(monitor.topPaths.some((p) => p.path === '/'), 'root pageview kept');
+  assert.ok(monitor.topReferrers.some((r) => r.domain === 'google.com'));
+  assert.equal(monitor.rangeHours, 24);
+  console.log('15. admin rollup counts pageviews, uniques, paths and referrers');
+
+  // 16. Breakdown reaches into custom event properties.
+  await capture({
+    batch: [
+      { event: 'project_view', distinct_id: 'visitor-a', properties: { $host: 'aleju.dev', slug: 'aula' } },
+      { event: 'project_view', distinct_id: 'visitor-b', properties: { $host: 'aleju.dev', slug: 'aula' } },
+    ],
+  });
+  let rows = [];
+  for (let i = 0; i < 20 && rows.length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    dup.send({ type: 'peeko-breakdown', event: 'project_view', prop: 'slug', rangeHours: 24 });
+    rows = (await dup.nextOf('peeko-breakdown', 'admin breakdown')).rows;
+  }
+  assert.equal(rows[0].value, 'aula');
+  assert.equal(rows[0].count, 2);
+  console.log('16. breakdown aggregates a custom event property');
 
   for (const c of [guest, alice, alice2, dup, late, p1, p2]) c.ws.close();
   child.kill('SIGTERM');

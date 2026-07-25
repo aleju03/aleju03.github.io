@@ -6,6 +6,7 @@ import { Reveal } from './Reveal'
 import { TechList } from './TechList'
 import { ZigzagDoodle } from './Doodles'
 import { useI18n } from '../i18n'
+import { track } from '../analytics'
 
 const ProjectModal = lazy(() =>
   import('./ProjectModal').then((m) => ({ default: m.ProjectModal })),
@@ -158,6 +159,9 @@ export function WorkGrid() {
   const [selected, setSelected] = useState<ShowcaseProject | null>(null)
   const [featured, ...rest] = projects.showcase
   const openProject = (project: ShowcaseProject) => {
+    // the slug, not the name: it matches the /projects/<slug> deep links, so
+    // both ways of reaching a project aggregate into one number
+    track('project_view', { slug: project.slug, source: 'grid' })
     primeProject(project)
     setSelected(project)
   }

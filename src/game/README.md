@@ -19,7 +19,8 @@ core/
   disposer.ts        createDisposer() — every texture/disposable checks in here
   input.ts           createRoamInput() — keys, mouse-look, pointer lock lifecycle
   sfx.ts             footstep()/landThump()/doorCreak()/doorLatch() — WebAudio
-                     one-shots, per-surface voicing, headless-safe
+                     one-shots, per-surface voicing, headless-safe. Doors also
+                     play recorded clips from public/os/sfx (synth fallback)
 physics/
   collision.ts       CollisionSet (Box3 list + bounds), resolveXZ(), supportY(),
                      addBoxFrom()/padXZ()/noStand() — height-aware solids

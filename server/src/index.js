@@ -13,6 +13,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { WebSocketServer, WebSocket } from 'ws';
 import Database from 'better-sqlite3';
+import { createAnalytics } from './analytics.js';
 
 // ---------------------------------------------------------------- config
 
@@ -24,6 +25,17 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 const DB_PATH = process.env.DB_PATH ?? './data/chat.db';
+
+// Analytics lives in its own libsql/Turso database, never in chat.db. Leave
+// ANALYTICS_URL unset and the whole feature stays off.
+const ANALYTICS_URL = process.env.ANALYTICS_URL;
+const ANALYTICS_AUTH_TOKEN = process.env.ANALYTICS_AUTH_TOKEN;
+const ANALYTICS_RETENTION_DAYS = Number(process.env.ANALYTICS_RETENTION_DAYS ?? 180);
+const ANALYTICS_SITE_HOSTS = (process.env.ANALYTICS_SITE_HOSTS ?? '')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+const ANALYTICS_TIME_ZONE = process.env.ANALYTICS_TIME_ZONE ?? 'UTC';
 
 if (!ADMIN_TOKEN) {
   console.error('ADMIN_TOKEN is required, refusing to start');
@@ -738,6 +750,90 @@ function handleDuelRematch(ws) {
   }
 }
 
+// ---------------------------------------------------------------- analytics
+
+// A failure here must never take the chat down with it: a bad Turso token or
+// an unreachable database costs the dashboard, nothing else.
+let analytics = null;
+try {
+  analytics = await createAnalytics({
+    url: ANALYTICS_URL,
+    authToken: ANALYTICS_AUTH_TOKEN,
+    retentionDays: ANALYTICS_RETENTION_DAYS,
+    siteHosts: ANALYTICS_SITE_HOSTS,
+    excludeViewer: ADMIN_USERNAME,
+    allowedOrigins: ALLOWED_ORIGINS,
+    timeZone: ANALYTICS_TIME_ZONE,
+  });
+  if (analytics) console.log('analytics: peeko store ready');
+} catch (err) {
+  console.error('analytics: disabled,', err?.message ?? err);
+  analytics = null;
+}
+
+// Admin sockets watching the live event feed -> their unsubscribe function.
+const analyticsWatchers = new Map();
+
+// Every analytics read is admin-only. The socket already proved who it is at
+// login, so the dashboard needs no token of its own.
+function analyticsGuard(ws) {
+  if (!ws.isAdmin) {
+    sendError(ws, 'forbidden');
+    return false;
+  }
+  if (!analytics) {
+    sendError(ws, 'unavailable', 'Analytics is not configured on this server.');
+    return false;
+  }
+  return true;
+}
+
+function handlePeekoMonitor(ws, msg) {
+  if (!analyticsGuard(ws)) return;
+  analytics
+    .monitor(Number(msg.rangeHours))
+    .then((data) => send(ws, { type: 'peeko-monitor', ...data }))
+    .catch((err) => sendError(ws, 'server', String(err?.message ?? 'query failed')));
+}
+
+function handlePeekoBreakdown(ws, msg) {
+  if (!analyticsGuard(ws)) return;
+  const prop = typeof msg.prop === 'string' ? msg.prop : '';
+  if (!prop) {
+    strike(ws);
+    return;
+  }
+  analytics
+    .breakdown({
+      event: typeof msg.event === 'string' ? msg.event : null,
+      prop,
+      rangeHours: Number(msg.rangeHours),
+      distinct: msg.distinct === true,
+    })
+    .then((rows) =>
+      send(ws, { type: 'peeko-breakdown', event: msg.event ?? null, prop, rows })
+    )
+    .catch((err) => sendError(ws, 'server', String(err?.message ?? 'query failed')));
+}
+
+function handlePeekoLive(ws, msg) {
+  if (!analyticsGuard(ws)) return;
+  const on = msg.on !== false;
+  const existing = analyticsWatchers.get(ws);
+  if (!on) {
+    if (existing) {
+      existing();
+      analyticsWatchers.delete(ws);
+    }
+    return;
+  }
+  if (existing) return;
+  analyticsWatchers.set(
+    ws,
+    analytics.subscribe((event) => send(ws, { type: 'peeko-event', event }))
+  );
+}
+
 // ---------------------------------------------------------------- handlers
 
 async function handleRegister(ws, msg) {
@@ -951,6 +1047,15 @@ function handleMessage(ws, msg) {
     case 'duel-rematch':
       handleDuelRematch(ws);
       return;
+    case 'peeko-monitor':
+      handlePeekoMonitor(ws, msg);
+      return;
+    case 'peeko-breakdown':
+      handlePeekoBreakdown(ws, msg);
+      return;
+    case 'peeko-live':
+      handlePeekoLive(ws, msg);
+      return;
     default:
       strike(ws);
   }
@@ -962,6 +1067,23 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('ok');
+    return;
+  }
+  // The only public analytics route: browsers appending events. Reads happen
+  // over the authenticated WebSocket, never here.
+  if (analytics) {
+    analytics
+      .handleHttp(req, res)
+      .then((handled) => {
+        if (handled) return;
+        res.writeHead(404, { 'content-type': 'text/plain' });
+        res.end('not found');
+      })
+      .catch(() => {
+        if (res.headersSent) return res.end();
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        res.end('error');
+      });
     return;
   }
   res.writeHead(404, { 'content-type': 'text/plain' });
@@ -1037,6 +1159,11 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     leaveRoom(ws);
     leaveDuel(ws, 'left');
+    const unwatch = analyticsWatchers.get(ws);
+    if (unwatch) {
+      unwatch();
+      analyticsWatchers.delete(ws);
+    }
   });
 
   ws.on('error', () => ws.terminate());
@@ -1079,8 +1206,10 @@ function shutdown() {
   clearInterval(tokenSweep);
   for (const ws of wss.clients) ws.terminate();
   wss.close(() => {
-    server.close(() => {
+    server.close(async () => {
       db.close();
+      // flushes the last second of buffered events before the process goes
+      await analytics?.stop().catch(() => {});
       process.exit(0);
     });
   });

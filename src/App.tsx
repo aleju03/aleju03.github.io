@@ -15,6 +15,7 @@ import {
   type PortfolioVersion,
 } from './version'
 import { NAVIGATE_EVENT, OPEN_CHOOSER_EVENT } from './events'
+import { pageview, setRendering, startAnalytics, track } from './analytics'
 
 const FullPortfolio = lazy(() => import('./components/FullPortfolio'))
 const SimplePortfolio = lazy(() => import('./components/simple/SimplePortfolio'))
@@ -48,6 +49,15 @@ function VersionRouter() {
     }
   }, [])
 
+  // Traffic capture subscribes to the site's own event spine (navigation
+  // included), so most of the instrumentation needs no call sites at all. The
+  // first pageview waits for the ?v= tidy-up above so the recorded path is the
+  // one the visitor keeps.
+  useEffect(() => {
+    startAnalytics()
+    pageview()
+  }, [])
+
   // follow back/forward and in-app (pushState) navigation
   useEffect(() => {
     const sync = () => setPathname(window.location.pathname)
@@ -76,13 +86,33 @@ function VersionRouter() {
   const forceFull = pathname.startsWith('/alejOS') || isRoomPath(pathname)
   const forcePc = isPcPath(pathname)
 
+  // which of the site's renderings is actually on screen. Tagged onto every
+  // event so the dashboard can answer the question this whole two-version
+  // idea exists to ask: does anyone read the quiet résumé, or do they all
+  // stay in the playground?
+  const rendering = forcePc
+    ? 'pc'
+    : forceFull
+      ? 'full'
+      : projectSlug !== null || version === 'simple'
+        ? 'simple'
+        : 'full'
+
+  // set during render, not in an effect: the first pageview fires from an
+  // effect below, and effects run after this — an effect here would race it
+  // and the landing event would go out untagged. Assigning a module string is
+  // idempotent, so a double render costs nothing.
+  setRendering(rendering)
+
   const choose = (next: PortfolioVersion) => {
+    track('version_switch', { from: rendering, to: next })
     persistVersion(next)
     setVersion(next)
     setChooserOpen(false)
   }
 
   const dismissNudge = () => {
+    track('nudge_dismissed')
     persistNudgeDismissed()
     setNudgeDismissed(true)
   }
@@ -111,7 +141,7 @@ function VersionRouter() {
 
   // the full site is the default landing; no explicit choice just means the
   // résumé nudge floats over it until it's followed or waved away
-  const showSimple = projectSlug !== null || version === 'simple'
+  const showSimple = rendering === 'simple'
   const showNudge = version === null && projectSlug === null && !nudgeDismissed
 
   return (

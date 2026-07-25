@@ -22,8 +22,10 @@ import { supportY } from '../physics/collision'
   body's own accelerations, so they lag, overshoot and settle — with the
   elbows chasing the shoulders one beat behind — and the head and chest's
   look-tracking rides the same springs, so a whipped mouse is followed with
-  weight, never a snap. The showy
-  parts of that layer (lean, head pitch-follow) scale with pose.show, so a
+  weight, never a snap. That tracking is both axes and both bones: the neck
+  takes most of the gaze and the spine bends a little under it, so a look at
+  the floor folds the body over instead of craning one joint. The showy
+  parts of that layer (lean, gaze-follow) scale with pose.show, so a
   chase camera or another player sees the full performance while the
   first-person lens keeps a level, out-of-frame head. Crouch is
   analytic two-bone IK (cosine law), so the feet stay planted while the hips
@@ -441,7 +443,8 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
   // insurance against a pathological frame time.
   // 0..11: arms ([shoulderX, shoulderZ, elbow] × L/R)
   // 12: chest look-yaw · 14: head look-yaw · 16: head look-pitch
-  const sprS = new Float64Array(18)
+  // 18: chest look-pitch
+  const sprS = new Float64Array(20)
   const spring = (
     i: number, target: number, K: number, C: number, force: number, dt: number,
     lo = -2.6, hi = 2.6,
@@ -595,6 +598,24 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       THREE.MathUtils.clamp((dFace - chestLook) * 0.85, -1.0, 1.0),
       90, 11, 0, dt,
     )
+    // the same trick vertically — and note the sign: every bone here tilts its
+    // face DOWN for a positive rotation.x (that is what folds the chest over
+    // the knees in the get-up), so the gaze target is the camera pitch
+    // negated. A gaze is also a neck AND a spine: the head takes the bulk of
+    // it and the chest bends a little under it, so looking at the floor folds
+    // the whole upper body over rather than craning one bone — which is what
+    // makes the pose readable from behind, the one angle a lone neck rotation
+    // is nearly invisible from. Looking down follows a little shallower than
+    // looking up: the chin runs out of room against the chest long before the
+    // crown does going back.
+    const pitchLook = spring(
+      16,
+      THREE.MathUtils.clamp(-pose.pitch * (pose.pitch > 0 ? 0.55 : 0.42), -0.75, 0.6) * pose.show,
+      90, 11, 0, dt,
+    )
+    const spineLook = spring(
+      18, THREE.MathUtils.clamp(-pose.pitch * 0.16, -0.24, 0.24) * pose.show, 70, 11, 0, dt,
+    )
 
     // landing spring: the touchdown kicks it, it argues its way back
     if (pose.landing > 0) springV -= Math.min(pose.landing, 14) * 0.055
@@ -655,20 +676,14 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
     pelvis.rotation.set(lean * 0.55, strafeYaw - stepS * 0.1 * gait, bank * 0.45)
     torso.position.set(0, WAIST_OFF, 0)
     torso.rotation.set(
-      lean * 0.45 + airK * 0.12 * fallK,
+      lean * 0.45 + airK * 0.12 * fallK + spineLook,
       chestLook - strafeYaw * 0.55 + stepS * 0.12 * gait,
       bank * 0.55,
     )
 
-    // head: keeps the gaze on the camera line and takes half the pitch —
-    // for outside viewers only; under the first-person lens the head stays
-    // level, or a look down finds the crown of its own head in frame.
-    // the pitch-follow is sprung like the yaw, so nods carry weight
-    const pitchLook = spring(
-      16,
-      pose.pitch * (pose.pitch < 0 ? 0.18 : 0.5) * pose.show,
-      90, 11, 0, dt,
-    )
+    // head: keeps the gaze on the camera line, in both axes — for outside
+    // viewers only; under the first-person lens the head stays level, or a
+    // look down finds the crown of its own head in frame
     head.rotation.set(
       // the chin lifts out of the get-up hunch: the chest is folded 0.5 rad
       // over the knees, so a level gaze means countering most of it
@@ -861,7 +876,9 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       sprS[7] -= jolt * 0.85
       sprS[3] += jolt * 0.35
       sprS[9] += jolt * 0.35
-      sprS[17] -= jolt * 0.5 // the head nods into a hard landing
+      // a nod is the face going down, i.e. positive on both of these
+      sprS[17] += jolt * 0.5 // the head nods into a hard landing
+      sprS[19] += jolt * 0.25 // and the chest folds a little under it
     }
     const KS = 70
     const CS = 9 // underdamped on purpose: the overshoot is the liveliness

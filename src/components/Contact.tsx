@@ -5,6 +5,7 @@ import { warpToOs } from '../warp'
 import { LocalTime } from './LocalTime'
 import { Reveal } from './Reveal'
 import { useI18n } from '../i18n'
+import { track } from '../analytics'
 
 export function Contact() {
   const { t } = useI18n()
@@ -33,6 +34,7 @@ export function Contact() {
           </p>
           <a
             href={`mailto:${email}`}
+            onClick={() => track('contact_click', { target: 'email' })}
             className="group mt-10 inline-flex max-w-full flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight text-blue-600 transition-colors hover:text-blue-700 sm:text-4xl lg:text-5xl dark:text-blue-400 dark:hover:text-blue-300"
           >
             <span className="break-all">{email}</span>
@@ -48,7 +50,7 @@ export function Contact() {
             <button
               type="button"
               onClick={() =>
-                window.dispatchEvent(new CustomEvent(BOOT_OS_EVENT, { detail: { app: 'chat' } }))
+                window.dispatchEvent(new CustomEvent(BOOT_OS_EVENT, { detail: { app: 'chat', via: 'contact' } }))
               }
               className="cursor-pointer text-left text-sm text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-4 transition-colors hover:text-stone-700 dark:decoration-stone-700 dark:hover:text-stone-300"
             >
@@ -102,6 +104,7 @@ export function Contact() {
               href={github}
               target="_blank"
               rel="noreferrer"
+              onClick={() => track('contact_click', { target: 'github' })}
               aria-label={t.nav.github}
               className="-m-2 p-2 text-stone-500 transition-colors hover:text-stone-900 dark:hover:text-stone-200"
             >
@@ -111,6 +114,7 @@ export function Contact() {
               href={linkedin}
               target="_blank"
               rel="noreferrer"
+              onClick={() => track('contact_click', { target: 'linkedin' })}
               aria-label={t.nav.linkedin}
               className="-m-2 p-2 text-stone-500 transition-colors hover:text-stone-900 dark:hover:text-stone-200"
             >

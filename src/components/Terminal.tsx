@@ -231,7 +231,7 @@ export function TerminalView({ onExit, insideOS }: TerminalViewProps) {
           </p>,
         )
         setTimeout(() => {
-          window.dispatchEvent(new CustomEvent(BOOT_OS_EVENT, { detail: { flat, room } }))
+          window.dispatchEvent(new CustomEvent(BOOT_OS_EVENT, { detail: { flat, room, via: 'terminal' } }))
           onExit?.()
         }, 500)
         break

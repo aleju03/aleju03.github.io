@@ -9,6 +9,7 @@ import { ChatApp } from './ChatApp'
 import { MinesweeperApp } from './MinesweeperApp'
 import { PaintApp } from './PaintApp'
 import { DisplayApp } from './DisplayApp'
+import { PeekoApp } from './PeekoApp'
 import { PongApp } from './games/PongApp'
 import { SnakeApp } from './games/SnakeApp'
 import { MemoryApp } from './games/MemoryApp'
@@ -37,6 +38,7 @@ export type AppId =
   | 'minesweeper'
   | 'paint'
   | 'display'
+  | 'peeko'
   | 'pong'
   | 'snake'
   | 'memory'
@@ -156,6 +158,24 @@ export const APPS: Record<AppId, AppDef> = {
     h: 480,
     single: true,
     render: (ctx) => <DisplayApp close={ctx.close} />,
+  },
+  peeko: {
+    name: 'peeko',
+    // its own mascot rather than an XP icon: nothing in shell32 says
+    // "analytics", and this app is not pretending to be period software
+    glyph: (s) => (
+      <img
+        src="/projects/peeko.png"
+        alt=""
+        draggable={false}
+        style={{ width: s, height: s }}
+        className="object-contain"
+      />
+    ),
+    w: 780,
+    h: 580,
+    single: true,
+    render: () => <PeekoApp />,
   },
   pong: {
     name: 'Pong',
