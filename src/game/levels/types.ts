@@ -31,11 +31,16 @@ export interface LevelLightRig {
 
 export interface Level {
   id: string
-  /** flat floor height under the player's feet */
+  /** the level's base floor: what holds the player up wherever no solid's
+      top does. Height is per-position now (collision.ts's supportY walks the
+      CollisionSet for the tallest surface under an x/z), so this is the
+      fallback underneath all of it rather than the one floor there is */
   groundY: number
   /** flat ceiling over it, for levels that are indoors everywhere; a jump
       bonks off it rather than carrying the camera through. Levels that are
-      partly open sky (the overworld) simply leave it out. */
+      partly open sky (the overworld) simply leave it out — which is why
+      anything tall enough to put the eye through a real ceiling registers
+      its collision box with `noStand` instead of relying on this. */
   ceilingY?: number
   collision: CollisionSet
   /** default arrival point, used when a seam doesn't carry its own */

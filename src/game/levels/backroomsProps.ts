@@ -226,13 +226,22 @@ export function buildBackroomsProps(o: BackroomsPropsInput): BackroomsProps {
     merged.computeBoundingBox()
     const bb = merged.boundingBox
     if (!bb) return
-    // collision is x/z only, so the box spans the whole storey either way
-    const b = new THREE.Box3(
-      new THREE.Vector3(bb.min.x - PAD, floorY, bb.min.z - PAD),
-      new THREE.Vector3(bb.max.x + PAD, ceilY, bb.max.z + PAD),
-    )
-    if (opt.mark !== false) taken.push(b)
-    if (opt.solid) boxes.push(b)
+    // the footprint the placer reserves spans the whole storey (it only ever
+    // asks about x/z), but the solid stops at the prop's real top — that top
+    // is a surface the player can hop onto, and a box stretched to the
+    // ceiling would be an invisible pillar instead
+    if (opt.mark !== false) {
+      taken.push(new THREE.Box3(
+        new THREE.Vector3(bb.min.x - PAD, floorY, bb.min.z - PAD),
+        new THREE.Vector3(bb.max.x + PAD, ceilY, bb.max.z + PAD),
+      ))
+    }
+    if (opt.solid) {
+      boxes.push(new THREE.Box3(
+        new THREE.Vector3(bb.min.x - PAD, floorY, bb.min.z - PAD),
+        new THREE.Vector3(bb.max.x + PAD, bb.max.y, bb.max.z + PAD),
+      ))
+    }
   }
 
   /** an open spot with `clear` units of nothing around it, or null */

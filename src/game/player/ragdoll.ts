@@ -5,16 +5,19 @@ import { seeded } from '../core/rand'
 /*
   A tiny verlet ragdoll: point masses at the skeleton's joints, distance
   constraints along the bones plus a few braces that keep the torso a stiff
-  triangle and the neck from folding flat. No physics library — thirteen-odd
-  particles and twenty-odd constraints relaxed a few times per substep is
+  triangle and the neck from folding flat, and one-sided separations that
+  stop limbs passing through each other (a distance link would tether them;
+  a separation only ever pushes apart). No physics library — thirteen-odd
+  particles and thirty-odd constraints relaxed a few times per substep is
   nothing next to a draw call, which is the whole point on a cold iGPU. The
-  world it collides with is the same one the walker uses: the level's flat
-  groundY underfoot and its CollisionSet boxes pushed out on x/z (a particle
-  only argues with a box while inside the box's y-span, so a body can still
-  drape over low furniture). Rest lengths are measured from the pose handed
-  to start(), so the sim always agrees with however the rig was standing.
-  The launch jitter draws from a seeded() stream — never Math.random() — so
-  a given flop replays identically.
+  world it collides with is the same one the walker uses: the level's floor
+  under everything, and its CollisionSet boxes resolved along whichever of
+  their five exposed faces is nearest — so a body thrown at the sofa drapes
+  over the cushion instead of being squeezed out sideways onto the rug.
+  Rest lengths are measured from the pose handed to start(), so the sim
+  always agrees with however the rig was standing. The launch jitter draws
+  from a seeded() stream — never Math.random() — so a given flop replays
+  identically.
 */
 
 export interface RagdollEnv {
@@ -27,6 +30,18 @@ export interface RagdollLink {
   a: number
   b: number
   /** 0..1 per relaxation pass; soft braces use less than bone edges */
+  stiff?: number
+}
+
+/** a one-sided constraint: pushes the pair apart when they close inside
+    `min`, never pulls them together. This is what keeps a crumpled body from
+    folding an arm through its own chest — a RagdollLink would hold them at
+    arm's length even while the body is stretched out */
+export interface RagdollSep {
+  a: number
+  b: number
+  /** world units, like the radii */
+  min: number
   stiff?: number
 }
 
@@ -45,7 +60,12 @@ const RELAX = 4
 const DRAG = 0.5 // per-second velocity bleed, air and rolling both
 const FLOOR_GRIP = 0.55 // fraction of planar slide a floor touch eats
 
-export function createRagdoll(radii: number[], links: RagdollLink[], grav = 34): Ragdoll {
+export function createRagdoll(
+  radii: number[],
+  links: RagdollLink[],
+  seps: RagdollSep[] = [],
+  grav = 34,
+): Ragdoll {
   const n = radii.length
   const pts = Array.from({ length: n }, () => new THREE.Vector3())
   const prev = Array.from({ length: n }, () => new THREE.Vector3())
@@ -99,6 +119,16 @@ export function createRagdoll(radii: number[], links: RagdollLink[], grav = 34):
         pts[a].addScaledVector(delta, k)
         pts[b].addScaledVector(delta, -k)
       }
+      // one-sided: limbs may spread freely, they just can't pass through
+      for (let i = 0; i < seps.length; i++) {
+        const { a, b, min, stiff = 1 } = seps[i]
+        delta.subVectors(pts[b], pts[a])
+        const d = delta.length()
+        if (d >= min || d < 1e-6) continue
+        const k = ((d - min) / d) * 0.5 * stiff
+        pts[a].addScaledVector(delta, k)
+        pts[b].addScaledVector(delta, -k)
+      }
       for (let i = 0; i < n; i++) {
         const p = pts[i]
         const r = radii[i]
@@ -121,12 +151,21 @@ export function createRagdoll(radii: number[], links: RagdollLink[], grav = 34):
             p.y > box.min.y - r &&
             p.y < box.max.y + r
           ) {
+            // five exposed faces, nearest one wins — the top included, so a
+            // body that lands on the sofa settles on it. There is no bottom
+            // exit on purpose: pushing a particle out underneath would post
+            // it through the floor the box is standing on.
             const exitL = p.x - (box.min.x - r)
             const exitR = box.max.x + r - p.x
             const exitN = p.z - (box.min.z - r)
             const exitF = box.max.z + r - p.z
-            const m = Math.min(exitL, exitR, exitN, exitF)
-            if (m === exitL) p.x = box.min.x - r
+            const exitT = box.max.y + r - p.y
+            const m = Math.min(exitL, exitR, exitN, exitF, exitT)
+            if (m === exitT) {
+              p.y = box.max.y + r
+              prev[i].x += (p.x - prev[i].x) * FLOOR_GRIP
+              prev[i].z += (p.z - prev[i].z) * FLOOR_GRIP
+            } else if (m === exitL) p.x = box.min.x - r
             else if (m === exitR) p.x = box.max.x + r
             else if (m === exitN) p.z = box.min.z - r
             else p.z = box.max.z + r

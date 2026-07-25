@@ -20,7 +20,7 @@ import {
 } from '@phosphor-icons/react'
 import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT } from '../../events'
-import { HOME_PATH, OS_PATH, PC_PATH, isOsPath, isPcPath } from '../../version'
+import { HOME_PATH, OS_PATH, PC_PATH, ROOM_PATH, isOsPath, isPcPath, isRoomPath } from '../../version'
 import { lockPageForOverlay } from '../../overlay'
 import { APPS, glyphFor, isAppId } from './apps'
 import { preloadImage, preloadXpIcons, xpIcon } from './xpIcon'
@@ -78,11 +78,14 @@ import type { FsNode } from './fs'
 
   Two renderings, one desktop. The 3D one is the default where it can land,
   but a boot can ask for the flat bezel outright (`{ flat: true }` on the boot
-  event, or the /pc route) — same OS, none of the three.js. That request also
-  picks which URL the session owns, so the two stay distinguishable on a
-  reload or a trip through the back button: a device that merely fell back to
-  flat still reads /alejOS, while someone who asked for the machine keeps a
-  shareable /pc (which re-derives the request through isPcPath on re-entry).
+  event, or the /pc route) — same OS, none of the three.js. `{ room: true }`
+  (or /room) asks for the opposite half: the room with the machine already
+  dark, entering at the 'room' phase and skipping the whole boot sequence.
+  The request also picks which URL the session owns, so the three stay
+  distinguishable on a reload or a trip through the back button: a device that
+  merely fell back to flat still reads /alejOS, while someone who asked for
+  the machine keeps a shareable /pc and someone who asked for the room keeps
+  /room (each re-derived through isPcPath/isRoomPath on re-entry).
 */
 
 const CrtScene = lazy(() => import('./CrtScene'))
@@ -667,8 +670,9 @@ export default function AlejOS({
     warmDesktop()
     // the boot event's detail can name an app to open once someone logs in;
     // the contact section uses this to land visitors straight in the chat
-    const detail = (e as CustomEvent<{ app?: string; via?: string; flat?: boolean }> | undefined)
-      ?.detail
+    const detail = (
+      e as CustomEvent<{ app?: string; via?: string; flat?: boolean; room?: boolean }> | undefined
+    )?.detail
     const want = detail?.app
     pendingAppRef.current = isAppId(want) ? want : null
     // a plane-triggered boot carries the dart into the room with it
@@ -676,22 +680,29 @@ export default function AlejOS({
     // someone asked for the machine and not the room — either through the
     // palette/terminal or by landing on /pc
     const flatOnly = detail?.flat === true || isPcPath()
+    // ...or for the room and not the machine: /room (and its palette/terminal
+    // twins) enters at the far end, tube already dark, no boot sequence
+    const roomOnly = !flatOnly && (detail?.room === true || isRoomPath())
     // the 3D session only where it can land: mouse, big screen, motion ok
     const fancy =
       !flatOnly &&
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
       !window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
       window.innerWidth >= 640
+    // without the 3D there is no room to walk, so a /room request on a phone
+    // degrades to the ordinary flat boot rather than to nothing
+    const entry: Phase = fancy ? (roomOnly ? 'room' : 'post') : 'boot'
     setMode(fancy ? '3d' : 'flat')
-    setPhase(fancy ? 'post' : 'boot')
+    setPhase(entry)
     // advance the ref NOW, not at commit: this boot pushes /alejOS below, so
     // the deep-link check in the next effect would otherwise boot a second
     // time in the same pass (still seeing 'off') and wipe this call's detail
-    phaseRef.current = fancy ? 'post' : 'boot'
+    phaseRef.current = entry
     // make the session shareable: the OS owns its route while it runs, and
-    // which route says how you got in — /pc stays /pc when shared, while a
-    // phone that merely fell back to the flat bezel still reads /alejOS
-    const path = flatOnly ? PC_PATH : OS_PATH
+    // which route says how you got in — /pc stays /pc and /room stays /room
+    // when shared, while a phone that merely fell back to the flat bezel (or
+    // to the boot it asked to skip) still reads /alejOS
+    const path = flatOnly ? PC_PATH : entry === 'room' ? ROOM_PATH : OS_PATH
     if (location.pathname.toLowerCase() !== path.toLowerCase())
       history.pushState({ alejos: true }, '', path)
   }, [warmDesktop])

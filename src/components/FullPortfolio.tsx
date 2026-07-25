@@ -9,6 +9,7 @@ import { Experience } from './Experience'
 import { About } from './About'
 import { Contact } from './Contact'
 import { BOOT_OS_EVENT, OPEN_TERMINAL_EVENT } from '../events'
+import { isOsPath, isPcPath } from '../version'
 
 const Terminal = lazy(() => import('./Terminal').then((m) => ({ default: m.Terminal })))
 const AlejOS = lazy(() => import('./os/AlejOS'))
@@ -49,8 +50,10 @@ function TerminalLoader() {
 }
 
 function AlejOSLoader() {
+  // both entrances that mount the site behind the OS pre-activate the loader;
+  // /pc never gets here (App renders AlejOS on its own for that one)
   const [bootRequest, setBootRequest] = useState<{ detail?: unknown } | null>(() =>
-    window.location.pathname === '/alejOS' ? {} : null,
+    isOsPath() && !isPcPath() ? {} : null,
   )
   const active = bootRequest !== null
   const activeRef = useRef(active)

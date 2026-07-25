@@ -4,6 +4,7 @@ import type { HouseModels, ModelLike } from './houseWorld'
 import { seeded } from '../core/rand'
 import { canvasTexture, makeGlowTexture } from '../core/textures'
 import { mergeGeoms } from '../core/geometry'
+import { noStand } from '../physics/collision'
 
 /*
   Everything past the property line, plus the sky above all of it:
@@ -443,10 +444,12 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       m.compose(p.set(d.x + off.x, 0.024, d.z + off.z), q, s.set(w, 1, w))
       lampPools.setMatrixAt(i, m)
       s.set(1, 1, 1)
-      obstacles.push(new THREE.Box3(
+      // a pole: the box is taller than the lamp and half a metre square,
+      // so its top is thin air five units up over the sidewalk
+      obstacles.push(noStand(new THREE.Box3(
         new THREE.Vector3(d.x - 0.24, 0, d.z - 0.24),
         new THREE.Vector3(d.x + 0.24, 5, d.z + 0.24),
-      ))
+      )))
     })
   }
   root.add(lampPoles, lampBulbs, lampGlows, lampPools)
@@ -541,10 +544,12 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
           ;(shellRand() < 0.4 ? litSlots : darkSlots).push(m.clone())
         }
       })
-      obstacles.push(new THREE.Box3(
+      // sh.h is the eave, with a pyramid roof rising above it, and the box
+      // overhangs the walls by 0.3 on every side: not a rooftop terrace
+      obstacles.push(noStand(new THREE.Box3(
         new THREE.Vector3(sh.x - sh.w / 2 - 0.3, 0, sh.z - sh.d / 2 - 0.3),
         new THREE.Vector3(sh.x + sh.w / 2 + 0.3, sh.h, sh.z + sh.d / 2 + 0.3),
-      ))
+      )))
     })
     chimneys.count = chim
   }
@@ -718,8 +723,10 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     const place = (x: number, z: number, s: number, block: boolean) => {
       const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, treeRand() * Math.PI * 2, 0))
       if (block) {
-        obstacles.push(new THREE.Box3(
-          new THREE.Vector3(x - 0.55, 0, z - 0.55), new THREE.Vector3(x + 0.55, 5, z + 0.55)))
+        // one flat 5 for trees that actually run 3.3 to 8.6 tall: the top
+        // is mid-canopy on the big ones and open sky over the small ones
+        obstacles.push(noStand(new THREE.Box3(
+          new THREE.Vector3(x - 0.55, 0, z - 0.55), new THREE.Vector3(x + 0.55, 5, z + 0.55))))
       }
       return new THREE.Matrix4().compose(
         new THREE.Vector3(x, 0, z), q, new THREE.Vector3(s, s * (0.9 + treeRand() * 0.25), s))

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { createRagdoll, type RagdollEnv } from './ragdoll'
+import { supportY } from '../physics/collision'
 
 /*
   The player's body: the same stubby service robot as before, but rebuilt as
@@ -28,8 +29,12 @@ import { createRagdoll, type RagdollEnv } from './ragdoll'
   analytic two-bone IK (cosine law), so the feet stay planted while the hips
   drop. The same skeleton doubles as the ragdoll: flop() hands every joint
   to the verlet sim in ragdoll.ts, update() fits the bones back over the
-  particles each frame, and beginRecover() blends the crumpled pose back
-  into the stance over half a second. Everything is smoothed and allocation-
+  particles each frame, and beginRecover() gets back up in two beats: the
+  heap first gathers itself into a deep crouch with the hands planted out
+  front — that is where the crumpled pose is blended away, so the limbs
+  travel to a shape they can push from rather than being straightened in
+  mid-air — and then stands out of it, which the ordinary stance already
+  knows how to do once the fold unwinds. Everything is smoothed and allocation-
   free per frame; the whole rig is ~30 small meshes over six materials.
 */
 
@@ -125,8 +130,22 @@ const P_FOOTL = 11
 const P_FOOTR = 12
 const P_COUNT = 13
 
-const RISE_TIME = 0.55 // get-up blend, seconds
+/** how fast the body accepts being spun or shoved before it simply stops
+    answering harder: ~1.1 turns a second, and a standing start's worth of
+    acceleration. Past these the pose would stop tracking the body and start
+    tracking the mouse — which is what threw the arms out on a fast circle. */
+const YAW_CAP = 7
+const ACC_CAP = 45
+const clampRate = (v: number, cap: number) => (v > cap ? cap : v < -cap ? -cap : v)
+
+// getting up runs in two stages rather than one straight blend: the heap
+// first gathers itself into a deep crouch (that's where the crumpled pose
+// is blended away), then pushes up out of it. RISE_FOLD is the fraction of
+// the whole spent on the fold.
+const RISE_TIME = 0.92
+const RISE_FOLD = 0.42
 const EASE = (t: number) => 1 - Math.pow(1 - t, 3)
+const SMOOTH = (t: number) => t * t * (3 - 2 * t)
 
 export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
   const group = new THREE.Group()
@@ -299,24 +318,45 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
     { a: P_PELV, b: P_KNEER },
     { a: P_KNEEL, b: P_FOOTL },
     { a: P_KNEER, b: P_FOOTR },
-    // braces: a rigid torso box, a neck that resists folding flat, and
-    // soft spacers that keep the legs from scissoring into a split
+    // braces: a rigid torso box, a neck that resists folding flat, and a
+    // couple of very soft tethers that keep the legs in the body's orbit
     { a: P_SHL, b: P_SHR },
     { a: P_PELV, b: P_SHL },
     { a: P_PELV, b: P_SHR },
     { a: P_HEAD, b: P_SHL, stiff: 0.5 },
     { a: P_HEAD, b: P_SHR, stiff: 0.5 },
-    { a: P_KNEEL, b: P_KNEER, stiff: 0.25 },
-    { a: P_FOOTL, b: P_FOOTR, stiff: 0.12 },
     { a: P_CHEST, b: P_KNEEL, stiff: 0.08 },
     { a: P_CHEST, b: P_KNEER, stiff: 0.08 },
-  ], grav)
+  ],
+    // self-collision: one-sided, so a heap can fold as tightly as it likes
+    // right up to the point where a limb would pass through another. Kept
+    // soft (a hard push fights the bones and buzzes) and to the pairs that
+    // actually cross: left against right, and arms against the trunk they
+    // swing past. Design units, scaled like the radii.
+    (
+      [
+        { a: P_KNEEL, b: P_KNEER, min: 0.46, stiff: 0.5 },
+        { a: P_FOOTL, b: P_FOOTR, min: 0.38, stiff: 0.4 },
+        { a: P_ELL, b: P_ELR, min: 0.52, stiff: 0.4 },
+        { a: P_HANDL, b: P_HANDR, min: 0.34, stiff: 0.35 },
+        { a: P_ELL, b: P_PELV, min: 0.46, stiff: 0.45 },
+        { a: P_ELR, b: P_PELV, min: 0.46, stiff: 0.45 },
+        { a: P_HANDL, b: P_PELV, min: 0.42, stiff: 0.4 },
+        { a: P_HANDR, b: P_PELV, min: 0.42, stiff: 0.4 },
+        { a: P_HANDL, b: P_KNEEL, min: 0.34, stiff: 0.3 },
+        { a: P_HANDR, b: P_KNEER, min: 0.34, stiff: 0.3 },
+        { a: P_HEAD, b: P_KNEEL, min: 0.5, stiff: 0.35 },
+        { a: P_HEAD, b: P_KNEER, min: 0.5, stiff: 0.35 },
+      ] as const
+    ).map((s) => ({ ...s, min: s.min * S })),
+  grav)
 
   // --- state --------------------------------------------------------------
   type Mode = 'up' | 'down' | 'rising'
   let mode: Mode = 'up'
   let downTime = 0
   let riseT = 0
+  let riseFold = 0 // 0 standing .. 1 gathered into the get-up crouch
   let flops = 0
 
   // smoothed kinetics
@@ -402,12 +442,24 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
   // 0..11: arms ([shoulderX, shoulderZ, elbow] × L/R)
   // 12: chest look-yaw · 14: head look-yaw · 16: head look-pitch
   const sprS = new Float64Array(18)
-  const spring = (i: number, target: number, K: number, C: number, force: number, dt: number) => {
+  const spring = (
+    i: number, target: number, K: number, C: number, force: number, dt: number,
+    lo = -2.6, hi = 2.6,
+  ) => {
     sprS[i + 1] += ((target - sprS[i]) * K - C * sprS[i + 1] + force) * dt
     sprS[i + 1] = THREE.MathUtils.clamp(sprS[i + 1], -22, 22)
-    sprS[i] = THREE.MathUtils.clamp(sprS[i] + sprS[i + 1] * dt, -2.6, 2.6)
+    sprS[i] = THREE.MathUtils.clamp(sprS[i] + sprS[i + 1] * dt, lo, hi)
     return sprS[i]
   }
+  // joint limits for the sprung arms. The springs are fed the body's own
+  // inertia as a force, and mouse-look can hand them accelerations no body
+  // ever feels — these are the shoulder and elbow simply running out of
+  // travel, the same way a real one does.
+  const SH_X_LO = -1.8
+  const SH_X_HI = 1.4
+  const SH_Z = 1.0
+  const EL_LO = -2.5
+  const EL_HI = 0.15
 
   const basisQuat = (q: THREE.Quaternion, x: THREE.Vector3, y: THREE.Vector3, z: THREE.Vector3) => {
     mTmp.makeBasis(x, y, z)
@@ -482,8 +534,15 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
   }
 
   // --- the kinetic stance -------------------------------------------------
-  const animate = (pose: PlayerPose, groundY: number) => {
+  const animate = (pose: PlayerPose, env: RagdollEnv) => {
     const { dt, gait } = pose
+    // what a sole standing at (x, z) would rest on. The reach cap keeps a
+    // step from planting on top of something the body isn't standing on:
+    // walk past the coffee table and the near foot must stay on the rug,
+    // not levitate onto the tabletop beside it
+    const reach = group.position.y + 0.45 * S
+    const footGround = (x: number, z: number) =>
+      supportY(x, z, reach, env.collision, env.groundY)
     idleT += dt
     const ease = (k: number) => 1 - Math.exp(-k * dt)
 
@@ -492,14 +551,19 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
     const side = pose.vx * Math.cos(pose.yaw) - pose.vz * Math.sin(pose.yaw)
     fwdS += (fwd - fwdS) * ease(10)
     sideS += (side - sideS) * ease(10)
-    accF += ((fwd - lastFwd) / Math.max(dt, 1e-4) - accF) * ease(6)
-    accS += ((side - lastSide) / Math.max(dt, 1e-4) - accS) * ease(6)
+    // clamp what we *react* to, not the motion itself. A mouse flick can
+    // swing the yaw tens of radians per second and a teleport can read as an
+    // infinite acceleration; fed straight into the springs below, those
+    // saturate them and throw the arms out sideways. A body has a ceiling on
+    // how hard it can be whipped, and these are it.
+    accF += (clampRate((fwd - lastFwd) / Math.max(dt, 1e-4), ACC_CAP) - accF) * ease(6)
+    accS += (clampRate((side - lastSide) / Math.max(dt, 1e-4), ACC_CAP) - accS) * ease(6)
     lastFwd = fwd
     lastSide = side
     let dYaw = pose.yaw - lastYaw
     if (dYaw > Math.PI) dYaw -= Math.PI * 2
     else if (dYaw < -Math.PI) dYaw += Math.PI * 2
-    yawRateS += (dYaw / Math.max(dt, 1e-4) - yawRateS) * ease(8)
+    yawRateS += (clampRate(dYaw / Math.max(dt, 1e-4), YAW_CAP) - yawRateS) * ease(8)
     lastYaw = pose.yaw
 
     // lazy facing: moving (or airborne) the body turns with the camera;
@@ -563,18 +627,21 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
     }
     const stepS = Math.sin(Math.PI * stepT)
 
-    // crouch + landing spring both lower the hips; the leg IK below folds
-    // the knees exactly enough that the planted feet stay on the floor
-    const drop = pose.crouchK * 0.85 - springP
+    // crouch, landing spring and the get-up fold all lower the hips; the leg
+    // IK below folds the knees exactly enough that the feet stay planted
+    const drop = pose.crouchK * 0.85 + riseFold * 0.8 - springP
     const hipH = THREE.MathUtils.clamp(HIP_Y - drop, Math.abs(THIGH - SHIN) + 0.06, HIP_Y)
 
     // pelvis: root motion — gait dip, crouch, spring; lean and bank on top
     // (the lean is outside-viewer flair: pose.show zeroes it under the lens)
     const dip = -Math.abs(stepS) * (0.045 + 0.03 * runK) * gait
     pelvis.position.set(0, hipH + dip, 0)
+    // the get-up hunch is not gated by pose.show: it is the shape of the
+    // action, not flair, and the lens is off the head for the whole of it
     const lean =
       (THREE.MathUtils.clamp(fwdS * 0.02 + accF * 0.02, -0.3, 0.34) + pose.crouchK * 0.24) *
-      pose.show
+        pose.show +
+      riseFold * 0.5
     const bank = THREE.MathUtils.clamp(-yawRateS * 0.05 - sideS * 0.012, -0.22, 0.22)
     pelvis.rotation.set(lean * 0.55, strafeYaw + stepS * 0.1 * gait, bank * 0.45)
     torso.position.set(0, WAIST_OFF, 0)
@@ -594,7 +661,9 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       90, 11, 0, dt,
     )
     head.rotation.set(
-      pitchLook + 0.08 * gait - airK * 0.1 + breathe * 0.015,
+      // the chin lifts out of the get-up hunch: the chest is folded 0.5 rad
+      // over the knees, so a level gaze means countering most of it
+      pitchLook + 0.08 * gait - airK * 0.1 + breathe * 0.015 - riseFold * 0.3,
       headLook - strafeYaw * 0.4 + stepS * 0.06 * gait,
       -bank * 0.3,
     )
@@ -604,10 +673,26 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
     // a planted sole is a fixed world point (nothing slides); the swinging
     // foot glides to a landing spot predicted along the real velocity
     qGroupInv.copy(group.quaternion).invert()
+    // Keep each sole on its own side of the body. The swing target is the hip
+    // socket plus a reach along the real velocity, and for a pure side-step
+    // that reach is entirely lateral — it aims the near foot straight through
+    // the far leg, which is the X-shape a strafe used to make. Clamping in the
+    // body frame bounds it both ways: never across the midline, and never
+    // lunged out past a side-step. Design units; z (the stride) is untouched.
+    const SOLE_MIN_X = HIP_X * 0.5
+    const SOLE_MAX_X = HIP_X + 0.42
+    const sideClamp = (foot: THREE.Vector3, side: 1 | -1, rate: number) => {
+      vTmp.copy(foot).sub(group.position).applyQuaternion(qGroupInv).multiplyScalar(1 / S)
+      const own = vTmp.x * side // distance onto this leg's own side, signed
+      const want = THREE.MathUtils.clamp(own, SOLE_MIN_X, SOLE_MAX_X)
+      if (want === own) return
+      vTmp.x = (own + (want - own) * rate) * side
+      foot.copy(vTmp.multiplyScalar(S).applyQuaternion(group.quaternion).add(group.position))
+    }
     const socketWorld = (side: 1 | -1, out: THREE.Vector3) => {
       out.set(side * HIP_X, 0, 0).applyQuaternion(pelvis.quaternion).add(pelvis.position)
       out.multiplyScalar(S).applyQuaternion(group.quaternion).add(group.position)
-      out.y = groundY
+      out.y = footGround(out.x, out.z)
       return out
     }
     if (pose.grounded) {
@@ -636,10 +721,16 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
           swingTarget.addScaledVector(vVel, ((1 - frac) * strideNow * S) / speed)
           swingTarget.addScaledVector(vVel, (0.42 * strideNow * S) / speed)
         }
-        swingTarget.y = groundY
+        // clamp to this leg's own side before asking what it lands on, or a
+        // side-step would sample the ground under the other foot
+        sideClamp(swingTarget, side, 1)
+        // the sole lands on whatever is actually under the target — the rug,
+        // the coffee table, the cushion — so the lerp carries the step up or
+        // down and the arc only has to add clearance over it
+        swingTarget.y = footGround(swingTarget.x, swingTarget.z)
         const k = frac * frac * (3 - 2 * frac)
         swing.lerpVectors(swingFrom, swingTarget, k)
-        swing.y = groundY + Math.sin(frac * Math.PI) * (0.09 + 0.07 * runK) * S * Math.min(1, speed)
+        swing.y += Math.sin(frac * Math.PI) * (0.09 + 0.07 * runK) * S * Math.min(1, speed)
       } else {
         // standing: a foot left far from its socket (turning on the spot,
         // a step that ended wide) shuffles home; otherwise feet stay put
@@ -649,12 +740,13 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
           vTmp.y = 0
           const d = vTmp.length()
           if (d < 0.03 * S) {
-            foot.y = groundY
+            foot.y = footGround(foot.x, foot.z)
             return
           }
           if (d > 0.26 * S) {
             foot.addScaledVector(vTmp.normalize(), Math.min(d, 2.6 * S * dt))
-            foot.y = groundY + Math.min(0.05 * S, d * 0.2) // a tiny shuffle hop
+            // a tiny shuffle hop over whatever this foot is standing on
+            foot.y = footGround(foot.x, foot.z) + Math.min(0.05 * S, d * 0.2)
           }
         }
         settle(plantedL, 1)
@@ -662,6 +754,14 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
         swingFrom.copy(idx === 0 ? plantedL : plantedR)
       }
     }
+
+    // the standing foot is planted in world space, so a body that turns or
+    // strafes past it can leave it crossed even though its target was legal.
+    // Eased rather than snapped: where nothing is wrong this does nothing,
+    // and where something is, the leg walks back out instead of popping.
+    const unCross = ease(12)
+    sideClamp(plantedL, 1, unCross)
+    sideClamp(plantedR, -1, unCross)
 
     // two-bone IK per leg in the pelvis frame; airborne it crossfades to a
     // tuck on the rise and a reach on the fall
@@ -758,12 +858,28 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
     const CS = 9 // underdamped on purpose: the overshoot is the liveliness
     const KE = 52
     const CE = 7.5
-    const shLX = spring(0, -swingF - airX + swayLX, KS, CS, throwX, dt)
-    const shLZ = spring(2, spread + swingS + swayLZ, KS, CS, slingZ, dt)
-    const elL = spring(4, -(elbowBase + Math.max(0, -shLX) * 0.75 + airK * 0.35), KE, CE, 0, dt)
-    const shRX = spring(6, swingF * 0.93 - airX + swayRX, KS, CS, throwX, dt)
-    const shRZ = spring(8, -spread + swingS + swayRZ, KS, CS, slingZ, dt)
-    const elR = spring(10, -(elbowBase + 0.03 + Math.max(0, shRX) * 0.75 + airK * 0.35), KE, CE, 0, dt)
+    // the get-up plants both hands out front and pushes off them; because
+    // these are spring targets the arms swing there and settle rather than
+    // snapping, which is what sells the shove
+    const push = riseFold * 0.8
+    const shLX = spring(0, -swingF - airX + swayLX - push, KS, CS, throwX, dt, SH_X_LO, SH_X_HI)
+    const shLZ = spring(
+      2, spread + swingS + swayLZ + riseFold * 0.14, KS, CS, slingZ, dt, -SH_Z, SH_Z,
+    )
+    const elL = spring(
+      4, -(elbowBase + Math.max(0, -shLX) * 0.75 + airK * 0.35 + riseFold * 0.5),
+      KE, CE, 0, dt, EL_LO, EL_HI,
+    )
+    const shRX = spring(
+      6, swingF * 0.93 - airX + swayRX - push, KS, CS, throwX, dt, SH_X_LO, SH_X_HI,
+    )
+    const shRZ = spring(
+      8, -spread + swingS + swayRZ - riseFold * 0.14, KS, CS, slingZ, dt, -SH_Z, SH_Z,
+    )
+    const elR = spring(
+      10, -(elbowBase + 0.03 + Math.max(0, shRX) * 0.75 + airK * 0.35 + riseFold * 0.5),
+      KE, CE, 0, dt, EL_LO, EL_HI,
+    )
     uarmL.rotation.set(shLX, 0, shLZ)
     farmL.rotation.set(elL, 0, 0)
     uarmR.rotation.set(shRX, 0, shRZ)
@@ -837,11 +953,14 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       captureBlendSource()
       mode = 'rising'
       riseT = 0
+      riseFold = 1 // the first frame of the rise is already the deep fold
       needReplant = true // fresh footing under the get-up spot
     },
     reset: () => {
       mode = 'up'
       downTime = 0
+      riseT = 0
+      riseFold = 0
       springP = 0
       springV = 0
       airK = 0
@@ -868,11 +987,24 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
         fitFromParticles()
         return
       }
-      animate(pose, env.groundY)
+      // the get-up in two beats. Beat one gathers the heap into a deep
+      // crouch — that is where the crumpled pose is blended out, so the
+      // limbs travel to a shape they can push from rather than being
+      // straightened in mid-air. Beat two stands out of the crouch, which
+      // the ordinary stance already knows how to do: riseFold just unwinds
+      // and every spring in animate() follows it up.
       if (mode === 'rising') {
-        riseT += pose.dt / RISE_TIME
-        if (riseT >= 1) mode = 'up'
-        else applyBlend(EASE(riseT))
+        riseT = Math.min(1, riseT + pose.dt / RISE_TIME)
+        const stand = Math.max(0, (riseT - RISE_FOLD) / (1 - RISE_FOLD))
+        riseFold = 1 - SMOOTH(stand)
+      }
+      animate(pose, env)
+      if (mode === 'rising') {
+        applyBlend(EASE(Math.min(1, riseT / RISE_FOLD)))
+        if (riseT >= 1) {
+          mode = 'up'
+          riseFold = 0
+        }
       }
     },
   }

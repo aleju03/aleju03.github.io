@@ -4,6 +4,7 @@ import { HOUSE, NOCLIP } from './houseWorld'
 import { buildBackroomsProps } from './backroomsProps'
 import { seeded } from '../core/rand'
 import { canvasTexture } from '../core/textures'
+import { noStand } from '../physics/collision'
 
 /*
   The backrooms. A span of the living room's east wall renders like wall but
@@ -628,7 +629,8 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
       if (!alongX) g.rotateY(Math.PI / 2)
       g.translate((pc.x0 + pc.x1) / 2, BR.y + BR.h / 2, (pc.z0 + pc.z1) / 2)
       wallParts.push(g)
-      boxes.push(
+      // wall and pillar boxes reach the drop ceiling: nothing to stand on
+      boxes.push(noStand(
         alongX
           ? new THREE.Box3(
               new THREE.Vector3(pc.x0 - 0.18, BR.y, pc.z0 - 0.4),
@@ -638,15 +640,15 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
               new THREE.Vector3(pc.x0 - 0.4, BR.y, pc.z0 - 0.18),
               new THREE.Vector3(pc.x0 + 0.4, BR.y + BR.h, pc.z1 + 0.18),
             ),
-      )
+      ))
     }
     for (const [px, pz] of pillars) {
       wallParts.push(pillarGeo.clone().translate(px, BR.y + BR.h / 2, pz))
       boxes.push(
-        new THREE.Box3(
+        noStand(new THREE.Box3(
           new THREE.Vector3(px - 0.75, BR.y, pz - 0.75),
           new THREE.Vector3(px + 0.75, BR.y + BR.h, pz + 0.75),
-        ),
+        )),
       )
     }
     if (wallParts.length) {
@@ -818,10 +820,15 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
     root,
     obstacles,
     exitSpot: { x: HOUSE.maxX - 0.75, z: ENTRY.z, yaw: Math.PI / 2 },
+    // both seams are holes in a wall at floor level, and p carries the
+    // player's feet — so a walk along a furniture top past the span keeps
+    // its footing instead of falling through into (or out of) level 0
     overEntry: (p) =>
-      p.x > HOUSE.maxX - 0.22 && p.z > NOCLIP.z0 + 0.08 && p.z < NOCLIP.z1 - 0.08,
+      p.y < 0.7 && p.x > HOUSE.maxX - 0.22 && p.z > NOCLIP.z0 + 0.08 && p.z < NOCLIP.z1 - 0.08,
     overExit: (p) =>
-      p.x > EXIT_WALL.x - 0.4 && Math.abs(p.z - (EXIT_WALL.z0 + EXIT_WALL.z1) / 2) < 1.05,
+      p.y < BR.y + 0.7 &&
+      p.x > EXIT_WALL.x - 0.4 &&
+      Math.abs(p.z - (EXIT_WALL.z0 + EXIT_WALL.z1) / 2) < 1.05,
     enter,
     leave,
     sleep,

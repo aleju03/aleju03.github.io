@@ -4,6 +4,7 @@ import { VersionChooser } from './components/VersionChooser'
 import { VersionNudge } from './components/VersionNudge'
 import {
   isPcPath,
+  isRoomPath,
   matchProjectSlug,
   persistNudgeDismissed,
   persistVersion,
@@ -70,7 +71,9 @@ function VersionRouter() {
   const leavePc = useCallback(() => setPathname(window.location.pathname), [])
 
   const projectSlug = matchProjectSlug(pathname)
-  const forceFull = pathname.startsWith('/alejOS')
+  // /alejOS and /room both mount the real site behind the OS: powering off or
+  // leaving the room drops you onto the portfolio where the machine was
+  const forceFull = pathname.startsWith('/alejOS') || isRoomPath(pathname)
   const forcePc = isPcPath(pathname)
 
   const choose = (next: PortfolioVersion) => {

@@ -94,26 +94,40 @@ export function projectPath(slug: string) {
 export const HOME_PATH = '/'
 
 /**
- * AlejOS owns the address bar while it runs, and it has two entrances.
- * `/alejOS` is the full session: the desktop on a CRT inside the 3D room you
- * can stand up and walk. `/pc` is the machine on its own — the same desktop
- * in its flat bezel, with no CrtScene, no game runtime, and no portfolio page
- * mounted behind it, so nothing three.js-shaped ever loads. Small/touch/
- * reduced-motion devices land in that same flat rendering from `/alejOS` too;
- * `/pc` is the way to ask for it deliberately.
+ * AlejOS owns the address bar while it runs, and it has three entrances — the
+ * same world, entered at different points:
+ *
+ * - `/alejOS` — the full session: POST, boot, login, the desktop on a CRT
+ *   inside the 3D room, which you can stand up from and walk.
+ * - `/pc` — the machine on its own. The same desktop in its flat bezel, with
+ *   no CrtScene, no game runtime and no portfolio page mounted behind it, so
+ *   nothing three.js-shaped ever loads.
+ * - `/room` — the other half: the room, with the machine already dark. It
+ *   skips the whole boot sequence and starts you on your feet in the house.
+ *
+ * `/pc` and `/room` are opposite ends of the same session, and each is the way
+ * to ask deliberately for the half you came for. Small/touch/reduced-motion
+ * devices land in the flat rendering from any of them — there is no room to
+ * walk without the 3D — so `/room` degrades to the ordinary boot.
  */
 export const OS_PATH = '/alejOS'
 export const PC_PATH = '/pc'
+export const ROOM_PATH = '/room'
 
-/** true on either AlejOS entrance */
+/** true on any AlejOS entrance */
 export function isOsPath(pathname: string = window.location.pathname): boolean {
   const path = pathname.toLowerCase()
-  return path === OS_PATH.toLowerCase() || path === PC_PATH
+  return path === OS_PATH.toLowerCase() || path === PC_PATH || path === ROOM_PATH
 }
 
 /** true only on the flat entrance */
 export function isPcPath(pathname: string = window.location.pathname): boolean {
   return pathname.toLowerCase() === PC_PATH
+}
+
+/** true only on the walk-the-room entrance */
+export function isRoomPath(pathname: string = window.location.pathname): boolean {
+  return pathname.toLowerCase() === ROOM_PATH
 }
 
 /** client-side navigation for the simple version's real URLs */

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { CollisionSet } from '../physics/collision'
+import { supportY } from '../physics/collision'
 
 /*
   The third-person boom. The walk controller keeps owning the camera as if
@@ -8,8 +9,9 @@ import type { CollisionSet } from '../physics/collision'
   off a boom position), apply() saves the head transform the sim just wrote
   and then pulls the camera back along the view ray, blended by a smoothed
   0..1 factor so first↔third is a glide, not a cut. The boom ray is clamped
-  against the level the same way the walker is — the CollisionSet boxes,
-  the flat floor, the ceiling where one exists — by sampling a few points
+  against the level the same way the walker is — the CollisionSet boxes, the
+  surface under each probe (a furniture top as readily as the level floor),
+  the ceiling where one exists — by sampling a few points
   down the ray and stopping short of the first blocked one; shrinking snaps
   (a wall must never clip through the lens) while growing eases. While the
   body is ragdolling, a focus point (the chest particle) replaces the head:
@@ -64,7 +66,11 @@ export function createChaseCam(): ChaseCam {
   const lookQ = new THREE.Quaternion()
 
   const blocked = (p: THREE.Vector3, env: ChaseEnv) => {
-    if (p.y < env.groundY + MARGIN) return true
+    // the floor under the probe, not the level's: standing on the sofa, a
+    // boom that ignored the cushion would swing down beside it and shoot the
+    // player from below. Probes inside a solid are caught by the box loop;
+    // this catches the ones grazing past its edge.
+    if (p.y < supportY(p.x, p.z, p.y, env.collision, env.groundY) + MARGIN) return true
     if (env.ceilingY !== undefined && p.y > env.ceilingY - MARGIN) return true
     for (const b of env.collision.boxes) {
       if (

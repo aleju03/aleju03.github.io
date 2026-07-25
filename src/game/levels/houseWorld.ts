@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { seeded } from '../core/rand'
 import { canvasTexture, makeGlowTexture } from '../core/textures'
 import { mergeGeoms } from '../core/geometry'
+import { noStand, padXZ } from '../physics/collision'
 
 /** anything with a .scene group — a GLTFLoader result or a slice of one */
 export interface ModelLike {
@@ -309,11 +310,14 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     }
     const block = (bu0: number, bu1: number) => {
       if (o.obstacle === false || bu1 - bu0 < 0.05) return
-      obstacles.push(
+      // noStand: the box is 0.8 deep around a paper-thin wall, so its top is
+      // an invisible catwalk at the ceiling plane — and the furniture below
+      // adds up to a ladder onto it
+      obstacles.push(noStand(
         axis === 'x'
           ? new THREE.Box3(new THREE.Vector3(at - 0.4, 0, bu0), new THREE.Vector3(at + 0.4, h, bu1))
           : new THREE.Box3(new THREE.Vector3(bu0, 0, at - 0.4), new THREE.Vector3(bu1, h, at + 0.4)),
-      )
+      ))
     }
     let cursor = u0
     for (const c of sorted) {
@@ -497,7 +501,9 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     const closedMax = axis === 'x'
       ? new THREE.Vector3(at + 0.35, CEIL_H, u1)
       : new THREE.Vector3(u1, CEIL_H, at + 0.35)
-    const block = new THREE.Box3(closedMin.clone(), closedMax.clone())
+    // a shut door reaches the ceiling like the wall it stands in: same deal,
+    // its top is not a ledge (and it collapses to a point when it opens)
+    const block = noStand(new THREE.Box3(closedMin.clone(), closedMax.clone()))
     obstacles.push(block)
     doors.push({
       pivot, axis, at, dir, ...center, swing,
@@ -542,6 +548,15 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     m.position.set((x0 + x1) / 2, CEIL_H, (z0 + z1) / 2)
     m.receiveShadow = true
     root.add(m)
+    // ...and a solid slab above it. The overworld has no level-wide ceilingY
+    // (half of it is open sky), so without this the third-person boom rises
+    // straight through the roof and frames the city. It sits entirely above
+    // head height, so a walk never meets it: resolveXZ skips any box whose
+    // min.y is over the walker's crown.
+    obstacles.push(noStand(new THREE.Box3(
+      new THREE.Vector3(x0, CEIL_H, z0),
+      new THREE.Vector3(x1, CEIL_H + 0.5, z1),
+    )))
   }
 
   /* ============================================================ INTERIOR */
@@ -810,12 +825,14 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   /* --------------------------------------------------------------- yard -- */
 
-  // fence obstacles now; the picket meshes arrive with the furniture GLBs
+  // fence obstacles now; the picket meshes arrive with the furniture GLBs.
+  // 0.4 out on each side of a picket line and taller than the pickets, so
+  // the top is thin air — the yard is fenced, not walled with a walkway
   const fenceBlock = (x0: number, z0: number, x1: number, z1: number) =>
-    obstacles.push(new THREE.Box3(
+    obstacles.push(noStand(new THREE.Box3(
       new THREE.Vector3(Math.min(x0, x1) - 0.4, 0, Math.min(z0, z1) - 0.4),
       new THREE.Vector3(Math.max(x0, x1) + 0.4, 3, Math.max(z0, z1) + 0.4),
-    ))
+    )))
   fenceBlock(YARD.minX, YARD.minZ, YARD.minX, YARD.maxZ)
   fenceBlock(YARD.maxX, YARD.minZ, YARD.maxX, YARD.maxZ)
   fenceBlock(YARD.minX, YARD.maxZ, YARD.maxX, YARD.maxZ)
@@ -1015,7 +1032,22 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     rotY: number,
     cx: number,
     cz: number,
-    o: { pad?: number; y?: number; lift?: number; clone?: boolean } = {},
+    o: {
+      pad?: number
+      y?: number
+      lift?: number
+      clone?: boolean
+      /** the top of this AABB is not somewhere anyone stands: taller than
+          the player (wardrobes, the fridge), or foliage/a lampshade the box
+          only approximates. Everything waist-high stays climbable on purpose */
+      noStand?: boolean
+      /** height of the surface you actually stand on, over this piece's own
+          base, where that isn't the top of its bounding box. A sofa's AABB
+          top is its backrest and a bed's is its headboard, so landing on one
+          left you hovering a metre over the cushion. Measured off the GLBs by
+          area of up-facing surface, not eyeballed. */
+      top?: number
+    } = {},
   ): Placement | null => {
     if (!gltf) return null
     const g = o.clone === false ? gltf.scene : gltf.scene.clone(true)
@@ -1037,7 +1069,16 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     root.add(g)
     g.updateMatrixWorld(true)
     const box = new THREE.Box3().setFromObject(g)
-    if (o.pad !== undefined) obstacles.push(box.clone().expandByScalar(o.pad))
+    // pad sideways only: the pad is shoulder room, and lifting the top would
+    // leave the player hovering over every surface they climb onto
+    if (o.pad !== undefined) {
+      const solid = padXZ(box.clone(), o.pad)
+      // one box can't be solid to the backrest and standable at the cushion,
+      // so it becomes the cushion: still far taller than a step, so it blocks
+      // a walk exactly as before, but a hop lands where a body would sit
+      if (o.top !== undefined) solid.max.y = box.min.y + o.top
+      obstacles.push(o.noStand ? noStand(solid) : solid)
+    }
     return { box }
   }
 
@@ -1066,22 +1107,22 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
     /* bedroom */
     // headboard to the hall wall, pillows beside the nightstand
-    put(models.bed, 1.15, Math.PI, -5.72, 8.03, { pad: 0.12 })
+    put(models.bed, 1.15, Math.PI, -5.72, 8.03, { pad: 0.12, top: 0.92 }) // comforter, not the headboard (1.79)
     const nstand = put(models.nightstand, 1.63, Math.PI, -3.2, 9.62, { pad: 0.08 })
     if (nstand) {
       put(models.alarmclock, 2.3, Math.PI - 0.3, -3.32, 9.58, { y: nstand.box.max.y })
     }
     put(models.dresser, 1.08, -HPI, 6.86, 2.0, { pad: 0.1 })
-    put(models.closet, 1.49, -HPI, 6.83, 9.3, { pad: 0.1 })
+    put(models.closet, 1.49, -HPI, 6.83, 9.3, { pad: 0.1, noStand: true })
     put(models.curtains, 0.82, HPI, -7.38, 5.75, { y: 0.86 })
-    put(models.officechair, 2.05, Math.PI - 0.03, -0.15, 3.05, { pad: 0.16 })
+    put(models.officechair, 2.05, Math.PI - 0.03, -0.15, 3.05, { pad: 0.16, top: 1.0 })
 
     /* bath: tub along the west wall, sink by the door, toilet on the far
        wall — respaced when the room grew, so nothing crowds anything */
     put(models.bathtub, 4.1, HPI, -6.35, 13.55, { pad: 0.08 })
     // both back up against their walls: bowl and basin open into the room
-    put(models.toilet, 0.94, Math.PI, -4.05, 15.72, { pad: 0.08 })
-    put(models.bathsink, 1.35, 0, -4.55, 11.14, { pad: 0.08 })
+    put(models.toilet, 0.94, Math.PI, -4.05, 15.72, { pad: 0.08, top: 0.88 })
+    put(models.bathsink, 1.35, 0, -4.55, 11.14, { pad: 0.08, top: 1.64 })
     put(models.towelrack, 1.8, -HPI, -2.62, 14.9, { y: 2.05 })
     put(models.toiletpaper, 1.4, -HPI, -2.6, 15.6, { y: 1.45 })
 
@@ -1108,25 +1149,25 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       root.add(led)
     }
     put(models.roundrug, 1.6, 0, 4.9, 17.5, { y: 0.008 })
-    put(models.sofa, 1.3, Math.PI, 4.6, 19.7, { pad: 0.14 })
+    put(models.sofa, 1.3, Math.PI, 4.6, 19.7, { pad: 0.14, top: 1.0 }) // cushion, not the backrest (1.89)
     // reading corner under the yard window, angled at the television
-    put(models.loveseat, 0.95, -HPI + 0.3, 5.0, 22.9, { pad: 0.12 })
+    put(models.loveseat, 0.95, -HPI + 0.3, 5.0, 22.9, { pad: 0.12, top: 1.24 })
     const ctable = put(models.coffeetable, 4.4, 0, 4.9, 17.15, { pad: 0.08 })
-    put(models.bookcase, 1.31, -HPI, 7.12, 23.1, { pad: 0.1 })
-    put(models.floorlamp, 4.4, 0, 7.05, 21.2, { pad: 0.08 })
-    put(models.plant, 1.35, 2.6, -1.7, 15.0, { pad: 0.1 })
+    put(models.bookcase, 1.31, -HPI, 7.12, 23.1, { pad: 0.1, noStand: true })
+    put(models.floorlamp, 4.4, 0, 7.05, 21.2, { pad: 0.08, noStand: true })
+    put(models.plant, 1.35, 2.6, -1.7, 15.0, { pad: 0.1, noStand: true })
 
     /* dining: chairs tucked in facing the table, not fleeing it */
     put(models.diningtable, 3.6, 0, -2.1, 19.8, { pad: 0.1 })
-    put(models.chair, 1.25, Math.PI, -2.9, 21.15, { pad: 0.05 })
-    put(models.chair, 1.25, Math.PI + 0.12, -1.25, 21.15, { pad: 0.05 })
-    put(models.chair, 1.25, 0.2, -2.05, 18.45, { pad: 0.05 })
+    put(models.chair, 1.25, Math.PI, -2.9, 21.15, { pad: 0.05, top: 0.96 })
+    put(models.chair, 1.25, Math.PI + 0.12, -1.25, 21.15, { pad: 0.05, top: 0.96 })
+    put(models.chair, 1.25, 0.2, -2.05, 18.45, { pad: 0.05, top: 0.96 })
 
     /* kitchen run along the west wall, fronts facing +x */
-    put(models.kfridge, 4.4, -HPI, -6.55, 17.45, { pad: 0.08 })
-    put(models.kstove, 4.4, -HPI, -6.5, 19.6, { pad: 0.08 })
-    put(models.ksink, 4.4, -HPI, -6.5, 21.6, { pad: 0.08 })
-    const kdrawer = put(models.kdrawer, 4.4, -HPI, -6.5, 23.55, { pad: 0.08 })
+    put(models.kfridge, 4.4, -HPI, -6.55, 17.45, { pad: 0.08, noStand: true })
+    put(models.kstove, 4.4, -HPI, -6.5, 19.6, { pad: 0.08, top: 1.72 })
+    put(models.ksink, 4.4, -HPI, -6.5, 21.6, { pad: 0.08, top: 1.72 }) // counter, not the tap
+    const kdrawer = put(models.kdrawer, 4.4, -HPI, -6.5, 23.55, { pad: 0.08, top: 1.72 })
     // one upper over the stove, a low one over the drawer stack; the stretch
     // of wall over the sink stays clear for its window
     put(models.kupper, 4.4, -HPI, -7.02, 19.6, { y: 3.35 })
@@ -1203,19 +1244,19 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       run(GATE.x1, YARD.minZ, YARD.maxX, YARD.minZ)
       instancedFromGLB(models.fence, mats)
     }
-    put(models.tree, 4.6, 0, -7.5, 33.0, { pad: -0.8 })
-    put(models.tree, 3.1, 2.1, 10.8, 30.0, { pad: -0.55 })
+    put(models.tree, 4.6, 0, -7.5, 33.0, { pad: -0.8, noStand: true })
+    put(models.tree, 3.1, 2.1, 10.8, 30.0, { pad: -0.55, noStand: true })
     put(models.tree, 3.4, 0.8, -11.4, 6.5)
     put(models.bush, 1.35, 0.5, -11.8, 27.5)
     put(models.bush, 1.35, 2.2, 11.5, 36.5)
     put(models.bush, 1.35, 1.1, -11.0, 10.8)
     put(models.bushflower, 1.4, 0, 6.9, 33.6)
     put(models.bushflower, 1.4, 1.9, -10.9, 36.8)
-    put(models.hedge, 1.0, 0, -6.5, 25.6, { pad: 0.06 })
-    put(models.hedge, 1.0, 0, -0.55, 25.6, { pad: 0.06 })
-    put(models.bench, 1.05, Math.PI * 1.5, 4.8, 34.6, { pad: 0.12 })
+    put(models.hedge, 1.0, 0, -6.5, 25.6, { pad: 0.06, noStand: true })
+    put(models.hedge, 1.0, 0, -0.55, 25.6, { pad: 0.06, noStand: true })
+    put(models.bench, 1.05, Math.PI * 1.5, 4.8, 34.6, { pad: 0.12, top: 1.0 })
     const lanternGlow = (x: number, z: number, rotY: number, lit: boolean) => {
-      const placed = put(models.lantern, 1.0, rotY, x, z, { pad: 0.05 })
+      const placed = put(models.lantern, 1.0, rotY, x, z, { pad: 0.05, noStand: true })
       if (!placed) return
       const bulb = new THREE.Mesh(
         new THREE.SphereGeometry(0.09, 8, 6),

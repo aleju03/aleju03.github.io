@@ -19,10 +19,12 @@ core/
   disposer.ts        createDisposer() — every texture/disposable checks in here
   input.ts           createRoamInput() — keys, mouse-look, pointer lock lifecycle
 physics/
-  collision.ts       CollisionSet (Box3 list + bounds), resolveXZ(), addBoxFrom()
+  collision.ts       CollisionSet (Box3 list + bounds), resolveXZ(), supportY(),
+                     addBoxFrom()/padXZ()/noStand() — height-aware solids
 player/
   walkController.ts  createWalkController() — the FPS movement sim (velocity,
-                     gravity/jump/crouch, footstep bob, sprint fov)
+                     gravity/jump/crouch, step-up and ledge falls over an
+                     absolute feetY, footstep bob, sprint fov)
   playerBody.ts      buildPlayerBody() — the articulated robot: kinetic stance
                      (accel lean, turn bank, landing spring), world-planted
                      stepping feet solved with two-bone IK, and the ragdoll
@@ -52,7 +54,8 @@ props/
   result if arrival shouldn't land on your level's default spawn. The cut
   (freeze → blackout → swap → fade) comes for free. Solids must register in your CollisionSet or the
   player walks through them; the backrooms entrance works by deliberately
-  not registering one.
+  not registering one. Give each one `noStand()` unless its box top is
+  somewhere a player could plausibly stand — see the debts below.
 - **A new world builder**: follow the existing contract — a
   `build*(opts) → Handles` function taking `{ scene, obstacles?,
   trackTexture, trackDisposable }` and returning `{ root, update(dt),
@@ -79,11 +82,18 @@ props/
 
 ## Known debts (grow into these when a feature demands them)
 
-- Collision is a linear Box3 scan, x/z only. The upgrade (spatial hash, or
-  a physics lib once verticality is real) belongs inside `resolveXZ` /
-  behind the CollisionSet contract.
+- Collision is a linear Box3 scan. It is height-aware now (a box argues only
+  where it overlaps the body, and `supportY` reports the tallest top under an
+  x/z), but it is still one flat list walked per query — twice per walk tick
+  plus once per foot. The upgrade is a spatial hash, or a physics lib, inside
+  `resolveXZ`/`supportY` behind the same CollisionSet contract.
+- An AABB is a coarse stand-in, so any solid whose box top is taller than the
+  thing it wraps registers with `noStand()` (walls, fences, lamp poles, tree
+  canopies, house eaves, wardrobes, lampshades). Miss one and the furniture
+  below it becomes a ladder onto somewhere nobody should stand.
 - Interactions are bespoke (house doors, the machine prompt, backroom
   seams). At ~10 interactables, build a registry (position, radius, prompt,
   action) and make walkTick iterate it.
-- `groundY` is flat per level; stairs/terrain mean a `groundYAt(x, z)` on
-  the Level contract.
+- Height comes from box tops only. Sloped ground or real stairs would want a
+  `groundYAt(x, z)` on the Level contract for `supportY` to fall back to, in
+  place of today's flat per-level `groundY`.

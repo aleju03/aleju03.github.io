@@ -18,7 +18,8 @@ import type { RagdollEnv } from '../../game/player/ragdoll'
 import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
 import { createWalkController } from '../../game/player/walkController'
 import { createRoamInput } from '../../game/core/input'
-import { makeCollisionSet } from '../../game/physics/collision'
+import { makeCollisionSet, supportY } from '../../game/physics/collision'
+import type { CollisionSet } from '../../game/physics/collision'
 import { createDisposer } from '../../game/core/disposer'
 import { OS_SCENE_READY_EVENT } from '../../events'
 
@@ -85,15 +86,16 @@ const HOUSE_MODEL_KEYS = [
 ] as const
 /** walk-mode preferences the pause menu edits; the seated view stays fixed */
 const PREFS_KEY = 'alejos-roam-prefs'
-const PREFS_DEFAULT = { fov: 60, sens: 1 }
+const PREFS_DEFAULT = { fov: 60, sens: 1, third: false }
 const loadPrefs = () => {
   try {
     const raw = localStorage.getItem(PREFS_KEY)
     if (raw) {
-      const p = JSON.parse(raw) as { fov?: number; sens?: number }
+      const p = JSON.parse(raw) as { fov?: number; sens?: number; third?: boolean }
       return {
         fov: Math.min(80, Math.max(30, Number(p.fov) || PREFS_DEFAULT.fov)),
         sens: Math.min(3, Math.max(0.3, Number(p.sens) || PREFS_DEFAULT.sens)),
+        third: p.third === true,
       }
     }
   } catch {
@@ -179,12 +181,16 @@ export default function CrtScene({
   const liveRef = useRef(screenLive)
   const prefsRef = useRef(prefs)
   const paperPlaneRef = useRef(paperPlane)
+  // the live roam prop, readable from inside the scene's build closure: a
+  // /room entrance has it true before roamRef exists to be called
+  const roamPropRef = useRef(roam)
   useEffect(() => {
     failRef.current = onFail
     interactRef.current = onInteract
     liveRef.current = screenLive
     prefsRef.current = prefs
     paperPlaneRef.current = paperPlane
+    roamPropRef.current = roam
   })
   useEffect(() => {
     try {
@@ -588,9 +594,17 @@ export default function CrtScene({
           runSpeed: 5.9,
           crouchSpeed: 1.7,
           crouchDrop: 0.85, // how far the eye sinks at full crouch
-          // space hops: heavy-ish gravity so it stays a hop, not a moon walk
-          jumpV: 10.4,
+          // space hops: heavy-ish gravity so it stays a hop, not a moon walk.
+          // The apex (jumpV²/2·grav ≈ 2.08, a bit over half an eye height)
+          // is chosen against the furniture: the tallest thing worth landing
+          // on is the sofa back at 1.89, with the bed at 1.79 and the desk at
+          // 1.84 under it. At the old 10.4 the apex was 1.59 and every one of
+          // those was a hair out of reach, which read as the hop being broken.
+          jumpV: 11.9,
           grav: 34,
+          // a shin's worth of ledge is walked up; anything taller wants the
+          // hop (whose apex, jumpV²/2·grav, clears the sofa and the bed)
+          step: EYE * 0.12,
         })
 
         // the player's body: the articulated robot in playerBody.ts. In first
@@ -617,11 +631,9 @@ export default function CrtScene({
           // the offset is presentation, not travel: the rig shifts its
           // planted feet along with it so the legs never stretch after it
           rig.trackSlide(ox, oz)
-          body.position.set(
-            camera.position.x + ox,
-            levels.current.groundY + walk.airY,
-            camera.position.z + oz,
-          )
+          // the soles sit wherever the walker's feet are — the level floor,
+          // the sofa cushion, mid-hop over either
+          body.position.set(camera.position.x + ox, walk.feetY, camera.position.z + oz)
           // the body faces where the rig says it faces — standing, that
           // lags the camera and the head covers the gap (no statue-spin)
           body.rotation.y = rig.facing + Math.PI
@@ -642,6 +654,14 @@ export default function CrtScene({
         }
         const focusPt = new THREE.Vector3()
         const getupPt = new THREE.Vector3()
+        // seams are floor-level doorways, so they get the feet, not the eye
+        const seamPt = new THREE.Vector3()
+        /** a spawn point names x/z; what it stands on is whatever is there.
+            Both authored spawns are open floor today, but furniture streams
+            into the overworld and chunks stream into level 0 long after the
+            levels were built, so ask rather than assume the floor. */
+        const spawnY = (level: { groundY: number; collision: CollisionSet }, x: number, z: number) =>
+          supportY(x, z, level.groundY + EYE * 0.12, level.collision, level.groundY)
         let vHeld = false
         let xHeld = false
 
@@ -651,6 +671,13 @@ export default function CrtScene({
         let pausedNow = false
         const gazeVec = new THREE.Vector3()
         const toScreen = new THREE.Vector3()
+        // where the player's head was and what it was looking at, snapshotted
+        // each tick while the camera still IS the head. Interaction callbacks
+        // fire from DOM events, outside walkTick — by then the chase boom has
+        // taken the camera, and in third person `camera.position` is metres
+        // behind the body, which is why E on a door did nothing there.
+        const headPos = new THREE.Vector3()
+        const headDir = new THREE.Vector3(0, 0, -1)
 
         const setPauseNow = (on: boolean) => {
           if (pausedNow === on) return
@@ -672,8 +699,7 @@ export default function CrtScene({
               return true
             }
             if (doorVerbNow) {
-              camera.getWorldDirection(gazeVec)
-              house.useDoor(camera.position, gazeVec)
+              house.useDoor(headPos, headDir)
               return true
             }
             return false
@@ -709,7 +735,7 @@ export default function CrtScene({
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
             chase.drop()
-            walk.spawnAt(spawn.x, spawn.z, spawn.yaw, level.groundY)
+            walk.spawnAt(spawn.x, spawn.z, spawn.yaw, spawnY(level, spawn.x, spawn.z))
             if (level.id === 'overworld') house.flagShadows(camera.position)
             // either side of the cut, the body's old shadow may still be
             // baked into the desk-area maps: re-render them without it
@@ -770,6 +796,23 @@ export default function CrtScene({
         let announced = false
         let t0 = performance.now()
         const drifted = new THREE.Vector3()
+        // tell the warp tunnel it can open its exit, and where the glass sits
+        // on the viewport so the mouth tears open right on the machine. Must
+        // fire on the first real frame whichever way we got here — a room
+        // entrance skips the intro, and a tunnel left holding never opens.
+        const announce = () => {
+          if (announced) return
+          announced = true
+          const c = front.clone().project(camera)
+          const top = front.clone().setY(front.y + gSize.y / 2).project(camera)
+          const cx = ((c.x + 1) / 2) * W
+          const cy = ((1 - c.y) / 2) * H
+          window.dispatchEvent(
+            new CustomEvent(OS_SCENE_READY_EVENT, {
+              detail: { x: cx, y: cy, r: Math.max(40, Math.abs(((1 - top.y) / 2) * H - cy)) },
+            }),
+          )
+        }
         const introTick = () => {
           if (disposed) return
           const t = (performance.now() - t0) / 1000
@@ -782,21 +825,7 @@ export default function CrtScene({
           camera.position.lerpVectors(drifted, camEnd, EASE(zoom))
           camera.lookAt(front)
           render()
-          if (!announced) {
-            // first real frame is up: tell the warp tunnel it can open its
-            // exit, and where the glass sits on the viewport so the mouth
-            // tears open right on the machine
-            announced = true
-            const c = front.clone().project(camera)
-            const top = front.clone().setY(front.y + gSize.y / 2).project(camera)
-            const cx = ((c.x + 1) / 2) * W
-            const cy = ((1 - c.y) / 2) * H
-            window.dispatchEvent(
-              new CustomEvent(OS_SCENE_READY_EVENT, {
-                detail: { x: cx, y: cy, r: Math.max(40, Math.abs(((1 - top.y) / 2) * H - cy)) },
-              }),
-            )
-          }
+          announce() // first real frame is up
           if (zoom >= 1) {
             parked = true
             setIntro(false)
@@ -865,7 +894,11 @@ export default function CrtScene({
           // seams and the noclip cut: stepping into the doctored wall span
           // freezes the walk and cuts to black; the level system swaps the
           // worlds under the cover (no seams during the stand-up glide)
-          levels.tick(now, camera.position, fps)
+          // the seam test gets the feet: its predicates are planar today, but
+          // walking a furniture top past the doctored wall span shouldn't
+          // noclip you into level 0 from head height
+          seamPt.set(camera.position.x, walk.feetY, camera.position.z)
+          levels.tick(now, seamPt, fps)
           const level = levels.current
           const step = walk.update({
             dt,
@@ -877,10 +910,12 @@ export default function CrtScene({
             collision: level.collision,
             fovBase: prefsRef.current.fov,
           })
-          // v flips the lens between the eyes and the chase boom; x flops —
-          // and once the ragdoll settles, x or any move key stands back up
+          // the view is a saved preference the pause menu also owns, so the
+          // boom just follows it and v flips it; x flops — and once the
+          // ragdoll settles, x or any move key stands back up
+          chase.third = prefsRef.current.third
           const vNow = input.keys.has('KeyV')
-          if (vNow && !vHeld && !levels.frozen) chase.third = !chase.third
+          if (vNow && !vHeld && !levels.frozen) setPrefs((p) => ({ ...p, third: !p.third }))
           vHeld = vNow
           const xNow = input.keys.has('KeyX')
           const wantsUp =
@@ -895,7 +930,13 @@ export default function CrtScene({
             // stand up where the body came to rest: move the walker there
             // first so the recovery blend is fitted against the new frame
             rig.getupSpot(getupPt)
-            walk.teleport(getupPt.x, getupPt.z, level.groundY)
+            // a body that came to rest on the sofa stands up on the sofa:
+            // the tallest surface under its pelvis, not the level floor
+            walk.teleport(
+              getupPt.x,
+              getupPt.z,
+              supportY(getupPt.x, getupPt.z, getupPt.y, level.collision, level.groundY),
+            )
             poseBody()
             rig.beginRecover()
           }
@@ -939,6 +980,9 @@ export default function CrtScene({
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
           camera.getWorldDirection(gazeVec)
+          // still the head here — chase.apply() only borrows the camera below
+          headPos.copy(camera.position)
+          headDir.copy(gazeVec)
           // no prompts while the body is a heap on the floor
           const isNear = !rig.down && dist < 3.4 && gazeVec.dot(toScreen.normalize()) > 0.35
           if (isNear !== nearNow) {
@@ -1034,7 +1078,10 @@ export default function CrtScene({
           // seam first, so the chair never has to fly up from level 0
           const homed = levels.reset()
           if (homed) {
-            walk.spawnAt(homed.spawn.x, homed.spawn.z, walk.yaw, homed.groundY)
+            walk.spawnAt(
+              homed.spawn.x, homed.spawn.z, walk.yaw,
+              spawnY(homed, homed.spawn.x, homed.spawn.z),
+            )
           }
           blackout.style.transition = ''
           blackout.style.opacity = '0'
@@ -1115,8 +1162,7 @@ export default function CrtScene({
         }
         // the door prompt button routes here (E does the same via input)
         doorRef.current = () => {
-          camera.getWorldDirection(gazeVec)
-          house.useDoor(camera.position, gazeVec)
+          house.useDoor(headPos, headDir)
         }
         // the pause menu's resume button (esc does the same via input)
         resumeRef.current = () => {
@@ -1156,12 +1202,23 @@ export default function CrtScene({
         // buffer and texture costs), then one shadow map per frame
         void firstCompile.then(async () => {
           if (disposed || roaming || leaving) return
-          camera.position.copy(camStart)
+          // arriving already roaming (the /room entrance) means nobody is
+          // watching a machine boot: start parked at the desk, where the
+          // stand-up glide reads as pushing your chair back, and skip the
+          // whole intro flight rather than flying in only to walk away
+          const straightToRoom = roamPropRef.current
+          camera.position.copy(straightToRoom ? camEnd : camStart)
           camera.lookAt(front)
           render()
+          announce()
           await new Promise((r) => requestAnimationFrame(r))
           await bakeShadowsStaggered(() => disposed || roaming || leaving)
           if (disposed || roaming || leaving) return
+          if (straightToRoom) {
+            roomLight(0) // the stand-up glide ramps this to full room light
+            startRoam()
+            return
+          }
           t0 = performance.now()
           raf = requestAnimationFrame(introTick)
         })
@@ -1257,7 +1314,30 @@ export default function CrtScene({
               <p className="text-[13px] text-stone-200">paused</p>
               <p className="text-[10px] text-stone-600">esc resumes</p>
             </div>
-            <label className="mt-4 block text-[11px] text-stone-400">
+            <div className="mt-4 text-[11px] text-stone-400">
+              <span className="flex justify-between">
+                <span>camera</span>
+                <span className="text-stone-500">v</span>
+              </span>
+              <div className="mt-1.5 flex gap-1.5">
+                {([false, true] as const).map((third) => (
+                  <button
+                    key={String(third)}
+                    type="button"
+                    onClick={() => setPrefs((p) => ({ ...p, third }))}
+                    aria-pressed={prefs.third === third}
+                    className={`flex-1 cursor-pointer rounded-md border px-2 py-1 text-[11px] transition-colors ${
+                      prefs.third === third
+                        ? 'border-stone-400 bg-stone-800/70 text-stone-100'
+                        : 'border-stone-700 text-stone-500 hover:border-stone-500 hover:text-stone-300'
+                    }`}
+                  >
+                    {third ? 'third person' : 'first person'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="mt-3 block text-[11px] text-stone-400">
               <span className="flex justify-between">
                 <span>field of view</span>
                 <span className="text-stone-500">{prefs.fov}°</span>

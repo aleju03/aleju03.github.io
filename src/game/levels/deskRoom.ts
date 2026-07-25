@@ -1,8 +1,8 @@
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import type { ModelLike } from './houseWorld'
-import { HOUSE } from './houseWorld'
-import { addBoxFrom } from '../physics/collision'
+import { CEIL_H, HOUSE } from './houseWorld'
+import { addBoxFrom, noStand, padXZ } from '../physics/collision'
 
 /*
   The desk corner of the bedroom: the desk itself and everything dressed
@@ -50,10 +50,17 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
   })
   scene.add(desk.scene)
   const deskTop = new THREE.Box3().setFromObject(desk.scene).max.y
-  // the walkable strip the desk denies runs all the way back to the wall
-  const deskBlock = new THREE.Box3().setFromObject(desk.scene).expandByScalar(0.35)
-  deskBlock.min.z = -10
+  // Two solids, not one. The desk itself is a surface — you can hop onto it,
+  // and its top has to be the real deskTop, so the pad is x/z only. The dead
+  // strip it denies behind itself runs back through the bedroom wall to
+  // z = -10, and that one is emphatically not a floor: standing on it past
+  // the wall plane, the wall box would eject you out of the house.
+  const deskBlock = padXZ(new THREE.Box3().setFromObject(desk.scene), 0.35)
   obstacles.push(deskBlock)
+  obstacles.push(noStand(new THREE.Box3(
+    new THREE.Vector3(deskBlock.min.x, 0, -10),
+    new THREE.Vector3(deskBlock.max.x, CEIL_H, deskBlock.min.z),
+  )))
 
   const makeBox = (w: number, h: number, d: number, material: THREE.Material, castShadow = true) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material)
@@ -266,6 +273,9 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
   shelf.position.set(HOUSE.maxX - 0.38, 0, 6.45)
   scene.add(shelf)
   addBoxFrom(obstacles, shelf, 0.2)
+  // noStand: a bookshelf tall enough that standing on it puts the eye
+  // through the bedroom ceiling
+  noStand(obstacles[obstacles.length - 1])
 
   const cork = new THREE.Group()
   const corkMat = new THREE.MeshStandardMaterial({ color: '#6a432c', roughness: 0.92 })
