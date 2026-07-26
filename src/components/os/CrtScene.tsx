@@ -2058,15 +2058,17 @@ export default function CrtScene({
           covered pass guarantees that first ring before either entrance draws
           its first visible frame.
 
-          It deliberately does *not* try to force the first *draw* of the
-          chunks. That was tried: a one-pixel viewport swept through four
-          headings so every chunk crossed a frustum once. It works, and it is
-          a bad trade — three.js reads a program's uniform structure on first
-          use, which blocks on the driver finishing the link, so the sweep
-          pulled nearly four seconds of shader setup into one lump to avoid a
-          hitch that measures a tenth of a second. Let the frustum do its job.
+          It deliberately does *not* sweep every chunk through a first draw.
+          That was tried: a one-pixel viewport through four headings pulled
+          nearly four seconds of shader setup into one lump. The direct /room
+          entrance has one narrower exception below: its opening view faces the
+          computer, and its exact reverse view measured a 633 ms first-turn
+          stall on the reference GPU. One rear-heading draw pays only that
+          known cold view under BootCover after the ordinary bake has given the
+          driver time to finish; every other heading still lets the frustum do
+          its job.
 
-          The sun's shadow is the exception, and it is worth the paragraph.
+          The sun's shadow warm-up is different, and worth the paragraph.
 
           The old sky switched `castShadow` itself at the indoor and daylight
           thresholds. That changed every lit surface's shader configuration;
@@ -2143,6 +2145,54 @@ export default function CrtScene({
               webgl.setScissorTest(false)
               webgl.setViewport(0, 0, warmSize.x, warmSize.y)
             }
+          }
+        }
+
+        /**
+         * The /room lens opens facing the dead computer, so the furnished house
+         * behind it has not crossed the live camera's frustum yet. compileAsync
+         * links its programs but does not perform WebGLProgram's onFirstUse or
+         * upload geometry buffers; a visitor turning around used to pay both in
+         * one visible frame. Draw that one known view into a one-pixel viewport
+         * while BootCover still owns the screen. Outdoor drawables are already
+         * covered by warmForRoam and stay hidden here—without occlusion culling,
+         * the rear camera otherwise submits the whole world through the house.
+         * Its lights remain live so the house gets the real shader layout. This
+         * is intentionally not the old four-heading sweep described above.
+         */
+        const warmRoomRear = (at: THREE.Vector3, aim: { pitch: number; yaw: number }) => {
+          if (!webgl || !scene) return
+          warmCam.fov = prefsRef.current.fov
+          warmCam.aspect = W / H
+          warmCam.rotation.order = 'YXZ'
+          warmCam.updateProjectionMatrix()
+          warmCam.position.copy(at)
+          warmCam.rotation.set(aim.pitch, aim.yaw + Math.PI, 0)
+          warmCam.updateMatrixWorld(true)
+          applyLight(warmCam.position)
+          webgl.getSize(warmSize)
+          const hiddenOutside: THREE.Object3D[] = []
+          outside.root.traverse((object) => {
+            if (
+              object.visible &&
+              ((object as THREE.Mesh).isMesh ||
+                (object as THREE.Points).isPoints ||
+                (object as THREE.Line).isLine ||
+                (object as THREE.Sprite).isSprite)
+            ) {
+              object.visible = false
+              hiddenOutside.push(object)
+            }
+          })
+          try {
+            webgl.setScissorTest(true)
+            webgl.setScissor(0, 0, 1, 1)
+            webgl.setViewport(0, 0, 1, 1)
+            webgl.render(scene, warmCam)
+          } finally {
+            for (const object of hiddenOutside) object.visible = true
+            webgl.setScissorTest(false)
+            webgl.setViewport(0, 0, warmSize.x, warmSize.y)
           }
         }
 
@@ -2437,6 +2487,18 @@ export default function CrtScene({
 
           if (!straightToRoom) body.visible = false
           await bakeShadowsCovered(() => disposed || roaming || leaving)
+          if (disposed || !webgl || !scene || roaming || leaving) return
+
+          if (straightToRoom) {
+            // compileAsync tracks one current program per material, while the
+            // same material can still have object-specific variants linking in
+            // parallel. A short idle after the real shadow passes avoids making
+            // the warm draw synchronously wait on work a human turn naturally
+            // gives the driver time to finish.
+            await new Promise((resolve) => setTimeout(resolve, 250))
+            if (disposed || !webgl || !scene || roaming || leaving) return
+            warmRoomRear(SPAWN, spawnAim)
+          }
           if (disposed || !webgl || !scene || roaming || leaving) return
           // startRoam reveals it only after the stand-up frame. Keeping it
           // live for the readiness render would put the still-visible head
