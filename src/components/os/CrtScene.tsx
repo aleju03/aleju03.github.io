@@ -763,9 +763,15 @@ export default function CrtScene({
         const FOV = 38
         const walk = createWalkController(camera, {
           eye: EYE,
-          speed: 3.4,
-          runSpeed: 5.9,
-          crouchSpeed: 1.7,
+          // the whole gait shifted up a notch: the old sprint (5.9) is now the
+          // default walk, and the sprint is faster than anything the walk used
+          // to reach. The old numbers were a stroll on a planet you cross on
+          // foot. Everything downstream is expressed against these two — the
+          // gait fraction, the sprint fov ramp, the body's stride length — so
+          // they follow on their own; the crouch keeps its half-of-a-walk feel.
+          speed: 5.9,
+          runSpeed: 9.4,
+          crouchSpeed: 2.8,
           crouchDrop: 0.85, // how far the eye sinks at full crouch
           // space hops: heavy-ish gravity so it stays a hop, not a moon walk.
           // The apex (jumpV²/2·grav ≈ 2.08, a bit over half an eye height)
