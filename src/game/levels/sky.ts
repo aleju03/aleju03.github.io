@@ -212,9 +212,41 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   dome.userData.dynamic = true
   parent.add(dome)
 
-  const starMat = mat(new THREE.MeshBasicMaterial({
+  /*
+    Distant terrain is completely `fogColor` by the time it reaches the edge
+    of the streamed ring. If the dome behind it is still textured there, that
+    otherwise invisible edge reads as a huge flat blue slab across the world.
+    Make both painted domes meet the live fog colour at and below the horizon,
+    then release the blend gradually through the lowest eight degrees of sky.
+    This stays in the existing dome programs instead of adding a full-width
+    transparent haze draw.
+  */
+  const horizonFogU = { value: new THREE.Color('#0d1220') }
+  const blendHorizon = <T extends THREE.MeshBasicMaterial>(material: T, key: string): T => {
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uHorizonFog = horizonFogU
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\n varying vec3 vSkyDir;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n vSkyDir = position;')
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          '#include <common>\n varying vec3 vSkyDir;\n uniform vec3 uHorizonFog;',
+        )
+        .replace(
+          '#include <opaque_fragment>',
+          `#include <opaque_fragment>
+           float horizonFogK = 1.0 - smoothstep(0.0, 0.14, normalize(vSkyDir).y);
+           gl_FragColor.rgb = mix(gl_FragColor.rgb, uHorizonFog, horizonFogK);`,
+        )
+    }
+    material.customProgramCacheKey = () => key
+    return material
+  }
+
+  const starMat = mat(blendHorizon(new THREE.MeshBasicMaterial({
     map: domeTex(makeStarTexture()), side: THREE.BackSide, fog: false, depthWrite: false,
-  }))
+  }), 'sky-star-dome-horizon'))
   const starDome = new THREE.Mesh(new THREE.SphereGeometry(430, 24, 20), starMat)
   starDome.renderOrder = -10
   starDome.frustumCulled = false
@@ -292,10 +324,10 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   stars.frustumCulled = false
   dome.add(stars)
 
-  const dayMat = mat(new THREE.MeshBasicMaterial({
+  const dayMat = mat(blendHorizon(new THREE.MeshBasicMaterial({
     map: domeTex(makeDayTexture()), side: THREE.BackSide, fog: false,
     depthWrite: false, transparent: true, opacity: 0,
-  }))
+  }), 'sky-day-dome-horizon'))
   const dayDome = new THREE.Mesh(new THREE.SphereGeometry(424, 24, 20), dayMat)
   dayDome.renderOrder = -9.7
   dayDome.frustumCulled = false
@@ -646,6 +678,7 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     // golden hour used to be a 45% nudge and read as ordinary grey haze; the
     // whole point of a low sun is that the air itself goes amber
     if (twilight > 0.001) state.fogColor.lerp(FOG_DUSK, twilight * 0.72)
+    horizonFogU.value.copy(state.fogColor)
     state.hemiSky.lerpColors(HEMI_SKY_NIGHT, HEMI_SKY_DAY, day)
     state.hemiGround.lerpColors(HEMI_GROUND_NIGHT, HEMI_GROUND_DAY, day)
     state.dayBoost = 1 + 2.1 * day * (1 - 0.7 * indoor)
