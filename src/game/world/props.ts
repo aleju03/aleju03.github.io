@@ -812,10 +812,40 @@ const bush = (v: number): Kit => {
   return drain({ r: 1.0, h: 1.5 }, 2.2)
 }
 
+/**
+ * Knee-high undergrowth: the leafy clump between a tuft of grass and a bush.
+ *
+ * It was two smooth lumps under a transform, and from three steps away that is
+ * exactly what it read as — a pair of solid green balls dropped on the lawn,
+ * polygonal at the silhouette and unbroken inside it, next to canopies and
+ * bushes that had long since stopped being solids. The rule the crowns settled
+ * on holds at ankle height too: what makes foliage read as foliage is that its
+ * outline is made of leaves. So this is a card cluster like `bush` — smaller,
+ * lower, and spread sideways rather than stacked, because undergrowth sprawls
+ * where a bush buds upward — and it stays walk-through.
+ *
+ * Two constraints set the numbers. Lobes ride at about their own radius so a
+ * card's lowest corner stops at the ground instead of shredding through it
+ * (the same tuning `bush` carries, and it matters more here because `plant()`
+ * sinks every prop 0.15). And the lobes stay small and stay four: a card's
+ * count per lobe barely falls with its radius, shrubs are the densest scatter
+ * in the table after grass — 34 per chunk in a jungle against a bush's 18 —
+ * and a clump this size wants many small cards rather than few big ones
+ * anyway, because a card seen edge-on is a sliver whatever it belongs to, and
+ * at half-unit lobes those slivers are leaf-sized instead of shrub-sized.
+ */
 const shrub = (v: number): Kit => {
-  push(NUB[0], 'leaf', at(0, 0.52, 0, 1.6 + v * 0.4, 1.1, 1.5))
-  push(NUB[2], 'leaf', at(0.5 - v * 0.7, 0.36, -0.35, 1.0, 0.75, 1.0))
-  return drain(null, 1.2)
+  // the variant only widens the sprawl: at this size there is no skeleton to
+  // vary the way the tree kits do, and four lobes at a fixed height with the
+  // outer three walked out and back is the whole range of shapes available
+  const s = 0.85 + v * 0.45
+  push(cards(29 + Math.floor(v * 70), [
+    [0, 0.6, 0, 0.46],
+    [0.4 * s, 0.46, 0.12 * s, 0.38],
+    [-0.16 * s, 0.44, -0.42 * s, 0.35],
+    [-0.34 * s, 0.5, 0.3 * s, 0.36],
+  ]), 'card', at(0, 0, 0))
+  return drain(null, 1.3)
 }
 
 const rock = (v: number): Kit => {
