@@ -3,9 +3,14 @@ import { canvasTexture } from '../core/textures'
 import { seeded } from '../core/rand'
 import type { Solid } from '../physics/collision'
 import { CHUNK, chunkX, chunkZ, OFF_Z, originX, originZ } from './grid'
-import { buildChunk, tierFor, type Chunk, type ChunkMats, type Tier } from './chunk'
+import {
+  buildChunk, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Tier,
+} from './chunk'
+import { applyFadeIn, FADE_FRAG_ALPHA, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead } from './fade'
+import { registerInteriors, unregisterInteriors } from './interiors'
+import type { ShopDoorSpec } from './shopDoors'
 import { SEA_Y, terrainY } from './terrain'
-import { applySway, tickWind, windUniforms } from './wind'
+import { applySway, tickWind, updateTrample, windUniforms } from './wind'
 import { buildGrass, type GrassHandles } from './grass'
 import { makeLeafTexture } from './treeMesh'
 
@@ -28,6 +33,8 @@ import { makeLeafTexture } from './treeMesh'
   budget per frame. The consequence is that the far ring can lag a moment
   behind a sprint, which fog covers, and that the *near* ring is built
   synchronously on the first call so the player never spawns over a hole.
+  What the drain does finish in view of the player dissolves in over a second
+  rather than popping — the birth-stamp mechanism is world/fade.ts's.
 
   The collision array handed out here is the same array the house and the desk
   already registered into: world boxes are appended after the authored ones,
@@ -155,6 +162,12 @@ interface Opts {
   scene: THREE.Object3D
   /** the shared obstacle list; world boxes live after `authoredCount` */
   obstacles: Solid[]
+  /** the hinged shop doors of the chunks whose collision is live, whenever
+      that set changes — outsideWorld hands these to world/shopDoors.ts */
+  onNearDoors?: (specs: ShopDoorSpec[]) => void
+  /** every chunk as it is built, so world/debris.ts can arm the props a
+      vehicle may knock down — and re-flatten the ones it already has */
+  onChunk?: (c: Chunk) => void
   trackTexture: (t: THREE.Texture) => void
   trackDisposable: (d: { dispose: () => void }) => void
 }
@@ -240,11 +253,13 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
          attribute float aDepth;
          varying float vDepth;
          varying float vWave;
-         varying vec2 vWXZ;`,
+         varying vec2 vWXZ;
+         ${FADE_VERT_HEAD}`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
+         ${FADE_VERT_BODY}
          vDepth = aDepth;
          vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
          vWXZ = wp.xz;
@@ -263,6 +278,7 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
          uniform float uCel;
          uniform vec2 uRippleCenters[${RIPPLES}];
          uniform float uRippleTimes[${RIPPLES}];
+         ${fadeFragHead(false)}
          varying float vDepth;
          varying float vWave;
          varying vec2 vWXZ;
@@ -285,7 +301,9 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
          }
          // F1 and SmoothF1 in one pass over the 3x3 neighbourhood; the same
-         // cell offsets feed both, or their difference stops meaning "edge"
+         // cell offsets feed both, or their difference stops meaning "edge".
+         // The wide smin radius is what makes the boundary ridge broad enough
+         // to threshold into a thick hand-drawn line rather than a hairline
          vec2 wVoro(vec2 p) {
            vec2 i = floor(p), f = fract(p);
            float f1 = 8.0, sf = 8.0;
@@ -294,7 +312,7 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
                vec2 n = vec2(float(x), float(y));
                float d = length(n + wHash2(i + n) - f);
                f1 = min(f1, d);
-               sf = wSmin(sf, d, 0.32);
+               sf = wSmin(sf, d, 0.5);
              }
            return vec2(f1, sf);
          }`,
@@ -303,16 +321,27 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
         '#include <dithering_fragment>',
         `#include <dithering_fragment>
          // the cel highlight web, drifting with the wind and warped by a slow
-         // noise so the cells never read as a stationary grid
+         // noise so the cells never read as a stationary grid. Thresholded
+         // through fwidth so the line keeps a constant screen-space softness:
+         // a fixed-width smoothstep aliased into structured moiré at grazing
+         // angles, which is most of what a standing player sees of the sea
          {
-           vec2 flow = vWXZ * 0.17 + vec2(uTime * 0.05, uTime * 0.031);
-           flow += (wNoise(vWXZ * 0.06 + uTime * 0.04) - 0.5) * 0.85;
+           vec2 flow = vWXZ * 0.085 + vec2(uTime * 0.035, uTime * 0.022);
+           flow += (wNoise(vWXZ * 0.045 + uTime * 0.03) - 0.5) * 0.9;
            vec2 vv = wVoro(flow);
-           float cel = smoothstep(0.03, 0.09, vv.x - vv.y);
+           float e = vv.x - vv.y;
+           float w = fwidth(e);
+           // the ridge tops out near k/6 = 0.083 between two sites; cutting
+           // this close to the top keeps the lines bold but not dominant,
+           // and lets the smin junctions swell into hand-drawn blobs
+           float cel = smoothstep(0.066 - w, 0.078 + w, e);
+           // once a pixel spans a good part of the ridge the web is only
+           // noise; hand the far field to the fog as flat colour instead
+           cel *= 1.0 - smoothstep(0.025, 0.075, w);
            // fade the web out in the last stretch of shallows so it never
            // draws over the foam band
            cel *= smoothstep(0.5, 2.2, vDepth);
-           gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.82, 0.94, 0.95), cel * uCel);
+           gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.94, 0.98, 1.0), cel * uCel);
          }
          // splash rings: three concentric anime rings per event, expanding
          // and dying on an exponential. Dead events early-out before the
@@ -339,10 +368,14 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
          // seven units the whole visible sea from a beach was inside the
          // bright end of it, and an ocean came out as a pale strip of milk
          float shallow = 1.0 - clamp(vDepth / 16.0, 0.0, 1.0);
-         gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * 1.35 + 0.03, shallow * 0.75);
+         // the lift leans cyan so the shelf reads tropical against the deep blue
+         gl_FragColor.rgb = mix(
+           gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.16, 1.42, 1.38) + 0.02, shallow * 0.75);
          float foam = smoothstep(1.2, 0.12, vDepth) * (0.55 + 0.45 * vWave);
          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.92, 0.96, 0.97), clamp(foam, 0.0, 0.85));
-         gl_FragColor.a *= smoothstep(0.0, 0.5, vDepth);`,
+         gl_FragColor.a *= smoothstep(0.0, 0.5, vDepth);
+         // a freshly streamed sea eases in with its chunk (world/fade.ts)
+         ${FADE_FRAG_ALPHA}`,
       )
   }
   mat.customProgramCacheKey = () => 'stylized-water-cel'
@@ -350,7 +383,7 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
 }
 
 export function buildWorld(opts: Opts): WorldHandles {
-  const { scene, obstacles, trackTexture, trackDisposable } = opts
+  const { scene, obstacles, onNearDoors, onChunk, trackTexture, trackDisposable } = opts
   const root = new THREE.Group()
   scene.add(root)
 
@@ -366,6 +399,12 @@ export function buildWorld(opts: Opts): WorldHandles {
   const groundMat = new THREE.MeshStandardMaterial({
     map: detailTex, vertexColors: true, roughness: 1, metalness: 0,
   })
+  // every chunk material fades its geometry in by the baked aBirth stamp
+  // (world/fade.ts): dissolve-by-dither on the opaques, alpha on the rest.
+  // The ground and glass get the standalone patcher; the detail and leaf
+  // soups carry the same GLSL through applySway (one onBeforeCompile per
+  // material), and the water carries it inside makeWaterStylized above
+  applyFadeIn(groundMat, windUniforms.uTime, 'dissolve')
   // the grey is deliberate. The ground multiplies its vertex colour by a
   // detail map that averages a little under white, and props carry no map at
   // all — matched palettes therefore rendered props visibly brighter than the
@@ -379,12 +418,13 @@ export function buildWorld(opts: Opts): WorldHandles {
   const glassMat = new THREE.MeshBasicMaterial({
     vertexColors: true, transparent: true, opacity: 0, depthWrite: false,
   })
+  applyFadeIn(glassMat, windUniforms.uTime, 'alpha')
   // foliage bends; kerbs, walls and roofs share the material and simply carry
   // a zero sway weight, so one draw call covers both. The same injection also
   // carries the procedural surface pass (world/surface.ts) — brick courses,
   // shingles, paving joints, bark — because a material only gets one
   // onBeforeCompile and this soup contains all of it
-  applySway(detailMat, { amplitude: 0.34, weight: 'attribute', surface: true })
+  applySway(detailMat, { amplitude: 0.34, weight: 'attribute', surface: true, fadeIn: true })
 
   // foliage cards: alpha-tested so they need no sorting, a strong rim so a
   // backlit crown glows at its edge the way thin leaves do
@@ -394,16 +434,18 @@ export function buildWorld(opts: Opts): WorldHandles {
   const leafMat = new THREE.MeshStandardMaterial({
     map: leafTex, alphaTest: 0.38, vertexColors: true, roughness: 0.95, metalness: 0,
   })
-  applySway(leafMat, { amplitude: 0.4, weight: 'attribute', rim: 0.45 })
+  applySway(leafMat, { amplitude: 0.4, weight: 'attribute', rim: 0.45, fadeIn: true })
   // what a crown looks like to the sun's shadow map: the same alpha test,
   // so foliage casts leaf-shaped dapple rather than solid rectangles
   const leafDepth = new THREE.MeshDepthMaterial({
     depthPacking: THREE.RGBADepthPacking, map: leafTex, alphaTest: 0.38,
   })
 
+  // matte on purpose: a glossy sun highlight over the vertex-displaced swell
+  // breaks into per-pixel sparkle, and the toon look wants none of it anyway
   const waterMat = new THREE.MeshStandardMaterial({
     color: '#2c4a52', transparent: true, opacity: 0.9,
-    roughness: 0.16, metalness: 0.4,
+    roughness: 0.9, metalness: 0,
   })
   makeWaterStylized(waterMat)
   ;[groundMat, detailMat, glassMat, waterMat, leafMat, leafDepth].forEach(trackDisposable)
@@ -430,22 +472,29 @@ export function buildWorld(opts: Opts): WorldHandles {
     root.remove(c.group)
     for (const g of c.geos) g.dispose()
     chunks.delete(key(c.cx, c.cz))
+    unregisterInteriors(key(c.cx, c.cz))
   }
 
-  const make = (cx: number, cz: number, tier: Tier) => {
-    const c = buildChunk(cx, cz, tier, mats)
+  const make = (cx: number, cz: number, tier: Tier, fade?: ChunkFade) => {
+    const c = buildChunk(cx, cz, tier, mats, fade)
     root.add(c.group)
     chunks.set(key(cx, cz), c)
+    registerInteriors(key(cx, cz), c.interiors)
+    // before anything can see it: a chunk rebuilt over ground the player has
+    // already cleared must arrive already cleared
+    onChunk?.(c)
     return c
   }
 
-  /** re-shelve the collision set: authored boxes, then the near ring's */
+  /** re-shelve the collision set: authored boxes, then the near ring's —
+      and report the same ring's hinged doors, whose collision is live too */
   const refreshSolids = (pcx: number, pcz: number) => {
     let w = 0
     for (let i = 0; i < obstacles.length; i++) {
       if (!worldOwned.has(obstacles[i])) obstacles[w++] = obstacles[i]
     }
     obstacles.length = w
+    const doors: ShopDoorSpec[] = []
     for (let dz = -SOLID_RADIUS; dz <= SOLID_RADIUS; dz++)
       for (let dx = -SOLID_RADIUS; dx <= SOLID_RADIUS; dx++) {
         const c = chunks.get(key(pcx + dx, pcz + dz))
@@ -454,8 +503,10 @@ export function buildWorld(opts: Opts): WorldHandles {
             worldOwned.add(b)
             obstacles.push(b)
           }
+          for (const d of c.doors) doors.push(d)
         }
       }
+    onNearDoors?.(doors)
   }
 
   /**
@@ -549,6 +600,9 @@ export function buildWorld(opts: Opts): WorldHandles {
     const low = alt < 25
     grass.setVisible(low)
     if (low) grass.update(x, z)
+    // the same on-the-ground gate the splash uses: eye height is under three
+    // units, so a jump lifts the press off the grass exactly when the feet do
+    updateTrample(x, z, speed, alt < 3)
     // ...and the splash detector needs the same altitude gate. It asks only
     // whether the ground *under* the camera is below the waterline, which is
     // true of a helicopter three hundred units over the sea: without this it
@@ -587,8 +641,13 @@ export function buildWorld(opts: Opts): WorldHandles {
     drain(budget)
   }
 
-  /** take chunks off the queue until `budget` milliseconds are spent */
-  const drain = (budget: number) => {
+  const TIER_RANK: Record<Tier, number> = { bare: 0, flora: 1, full: 2 }
+
+  /** take chunks off the queue until `budget` milliseconds are spent.
+      `announce` stamps what gets built with a fresh birth so it dissolves in
+      (world/fade.ts); a priming pass under the boot cover passes false, so the
+      lens never opens onto a world still materialising */
+  const drain = (budget: number, announce = true) => {
     const t0 = performance.now()
     for (;;) {
       if (!queue.length) break
@@ -597,12 +656,21 @@ export function buildWorld(opts: Opts): WorldHandles {
       const w = queue.shift()
       if (!w) break
       const have = chunks.get(key(w.cx, w.cz))
+      let fade: ChunkFade | undefined
+      if (announce) fade = { at: windUniforms.uTime.value }
       if (have) {
         if (have.tier === w.tier) continue
+        // an upgrade dissolves in only what the old tier lacked; a downgrade
+        // only removes, and fading its survivors would blink geometry the
+        // player is already looking at
+        if (fade) {
+          fade = TIER_RANK[w.tier] > TIER_RANK[have.tier]
+            ? { ...fade, from: have.tier } : undefined
+        }
         drop(have)
       }
       const c0 = performance.now()
-      make(w.cx, w.cz, w.tier)
+      make(w.cx, w.cz, w.tier, fade)
       chunkMs = chunkMs * 0.8 + (performance.now() - c0) * 0.2
       // a chunk arriving inside the collision radius changed the boxes under
       // the player's feet, and refreshSolids only runs on a border crossing
@@ -620,10 +688,10 @@ export function buildWorld(opts: Opts): WorldHandles {
     // going into the outer rings. Anything left here streams in behind the
     // fog as usual; what this buys is that it isn't *also* being built on
     // the frames where the player is first looking at it
-    if (ms > 0) drain(ms)
+    if (ms > 0) drain(ms, false)
   }
 
-  const WATER_DAY = new THREE.Color('#3d6b78')
+  const WATER_DAY = new THREE.Color('#2a6fc0')
   const WATER_NIGHT = new THREE.Color('#111d26')
 
   return {
@@ -641,9 +709,9 @@ export function buildWorld(opts: Opts): WorldHandles {
       waterMat.color.lerpColors(WATER_NIGHT, WATER_DAY, sun)
       // a touch of the sky's own colour, which is most of what makes water
       // read as water rather than as blue-painted ground
-      waterMat.color.lerp(sky, 0.22)
+      waterMat.color.lerp(sky, 0.15)
       // the caustic web is sunlight; by night it dims to a ghost of itself
-      waterCel.value = 0.08 + sun * 0.45
+      waterCel.value = 0.07 + sun * 0.75
     },
   }
 }

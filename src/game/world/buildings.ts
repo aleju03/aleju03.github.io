@@ -2,6 +2,9 @@ import * as THREE from 'three'
 import type { MeshBuilder } from '../core/geometry'
 import { noStand, type Solid } from '../physics/collision'
 import type { District } from './settlements'
+import type { InteriorRect } from './interiors'
+import type { ShopDoorSpec } from './shopDoors'
+import type { Smashable } from './debris'
 import { SURF, type SurfaceId } from './surface'
 
 /*
@@ -17,11 +20,16 @@ import { SURF, type SurfaceId } from './surface'
 
   Three of the kits are shells: solid boxes with detail on the outside and one
   collision box around them. The fourth is not. `shopFront` builds a real
-  ground floor — four walls with a gap for the door, a floor, a ceiling, a
-  counter and shelves — and registers its walls individually so the doorway is
-  walk-through. Those are the ones with a lit interior and an actual inside,
-  scattered a few to a town, and they exist because a city you can only walk
-  *between* gets old faster than one you can occasionally walk *into*.
+  ground floor — four walls with a doorway facing the street, a raised plank
+  floor the player actually stands on, shelving with goods, a counter — and
+  registers its walls individually so the doorway is genuinely walk-through.
+  Those are the ones with an actual inside, scattered a few to a town, and
+  they exist because a city you can only walk *between* gets old faster than
+  one you can occasionally walk *into*. The floor is graded to the *highest*
+  ground under the footprint (terrain under a lot is never level, and a floor
+  at the lowest corner is a floor the ground grows through) and meets the
+  street with a stoop; the footprint reports itself to `out.interiors` so the
+  grass field and the scatterer keep out of the sales floor.
 
   Everything sits on `baseY`, which the chunk builder resolves as the lowest
   ground under the footprint, and every kit extends its walls a little below
@@ -38,6 +46,14 @@ export interface BuildOut {
   boxes: Solid[]
   /** interiors that want a light; kept tiny, the streamer caps how many burn */
   lamps: Array<{ x: number; y: number; z: number }>
+  /** walk-in footprints, for the interiors registry and the scatter keep-out */
+  interiors: InteriorRect[]
+  /** hinged leaves for world/shopDoors.ts; ids are assigned by the chunk */
+  doors: ShopDoorSpec[]
+  /** props a vehicle can knock down (world/debris.ts). Nothing a *building*
+      makes goes in here — a shopfront is not something you drive through —
+      but the park trees a block plants instead of housing do */
+  smash: Smashable[]
   /**
    * false on the outer ring, where a building is a silhouette on the skyline
    * and nothing more. Window grids are the single most expensive thing the
@@ -54,8 +70,10 @@ export interface Lot {
   z: number
   w: number
   d: number
-  /** ground the building stands on */
+  /** ground the building stands on: lowest corner of the footprint */
   baseY: number
+  /** ...and the highest, so an interior can grade its floor above the dirt */
+  topY: number
   /** how tall it wants to be */
   height: number
   /** which way the front faces: yaw in radians, 0 = facing +z */
@@ -528,100 +546,329 @@ export const tower = (out: BuildOut, lot: Lot) => {
 
 /** how wide the doorway gap is, and how tall the ground floor stands */
 const DOOR_W = 3.4
+const DOOR_H = 4.9
 const SHOP_H = 6.4
 const WALL_T = 0.5
+/** what a shop sells: the crate/carton tints stacked on its shelving */
+const GOODS = [
+  '#a8524a', '#5a7a4e', '#c8a34e', '#5e6f9e', '#9e5e8a',
+  '#c87d4e', '#6fa3a0', '#8a8a55', '#b0b0a8', '#7a4f38',
+]
+const SIGNS = ['#7d3f33', '#3f5a52', '#54486e', '#6e5a2e', '#33502e', '#5a3a4e']
 
 /**
- * A building with an inside. Four walls, each registering its own collision
- * box, with the front wall split around a doorway so the gap is genuinely
- * walk-through; a floor slab, a ceiling slab that doubles as the roof, a
- * service counter, two shelf runs, and a lamp.
+ * A building with an inside. Four walls around a raised plank floor, each
+ * wall registering its own collision box so the doorway — which faces the
+ * street the lot faces, not a fixed compass point — is genuinely
+ * walk-through. Inside: shelf runs stocked with goods, a counter with a
+ * worktop and a till, wall shelves, a rug and a hung ceiling light. Outside:
+ * glazing with sills, a sign band, sometimes an awning, and a stoop of steps
+ * up to the floor.
  *
- * The ceiling registers as an obstacle the same way the house's does — the
- * overworld has no level-wide ceiling (half of it is sky), so without a slab
- * up there the third-person boom would rise straight through the roof.
+ * The floor sits above `lot.topY` — the *highest* ground under the footprint
+ * — because a slab at the lowest corner is a slab the terrain mesh (and the
+ * grass field) pokes up through; it registers a standable box so the player
+ * walks on planks, not on the dirt the slab hides. The stoop's treads each
+ * rise less than the walk's step allowance, so entering is just walking.
+ *
+ * Everything is stamped axis-aligned (the collision model is AABBs), so
+ * facing is resolved cardinally: `f` is the forward normal, `r` runs along
+ * the front wall, and `boxL` maps shop-local (u along the front, v toward
+ * it) into world space. The ceiling registers as an obstacle the same way
+ * the house's does — the overworld has no level-wide ceiling, so without a
+ * slab up there the third-person boom would rise straight through the roof.
  */
 export const shopFront = (out: BuildOut, lot: Lot) => {
   const { rng } = lot
-  const w = Math.min(lot.w, 26)
-  const d = Math.min(lot.d, 22)
-  const y = lot.baseY
+  const W = Math.min(lot.w, 26)
+  const D = Math.min(lot.d, 22)
   const body = BODY[Math.floor(rng() * BODY.length)]
-  const x0 = lot.x - w / 2
-  const x1 = lot.x + w / 2
-  const z0 = lot.z - d / 2
-  const z1 = lot.z + d / 2
+  const baseY = lot.baseY
+  /** the sales floor: clear of the dirt everywhere in the footprint */
+  const floorY = lot.topY + 0.22
+
+  // the body is stamped axis-aligned, so the front is a cardinal (see
+  // midriseBlock's note on reading the wall distance off the wrong extent)
+  const fx = Math.round(Math.sin(lot.face))
+  const fz = Math.round(Math.cos(lot.face))
+  const rx = fz
+  const rz = -fx
+  /** half-length of the front wall, and half-depth from centre to it */
+  const halfU = (fx !== 0 ? D : W) / 2
+  const halfV = (fx !== 0 ? W : D) / 2
+  // half the shops are mirrored: same plan, counter and shelving swapped
+  // side for side (the door hinge goes with them), which doubles the read
+  // of variety for one sign flip in the frame mapping
+  const mir = rng() < 0.5 ? 1 : -1
+  const wx = (u: number, v: number) => lot.x + rx * u * mir + fx * v
+  const wz = (u: number, v: number) => lot.z + rz * u * mir + fz * v
+  /** a box in shop-local space: `lu` along the front wall, `lv` toward it */
+  const boxL = (
+    hex: string, u: number, v: number, cy: number,
+    lu: number, h: number, lv: number, surf: SurfaceId = SURF.none,
+  ) => {
+    box(out.solid, hex, wx(u, v), cy, wz(u, v), fx !== 0 ? lv : lu, h, fx !== 0 ? lu : lv,
+      0, surf)
+  }
+  /** its collision twin; `stand` marks the top as a real surface */
+  const solidL = (
+    u: number, v: number, lu: number, lv: number, y0: number, y1: number,
+    stand = false, pad = 0,
+  ) => {
+    const hw = (fx !== 0 ? lv : lu) / 2 + pad
+    const hd = (fx !== 0 ? lu : lv) / 2 + pad
+    const b = new THREE.Box3(
+      new THREE.Vector3(wx(u, v) - hw, y0, wz(u, v) - hd),
+      new THREE.Vector3(wx(u, v) + hw, y1, wz(u, v) + hd),
+    )
+    out.boxes.push(stand ? b : noStand(b))
+    return b
+  }
+  /** a wall-hugging quad; `facing` +1 looks out of the shop, -1 into it */
+  const panelL = (
+    target: MeshBuilder, hex: string, u: number, v: number, cy: number,
+    lw: number, lh: number, facing: 1 | -1, surf: SurfaceId = SURF.none,
+  ) => {
+    panel(target, hex, wx(u, v), cy, wz(u, v), lw, lh,
+      lot.face + (facing > 0 ? 0 : Math.PI), surf)
+  }
 
   // on the outer ring it is a shed on the horizon: build the silhouette and
   // skip the interior nobody can see or reach from there. The chunk is rebuilt
   // when it promotes a tier, so walking toward it gets you the real thing
   if (!out.detailed) {
-    box(out.solid, body, lot.x, y + SHOP_H / 2, lot.z, w, SHOP_H, d, 0, SURF.plaster)
+    const h = floorY + SHOP_H - baseY
+    box(out.solid, body, lot.x, baseY + h / 2, lot.z, W, h, D, 0, SURF.plaster)
     out.boxes.push(noStand(new THREE.Box3(
-      new THREE.Vector3(x0 - 0.2, y - 2, z0 - 0.2),
-      new THREE.Vector3(x1 + 0.2, y + SHOP_H, z1 + 0.2),
+      new THREE.Vector3(lot.x - W / 2 - 0.2, baseY - 2, lot.z - D / 2 - 0.2),
+      new THREE.Vector3(lot.x + W / 2 + 0.2, floorY + SHOP_H, lot.z + D / 2 + 0.2),
     )))
     return
   }
 
-  // floor and ceiling
-  box(out.solid, '#6a6660', lot.x, y - 0.15, lot.z, w, 0.3, d, 0, SURF.paving)
-  box(out.solid, '#4a463f', lot.x, y + SHOP_H + 0.3, lot.z,
-    w + 0.6, 0.6, d + 0.6, 0, SURF.paving)
-  out.boxes.push(noStand(new THREE.Box3(
-    new THREE.Vector3(x0 - 0.3, y + SHOP_H, z0 - 0.3),
-    new THREE.Vector3(x1 + 0.3, y + SHOP_H + 0.6, z1 + 0.3),
-  )))
+  /* ---- floor, plinth, roof ---- */
 
-  /** a wall segment plus its collision box */
-  const wall = (ax: number, az: number, ww: number, dd: number) => {
-    if (ww < 0.05 || dd < 0.05) return
-    box(out.solid, body, ax, y + SHOP_H / 2, az, ww, SHOP_H, dd, 0, SURF.plaster)
-    out.boxes.push(noStand(new THREE.Box3(
-      new THREE.Vector3(ax - ww / 2 - 0.15, y, az - dd / 2 - 0.15),
-      new THREE.Vector3(ax + ww / 2 + 0.15, y + SHOP_H, az + dd / 2 + 0.15),
-    )))
+  // the plinth carries the building down to the dirt on every side; the plank
+  // slab rides on it and is the only part the player ever sees up close
+  boxL('#57514a', 0, 0, (baseY - 0.6 + floorY) / 2,
+    2 * halfU + 0.34, floorY - baseY + 0.6, 2 * halfV + 0.34, SURF.paving)
+  boxL('#7a5f43', 0, 0, floorY - 0.04,
+    2 * halfU - 2 * WALL_T + 0.3, 0.12, 2 * halfV - 2 * WALL_T + 0.3, SURF.plank)
+  // the whole footprint is a floor: walking in, the player stands at floorY
+  solidL(0, 0, 2 * halfU, 2 * halfV, baseY - 1, floorY, true)
+
+  // ceiling slab doubling as the flat roof, with a light lining underneath —
+  // the slab's own underside is roof-dark, and a dark ceiling swallowed the
+  // whole room
+  boxL('#4a463f', 0, 0, floorY + SHOP_H + 0.3,
+    2 * halfU + 0.6, 0.6, 2 * halfV + 0.6, SURF.paving)
+  boxL('#8d867a', 0, 0, floorY + SHOP_H - 0.05,
+    2 * halfU - 2 * WALL_T + 0.2, 0.1, 2 * halfV - 2 * WALL_T + 0.2, SURF.plaster)
+  solidL(0, 0, 2 * halfU + 0.6, 2 * halfV + 0.6,
+    floorY + SHOP_H, floorY + SHOP_H + 0.6)
+
+  /* ---- walls, doorway facing the street ---- */
+
+  const wallL = (u: number, v: number, lu: number, lv: number) => {
+    if (lu < 0.05 || lv < 0.05) return
+    boxL(body, u, v, floorY + SHOP_H / 2, lu, SHOP_H, lv, SURF.plaster)
+    solidL(u, v, lu, lv, floorY, floorY + SHOP_H, false, 0.15)
   }
-  // front wall (+z), split around the doorway
   const gap = DOOR_W
-  const leftW = (w - gap) / 2
-  wall(x0 + leftW / 2, z1 - WALL_T / 2, leftW, WALL_T)
-  wall(x1 - leftW / 2, z1 - WALL_T / 2, leftW, WALL_T)
+  const segLen = halfU - gap / 2
+  const vFront = halfV - WALL_T / 2
+  // the display windows are real openings, not painted panes: piers either
+  // side, a sill band below, a header band above, and nothing in the gap but
+  // the night-emissive glow — so by day the interior shows through from the
+  // street and the street shows through from inside. The sill is standable
+  // (a determined hop puts you in the shop window, which is fine) and the
+  // header is not.
+  const winW = segLen * 0.72
+  const pier = segLen * 0.14
+  const sillTop = floorY + 1.45
+  const winTop = floorY + 4.65
+  for (const s of [-1, 1]) {
+    const uWin = s * (gap / 2 + segLen / 2)
+    wallL(s * (gap / 2 + pier / 2), vFront, pier, WALL_T)
+    wallL(s * (halfU - pier / 2), vFront, pier, WALL_T)
+    boxL(body, uWin, vFront, (floorY + sillTop) / 2, winW, sillTop - floorY,
+      WALL_T, SURF.plaster)
+    solidL(uWin, vFront, winW, WALL_T, floorY, sillTop, true, 0.15)
+    boxL(body, uWin, vFront, (winTop + floorY + SHOP_H) / 2, winW,
+      floorY + SHOP_H - winTop, WALL_T, SURF.plaster)
+    solidL(uWin, vFront, winW, WALL_T, winTop, floorY + SHOP_H, false, 0.15)
+  }
   // the header over the door, above head height so it blocks nothing
-  box(out.solid, body, lot.x, y + SHOP_H - 0.8, z1 - WALL_T / 2, gap, 1.6, WALL_T, 0, SURF.plaster)
-  wall(lot.x, z0 + WALL_T / 2, w, WALL_T)
-  wall(x0 + WALL_T / 2, lot.z, WALL_T, d)
-  wall(x1 - WALL_T / 2, lot.z, WALL_T, d)
+  boxL(body, 0, vFront,
+    floorY + DOOR_H + 0.2 + (SHOP_H - DOOR_H - 0.2) / 2,
+    gap, SHOP_H - DOOR_H - 0.2, WALL_T, SURF.plaster)
+  wallL(0, -(halfV - WALL_T / 2), 2 * halfU, WALL_T)
+  wallL(-(halfU - WALL_T / 2), 0, WALL_T, 2 * halfV)
+  wallL(halfU - WALL_T / 2, 0, WALL_T, 2 * halfV)
 
-  // shopfront glazing either side of the door, and a sign band over it
+  /* ---- the door ---- */
+
+  // frame: jambs and a lintel standing proud of the wall on both sides
+  const trimD = '#4a3d30'
   for (const s of [-1, 1]) {
-    panel(out.solid, GLASS_DARK, lot.x + s * (gap / 2 + leftW / 2), y + 3.2, z1 + 0.06,
-      leftW * 0.72, 3.0, 0)
-    panel(out.glass, '#ffe2ae', lot.x + s * (gap / 2 + leftW / 2), y + 3.2, z1 + 0.09,
-      leftW * 0.72, 3.0, 0)
+    boxL(trimD, s * (gap / 2 + 0.1), halfV - WALL_T / 2, floorY + DOOR_H / 2,
+      0.22, DOOR_H + 0.12, WALL_T + 0.16)
   }
-  box(out.solid, '#7d3f33', lot.x, y + SHOP_H - 0.4, z1 + 0.2, w * 0.8, 1.1, 0.25, 0, SURF.none)
+  boxL(trimD, 0, halfV - WALL_T / 2, floorY + DOOR_H + 0.13,
+    gap + 0.55, 0.3, WALL_T + 0.16)
+  // both leaves are real hinged doors: the chunk stamps only the frame and
+  // emits a spec per leaf, and world/shopDoors.ts owns everything that
+  // swings. One leaf used to be baked shut into the merged mesh, and the
+  // procedural plank pass plus the chunk material's tint made the twins
+  // visibly different species — the tell that only one of them worked.
+  const leafW = gap / 2 - 0.05
+  for (const s of [-1, 1] as const) {
+    const hingeU = s * (gap / 2 - 0.07)
+    out.doors.push({
+      id: '',
+      x: wx(hingeU, halfV - WALL_T / 2),
+      y: floorY,
+      z: wz(hingeU, halfV - WALL_T / 2),
+      dx: -s * rx * mir,
+      dz: -s * rz * mir,
+      fx,
+      fz,
+      leafW,
+      leafH: DOOR_H - 0.1,
+    })
+  }
 
-  // a counter you can walk around and hop onto, and two shelf runs
-  const counter = new THREE.Box3(
-    new THREE.Vector3(x0 + 2.0, y, lot.z - 2.4),
-    new THREE.Vector3(x0 + 2.0 + w * 0.42, y + 2.1, lot.z - 1.2),
-  )
-  box(out.solid, '#5d4630',
-    (counter.min.x + counter.max.x) / 2, y + 1.05, (counter.min.z + counter.max.z) / 2,
-    counter.max.x - counter.min.x, 2.1, counter.max.z - counter.min.z, 0, SURF.plank)
-  out.boxes.push(counter)
+  /* ---- the stoop ---- */
+
+  // treads down from the floor to the pavement, each rise under the walk's
+  // step allowance so entering is just walking; none needed on flat ground.
+  // `rise` is measured to the footprint's lowest corner — the ground at the
+  // door may sit higher, which only buries the lower treads in the verge
+  const rise = floorY - baseY
+  const treads = Math.min(3, Math.max(0, Math.ceil(rise / 0.38) - 1))
+  const TREAD = 0.62
+  for (let i = 1; i <= treads; i++) {
+    const top = floorY - (i * rise) / (treads + 1)
+    boxL('#8b867c', 0, halfV + (i - 0.5) * TREAD, (baseY - 0.4 + top) / 2,
+      gap + 1.0, top - baseY + 0.4, TREAD, SURF.paving)
+    solidL(0, halfV + (i - 0.5) * TREAD, gap + 1.0, TREAD, baseY - 1, top, true)
+  }
+
+  /* ---- shopfront glazing, sign, awning ---- */
+
+  const uGlass = gap / 2 + segLen / 2
   for (const s of [-1, 1]) {
-    const sx = lot.x + s * (w / 2 - 2.6)
-    const sz = z0 + d * 0.34
-    box(out.solid, '#6b5a44', sx, y + 1.6, sz, 1.6, 3.2, d * 0.42, 0, SURF.plank)
-    out.boxes.push(noStand(new THREE.Box3(
-      new THREE.Vector3(sx - 0.95, y, sz - d * 0.22),
-      new THREE.Vector3(sx + 0.95, y + 3.2, sz + d * 0.22),
-    )))
+    // sill trim outside, and the warm pane that comes up with the dusk —
+    // by day it is invisible and the opening is simply open
+    boxL(trimD, s * uGlass, halfV - 0.04, sillTop - 0.06, winW + 0.24, 0.14, 0.3)
+    for (const f of [1, -1] as const) {
+      panelL(out.glass, '#ffe2ae', s * uGlass, halfV - WALL_T / 2 + f * 0.02,
+        (sillTop + winTop) / 2, winW, winTop - sillTop, f)
+    }
+  }
+  const signC = SIGNS[Math.floor(rng() * SIGNS.length)]
+  boxL(signC, 0, halfV + 0.02, floorY + SHOP_H - 0.55, 2 * halfU * 0.82, 1.05, 0.28)
+  if (rng() < 0.55) {
+    // a canvas awning over the glazing, drooping toward the street
+    tmpQ.setFromEuler(tmpE.set(0.42, lot.face, 0, 'YXZ'))
+    tmpM.compose(
+      tmpP.set(wx(0, halfV + 0.62), floorY + 4.86, wz(0, halfV + 0.62)),
+      tmpQ, tmpS.set(2 * halfU * 0.88, 0.08, 1.6),
+    )
+    out.solid.add(BOX, tmpM, col.set(signC))
+    tmpE.order = 'XYZ'
   }
 
-  out.lamps.push({ x: lot.x, y: y + SHOP_H - 1.1, z: lot.z })
+  /* ---- the interior ---- */
+
+  // a rug at the entry
+  boxL('#7a4030', 0, halfV - WALL_T - 1.35, floorY + 0.045, 2.4, 0.05, 1.5)
+
+  /** a stack of goods on a surface: little cartons in the shop's palette */
+  const goods = (u: number, v0: number, v1: number, top: number, big: number) => {
+    for (let v = v0 + 0.45; v < v1 - 0.35; v += 0.85) {
+      if (rng() > 0.72) continue
+      const gw = (0.4 + rng() * 0.35) * big
+      const gh = (0.32 + rng() * 0.38) * big
+      const gd = (0.5 + rng() * 0.3) * big
+      boxL(GOODS[Math.floor(rng() * GOODS.length)],
+        u + (rng() - 0.5) * 0.3, v + (rng() - 0.5) * 0.2,
+        top + gh / 2, gw, gh, gd)
+    }
+  }
+
+  // gondola shelf runs: uprights, boards, stocked shelves. One along the
+  // wall away from the counter; a second down the middle on a wide floor
+  const vg0 = -halfV + WALL_T + 1.0
+  const vg1 = halfV - WALL_T - 3.2
+  const gondola = (uC: number) => {
+    const len = vg1 - vg0
+    if (len < 2.4) return
+    const vc = (vg0 + vg1) / 2
+    boxL('#4a3b2c', uC, vc, floorY + 0.15, 1.15, 0.3, len, SURF.plank)
+    for (const e of [-1, 1]) {
+      boxL('#5c4936', uC, vc + e * (len / 2 - 0.07), floorY + 1.28, 1.1, 2.55, 0.14,
+        SURF.plank)
+    }
+    for (const h of [0.52, 1.34, 2.16]) {
+      boxL('#6b5642', uC, vc, floorY + h, 1.05, 0.09, len - 0.2, SURF.plank)
+      goods(uC, vg0, vg1, floorY + h + 0.045, 1)
+    }
+    solidL(uC, vc, 1.15, len, floorY, floorY + 2.6, false, 0.1)
+  }
+  const uShelf = -(halfU - WALL_T - 1.7)
+  gondola(uShelf)
+  if (halfU > 7.2) gondola(uShelf / 3)
+
+  // the counter: base, overhanging worktop you can hop onto, and a till
+  const clen = Math.min(2 * halfV * 0.42, 6)
+  const uCnt = halfU - WALL_T - 1.55
+  const vCnt = -halfV * 0.1
+  boxL('#5d4630', uCnt, vCnt, floorY + 0.95, 1.0, 1.9, clen, SURF.plank)
+  boxL('#8a7358', uCnt, vCnt, floorY + 1.96, 1.3, 0.12, clen + 0.25, SURF.plank)
+  boxL('#33343a', uCnt, vCnt - clen / 2 + 0.6, floorY + 2.28, 0.55, 0.5, 0.45)
+  solidL(uCnt, vCnt, 1.3, clen + 0.25, floorY, floorY + 2.02, true)
+
+  // stock shelves on the back wall, with a keep-out so the body can't stand
+  // inside the boards (they hang below head height)
+  const bLen = Math.min(2 * halfU * 0.55, 8)
+  for (const h of [2.3, 3.15]) {
+    boxL('#6b5642', 0, -halfV + WALL_T + 0.35, floorY + h, bLen, 0.09, 0.6, SURF.plank)
+    for (let u = -bLen / 2 + 0.5; u < bLen / 2 - 0.4; u += 0.9) {
+      if (rng() > 0.6) continue
+      const gh = 0.24 + rng() * 0.3
+      boxL(GOODS[Math.floor(rng() * GOODS.length)],
+        u + (rng() - 0.5) * 0.25, -halfV + WALL_T + 0.35,
+        floorY + h + 0.045 + gh / 2, 0.34 + rng() * 0.28, gh, 0.4 + rng() * 0.15)
+    }
+  }
+  solidL(0, -halfV + WALL_T + 0.35, bLen, 0.7, floorY + 2.25, floorY + 3.25)
+
+  // a hung light: cord, shade, and a warm pane that comes up with the dusk
+  boxL('#3a3630', 0, 0, floorY + SHOP_H - 0.25, 0.07, 0.5, 0.07)
+  boxL('#e8e4da', 0, 0, floorY + SHOP_H - 0.55, 0.95, 0.14, 0.95)
+  box(out.glass, '#ffe9bd', wx(0, 0), floorY + SHOP_H - 0.64, wz(0, 0), 0.8, 0.05, 0.8)
+
+  out.lamps.push({ x: wx(0, 0), y: floorY + SHOP_H - 1.1, z: wz(0, 0) })
+
+  /* ---- report the interior ---- */
+
+  // the sales floor plus the stoop, so neither the scatterer nor the grass
+  // field plants anything inside (or growing up through the treads)
+  const rect = (u0: number, u1: number, v0: number, v1: number): InteriorRect => {
+    const xs = [wx(u0, v0), wx(u1, v0), wx(u0, v1), wx(u1, v1)]
+    const zs = [wz(u0, v0), wz(u1, v0), wz(u0, v1), wz(u1, v1)]
+    return {
+      minX: Math.min(...xs), maxX: Math.max(...xs),
+      minZ: Math.min(...zs), maxZ: Math.max(...zs),
+    }
+  }
+  out.interiors.push(rect(-halfU - 0.4, halfU + 0.4, -halfV - 0.4, halfV + 0.4))
+  if (treads > 0) {
+    out.interiors.push(
+      rect(-(gap / 2 + 0.8), gap / 2 + 0.8, halfV, halfV + treads * TREAD + 0.3),
+    )
+  }
 }
 
 export const KIND_FOR = (district: District, roll: number) =>

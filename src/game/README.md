@@ -18,15 +18,19 @@ core/
   geometry.ts        mergeGeoms() — merge/instance statics, few draw calls
   disposer.ts        createDisposer() — every texture/disposable checks in here
   input.ts           createRoamInput() — keys, mouse-look, pointer lock lifecycle
-  sfx.ts             footstep()/landThump()/doorCreak()/doorLatch() — WebAudio
-                     one-shots, per-surface voicing, headless-safe. Doors also
-                     play recorded clips from public/os/sfx (synth fallback)
+  sfx.ts             footstep()/landThump()/doorCreak()/doorLatch()/
+                     propSnap() — WebAudio one-shots, per-surface voicing,
+                     headless-safe. Doors also play recorded clips from
+                     public/os/sfx (synth fallback)
 physics/
   collision.ts       CollisionSet (Box3 list + bounds), resolveXZ(), supportY(),
                      addBoxFrom()/padXZ()/noStand() — height-aware solids, plus
                      the oriented `hull` the vehicles carry
   collisionDebug.ts  F9 — outline every solid the live level is testing
                      against. Green box, amber noStand, red hull-as-profile
+  tumble.ts          createTumbler() — the ragdoll with the skeleton taken
+                     out: a rigid rod of two verlet particles, launched end
+                     by end, for anything a vehicle knocks over
 player/
   walkController.ts  createWalkController() — the FPS movement sim (velocity,
                      gravity/jump/crouch, step-up and ledge falls over an
@@ -67,8 +71,9 @@ props/
 
 ## The fleet
 
-Three machines, one per medium, because the world has a sea on it and
-mountains behind it and walking reaches neither in any reasonable time.
+Three machines, one per medium, because the world has a sea on it and high
+ranges beyond the one over town, and walking reaches neither in any
+reasonable time.
 
 ```
 vehicles/
@@ -133,6 +138,18 @@ vehicles/
   including them would wall off the space *between* them) and its tail rotor
   (hung to port, and a symmetric profile wide enough for it would put the same
   1.15 of nothing to starboard).
+- **A body is an area, and points do not cover areas.** `chassis.ts`'s
+  `sweepBody` samples the footprint at six points against everything the world
+  puts in the way, which is right for the thing it was written for — a wall or
+  a building is longer than the gaps between samples and cannot be missed. A
+  *post* can: measured, 255 of the 273 positions inside a car's own footprint
+  were invisible to the sample set, so anything that got in there (a yaw that
+  swept the flank over it, one fast substep) stayed invisible and you drove
+  away with a lamp post through the roof. No number of extra probes fixes
+  that. Solids smaller than the body are therefore tested *exactly* — the
+  box's extent folded onto the body's axes and its centre tested against the
+  grown rectangle, one comparison per solid rather than six — and only solids
+  bigger than the body are still sampled.
 - **Integrate in fixed slices.** The walk loop's dt is clamped to 50 ms, and
   50 ms of explicit Euler through a spring stiff enough to hold a car up is not
   a suspension. `registry.ts` substeps at 1/120, which also makes the machines
@@ -174,16 +191,22 @@ world/
                   street in front of the property lands exactly where the
                   hand-made one used to (z = -11.2)
   land.ts         the raw planet: continents, erosion, ranges, rivers, basins,
-                  latitude temperature + moisture. WORLD_X/Z and CLIMATE_X/Z
-                  slide the landmass and the isotherms under the origin
-                  independently — that is how the house ended up on temperate
-                  forest with a coast a walk away
+                  latitude temperature + moisture, and the desert oases —
+                  site-hashed bowls sunk through the waterline whose moisture
+                  halo makes the biome table draw the green ring by itself.
+                  WORLD_X/Z and CLIMATE_X/Z slide the landmass and the
+                  isotherms under the origin independently — that is how the
+                  house ended up on temperate forest with a coast a walk away,
+                  and (re-probed) with a modest desert to the south instead of
+                  the near-worst-case one the first calibration parked there
   biomes.ts       the Whittaker table: 12 biomes, their tints, palettes and
                   scatter densities
   terrain.ts      land + settlement grading + the house pad -> the finished
                   ground. terrainY() reproduces the drawn mesh exactly
   settlements.ts  town sites, districts (downtown/midrise/suburb), the street
-                  grid, and the roads that run out into the country
+                  lattice — frayed by hashed segment dropout into T-junctions,
+                  dead ends and double blocks — and the roads that run out
+                  into the country
   props.ts        tree/cactus/rock kits, VARIANTS (6) shapes each, stamped
                   not instanced. Trunks are grown by wood(): a tube swept
                   along a wandering spine that flares into the ground and
@@ -199,6 +222,11 @@ world/
                   fragment shader from world position, because merged
                   geometry has no UVs to tile a texture across
   chunk.ts        one block: ground, water, streets, buildings, scatter
+  debris.ts       what a car drives through. Chunk geometry is one merged
+                  soup, so a felled tree is a *span* of it: copied out into
+                  its own little mesh, collapsed where it stood, and thrown
+                  on a physics/tumble.ts rod. Session state keyed by a
+                  position-stable id, so a rebuilt chunk arrives cleared
   streamer.ts     the ring, the build budget, the collision shelf
   grass.ts        the grass, as two scrolling lattices: a dense near field
                   whose blades actually touch (which is the whole difference
@@ -208,7 +236,10 @@ world/
                   sparse field used to — it was all being spent out of range
   wind.ts         one wind, shared by everything that sways — and the one
                   onBeforeCompile the chunk material gets, so surface.ts
-                  rides along inside it
+                  rides along inside it. Also owns the trample: a live press
+                  under the walker plus a ring of footprint stamps, replayed
+                  in the vertex shader like the water's splash rings, so
+                  grass bends away underfoot and springs back behind you
   birds.ts        flocks circling over wherever the player is standing: one
                   instanced draw, a vertex-shader flap, and a ring that is
                   re-cut past the fog when the walker outruns it. Session
@@ -243,6 +274,17 @@ world/
   organic asks for none and pays for a branch. Analytic patterns are used in
   preference to noise because they antialias against `fwidth` instead of
   turning into moire at distance.
+- **What the world can lose, it loses to a span — and remembers.** A prop is
+  a run of vertices in a merged mesh, so knocking one down is a copy of that
+  range into a standalone geometry plus a collapse of the range it came from
+  (every triangle degenerate, one partial buffer upload). Nothing rebuilds.
+  But the world is a *pure function of coordinates*, so it would grow the
+  tree straight back on the next chunk build: what a session actually
+  destroys is kept in `debris.ts` by a position-stable id and re-applied when
+  the chunk is armed — the same policy the hinged shop doors use for the one
+  you left ajar. Which also fixes the ids: they must not be a running count
+  of smashables, because a `bare` chunk builds no lamps and every tree after
+  them would renumber.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs
@@ -270,6 +312,15 @@ world/
   grow. And the flare must stay inside `solid.r` or the player clips into the
   roots — check `r * (1 + flare * (1 - t0/0.22)^1.8)` at the station where the
   spine crosses y = 0.
+- **A plant a car can flatten**: give its kind a closing speed in `props.ts`'s
+  `SNAP` table and it inherits the whole thing — the chunk builder already
+  records every stamp's span, and anything absent from the table stays
+  immovable (which is the honest answer for a boulder). Something built by
+  hand rather than stamped from a kit — the street lamp is the one that
+  exists — pushes its own `Smashable` instead, and the two numbers that
+  matter are `r` (the collision radius, which is also how high the near end
+  rests when it lands) and `rTop` (what the *far* end rests on: a crown props
+  a felled trunk up at a real angle, a lamp head does not).
 - **A building**: write a kit taking `(out: BuildOut, lot: Lot)` and hook it
   into `KIND_FOR`. Respect `out.detailed` — on the outer ring it is a
   silhouette and window grids are the most expensive thing the city builds.
@@ -414,8 +465,13 @@ them still works.
   vertex rather than mixing them. A real fix samples the two nearest cells and
   interpolates.
 - Buildings are shells with one collision box each; only the shopfronts have
-  an inside. Doors on them are painted on — the door registry above is what
-  would make a suburb house openable.
+  an inside — a raised plank floor graded above the terrain, stocked shelving,
+  a counter, real window openings and a working front door: one leaf fixed
+  shut in the merged chunk geometry, the other a hinged leaf the chunk emits
+  as a spec and `world/shopDoors.ts` animates, with the house doors'
+  interaction contract and sounds (house doors on the generated *houses* are
+  still painted on). Shop footprints feed `world/interiors.ts` so the grass
+  field and the scatterer stay out.
 - The world has no persistence. Nothing the player does out there survives a
   reload, because nothing writes: the whole thing is a pure function of
   coordinates. That is what makes the save-state story easy when it comes

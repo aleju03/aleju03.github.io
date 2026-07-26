@@ -1,8 +1,10 @@
 import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
-import type { StepSurface } from '../core/sfx'
+import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { buildBirds } from '../world/birds'
+import { buildDebris } from '../world/debris'
+import { buildShopDoors } from '../world/shopDoors'
 import { buildWorld, waveHeightAt } from '../world/streamer'
 import { SEA_Y, surfaceAt as worldSurfaceAt, terrainY } from '../world/terrain'
 import { YARD } from './houseWorld'
@@ -56,6 +58,11 @@ export interface OutsideHandles {
   /** the sun, whose stable shadow program is warmed by one covered render;
       strength and map updates sleep independently indoors and at night */
   sun: THREE.DirectionalLight
+  /** the shop door within reach the player is looking at, and its verb —
+      same contract as the house's, so the scene can ask both in one breath */
+  doorPrompt: (p: THREE.Vector3, gaze: THREE.Vector3) => 'open' | 'close' | null
+  /** work that shop door */
+  useDoor: (p: THREE.Vector3, gaze: THREE.Vector3) => boolean
   /** stop streaming while another level is live (see the header) */
   setActive: (on: boolean) => void
   /** build the ring around a point without waiting for the frame budget. The
@@ -80,7 +87,35 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   scene.add(root)
 
   const sky = buildSky({ parent: root, trackTexture, trackDisposable })
-  const world = buildWorld({ scene: root, obstacles, trackTexture, trackDisposable })
+  // the shops' hinged leaves: the streamer reports the near ring's door
+  // specs, this manager owns the meshes, swing state and doorway blockers.
+  // The sfx arrive here rather than inside the manager because core/sfx
+  // fetches its clips at module load and world/* must stay headless-safe.
+  const shopDoors = buildShopDoors({
+    parent: root,
+    obstacles,
+    sfx: { creak: doorCreak, latch: doorLatch },
+    trackDisposable,
+  })
+  // ...and the same arrangement for the props a car can drive through: the
+  // manager owns the flattened set and the flying bodies, the streamer tells
+  // it about every chunk it builds, and the snap arrives as a callback for
+  // the same headless reason the doors' creak does
+  const debris = buildDebris({
+    parent: root,
+    obstacles,
+    groundAt: terrainY,
+    onSnap: propSnap,
+    trackDisposable,
+  })
+  const world = buildWorld({
+    scene: root,
+    obstacles,
+    onNearDoors: shopDoors.sync,
+    onChunk: (c) => debris.arm(c.smash),
+    trackTexture,
+    trackDisposable,
+  })
   // the flocks are neither sky nor ground: they hang off this seam because
   // they need the sky's daylight and the world's terrain height, and because
   // they must sleep with the streamer when another level is live
@@ -115,6 +150,8 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       */
       const alt = Math.max(0, camPos.y - terrainY(camPos.x, camPos.z))
       world.update(camPos.x, camPos.z, dt, alt)
+      shopDoors.update(dt)
+      debris.update(dt)
       birds.update(camPos, dt, state.day, state.twilight)
       if (alt > 20) {
         const k = Math.min(1, (alt - 20) / 100)
@@ -141,6 +178,8 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     waveAt: waveHeightAt,
     onProperty,
     sun: sky.sun,
+    doorPrompt: shopDoors.doorPrompt,
+    useDoor: shopDoors.useDoor,
     setActive: (on) => {
       active = on
     },

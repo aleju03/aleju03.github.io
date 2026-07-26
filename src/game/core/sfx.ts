@@ -206,6 +206,40 @@ export const landThump = (surface: StepSurface, k: number) => {
   burst(a, now, 'bandpass', p.bp * 0.8, p.q, p.scuff * (0.8 + k), p.dur * 1.4)
 }
 
+/**
+ * Something out in the world coming off its base: a trunk splitting, a lamp
+ * post shearing. `hard` is 0..1 of how fast it was hit.
+ *
+ * Three layers, and the middle one is what sells it. A crack alone reads as
+ * a twig, a thud alone as a kerb — a snap is a hard high transient, a short
+ * downward-swept splintering band under it, and a body thump arriving a beat
+ * late as the thing lets go. The band sweeps because fibres part from thin to
+ * thick, which is also why it is the layer that grows most with `hard`.
+ */
+export const propSnap = (hard: number) => {
+  const a = audio()
+  if (!a) return
+  const now = a.currentTime
+  const w = Math.min(1, Math.max(0, hard))
+  burst(a, now, 'highpass', 2600, 0.7, 0.03 + 0.045 * w, 0.05)
+  const s = a.createBufferSource()
+  s.buffer = noise(a)
+  s.loop = true
+  const f = a.createBiquadFilter()
+  f.type = 'bandpass'
+  f.frequency.setValueAtTime(1500 + 900 * w, now)
+  f.frequency.exponentialRampToValueAtTime(220, now + 0.22)
+  f.Q.value = 1.4
+  const g = a.createGain()
+  g.gain.setValueAtTime(0.0001, now)
+  g.gain.exponentialRampToValueAtTime(0.025 + 0.05 * w, now + 0.012)
+  g.gain.exponentialRampToValueAtTime(0.0004, now + 0.26)
+  s.connect(f).connect(g).connect(a.destination)
+  s.start(now, Math.random() * 0.6)
+  s.stop(now + 0.3)
+  thump(a, now + 0.04, 92, 0.02 + 0.05 * w, 0.2)
+}
+
 /** the hinge working: the recorded swing, or the stick-slip judder below
     (gliding up opening and down shut) while that clip is still loading */
 export const doorCreak = (opening: boolean) => {

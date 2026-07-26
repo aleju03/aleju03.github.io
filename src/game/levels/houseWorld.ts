@@ -1,7 +1,6 @@
 import * as THREE from 'three'
 import { seeded } from '../core/rand'
 import { canvasTexture, makeGlowTexture } from '../core/textures'
-import { mergeGeoms } from '../core/geometry'
 import { noStand, padXZ } from '../physics/collision'
 import { doorCreak, doorLatch, type StepSurface } from '../core/sfx'
 import { applyFixedSurface, SURF, type SurfaceId } from '../world/surface'
@@ -213,9 +212,13 @@ const makeGrassTexture = () =>
   canvasTexture([256, 256], (ctx, w, h) => {
     const rand = seeded(0x97a55)
     // tuned against the open world's lawns, not against midnight: this base
-    // was #233618 when the site never saw daylight, and once the sun rose the
-    // yard sat inside the bright suburb like a hole cut out of it
-    ctx.fillStyle = '#3d5326'
+    // was #233618 when the site never saw daylight, then #3d5326, and both
+    // read as a hole cut out of the bright suburb. It sits between the two
+    // ground tints of the biome the home block actually lands in — *forest*,
+    // per probing biomeAt over the yard, not plains — because the world's
+    // grass field grows the yard's turf now and colours its blades off the
+    // ground, so the soil under them has to be the same number
+    ctx.fillStyle = '#44602f'
     ctx.fillRect(0, 0, w, h)
     for (let i = 0; i < 2600; i++) {
       const g = 78 + rand() * 54
@@ -230,24 +233,6 @@ const makeGrassTexture = () =>
       grad.addColorStop(1, 'rgba(52,48,26,0)')
       ctx.fillStyle = grad
       ctx.fillRect(0, 0, w, h)
-    }
-  })
-
-const makeTuftTexture = () =>
-  canvasTexture([64, 64], (ctx, w, h) => {
-    const rand = seeded(0x9f01)
-    ctx.clearRect(0, 0, w, h)
-    for (let i = 0; i < 26; i++) {
-      const x = 6 + rand() * (w - 12)
-      const top = h * (0.12 + rand() * 0.3)
-      const lean = (rand() - 0.5) * 14
-      const g = 96 + rand() * 60
-      ctx.strokeStyle = `rgba(${g * 0.5},${g},${g * 0.38},0.95)`
-      ctx.lineWidth = 1.6
-      ctx.beginPath()
-      ctx.moveTo(x, h)
-      ctx.quadraticCurveTo(x + lean * 0.4, (h + top) / 2, x + lean, top)
-      ctx.stroke()
     }
   })
 
@@ -933,49 +918,12 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   fenceBlock(YARD.minX, YARD.minZ, GATE.x0, YARD.minZ)
   fenceBlock(GATE.x1, YARD.minZ, YARD.maxX, YARD.minZ)
 
-  // grass tufts: one instanced mesh of crossed alpha quads
-  const tuftTex = track(makeTuftTexture())
-  const tuftMat = new THREE.MeshStandardMaterial({
-    map: tuftTex, alphaTest: 0.42, side: THREE.DoubleSide,
-    color: '#9cb26d', roughness: 1,
-  })
-  trackDisposable(tuftMat)
-  const tuftGeoA = new THREE.PlaneGeometry(1.05, 0.85)
-  const tuftGeoB = tuftGeoA.clone().rotateY(Math.PI / 2)
-  const tuftGeo = mergeGeoms(tuftGeoA, tuftGeoB)
-  tuftGeo.translate(0, 0.4, 0)
-  const tuftRand = seeded(0x9baf)
-  const tuftMats: THREE.Matrix4[] = []
-  const tuftSpot = (x: number, z: number) => {
-    // keep tufts off the porch, path and fence line
-    if (x > -5.6 && x < -1.5 && z < 27.4) return
-    for (const [sx, sz] of stonePath) if ((x - sx) ** 2 + (z - sz) ** 2 < 1.2) return
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, tuftRand() * Math.PI, 0))
-    const s = 0.7 + tuftRand() * 0.75
-    tuftMats.push(new THREE.Matrix4().compose(
-      new THREE.Vector3(x, 0, z), q, new THREE.Vector3(s, s * (0.8 + tuftRand() * 0.5), s)))
-  }
-  for (let i = 0; i < 240; i++)
-    tuftSpot(
-      YARD.minX + 1 + tuftRand() * (YARD.maxX - YARD.minX - 2),
-      HOUSE.maxZ + 0.8 + tuftRand() * (YARD.maxZ - HOUSE.maxZ - 1.6),
-    )
-  // the side strip the bedroom window looks onto
-  for (let i = 0; i < 60; i++)
-    tuftSpot(YARD.minX + 0.8 + tuftRand() * 4.6, -2 + tuftRand() * 24)
-  // the east strip and the front yard, on the walk around to the gate
-  for (let i = 0; i < 40; i++)
-    tuftSpot(HOUSE.maxX + 0.7 + tuftRand() * 4.9, -2 + tuftRand() * 24)
-  for (let i = 0; i < 36; i++) {
-    const x = YARD.minX + 0.8 + tuftRand() * (YARD.maxX - YARD.minX - 1.6)
-    // keep the front walk clear — it runs on the front door's centreline now
-    if (Math.abs(x - (FRONT_DOOR.u0 + FRONT_DOOR.u1) / 2) < 1.4) continue
-    tuftSpot(x, YARD.minZ + 0.5 + tuftRand() * 1.4)
-  }
-  const tufts = new THREE.InstancedMesh(tuftGeo, tuftMat, tuftMats.length)
-  tuftMats.forEach((m, i) => tufts.setMatrixAt(i, m))
-  tufts.castShadow = false
-  root.add(tufts)
+  // the turf itself is the world's grass field: grass.ts grows its blades
+  // right through the fence line now (mown shorter inside it), mowing around
+  // the hardscape via grid.ts's onHomeHardscape mirror of these slabs and
+  // stones. The instanced tufts that used to live here read as a different,
+  // darker plant than the field starting at the fence, and the seam ran
+  // along the property line.
 
   // fireflies: additive quads on gentle sine orbits
   const flyTex = track(makeGlowTexture('rgba(255,236,150,0.9)', 'rgba(255,200,80,0)'))
@@ -1384,6 +1332,26 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     yardTree(0, 0.62, 0.4, -7.5, 33.0)
     yardTree(1, 0.5, 2.1, 10.8, 30.0)
     yardTree(2, 0.55, 0.8, -11.4, 6.5)
+    // the shrub GLBs wrap a solid green core in alpha-BLEND leaf cards, and
+    // GLTFLoader gives BLEND materials depthWrite:false — so triangle order,
+    // not depth, decided what covered what, and the smooth core painted over
+    // its own leafy shell as a green box inside every bush. Cutout alpha
+    // writes depth and lets the cards occlude the core properly. Patched on
+    // the source scene once: put()'s clones share these materials.
+    for (const shrub of [models.bush, models.bushflower, models.hedge]) {
+      shrub?.scene.traverse((o) => {
+        const mesh = o as THREE.Mesh
+        if (!mesh.isMesh) return
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+        for (const m of mats as THREE.MeshStandardMaterial[]) {
+          if (!m.transparent) continue
+          m.transparent = false
+          m.depthWrite = true
+          m.alphaTest = 0.45
+          m.needsUpdate = true
+        }
+      })
+    }
     put(models.bush, 1.35, 0.5, -11.8, 27.5)
     put(models.bush, 1.35, 2.2, 11.5, 36.5)
     put(models.bush, 1.35, 1.1, -11.0, 10.8)

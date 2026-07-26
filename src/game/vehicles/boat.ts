@@ -896,7 +896,8 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     Somebody at the helm: perched on the leaning post, both hands on the
     wheel, eyes at (0, 2.35, 1.30) — the same point DriveView hands the
     camera, so the cockpit lens looks out of this figure's head rather than
-    out of thin air beside it. Hidden until the player boards.
+    out of thin air beside it. This original stand-in stays hidden; CrtScene
+    now seats the live articulated player rig at `driverSeat` instead.
   */
   const DB = createPartBuilder()
   {
@@ -944,6 +945,10 @@ export function buildBoat(opts: BoatOpts): Vehicle {
   const root = new THREE.Group()
   root.name = 'boat'
   root.add(hull, greenLamp, helm, outboard, driver)
+  const driverSeat = new THREE.Group()
+  driverSeat.name = 'driverSeat'
+  driverSeat.position.set(0, 1.18, 1.62)
+  root.add(driverSeat)
   markDynamic(root)
 
   /* ------------------------------------------------------------------ state */
@@ -1384,6 +1389,7 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     label: 'boat',
     verb: 'board',
     root,
+    driverSeat,
     view: {
       back: 13,
       up: 4.2,
@@ -1400,12 +1406,8 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     solid,
     reach: 5,
     placeAt,
-    mount: () => {
-      driver.visible = true
-    },
-    dismount: () => {
-      driver.visible = false
-    },
+    mount: () => {},
+    dismount: () => {},
     exitSpot,
     update,
     setDay,

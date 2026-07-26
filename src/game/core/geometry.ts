@@ -68,6 +68,10 @@ export interface MeshBuilder {
   surface: number
   /** vertices accumulated so far; 0 means build() will return null */
   readonly count: number
+  /** ...and indices. Read together with `count` around a stamp, the two give
+      that stamp's span in the merged result — which is what lets world/debris
+      lift one tree out of a chunk's soup and collapse what it left behind */
+  readonly indexCount: number
   /** hand over the merged geometry, or null if nothing was ever added */
   build: () => THREE.BufferGeometry | null
 }
@@ -150,6 +154,9 @@ export function createMeshBuilder(withUV = false): MeshBuilder {
     },
     get count() {
       return pos.length / 3
+    },
+    get indexCount() {
+      return idx.length
     },
     build() {
       if (!pos.length) return null

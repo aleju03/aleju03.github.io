@@ -36,8 +36,11 @@ import { supportY } from '../physics/collision'
   front — that is where the crumpled pose is blended away, so the limbs
   travel to a shape they can push from rather than being straightened in
   mid-air — and then stands out of it, which the ordinary stance already
-  knows how to do once the fold unwinds. Everything is smoothed and allocation-
-  free per frame; the whole rig is ~30 small meshes over six materials.
+  knows how to do once the fold unwinds. It is also the vehicle driver: sit()
+  folds these same bones into a shared control pose, then CrtScene reparents
+  the group onto the active machine's authored seat. Everything is smoothed
+  and allocation-free per frame; the whole rig is ~30 small meshes over six
+  materials.
 */
 
 export interface PlayerPose {
@@ -67,6 +70,9 @@ export interface PlayerRig {
   group: THREE.Group
   /** drive the skeleton one frame; env is only consulted while ragdolling */
   update: (pose: PlayerPose, env: RagdollEnv) => void
+  /** fold the live avatar into its vehicle pose. The vehicle supplies the
+      seat transform; this method owns only the articulated body shape */
+  sit: () => void
   /** hand the skeleton to the verlet sim, thrown with this velocity */
   flop: (vx: number, vy: number, vz: number) => void
   /** start blending back to the stance. The caller must have already moved
@@ -968,6 +974,32 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       slideX = x
       slideZ = z
       slideSet = true
+    },
+    sit: () => {
+      // Vehicle seats differ in position, but the body shape is shared: hips
+      // on the cushion, knees and elbows folded forward, hands together near
+      // the controls. CrtScene parents the group to the active seat after
+      // calling this, so pitch and roll come from the machine itself.
+      mode = 'up'
+      showHead(true)
+      pelvis.position.set(0, 0, 0)
+      pelvis.rotation.set(0, 0, 0)
+      torso.position.set(0, 0.16, 0)
+      torso.rotation.set(0.12, 0, 0)
+      head.position.set(0, 0.58, 0)
+      head.rotation.set(-0.1, 0, 0)
+
+      thighL.rotation.set(-1.25, 0, -0.04)
+      thighR.rotation.set(-1.25, 0, 0.04)
+      shinL.rotation.set(1.42, 0, 0)
+      shinR.rotation.set(1.42, 0, 0)
+      ankleL.rotation.set(-0.17, 0, 0)
+      ankleR.rotation.set(-0.17, 0, 0)
+
+      uarmL.rotation.set(-0.64, 0, -0.22)
+      uarmR.rotation.set(-0.64, 0, 0.22)
+      farmL.rotation.set(-0.72, 0, 0.12)
+      farmR.rotation.set(-0.72, 0, -0.12)
     },
     flop: (vx, vy, vz) => {
       group.updateMatrixWorld(true)

@@ -872,6 +872,31 @@ const MAKERS: Record<PropKind, (v: number, vi: number) => Kit> = {
  */
 export const VARIANTS = 6
 
+/**
+ * What a vehicle can drive through, and how fast it has to be going.
+ *
+ * The number is a closing speed in units/s (the car's top is 40): under it
+ * the prop is a wall like everything else in the collision set, over it the
+ * prop leaves with whatever hit it — see world/debris.ts. A kind absent from
+ * this table is immovable, which is the honest answer for a boulder: a rock
+ * you can punt across a meadow is a rock nobody believes in, and something
+ * out there has to be able to stop a hatchback.
+ *
+ * The ordering is girth, not height. A cactus and a dead tree are brittle, a
+ * mature broadleaf takes a genuine run-up, and the birch — a pole with no
+ * taper in it — sits between them.
+ */
+export const SNAP: Partial<Record<PropKind, number>> = {
+  broadleaf: 26,
+  birch: 15,
+  pine: 21,
+  palm: 17,
+  acacia: 19,
+  deadtree: 9,
+  cactus: 7,
+  bush: 6,
+}
+
 /** the variants of a kind, built once. Kit geometry is never disposed: it is
     the source every chunk stamps from, not something a chunk owns. */
 const KITS: Partial<Record<PropKind, Kit[]>> = {}

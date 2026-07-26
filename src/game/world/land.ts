@@ -1,4 +1,4 @@
-import { clamp01, fbm, mix, ridged, smoothstep, vein, warped } from './noise'
+import { clamp01, fbm, mix, ridged, siteOf, smoothstep, vein, warped } from './noise'
 
 /*
   The raw planet: elevation and climate as pure functions of (x, z), with no
@@ -29,8 +29,13 @@ import { clamp01, fbm, mix, ridged, smoothstep, vein, warped } from './noise'
   - temperature is mostly latitude — a cosine in z, so walking north gets
     cold and walking south gets hot — plus local noise and an altitude
     lapse, so a mountain in the tropics still wears snow. Moisture is noise
-    with a coastal bonus. The pair feeds a Whittaker-style table in
-    biomes.ts.
+    minus a drying term with altitude. The pair feeds a Whittaker-style
+    table in biomes.ts.
+  - oases are the one feature placed by site rather than by field: rare
+    cells of the hot drylands sink a small bowl through the waterline and
+    raise a moisture halo around it, so the biome table greens the ring on
+    its own — a pond, jungle at the water, savanna scrub fading back into
+    the sand, with no oasis special case anywhere downstream.
 
   The world repeats its climate bands every LAT_SPAN units, which is the one
   deliberate lie: an endless plane has no poles, so the bands cycle instead.
@@ -64,9 +69,13 @@ const WORLD_Z = 3700
     continent without reshaping it — which is what settles the argument
     between "the house should be on a temperate coast" and "the house should
     be a few hundred units inland". Tuned so the property reads temperate and
-    reasonably damp, i.e. the forest the authored yard already looks like. */
-const CLIMATE_X = -58300
-const CLIMATE_Z = -12400
+    reasonably damp, i.e. the forest the authored yard already looks like —
+    and, re-probed, so the desert a few minutes south is a modest patch. The
+    first calibration parked a near-worst-case desert (4200x3700 units, the
+    second-largest in an 86 km sweep of the hot belt) with its corner 400
+    units from the property line. */
+const CLIMATE_X = -52300
+const CLIMATE_Z = -18400
 
 /** spread a stacked-octave field back out over 0..1. Summing octaves pulls
     values toward the middle (the central limit doing its job), so a raw fbm
@@ -117,7 +126,7 @@ export const terraceAt = (x: number, z: number) => {
   const c = continentAt(x, z)
   return mix(
     mix(SEA_Y - 36, SEA_Y - 1.1, smoothstep(0.26, 0.4, c)),
-    SEA_Y + 3.4 + smoothstep(0.5, 0.8, c) * 46,
+    SEA_Y + 3.4 + smoothstep(0.5, 0.8, c) * 60,
     smoothstep(0.4, 0.5, c),
   )
 }
@@ -136,15 +145,22 @@ export const elevationAt = (x: number, z: number) => {
   // sea floor: an abyss that shallows onto a shelf as the coast approaches
   let h = mix(SEA_Y - 36, SEA_Y - 1.1, smoothstep(0.26, 0.4, c))
   // ...and the land that rises out of it, higher the further inland it gets
-  h = mix(h, SEA_Y + 3.4 + smoothstep(0.5, 0.8, c) * 46, landK)
+  h = mix(h, SEA_Y + 3.4 + smoothstep(0.5, 0.8, c) * 60, landK)
 
   // rugged 0..1: low erosion means broken ground, high means placid
   const rugged = smoothstep(0.62, 0.3, fbm(wx * F_ERO, wz * F_ERO, S_ERO, 3))
 
-  // ranges: crests where the mask says a range runs, and only on real land
-  const rangeMask = smoothstep(0.52, 0.78, fbm(wx * F_RANGE, wz * F_RANGE, S_RANGE, 3))
+  // ranges: crests where the mask says a range runs, and only on real land.
+  // The mask gate is calibrated against fbm's measured spread (a 3-octave sum
+  // rarely leaves 0.27..0.73): the first tune gated at 0.52..0.78 AND
+  // multiplied by rugged outright, two rare fields that had to coincide, and
+  // the probe put >80-unit relief on 1.5% of the land — a planet with no
+  // mountains on it. The mask now carries the range and erosion only tempers
+  // it, which is also truer to the geology the header claims: orogeny decides
+  // where ranges run, erosion decides how worn they stand.
+  const rangeMask = smoothstep(0.44, 0.7, fbm(wx * F_RANGE, wz * F_RANGE, S_RANGE, 3))
   const crest = ridged(wx * F_RANGE * 1.35, wz * F_RANGE * 1.35, S_CREST, 5)
-  h += Math.pow(crest, 2.1) * rangeMask * rugged * landK * 380
+  h += Math.pow(crest, 2.0) * rangeMask * mix(0.45, 1, rugged) * landK * 560
 
   // rolling hills over everything ashore, flattened where erosion won — but
   // never to a floor. The first tune ran these at 34 with a 0.35 floor and
@@ -163,12 +179,132 @@ export const elevationAt = (x: number, z: number) => {
   // be sliced in half by a gorge
   h -= riverAt(x, z) * landK * mix(17, 7, rangeMask)
 
+  // oases: the apron sinks the surroundings toward a shelf just above the
+  // waterline — cutting only, never raising, so an overlap with a basin or
+  // river deepens instead of growing a berm — and the bowl digs through to
+  // under it. moistureAt greens the ring
+  const o = oasisAt(x, z)
+  if (o) {
+    const shelf = Math.min(SEA_Y + 8, Math.max(SEA_Y + 2, terraceAt(x, z) + 1.2))
+    if (o.apron > 0 && h > shelf) h = mix(h, shelf, o.apron)
+    h = mix(h, SEA_Y - 3.6, o.bowl)
+  }
+
   return h
 }
 
 /** 0..1 strength of the river vein through this point (1 = mid-channel) */
 export const riverAt = (x: number, z: number) =>
   vein((x + WORLD_X) * F_RIVER, (z + WORLD_Z) * F_RIVER, S_RIVER, 0.03, 3)
+
+/* --------------------------------------------------------------- oases -- */
+
+/*
+  A desert with nothing in it for four kilometres reads as a loading screen.
+  An oasis is two field edits and no new machinery downstream: elevationAt
+  sinks a wide apron to a shelf just above the waterline and a bowl through
+  it, so the standard "below the waterline is water" rule fills the pond;
+  and moistureAt raises a halo around it, so the Whittaker table in
+  biomes.ts draws the green ring by itself — jungle at the shore, savanna
+  scrub fading back into sand. The apron only ever cuts, never banks up:
+  whatever height the dunes are, the rim the shore is carved from starts at
+  most 14 units over the pond floor, which is what keeps the waterline
+  ringed by beach instead of by a rock cliff. (The first version instead
+  *required* low ground, terraceAt < SEA_Y+12 on top of continentAt > 0.55
+  — jointly a continentalness window of 0.03 that no site on the planet
+  fell into, and the feature silently never fired.) Sites are hashed cells
+  like settlements, gated on the raw climate fields (latitude and weather
+  noise, never the finished temp/moist — those include the altitude lapse
+  and the halo itself, and the second is a cycle). The only ground gate that
+  remains is an estimate of the site's height, excluding open water on one
+  side and true highlands — where a sunken waterhole would be a mine shaft —
+  on the other.
+*/
+const OASIS_CELL = 900
+const S_OASIS = 0xf27a
+
+interface OasisSite {
+  x: number
+  z: number
+  /** pond radius; the apron and halo reach about twice this */
+  r: number
+}
+
+/** memoized: every elevation and moisture probe in the hot belt asks, and
+    the gates below cost a few fbm reads per site */
+const oasisMemo = new Map<string, OasisSite | null>()
+
+const oasisSiteOf = (cx: number, cz: number): OasisSite | null => {
+  const key = cx + ',' + cz
+  const hit = oasisMemo.get(key)
+  if (hit !== undefined) return hit
+  const s = siteOf(cx, cz, OASIS_CELL, S_OASIS)
+  let out: OasisSite | null = null
+  if (s.roll < 0.8) {
+    // hot by latitude + weather (no lapse: the pond floor is near sea
+    // level) and desert-dry by raw weather — the same 0.27 the biome table
+    // uses, so anywhere sand can be, a pond can be
+    const u = (s.z + 3000) / LAT_SPAN
+    const tri = 4 * Math.abs(u - Math.floor(u + 0.5)) - 1
+    const local =
+      spread(fbm((s.x + CLIMATE_X) * F_TEMP, (s.z + CLIMATE_Z) * F_TEMP, S_TEMP, 3), 1.7) - 0.5
+    const dry = spread(fbm((s.x + CLIMATE_X) * F_MOIST, (s.z + CLIMATE_Z) * F_MOIST, S_MOIST, 4), 1.9)
+    // ground check without elevationAt — that now reads the oasis field
+    // back, and asking it from in here would recurse into this very cell.
+    // Terrace plus the hill term is close enough to keep sites off open
+    // water (coastal shelf deserts hold their ground with hills alone, so
+    // the terrace by itself would wrongly drown them) and off the high
+    // plateaus, where a sunken waterhole would be a mine shaft
+    const c = continentAt(s.x, s.z)
+    const landK = smoothstep(0.4, 0.5, c)
+    const ground =
+      terraceAt(s.x, s.z) +
+      (fbm((s.x + WORLD_X) * F_HILL, (s.z + WORLD_Z) * F_HILL, S_HILL, 3) - 0.42) *
+        50 * landK * 0.75
+    if (
+      0.5 + 0.46 * tri + local * 0.34 > 0.62 &&
+      dry < 0.27 &&
+      c > 0.45 &&
+      ground > SEA_Y + 1.5 &&
+      ground < SEA_Y + 30
+    )
+      out = { x: s.x, z: s.z, r: 65 + s.roll * 50 }
+  }
+  oasisMemo.set(key, out)
+  return out
+}
+
+/** the oasis influence over (x, z): apron and bowl grade the ground,
+    halo waters the ring. Overlapping sites combine by max, which keeps the
+    fields continuous where two aprons meet — "nearest site wins" would put
+    a seam through the overlap. The latitude test up front makes the whole
+    feature free outside the hot belt — the temperate and polar two-thirds
+    of the world never touch the site grid. It is safe because a site
+    0.62-hot lies well inside the belt and influence reaches at most ~240
+    units from it, a latitude drift of under 0.05. */
+const oasisAt = (
+  x: number,
+  z: number,
+): { apron: number; bowl: number; halo: number } | null => {
+  const u = (z + 3000) / LAT_SPAN
+  if (0.5 + 0.46 * (4 * Math.abs(u - Math.floor(u + 0.5)) - 1) < 0.55) return null
+  const cx = Math.floor(x / OASIS_CELL)
+  const cz = Math.floor(z / OASIS_CELL)
+  let apron = 0
+  let bowl = 0
+  let halo = 0
+  for (let dz = -1; dz <= 1; dz++)
+    for (let dx = -1; dx <= 1; dx++) {
+      const s = oasisSiteOf(cx + dx, cz + dz)
+      if (!s) continue
+      const d = Math.hypot(x - s.x, z - s.z)
+      if (d >= s.r * 2.3) continue
+      apron = Math.max(apron, smoothstep(s.r * 2.2, s.r, d))
+      bowl = Math.max(bowl, smoothstep(s.r, s.r * 0.25, d))
+      halo = Math.max(halo, smoothstep(s.r * 2.2, s.r * 0.6, d))
+    }
+  return apron > 0 || halo > 0 ? { apron, bowl, halo } : null
+}
 
 /** 0 arctic .. 1 tropical. Latitude does most of the work — a cosine in z, so
     the walk north gets cold and the walk south gets hot — with local weather
@@ -194,7 +330,10 @@ export const temperatureAt = (x: number, z: number, height: number) => {
     the treeline instead of meadow. */
 export const moistureAt = (x: number, z: number, height: number) => {
   const m = spread(fbm((x + CLIMATE_X) * F_MOIST, (z + CLIMATE_Z) * F_MOIST, S_MOIST, 4), 1.9)
-  return clamp01(m - smoothstep(120, 340, height - SEA_Y) * 0.22)
+  // the oasis halo: wide enough that the pond wears jungle at the shore and
+  // savanna scrub beyond it before the sand resumes
+  const o = oasisAt(x, z)
+  return clamp01(m + (o ? o.halo * 0.55 : 0) - smoothstep(120, 340, height - SEA_Y) * 0.22)
 }
 
 /** how buildable a patch is, 0..1 — dry land, not too steep, not a river.

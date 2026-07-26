@@ -1,5 +1,8 @@
 import * as THREE from 'three'
 import {
+  FADE_FRAG_DISSOLVE, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead,
+} from './fade'
+import {
   SURFACE_FRAG_BODY, SURFACE_FRAG_HEAD, surfaceVertBody, surfaceVertHead,
 } from './surface'
 
@@ -31,6 +34,20 @@ import {
   keeps the project's lighting, fog and tone mapping exactly as they are —
   a hand-written shader would have to reimplement all of it — and it keeps
   this working on the WebGL renderer the rest of the site already uses.
+
+  The wind's counterpart is the trample: grass has to move *away from you*
+  as well as with the weather, or walking through a meadow feels like wading
+  through a photograph. It works the way the water's splash rings do (see
+  streamer.ts): no per-blade state anywhere, just a tiny event list the
+  vertex shader replays analytically. One live "press" rides under the
+  player's feet and bends everything inside arm's reach radially outward;
+  walking lays a short ring-buffer trail of footprint stamps behind it, each
+  decaying on an exponential with a damped cosine ringing through it — so a
+  blade you step off doesn't ease politely upright, it springs back and
+  overshoots. A pressed blade also loses most of its wind, because grass
+  pinned under a boot does not flutter. Per vertex the whole thing is a
+  dozen distance tests, which is cheaper than the sines the wind already
+  spends.
 */
 
 export const windUniforms = {
@@ -48,6 +65,67 @@ export const tickWind = (dt: number) => {
 /** how hard it is blowing right now, 0..1.5; the sky ramps this */
 export const setGust = (k: number) => {
   windUniforms.uGust.value = k
+}
+
+/* ------------------------------------------------------------- trample -- */
+
+/** footprint stamps the blades replay: world xz, the uTime they landed, and
+    strength. Twelve cover a sprint's worth of trail before the ring laps
+    itself — by which point a stamp's envelope is under 3% and the overwrite
+    doesn't pop */
+const TRAMPLES = 12
+/** how far a step's influence reaches, world units */
+const TRAMPLE_R = 1.35
+
+export const trampleUniforms = {
+  uTramples: {
+    value: Array.from({ length: TRAMPLES }, () => new THREE.Vector4(0, 0, -1e6, 0)),
+  },
+  /** the live press under the player: xz, strength, radius */
+  uPress: { value: new THREE.Vector4(0, 0, 0, 1.15) },
+}
+
+let trampleHead = 0
+let trailX = Number.NaN
+let trailZ = 0
+
+/** stamp one decaying footprint; anything that disturbs grass may call it */
+export const pushTrample = (x: number, z: number, strength = 1) => {
+  trampleUniforms.uTramples.value[trampleHead]
+    .set(x, z, windUniforms.uTime.value, strength)
+  trampleHead = (trampleHead + 1) % TRAMPLES
+}
+
+/**
+ * Feed the walker's feet in, once a frame. While grounded the live press
+ * follows them exactly — grass under you stays bent for as long as you stand
+ * on it — and every step's worth of travel drops a footprint stamp behind, at
+ * a spacing that widens with speed so a car crossing a meadow doesn't lap the
+ * ring while its trail is still visible. Leaving the ground converts the
+ * press into one last stamp, which is what makes the grass under a jump
+ * spring up while you hang over it.
+ */
+export const updateTrample = (x: number, z: number, speed: number, onGround: boolean) => {
+  const press = trampleUniforms.uPress.value
+  if (!onGround) {
+    if (press.z > 0 && !Number.isNaN(trailX)) pushTrample(trailX, trailZ)
+    press.z = 0
+    trailX = Number.NaN
+    return
+  }
+  press.x = x
+  press.y = z
+  press.z = 1
+  if (Number.isNaN(trailX)) {
+    trailX = x
+    trailZ = z
+    return
+  }
+  if (Math.hypot(x - trailX, z - trailZ) >= Math.max(0.6, speed * 0.12)) {
+    pushTrample(x, z)
+    trailX = x
+    trailZ = z
+  }
 }
 
 /** the GLSL every swaying material shares. `wPos` is world position (for the
@@ -73,6 +151,46 @@ export const WIND_GLSL = /* glsl */ `
     // keeps its length instead of stretching
     dropY = bend * bend * 0.42;
     return uWind.xz * bend;
+  }
+`
+
+/** the trample resolver; injected after WIND_GLSL (it reads uTime). Returns
+    the world-space push direction, length-capped at 1, and writes how hard
+    this spot is being pressed (0..1) so the caller can damp the wind with it */
+const TRAMPLE_GLSL = /* glsl */ `
+  uniform vec4 uTramples[${TRAMPLES}];
+  uniform vec4 uPress;
+
+  vec2 trample(vec3 wPos, out float pressK) {
+    vec2 push = vec2(0.0);
+    float k = 0.0;
+    // the live press under the player's feet: no envelope, it holds as long
+    // as they stand there
+    vec2 d = wPos.xz - uPress.xy;
+    float dist = length(d);
+    if (uPress.z > 0.001 && dist < uPress.w) {
+      float f = (1.0 - smoothstep(0.1, uPress.w, dist)) * uPress.z;
+      push += d / max(dist, 0.1) * f;
+      k = f;
+    }
+    // the footprint trail: each stamp recovers on an exponential with a
+    // damped cosine ringing through it, so a released blade springs back and
+    // overshoots instead of easing up like a pneumatic door
+    for (int i = 0; i < ${TRAMPLES}; i++) {
+      float age = uTime - uTramples[i].z;
+      if (age < 0.0 || age > 1.6) continue;
+      d = wPos.xz - uTramples[i].xy;
+      dist = length(d);
+      if (dist > float(${TRAMPLE_R})) continue;
+      float env = exp(-age * 2.6) * (0.68 + 0.32 * cos(age * 10.0));
+      float f = (1.0 - smoothstep(0.1, float(${TRAMPLE_R}), dist)) * uTramples[i].w * env;
+      push += d / max(dist, 0.1) * f;
+      k = max(k, f);
+    }
+    float m = length(push);
+    if (m > 1.0) push /= m;
+    pressK = min(k, 1.0);
+    return push;
   }
 `
 
@@ -125,6 +243,23 @@ interface SwayOpts {
    */
   fadeRadius?: number
   /**
+   * Also bend away from the player's feet and their footprint trail (the
+   * trample above). `amp` is the sideways push at the tip and `drop` how far
+   * a fully pressed tip sinks — both in the geometry's *local* units, because
+   * they apply before the instance matrix: a blade's xz is scaled by its
+   * width and its y by its height, so the numbers differ per mesh and are
+   * tuned per caller rather than shared. Grass and flowers opt in; trees do
+   * not get stepped on.
+   */
+  trample?: { amp: number; drop: number }
+  /**
+   * Also dissolve geometry in by its baked `aBirth` stamp (world/fade.ts), so
+   * a chunk the streamer finishes mid-walk arrives over a second instead of in
+   * a frame. Only the chunk soup's materials opt in — their geometry always
+   * carries the attribute; the grass field manages its own appearance.
+   */
+  fadeIn?: boolean
+  /**
    * Undo three's backface normal flip, so a DoubleSide material lights both
    * faces off the same normal.
    *
@@ -151,14 +286,20 @@ export const applySway = (mat: THREE.Material, opts: SwayOpts) => {
     shader.uniforms.uTime = windUniforms.uTime
     shader.uniforms.uWind = windUniforms.uWind
     shader.uniforms.uGust = windUniforms.uGust
+    if (opts.trample) {
+      shader.uniforms.uTramples = trampleUniforms.uTramples
+      shader.uniforms.uPress = trampleUniforms.uPress
+    }
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
          ${WIND_GLSL}
+         ${opts.trample ? TRAMPLE_GLSL : ''}
          ${opts.weight === 'attribute' ? 'attribute float aSway;' : ''}
          ${opts.instancedYaw ? 'attribute vec2 aBlade;' : ''}
-         ${opts.surface ? surfaceVertHead() : ''}`,
+         ${opts.surface ? surfaceVertHead() : ''}
+         ${opts.fadeIn ? FADE_VERT_HEAD : ''}`,
       )
       .replace(
         '#include <begin_vertex>',
@@ -192,13 +333,36 @@ export const applySway = (mat: THREE.Material, opts: SwayOpts) => {
             : ''}
           if (swayW > 0.001) {
             float dropY;
-            vec2 off = windBend(instOrigin, swayW, phase, float(${opts.amplitude}), dropY);
-            transformed.xz += off;
-            transformed.y -= dropY;
+            ${opts.trample ? `
+              float pressK;
+              vec2 tPush = trample(instOrigin, pressK);
+              float w2t = swayW * swayW;
+              float tK = pressK * w2t;
+              // a pinned blade loses most of its wind — grass under a boot
+              // does not flutter
+              vec2 off = windBend(instOrigin, swayW, phase,
+                float(${opts.amplitude}) * (1.0 - 0.75 * pressK), dropY);
+              transformed.xz += off + tPush * w2t * float(${opts.trample.amp});
+              transformed.y -= dropY + tK * tK * float(${opts.trample.drop});
+            ` : `
+              vec2 off = windBend(instOrigin, swayW, phase, float(${opts.amplitude}), dropY);
+              transformed.xz += off;
+              transformed.y -= dropY;
+            `}
           }
         }
-        ${opts.surface ? surfaceVertBody() : ''}`,
+        ${opts.surface ? surfaceVertBody() : ''}
+        ${opts.fadeIn ? FADE_VERT_BODY : ''}`,
       )
+    if (opts.fadeIn) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\n${fadeFragHead()}`)
+        // at the very top of main, so a dissolved fragment costs nothing else
+        .replace(
+          '#include <clipping_planes_fragment>',
+          `#include <clipping_planes_fragment>\n${FADE_FRAG_DISSOLVE}`,
+        )
+    }
     if (opts.upNormals) {
       // faceDirection is +1 on front faces and -1 on back ones, so applying
       // it a second time is exactly the inverse of three's flip. Written this
@@ -245,6 +409,8 @@ export const applySway = (mat: THREE.Material, opts: SwayOpts) => {
   mat.customProgramCacheKey = () =>
     `sway:${opts.weight}:${opts.amplitude}:${opts.instancedYaw}` +
     `:${opts.rim ?? 0}:${opts.surface ? 1 : 0}:${opts.fadeRadius ?? 0}` +
-    `:${opts.upNormals ? 1 : 0}`
+    `:${opts.upNormals ? 1 : 0}` +
+    `:${opts.trample ? `${opts.trample.amp},${opts.trample.drop}` : 0}` +
+    `:${opts.fadeIn ? 1 : 0}`
   mat.needsUpdate = true
 }

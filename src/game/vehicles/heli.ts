@@ -1005,6 +1005,9 @@ const buildModel = (mats: VehicleMaterials): HeliModel => {
 
   /* ------------------------------------------------------------- pilot -- */
 
+  // Kept as an inert model-space reference for the authored cabin fit. The
+  // occupied helicopter now carries the live articulated player at the
+  // driverSeat created by buildHeli(), so this approximation stays hidden.
   const pilot = new THREE.Group()
   pilot.name = 'pilot'
   pilot.position.set(-0.8, 0, 0)
@@ -1087,6 +1090,10 @@ const PROBES: Array<[number, number]> = [
 export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   const model = buildModel(opts.mats)
   const root = model.root
+  const driverSeat = new THREE.Group()
+  driverSeat.name = 'driverSeat'
+  driverSeat.position.set(-0.8, 1.38, 0.06)
+  root.add(driverSeat)
   const pos = root.position
 
   let yaw = 0
@@ -1381,6 +1388,7 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
     label: 'helicopter',
     verb: 'fly',
     root,
+    driverSeat,
     view: {
       back: 15,
       up: 5.5,
@@ -1399,11 +1407,9 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
     placeAt,
     mount: () => {
       running = true
-      model.pilot.visible = true
     },
     dismount: () => {
       running = false
-      model.pilot.visible = false
     },
     exitSpot,
     update,

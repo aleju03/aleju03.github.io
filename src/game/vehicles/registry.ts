@@ -91,9 +91,10 @@ const HOME: Record<VehicleId, { x: number; z: number; yaw: number }> = {
   // 12 units and the yard fence is 11.3 away — the largest clear disc in the
   // neighbourhood, which is what sized the rotor
   heli: { x: -9, z: 50, yaw: -0.178 },
-  // a coastal lagoon: 2.9 units of water under the keel, a sand shore fifteen
-  // units off the port bow, and a shelf that drops to six units fifty out
-  boat: { x: -2279, z: -614, yaw: -0.175 },
+  // a coastal lagoon: 2.9 units of water under the keel and a shore about
+  // twenty-five units off. Re-probed when the mountain retune lifted the
+  // raw field — the old spot at (-2279, -614) kept half a unit of water
+  boat: { x: -2170, z: -1080, yaw: -0.175 },
 }
 
 /** how long the camera takes to move from the player's eye into the seat */
@@ -182,6 +183,9 @@ export interface VehicleFleet {
   where: (id: VehicleId, p: THREE.Vector3) => { dist: number; bearing: string }
   /** the day cycle: headlamps, nav lights, reflections */
   setDay: (day: number, night: number, fog: THREE.Color, sunEl: number) => void
+  /** expose renderer lights that normally appear only at a threshold, solely
+      while CrtScene compiles that program layout behind the boot cover */
+  setLightWarmup: (on: boolean) => void
   /** the pause menu is up, or the tab went away */
   setMuted: (on: boolean) => void
   /** everything stops (sitting back down, a level cut, unmount) */
@@ -673,6 +677,9 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     setDay: (day, night, fog, sunEl) => {
       mats.setDay(day, night, fog, sunEl)
       for (const e of entries) e.v.setDay?.(day, night)
+    },
+    setLightWarmup: (on) => {
+      for (const e of entries) e.v.setLightWarmup?.(on)
     },
     setMuted: (on) => {
       for (const k of Object.keys(voices) as VehicleId[]) voices[k].mute(on)

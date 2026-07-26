@@ -27,16 +27,19 @@ import type { DriveEnv, DriveStep, Vehicle } from './types'
     tell where the front is pointing.
 
   - **Speed is sold with the lens, not the number.** The boom stretches back
-    and drops, and the fov opens, both on the same normalised speed. Nothing
-    communicates 40 units a second in a world with no odometer like the frame
-    widening around you.
+    without sinking toward the road, and the fov opens on the same normalised
+    speed. Nothing communicates 40 units a second in a world with no odometer
+    like the frame widening around you.
 
   - **Free-look is a temporary opinion.** Dragging the mouse orbits the boom,
     and the offset decays back to centre once you let go and are moving. A
     camera that stays wherever you last flicked it is a camera you spend the
     whole drive fighting; one that snaps back instantly is one you cannot look
     out of the side window with. A second and a half of hold, then a gentle
-    return, is the setting that stops feeling like either.
+    return, is the setting that stops feeling like either. While it lasts, the
+    orbit is a true sphere around the machine and the frame re-centres on it —
+    the ahead-bias of the driving frame is given up, because free-look exists
+    to look at the machine, not past it.
 
   Cockpit view (v) is the same instrument with the boom at zero: the lens sits
   at the vehicle's own eye point, rides its roll and pitch, and free-look
@@ -87,6 +90,8 @@ export function createDriveCam(): DriveCam {
   /** the boom's own heading, chasing the vehicle's */
   let boomYaw = 0
   let boomPitch = 0.16
+  /** the boom ray's base elevation over the horizon, recomputed each apply */
+  let baseElev = 0.16
   /** the player's temporary offset from that, and how long it survives */
   let lookYaw = 0
   let lookPitch = 0
@@ -130,7 +135,7 @@ export function createDriveCam(): DriveCam {
       return boomYaw + lookYaw
     },
     get pitch() {
-      return -boomPitch + lookPitch
+      return -baseElev + lookPitch
     },
     get cockpit() {
       return cockpit
@@ -156,6 +161,7 @@ export function createDriveCam(): DriveCam {
       boomYaw = startYaw ?? v.yaw
       travelYaw = v.yaw
       boomPitch = 0.16
+      baseElev = 0.16
       lookYaw = 0
       lookPitch = 0
       hold = 0
@@ -213,15 +219,12 @@ export function createDriveCam(): DriveCam {
       }
 
       const yaw = boomYaw + lookYaw
-      // pitch: a little more overhead the faster you go, so the road ahead
-      // stays in frame instead of sliding under the bonnet
-      boomPitch = damp(boomPitch, 0.14 + fast * 0.1, 4, dt)
-      // the ray's pitch drops the boom down the arc, so *more* of it puts the
-      // lens lower and tilts the view up. Free-look is stated the other way
-      // round — positive is up, as everywhere else — so it adds here rather
-      // than subtracting. Subtracting is what made the mouse invert at the
-      // wheel: drag down, boom sinks, view rises
-      const pitch = boomPitch + lookPitch
+      // Pulling the boom farther back already adds vertical drop along its
+      // ray. Shallow the ray by the matching amount as speed builds so the
+      // lens stays above the vehicle instead of settling beside its boot.
+      // The old `0.14 + fast * 0.1` compounded both effects and lowered the
+      // car camera by about two world units after a few seconds at speed.
+      boomPitch = damp(boomPitch, 0.14 - fast * 0.03, 4, dt)
 
       v.root.updateMatrixWorld()
 
@@ -245,33 +248,43 @@ export function createDriveCam(): DriveCam {
       }
 
       anchor.copy(view.anchor).applyMatrix4(v.root.matrixWorld)
-      // look a little ahead of the machine rather than at it: the frame then
-      // belongs to where you are going, which is the whole point of a chase cam
+      // look a little ahead of the machine rather than at it — the frame then
+      // belongs to where you are going — but only while the player looks with
+      // the machine. Free-look means "show me the machine from here": a focus
+      // held nine units up the road while the boom orbited the side put the
+      // car at the frame's edge and the lens on empty asphalt, so the ahead
+      // bias fades out as the look offset grows
+      const ahead = (2 + fast * 7) * Math.max(0, 1 - Math.hypot(lookYaw, lookPitch) / 0.7)
       focus.copy(anchor)
-      focus.x -= Math.sin(v.yaw) * (2 + fast * 7)
-      focus.z -= Math.cos(v.yaw) * (2 + fast * 7)
+      focus.x -= Math.sin(v.yaw) * ahead
+      focus.z -= Math.cos(v.yaw) * ahead
       focus.y += view.up * 0.22
 
       const reach = view.back + view.stretch * fast
-      dir.set(
-        -Math.sin(yaw) * Math.cos(pitch),
-        Math.sin(pitch),
-        -Math.cos(yaw) * Math.cos(pitch),
-      )
+      // the boom is a spherical orbit around the anchor: `view.up` is folded
+      // into the ray's *elevation* rather than added straight up afterwards.
+      // The old post-hoc lift stayed vertical while the boom swung, so it was
+      // perpendicular to the ray behind the machine but parallel to it
+      // overhead — looking down pushed the lens a whole `view.up` further
+      // from the machine, and looking up aimed the raw ray at the ground so
+      // the probe crushed the boom to nothing. `boomPitch` gives the base pose
+      // its slight drop; free-look subtracts because its positive is up, and
+      // rotating the view up must swing the lens down the sphere
+      baseElev = Math.atan2(view.up - reach * Math.sin(boomPitch), reach * Math.cos(boomPitch))
+      const elev = baseElev - lookPitch
+      dir.set(Math.sin(yaw) * Math.cos(elev), Math.sin(elev), Math.cos(yaw) * Math.cos(elev))
       // sample outward along the boom and stop short of the first blocked one
       let free = 0
       for (let i = 1; i <= SAMPLES; i++) {
         const t = (i / SAMPLES) * reach
-        probe.copy(anchor).addScaledVector(dir, -t)
-        probe.y += view.up * (t / reach)
+        probe.copy(anchor).addScaledVector(dir, t)
         if (blocked(probe, env)) break
         free = t
       }
       // a wall crushes the boom this frame; open ground gives it back slowly
       dist = free < dist ? free : damp(dist, free, 9, dt)
 
-      want.copy(anchor).addScaledVector(dir, -dist)
-      want.y += view.up * (dist / Math.max(0.001, reach))
+      want.copy(anchor).addScaledVector(dir, dist)
       // and never let the lens drop through the floor when the boom is short
       const floor = Math.max(
         env.groundAt(want.x, want.z),

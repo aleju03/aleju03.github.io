@@ -50,6 +50,22 @@ export interface WorldBounds {
   maxZ: number
 }
 
+/** a solid that a hard enough impact carries out of the world rather than
+    stopping against: a sapling, a cactus, a lamp post. The world registers
+    these (world/debris.ts arms them); a vehicle's sweep asks. Everything
+    without one is immovable, which is every solid this repo had before. */
+export interface Breakable {
+  /** closing speed, units/s, under which it simply holds. It doubles as how
+      much it *costs* to break — see the caller in vehicles/car.ts, where a
+      prop takes `limit * 0.6` units of speed off whatever broke it, so one
+      number covers both "can I" and "what did that cost me" */
+  limit: number
+  /** it gave: the contact point, the direction the hitter was travelling
+      (unit, xz) and its speed. Called once — the owner empties its own box
+      inside this, so the next tick sweeps straight through where it stood */
+  hit: (x: number, y: number, z: number, dx: number, dz: number, speed: number) => void
+}
+
 /** a collision box that may also declare its top off-limits. An AABB is a
     coarse stand-in for the thing it wraps, and for plenty of solids the top
     of that box is nowhere a body could stand: the ceiling plane over a
@@ -59,6 +75,7 @@ export interface WorldBounds {
 export interface Solid extends THREE.Box3 {
   noStand?: boolean
   hull?: Hull
+  breaks?: Breakable
 }
 
 /** one control station of a hull profile: at this local z the footprint

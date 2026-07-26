@@ -108,6 +108,10 @@ export interface Vehicle {
   root: THREE.Group
   /** the camera rules for this machine */
   view: DriveView
+  /** local attachment for the live player rig while this machine is occupied.
+      Its origin is the seated avatar's pelvis and it inherits every attitude
+      transform the driver should ride (the car body, the boat hull, etc.) */
+  driverSeat: THREE.Object3D
   /** the body's own extent, in model units: where the dust comes off, how far
       away a player has to stand to be put down clear of it, and the reach of
       the sweep each machine runs against the world. What the *player* collides
@@ -144,5 +148,9 @@ export interface Vehicle {
   update: (env: DriveEnv, driven: boolean) => DriveStep
   /** day cycle: headlamps, nav lights, instrument glow */
   setDay?: (day: number, night: number) => void
+  /** Temporarily expose threshold-switched renderer lights so the scene can
+      compile their lighting layout under its boot cover. Turning this back
+      off restores the visibility dictated by the live day cycle. */
+  setLightWarmup?: (on: boolean) => void
   dispose: () => void
 }

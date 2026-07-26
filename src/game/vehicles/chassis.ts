@@ -81,23 +81,56 @@ export interface SweepHit {
   at: THREE.Vector3
   /** the deepest penetration found, 0 for a clean frame */
   depth: number
+  /** and which solid it was, so a caller can ask whether the thing it just
+      met is something that gives way (collision.ts's Breakable) */
+  solid: Solid | null
 }
 
-const hit: SweepHit = { push: new THREE.Vector3(), at: new THREE.Vector3(), depth: 0 }
+const hit: SweepHit = {
+  push: new THREE.Vector3(), at: new THREE.Vector3(), depth: 0, solid: null,
+}
+
+/**
+ * Where a *wall* is probed, as fractions of (halfX, halfZ): the four corners
+ * and the middle of each flank. A long body scraping a wall touches at the
+ * flank and the corners never see it, which is what the middle pair is for.
+ *
+ * Six points is enough for a wall and hopeless for a post, which is why they
+ * are no longer the only test — see `sweepBody`.
+ */
+const PROBE: ReadonlyArray<readonly [number, number]> = [
+  [-1, -1], [1, -1], [1, 1], [-1, 1],
+  [-1, 0], [1, 0],
+]
 
 /**
  * Push an oriented footprint out of the world.
  *
- * `half` is the body's half-length (z) and half-width (x) in its own frame;
- * the sweep tests the four corners and the two side midpoints, which is the
- * cheapest set that cannot thread a wall between samples at any width a
- * vehicle actually has. Every sample argues with a box only where the body's
- * own y-span overlaps it — the same height rule collision.ts applies to the
- * player, so a low kerb is something to drive over and not something to stop
- * against.
+ * `half` is the body's half-length (z) and half-width (x) in its own frame.
+ * Every solid argues with the body only where the body's own y-span overlaps
+ * it — the same height rule collision.ts applies to the player, so a low kerb
+ * is something to drive over and not something to stop against. The returned
+ * push is the single deepest one rather than a sum: adding several pushes
+ * together in a corner ejects a car across the street.
  *
- * The returned push is the single deepest one rather than a sum: adding six
- * pushes together in a corner ejects a car across the street.
+ * There are two tests, chosen per solid by how big it is, and the split is the
+ * whole point of this function.
+ *
+ * A solid **bigger than the body** is sampled at `PROBE`. Sampling can only
+ * ever find a solid that reaches one of those points, and that is fine for a
+ * wall or a building: they are longer than the gaps.
+ *
+ * A solid **smaller than the body** is tested exactly, as an oriented
+ * rectangle against a box, because sampling a nine-unit car with six points
+ * leaves the entire middle of it blind — measured, 255 of 273 positions inside
+ * the footprint. Anything that got in there (a yaw that swept the flank over
+ * it, one fast substep, a machine recalled onto it) was invisible from then
+ * on, and you drove away with a lamp post through the roof. There is no probe
+ * count that fixes that; the body has an interior and points do not cover
+ * areas. The box's own extent is folded onto the body's axes and the box
+ * centre tested against the grown rectangle, which is a Minkowski sum with two
+ * of the four separating axes — the two omitted ones can only over-report, and
+ * only within the solid's own width at forty-five degrees.
  */
 export const sweepBody = (
   centre: THREE.Vector3,
@@ -112,21 +145,51 @@ export const sweepBody = (
   hit.depth = 0
   hit.push.set(0, 0, 0)
   hit.at.set(0, 0, 0)
+  hit.solid = null
   const c = Math.cos(yaw)
   const s = Math.sin(yaw)
-  // corners, then the middle of each flank: a long body scraping a wall
-  // touches there first and the corners never see it
-  const local: Array<[number, number]> = [
-    [-halfX, -halfZ], [halfX, -halfZ], [halfX, halfZ], [-halfX, halfZ],
-    [-halfX, 0], [halfX, 0],
-  ]
-  for (const [lx, lz] of local) {
-    // yaw 0 faces -z, so this is the standard y-rotation
-    const wx = centre.x + lx * c + lz * s
-    const wz = centre.z - lx * s + lz * c
-    for (const b of set.boxes) {
-      if (b === skip) continue
-      if (b.max.y <= bottom || b.min.y >= top) continue
+  const ac = Math.abs(c)
+  const as = Math.abs(s)
+  for (const b of set.boxes) {
+    if (b === skip) continue
+    if (b.max.y <= bottom || b.min.y >= top) continue
+    const bw = (b.max.x - b.min.x) * 0.5
+    const bd = (b.max.z - b.min.z) * 0.5
+
+    if (bw < halfX && bd < halfZ) {
+      // small enough to sit inside the footprint: test it exactly, in the
+      // body's own frame, where the four ways out are the flanks and the ends
+      const dx = (b.min.x + b.max.x) * 0.5 - centre.x
+      const dz = (b.min.z + b.max.z) * 0.5 - centre.z
+      const lx = dx * c - dz * s
+      const lz = dx * s + dz * c
+      const ex = halfX + ac * bw + as * bd
+      const ez = halfZ + as * bw + ac * bd
+      if (lx <= -ex || lx >= ex || lz <= -ez || lz >= ez) continue
+      // ...and these are the distances the *solid* would travel to leave, so
+      // the body moves the other way: something dead ahead (local -z) exits
+      // forward and pushes the body back
+      const exitL = lx + ex
+      const exitR = ex - lx
+      const exitN = lz + ez
+      const exitF = ez - lz
+      const m = Math.min(exitL, exitR, exitN, exitF)
+      if (m <= hit.depth) continue
+      hit.depth = m
+      hit.solid = b
+      const px = m === exitL ? m : m === exitR ? -m : 0
+      const pz = m === exitN ? m : m === exitF ? -m : 0
+      hit.push.set(px * c + pz * s, 0, -px * s + pz * c)
+      hit.at.set(dx, 0, dz)
+      continue
+    }
+
+    for (const [fx, fz] of PROBE) {
+      const lx = fx * halfX
+      const lz = fz * halfZ
+      // yaw 0 faces -z, so this is the standard y-rotation
+      const wx = centre.x + lx * c + lz * s
+      const wz = centre.z - lx * s + lz * c
       if (wx <= b.min.x || wx >= b.max.x || wz <= b.min.z || wz >= b.max.z) continue
       const exitL = wx - b.min.x
       const exitR = b.max.x - wx
@@ -135,6 +198,7 @@ export const sweepBody = (
       const m = Math.min(exitL, exitR, exitN, exitF)
       if (m <= hit.depth) continue
       hit.depth = m
+      hit.solid = b
       if (m === exitL) hit.push.set(-m, 0, 0)
       else if (m === exitR) hit.push.set(m, 0, 0)
       else if (m === exitN) hit.push.set(0, 0, -m)

@@ -362,6 +362,18 @@ import type { VehicleMaterials } from './materials'
   a wall the car reports a 22 u/s impact, never moves more than 0.24 units in
   a tick, and comes to rest exactly its own half-length clear of the face.
 
+  Unless the thing it met gives way. A solid may carry a `Breakable`
+  (collision.ts) saying how fast something has to be closing to take it out of
+  the world — a sapling, a cactus, a lamp post — and against one of those the
+  push, the yaw and the velocity reflection are all skipped: the car keeps its
+  line and pays a bite of speed instead, `limit * 0.6` units of it, so hitting
+  a lamp post at just over its limit is nearly a stop and mowing a cactus at
+  forty barely registers. The break test reads the car's planar speed rather
+  than the closing rate along the contact normal, because a box's exit face is
+  axis-aligned and clipping a trunk's corner at speed reports almost no
+  closing at all — and a tree brushed off the wing at forty is still a tree
+  that comes down. What happens to it after that is world/debris.ts's.
+
   The other thing that reports an `impact` is a landing, and the only honest
   measure of one is how fast a *spring* is closing — never `vy`. The old test
   was `grounded && vyPrev < -6 && vy > vyPrev`, and vy is the whole car's
@@ -1591,14 +1603,15 @@ export function buildCar(opts: CarOpts): Vehicle {
   /* ---------------------------------------------------------- the driver -- */
 
   /*
-    The same service robot the player walks around as — cream shell, dark
+    The original static service-robot approximation — cream shell, dark
     plastic limbs, a black visor with two lit eyes — sitting in the left seat
     with its hands at quarter to three. It borrows the vehicle slots rather
     than making its own materials: paint2 for the cream, trim for the dark,
     dark for the visor, chrome for the joints. The eyes take the `lamp` slot,
     which means they come on with the headlights and are a pale grey by day.
     That is a happy accident of sharing eleven materials across three
-    vehicles, and it looks deliberate, so it stays.
+    vehicles. It now stays hidden: CrtScene attaches the live articulated
+    player rig to `driverSeat`, so every vehicle carries the exact same avatar.
   */
   const dr = createPartBuilder()
   const DX = -0.78 // the driver's seat centreline: left-hand drive
@@ -1682,6 +1695,13 @@ export function buildCar(opts: CarOpts): Vehicle {
      visible product of the suspension */
   const body = new THREE.Group()
   body.add(shell, driver, steerWheel)
+  // The real player rig is attached here while occupied. Unlike `root`, this
+  // group carries the suspension's pitch and roll, so the driver rides the
+  // body instead of staying uncannily level while the car moves underneath.
+  const driverSeat = new THREE.Group()
+  driverSeat.name = 'driverSeat'
+  driverSeat.position.set(DX, 0.88, 0.62)
+  body.add(driverSeat)
   root.add(body)
 
   const mounts: THREE.Object3D[] = []
@@ -1717,7 +1737,9 @@ export function buildCar(opts: CarOpts): Vehicle {
      in the scene — so a pair of zero-intensity spots parked on a car recompile
      the whole world's shaders with two spot slots nobody uses. Zero intensity
      costs a uniform upload; zero intensity and still visible costs a
-     recompile. */
+     recompile. The dusk layout is exposed once under BootCover by
+     `setLightWarmup`, then hidden again, so the threshold hits a cached program
+     without making those two unused slots a permanent daytime cost. */
   const beams: THREE.SpotLight[] = []
   for (const s of [-1, 1]) {
     const l = new THREE.SpotLight(0xfff0d2, 0, 52, 0.42, 0.55, 1.2)
@@ -1752,6 +1774,7 @@ export function buildCar(opts: CarOpts): Vehicle {
   let dayK = 1
   let lampHead = -1
   let lampTail = -1
+  let lightWarmup = false
 
   const len = [SPRING_FREE - GRAV / SPRING_K, SPRING_FREE - GRAV / SPRING_K, SPRING_FREE - GRAV / SPRING_K, SPRING_FREE - GRAV / SPRING_K]
   /** last tick's lengths, so the landing detector can read how fast a spring
@@ -1801,7 +1824,7 @@ export function buildCar(opts: CarOpts): Vehicle {
     mats.setLamps(head, tail)
     for (const l of beams) {
       l.intensity = head * 30
-      l.visible = head > 0.01
+      l.visible = lightWarmup || head > 0.01
     }
   }
 
@@ -2122,7 +2145,19 @@ export function buildCar(opts: CarOpts): Vehicle {
       sweepC, yaw, SIZE.halfX, SIZE.halfZ,
       pos.y + 0.34, pos.y + 2.7, env.collision,
     )
-    if (hit.depth > 0) {
+    const breaks = hit.depth > 0 ? hit.solid?.breaks : undefined
+    const rush = Math.hypot(vel.x, vel.z)
+    if (breaks && rush > breaks.limit) {
+      // it comes with us. No push, no reflection, no yaw — the car keeps its
+      // line and pays for the prop out of its speed, which is the whole
+      // difference between driving through a sapling and hitting a wall
+      vel.multiplyScalar(1 - clamp((breaks.limit * 0.6) / rush, 0, 0.6))
+      impact = Math.max(impact, rush * 0.3)
+      breaks.hit(
+        pos.x + hit.at.x, pos.y + 0.5, pos.z + hit.at.z,
+        vel.x / rush, vel.z / rush, rush,
+      )
+    } else if (hit.depth > 0) {
       const px = clamp(hit.push.x, -PUSH_CAP, PUSH_CAP)
       const pz = clamp(hit.push.z, -PUSH_CAP, PUSH_CAP)
       pos.x += px
@@ -2199,6 +2234,7 @@ export function buildCar(opts: CarOpts): Vehicle {
     label: 'car',
     verb: 'drive',
     root,
+    driverSeat,
     view: {
       back: 11.5,
       up: 3.6,
@@ -2244,12 +2280,10 @@ export function buildCar(opts: CarOpts): Vehicle {
     },
 
     mount: () => {
-      driver.visible = true
       solid.makeEmpty()
     },
 
     dismount: () => {
-      driver.visible = false
       refreshSolid()
     },
 
@@ -2288,6 +2322,14 @@ export function buildCar(opts: CarOpts): Vehicle {
     setDay: (day) => {
       dayK = day
       syncLamps()
+    },
+
+    setLightWarmup: (on) => {
+      lightWarmup = on
+      // Only visibility matters to Three's lighting program key. Intensity
+      // stays on the real day-cycle value (zero during the covered warm-up),
+      // so this compiles the dusk layout without visibly turning the beams on.
+      for (const l of beams) l.visible = on || lampHead > 0.01
     },
 
     dispose: () => {

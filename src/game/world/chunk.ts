@@ -6,16 +6,22 @@ import { hash2, mix, rand3 } from './noise'
 import {
   CHUNK, GRID, OFF_X, OFF_Z, RESERVED, inReserved, inYard, originX, originZ,
 } from './grid'
-import { SEA_Y, biomeAt, latticeHeight, terrainY, tintAt } from './terrain'
+import { SEA_Y, latticeGround, latticeHeight, terrainY } from './terrain'
 import {
   placeAt, roadAt, pavedAt, buildingHeightAt, blockInset, ROAD_HALF, WALK_W, CURB_H,
 } from './settlements'
 import { BIOMES, type BiomeId, type PropKind } from './biomes'
-import { VARIANTS, kitsFor, stampKit, variantFor, type Palette } from './props'
+import {
+  SNAP, VARIANTS, kitsFor, stampKit, variantFor, type Kit, type Palette,
+} from './props'
 import { SURF } from './surface'
 import {
   KIND_FOR, midriseBlock, shopFront, suburbHouse, tower, type BuildOut, type Lot,
 } from './buildings'
+import { bakeBirth, PREBORN } from './fade'
+import type { InteriorRect } from './interiors'
+import type { ShopDoorSpec } from './shopDoors'
+import type { SmashLayer, Smashable, SmashSet, Span } from './debris'
 
 /*
   One 64-unit block of world, built from nothing but its own coordinates.
@@ -69,6 +75,36 @@ export interface Chunk {
   boxes: Solid[]
   /** interior lamp spots the streamer may choose to light */
   lamps: Array<{ x: number; y: number; z: number }>
+  /** walk-in footprints for the interiors registry (see world/interiors.ts) */
+  interiors: InteriorRect[]
+  /** hinged shop-door leaves the near ring should animate (world/shopDoors.ts) */
+  doors: ShopDoorSpec[]
+  /** the props a vehicle can knock out of this chunk, and where their
+      vertices sit in its merged meshes (world/debris.ts) */
+  smash: SmashSet
+}
+
+/**
+ * The span a stamp just occupied in a builder, measured either side of it —
+ * the whole trick behind breaking one prop out of a merged chunk. A stamp is
+ * a run of consecutive `add` calls into one builder, so its vertices and its
+ * indices are both contiguous, and two counters read before and after are the
+ * only bookkeeping the chunk has to keep.
+ */
+const spanFrom = (b: MeshBuilder, v0: number, i0: number): Span | undefined =>
+  b.count > v0 ? [v0, b.count - v0, i0, b.indexCount - i0] : undefined
+
+/** ...and the same for a stamp that went into two builders at once (a tree:
+    trunk into the soup, foliage cards into the UV-carrying one) */
+const spansFrom = (
+  parts: Array<[SmashLayer, MeshBuilder, number, number]>,
+): Smashable['spans'] => {
+  const out: Smashable['spans'] = {}
+  for (const [layer, b, v0, i0] of parts) {
+    const s = spanFrom(b, v0, i0)
+    if (s) out[layer] = s
+  }
+  return out
 }
 
 const VERTS = CHUNK / GRID + 1 // 17
@@ -77,8 +113,6 @@ const tmpQ = new THREE.Quaternion()
 const tmpE = new THREE.Euler()
 const tmpP = new THREE.Vector3()
 const tmpS = new THREE.Vector3()
-const tmpC = new THREE.Color()
-const tmpC2 = new THREE.Color()
 const BOX = new THREE.BoxGeometry(1, 1, 1)
 /** unit hex posts, height 1 centred on the origin: the tapered one is the
     streetlight's mast, the parallel and open-ended one the segments of its arm
@@ -215,26 +249,16 @@ const buildGround = (cx: number, cz: number): Ground => {
       nor[k * 3] = tmpP.x
       nor[k * 3 + 1] = tmpP.y
       nor[k * 3 + 2] = tmpP.z
-      const slope = Math.hypot((hx1 - hx0) / (2 * GRID), (hz1 - hz0) / (2 * GRID))
-      const b = biomeAt(wx, wz, y, slope)
-      biome[k] = b
-      const place = placeAt(wx, wz)
-      const road = roadAt(wx, wz, place)
-      // Paved wins over climate — but only where a town actually paves, and
-      // it fades back to ground away from the kerb. The first cut gave every
-      // district one flat 0.55, which crosses tintAt's threshold, so a whole
-      // city including its suburbs came out as one grey concrete field with a
-      // few tufts standing in it. A suburb is lawns; only the middle of a city
-      // is a floor.
-      const paved = pavedAt(place, road)
-      const [a, c, t] = tintAt(wx, wz, b, paved)
-      tmpC.set(a)
-      tmpC2.set(c)
-      tmpC.lerp(tmpC2, t)
-      if (paved > 0 && paved < 1) tmpC.lerp(tmpC2.set('#6f6f66'), paved * 0.5)
-      colArr[k * 3] = tmpC.r
-      colArr[k * 3 + 1] = tmpC.g
-      colArr[k * 3 + 2] = tmpC.b
+      // colour and biome come from the shared lattice sample — the same one
+      // the grass field interpolates, which is the whole contract: a blade
+      // and the soil it grows from can only match if they are literally the
+      // same number. The paved fade, urban tint and straw drifts all live in
+      // latticeGround now.
+      const g = latticeGround(baseI + i, baseJ + j)
+      biome[k] = g.biome
+      colArr[k * 3] = g.r
+      colArr[k * 3 + 1] = g.g
+      colArr[k * 3 + 2] = g.b
       uv[k * 2] = wx / 9
       uv[k * 2 + 1] = wz / 9
     }
@@ -290,6 +314,7 @@ const rq3 = new THREE.Vector3()
  */
 const buildRoads = (
   cx: number, cz: number, out: MeshBuilder, glass: MeshBuilder, detailed: boolean,
+  smash: Smashable[],
 ): Solid[] => {
   const ox = originX(cx)
   const oz = originZ(cz)
@@ -308,28 +333,64 @@ const buildRoads = (
       grass around */
   const poles: Solid[] = []
 
-  /** one street, `along` = the axis it runs down */
-  const strip = (along: 'x' | 'z', line: number, from: number, to: number) => {
-    const mid = (from + to) / 2
+  /** is the street arm reaching away from junction node (nx, nz) along
+      `axis` in direction `sgn` actually paved just past the node? Probed a
+      step along the arm's own centreline — far enough out that the crossing
+      street can't claim the asphalt bit for it. With segments dropping out of
+      the lattice, the four arms of a node answer independently now. */
+  const armAlive = (axis: 'x' | 'z', nx: number, nz: number, sgn: number) => {
+    const px = axis === 'x' ? nx + sgn * (ROAD_HALF + 1.5) : nx
+    const pz = axis === 'x' ? nz : nz + sgn * (ROAD_HALF + 1.5)
+    return roadAt(px, pz, placeAt(px, pz)).asphalt
+  }
+
+  /** one street between two junction nodes, `along` = the axis it runs down.
+      The span passed in is node centre to node centre; how far the deck
+      actually reaches at each end depends on who else is alive at the node —
+      the crossroads square goes to the east-west street when there is one,
+      and a street whose continuation dropped out squares off its own end. */
+  const strip = (along: 'x' | 'z', line: number, n0: number, n1: number) => {
+    const mid = (n0 + n1) / 2
     const probe = along === 'x' ? { x: mid, z: line } : { x: line, z: mid }
     const place = placeAt(probe.x, probe.z)
     const road = roadAt(probe.x, probe.z, place)
     if (!road.asphalt || road.grade < 0.35) return
+    let from = n0
+    let to = n1
+    if (along === 'x') {
+      // this east-west strip owns its junction squares — but only where its
+      // western/eastern continuations exist to paint their halves; a dead
+      // arm's half of the square is annexed so a through road never shows a
+      // bitten corner at a junction it sails past
+      if (!armAlive('x', n0, line, -1)) from = n0 - ROAD_HALF
+      if (!armAlive('x', n1, line, 1)) to = n1 + ROAD_HALF
+    } else {
+      // the north-south strip yields the square to the east-west pair when
+      // either of them survives; when both dropped, it paints the square
+      // itself and the road runs straight through
+      if (armAlive('x', line, n0, 1) || armAlive('x', line, n0, -1)) from = n0 + ROAD_HALF
+    }
     const steps = Math.ceil((to - from) / GRID)
     const seg = (to - from) / steps
 
     // where a live perpendicular street crosses, its asphalt owns the ground:
     // pavement, kerbs, dashes and lamps all stop at its edge. Without this
     // every junction wore a raised sidewalk bar straight across the mouth of
-    // the crossing road, kerb face and all.
+    // the crossing road, kerb face and all. Either side of the crossing may
+    // be the live one, so both are asked.
     const off = along === 'x' ? OFF_X : OFF_Z
-    const j0 = Math.round((from - off) / CHUNK) * CHUNK + off
+    const j0 = Math.round((n0 - off) / CHUNK) * CHUNK + off
     const blocked: Array<[number, number]> = []
     for (const jl of [j0, j0 + CHUNK]) {
-      const px = along === 'x' ? jl : line + ROAD_HALF + WALK_W + 1.4
-      const pz = along === 'x' ? line + ROAD_HALF + WALK_W + 1.4 : jl
-      const pRoad = roadAt(px, pz, placeAt(px, pz))
-      if (pRoad.asphalt) blocked.push([jl - ROAD_HALF, jl + ROAD_HALF])
+      for (const sgn of [1, -1]) {
+        const px = along === 'x' ? jl : line + sgn * (ROAD_HALF + WALK_W + 1.4)
+        const pz = along === 'x' ? line + sgn * (ROAD_HALF + WALK_W + 1.4) : jl
+        const pRoad = roadAt(px, pz, placeAt(px, pz))
+        if (pRoad.asphalt) {
+          blocked.push([jl - ROAD_HALF, jl + ROAD_HALF])
+          break
+        }
+      }
     }
     /** [a, b] minus every blocked interval */
     const clip = (a: number, b: number): Array<[number, number]> => {
@@ -424,20 +485,93 @@ const buildRoads = (
         // the arm has to reach back over the road, so the mast is yawed to put
         // its local +x on the cross axis pointing at the centreline
         const yaw = along === 'x' ? (sgn * Math.PI) / 2 : sgn > 0 ? Math.PI : 0
+        const dv = out.count
+        const di = out.indexCount
+        const gv = glass.count
+        const gi = glass.indexCount
         streetLamp(out, glass, poleC, bulbC, lx, y, lz, yaw)
-        poles.push(noStand(new THREE.Box3(
-          new THREE.Vector3(lx - 0.22, y - 1, lz - 0.22),
-          new THREE.Vector3(lx + 0.22, y + LAMP_H, lz + 0.22),
-        )))
+        // 0.4 is the plinth (0.23) plus the shoulder margin every solid
+        // registered through addBoxFrom() gets and this one, built by hand,
+        // was going without: at the plinth's own width a walker stops with
+        // their centre on the edge of it and their shoulders inside the mast
+        const box = noStand(new THREE.Box3(
+          new THREE.Vector3(lx - 0.4, y - 1, lz - 0.4),
+          new THREE.Vector3(lx + 0.4, y + LAMP_H, lz + 0.4),
+        )) as Solid
+        poles.push(box)
+        // a mast is a thin steel tube on a bolted plinth: the one thing out
+        // here that goes over at a speed you reach on the street it stands on
+        smash.push({
+          id: `${cx},${cz}:L${along}${s}`,
+          box,
+          limit: 13,
+          x: lx,
+          y,
+          z: lz,
+          r: 0.22,
+          // the head end is an arm and a housing, not a crown: a downed mast
+          // lies on the road with the arm sticking out sideways
+          rTop: 0.35,
+          spans: spansFrom([
+            ['detail', out, dv, di],
+            ['glass', glass, gv, gi],
+          ]),
+        })
       }
     }
   }
-  strip('z', ox, oz + ROAD_HALF, oz + CHUNK)
+  strip('z', ox, oz, oz + CHUNK)
   strip('x', oz, ox, ox + CHUNK)
   return poles
 }
 
 /* ------------------------------------------------------------ buildings */
+
+/**
+ * Plant one kit instance: stamp it, register the collision cylinder its kit
+ * asks for, and — where the kind is one a vehicle can flatten (props.ts's
+ * SNAP) — record the span it just occupied so world/debris.ts can lift it
+ * back out. Both places that plant a tree go through here, because the three
+ * steps have to agree about the same position and scale and did not when
+ * they were written out twice.
+ */
+const plant = (
+  out: MeshBuilder, cards: MeshBuilder, kit: Kit, kind: PropKind, pal: Palette,
+  px: number, py: number, pz: number, sc: number, yaw: number, jitter: number,
+  boxes: Solid[] | null, smash: Smashable[] | null, id: string,
+) => {
+  const dv = out.count
+  const di = out.indexCount
+  const cv = cards.count
+  const ci = cards.indexCount
+  stampKit(out, cards, kit, pal, px, py - 0.15, pz, sc, yaw, jitter)
+  if (!boxes || !kit.solid) return
+  const rr = kit.solid.r * sc
+  const box = noStand(new THREE.Box3(
+    new THREE.Vector3(px - rr, py - 0.4, pz - rr),
+    new THREE.Vector3(px + rr, py + kit.solid.h * sc, pz + rr),
+  )) as Solid
+  boxes.push(box)
+  const limit = SNAP[kind]
+  if (!smash || limit === undefined) return
+  smash.push({
+    id,
+    box,
+    // a bigger tree of the same kind is a bigger tree to hit
+    limit: limit * (0.7 + sc * 0.3),
+    x: px,
+    y: py - 0.15,
+    z: pz,
+    r: rr,
+    // a kit with foliage cards has a crown, and a felled trunk lies on it
+    // rather than on the ground; a cactus or a dead tree lies flat
+    rTop: kit.parts.some((p) => p.slot === 'card') ? rr * 2.2 : rr,
+    spans: spansFrom([
+      ['detail', out, dv, di],
+      ['leaf', cards, cv, ci],
+    ]),
+  })
+}
 
 const buildBlock = (
   cx: number, cz: number, out: BuildOut, ground: Ground, leaves: MeshBuilder,
@@ -475,15 +609,9 @@ const buildBlock = (
       const kind = kinds[Math.floor(rng() * kinds.length)]
       const kit = kitsFor(kind)[Math.floor(rng() * VARIANTS)]
       const sc = 0.9 + rng() * 0.4
-      stampKit(out.solid, leaves, kit, pal, px, py - 0.15, pz, sc,
-        rng() * Math.PI * 2, rng() * 2 - 1)
-      if (kit.solid) {
-        const rr = kit.solid.r * sc
-        out.boxes.push(noStand(new THREE.Box3(
-          new THREE.Vector3(px - rr, py - 0.4, pz - rr),
-          new THREE.Vector3(px + rr, py + kit.solid.h * sc, pz + rr),
-        )))
-      }
+      plant(out.solid, leaves, kit, kind, pal, px, py, pz, sc,
+        rng() * Math.PI * 2, rng() * 2 - 1,
+        out.boxes, out.smash, `${cx},${cz}:P${i}`)
     }
     return
   }
@@ -521,18 +649,34 @@ const buildBlock = (
       // at all where the corners disagree by more than the plinth can hide.
       // The rim of a town is only half-graded now that the hills start there,
       // and a house sunk to its windowsills reads as the ground eating it.
+      // A shell only needs the corners; an enterable shop grades its floor to
+      // `topY` and so must see any bump *inside* the footprint too — the
+      // terrain lattice has a vertex every 4 units, and a hump between the
+      // corners once stood 0.22 proud of a floor set by corners alone.
+      let kind = KIND_FOR(place.district, roll)
       let baseY = Infinity
       let topY = -Infinity
-      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-        const cy = terrainY(bx + (sx * w) / 2, bz + (sz * d) / 2)
-        baseY = Math.min(baseY, cy)
-        topY = Math.max(topY, cy)
-      }
+      const nu = kind === 'shop' ? Math.max(2, Math.ceil(w / 2.5)) : 1
+      const nv = kind === 'shop' ? Math.max(2, Math.ceil(d / 2.5)) : 1
+      for (let i = 0; i <= nu; i++)
+        for (let j = 0; j <= nv; j++) {
+          const cy = terrainY(bx - w / 2 + (w * i) / nu, bz - d / 2 + (d * j) / nv)
+          baseY = Math.min(baseY, cy)
+          topY = Math.max(topY, cy)
+        }
       if (baseY < SEA_Y + 1) continue
       if (topY - baseY > 2.2) continue
 
-      const lot: Lot = { x: bx, z: bz, w, d, baseY, height: height * (0.7 + rng() * 0.6), face, rng }
-      switch (KIND_FOR(place.district, roll)) {
+      const lot: Lot = {
+        x: bx, z: bz, w, d, baseY, topY, height: height * (0.7 + rng() * 0.6), face, rng,
+      }
+      // an enterable shop grades its floor up to the *highest* ground under
+      // it and meets the street with a stoop; past a shin-and-a-bit of spread
+      // the stoop turns into a staircase, so the lot builds a shell instead
+      if (kind === 'shop' && topY - baseY > 1.2) {
+        kind = place.district === 'midrise' ? 'midrise' : 'house'
+      }
+      switch (kind) {
         case 'tower': tower(out, lot); break
         case 'midrise': midriseBlock(out, lot); break
         case 'shop': shopFront(out, lot); break
@@ -586,7 +730,8 @@ const insideBuilt = (built: Solid[], x: number, z: number, pad: number) => {
  */
 const scatter = (
   cx: number, cz: number, ground: Ground, built: Solid[],
-  out: MeshBuilder, cardsOut: MeshBuilder, boxes: Solid[] | null, cover: boolean,
+  out: MeshBuilder, cardsOut: MeshBuilder, boxes: Solid[] | null,
+  smash: Smashable[] | null, cover: boolean,
 ) => {
   const ox = originX(cx)
   const oz = originZ(cz)
@@ -631,15 +776,9 @@ const scatter = (
         const kits = kitsFor(s.kind)
         const kit = kits[variantFor(s.kind, cx * 977 + id, cz, i)]
         const sc = mix(s.scale[0], s.scale[1], r)
-        stampKit(out, cardsOut, kit, pal, px, y - 0.15, pz, sc,
-          rand3(cx, cz, id * 3 + 4, 0x51a7) * Math.PI * 2, r * 2 - 1)
-        if (boxes && kit.solid) {
-          const rr = kit.solid.r * sc
-          boxes.push(noStand(new THREE.Box3(
-            new THREE.Vector3(px - rr, y - 0.4, pz - rr),
-            new THREE.Vector3(px + rr, y + kit.solid.h * sc, pz + rr),
-          )))
-        }
+        plant(out, cardsOut, kit, s.kind, pal, px, y, pz, sc,
+          rand3(cx, cz, id * 3 + 4, 0x51a7) * Math.PI * 2, r * 2 - 1,
+          boxes, smash, `${cx},${cz}:S${id}`)
       }
     }
   }
@@ -647,17 +786,36 @@ const scatter = (
 
 /* ----------------------------------------------------------------- build */
 
+/**
+ * How a chunk announces itself (world/fade.ts). `at` is the wind clock's now;
+ * `from` — set on a tier upgrade — is the tier already on screen, and gates
+ * the fade to the slices that tier didn't have: fading a whole replacement
+ * would blink roads and trees the player was already looking at.
+ */
+export interface ChunkFade {
+  at: number
+  from?: Tier
+}
+
 export const buildChunk = (
-  cx: number, cz: number, tier: Tier, mats: ChunkMats,
+  cx: number, cz: number, tier: Tier, mats: ChunkMats, fade?: ChunkFade,
 ): Chunk => {
   const group = new THREE.Group()
   const geos: THREE.BufferGeometry[] = []
   const boxes: Solid[] = []
   const lamps: Array<{ x: number; y: number; z: number }> = []
 
+  // birth stamps per slice: the base (ground, water, roads, buildings, glass)
+  // fades only on a brand-new chunk, flora only when the old tier had none,
+  // and cover — which only 'full' builds — is new whenever anything fades
+  const at = fade?.at ?? PREBORN
+  const baseBirth = fade?.from === undefined ? at : PREBORN
+  const floraBirth = fade?.from !== 'flora' ? at : PREBORN
+
   const ground = buildGround(cx, cz)
   if (ground.geo) {
     geos.push(ground.geo)
+    bakeBirth(ground.geo, baseBirth)
     const m = new THREE.Mesh(ground.geo, mats.ground)
     m.receiveShadow = true
     group.add(m)
@@ -678,6 +836,7 @@ export const buildChunk = (
       depth[i] = SEA_Y - terrainY(wp.getX(i), wp.getZ(i))
     }
     g.setAttribute('aDepth', new THREE.BufferAttribute(depth, 1))
+    bakeBirth(g, baseBirth)
     geos.push(g)
     const m = new THREE.Mesh(g, mats.water)
     m.renderOrder = 1
@@ -687,9 +846,15 @@ export const buildChunk = (
   const detail = createMeshBuilder()
   const glass = createMeshBuilder()
   const leaves = createMeshBuilder(true)
-  const out: BuildOut = { solid: detail, glass, boxes, lamps, detailed: tier !== 'bare' }
+  const interiors: InteriorRect[] = []
+  const doors: ShopDoorSpec[] = []
+  const props: Smashable[] = []
+  const out: BuildOut = {
+    solid: detail, glass, boxes, lamps, interiors, doors, smash: props,
+    detailed: tier !== 'bare',
+  }
 
-  const poles = buildRoads(cx, cz, detail, glass, out.detailed)
+  const poles = buildRoads(cx, cz, detail, glass, out.detailed, props)
   buildBlock(cx, cz, out, ground, leaves)
   // everything in `boxes` at this point is a building — the roads register
   // theirs separately and the scatter has not run yet — so this is the
@@ -697,23 +862,49 @@ export const buildChunk = (
   // rooms. The lamp posts join afterwards: they collide, but clearing three
   // units of flora around each one would leave a bald ring down every verge
   const built = boxes.slice()
+  // ...and an enterable interior is a footprint with no box over most of it
+  // (its walls register individually so the doorway stays open), so it joins
+  // the scatter's keep-out list as a phantom: never collided with, only read
+  // for its x/z extents here
+  for (const r of interiors) {
+    built.push(new THREE.Box3(
+      new THREE.Vector3(r.minX, 0, r.minZ), new THREE.Vector3(r.maxX, 0, r.maxZ),
+    ))
+  }
   for (const p of poles) boxes.push(p)
-  if (tier !== 'bare') {
-    scatter(cx, cz, ground, built, detail, leaves, boxes, false)
-    if (tier === 'full') scatter(cx, cz, ground, built, detail, leaves, null, true)
+  // the builders' vertex counts, snapshotted between passes, are what turn
+  // one merged soup into separately-born slices for the fade attribute
+  const dFlora = detail.count
+  const lFlora = leaves.count
+  if (tier !== 'bare') scatter(cx, cz, ground, built, detail, leaves, boxes, props, false)
+  const dCover = detail.count
+  const lCover = leaves.count
+  if (tier === 'full') scatter(cx, cz, ground, built, detail, leaves, null, null, true)
+
+  /** base up to `m1`, flora up to `m2`, cover after — each at its own birth */
+  const slicedBirth = (g: THREE.BufferGeometry, m1: number, m2: number) => {
+    const a = new Float32Array(g.getAttribute('position').count)
+    a.fill(baseBirth, 0, m1)
+    a.fill(floraBirth, m1, m2)
+    a.fill(at, m2)
+    g.setAttribute('aBirth', new THREE.BufferAttribute(a, 1))
   }
 
+  const smash: SmashSet = { key: `${cx},${cz}`, meshes: {}, props }
   const dg = detail.build()
   if (dg) {
     geos.push(dg)
+    slicedBirth(dg, dFlora, dCover)
     const dm = new THREE.Mesh(dg, mats.detail)
     dm.castShadow = true
     dm.receiveShadow = true
     group.add(dm)
+    smash.meshes.detail = dm
   }
   const lg = leaves.build()
   if (lg) {
     geos.push(lg)
+    slicedBirth(lg, lFlora, lCover)
     const lm = new THREE.Mesh(lg, mats.leaf)
     lm.castShadow = true
     lm.receiveShadow = true
@@ -721,20 +912,28 @@ export const buildChunk = (
     // shadow of a solid card deck
     lm.customDepthMaterial = mats.leafDepth
     group.add(lm)
+    smash.meshes.leaf = lm
   }
   const gg = glass.build()
   if (gg) {
     geos.push(gg)
+    bakeBirth(gg, baseBirth)
     const m = new THREE.Mesh(gg, mats.glass)
     m.renderOrder = 2
     group.add(m)
+    smash.meshes.glass = m
   }
 
   group.updateMatrixWorld(true)
   group.traverse((o) => {
     o.matrixAutoUpdate = false
   })
-  return { cx, cz, tier, group, geos, boxes, lamps }
+  // door ids are position-stable across rebuilds, so the session's open/shut
+  // state survives a tier change or a ring exit and return
+  doors.forEach((d, i) => {
+    d.id = `${cx},${cz}:${i}`
+  })
+  return { cx, cz, tier, group, geos, boxes, lamps, interiors, doors, smash }
 }
 
 /**

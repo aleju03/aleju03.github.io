@@ -1,11 +1,12 @@
 import * as THREE from 'three'
 import { canvasTexture } from '../core/textures'
 import { seeded } from '../core/rand'
-import { noise2, rand2 } from './noise'
-import { inYard } from './grid'
-import { SEA_Y, biomeAt, terrainY } from './terrain'
-import { BIOMES, type BiomeId } from './biomes'
+import { rand2 } from './noise'
+import { inYard, onHomeHardscape } from './grid'
+import { SEA_Y, biomeAt, groundColorAt, terrainY } from './terrain'
+import type { BiomeId } from './biomes'
 import { pavedAt, placeAt, roadAt } from './settlements'
+import { insideInterior } from './interiors'
 import { gfx } from './quality'
 import { applySway } from './wind'
 
@@ -45,12 +46,17 @@ import { applySway } from './wind'
     (The proper version — and the wind, arc bend and fresnel rim in wind.ts —
     follows the same recipe as cortiz2894/stylized-components' GrassField,
     MIT © Christian Ortiz, rebuilt on this project's onBeforeCompile spine.)
-  - the vertex colour runs dark at the root to bright and *warm* at the tip —
-    sun-dried ends over a damp base — and the per-blade instance colour is
-    sampled from the ground underneath: the biome palette out in the wild,
-    pulled toward the same concrete grey the terrain tint uses where a town
-    has partly paved it. When the blades and the ground read different
-    numbers, every verge in town was neon turf standing in cement.
+  - the instance colour *is* the ground: terrain.ts's groundColorAt, the same
+    lattice interpolation the terrain mesh renders, times the ground detail
+    map's average brightness, and the vertex gradient then runs from that
+    colour at the root to bright and *warm* at the tip — sun-dried ends over
+    a damp base. This is the one trick doing most of the work in the look
+    this field is chasing (cortiz2894's GrassField demo, where blades and
+    ground are indistinguishable): blade and soil are the same number by
+    construction, so nothing can drift. When each derived its own colour —
+    blades from the biome's leaf palette, ground from its tint pair — every
+    meadow's turf read as bright litter scattered on darker felt, and every
+    verge in town was neon turf standing in cement.
   - the yaw lives in an instanced attribute rather than in the instance
     matrix, so wind.ts can resolve the bend in world space before the blade's
     own facing is applied. Otherwise every blade bends along its own axis and
@@ -61,9 +67,12 @@ import { applySway } from './wind'
   swaying with the same wind. A meadow with a dozen flowers in view reads as
   alive; one with none reads as a golf course.
 
-  Slots that land on a road, in the sea, on the reserved property or in a
+  Slots that land on a road, in the sea, on the home yard's hardscape or in a
   biome with no grass collapse to zero scale rather than being removed — a
   fixed instance count means the buffers are allocated once and never resized.
+  The yard itself grows this same turf (shorter — somebody mows it), because
+  its old authored tufts read as a different, darker plant than the field
+  starting at the fence line.
 */
 
 /*
@@ -123,6 +132,13 @@ const FLOWERS: Partial<Record<BiomeId, number>> = {
 
 const FLOWER_TINTS = ['#ffffff', '#ffe9a8', '#eeb7c8', '#c9d9ff']
 
+/** the ground multiplies its vertex colour by a tiling detail map that
+    averages a little under white; blades carry no map, so their instance
+    colour is scaled by the same flat average streamer.ts hands the prop
+    material (0xe0e0e0), or matched palettes render visibly paler than the
+    soil — which is what turned the first savanna into straw */
+const DETAIL_K = new THREE.Color(0xe0e0e0).r
+
 export interface GrassHandles {
   /** re-place whatever slots the player just walked off the edge of */
   update: (x: number, z: number) => void
@@ -166,10 +182,13 @@ const bladeGeometry = () => {
         const lz = lean * b.s
         pos.push(b.dx + lx * ca - lz * sa, t * b.s, b.dz + lx * sa + lz * ca)
         nor.push(0, 1, 0)
-        // root dark and cool, tip bright and warm: the gradient does the work
-        // a translucency term would, for none of the cost
-        const k = 0.72 + t * t * 0.5
-        col.push(k * (0.92 + 0.12 * t), k * 1.05, k * (0.88 - 0.16 * t))
+        // the root is the ground colour itself, only shadowed a shade — the
+        // instance colour is the drawn terrain under the clump, and the join
+        // between soil and turf is exactly where a hue shift would show —
+        // and the tip dries bright and warm: the gradient does the work a
+        // translucency term would, for none of the cost
+        const k = 0.92 + t * t * 0.5
+        col.push(k * (1 + 0.1 * t), k, k * (1 - 0.22 * t))
       }
     }
     for (let i = 0; i < rows - 1; i++) {
@@ -304,7 +323,6 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
   const q = new THREE.Quaternion() // stays identity: the yaw is a shader job
   const s = new THREE.Vector3()
   const c = new THREE.Color()
-  const c2 = new THREE.Color()
   const hidden = new THREE.Vector3(0, 0, 0)
   const qf = new THREE.Quaternion()
   const e = new THREE.Euler()
@@ -329,6 +347,10 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
     applySway(mat, {
       amplitude: 0.42, weight: 'localY', instancedYaw: true, rim: 0.85, fadeRadius: HALF,
       upNormals: true,
+      // amp is in blade-local units, which xz-scale by the blade's *width*:
+      // 2.2 widths of sideways push lays the tip over by about a third of a
+      // metre, and the drop sinks it to roughly half height under a boot
+      trample: { amp: 2.2, drop: 0.45 },
     })
     trackDisposable(geo)
     trackDisposable(mat)
@@ -362,9 +384,13 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
       const x = i * step + jitterX * step * 1.6
       const z = j * step + jitterZ * step * 1.6
 
-      // blades stop at the fence, not at the reserved margin: the lawn inside
-      // is authored, but the strip around it grows the same turf as the street
-      let ok = !inYard(x, z, 0.6)
+      // the yard grows this same turf now — its old authored tufts were a
+      // darker, spikier grass standing on a lawn that matched neither, and
+      // the fence line read as a seam between two art styles. Inside the
+      // fence the field only respects the hardscape (house, porch, walk,
+      // stones) and skips the paved logic: a fenced lawn is never a verge
+      const yard = inYard(x, z, 0.6)
+      let ok = !yard || !onHomeHardscape(x, z)
       let y = 0
       let biome: BiomeId = 'plains'
       let paved = 0
@@ -377,15 +403,24 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
         if (!GRASS_HEIGHT[biome]) ok = false
       }
       if (ok) {
-        const place = placeAt(x, z)
-        const road = roadAt(x, z, place)
-        // grass grows exactly where the ground is not paved, using the same
-        // number the ground colour reads. They disagreed before, and the
-        // result was green tufts standing in bare concrete on every street
-        paved = pavedAt(place, road)
-        if (paved > 0.3) ok = false
-        else if (paved > 0 && rand2(i, j, 0x2b19) < paved * 2.2) ok = false
+        // the drawn ground colour and pavedness under this clump, off the
+        // same lattice interpolation the terrain mesh renders. Gating on the
+        // exact pavedAt field was the verge bug's last hiding place: ground
+        // colour lives on a 4-unit lattice, so the urban grey bleeds a full
+        // cell past where pavedAt says the concrete stops, and blades gated
+        // on the exact number stood bright green on ground that had already
+        // faded to white. A fenced lawn is never a verge, so the yard keeps
+        // its turf whatever the street outside is doing
+        const drawnPaved = groundColorAt(x, z, c)
+        if (!yard) {
+          paved = drawnPaved
+          if (paved > 0.42) ok = false
+          else if (paved > 0 && rand2(i, j, 0x2b19) < paved * 1.9) ok = false
+        }
       }
+      // never inside a building you can walk into: an enterable shop's floor
+      // is open air to this field, and blades grew up through the planks
+      if (ok && insideInterior(x, z, 0.3)) ok = false
       if (!ok) {
         m.compose(hidden, q, s.set(0, 0, 0))
         mesh.setMatrixAt(id, m)
@@ -394,7 +429,10 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
 
       const [lo, hi] = GRASS_HEIGHT[biome]!
       const r = rand2(i, j, 0x9c4d)
-      const h = lo + (hi - lo) * r
+      // the yard is the one lawn somebody mows; on town ground the turf
+      // shortens as the drawn pavedness rises, down to stubble where the
+      // concrete takes over, so a verge reads as worn rather than planted
+      const h = (lo + (hi - lo) * r) * (yard ? 0.7 : 1 - paved * 1.2)
       // the far field's blades are fatter. Past a dozen units a blade is a
       // couple of pixels and nobody reads it as a blade — what it contributes
       // is coverage, and coverage is what the sparse lattice is short of. The
@@ -407,31 +445,13 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
       blade[id * 2] = rand2(i, j, 0x3ea7) * Math.PI * 2
       blade[id * 2 + 1] = rand2(i, j, 0x1d55) * Math.PI * 2
 
-      // The blade takes its colour from the ground it grows out of — the
-      // cheapest way to keep a biome boundary from showing as a line where
-      // the grass stops matching the terrain. It is pulled toward the *darker*
-      // of the biome's two tints and scaled by the same factor the prop
-      // material carries, because the ground multiplies its colour by a detail
-      // map and grass has none: matched palettes rendered raw come out visibly
-      // paler than the ground, which turned the first savanna into straw.
-      const pal = BIOMES[biome]
-      c.set(pal.pal.leaf)
-      c2.set(pal.tint[1])
-      c.lerp(c2, 0.34)
-      // broad drifts of sun-dried straw wander across every wild field — the
-      // environmental patch value from cortiz2894's GrassField, sampled
-      // CPU-side per clump instead of in the shader. One low-frequency noise,
-      // squared so only its crests bleach, is most of what separates a painted
-      // meadow from a green carpet
-      if (paved <= 0) {
-        const patch = noise2(x * 0.041, z * 0.041, 0x77aa)
-        c.lerp(c2.set('#a89a58'), patch * patch * 0.5)
-      }
-      // a lawn on half-paved ground dulls toward the same concrete grey the
-      // terrain tint mixes in, so verge grass belongs to its verge
-      if (paved > 0) c.lerp(c2.set('#6f6f66'), paved * 0.55)
-      const k = (0.86 + rand2(i, j, 0x64b2) * 0.36) * 0.94
-      mesh.instanceColor!.setXYZ(id, c.r * k, c.g * k, c.b * (k * 0.9))
+      // the blade is painted with the pixel of ground it grows out of —
+      // groundColorAt filled `c` above, straw drifts, paved fade and biome
+      // blends included, since all of those live in the shared lattice now.
+      // The only corrections are the detail map's average (DETAIL_K) and a
+      // small per-blade jitter standing in for the map's mottle
+      const k = DETAIL_K * (0.92 + rand2(i, j, 0x64b2) * 0.16)
+      mesh.instanceColor!.setXYZ(id, c.r * k, c.g * k, c.b * k)
     }
 
     const scroll = makeLattice(side, step, fill)
@@ -461,6 +481,10 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
   })
   applySway(flowerMat, {
     amplitude: 0.26, weight: 'localY', fadeRadius: F_HALF, upNormals: true,
+    // flowers scale uniformly, so these are near-world units: a brushed
+    // flower jostles aside rather than flattening. Its instance yaw rotates
+    // the push off true radial, which the motion is too brief to betray
+    trample: { amp: 0.7, drop: 0.28 },
   })
   trackDisposable(flowerGeo)
   trackDisposable(flowerMat)
@@ -497,6 +521,7 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
         const place = placeAt(x, z)
         if (pavedAt(place, roadAt(x, z, place)) > 0.05) ok = false
       }
+      if (ok && insideInterior(x, z, 0.3)) ok = false
     }
     if (!ok) {
       m.compose(hidden, q, s.set(0, 0, 0))

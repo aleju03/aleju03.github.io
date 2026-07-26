@@ -935,8 +935,15 @@ export default function CrtScene({
           fleet.enter(v, camera, walk.yaw, walk.pitch)
           walk.resetMotion()
           rig.reset()
+          rig.sit()
           chase.drop()
-          body.visible = false
+          // This is the same articulated avatar used on foot, not a vehicle's
+          // approximation of it. The seat owns position and vehicle attitude;
+          // the rig owns the one shared seated pose.
+          v.driverSeat.add(body)
+          body.position.set(0, 0, 0)
+          body.rotation.set(0, Math.PI, 0)
+          body.visible = true
           vehicleNow = null
           setVehiclePrompt(null)
           setDriving({ id, label: v.label, cockpit: fleet.cockpit })
@@ -957,6 +964,9 @@ export default function CrtScene({
           walk.spawnAt(spot.x, spot.z, spot.yaw, spot.feetY)
           // spawnAt levels the pitch; keep the view the player actually had
           walk.pitch = spot.pitch
+          // Leave the vehicle hierarchy before poseBody writes world-space
+          // coordinates back into the walking rig.
+          scene?.add(body)
           rig.reset()
           rig.face(spot.yaw)
           poseBody()
@@ -1190,7 +1200,7 @@ export default function CrtScene({
               return true
             }
             if (doorVerbNow) {
-              house.useDoor(headPos, headDir)
+              if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
               return true
             }
             if (vehicleNow) {
@@ -1437,6 +1447,10 @@ export default function CrtScene({
           const vNow = input.keys.has('KeyV')
           if (vNow && !vHeld && !pausedNow) {
             fleet.toggleView()
+            // A cockpit lens sits at the avatar's face. Hide the body in that
+            // view so its head cannot occlude the windscreen; chase view shows
+            // the complete seated player.
+            body.visible = !fleet.cockpit
             setDriving((d) => (d ? { ...d, cockpit: fleet.cockpit } : d))
           }
           vHeld = vNow
@@ -1711,11 +1725,13 @@ export default function CrtScene({
             setNear(isNear)
           }
           // a door in reach offers its own prompt; the machine's wins (and
-          // level 0 has no doors, whatever its x/z coordinates suggest)
+          // level 0 has no doors, whatever its x/z coordinates suggest).
+          // The house answers first, then the town's shop doors
           const verb =
             isNear || rig.down || level.id !== 'overworld'
               ? null
-              : house.doorPrompt(camera.position, gazeVec)
+              : house.doorPrompt(camera.position, gazeVec) ??
+                outside.doorPrompt(camera.position, gazeVec)
           if (verb !== doorVerbNow) {
             doorVerbNow = verb
             setDoorVerb(verb)
@@ -1789,9 +1805,12 @@ export default function CrtScene({
           So compile the sun-lit surface variants asynchronously, then do one
           render with the sun map flagged into a one-pixel viewport. The depth
           programs only exist when Three performs a real shadow pass, so
-          compileAsync alone cannot cover them. It is the same total cost
-          either way — the only choice is whether it is paid behind the boot
-          cover or in someone's face on the doorstep.
+          compileAsync alone cannot cover them. The car's two headlight spots
+          are the other thresholded program layout: expose them at zero
+          intensity for a second compile and the first dusk can reuse that
+          cached variant instead of linking the whole lit world in one frame.
+          It is the same total cost either way — the only choice is whether it
+          is paid behind the boot cover or in someone's face on the doorstep.
         */
         const warmCam = new THREE.PerspectiveCamera(110, 1, 0.1, 900)
         const warmSize = new THREE.Vector2()
@@ -1825,12 +1844,23 @@ export default function CrtScene({
             // parallel while BootCover continues animating on the compositor.
             await webgl.compileAsync(scene, warmCam).catch(() => {})
             if (disposed || !webgl || !scene) return
-            webgl.getSize(warmSize)
-            webgl.setScissorTest(true)
-            webgl.setScissor(0, 0, 1, 1)
-            webgl.setViewport(0, 0, 1, 1)
-            outside.sun.shadow.needsUpdate = true
-            webgl.render(scene, warmCam)
+            // At dusk the car adds two visible SpotLights. Their count is a
+            // shader define, so compile and first-draw that layout now while
+            // BootCover still owns the screen. The helper restores the live
+            // day-cycle visibility even if compilation or teardown interrupts.
+            fleet.setLightWarmup(true)
+            try {
+              await webgl.compileAsync(scene, warmCam).catch(() => {})
+              if (disposed || !webgl || !scene) return
+              webgl.getSize(warmSize)
+              webgl.setScissorTest(true)
+              webgl.setScissor(0, 0, 1, 1)
+              webgl.setViewport(0, 0, 1, 1)
+              outside.sun.shadow.needsUpdate = true
+              webgl.render(scene, warmCam)
+            } finally {
+              fleet.setLightWarmup(false)
+            }
           } finally {
             if (webgl) {
               webgl.setScissorTest(false)
@@ -1917,6 +1947,10 @@ export default function CrtScene({
           // out of whatever you were driving first: the engine has to stop,
           // and `levels.reset()` below hauls the walker home whether or not a
           // car came with it
+          // sleep() can dismount without going through leaveVehicle(); detach
+          // the shared avatar first so the next walk does not inherit a seat's
+          // local coordinate system.
+          scene?.add(body)
           fleet.sleep()
           walk.resetMotion()
           rig.reset()
@@ -2012,7 +2046,7 @@ export default function CrtScene({
         }
         // the door prompt button routes here (E does the same via input)
         doorRef.current = () => {
-          house.useDoor(headPos, headDir)
+          if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
         }
         enterRef.current = () => {
           if (vehicleNow) enterVehicle(vehicleNow.id)
