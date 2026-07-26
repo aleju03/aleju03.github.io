@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
 import { sounds } from './sounds'
-import { authRequest } from './chatRooms'
+import { authRequest, resumeRequest } from './chatRooms'
 import { AlejLogo } from './AlejLogo'
 import { xpIcon } from './xpIcon'
 import type { Session } from './osContext'
-import { loadStoredSession, storeSession } from './session'
+import { clearStoredSession, loadStoredSession, storeSession } from './session'
 
 /*
   The AlejOS welcome screen, in the spirit of the XP login: dark blue bands
@@ -13,6 +13,11 @@ import { loadStoredSession, storeSession } from './session'
   accounts live in the chat server's SQLite (register once, your name is
   yours in the chat rooms); Guest always works, server or no server. A
   previously signed-in user gets their tile back for one-click entry.
+
+  That tile is a cache of the server's decision, so it is checked against the
+  server before the desktop comes up — see resumeRequest(). Entering on an
+  unverified token is how a dead session used to turn into an ejection three
+  clicks later, when the first app opened a socket and heard `badToken`.
 */
 
 interface TileProps {
@@ -21,14 +26,16 @@ interface TileProps {
   title: string
   sub: string
   onClick: () => void
+  disabled?: boolean
 }
 
-function Tile({ img, title, sub, onClick }: TileProps) {
+function Tile({ img, title, sub, onClick, disabled }: TileProps) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="group flex w-full cursor-pointer items-center gap-3.5 px-3 py-2 text-left"
+      disabled={disabled}
+      className="group flex w-full cursor-pointer items-center gap-3.5 px-3 py-2 text-left disabled:cursor-default disabled:opacity-70"
     >
       <span className="h-[54px] w-[54px] shrink-0 rounded-[4px] border border-white/50 bg-gradient-to-b from-white to-[#d8e2f8] p-[3px] shadow-[1px_1px_3px_rgba(0,0,30,0.4)] transition group-hover:border-white group-hover:shadow-[0_0_14px_rgba(255,233,160,0.7)]">
         <img
@@ -53,18 +60,48 @@ function Tile({ img, title, sub, onClick }: TileProps) {
 interface LoginScreenProps {
   onLogin: (session: Session) => void
   onShutdown: () => void
+  /** why we are back here, when the visitor did not ask to be */
+  notice?: string
 }
 
-export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
+export function LoginScreen({ onLogin, onShutdown, notice }: LoginScreenProps) {
   const [mode, setMode] = useState<'pick' | 'signin' | 'register'>('pick')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const [resuming, setResuming] = useState(false)
+  const [error, setError] = useState(notice ?? '')
+  // read every render, so clearing a dead session takes its tile away with it
   const saved = loadStoredSession()
 
   const enter = (session: Session) => {
     storeSession(session)
     sounds.startup()
     onLogin(session)
+  }
+
+  /**
+   * The welcome tile: confirm the saved token with the server first, and take
+   * the name and the admin badge from its answer rather than from the copy in
+   * localStorage, which may be older than the account it describes.
+   */
+  const resume = async (session: Session) => {
+    if (resuming || !session.token) return
+    sounds.click()
+    setResuming(true)
+    const r = await resumeRequest(session.token)
+    setResuming(false)
+    if (r.ok) {
+      enter({ kind: 'user', name: r.name, token: session.token, admin: r.admin })
+      return
+    }
+    if (!r.expired) {
+      // the account server is unreachable; the desktop is not, so come in
+      enter(session)
+      return
+    }
+    clearStoredSession()
+    sounds.error()
+    setError(`The saved session for ${session.name} expired. Sign in again.`)
+    setMode('signin')
   }
 
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -136,18 +173,23 @@ export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
           >
             {mode === 'pick' ? (
               <>
+                {error && (
+                  <p className="mb-1 px-3 text-[11px] leading-snug text-amber-300">{error}</p>
+                )}
                 {saved && (
                   <Tile
                     img={saved.admin ? '/os/pictures/chess.png' : '/os/pictures/ball.png'}
                     title={saved.name}
-                    sub="click to sign back in"
-                    onClick={() => enter(saved)}
+                    sub={resuming ? 'checking your session…' : 'click to sign back in'}
+                    onClick={() => void resume(saved)}
+                    disabled={resuming}
                   />
                 )}
                 <Tile
                   img="/os/pictures/accounts.png"
                   title="Sign in or register"
                   sub="make a name for yourself"
+                  disabled={resuming}
                   onClick={() => {
                     sounds.click()
                     setError('')
@@ -158,6 +200,7 @@ export function LoginScreen({ onLogin, onShutdown }: LoginScreenProps) {
                   img="/os/pictures/duck.png"
                   title="Guest"
                   sub="just looking around"
+                  disabled={resuming}
                   onClick={() => enter({ kind: 'guest', name: 'guest' })}
                 />
               </>

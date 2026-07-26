@@ -8,6 +8,9 @@ import { sessionExpired } from './session'
 
   - authRequest(): one-shot register/login over a short-lived socket, used
     by the boot login screen. Resolves with a token the server minted.
+  - resumeRequest(): the same shape for a token we already hold, so the
+    welcome tile can ask the server whether the saved session is still real
+    before the desktop acts on it.
   - useRoomChat(): the live connection for the Chat Rooms app — join a room,
     stream messages, watch who is online and who is typing.
 
@@ -125,6 +128,77 @@ export function authRequest(
     }
     ws.onerror = () => done({ ok: false, error: 'Could not reach the account server.' })
     ws.onclose = () => done({ ok: false, error: 'Connection closed before the server answered.' })
+  })
+}
+
+export type ResumeResult =
+  /** the server resumed the token; name and badge are its answer, not ours */
+  | { ok: true; name: string; admin: boolean }
+  /** the server does not know this token — the saved session is dead */
+  | { ok: false; expired: true }
+  /** no answer: unreachable, timed out, or no server configured at all */
+  | { ok: false; expired: false }
+
+const RESUME_TIMEOUT_MS = 5000
+
+/**
+ * Ask the server whether a saved token still resolves to an account.
+ *
+ * The welcome tile used to enter on whatever localStorage held, which is a
+ * cache of a decision only the server gets to make. When the token was dead
+ * the desktop came up anyway and the first socket to open — chat, a game,
+ * peeko, standing up into the world — came back with `badToken` and threw the
+ * visitor out mid-session. Same rejection, but now it happens on the login
+ * screen where it reads as "sign in again" instead of as a random ejection.
+ *
+ * An unreachable server is deliberately *not* an expiry: the desktop runs
+ * offline, and refusing entry because a VPS is down would be a worse lie than
+ * the optimistic one. Only an actual `badToken` clears the session.
+ */
+export function resumeRequest(token: string): Promise<ResumeResult> {
+  return new Promise((resolve) => {
+    if (!CHAT_URL) {
+      resolve({ ok: false, expired: false })
+      return
+    }
+    let settled = false
+    const done = (result: ResumeResult) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        ws.close()
+      } catch {
+        /* already closed */
+      }
+      resolve(result)
+    }
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(CHAT_URL)
+    } catch {
+      resolve({ ok: false, expired: false })
+      return
+    }
+    const timer = window.setTimeout(() => done({ ok: false, expired: false }), RESUME_TIMEOUT_MS)
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', token }))
+    ws.onmessage = (ev) => {
+      let data: Record<string, unknown>
+      try {
+        data = JSON.parse(String(ev.data))
+      } catch {
+        return
+      }
+      if (data.type !== 'hello-ok') return
+      const user = data.user as { name: string; admin: boolean } | null
+      if (data.badToken || !user) {
+        done({ ok: false, expired: true })
+        return
+      }
+      done({ ok: true, name: user.name, admin: Boolean(user.admin) })
+    }
+    ws.onerror = () => done({ ok: false, expired: false })
+    ws.onclose = () => done({ ok: false, expired: false })
   })
 }
 

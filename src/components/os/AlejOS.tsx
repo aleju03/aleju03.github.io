@@ -499,6 +499,10 @@ export default function AlejOS({
   // what was actually showing (turning off at login must not flash the desktop)
   const [downFrom, setDownFrom] = useState<Phase>('on')
   const [session, setSession] = useState<Session | null>(null)
+  // why the login screen is up, when it is up for a reason the visitor did not
+  // choose: an expired session hands back the welcome screen, and doing that
+  // without a word is what makes it read as "it logged me out for no reason"
+  const [loginNotice, setLoginNotice] = useState('')
   const [wins, setWins] = useState<OsWin[]>([])
   const [activeId, setActiveId] = useState('')
   const [startOpen, setStartOpen] = useState(false)
@@ -892,7 +896,8 @@ export default function AlejOS({
     })
   }, [])
 
-  const logOff = useCallback(() => {
+  /** back to the welcome screen; `notice` explains an involuntary trip there */
+  const logOff = useCallback((notice = '') => {
     sounds.close()
     setWins([])
     setActiveId('')
@@ -901,6 +906,7 @@ export default function AlejOS({
     setSelected(new Set())
     setSession(null)
     setViewer(null)
+    setLoginNotice(notice)
     setPhase('login')
   }, [])
 
@@ -908,11 +914,13 @@ export default function AlejOS({
   // session is over whether or not the desktop knew it. Staying in it silently
   // acts as a guest (arcade scores land on the boards under a guest name,
   // peeko refuses to load), so hand back the login screen instead of showing a
-  // name the server will not use.
+  // name the server will not use. Say why: this fires on the first socket an
+  // app happens to open, which from the desk looks like being thrown out at
+  // random minutes after signing in.
   useEffect(() => {
     const expire = () => {
       if (phaseRef.current === 'off' || phaseRef.current === 'login') return
-      logOff()
+      logOff('The account server no longer recognises that session. Sign in again.')
     }
     window.addEventListener(SESSION_EXPIRED_EVENT, expire)
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expire)
@@ -924,7 +932,7 @@ export default function AlejOS({
       if (isAppId(app)) openApp(app, props)
     },
     openPath,
-    logOff,
+    logOff: () => logOff(),
     shutdown: () => shutdown(),
   }
 
@@ -1314,7 +1322,7 @@ export default function AlejOS({
                 <li>
                   <button
                     type="button"
-                    onClick={logOff}
+                    onClick={() => logOff()}
                     className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
                   >
                     <UserIcon size={18} className="text-blue-700" />
@@ -1423,7 +1431,9 @@ export default function AlejOS({
       <BootScreen />
     ) : phase === 'login' ? (
       <LoginScreen
+        notice={loginNotice}
         onLogin={(s) => {
+          setLoginNotice('')
           setSession(s)
           // registered visitors get their name on subsequent events; it is
           // also how the server keeps my own testing out of the live feed
