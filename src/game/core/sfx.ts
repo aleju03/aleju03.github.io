@@ -37,6 +37,12 @@ const audio = (): AudioContext | null => {
   }
 }
 
+/** the same lazy context, for the browser-side audio that lives outside this
+    module — proximity voice hangs its listener and its panners here rather
+    than opening a second context, since a page only gets a handful. Returns
+    null headless, exactly like every sound below. */
+export const sharedAudio = audio
+
 /* ---------------------------------------------------------- recorded -- */
 
 type Clip = `door-${'open' | 'close' | 'latch'}-${1 | 2 | 3}`
@@ -150,10 +156,18 @@ const thump = (a: AudioContext, at: number, f0: number, gain: number, dur: numbe
   o.stop(at + dur + 0.02)
 }
 
-export type StepSurface = 'wood' | 'stone' | 'grass' | 'carpet'
+export type StepSurface =
+  | 'wood' | 'stone' | 'grass' | 'carpet'
+  | 'sand' | 'snow' | 'asphalt' | 'water'
 
 /* per-surface voicing: bandpass center for the scuff, its width and length,
-   and how much tonal knock rides underneath */
+   and how much tonal knock rides underneath. The four outdoor surfaces came
+   with the open world and are voiced against the original four rather than
+   from scratch: sand is grass with the knock taken out and the scuff pushed
+   down, snow is a shorter, duller sand (a squeak with no ring under it),
+   asphalt is stone with the top end filed off, and water is a wide, wet
+   splash — the widest bandpass here, and the only one whose scuff outweighs
+   everything else in the mix. */
 const STEP: Record<
   StepSurface,
   { bp: number; q: number; dur: number; scuff: number; knock: number; knockF: number }
@@ -162,6 +176,10 @@ const STEP: Record<
   stone: { bp: 2300, q: 1.2, dur: 0.05, scuff: 0.034, knock: 0.024, knockF: 105 },
   grass: { bp: 850, q: 0.5, dur: 0.11, scuff: 0.055, knock: 0.008, knockF: 66 },
   carpet: { bp: 520, q: 0.5, dur: 0.09, scuff: 0.022, knock: 0.026, knockF: 58 },
+  sand: { bp: 720, q: 0.45, dur: 0.1, scuff: 0.046, knock: 0.004, knockF: 58 },
+  snow: { bp: 600, q: 0.7, dur: 0.07, scuff: 0.038, knock: 0.006, knockF: 52 },
+  asphalt: { bp: 1750, q: 1.0, dur: 0.055, scuff: 0.031, knock: 0.022, knockF: 96 },
+  water: { bp: 1150, q: 0.32, dur: 0.16, scuff: 0.07, knock: 0.005, knockF: 48 },
 }
 
 /** one sole landing; weight is the walk's gait (0..1), already crouch-scaled */

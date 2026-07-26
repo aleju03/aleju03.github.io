@@ -386,7 +386,85 @@ async function main() {
   );
   console.log('16b. timezone resolves a country when no geo header is present');
 
-  // 17. An admin session survives a restart. It used to live only in memory,
+  // 17. The open world: roster, level-scoped snapshots, chat and the WebRTC
+  //     signalling relay. The scoping assertion is the load-bearing one — a
+  //     visitor in the backrooms must not be shipped the overworld's crowd.
+  const w1 = connect(url);
+  const w2 = connect(url);
+  await Promise.all([w1.opened, w2.opened]);
+  w1.send({ type: 'hello', nick: 'walker-one' });
+  w2.send({ type: 'hello', nick: 'walker-two' });
+  await w1.nextOf('hello-ok', 'w1 hello');
+  await w2.nextOf('hello-ok', 'w2 hello');
+
+  w1.send({ type: 'world-join', level: 'overworld' });
+  const welcome1 = await w1.nextOf('world-welcome', 'first walker welcome');
+  assert.equal(welcome1.players.length, 0, 'first in is alone');
+  assert.ok(Number.isInteger(welcome1.you));
+  // voice needs somewhere to look for a path to its peers. STUN always; a TURN
+  // relay only where the deployment configured one, and never a static password
+  assert.ok(Array.isArray(welcome1.ice) && welcome1.ice.length > 0, 'ICE servers offered at join');
+  assert.ok(
+    welcome1.ice.every((s) => !s.credential),
+    'no TURN credential is minted when TURN_URLS is unset'
+  );
+
+  w2.send({ type: 'world-join', level: 'overworld' });
+  const welcome2 = await w2.nextOf('world-welcome', 'second walker welcome');
+  assert.deepEqual(
+    welcome2.players.map((p) => p.name),
+    ['walker-one'],
+    'the welcome carries who is already out there'
+  );
+  const entered = await w1.nextOf('world-enter', 'w1 sees w2 arrive');
+  assert.equal(entered.player.id, welcome2.you);
+  assert.equal(entered.player.name, 'walker-two');
+  assert.equal(entered.player.registered, false);
+
+  // a move reaches the other walker as a compact tuple, rounded on the wire
+  w2.send({ type: 'world-move', x: 12.3456, y: 1.5, z: -8, yaw: 1.5708, pitch: 0, gait: 0.5, f: 3 });
+  const tick = await w1.nextOf('world-tick', 'snapshot after a move');
+  const seen = tick.players.find((p) => p[0] === welcome2.you);
+  assert.ok(seen, 'the snapshot carries the walker that moved');
+  assert.equal(seen[1], 12.35, 'positions are rounded to centimetres');
+  assert.equal(seen[7], 3, 'pose flags survive the trip');
+
+  // stepping through a level seam takes you out of everyone else's snapshot
+  w2.send({ type: 'world-level', level: 'backrooms' });
+  const scoped = await w1.nextOf('world-tick', 'snapshot after the seam');
+  assert.deepEqual(
+    scoped.players.map((p) => p[0]),
+    [welcome1.you],
+    'a walker in another level is not in this one\'s snapshot'
+  );
+  w2.send({ type: 'world-level', level: 'overworld' });
+  await w1.nextOf('world-tick', 'snapshot after coming back');
+
+  w1.send({ type: 'world-chat', text: '  hello out there  ' });
+  const shout = await w2.nextOf('world-chat', 'world chat delivered');
+  assert.equal(shout.text, 'hello out there', 'chat is trimmed like room chat');
+  assert.equal(shout.id, welcome1.you);
+  assert.equal(shout.name, 'walker-one');
+
+  // voice signalling is relayed verbatim between two named peers
+  w1.send({ type: 'world-signal', to: welcome2.you, data: { sdp: 'v=0', kind: 'offer' } });
+  const signal = await w2.nextOf('world-signal', 'webrtc offer relayed');
+  assert.equal(signal.from, welcome1.you);
+  assert.deepEqual(signal.data, { sdp: 'v=0', kind: 'offer' });
+
+  // a signal aimed at nobody is dropped in silence, not punished: the sender
+  // must still be connected and usable afterwards
+  w1.send({ type: 'world-signal', to: 999_999, data: { sdp: 'v=0' } });
+  w1.send({ type: 'world-chat', text: 'still here' });
+  assert.equal((await w2.nextOf('world-chat', 'sender survived a stray signal')).text, 'still here');
+
+  w1.ws.close();
+  const exited = await w2.nextOf('world-exit', 'walker departure announced');
+  assert.equal(exited.id, welcome1.you);
+  w2.ws.close();
+  console.log('17. open world: roster, level-scoped snapshots, chat and voice signalling');
+
+  // 18. An admin session survives a restart. It used to live only in memory,
   //     so every deploy silently turned a still-logged-in admin into a guest:
   //     the browser kept a session it believed in, and everything that socket
   //     did afterwards — arcade scores especially — was filed under a guest
@@ -416,7 +494,7 @@ async function main() {
   // and analytics still recognises it as the admin
   reborn.send({ type: 'peeko-monitor', rangeHours: 24 });
   await reborn.nextOf('peeko-monitor', 'admin monitor after restart');
-  console.log('17. admin session survives a restart: score keeps the real name');
+  console.log('18. admin session survives a restart: score keeps the real name');
 
   reborn.ws.close();
   child.kill('SIGTERM');

@@ -822,9 +822,18 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
     exitSpot: { x: HOUSE.maxX - 0.75, z: ENTRY.z, yaw: Math.PI / 2 },
     // both seams are holes in a wall at floor level, and p carries the
     // player's feet — so a walk along a furniture top past the span keeps
-    // its footing instead of falling through into (or out of) level 0
+    // its footing instead of falling through into (or out of) level 0.
+    //
+    // The far x bound is not decoration. This was written as an open
+    // half-plane back when the outside was a closed neighbourhood you could
+    // not walk far into; against an endless world it became a trapdoor
+    // 1.8 units wide and infinitely long, and anyone strolling east down the
+    // suburb at z ~= 17 fell through the floor of the world into level 0.
+    // Every seam out here has to be a box.
     overEntry: (p) =>
-      p.y < 0.7 && p.x > HOUSE.maxX - 0.22 && p.z > NOCLIP.z0 + 0.08 && p.z < NOCLIP.z1 - 0.08,
+      p.y < 0.7 && p.y > -0.6 &&
+      p.x > HOUSE.maxX - 0.22 && p.x < HOUSE.maxX + 0.9 &&
+      p.z > NOCLIP.z0 + 0.08 && p.z < NOCLIP.z1 - 0.08,
     overExit: (p) =>
       p.y < BR.y + 0.7 &&
       p.x > EXIT_WALL.x - 0.4 &&

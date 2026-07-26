@@ -26,7 +26,13 @@ const MOVE_KEYS = new Set([
 ])
 // sprint and crouch modifiers; c is a crouch alias for anyone wary of
 // the browser eating ctrl chords. v and x ride along so the scene can
-// edge-detect the camera toggle and the ragdoll flop off the same set
+// edge-detect the camera toggle and the ragdoll flop off the same set, and
+// so do the multiplayer keys: t opens the chat line, m arms the microphone,
+// n swaps open-mic for push-to-talk, and b is the push-to-talk key itself —
+// the only one of them the scene reads as a held state rather than an edge.
+// F9 is the collision wireframe (collisionDebug.ts); it lives here rather than
+// behind a build flag because the thing it diagnoses — a solid that disagrees
+// with the geometry it stands for — only ever shows up in a real walk
 const MOD_KEYS = new Set([
   'ShiftLeft',
   'ShiftRight',
@@ -35,6 +41,11 @@ const MOD_KEYS = new Set([
   'KeyC',
   'KeyV',
   'KeyX',
+  'KeyT',
+  'KeyM',
+  'KeyN',
+  'KeyB',
+  'F9',
 ])
 
 export interface RoamInputOpts {
@@ -46,6 +57,10 @@ export interface RoamInputOpts {
   isLive: () => boolean
   /** the pause menu is up: the world ignores the keyboard */
   isPaused: () => boolean
+  /** the chat line has the keyboard. Unlike a pause this leaves the world
+      running and the mouse locked, so it also has to mute mouse-look —
+      otherwise typing a message spins the camera under the composer */
+  isTyping: () => boolean
   /** mouse-look delta; sign is -1 locked, +1 dragging */
   onTurn: (dx: number, dy: number, sign: 1 | -1) => void
   /** E while live; return true if it acted (consumes the key) */
@@ -70,7 +85,7 @@ export interface RoamInput {
 }
 
 export function createRoamInput(opts: RoamInputOpts): RoamInput {
-  const { dom, isActive, isLive, isPaused, onTurn, onUse, onEscResume, onLock } = opts
+  const { dom, isActive, isLive, isPaused, isTyping, onTurn, onUse, onEscResume, onLock } = opts
   const keys = new Set<string>()
   let locked = false
   let downPt: { moved: number } | null = null
@@ -99,6 +114,7 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
       return
     }
     if (isPaused()) return // the world ignores the keyboard under the menu
+    if (isTyping()) return // every key belongs to the chat line while it is up
     // movement keys register during the stand-up glide too, so a held W
     // starts the walk the very frame the controls go live
     if (MOVE_KEYS.has(e.code)) {
@@ -124,7 +140,7 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
     if (!locked) setCursor('grabbing')
   }
   const onPtrMove = (e: PointerEvent) => {
-    if (!isActive() || !isLive()) return
+    if (!isActive() || !isLive() || isTyping()) return
     if (locked) {
       onTurn(e.movementX, e.movementY, -1)
     } else if (downPt) {

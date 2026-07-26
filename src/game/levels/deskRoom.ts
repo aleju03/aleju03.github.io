@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import type { ModelLike } from './houseWorld'
-import { CEIL_H, HOUSE } from './houseWorld'
+import { CEIL_H, HOUSE, PART_X } from './houseWorld'
 import { addBoxFrom, noStand, padXZ } from '../physics/collision'
 
 /*
@@ -52,13 +52,22 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
   const deskTop = new THREE.Box3().setFromObject(desk.scene).max.y
   // Two solids, not one. The desk itself is a surface — you can hop onto it,
   // and its top has to be the real deskTop, so the pad is x/z only. The dead
-  // strip it denies behind itself runs back through the bedroom wall to
-  // z = -10, and that one is emphatically not a floor: standing on it past
-  // the wall plane, the wall box would eject you out of the house.
+  // strip it denies behind itself runs back through the bedroom wall, and
+  // that one is emphatically not a floor: standing on it past the wall plane,
+  // the wall box would eject you out of the house.
+  //
+  // It used to run to a hard-coded z = -10, which was harmless for exactly as
+  // long as the world stopped at that wall. It does not any more: -10 is now
+  // out past the front yard, the fence, the pavement and the kerb, and lands
+  // in the middle of the street — where it was a six-unit-tall invisible wall
+  // across the road, and where it happened to be sitting on the car's parking
+  // spot, which is why the car could not pull away from the kerb in either
+  // direction. The strip only ever had to cover the wall it hides behind, so
+  // that is what it covers: the front wall plane plus its own 0.8 thickness.
   const deskBlock = padXZ(new THREE.Box3().setFromObject(desk.scene), 0.35)
   obstacles.push(deskBlock)
   obstacles.push(noStand(new THREE.Box3(
-    new THREE.Vector3(deskBlock.min.x, 0, -10),
+    new THREE.Vector3(deskBlock.min.x, 0, HOUSE.minZ - 0.6),
     new THREE.Vector3(deskBlock.max.x, CEIL_H, deskBlock.min.z),
   )))
 
@@ -270,7 +279,10 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
       shelf.add(book)
     }
   })
-  shelf.position.set(HOUSE.maxX - 0.38, 0, 6.45)
+  // against the bedroom's east partition. It hung on the house's outer east
+  // wall until that side of the room became the entry hall; the partition
+  // faces the room the same way, so only the x moved
+  shelf.position.set(PART_X - 0.38, 0, 6.45)
   scene.add(shelf)
   addBoxFrom(obstacles, shelf, 0.2)
   // noStand: a bookshelf tall enough that standing on it puts the eye

@@ -3,33 +3,38 @@ import type { HouseHandles } from './houseWorld'
 import type { BackroomsHandles } from './backrooms'
 import { BR } from './backrooms'
 import type { OutsideHandles } from './outsideWorld'
-import { WORLD } from './outsideWorld'
 import { makeCollisionSet } from '../physics/collision'
 import type { Level } from './types'
 
 /*
   The two levels the game ships today, adapted onto the Level contract:
 
-  - 'overworld' — the house, the yard, the neighborhood. Its collision set
-    is the shared obstacle list every builder registers into, bounded by
-    the edge of the neighborhood (with shoulder room). Its spawn is the
-    living-room spot the backrooms return you to.
+  - 'overworld' — the house, the yard, and an endless procedural world past
+    the fence. Its collision set is the shared obstacle list every builder
+    registers into, which the chunk streamer keeps topped up with the solids
+    of the nine chunks around the player. It has no bounds worth the name any
+    more: the clamp is set a million units out purely as floating-point
+    hygiene, because the thing that used to stop you at the edge of the
+    neighbourhood was the point of this whole rewrite. Its floor is a
+    function rather than a number (terrain), and it has a waterline, so the
+    walk swims when the sea is over your chest.
   - 'backrooms' — level 0 behind the doctored wall span. It brings its own
-    obstacle set (chunk-streamed), a floor far below the world, and a light
-    override that kills the sky while you're down there.
+    obstacle set (chunk-streamed), a flat floor far below the world, and a
+    light override that kills the sky while you're down there.
 
-  Depth alone doesn't separate them: the outside world's domes and celestial
-  bodies are drawn with fog off and frustum culling off, and the star dome's
-  230-unit radius still swallows a camera 120 below. So level 0 hides the
-  whole outside root while you're in it — otherwise every sight line that
-  escapes the streamed chunk ring (a band of near-horizontal rays that miss
-  both the chunk floor and its ceiling) frames a rectangle of night sky in
-  the fog. With the sky gone those pixels fall through to the scene
-  background, which the light override has already pinned to the fog color.
+  Depth alone doesn't separate them: the sky's domes and celestial bodies are
+  drawn with fog off and frustum culling off, and the star dome's radius still
+  swallows a camera 120 below. So level 0 hides the whole outside root while
+  you're in it — otherwise every sight line that escapes the streamed chunk
+  ring frames a rectangle of night sky in the fog. With the sky gone those
+  pixels fall through to the scene background, which the light override has
+  already pinned to the fog colour. Going down also stops the surface
+  streaming: the maze wanders far enough that the overworld would otherwise
+  keep rebuilding terrain around coordinates nobody is standing on.
 
-  Both keep the house and the backrooms modules ticking every frame no
-  matter which side you're on: doors keep easing shut upstairs while you're
-  below, and the seam keeps whispering upstairs while you're not.
+  Both keep the house and the backrooms modules ticking every frame no matter
+  which side you're on: doors keep easing shut upstairs while you're below,
+  and the seam keeps whispering upstairs while you're not.
 */
 
 export function makeHomeLevels(
@@ -41,20 +46,19 @@ export function makeHomeLevels(
   const overworld: Level = {
     id: 'overworld',
     groundY: 0,
-    // hard bounds are the edge of the neighborhood; the fences, walls and
-    // everything else in between are obstacle boxes
+    // the terrain, which is also exactly 0 across the property: the house is
+    // authored at y=0 and the generator holds a flat pad under it
+    groundYAt: outside.groundYAt,
+    waterY: outside.waterY,
     collision: makeCollisionSet(
-      {
-        minX: WORLD.minX + 0.55,
-        maxX: WORLD.maxX - 0.55,
-        minZ: WORLD.minZ + 0.55,
-        maxZ: WORLD.maxZ - 0.55,
-      },
+      { minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 },
       sharedObstacles,
     ),
     // where the return trip stands you back up in the living room
     spawn: backrooms.exitSpot,
-    enter: () => {},
+    enter: () => {
+      outside.setActive(true)
+    },
     leave: () => {},
     update: (dt, p) => {
       house.update(dt) // doors easing, fireflies drifting
@@ -76,14 +80,16 @@ export function makeHomeLevels(
     ),
     spawn: BR.spawn,
     // the sky goes with the lights: hidden, its domes can't paint through
-    // the gaps in the fog (and the neighborhood stops costing draw calls)
+    // the gaps in the fog (and the surface stops costing draw calls)
     enter: () => {
       outside.root.visible = false
+      outside.setActive(false)
       backrooms.enter()
     },
     leave: () => {
       backrooms.leave()
       outside.root.visible = true
+      outside.setActive(true)
     },
     update: (dt, p) => {
       house.update(dt)

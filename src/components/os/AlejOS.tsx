@@ -48,6 +48,8 @@ import type { MenuItem } from './ContextMenu'
 import { OsContext } from './osContext'
 import type { OsApi, Session } from './osContext'
 import { LoginScreen } from './LoginScreen'
+import BootCover from './BootCover'
+import type { LoadStage } from './CrtScene'
 import {
   DESKTOP,
   MY_COMPUTER,
@@ -486,6 +488,9 @@ export default function AlejOS({
 }) {
   const [phase, setPhase] = useState<Phase>('off')
   const [mode, setMode] = useState<Mode>('flat')
+  // how far the 3D boot has got, for the cover over it (null once the first
+  // frame is up). Only CrtScene ever writes it
+  const [loadStage, setLoadStage] = useState<LoadStage | null>('models')
   // standing up mid-session: the OS keeps running and the tube stays lit
   // while you walk the room; sitting back down resumes where you left off
   const [away, setAway] = useState(false)
@@ -1493,15 +1498,23 @@ export default function AlejOS({
           animate={{ opacity: 1 }}
           className="fixed inset-0 z-[60] bg-stone-950"
         >
+          {/* the wait before the room exists is mostly the driver linking
+              shaders, and it used to be a black rectangle. BootCover holds
+              until CrtScene reports its first frame */}
+          <BootCover stage={loadStage} />
           <Suspense fallback={null}>
             <CrtScene
               off={phase === 'down'}
               roam={phase === 'room' || away}
               screenLive={phase === 'on'}
               paperPlane={planeInRoom}
+              // who the shared walk introduces you as; the desktop owns the
+              // session, the room only borrows the name off it
+              session={session}
               onInteract={away ? sitDown : wake}
               onLeave={leaveRoom}
               onFail={() => setMode('flat')}
+              onStage={setLoadStage}
             >
               <div className="relative h-full w-full" onWheel={onScreenWheel}>
                 {screen}

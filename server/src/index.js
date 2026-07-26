@@ -5,6 +5,11 @@
 // tiny Discord. Accounts, tokens and room history persist in SQLite. The
 // site owner logs in with the reserved username and ADMIN_TOKEN as the
 // password, and his messages carry the admin badge.
+//
+// The same socket also carries the arcade (leaderboards + the Mine Duel match
+// engine), the admin-only analytics reads, and presence for the 3D world's
+// shared walk — see the "open world" section, which is a relay rather than a
+// simulator because every client can already recompute the planet itself.
 
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -25,6 +30,30 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 const DB_PATH = process.env.DB_PATH ?? './data/chat.db';
+
+// Proximity voice is peer-to-peer, so normally no audio touches this box. A
+// pair of visitors behind strict (symmetric) NATs cannot open a direct path
+// to each other, though, and for them the only fix is a relay both sides can
+// reach. Leave TURN_URLS unset and nothing changes: peers use STUN alone and
+// the strict-NAT pair simply stays silent to each other, which is what shipped
+// first. Point it at a coturn (or any TURN provider) and those calls connect,
+// at the cost of that server carrying their audio.
+//
+// Credentials are minted here, per join, and expire. The alternative — a
+// static username/password compiled into the frontend bundle — is a public
+// password for your relay's bandwidth. This is coturn's `use-auth-secret`
+// scheme: the username is an expiry timestamp and the password is an HMAC of
+// it, so a stolen credential is worthless within the hour.
+const TURN_URLS = (process.env.TURN_URLS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const TURN_SECRET = process.env.TURN_SECRET;
+const TURN_TTL_S = Number(process.env.TURN_TTL_S ?? 3600);
+const STUN_URLS = (process.env.STUN_URLS ?? 'stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // Analytics lives in its own libsql/Turso database, never in chat.db. Leave
 // ANALYTICS_URL unset and the whole feature stays off.
@@ -79,6 +108,26 @@ const DUEL_LIVES = 2;
 const DUEL_PLANT_MS = 45_000;
 const DUEL_TURN_MS = 20_000;
 const DUEL_REMATCH_MS = 60_000;
+
+// The open world: the 3D room's walkable planet, shared. The server is a
+// relay here, not a simulator — the world is a pure function of coordinates
+// on every client, so all that has to travel is who is where. Positions are
+// client-authoritative for the same reason the score caps are loose: real
+// anticheat is not worth it for a portfolio. Voice never touches this
+// process; peers talk WebRTC directly and only their offer/answer/ICE
+// handshake is relayed (world-signal).
+const WORLD_TICK_MS = 66; // ~15 snapshots a second
+const WORLD_MAX_PLAYERS = 32;
+const WORLD_MOVE_RATE_MAX = 40; // move packets per window per connection
+const WORLD_MOVE_RATE_WINDOW_MS = 1_000;
+const WORLD_CHAT_RATE_MAX = 8;
+const WORLD_CHAT_RATE_WINDOW_MS = 20_000;
+const WORLD_SIGNAL_RATE_MAX = 150; // an ICE burst is chatty and short-lived
+const WORLD_SIGNAL_RATE_WINDOW_MS = 10_000;
+const WORLD_MAX_TEXT_LEN = 200;
+const WORLD_MAX_SIGNAL_LEN = 6_000; // one SDP blob; maxPayload is 8 KiB
+const WORLD_LEVEL_RE = /^[a-z0-9-]{1,24}$/;
+const WORLD_COORD_LIMIT = 1e7; // the planet is endless, the wire is not
 
 const MAX_TEXT_LEN = 600;
 const HISTORY_LIMIT = 60;
@@ -764,6 +813,255 @@ function handleDuelRematch(ws) {
   }
 }
 
+// ---------------------------------------------------------------- open world
+
+// Presence for the 3D room's walkable planet. Unlike Mine Duel this owns no
+// rules and no board: the world is a pure function of coordinates on every
+// client (src/game/world/), so the only thing that cannot be recomputed is
+// where the other people are. Three jobs, in order of traffic:
+//
+//   1. a roster — who is here, under what name (world-enter/world-exit)
+//   2. a snapshot loop — everyone's transform, ~15Hz, grouped by level so a
+//      visitor in the backrooms is not paying for the overworld's crowd
+//   3. a signalling relay — WebRTC offer/answer/ICE between two peers, so
+//      proximity voice is browser-to-browser and no audio touches this box
+//
+// Sockets stay in the world independently of chat: `ws.world` is set by
+// world-join and is the whole of a player's server-side state.
+
+let worldSeq = 1;
+const worldPlayers = new Map(); // id -> ws
+const worldMoveRate = new WeakMap(); // ws -> [timestamps]
+const worldChatRate = new WeakMap();
+const worldSignalRate = new WeakMap();
+let worldTicker = null;
+let worldDirty = false;
+
+// pose bits, mirrored by src/game/net/protocol.ts's POSE flags
+const W_GROUNDED = 1;
+const W_RUN = 2;
+const W_CROUCH = 4;
+const W_SWIM = 8;
+const W_SPEAKING = 16;
+const W_DOWN = 32;
+const W_FLAGS = W_GROUNDED | W_RUN | W_CROUCH | W_SWIM | W_SPEAKING | W_DOWN;
+
+function allowWorld(map, ws, max, windowMs) {
+  const now = Date.now();
+  const hits = recentHits(map.get(ws) ?? [], now, windowMs);
+  map.set(ws, hits);
+  if (hits.length >= max) return false;
+  hits.push(now);
+  return true;
+}
+
+function finite(n) {
+  return typeof n === 'number' && Number.isFinite(n);
+}
+
+function clampCoord(n) {
+  return n > WORLD_COORD_LIMIT ? WORLD_COORD_LIMIT : n < -WORLD_COORD_LIMIT ? -WORLD_COORD_LIMIT : n;
+}
+
+const r2 = (n) => Math.round(n * 100) / 100;
+const r3 = (n) => Math.round(n * 1000) / 1000;
+
+function worldRosterEntry(ws) {
+  return { id: ws.world.id, ...userPayload(ws) };
+}
+
+/** The ICE servers a joining client should use. STUN is enough for most
+    people; the TURN entry only appears when one is configured, and carries a
+    credential that dies after TURN_TTL_S. */
+function iceServers() {
+  const list = [{ urls: STUN_URLS }];
+  if (TURN_URLS.length > 0 && TURN_SECRET) {
+    const username = `${Math.floor(Date.now() / 1000) + TURN_TTL_S}`;
+    list.push({
+      urls: TURN_URLS,
+      username,
+      credential: crypto.createHmac('sha1', TURN_SECRET).update(username).digest('base64'),
+    });
+  }
+  return list;
+}
+
+function worldBroadcast(payload, except = null) {
+  for (const ws of worldPlayers.values()) {
+    if (ws !== except) send(ws, payload);
+  }
+}
+
+// One snapshot per level, stringified once and pushed to everyone standing in
+// it — including its own subject, so the payload stays identical per level and
+// the client can reconcile against what the server thinks it said.
+function worldTick() {
+  if (!worldDirty || worldPlayers.size === 0) return;
+  worldDirty = false;
+  const byLevel = new Map();
+  for (const ws of worldPlayers.values()) {
+    const p = ws.world;
+    let list = byLevel.get(p.level);
+    if (!list) byLevel.set(p.level, (list = []));
+    list.push(ws);
+  }
+  const t = Date.now();
+  for (const [, list] of byLevel) {
+    const players = list.map((ws) => {
+      const p = ws.world;
+      return [p.id, r2(p.x), r2(p.y), r2(p.z), r3(p.yaw), r3(p.pitch), r2(p.gait), p.f];
+    });
+    const text = JSON.stringify({ type: 'world-tick', t, players });
+    for (const ws of list) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(text);
+    }
+  }
+}
+
+// The loop only exists while somebody is out there; an empty planet must not
+// wake the event loop 15 times a second forever.
+function startWorldTicker() {
+  if (worldTicker) return;
+  worldTicker = setInterval(worldTick, WORLD_TICK_MS);
+}
+
+function stopWorldTicker() {
+  if (!worldTicker || worldPlayers.size > 0) return;
+  clearInterval(worldTicker);
+  worldTicker = null;
+}
+
+function handleWorldJoin(ws, msg) {
+  if (ws.world) {
+    sendError(ws, 'bad_request');
+    return;
+  }
+  if (worldPlayers.size >= WORLD_MAX_PLAYERS) {
+    sendError(ws, 'unavailable', 'The world is full right now.');
+    return;
+  }
+  const level = typeof msg.level === 'string' && WORLD_LEVEL_RE.test(msg.level) ? msg.level : null;
+  if (!level) {
+    strike(ws);
+    return;
+  }
+  const id = worldSeq++;
+  // Every spawn in the game is one authored point, so arrivals stack inside
+  // each other. The lowest free slot is handed out here — the client turns it
+  // into an offset — and freed the moment they leave, so a quiet world always
+  // puts the next person on the exact original spot.
+  const taken = new Set();
+  for (const other of worldPlayers.values()) taken.add(other.world.slot);
+  let slot = 0;
+  while (taken.has(slot)) slot++;
+  ws.world = { id, slot, level, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED };
+  worldPlayers.set(id, ws);
+  send(ws, {
+    type: 'world-welcome',
+    you: id,
+    slot,
+    tick: WORLD_TICK_MS,
+    ice: iceServers(),
+    players: [...worldPlayers.values()].filter((o) => o !== ws).map(worldRosterEntry),
+  });
+  worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
+  worldDirty = true;
+  startWorldTicker();
+}
+
+function leaveWorld(ws) {
+  const w = ws.world;
+  if (!w) return;
+  ws.world = null;
+  worldPlayers.delete(w.id);
+  worldBroadcast({ type: 'world-exit', id: w.id });
+  worldDirty = true;
+  stopWorldTicker();
+}
+
+function handleWorldMove(ws, msg) {
+  const w = ws.world;
+  if (!w) return; // a packet in flight when the player left; not worth a strike
+  // The firehose is dropped, never punished: a client that ramps its send rate
+  // on a fast machine is not misbehaving, it is just early.
+  if (!allowWorld(worldMoveRate, ws, WORLD_MOVE_RATE_MAX, WORLD_MOVE_RATE_WINDOW_MS)) return;
+  if (!finite(msg.x) || !finite(msg.y) || !finite(msg.z)) {
+    strike(ws);
+    return;
+  }
+  if (!finite(msg.yaw) || !finite(msg.pitch)) {
+    strike(ws);
+    return;
+  }
+  w.x = clampCoord(msg.x);
+  w.y = clampCoord(msg.y);
+  w.z = clampCoord(msg.z);
+  w.yaw = msg.yaw;
+  w.pitch = msg.pitch;
+  w.gait = finite(msg.gait) ? Math.max(0, Math.min(1, msg.gait)) : 0;
+  w.f = Number.isInteger(msg.f) ? msg.f & W_FLAGS : 0;
+  worldDirty = true;
+}
+
+function handleWorldLevel(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (typeof msg.level !== 'string' || !WORLD_LEVEL_RE.test(msg.level)) {
+    strike(ws);
+    return;
+  }
+  w.level = msg.level;
+  worldDirty = true;
+}
+
+function handleWorldChat(ws, msg) {
+  const w = ws.world;
+  if (!w) {
+    sendError(ws, 'bad_request');
+    return;
+  }
+  const text = sanitizeText(msg.text);
+  if (text === null || text === '') {
+    strike(ws);
+    return;
+  }
+  if (text.length > WORLD_MAX_TEXT_LEN) {
+    sendError(ws, 'too_long');
+    return;
+  }
+  if (!allowWorld(worldChatRate, ws, WORLD_CHAT_RATE_MAX, WORLD_CHAT_RATE_WINDOW_MS)) {
+    sendError(ws, 'rate');
+    return;
+  }
+  // Not stored: world chat is shouted across a field, not a room with history.
+  worldBroadcast({
+    type: 'world-chat',
+    id: w.id,
+    ...userPayload(ws),
+    text,
+    at: Date.now(),
+  });
+}
+
+function handleWorldSignal(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (!allowWorld(worldSignalRate, ws, WORLD_SIGNAL_RATE_MAX, WORLD_SIGNAL_RATE_WINDOW_MS)) return;
+  if (!Number.isInteger(msg.to) || msg.data === null || typeof msg.data !== 'object') {
+    strike(ws);
+    return;
+  }
+  if (JSON.stringify(msg.data).length > WORLD_MAX_SIGNAL_LEN) {
+    sendError(ws, 'too_long');
+    return;
+  }
+  const peer = worldPlayers.get(msg.to);
+  // Dropped in silence on purpose: a peer that just left, or stepped through a
+  // level seam mid-handshake, is a race the caller already recovers from.
+  if (!peer || peer === ws || peer.world.level !== w.level) return;
+  send(peer, { type: 'world-signal', from: w.id, data: msg.data });
+}
+
 // ---------------------------------------------------------------- analytics
 
 // A failure here must never take the chat down with it: a bad Turso token or
@@ -1070,6 +1368,24 @@ function handleMessage(ws, msg) {
     case 'duel-rematch':
       handleDuelRematch(ws);
       return;
+    case 'world-join':
+      handleWorldJoin(ws, msg);
+      return;
+    case 'world-leave':
+      leaveWorld(ws);
+      return;
+    case 'world-move':
+      handleWorldMove(ws, msg);
+      return;
+    case 'world-level':
+      handleWorldLevel(ws, msg);
+      return;
+    case 'world-chat':
+      handleWorldChat(ws, msg);
+      return;
+    case 'world-signal':
+      handleWorldSignal(ws, msg);
+      return;
     case 'peeko-monitor':
       handlePeekoMonitor(ws, msg);
       return;
@@ -1182,6 +1498,7 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     leaveRoom(ws);
     leaveDuel(ws, 'left');
+    leaveWorld(ws);
     const unwatch = analyticsWatchers.get(ws);
     if (unwatch) {
       unwatch();
@@ -1231,6 +1548,7 @@ function shutdown() {
   shuttingDown = true;
   clearInterval(heartbeat);
   clearInterval(tokenSweep);
+  if (worldTicker) clearInterval(worldTicker);
   for (const ws of wss.clients) ws.terminate();
   wss.close(() => {
     server.close(async () => {

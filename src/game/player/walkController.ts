@@ -23,6 +23,19 @@ import { resolveXZ, supportY } from '../physics/collision'
   still a wall you slide along. The step/drop easing is smoothed rather than
   snapped so the lens rises onto furniture instead of teleporting.
 
+  Height is also no longer one number per level. A level may hand over a
+  `groundAt(x, z)` instead of a flat `groundY`, which is how the open world's
+  terrain holds the player up: it is sampled *after* collision has resolved
+  the step, so the floor being asked about is the one the feet actually ended
+  on. Levels that are flat (the house, level 0) simply don't pass one.
+
+  And where there is a `waterY`, deep enough water swims. Buoyancy is a spring
+  toward a float height that keeps the eye just above the surface, under a
+  tenth of normal gravity and a lot of drag; jump swims up, crouch dives, and
+  planar speed drops by nearly half. It stays inside this module because it is
+  the same integrator with different constants — the alternative, a wading
+  wall at the shoreline, makes an ocean into scenery.
+
   While `frozen` (a level cut in flight) planar input and jumps are ignored
   but gravity and the crouch ease keep integrating, exactly like the old
   inline loop.
@@ -50,9 +63,16 @@ export interface WalkStepOpts {
   frozen: boolean
   /** the current level's floor height — the surface under everything else */
   groundY: number
+  /** per-position floor, for levels whose ground is not flat. Sampled after
+      the planar step resolves, so it reports the ground actually arrived at.
+      Takes precedence over `groundY`, which stays the fallback. */
+  groundAt?: (x: number, z: number) => number
   /** the flat ceiling over it, where the level has one: the hop bonks off it
       instead of carrying the lens through */
   ceilingY?: number
+  /** the waterline, where the level has one. Below it deep enough to cover
+      the chest, the walk becomes a swim. */
+  waterY?: number
   collision: CollisionSet
   /** the player's fov preference; sprinting stretches it slightly */
   fovBase: number
@@ -82,6 +102,12 @@ export interface WalkStep {
   /** a sole landed this tick — one per bob cycle, at the bottom of the dip.
       The sim only reports it; the scene decides what a step sounds like */
   footfall: boolean
+  /** the body is in water over its chest: buoyancy owns the vertical, planar
+      speed is damped, and the scene should stop asking the ground what a
+      footstep sounds like */
+  swimming: boolean
+  /** 0 dry .. 1 eye at the waterline; the scene tints and muffles with it */
+  wet: number
 }
 
 export interface WalkController {
@@ -131,6 +157,7 @@ export function createWalkController(
   const step: WalkStep = {
     planar: 0, gait: 0, grounded: true, duck: false, run: false, moved: false,
     vx: 0, vz: 0, vy: 0, landing: 0, support: 0, footfall: false,
+    swimming: false, wet: 0,
   }
 
   return {
@@ -185,7 +212,7 @@ export function createWalkController(
       bobT = 0
       stride = 0 // or the clock rewind reads as one phantom footfall
     },
-    update: ({ dt, keys, frozen, groundY, ceilingY, collision, fovBase }) => {
+    update: ({ dt, keys, frozen, groundY, groundAt, ceilingY, waterY, collision, fovBase }) => {
       const fwd = frozen
         ? 0
         : (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
@@ -197,8 +224,15 @@ export function createWalkController(
       // shift sprints, ctrl (or c) crouches; crouching wins the argument
       const duck = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')
       const run = !duck && (keys.has('ShiftLeft') || keys.has('ShiftRight'))
-      const speed = duck ? tune.crouchSpeed : run ? tune.runSpeed : tune.speed
-      crouchK += ((duck ? 1 : 0) - crouchK) * (1 - Math.exp(-11 * dt))
+      // deep enough to swim: the water is over the chest. Decided on last
+      // tick's feet, before anything moves, so the mode can't flicker
+      // mid-integration between the planar step and the vertical one
+      const swimming = waterY !== undefined && waterY - feetY > tune.eye * 0.62
+      const speed =
+        (duck && !swimming ? tune.crouchSpeed : run ? tune.runSpeed : tune.speed) *
+        (swimming ? 0.55 : 1)
+      // no crouching in open water — the key is the dive control down there
+      crouchK += ((duck && !swimming ? 1 : 0) - crouchK) * (1 - Math.exp(-11 * dt))
       want.set(0, 0, 0)
       if (fwd || side) {
         want
@@ -219,22 +253,49 @@ export function createWalkController(
       const stepUp = grounded ? tune.step : 0
       resolveXZ(rig.position, collision, feetY, feetY + tune.eye, stepUp)
       // whatever is under the feet now — the level floor unless a box top
-      // stands between. Grounded, tops one step up count (that's the climb);
-      // airborne only tops already below the soles can catch a fall.
+      // stands between. The floor itself is per-position where the level says
+      // so (terrain), and it is sampled here rather than before the move: the
+      // ground that matters is the one the step actually landed on.
+      const floorY = groundAt
+        ? groundAt(rig.position.x, rig.position.z)
+        : groundY
       const support = supportY(
         rig.position.x,
         rig.position.z,
         feetY + (grounded ? tune.step : 0.02),
         collision,
-        groundY,
+        floorY,
       )
       // space jumps; holding it bunny-hops off each landing
-      if (!frozen && keys.has('Space') && grounded && !duck) {
+      if (!frozen && !swimming && keys.has('Space') && grounded && !duck) {
         grounded = false
         vy = tune.jumpV
       }
       step.landing = 0
-      if (!grounded) {
+      if (swimming && waterY !== undefined) {
+        // buoyancy: a spring toward the height that floats the eye just clear
+        // of the surface, under a tenth of gravity and a lot of drag. Jump
+        // swims up, crouch dives; both are accelerations, so neither can beat
+        // the spring far enough to launch the body out of the water
+        grounded = false
+        // the +0.8 is not where the eye ends up — it is the spring's rest
+        // point, and the residual gravity below pulls the equilibrium down by
+        // grav*0.1/6.5 ≈ 0.52 from it. Net: the eye settles a quarter unit
+        // clear of the surface. Setting the rest point to the wanted height
+        // instead left the head permanently just under water.
+        const floatFeet = waterY + 0.8 - tune.eye
+        vy += (floatFeet - feetY) * 6.5 * dt
+        vy -= tune.grav * 0.1 * dt
+        if (!frozen && keys.has('Space')) vy += 30 * dt
+        if (!frozen && duck) vy -= 30 * dt
+        vy *= Math.exp(-3.4 * dt)
+        feetY += vy * dt
+        // the bottom is still the bottom: a shallow lake is stood in, not swum
+        if (feetY <= support) {
+          feetY = support
+          if (vy < 0) vy = 0
+        }
+      } else if (!grounded) {
         vy -= tune.grav * dt
         feetY += vy * dt
         if (vy <= 0 && feetY <= support) {
@@ -296,8 +357,13 @@ export function createWalkController(
       step.planar = planar
       step.gait = gait
       step.grounded = grounded
-      step.duck = duck
+      step.duck = duck && !swimming
       step.run = run
+      step.swimming = swimming
+      step.wet =
+        waterY === undefined
+          ? 0
+          : Math.min(1, Math.max(0, (waterY - feetY) / Math.max(0.01, tune.eye)))
       step.vx = vel.x
       step.vz = vel.z
       step.vy = grounded ? 0 : vy

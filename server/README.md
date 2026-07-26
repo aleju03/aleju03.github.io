@@ -13,6 +13,10 @@ v2 replaced the old 1:1 messenger protocol entirely — deploy the server and th
 | `ADMIN_USERNAME` | no | `aleju` | Reserved username; logging in with it + `ADMIN_TOKEN` grants the admin badge. Nobody can register or nick it |
 | `ALLOWED_ORIGINS` | no | unset | Comma-separated list, e.g. `https://aleju.dev,http://localhost:4173`. If set, WebSocket upgrades with an Origin header not in the list are rejected |
 | `DB_PATH` | no | `./data/chat.db` | SQLite database path. The parent directory is created if missing |
+| `STUN_URLS` | no | two Google STUN servers | Comma-separated STUN servers handed to clients for proximity voice |
+| `TURN_URLS` | no | unset | Comma-separated TURN servers, e.g. `turn:voice.example.com:3478`. Only needed for visitors whose NATs cannot be traversed directly; unset means voice is pure peer-to-peer |
+| `TURN_SECRET` | no | unset | Shared secret for coturn's `use-auth-secret` scheme. Required alongside `TURN_URLS`; per-join credentials are minted from it so no static password reaches a browser |
+| `TURN_TTL_S` | no | `3600` | How long a minted TURN credential stays valid |
 | `ANALYTICS_URL` | no | unset | libsql URL for the peeko analytics store (`libsql://…turso.io` or `file:./data/analytics.db`). **Unset disables analytics entirely** |
 | `ANALYTICS_AUTH_TOKEN` | no | unset | Turso database token; not needed for a `file:` URL |
 | `ANALYTICS_RETENTION_DAYS` | no | `180` | Rows older than this are pruned hourly |
@@ -87,6 +91,31 @@ Arcade messages, same socket after `hello`:
 - `{type:'duel-plant', cells: [5 indices]}` during the blind phase → `duel-planted` per seat (with `auto: true` plus your cells if the 45s clock planted for you), then `duel-phase {turn, deadline}`
 - `{type:'duel-dig', cell}` on your turn → `duel-dug {cell, by, mine, count, lives, turn, deadline}` to both; a 20s turn timeout digs a random tile for the staller. Numbers count both players' mines (duplicates included); any mine costs the digger a life, their own included
 - `duel-over {winner, reason, lives, mines}` reveals both minefields; `{type:'duel-rematch'}` from both seats restarts, `{type:'duel-leave'}` forfeits
+
+Open-world presence, same socket after `hello`. Unlike the duel this owns no
+rules: the world is a pure function of coordinates on every client, so the only
+thing that has to travel is who is where. Positions are client-authoritative,
+for the same reason the score caps are loose. `src/game/net/protocol.ts` is the
+typed specification this section implements — the socket has no version
+negotiation, so the two ship together.
+
+- `{type:'world-join', level}` → `{type:'world-welcome', you, tick, players:[{id,name,admin,registered}]}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`
+- `{type:'world-move', x, y, z, yaw, pitch, gait, f}` — the hot path, ~15/s per client, dropped rather than punished above the rate cap. `y` is the soles, not the eye; `f` is a pose bitfield (grounded/run/crouch/swim/**speaking**/down) mirrored by `POSE` in protocol.ts
+- `{type:'world-tick', t, players:[[id,x,y,z,yaw,pitch,gait,f], ...]}` — broadcast every `WORLD_TICK_MS` while anything has changed, **grouped by level**, so a visitor in the backrooms never receives the overworld's crowd. Tuples rather than objects because a full lobby would otherwise spend more bytes on repeated key names than on positions. The list includes the recipient; clients filter themselves out. A player missing from it is not gone, they are somewhere else
+- `{type:'world-level', level}` — stepping through a level seam, which is what moves you between snapshot groups
+- `{type:'world-chat', text}` → `{type:'world-chat', id, name, admin, registered, text, at}` to everyone in the world. Not stored: this is shouting across a field, not a room with history
+- `{type:'world-signal', to, data}` → `{type:'world-signal', from, data}` — the WebRTC offer/answer/ICE relay for proximity voice, forwarded verbatim between two peers in the same level. **No audio ever passes through this process**; peers talk browser to browser and the server only introduces them. A signal aimed at someone who just left or stepped through a seam is dropped in silence, because that race is one the caller already recovers from
+- `world-exit {id}` on departure; a socket closing leaves the world as well as its chat room and any duel
+
+Voice needs a path between two browsers, and a minority of visitors — both ends
+behind a symmetric NAT — have none that STUN can find. `TURN_URLS` + `TURN_SECRET`
+add a relay for exactly those pairs; leave them unset and nothing changes, which
+is the shipped default. Credentials are minted per join and expire after
+`TURN_TTL_S`, using coturn's `use-auth-secret` scheme (username is the expiry,
+password is its HMAC) — a static credential in the frontend bundle would be a
+public password for your relay's bandwidth. Any coturn-compatible provider works.
+Note this is the one setting that puts audio through a server you pay for: only
+the calls that cannot connect directly are relayed, but those are real bytes.
 
 ## Run locally
 

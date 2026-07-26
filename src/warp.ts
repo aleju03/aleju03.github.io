@@ -13,7 +13,9 @@ import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT } from './events'
   the whole viewport. Then the ride: the boot event fires under the black
   and the tunnel keeps streaming past, picking up speed, for as long as the
   far side needs to raise its first frame — the 3D room builds its whole
-  house under this cover. When the scene announces itself (or immediately
+  house under this cover. That middle ride is transform/opacity-only DOM,
+  not the entry canvas: the compositor can keep it moving while room setup
+  blocks the main thread. When the scene announces itself (or immediately
   after the minimum ride, if it was already up), the exit tears open FROM
   the machine's spot in the room and slings you out in front of it.
 
@@ -56,19 +58,100 @@ const INK = '#0c0a09' // stone-950, same night the OS overlay sits on
 const STONE = '168,162,158' // stone-400
 const ACCENT = '96,165,250' // blue-400, the plane's contrail blue
 
+/** The part of the trip that overlaps the cold 3D boot. Canvas rAF cannot
+    move while scene construction or a driver call owns the main thread;
+    these transform/opacity-only layers keep moving on the compositor. */
+const makeCompositorRide = () => {
+  const layer = document.createElement('div')
+  layer.setAttribute('aria-hidden', 'true')
+  layer.dataset.alejosWarpRide = 'true'
+  layer.style.cssText = [
+    'position:fixed', 'inset:0', 'z-index:71', 'overflow:hidden',
+    `background:${INK}`, 'opacity:.001', 'pointer-events:none',
+    'transition:opacity 100ms linear', 'will-change:opacity', 'contain:strict',
+  ].join(';')
+
+  const style = document.createElement('style')
+  style.textContent = `
+    @keyframes alejos-warp-depth {
+      0%   { transform:translate3d(-50%,-50%,0) scale(1.18) rotate(0deg); opacity:.12 }
+      14%  { opacity:.58 }
+      100% { transform:translate3d(-50%,-50%,0) scale(.82) rotate(3deg); opacity:.16 }
+    }
+    @keyframes alejos-warp-breathe {
+      0%,100% { transform:translate3d(-50%,-50%,0) scale(.88); opacity:.62 }
+      50%     { transform:translate3d(-50%,-50%,0) scale(1.12); opacity:.92 }
+    }
+  `
+  layer.appendChild(style)
+
+  const glow = document.createElement('div')
+  glow.style.cssText = [
+    'position:absolute', 'left:50%', 'top:50%', 'width:62vmax', 'height:62vmax',
+    'border-radius:9999px', 'will-change:transform,opacity',
+    `background:radial-gradient(circle,rgba(${ACCENT},.36) 0%,rgba(${ACCENT},.12) 34%,rgba(${ACCENT},0) 72%)`,
+    'animation:alejos-warp-breathe 1.7s ease-in-out infinite',
+  ].join(';')
+  layer.appendChild(glow)
+
+  // Each panel is one promoted layer. Its rings and rays are static children,
+  // so this is three compositor surfaces total instead of fifty enormous
+  // independently-rasterized circles fighting the scene for GPU memory.
+  for (let phase = 0; phase < 2; phase += 1) {
+    const panel = document.createElement('div')
+    panel.style.cssText = [
+      'position:absolute', 'left:50%', 'top:50%', 'width:142vmax', 'height:142vmax',
+      'will-change:transform,opacity',
+      `animation:alejos-warp-depth 2.2s linear ${phase ? -1.1 : 0}s infinite`,
+    ].join(';')
+
+    for (let i = 0; i < 12; i += 1) {
+      const ring = document.createElement('div')
+      const size = 7 + i * 8
+      ring.style.cssText = [
+        'position:absolute', 'left:50%', 'top:50%',
+        `width:${size}%`, `height:${size}%`,
+        'transform:translate3d(-50%,-50%,0)', 'border-radius:9999px',
+        `border:${i % 5 === 0 ? 2 : 1}px solid ${
+          i % 5 === 0 ? `rgba(${ACCENT},.72)` : `rgba(${STONE},.58)`
+        }`,
+      ].join(';')
+      panel.appendChild(ring)
+    }
+
+    for (let i = 0; i < 24; i += 1) {
+      const spoke = document.createElement('div')
+      spoke.style.cssText = [
+        'position:absolute', 'left:50%', 'top:50%', 'width:0', 'height:0',
+        `transform:rotate(${(i * 137.508 + phase * 9) % 360}deg)`,
+      ].join(';')
+      const ray = document.createElement('div')
+      ray.style.cssText = [
+        'position:absolute', `left:${12 + ((i * 19) % 48)}vmax`, 'top:-1px',
+        `width:${2.2 + (i % 6) * 0.55}vmax`, `height:${i % 5 === 0 ? 2 : 1}px`,
+        `background:${i % 4 === 0 ? `rgba(${ACCENT},.76)` : 'rgba(231,229,228,.62)'}`,
+        'transform-origin:left center',
+      ].join(';')
+      spoke.appendChild(ray)
+      panel.appendChild(spoke)
+    }
+    layer.appendChild(panel)
+  }
+
+  document.body.appendChild(layer)
+  return {
+    show: () => {
+      layer.style.opacity = '1'
+    },
+    hide: () => {
+      layer.style.opacity = '0'
+    },
+    remove: () => layer.remove(),
+  }
+}
+
 export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
   if (running) return
-  // the ride hides the heavy lifting: start pulling the OS chunk now, and
-  // the 3D scene too on the screens that will actually mount it, so the
-  // tunnel only has to cover the models, not the code
-  void import('./components/os/AlejOS')
-  if (
-    window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
-    !window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
-    window.innerWidth >= 640
-  ) {
-    void import('./components/os/CrtScene')
-  }
   const boot = () =>
     window.dispatchEvent(
       detail ? new CustomEvent(BOOT_OS_EVENT, { detail }) : new Event(BOOT_OS_EVENT),
@@ -94,6 +177,9 @@ export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
   cv.setAttribute('aria-hidden', 'true')
   ctx.scale(dpr, dpr)
   document.body.appendChild(cv)
+  // Keep this barely non-zero during the entry so Chrome rasterizes and
+  // promotes it before the first expensive module evaluation begins.
+  const compositorRide = makeCompositorRide()
 
   const stage = document.getElementById('os-wreck')?.getBoundingClientRect()
   const o =
@@ -128,7 +214,7 @@ export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
 
   const t0 = performance.now()
   let last = t0
-  let booted = false
+  let bootQueued = false
   let travel = 0 // tunnel distance, integrated so the ride can accelerate
   let exitAt: number | null = null // ride time when the far mouth opened
   const circle = (x: number, y: number, r: number) => {
@@ -137,6 +223,7 @@ export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
   }
   const finish = () => {
     cv.remove()
+    compositorRide.remove()
     window.removeEventListener(OS_SCENE_READY_EVENT, onReady)
     running = false
   }
@@ -145,20 +232,32 @@ export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
     const dt = Math.min(0.1, (now - last) / 1000)
     last = now
     const p = Math.min(1, t / COVER_S)
-    if (p >= 1 && !booted) {
-      // the page is gone; boot the machine under the black and let the far
-      // side build its scene in peace behind the tunnel
-      booted = true
-      boot()
+    if (p >= 1 && !bootQueued) {
+      // First promote and paint the compositor ride. Booting from the next
+      // animation frame guarantees the CSS tunnel exists before React/module
+      // evaluation gets a chance to monopolize the main thread.
+      bootQueued = true
+      compositorRide.show()
+      requestAnimationFrame(() => {
+        if (running) boot()
+      })
     }
     // the ride ends when the far side has a frame up (never before the
     // minimum, never after the bail cap)
     if (exitAt === null && t >= COVER_S + MIN_RIDE_S && (sceneReady || t >= COVER_S + MAX_RIDE_S)) {
       exitAt = t
+      compositorRide.hide()
     }
     const q = exitAt === null ? 0 : Math.min(1, (t - exitAt) / EXIT_S)
     if (q >= 1) {
       finish()
+      return
+    }
+    // CSS owns the fully-covered part of the ride. Keeping only this timing
+    // heartbeat avoids wasting the main thread redrawing pixels no one sees;
+    // more importantly, the visible motion no longer depends on this rAF.
+    if (p >= 1 && exitAt === null) {
+      requestAnimationFrame(frame)
       return
     }
     // cruise builds after the tear; the opening exit slings you out faster

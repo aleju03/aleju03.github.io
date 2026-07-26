@@ -4,13 +4,13 @@ import { createPortal } from 'react-dom'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
-import { buildHouse, CEIL_H, HOUSE } from '../../game/levels/houseWorld'
+import { buildHouse, CEIL_H, FRONT_DOOR_X, HOUSE } from '../../game/levels/houseWorld'
 import { buildOutsideWorld } from '../../game/levels/outsideWorld'
 import { buildBackrooms } from '../../game/levels/backrooms'
 import { buildDeskRoom } from '../../game/levels/deskRoom'
 import { makeHomeLevels } from '../../game/levels/homeLevels'
 import { createLevelSystem } from '../../game/levels/levelSystem'
-import type { LevelLightRig } from '../../game/levels/types'
+import type { Level, LevelLightRig } from '../../game/levels/types'
 import { buildPaperPlane } from '../../game/props/paperPlane'
 import type { HouseModels } from '../../game/levels/houseWorld'
 import { buildPlayerBody, type PlayerPose } from '../../game/player/playerBody'
@@ -18,10 +18,21 @@ import type { RagdollEnv } from '../../game/player/ragdoll'
 import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
 import { createWalkController } from '../../game/player/walkController'
 import { createRoamInput } from '../../game/core/input'
-import { makeCollisionSet, supportY } from '../../game/physics/collision'
-import type { CollisionSet } from '../../game/physics/collision'
+import { blockedAt, makeCollisionSet, supportY } from '../../game/physics/collision'
+import { createCollisionDebug } from '../../game/physics/collisionDebug'
 import { createDisposer } from '../../game/core/disposer'
 import { footstep, landThump } from '../../game/core/sfx'
+import { buildFleet, type FleetEnvQueries } from '../../game/vehicles/registry'
+import type { VehicleId } from '../../game/vehicles/types'
+import { setGfxTier } from '../../game/world/quality'
+import { createRemoteWorld } from '../../game/net/remotePlayers'
+import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
+import { packPose, WORLD_MAX_TEXT_LEN } from '../../game/net/protocol'
+import { scatterSpawn } from '../../game/net/spawn'
+import { createWorldNet, worldConfigured, type WorldStatus } from './worldNet'
+import { createProximityVoice, type VoiceMode } from './proximityVoice'
+import type { Session } from './osContext'
+import { track } from '../../analytics'
 import { OS_SCENE_READY_EVENT } from '../../events'
 
 /*
@@ -58,13 +69,49 @@ interface CrtSceneProps {
   /** this boot came from the wreck swallowing the hero's paper plane, so
       the dart lies landed on the bedroom rug */
   paperPlane?: boolean
+  /** who the shared walk introduces you as. Null while the desktop is still
+      on the login screen; the world simply is not joined until there is one */
+  session?: Session | null
   /** pressed the interact key at the machine: sit down (and boot if cold) */
   onInteract: () => void
   /** the pause menu's way out of the room entirely (what esc used to do) */
   onLeave?: () => void
   onFail: () => void
+  /** how far along the cold boot is, for whatever is covering it. Called with
+      null once the first real frame is on screen and the cover can go */
+  onStage?: (stage: LoadStage | null) => void
   children: ReactNode
 }
+
+/** the three things a cold boot spends real time on, in the order it does.
+    They are wall-clock unequal by a lot — shaders is most of it — so anything
+    drawing a progress bar off these should weight them, not space them */
+export type LoadStage = 'models' | 'world' | 'shaders'
+
+/** one line on the chat rail. `mine` is what tints it, not the name, so two
+    visitors sharing a nickname still read their own words correctly */
+interface ChatLine {
+  key: number
+  name: string
+  text: string
+  admin: boolean
+  mine: boolean
+  /** an arrival or a departure rather than something somebody said; the whole
+      sentence is in `text` and there is no name to attribute it to */
+  system?: boolean
+}
+/** everything the voice indicator needs, mirrored out of proximityVoice.ts
+    because the HUD is React and that module is not */
+interface VoiceHud {
+  available: boolean
+  enabled: boolean
+  mode: VoiceMode
+  speaking: boolean
+  peers: number
+  error: string | null
+}
+/** the rail only ever shows the tail; anything older has scrolled off */
+const CHAT_KEEP = 6
 
 const EASE = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 const MODELS = [
@@ -75,7 +122,8 @@ const MODELS = [
   '/os/models/mouse.glb',
   '/os/models/lamp.glb',
 ]
-// the rest of the house streams in behind the intro; the walls never wait
+// the rest of the house downloads beside the first shader compile, then joins
+// the scene under BootCover so none of its material variants can land mid-walk
 const HOUSE_MODEL_KEYS = [
   'bed', 'nightstand', 'dresser', 'closet', 'curtains', 'alarmclock',
   'officechair', 'bathtub', 'toilet', 'bathsink', 'towelrack',
@@ -104,6 +152,15 @@ const loadPrefs = () => {
   }
   return { ...PREFS_DEFAULT }
 }
+/** the control line each machine puts in the HUD. Three media, three sets of
+    verbs: what "space" does is a handbrake, a throttle blip or the collective
+    depending on what you climbed into */
+const DRIVE_KEYS: Record<VehicleId, string> = {
+  car: 'wasd drive · space handbrake · shift boost · x horn',
+  boat: 'w/s throttle · a/d rudder · shift boost · x horn',
+  heli: 'w/s tilt · a/d turn · space climb · ctrl descend · shift power',
+}
+
 /** fraction of the viewport height the glass fills once parked */
 const FILL = 0.86
 const INTRO_S = 2.6
@@ -155,9 +212,11 @@ export default function CrtScene({
   roam,
   screenLive,
   paperPlane,
+  session,
   onInteract,
   onLeave,
   onFail,
+  onStage,
   children,
 }: CrtSceneProps) {
   const mountRef = useRef<HTMLDivElement>(null)
@@ -173,11 +232,62 @@ export default function CrtScene({
   // esc mid-walk frees the mouse and raises the pause menu
   const [paused, setPaused] = useState(false)
   const [prefs, setPrefs] = useState(loadPrefs)
+  // --- the fleet -----------------------------------------------------------
+  // a parked machine in reach, what is being driven, and the instrument
+  // readout. All of it is HUD state, mirrored out of the sim on change only —
+  // the numbers would otherwise re-render this component sixty times a second
+  const [vehiclePrompt, setVehiclePrompt] = useState<{ label: string; verb: string } | null>(null)
+  const [driving, setDriving] = useState<{ id: VehicleId; label: string; cockpit: boolean } | null>(
+    null,
+  )
+  const [gauge, setGauge] = useState({ speed: 0, load: 0, altitude: 0, gear: 0 })
+  /** a line of feedback that fades: "land first", "nowhere to put it down" */
+  const [notice, setNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(null), 2200)
+    return () => clearTimeout(t)
+  }, [notice])
+  /** the pause menu's vehicle list, refreshed only while the menu is up */
+  const [fleetWhere, setFleetWhere] = useState<
+    Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
+  >([])
+  const fleetRef = useRef<{
+    where: () => Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
+    recall: (id: VehicleId) => boolean
+  } | null>(null)
+  // the prompt buttons route here; E does the same through the input service
+  const enterRef = useRef<(() => void) | null>(null)
+  const leaveRef = useRef<(() => void) | null>(null)
+  // --- the shared walk -----------------------------------------------------
+  // presence, the chat rail, and what the microphone is doing. All of it is
+  // HUD state: the sim side lives in the effect below and never re-renders
+  const [mp, setMp] = useState<{ status: WorldStatus; here: number }>({
+    status: 'offline',
+    here: 0,
+  })
+  const [chat, setChat] = useState<ChatLine[]>([])
+  const [typing, setTyping] = useState(false)
+  // named for what it is: a mirror of proximityVoice.ts's state for the HUD,
+  // not the voice channel itself (that lives in the scene effect below)
+  const [voiceHud, setVoiceHud] = useState<VoiceHud>({
+    available: false, enabled: false, mode: 'open', speaking: false, peers: 0, error: null,
+  })
+  const chatInputRef = useRef<HTMLInputElement>(null)
+  const typingRef = useRef(false)
+  const closeChat = () => {
+    typingRef.current = false
+    setTyping(false)
+  }
+  // set by the effect so the composer can post without reaching into the sim
+  const sayRef = useRef<((text: string) => void) | null>(null)
+  const sessionRef = useRef(session)
   const outroRef = useRef<(() => void) | null>(null)
   const roamRef = useRef<((on: boolean) => void) | null>(null)
   const doorRef = useRef<(() => void) | null>(null)
   const resumeRef = useRef<(() => void) | null>(null)
   const failRef = useRef(onFail)
+  const stageRef = useRef(onStage)
   const interactRef = useRef(onInteract)
   const liveRef = useRef(screenLive)
   const prefsRef = useRef(prefs)
@@ -187,11 +297,13 @@ export default function CrtScene({
   const roamPropRef = useRef(roam)
   useEffect(() => {
     failRef.current = onFail
+    stageRef.current = onStage
     interactRef.current = onInteract
     liveRef.current = screenLive
     prefsRef.current = prefs
     paperPlaneRef.current = paperPlane
     roamPropRef.current = roam
+    sessionRef.current = session
   })
   useEffect(() => {
     try {
@@ -217,6 +329,10 @@ export default function CrtScene({
     let webgl: THREE.WebGLRenderer | null = null
     let scene: THREE.Scene | null = null
     let cleanupDom: (() => void) | null = null
+    // the fleet is the one subsystem with a live audio graph in it, so it has
+    // to be torn down explicitly rather than left to the disposer: an engine
+    // that is only garbage-collected keeps idling under an unmounted scene
+    let disposeFleet: (() => void) | null = null
     const disposer = createDisposer()
 
     const bail = setTimeout(() => {
@@ -229,10 +345,12 @@ export default function CrtScene({
         loader.load(url, resolve, undefined, reject),
       )
 
+    stageRef.current?.('models')
     Promise.all(MODELS.map(load))
       .then(([computer, desk, mug, plant, mouse, lamp]) => {
         clearTimeout(bail)
         if (disposed) return
+        stageRef.current?.('world')
 
         const W = mount.clientWidth
         const H = mount.clientHeight
@@ -254,6 +372,24 @@ export default function CrtScene({
         webgl.shadowMap.autoUpdate = true
         webgl.toneMapping = THREE.ACESFilmicToneMapping
         webgl.toneMappingExposure = 1.1
+        // classify the GPU and pick the graphics tier BEFORE any level
+        // builds: grass density, canopy fullness and the sun's shadow map
+        // are baked at construction time (world/quality.ts). Discrete cards
+        // get the dense tier; integrated, mobile and software renderers keep
+        // the lean one, with the pixel-ratio governor under both.
+        try {
+          const gl = webgl.getContext()
+          const info = gl.getExtension('WEBGL_debug_renderer_info')
+          const gpu = info
+            ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL))
+            : String(gl.getParameter(gl.RENDERER))
+          setGfxTier(
+            /intel|iris|uhd|mali|adreno|powervr|videocore|apple gpu|swiftshader|llvmpipe/i
+              .test(gpu) ? 'medium' : 'high',
+          )
+        } catch {
+          setGfxTier('medium')
+        }
         // three only reads a program's link status when this is on, and that
         // read (getProgramInfoLog/getShaderInfoLog) blocks the main thread
         // until the driver has finished compiling — the exact stall
@@ -343,9 +479,18 @@ export default function CrtScene({
           trackTexture: disposer.texture,
           trackDisposable: disposer.add,
         })
-        // ...and past the fence: sky, sun and moon on the day cycle, the
-        // street, the neighbors, the city rings. update() runs per rendered
-        // frame and hands back the fog/hemisphere targets for right now.
+        // the desk strip goes in before the world does, and that ordering is
+        // load-bearing twice over: resolveXZ is a sequential pass where the
+        // last overlapping box wins (so the desk has to beat the bedroom
+        // walls), and the streamer records the length of this list as the
+        // authored count it truncates back to on every restream — anything
+        // pushed after it would be dropped the first time the player crosses
+        // a chunk border
+        obstacles.push(...deskObstacles)
+        // ...and past the fence: the sky on its day cycle, and an endless
+        // chunk-streamed world of terrain, biomes, water, roads and cities.
+        // update() runs per rendered frame: it streams the ring around the
+        // camera and hands back the fog/hemisphere targets for right now.
         const outside = buildOutsideWorld({
           scene,
           obstacles,
@@ -360,7 +505,25 @@ export default function CrtScene({
           trackTexture: disposer.texture,
           trackDisposable: disposer.add,
         })
-        obstacles.push(...deskObstacles)
+        // three machines parked in it: a car at the kerb, a helicopter a block
+        // north, and a boat two and a half kilometres west on the coast. The
+        // fleet owns its own physics, camera, sound and dust; from here it is
+        // one tick and two prompts. Its collision boxes join the shared
+        // obstacle list, so a parked car is something you walk into — and, in
+        // the same breath, something the chunk streamer must not mistake for
+        // its own (it filters by identity, and these are never in its WeakSet)
+        const fleet = buildFleet({
+          scene,
+          obstacles,
+          trackTexture: disposer.texture,
+          trackDisposable: disposer.add,
+        })
+        disposeFleet = fleet.dispose
+        // F9: outline whatever the live level is testing the walk against.
+        // Collision in here is a Box3 list with nothing drawn behind it, so a
+        // solid that disagrees with the geometry it stands for is invisible by
+        // construction — see collisionDebug.ts
+        const collisionDebug = disposer.add(createCollisionDebug(scene))
 
         computer.scene.scale.setScalar(16)
         computer.scene.position.set(0, deskTop, 0.05)
@@ -521,22 +684,16 @@ export default function CrtScene({
         key.shadow.camera.near = 2
         key.shadow.autoUpdate = false
         scene.add(key, key.target)
-        // every shadow map is hand-baked, and the bake is paid in
-        // installments: flag one light per frame, each consumed by its own
-        // render, so no single frame carries every map — the all-at-once
-        // bake was the warp ride's one visible hitch, worst on cold iGPUs
-        // where the shadow-depth programs also link inside that frame
-        const bakeShadowsStaggered = async (bailOut: () => boolean) => {
+        // Every local shadow map is hand-baked while BootCover is still
+        // opaque. One light per frame keeps the compositor's loading bar
+        // moving between maps; announcing the scene before this loop is done
+        // merely moves the cold driver stalls into the first seconds of play.
+        const bakeShadowsCovered = async (bailOut: () => boolean) => {
           const lights = [pendant, key, ...house.shadowLights]
           for (let i = 0; i < lights.length; i += 1) {
-            if (bailOut()) {
-              // interrupted: flag the rest in one go — whoever took over
-              // (walk, outro) renders every frame and pays it on the next
-              for (; i < lights.length; i += 1) lights[i].shadow.needsUpdate = true
-              return
-            }
+            if (bailOut()) return
             lights[i].shadow.needsUpdate = true
-            if (!roaming) render() // the walk loop already renders per frame
+            render()
             await new Promise((r) => requestAnimationFrame(r))
           }
         }
@@ -557,19 +714,36 @@ export default function CrtScene({
           if (!o.userData.dynamic) o.matrixAutoUpdate = false
         })
 
-        // far plane reaches the star dome and the skyline ring now
-        const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 400)
+        /*
+          The far plane has to clear the sky dome's radius outright, and by a
+          margin — at 400 against a 430 dome it did not, and the way that fails
+          is worth remembering. A far plane is a *plane*, perpendicular to the
+          view axis; a dome centred on the camera is a *sphere*. A point on the
+          dome at angle t off the view axis sits cos(t) * radius deep, so
+          everything inside acos(far / radius) of wherever you happen to be
+          looking gets clipped away. The symptom is a hard-edged disc of empty
+          background about forty degrees across, pinned to the middle of the
+          screen, sliding across the stars as you turn your head. It looks like
+          a bug in the sky texture and it is a bug in the frustum.
+        */
+        const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 900)
         camera.rotation.order = 'YXZ' // yaw/pitch compose FPS-style while walking
         const tanHalf = Math.tan(THREE.MathUtils.degToRad(38 / 2))
         const camStart = new THREE.Vector3(2.4, 2.9, 4.5)
         const camEndFor = (h: number) =>
           front.clone().add(normal.clone().multiplyScalar((gSize.y * h) / (divH * 2 * tanHalf)))
         let camEnd = camEndFor(H)
+        // where the walk stands. Up here with the camera rather than down in
+        // the runtime block, because the /room entrance opens the lens on it
+        // directly rather than gliding up to it from the chair
+        const EYE = deskTop + 2.0 // standing eye height over this desk's scale
+        const SPAWN = new THREE.Vector3(1.15, EYE, 2.55)
         // Warm every static texture now and let the drivers link the shader
         // pile in parallel: the old synchronous compile() blocked the main
         // thread for its whole duration, which froze the warp tunnel's canvas
         // mid-ride. The intro flight lifts off once this resolves (below).
         disposer.textures.forEach((texture) => webgl?.initTexture(texture))
+        stageRef.current?.('shaders')
         const firstCompile = webgl.compileAsync(scene, camera).catch(() => {})
 
         // start the furniture and yard downloads now; the attach itself waits
@@ -584,9 +758,7 @@ export default function CrtScene({
         )
 
         // --- the game runtime: walker, input, levels ------------------------
-        const EYE = deskTop + 2.0 // standing eye height over this desk's scale
-        const SPAWN = new THREE.Vector3(1.15, EYE, 2.55)
-        // the seated framing math (camEndFor, tanHalf) is baked around this;
+        // the seated framing math (camEndFor, tanHalf) is baked around SPAWN;
         // the walk uses the adjustable prefs fov and flyIn eases back here
         const FOV = 38
         const walk = createWalkController(camera, {
@@ -660,15 +832,74 @@ export default function CrtScene({
         /** a spawn point names x/z; what it stands on is whatever is there.
             Both authored spawns are open floor today, but furniture streams
             into the overworld and chunks stream into level 0 long after the
-            levels were built, so ask rather than assume the floor. */
-        const spawnY = (level: { groundY: number; collision: CollisionSet }, x: number, z: number) =>
-          supportY(x, z, level.groundY + EYE * 0.12, level.collision, level.groundY)
+            levels were built, so ask rather than assume the floor — and ask
+            the level's own terrain where the floor under all of it is. */
+        const floorOf = (level: Level, x: number, z: number) =>
+          level.groundYAt ? level.groundYAt(x, z) : level.groundY
+        const spawnY = (level: Level, x: number, z: number) => {
+          const floor = floorOf(level, x, z)
+          return supportY(x, z, floor + EYE * 0.12, level.collision, floor)
+        }
+        /** the authored spawn, nudged aside so simultaneous arrivals do not
+            stand up inside one another. Slot 0 (nobody else here, or the
+            first one in) is the authored point untouched, so single player
+            is pixel-for-pixel what it always was. */
+        const spawnSpotFor = (level: Level, x: number, z: number) => {
+          if (spawnSlot <= 0) return { x, z }
+          return scatterSpawn(x, z, spawnSlot, (cx, cz) => {
+            const floor = spawnY(level, cx, cz)
+            return !blockedAt(cx, cz, floor, floor + EYE, level.collision, EYE * 0.12)
+          })
+        }
+        /** what a wheel, a hull or a boot is standing on. The property answers
+            for its own lawn, porch and paths; the open world for the rest */
+        const surfaceOf = (x: number, z: number) =>
+          outside.onProperty(x, z) ? house.surfaceAt(x, z) : outside.surfaceAt(x, z)
+        // the world, as the vehicles ask about it. One object, re-pointed at
+        // the live level each tick — the same shape rigEnv and chaseEnv take
+        const fleetEnv: FleetEnvQueries = {
+          groundAt: outside.groundYAt,
+          waterY: outside.waterY,
+          collision: bootSet,
+          surfaceAt: surfaceOf,
+          waveAt: outside.waveAt,
+        }
+        // a level with no terrain function still has to answer; the closure is
+        // hoisted rather than made per frame, because this runs every tick
+        let flatY = 0
+        const flatGround = () => flatY
+        const aimFleetEnv = (level: Level) => {
+          flatY = level.groundY
+          fleetEnv.groundAt = level.groundYAt ?? flatGround
+          fleetEnv.waterY = level.waterY
+          fleetEnv.collision = level.collision
+          return fleetEnv
+        }
         let vHeld = false
         let xHeld = false
+        let dbgHeld = false
+        /** F9, read the same way v and x are: edge-detected off the key set,
+            and asked in both loops because either can be the live one */
+        const debugTick = (level: Level, x: number, footY: number, z: number) => {
+          const now = input.keys.has('F9')
+          if (now && !dbgHeld) collisionDebug.toggle()
+          dbgHeld = now
+          collisionDebug.update(level.collision, {
+            x, z, footY, headY: footY + EYE,
+          })
+        }
+        // the multiplayer keys ride the same edge-detect pattern: t opens the
+        // chat line, m arms the microphone, n swaps the talk mode. b is read
+        // as a held state instead, since it is the push-to-talk key
+        let tHeld = false
+        let mHeld = false
+        let nHeld = false
+        let hereNow = 0
 
         // prompt bookkeeping mirrored into React state only on change
         let nearNow = false
         let doorVerbNow: 'open' | 'close' | null = null
+        let vehicleNow: { id: VehicleId; label: string; verb: string } | null = null
         let pausedNow = false
         const gazeVec = new THREE.Vector3()
         const toScreen = new THREE.Vector3()
@@ -680,10 +911,257 @@ export default function CrtScene({
         const headPos = new THREE.Vector3()
         const headDir = new THREE.Vector3(0, 0, -1)
 
+        /*
+          Climbing in and out.
+
+          Two things make this delicate, and both are about the camera. The
+          chase boom (chaseCam.ts) brackets the walk: restore() writes back the
+          head transform it saved last frame, apply() saves whatever it finds.
+          Leave it holding while the drive camera writes the lens and it will
+          treat the boom position as a head and boom off *that*; leave it
+          holding across the whole drive and it will snap the camera back to a
+          transform from before you got in. So it is dropped on both edges.
+
+          The other is the walker itself. It keeps integrating a body that is
+          no longer anywhere, so it is parked at the machine every frame — that
+          way the network, the level reset and the stand-down all read a
+          position that is true, and a level cut cannot strand a walker under
+          the sea while the car drives on.
+        */
+        const enterVehicle = (id: VehicleId) => {
+          if (fleet.driving || levels.frozen || rig.down) return
+          const v = fleet.all.find((x) => x.id === id)
+          if (!v) return
+          fleet.enter(v, camera, walk.yaw, walk.pitch)
+          walk.resetMotion()
+          rig.reset()
+          chase.drop()
+          body.visible = false
+          vehicleNow = null
+          setVehiclePrompt(null)
+          setDriving({ id, label: v.label, cockpit: fleet.cockpit })
+          track('vehicle_entered', { kind: id })
+        }
+
+        const leaveVehicle = () => {
+          const v = fleet.driving
+          if (!v) return
+          const spot = fleet.leave(aimFleetEnv(levels.current))
+          if (!spot) {
+            // a helicopter fifty units up is not somewhere you step out of
+            setNotice('land first')
+            return
+          }
+          chase.drop()
+          walk.resetMotion()
+          walk.spawnAt(spot.x, spot.z, spot.yaw, spot.feetY)
+          // spawnAt levels the pitch; keep the view the player actually had
+          walk.pitch = spot.pitch
+          rig.reset()
+          rig.face(spot.yaw)
+          poseBody()
+          body.visible = true
+          // the body just reappeared somewhere new, and the machine's own
+          // shadow moved with it
+          if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
+          if (camera.position.z < 7) key.shadow.needsUpdate = true
+          house.flagShadows(camera.position)
+          setDriving(null)
+        }
+
+        // --- the shared walk --------------------------------------------------
+        // Presence, chat and proximity voice, all hanging off the same server
+        // the desktop already talks to. Nothing here connects until the player
+        // actually stands up, and it is all torn down when they sit back down:
+        // a visitor who only ever uses the OS never joins the world at all.
+        //
+        // The split follows the runtime's rule. The store and the bodies are in
+        // src/game/net/ because they are simulation and have to keep working
+        // with no browser under them; the socket and the WebRTC mesh are out
+        // here because they are neither.
+        const remote = createRemoteWorld()
+        const avatars = createRemoteAvatars(EYE, 34)
+        scene.add(avatars.root)
+        let net: ReturnType<typeof createWorldNet> | null = null
+        let voice: ReturnType<typeof createProximityVoice> | null = null
+        let chatKey = 0
+        // which spawn offset is ours; the server hands out the lowest free one.
+        // -1 is "not told yet", which is not the same as slot 0 (the authored
+        // spot): the stand-up can finish before the welcome lands, and treating
+        // the two alike latched the scatter off for the whole session
+        let spawnSlot = -1
+        let scattered = false
+        /** the authored spawn we last arrived on, in x/z. Stepping aside is
+            only allowed while the player is still standing on it */
+        const spawnHome = new THREE.Vector2()
+        const avatarEnv: AvatarEnv = {
+          // the remote's feet are solved against the ground under *them*
+          groundAt: (x, z) => floorOf(levels.current, x, z),
+          // re-pointed at the live level every tick, like rigEnv and chaseEnv;
+          // the level system is built below this, so it starts out empty
+          collision: makeCollisionSet({ minX: 0, maxX: 0, minZ: 0, maxZ: 0 }),
+          eyePos: camera.position,
+        }
+
+        const pushChat = (line: Omit<ChatLine, 'key'>) =>
+          setChat((prev) => [...prev, { ...line, key: chatKey++ }].slice(-CHAT_KEEP))
+
+        const syncVoice = () => {
+          if (!voice) return
+          setVoiceHud({
+            available: voice.available,
+            enabled: voice.enabled,
+            mode: voice.mode,
+            speaking: voice.speaking,
+            peers: voice.peerCount,
+            error: voice.error,
+          })
+        }
+
+        const joinWorld = () => {
+          if (net || !worldConfigured()) return
+          // The room is walkable long before the desktop has been logged into
+          // — that is the whole of the /room entrance — so an absent session
+          // is a guest, not a reason to stay out of the world. The server
+          // mints the guest-xxxx name, exactly as it does for the arcade.
+          const who = sessionRef.current ?? { kind: 'guest' as const, name: '' }
+          net = createWorldNet({
+            session: who,
+            level: levels.current.id,
+            onStatus: (status) => setMp((m) => ({ ...m, status })),
+            onMessage: (msg) => {
+              switch (msg.type) {
+                case 'world-welcome':
+                  remote.welcome(msg.you, msg.tick, msg.players)
+                  spawnSlot = msg.slot ?? 0
+                  // the welcome usually lands mid stand-up, in which case the
+                  // glide's own handoff does this; if it arrives late we step
+                  // aside here instead — but never once the player has walked
+                  stepAside()
+                  track('world_joined', { players: msg.players.length })
+                  break
+                case 'world-enter':
+                  remote.enter(msg.player)
+                  pushChat({
+                    name: '', text: `${msg.player.name} is here`,
+                    admin: false, mine: false, system: true,
+                  })
+                  break
+                case 'world-exit': {
+                  const gone = remote.roster.get(msg.id)
+                  remote.exit(msg.id)
+                  if (gone) {
+                    pushChat({
+                      name: '', text: `${gone.name} left`,
+                      admin: false, mine: false, system: true,
+                    })
+                  }
+                  break
+                }
+                case 'world-tick':
+                  remote.tick(msg.players, performance.now())
+                  break
+                case 'world-chat':
+                  pushChat({
+                    name: msg.name, text: msg.text,
+                    admin: msg.admin, mine: msg.id === remote.you,
+                  })
+                  // and over the head that said it, if they are in view
+                  avatars.say(msg.id, msg.text)
+                  break
+                case 'world-signal':
+                  voice?.accept(msg.from, msg.data)
+                  break
+              }
+            },
+          })
+          voice = createProximityVoice({
+            self: () => remote.you,
+            // read per peer, not captured: a reconnect brings a fresh TURN
+            // credential and the old one may already have expired
+            ice: () => net?.ice ?? [],
+            send: (to, data) => net?.signal(to, data),
+            onChange: syncVoice,
+          })
+          syncVoice()
+          sayRef.current = (text) => net?.chat(text)
+        }
+
+        const leaveWorld = () => {
+          voice?.dispose()
+          voice = null
+          net?.close()
+          net = null
+          sayRef.current = null
+          spawnSlot = -1
+          scattered = false
+          remote.clear()
+          // one last pass over an empty roster retires every body and its
+          // sprites; the avatar system itself outlives a sit-down
+          avatars.update(remote, 0, avatarEnv)
+          hereNow = 0
+          setMp({ status: 'offline', here: 0 })
+          setChat([])
+          setTyping(false)
+          typingRef.current = false
+        }
+
+        /** move off the shared spawn tile onto our slot. Only ever fires once,
+            only while the player is still standing where they arrived, and
+            never mid-cut — walking away first means they chose their spot. */
+        const stepAside = () => {
+          if (scattered || !fps || levels.frozen || rig.down) return
+          if (spawnSlot < 0) return // no slot yet; the welcome calls back
+          const level = levels.current
+          const here = new THREE.Vector2(camera.position.x, camera.position.z)
+          if (here.distanceTo(spawnHome) > 1) {
+            scattered = true // they already walked; leave them alone
+            return
+          }
+          scattered = true
+          if (spawnSlot === 0) return // nobody else here: the authored spot
+          const spot = spawnSpotFor(level, spawnHome.x, spawnHome.y)
+          // the boom writes back the head position it saved last frame, so a
+          // teleport it has not been told about is undone one frame later
+          chase.drop()
+          walk.teleport(spot.x, spot.z, spawnY(level, spot.x, spot.z))
+          rig.reset()
+          rig.face(walk.yaw)
+          poseBody()
+        }
+
+        const openChat = () => {
+          if (typingRef.current) return
+          typingRef.current = true
+          setTyping(true)
+          input.clearKeys() // nothing stays latched while the line has the keys
+          requestAnimationFrame(() => chatInputRef.current?.focus())
+        }
+
         const setPauseNow = (on: boolean) => {
           if (pausedNow === on) return
           pausedNow = on
-          if (on) input.clearKeys() // nothing stays latched under the menu
+          // an engine is the first sound in this project that does not stop by
+          // itself, so the menu has to say so — a paused world that is still
+          // idling underneath reads as the game having hung
+          fleet.setMuted(on)
+          if (on) {
+            input.clearKeys() // nothing stays latched under the menu
+            // esc is spent on the pointer unlock before the composer ever sees
+            // it, so the pause is also how a chat line gets abandoned
+            typingRef.current = false
+            setTyping(false)
+            // and while it is up, the menu lists where the machines are — a
+            // boat two kilometres away is otherwise something you have to
+            // remember rather than something you can look up
+            setFleetWhere(
+              fleet.all.map((v) => ({
+                id: v.id,
+                label: v.label,
+                ...fleet.where(v.id, camera.position),
+              })),
+            )
+          }
           setPaused(on)
         }
 
@@ -692,15 +1170,31 @@ export default function CrtScene({
           isActive: () => roaming,
           isLive: () => fps,
           isPaused: () => pausedNow,
-          onTurn: (dx, dy, sign) => walk.turn(dx, dy, sign, prefsRef.current.sens),
-          // E: the machine's prompt wins over a door's
+          isTyping: () => typingRef.current,
+          // at the wheel the mouse belongs to the drive camera. Left wired to
+          // walk.turn it would silently spin the suspended walker's heading
+          // and stand you down facing somewhere you never looked
+          onTurn: (dx, dy, sign) =>
+            fleet.driving
+              ? fleet.turn(dx, dy, sign, prefsRef.current.sens)
+              : walk.turn(dx, dy, sign, prefsRef.current.sens),
+          // E: get out of whatever you are in, else the machine's prompt, else
+          // a door's, else climb into whatever is parked in front of you
           onUse: () => {
+            if (fleet.driving) {
+              leaveVehicle()
+              return true
+            }
             if (nearNow) {
               interactRef.current()
               return true
             }
             if (doorVerbNow) {
               house.useDoor(headPos, headDir)
+              return true
+            }
+            if (vehicleNow) {
+              enterVehicle(vehicleNow.id)
               return true
             }
             return false
@@ -733,10 +1227,19 @@ export default function CrtScene({
           },
           onSwapped: (level, spawn) => {
             walk.resetMotion()
+            // everyone else is scoped by level, so the swap has to be
+            // announced: until it is, we are still drawing the crowd we just
+            // walked away from, and they are still drawing us
+            net?.setLevel(level.id)
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
             chase.drop()
-            walk.spawnAt(spawn.x, spawn.z, spawn.yaw, spawnY(level, spawn.x, spawn.z))
+            // a seam drops everyone on one tile too, so the same offset
+            // applies — here it can be baked straight into the arrival
+            spawnHome.set(spawn.x, spawn.z)
+            scattered = true
+            const spot = spawnSpotFor(level, spawn.x, spawn.z)
+            walk.spawnAt(spot.x, spot.z, spawn.yaw, spawnY(level, spot.x, spot.z))
             if (level.id === 'overworld') house.flagShadows(camera.position)
             // either side of the cut, the body's old shadow may still be
             // baked into the desk-area maps: re-render them without it
@@ -763,8 +1266,8 @@ export default function CrtScene({
           fog: sceneFog,
           bg: sceneBg,
         }
-        const applyLight = () => {
-          const sky = outside.update(camera.position)
+        const applyLight = (at: THREE.Vector3 = camera.position) => {
+          const sky = outside.update(at)
           const k = roamK
           hemi.color.copy(sky.hemiSky)
           hemi.groundColor.copy(sky.hemiGround)
@@ -779,6 +1282,10 @@ export default function CrtScene({
           if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
           house.setRoamLight(k)
           house.setDay(sky.day)
+          // the fleet's paintwork has no lights of its own: what it reflects
+          // is a painted equirect sky repainted off these same numbers, and
+          // its headlamps and nav lights come up with the dusk
+          fleet.setDay(sky.day, sky.night, sky.fogColor, sky.sunEl)
           sceneFog.color.copy(sky.fogColor)
           sceneFog.near = sky.fogNear
           sceneFog.far = sky.fogFar
@@ -804,6 +1311,8 @@ export default function CrtScene({
         const announce = () => {
           if (announced) return
           announced = true
+          // whatever is covering the boot can go: this is the first frame
+          stageRef.current?.(null)
           const c = front.clone().project(camera)
           const top = front.clone().setY(front.y + gSize.y / 2).project(camera)
           const cx = ((c.x + 1) / 2) * W
@@ -875,19 +1384,148 @@ export default function CrtScene({
           }
         }
 
+        /*
+          The driving frame.
+
+          Deliberately short: the fleet's own tick does the physics (in fixed
+          slices, not this frame's dt), places the camera and makes the noise,
+          so what is left here is everything that is true whichever way the
+          player is getting around — the world's pulse, the shadow flags, the
+          crowd, and the HUD.
+
+          The one piece of housekeeping worth naming is the walker. It keeps
+          existing while you drive; it is simply parked at the machine every
+          frame. That is what makes a dismount land in the right place, what
+          keeps the level system's idea of where you are honest, and what stops
+          `stopRoam` (which snaps the walker home) from disagreeing with a car
+          that drove two kilometres.
+        */
+        const gaugeNow = { speed: -1, load: 0, altitude: -1, gear: -1 }
+
+        const driveTick = (now: number, dt: number) => {
+          const v = fleet.driving
+          if (!v) return
+          const level = levels.current
+          // the cut state machine still has to run — but no seam may fire at
+          // the wheel, so it is never handed a live flag
+          seamPt.set(v.root.position.x, v.root.position.y, v.root.position.z)
+          levels.tick(now, seamPt, false)
+          // park the walker on the machine (see the header) — and do it *here*,
+          // before the fleet tick, because the walk controller's rig is the
+          // camera itself. Parked afterwards, the teleport threw the lens back
+          // to the machine's own origin at eye height every single frame: you
+          // sat on the car's centreline looking over its bonnet, or inside the
+          // helicopter's cabin at eighty units up, with the drive camera doing
+          // its work and being overwritten a few lines later. The boom writes
+          // the camera last and nothing after it may touch the position
+          const feet = v.root.position.y
+          walk.teleport(v.root.position.x, v.root.position.z, feet)
+          walk.yaw = v.yaw
+          const fs = fleet.tick({
+            dt,
+            keys: input.keys,
+            frozen: pausedNow || levels.frozen,
+            env: aimFleetEnv(level),
+            camera,
+            fovBase: prefsRef.current.fov,
+            playerPos: v.root.position,
+            outdoors: level.id === 'overworld',
+          })
+          // v swaps the boom for the cockpit. It is not the walk's saved
+          // third-person preference — a car has two views and neither is the
+          // one the pause menu's toggle means
+          const vNow = input.keys.has('KeyV')
+          if (vNow && !vHeld && !pausedNow) {
+            fleet.toggleView()
+            setDriving((d) => (d ? { ...d, cockpit: fleet.cockpit } : d))
+          }
+          vHeld = vNow
+          xHeld = input.keys.has('KeyX')
+          level.update(dt, camera.position)
+          // the machine is now the moving caster, and `step.moved` — which
+          // gates the whole hand-baked shadow regime — comes from a walk
+          // controller that is not running. The fleet reports its own
+          if (level.id === 'overworld' && fs.moved) {
+            if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
+            if (camera.position.z < 7) key.shadow.needsUpdate = true
+            house.flagShadows(camera.position)
+            if (outside.sun.shadow.intensity > 0.001) outside.sun.shadow.needsUpdate = true
+          }
+          // everyone else. Kept in step with the walking branch below by hand:
+          // both say where we are and play the others back, they just disagree
+          // about what "we" is standing on
+          if (net) {
+            net.move(
+              v.root.position.x, feet, v.root.position.z,
+              v.yaw, 0, 0,
+              packPose({
+                grounded: fs.altitude < 1,
+                run: false,
+                crouch: false,
+                swimming: false,
+                speaking: Boolean(voice?.speaking),
+                down: false,
+              }),
+            )
+            remote.sample(now, dt)
+            avatarEnv.collision = level.collision
+            avatarEnv.ceilingY = level.ceilingY
+            avatars.update(remote, dt, avatarEnv)
+            voice?.update(remote.players, camera, dt)
+            if (remote.players.size !== hereNow) {
+              hereNow = remote.players.size
+              setMp((m) => ({ ...m, here: hereNow }))
+            }
+          }
+          // the instrument readout, rounded before it is mirrored: at full
+          // precision this re-renders the whole component every frame
+          const sp = Math.round(Math.abs(fs.speed) * 1.44) // units/s -> km/h
+          const alt = Math.round(fs.altitude)
+          if (sp !== gaugeNow.speed || alt !== gaugeNow.altitude || fs.gear !== gaugeNow.gear) {
+            gaugeNow.speed = sp
+            gaugeNow.altitude = alt
+            gaugeNow.gear = fs.gear
+            gaugeNow.load = fs.load
+            setGauge({ speed: sp, load: fs.load, altitude: alt, gear: fs.gear })
+          }
+          // at the wheel, the body worth probing is the machine's
+          debugTick(level, v.root.position.x, feet, v.root.position.z)
+          render()
+          raf = requestAnimationFrame(walkTick)
+        }
+
         const walkTick = (now: number) => {
           if (disposed || !roaming) return
           const rawMs = now - lastT
           const dt = Math.min(0.05, rawMs / 1000)
           lastT = now
           // frame-time governor: a smoothed frame cost over ~22ms means the
-          // GPU can't keep up at this resolution, so shed a pixel-ratio step
+          // GPU can't keep up at this resolution, so shed a pixel-ratio step.
+          // How big a step is how far over budget it is: a retina panel
+          // starting at 2 and stepping down an eighth of a second at a time
+          // spent six seconds visibly struggling before it found the ratio it
+          // was always going to end at, which is most of a first impression
           emaMs = emaMs * 0.93 + Math.min(100, rawMs) * 0.07
           prWait -= rawMs / 1000
           if (prWait <= 0 && emaMs > 22 && pr > 1) {
-            pr = Math.max(1, pr - 0.25)
+            pr = Math.max(1, pr - (emaMs > 45 ? 0.5 : 0.25))
             webgl?.setPixelRatio(pr)
             prWait = 1.2
+          }
+          /*
+            At the wheel this loop is a different loop.
+
+            The walk controller, the chase boom, the player's body, the
+            footstep voicing and the seam test are all suspended — there is no
+            walker to integrate, and every one of them would be reading a
+            position that no longer means anything. What is left is the fleet's
+            own tick (which owns the lens for the duration), the level's pulse,
+            the shadow flags and the network. It returns early rather than
+            threading a `driving` flag through two hundred lines of walk code.
+          */
+          if (fleet.driving) {
+            driveTick(now, dt)
+            return
           }
           // the boom hands the camera back to the head before anything reads
           // or integrates it; it takes it again just before render below
@@ -907,18 +1545,28 @@ export default function CrtScene({
             // a downed body forfeits movement until it has stood back up
             frozen: levels.frozen || rig.down,
             groundY: level.groundY,
+            groundAt: level.groundYAt,
             ceilingY: level.ceilingY,
+            waterY: level.waterY,
             collision: level.collision,
             fovBase: prefsRef.current.fov,
           })
           // the sim reports footfalls and touchdowns; the level says what is
           // underfoot (the backrooms are carpet wall to wall), and crouched
-          // steps land softer
+          // steps land softer. Outdoors the answer has two owners: the house
+          // speaks for its own property — planks, porch slab, front walk,
+          // lawn — and the open world for everything past the fence
           if (step.footfall || step.landing > 3) {
+            const px = camera.position.x
+            const pz = camera.position.z
             const surface =
-              level.id === 'overworld'
-                ? house.surfaceAt(camera.position.x, camera.position.z)
-                : 'carpet'
+              level.id !== 'overworld'
+                ? 'carpet'
+                : step.wet > 0.12
+                  ? 'water'
+                  : outside.onProperty(px, pz)
+                    ? house.surfaceAt(px, pz)
+                    : outside.surfaceAt(px, pz)
             if (step.landing > 3) landThump(surface, Math.min(1, (step.landing - 3) / 14))
             else footstep(surface, step.gait * (1 - walk.crouchK * 0.65), step.run)
           }
@@ -947,12 +1595,32 @@ export default function CrtScene({
             walk.teleport(
               getupPt.x,
               getupPt.z,
-              supportY(getupPt.x, getupPt.z, getupPt.y, level.collision, level.groundY),
+              supportY(
+                getupPt.x, getupPt.z, getupPt.y,
+                level.collision, floorOf(level, getupPt.x, getupPt.z),
+              ),
             )
             poseBody()
             rig.beginRecover()
           }
           xHeld = xNow
+          // t opens the chat line, m arms the microphone, n swaps the talk
+          // mode, and b is held to push to talk. Same edge-detect as v and x
+          const tNow = input.keys.has('KeyT')
+          if (tNow && !tHeld && net && !levels.frozen) openChat()
+          tHeld = tNow
+          const mNow = input.keys.has('KeyM')
+          if (mNow && !mHeld && voice?.available) {
+            const arming = !voice.enabled
+            void voice.toggle().then(() => {
+              if (arming && voice?.enabled) track('world_voice')
+            })
+          }
+          mHeld = mNow
+          const nNow = input.keys.has('KeyN')
+          if (nNow && !nHeld && voice?.enabled) voice.cycleMode()
+          nHeld = nNow
+          voice?.setPushing(input.keys.has('KeyB'))
           // the body plants its feet under the camera and faces the walk
           // (or hangs from it, mid-hop) — unless the ragdoll owns it
           if (!rig.ragdolling) poseBody()
@@ -970,10 +1638,47 @@ export default function CrtScene({
           // same factor as poseBody's trailing offset: a crushed boom means
           // the lens is back on the head, so the flair fades out with it
           rigPose.show = Math.min(1, chase.dist / 1.2)
-          rigEnv.groundY = level.groundY
+          // the ragdoll and the boom both work in a few units around the
+          // body, so one terrain sample under it is the floor for both —
+          // they never need the whole heightfield, only the local plane
+          const localFloor = floorOf(level, camera.position.x, camera.position.z)
+          rigEnv.groundY = localFloor
           rigEnv.ceilingY = level.ceilingY
           rigEnv.collision = level.collision
           rig.update(rigPose, rigEnv)
+          // --- everyone else ------------------------------------------------
+          // Say where we are, play the others back a couple of ticks in the
+          // past, and put their voices where their bodies ended up. All of it
+          // runs while the camera is still the head: the boom only borrows it
+          // further down, and a listener parked on the boom would hear the
+          // world from somewhere behind your own back.
+          if (net) {
+            net.move(
+              camera.position.x,
+              walk.feetY,
+              camera.position.z,
+              walk.yaw,
+              walk.pitch,
+              step.gait,
+              packPose({
+                grounded: step.grounded,
+                run: step.run,
+                crouch: step.duck,
+                swimming: step.swimming,
+                speaking: Boolean(voice?.speaking),
+                down: rig.down,
+              }),
+            )
+            remote.sample(now, dt)
+            avatarEnv.collision = level.collision
+            avatarEnv.ceilingY = level.ceilingY
+            avatars.update(remote, dt, avatarEnv)
+            voice?.update(remote.players, camera, dt)
+            if (remote.players.size !== hereNow) {
+              hereNow = remote.players.size
+              setMp((m) => ({ ...m, here: hereNow }))
+            }
+          }
           // doors easing upstairs, chunks streaming below — whichever side
           // the player is on, both worlds keep their pulse
           level.update(dt, camera.position)
@@ -987,6 +1692,10 @@ export default function CrtScene({
             if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
             if (camera.position.z < 7) key.shadow.needsUpdate = true
             house.flagShadows(camera.position)
+            // The sun's program stays invariant now, but its hand-managed map
+            // still follows a genuinely moving caster. This is the ordinary
+            // warmed draw, not a shader-mode switch at the front door.
+            if (outside.sun.shadow.intensity > 0.001) outside.sun.shadow.needsUpdate = true
           }
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
@@ -1011,20 +1720,126 @@ export default function CrtScene({
             doorVerbNow = verb
             setDoorVerb(verb)
           }
+          // the fleet still ticks while you are on foot: a parked machine has
+          // to settle onto the ground it is standing on, keep its collision box
+          // under the walker's shoulder, and offer its prompt when you get
+          // close. Everything past SIM_RANGE it skips on its own
+          const fs = fleet.tick({
+            dt,
+            keys: input.keys,
+            frozen: levels.frozen || pausedNow,
+            env: aimFleetEnv(level),
+            camera,
+            fovBase: prefsRef.current.fov,
+            playerPos: camera.position,
+            outdoors: level.id === 'overworld',
+          })
+          // ...and its prompt is the lowest-priority one: the machine and a
+          // door both win, because both are things you are standing right at
+          const atVehicle =
+            isNear || verb || rig.down || levels.frozen ? null : fs.prompt
+          if ((atVehicle ? atVehicle.id : null) !== (vehicleNow && vehicleNow.id)) {
+            vehicleNow = atVehicle
+              ? { id: atVehicle.id, label: atVehicle.label, verb: atVehicle.verb }
+              : null
+            setVehiclePrompt(vehicleNow && { label: vehicleNow.label, verb: vehicleNow.verb })
+          }
           // every gameplay read above used the head; only now does the boom
           // borrow the camera (third person, or orbiting a downed body)
           chaseEnv.collision = level.collision
-          chaseEnv.groundY = level.groundY
+          chaseEnv.groundY = localFloor
           chaseEnv.ceilingY = level.ceilingY
           chaseEnv.yaw = walk.yaw
           chaseEnv.pitch = walk.pitch
           chaseEnv.focus = rig.ragdolling ? rig.focus(focusPt) : null
           chase.apply(camera, dt, chaseEnv)
+          debugTick(level, camera.position.x, walk.feetY, camera.position.z)
           render()
           raf = requestAnimationFrame(walkTick)
         }
 
-        const startRoam = () => {
+        /*
+          The world the walk will eventually be handed, built while there is
+          still a cover over the scene's very first frame.
+
+          Two inner rings is what prime has always guaranteed; the extra
+          budget buys as much of the outer ones as it can, because the frame
+          budget's alternative is to dribble them out at two milliseconds a
+          frame into the face of somebody who already has the controls. This
+          covered pass guarantees that first ring before either entrance draws
+          its first visible frame.
+
+          It deliberately does *not* try to force the first *draw* of the
+          chunks. That was tried: a one-pixel viewport swept through four
+          headings so every chunk crossed a frustum once. It works, and it is
+          a bad trade — three.js reads a program's uniform structure on first
+          use, which blocks on the driver finishing the link, so the sweep
+          pulled nearly four seconds of shader setup into one lump to avoid a
+          hitch that measures a tenth of a second. Let the frustum do its job.
+
+          The sun's shadow is the exception, and it is worth the paragraph.
+
+          The old sky switched `castShadow` itself at the indoor and daylight
+          thresholds. That changed every lit surface's shader configuration;
+          the front door or the first sunset could therefore ask the driver to
+          link nineteen programs in one frame, measured at 2.8 seconds. The
+          flag is now stable and only a uniform strength changes, but the
+          depth half of the shader pile still needs one real draw up front.
+
+          So compile the sun-lit surface variants asynchronously, then do one
+          render with the sun map flagged into a one-pixel viewport. The depth
+          programs only exist when Three performs a real shadow pass, so
+          compileAsync alone cannot cover them. It is the same total cost
+          either way — the only choice is whether it is paid behind the boot
+          cover or in someone's face on the doorstep.
+        */
+        const warmCam = new THREE.PerspectiveCamera(110, 1, 0.1, 900)
+        const warmSize = new THREE.Vector2()
+        /** the fleet is put down once during the covered warm-up and stays
+            where the player leaves it for the rest of the session */
+        let fleetPlaced = false
+        const warmForRoam = async (at: THREE.Vector3) => {
+          outside.prime(at.x, at.z, 200)
+          if (!webgl || !scene) return
+          // Constructors leave all three machines at (0,0,0), hidden by the
+          // fleet root. Terrain and collision now exist, so place them before
+          // compiling or drawing anything the player can later meet outside.
+          if (!fleetPlaced) {
+            fleetPlaced = true
+            fleet.spawnAll(aimFleetEnv(levels.current))
+          }
+          // Stand at the actual front door, not at the bedroom spawn's x. The
+          // exact live lighting state and caster set at this threshold are the
+          // things this warm-up exists to pay for.
+          warmCam.position.set(FRONT_DOOR_X, at.y, HOUSE.minZ - 1.25)
+          warmCam.rotation.set(0, 0, 0)
+          warmCam.updateMatrixWorld(true)
+          // This render bypasses render()'s light pass, so compose the day
+          // cycle at the warm camera. That also anchors the hand-managed sun
+          // map here, letting the first real doorway frame reuse it.
+          applyLight(warmCam.position)
+          try {
+            // The initial compile ran before the streamed chunks existed.
+            // Compile their live outdoor lighting variant now; the promise
+            // lets the driver link in
+            // parallel while BootCover continues animating on the compositor.
+            await webgl.compileAsync(scene, warmCam).catch(() => {})
+            if (disposed || !webgl || !scene) return
+            webgl.getSize(warmSize)
+            webgl.setScissorTest(true)
+            webgl.setScissor(0, 0, 1, 1)
+            webgl.setViewport(0, 0, 1, 1)
+            outside.sun.shadow.needsUpdate = true
+            webgl.render(scene, warmCam)
+          } finally {
+            if (webgl) {
+              webgl.setScissorTest(false)
+              webgl.setViewport(0, 0, warmSize.x, warmSize.y)
+            }
+          }
+        }
+
+        const startRoam = (instant = false, spawnShadowsReady = false) => {
           if (!webgl || roaming) return
           roaming = true
           parked = false
@@ -1039,13 +1854,18 @@ export default function CrtScene({
           emaMs = 16
           prWait = 1.5
           webgl.setPixelRatio(pr)
+          // announce ourselves while the stand-up glide plays, so the roster
+          // and the first snapshots have landed by the time the controls do
+          joinWorld()
           // push back from the desk and rise to standing height: kept short,
-          // lingering here made standing up feel mushy
+          // lingering here made standing up feel mushy. The /room entrance
+          // never sat down, so it opens standing instead of gliding up out
+          // of a chair nobody watched it push back from
           const s0 = performance.now()
           const from = camera.position.clone()
           const standTick = () => {
             if (disposed || !roaming) return
-            const t = Math.min(1, (performance.now() - s0) / 620)
+            const t = instant ? 1 : Math.min(1, (performance.now() - s0) / 620)
             camera.position.lerpVectors(from, SPAWN, EASE(t))
             const aim = lookAngles(camera.position, front)
             camera.rotation.set(aim.pitch, aim.yaw, 0)
@@ -1060,13 +1880,20 @@ export default function CrtScene({
               // the body materializes behind the lens, feet on the floor
               rig.face(aim.yaw)
               poseBody()
+              // the chair is one tile and everyone stands up out of it
+              spawnHome.set(SPAWN.x, SPAWN.z)
+              scattered = false
+              stepAside()
               body.visible = true
-              // the body just appeared: refresh only the maps that can see
-              // it (same regions walkTick uses) — a full bakeShadows() here
-              // re-rendered every map in one frame and stalled the handoff
-              if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
-              if (camera.position.z < 7) key.shadow.needsUpdate = true
-              house.flagShadows(camera.position)
+              // A direct /room boot baked this exact body pose into the local
+              // maps under BootCover. Other entrances warmed the shader but
+              // not the shadow itself, because an invisible person must not
+              // leave a silhouette beside the desk during the intro.
+              if (!spawnShadowsReady) {
+                if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
+                if (camera.position.z < 7) key.shadow.needsUpdate = true
+                house.flagShadows(camera.position)
+              }
               input.tryLock()
               setWalking(true)
               lastT = performance.now()
@@ -1082,7 +1909,15 @@ export default function CrtScene({
           roaming = false
           fps = false
           setPauseNow(false)
+          // sitting back down leaves the world: the socket closes, the bodies
+          // are retired, and the microphone is released rather than left live
+          // behind a desktop that gives no sign it is on
+          leaveWorld()
           input.clearKeys()
+          // out of whatever you were driving first: the engine has to stop,
+          // and `levels.reset()` below hauls the walker home whether or not a
+          // car came with it
+          fleet.sleep()
           walk.resetMotion()
           rig.reset()
           chase.drop() // the sit-down glide starts from wherever the lens is
@@ -1110,9 +1945,12 @@ export default function CrtScene({
           }
           nearNow = false
           doorVerbNow = null
+          vehicleNow = null
           setWalking(false)
           setNear(false)
           setDoorVerb(null)
+          setVehiclePrompt(null)
+          setDriving(null)
           input.releaseLock()
           if (webgl) {
             webgl.domElement.style.pointerEvents = 'none'
@@ -1176,6 +2014,27 @@ export default function CrtScene({
         doorRef.current = () => {
           house.useDoor(headPos, headDir)
         }
+        enterRef.current = () => {
+          if (vehicleNow) enterVehicle(vehicleNow.id)
+        }
+        leaveRef.current = () => leaveVehicle()
+        // the pause menu's vehicle list: where each machine is, and the way
+        // out of having stranded one. A recall is not a teleport for the
+        // player — it puts the machine on the nearest place it can legally
+        // stand (or float), which is why the boat refuses inland
+        fleetRef.current = {
+          where: () =>
+            fleet.all.map((v) => ({
+              id: v.id,
+              label: v.label,
+              ...fleet.where(v.id, camera.position),
+            })),
+          recall: (id) => {
+            const ok = fleet.recall(id, camera.position, aimFleetEnv(levels.current))
+            setFleetWhere(fleetRef.current?.where() ?? [])
+            return ok
+          },
+        }
         // the pause menu's resume button (esc does the same via input)
         resumeRef.current = () => {
           setPauseNow(false)
@@ -1202,62 +2061,89 @@ export default function CrtScene({
         const prevCleanup = cleanupDom
         cleanupDom = () => {
           removeResize()
-          stopRoam()
+          stopRoam() // which also leaves the world and drops the microphone
+          avatars.dispose()
           input.dispose()
           prevCleanup?.()
         }
 
-        // lift-off: the flight starts once every program has linked, so its
-        // first frame renders without a compile stall; the tunnel is still
-        // holding for that frame's announce. The heavy first frame is paid
-        // in installments under the cover: one plain render (first-draw
-        // buffer and texture costs), then one shadow map per frame
+        // Lift-off waits for the complete scene, not merely the desk shell.
+        // This is intentionally the one non-progressive part of the room: a
+        // late model can introduce another cold shadow-depth variant, and the
+        // first place it gets drawn is the front door. The tunnel and
+        // BootCover are still holding, so downloads, the outdoor sun pass and
+        // the first buffer uploads all finish before a gameplay frame exists.
         void firstCompile.then(async () => {
           if (disposed || roaming || leaving) return
-          // arriving already roaming (the /room entrance) means nobody is
-          // watching a machine boot: start parked at the desk, where the
-          // stand-up glide reads as pushing your chair back, and skip the
-          // whole intro flight rather than flying in only to walk away
+          /*
+            Arriving already roaming (the /room entrance) means nobody is
+            watching a machine boot, so the intro flight is skipped outright
+            rather than flown only to walk away from.
+
+            It used to open parked at the desk and glide up from there, on
+            the theory that the glide reads as pushing your chair back. It
+            doesn't — on this route the tube is dark and the park is nose to
+            glass, so the first thing the visitor sees is a black rectangle
+            filling the lens, held for however long the shadow bake and the
+            world's first ring take. Standing is the honest opening: the
+            camera is at eye height and the outer rings are in before the
+            first frame is drawn.
+          */
           const straightToRoom = roamPropRef.current
-          camera.position.copy(straightToRoom ? camEnd : camStart)
+          camera.position.copy(straightToRoom ? SPAWN : camStart)
+          camera.lookAt(front)
+          if (straightToRoom) {
+            roomLight(1) // no chair to rise from, so no ramp to rise with
+          }
+          // The property models used to attach after the intro. That left
+          // their sun-depth variants outside the covered warm-up and made a
+          // fast /room arrival capable of meeting them for the first time at
+          // the doorstep. Finish the small model batch here instead.
+          const entries = await housePromise
+          if (disposed || !webgl || !scene || roaming || leaving) return
+          const models: HouseModels = { plant, mug }
+          for (const e of entries) if (e) models[e[0]] = e[1]
+          house.furnish(models)
+          disposer.textures.forEach((texture) => webgl?.initTexture(texture))
+
+          // Make the player part of the covered shader warm-up too. Each body
+          // mesh opts out of frustum culling, so the outdoor pass compiles its
+          // surface and depth variants even though the warm camera faces away.
+          // On /room, keep it visible through the local bake: those maps then
+          // already contain the exact body pose the first live frame reveals.
+          const spawnAim = lookAngles(SPAWN, front)
+          walk.spawnAt(
+            SPAWN.x, SPAWN.z, spawnAim.yaw,
+            spawnY(levels.current, SPAWN.x, SPAWN.z),
+          )
+          walk.pitch = spawnAim.pitch
+          rig.reset()
+          rig.face(spawnAim.yaw)
+          poseBody()
+          body.visible = true
+          await warmForRoam(SPAWN)
+          if (disposed || !webgl || !scene || roaming || leaving) return
+
+          if (!straightToRoom) body.visible = false
+          await bakeShadowsCovered(() => disposed || roaming || leaving)
+          if (disposed || !webgl || !scene || roaming || leaving) return
+          // startRoam reveals it only after the stand-up frame. Keeping it
+          // live for the readiness render would put the still-visible head
+          // around the first-person camera while BootCover fades.
+          body.visible = false
+
+          // walk.spawnAt above borrowed the live camera while posing the body;
+          // put the lens back on the entrance before the first visible frame.
+          camera.position.copy(straightToRoom ? SPAWN : camStart)
           camera.lookAt(front)
           render()
           announce()
-          await new Promise((r) => requestAnimationFrame(r))
-          await bakeShadowsStaggered(() => disposed || roaming || leaving)
-          if (disposed || roaming || leaving) return
           if (straightToRoom) {
-            roomLight(0) // the stand-up glide ramps this to full room light
-            startRoam()
+            startRoam(true, true)
             return
           }
           t0 = performance.now()
           raf = requestAnimationFrame(introTick)
-        })
-
-        // stream the furniture and yard models in behind the intro; the
-        // house is fully walkable before any of them land, and a prop that
-        // fails to download is just a gap, never a failure
-        void housePromise.then(async (entries) => {
-          if (disposed || !webgl || !scene) return
-          const models: HouseModels = { plant, mug }
-          for (const e of entries) if (e) models[e[0]] = e[1]
-          // hold the attach until the camera parks (or the walk begins):
-          // the clone + compile burst used to land mid-flight and hitch the
-          // intro and the warp exit right on top of each other
-          while (!disposed && !parked && !roaming && !leaving) {
-            await new Promise((r) => setTimeout(r, 120))
-          }
-          if (disposed || !webgl || !scene) return
-          house.furnish(models)
-          outside.furnish(models) // borrows the tree/bush GLBs for the block
-          disposer.textures.forEach((texture) => webgl?.initTexture(texture))
-          // pay the new shaders/textures now, not on the first look around
-          await webgl.compileAsync(scene, camera).catch(() => {})
-          if (disposed || !webgl) return
-          // re-bake in installments; parked, each step draws its own frame,
-          // so the furniture joins the standing image without one big hitch
-          await bakeShadowsStaggered(() => disposed || !webgl)
         })
       })
       .catch(() => {
@@ -1273,6 +2159,11 @@ export default function CrtScene({
       roamRef.current = null
       doorRef.current = null
       resumeRef.current = null
+      fleetRef.current = null
+      enterRef.current = null
+      leaveRef.current = null
+      disposeFleet?.()
+      disposeFleet = null
       if (scene) {
         scene.traverse((o) => {
           const mesh = o as THREE.Mesh
@@ -1307,10 +2198,125 @@ export default function CrtScene({
       )}
       {roam && walking && !paused && (
         <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
-          {locked
-            ? 'wasd move · space jump · shift run · ctrl crouch · v camera · x flop · esc pauses'
-            : 'wasd to move · click to grab the mouse · esc to leave'}
+          {!locked
+            ? 'wasd to move · click to grab the mouse · esc to leave'
+            : driving
+              ? // the controls change with the medium, so the line does too:
+                // a helicopter has a collective where a car has a handbrake
+                `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
+              : `wasd move · space jump · shift run · ctrl crouch · v camera · x flop${
+                  mp.status === 'live' ? ' · t chat · m mic' : ''
+                } · esc pauses`}
         </p>
+      )}
+      {/* the instrument panel. Deliberately the same quiet mono the rest of
+          the HUD is in — a chrome speedometer over this world would be a
+          different game's furniture */}
+      {roam && walking && !paused && driving && (
+        <div className="pointer-events-none absolute right-5 bottom-11 z-10 text-right font-mono">
+          <div className="flex items-baseline justify-end gap-1.5">
+            <span className="text-[26px] leading-none text-stone-200 tabular-nums">
+              {gauge.speed}
+            </span>
+            <span className="text-[11px] text-stone-500">km/h</span>
+          </div>
+          <div className="mt-1 flex items-center justify-end gap-2 text-[10px] text-stone-500">
+            {driving.id === 'car' && gauge.gear !== 0 && (
+              <span>{gauge.gear < 0 ? 'R' : `gear ${gauge.gear}`}</span>
+            )}
+            {driving.id === 'heli' && <span>{gauge.altitude} up</span>}
+            <span className="text-stone-600">{driving.label}</span>
+          </div>
+          {/* a bar rather than a rev counter: it reads at a glance and it is
+              the same number the engine note is riding */}
+          <div className="mt-1.5 ml-auto h-[3px] w-24 overflow-hidden rounded-full bg-stone-800">
+            <div
+              className="h-full rounded-full bg-stone-400 transition-[width] duration-100"
+              style={{ width: `${Math.round(Math.min(1, Math.max(0, gauge.load)) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+      {notice && (
+        <p className="pointer-events-none absolute bottom-24 left-1/2 z-20 -translate-x-1/2 rounded-md border border-stone-700 bg-stone-950/80 px-3 py-1.5 font-mono text-[12px] text-stone-300 backdrop-blur-sm">
+          {notice}
+        </p>
+      )}
+      {/* the shared walk's rail: who is here, what they said, and whether the
+          microphone is live. Only ever mounted while actually in the world */}
+      {roam && walking && mp.status === 'live' && !paused && (
+        <div className="pointer-events-none absolute bottom-4 left-5 z-10 max-w-[min(28rem,52vw)] font-mono">
+          <div className="flex items-center gap-2 text-[11px] text-stone-500">
+            <span className="inline-flex items-center gap-1.5">
+              <span aria-hidden className="size-1.5 rounded-full bg-emerald-400/80" />
+              {mp.here === 0 ? 'nobody else out here' : `${mp.here} nearby`}
+            </span>
+            {voiceHud.enabled && (
+              <span className={voiceHud.speaking ? 'text-emerald-300' : 'text-stone-500'}>
+                · mic {voiceHud.mode === 'ptt' ? '(hold b)' : 'open'}
+                {voiceHud.peers > 0 && ` · ${voiceHud.peers} voice`}
+              </span>
+            )}
+            {voiceHud.available && !voiceHud.enabled && <span>· m for voice</span>}
+            {voiceHud.error && <span className="text-amber-400/80">· {voiceHud.error}</span>}
+          </div>
+          {chat.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5 text-[11px] leading-snug">
+              {chat.map((line) => (
+                <li
+                  key={line.key}
+                  className={line.system ? 'text-stone-600 italic' : 'text-stone-300'}
+                >
+                  {!line.system && (
+                    <span
+                      className={
+                        line.admin
+                          ? 'text-[#c0705c]'
+                          : line.mine
+                            ? 'text-stone-400'
+                            : 'text-sky-300/80'
+                      }
+                    >
+                      {line.name}
+                    </span>
+                  )}
+                  {!line.system && <span className="text-stone-600">: </span>}
+                  {line.text}
+                </li>
+              ))}
+            </ul>
+          )}
+          {typing && (
+            <form
+              className="pointer-events-auto mt-2 flex items-center gap-2 rounded border border-stone-700 bg-stone-950/85 px-2 py-1 backdrop-blur-sm"
+              onSubmit={(e) => {
+                e.preventDefault()
+                const value = chatInputRef.current?.value ?? ''
+                sayRef.current?.(value)
+                closeChat()
+              }}
+            >
+              <span aria-hidden className="text-[11px] text-stone-600">
+                say
+              </span>
+              <input
+                ref={chatInputRef}
+                type="text"
+                maxLength={WORLD_MAX_TEXT_LEN}
+                autoComplete="off"
+                className="w-64 bg-transparent text-[12px] text-stone-200 outline-none placeholder:text-stone-700"
+                placeholder="enter sends · esc cancels"
+                onKeyDown={(e) => {
+                  // the composer owns every key while it is up; without this
+                  // the OS shell's window-level handlers see them too
+                  e.stopPropagation()
+                  if (e.key === 'Escape') closeChat()
+                }}
+                onBlur={closeChat}
+              />
+            </form>
+          )}
+        </div>
       )}
       {roam && walking && locked && (
         <span
@@ -1349,6 +2355,47 @@ export default function CrtScene({
                 ))}
               </div>
             </div>
+            {/* where the machines are. A fixed fleet in an endless world
+                needs this: the boat lives on a coast two and a half
+                kilometres out, and without a bearing that is not a
+                destination, it is a rumour. "call it over" is the way back
+                from having stranded one — it puts the machine on the nearest
+                place it can legally stand, which is why the boat refuses
+                unless there is water within reach */}
+            {fleetWhere.length > 0 && (
+              <div className="mt-4 text-[11px] text-stone-400">
+                <span className="flex justify-between">
+                  <span>vehicles</span>
+                  <span className="text-stone-600">e to get in</span>
+                </span>
+                <ul className="mt-1.5 space-y-1">
+                  {fleetWhere.map((v) => (
+                    <li key={v.id} className="flex items-center justify-between gap-2">
+                      <span className="text-stone-500">
+                        {v.label}
+                        <span className="ml-1.5 text-stone-600 tabular-nums">
+                          {v.dist < 1000
+                            ? `${Math.round(v.dist * 0.48)} m`
+                            : `${(v.dist * 0.00048).toFixed(1)} km`}{' '}
+                          {v.bearing}
+                        </span>
+                      </span>
+                      {v.dist > 80 && !driving && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!fleetRef.current?.recall(v.id)) setNotice(`no room for the ${v.label} here`)
+                          }}
+                          className="shrink-0 cursor-pointer rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-500 transition-colors hover:border-stone-500 hover:text-stone-300"
+                        >
+                          call it over
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <label className="mt-3 block text-[11px] text-stone-400">
               <span className="flex justify-between">
                 <span>field of view</span>
@@ -1422,6 +2469,32 @@ export default function CrtScene({
             E
           </kbd>
           {doorVerb === 'open' ? 'open the door' : 'close the door'}
+        </button>
+      )}
+      {/* the fleet's prompt is last in the stack because it is the one you can
+          be standing at while also standing at something else */}
+      {roam && walking && !paused && !near && !doorVerb && vehiclePrompt && (
+        <button
+          type="button"
+          onClick={() => enterRef.current?.()}
+          className="absolute bottom-14 left-1/2 z-10 -translate-x-1/2 cursor-pointer rounded-md border border-stone-700 bg-stone-950/80 px-3 py-1.5 font-mono text-[12px] text-stone-300 backdrop-blur-sm transition-colors hover:border-stone-500 hover:text-white"
+        >
+          <kbd className="mr-2 rounded border border-stone-600 bg-stone-800 px-1.5 py-0.5 text-[10px] text-stone-200">
+            E
+          </kbd>
+          {vehiclePrompt.verb} the {vehiclePrompt.label}
+        </button>
+      )}
+      {roam && walking && !paused && driving && (
+        <button
+          type="button"
+          onClick={() => leaveRef.current?.()}
+          className="absolute bottom-14 left-1/2 z-10 -translate-x-1/2 cursor-pointer rounded-md border border-stone-700 bg-stone-950/80 px-3 py-1.5 font-mono text-[12px] text-stone-300 backdrop-blur-sm transition-colors hover:border-stone-500 hover:text-white"
+        >
+          <kbd className="mr-2 rounded border border-stone-600 bg-stone-800 px-1.5 py-0.5 text-[10px] text-stone-200">
+            E
+          </kbd>
+          get out
         </button>
       )}
     </div>

@@ -36,6 +36,17 @@ export interface Level {
       CollisionSet for the tallest surface under an x/z), so this is the
       fallback underneath all of it rather than the one floor there is */
   groundY: number
+  /** ...and where even that fallback varies, the function that answers for
+      it. The open world's terrain lives here: everything that samples the
+      floor (the walk, the ragdoll, the chase boom, a spawn) asks this instead
+      of reading `groundY`, which stays the answer for levels built on one
+      plane. It must report the height of the *drawn* surface — a player
+      hovering a hand's width over a hillside is the visible cost of a
+      groundYAt that disagrees with the mesh by an interpolation error. */
+  groundYAt?: (x: number, z: number) => number
+  /** the waterline, for levels that have one. Ground below it is a sea, lake
+      or river bed, and a body far enough under it swims. */
+  waterY?: number
   /** flat ceiling over it, for levels that are indoors everywhere; a jump
       bonks off it rather than carrying the camera through. Levels that are
       partly open sky (the overworld) simply leave it out — which is why

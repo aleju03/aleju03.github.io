@@ -4,6 +4,8 @@ import { canvasTexture, makeGlowTexture } from '../core/textures'
 import { mergeGeoms } from '../core/geometry'
 import { noStand, padXZ } from '../physics/collision'
 import { doorCreak, doorLatch, type StepSurface } from '../core/sfx'
+import { applyFixedSurface, SURF, type SurfaceId } from '../world/surface'
+import { buildKitTree } from '../world/treeMesh'
 
 /** anything with a .scene group — a GLTFLoader result or a slice of one */
 export interface ModelLike {
@@ -24,10 +26,13 @@ export interface ModelLike {
     run, fence, trees...) whenever they finish streaming in.
 
   Walls are built per room: every room lays down its own full perimeter with
-  door/window holes cut out, and every solid segment registers a thick AABB
-  obstacle (0.8 deep — a sprinting step is ~0.3, so nobody tunnels through a
-  wall face). Doors are hinge pivots worked with the interact key: a closed
-  one swings away from whichever side the player stands on, an open one pulls
+  door/window holes cut out. Collision remains one continuous thick AABB
+  through windows (glass is never a passage) and only splits at floor-height
+  openings, whose ends overlap by a shoulder margin. The overlap matters: two
+  boxes meeting at an exact edge leave a zero-width line a point-body can be
+  resolved onto and then walk along through the wall. Doors are hinge pivots
+  worked with the interact key: a closed one swings away from whichever side
+  the player stands on, an open one pulls
   shut, and the doorway itself is an obstacle while the leaf is in the way.
   They cast no shadows so the baked maps stay valid. Working one creaks the
   hinge (core/sfx.ts) and a closing leaf clicks its latch home as it seats.
@@ -56,7 +61,7 @@ export interface HouseHandles {
   flagShadows: (p: THREE.Vector3) => void
   /** shadow-casting lights owned by the house (for full re-bakes) */
   shadowLights: THREE.SpotLight[]
-  /** attach the streamed furniture models; safe to call once, any time */
+  /** attach the downloaded furniture models during the covered boot warm-up */
   furnish: (models: HouseModels) => void
 }
 
@@ -73,17 +78,48 @@ interface BuildOpts {
 }
 
 /* ---------------------------------------------------------------- plan --
-   Bedroom (existing): x -7.6..7.6, z -1.75..10.5. Door in its north wall.
+   Entry: x 3.4..7.6, z -1.75..10.5   (front door in the street wall, runs
+                                       north and opens into the hall)
+   Bedroom: x -7.6..3.4, z -1.75..10.5 (the desk scene's room; its door is in
+                                        the partition onto the entry)
    Bath:  x -7.6..-2.4, z 10.5..16.6   (door from the hall's west end)
-   Hall:  x -2.4..7.6,  z 10.5..14.0   (arch opening to the living room)
+   Hall:  x -2.4..3.4,  z 10.5..14.0   (arch opening to the living room; its
+                                        east end is where the entry arrives)
    Living+kitchen: x -7.6..7.6, z 14..24.5 minus the bath block corner.
    Yard: fenced x ±13.5 out to z 38.5; back door + porch on the north wall.
+
+   The entry is the correction to a floor plan that used to lie. The street
+   facade carried a front door and two curtained windows belonging to rooms
+   that did not exist — behind that wall was the bedroom, and the door opened
+   onto nothing. Now the bedroom gives up its east four metres to a hall that
+   runs from a working front door up to the rest of the house, the curtains
+   are real windows, and every opening on the outside of this building leads
+   somewhere on the inside of it.
 ------------------------------------------------------------------------- */
 export const CEIL_H = 6
 export const HOUSE = { minX: -7.6, maxX: 7.6, minZ: -1.75, maxZ: 24.5 }
 export const YARD = { minX: -13.5, maxX: 13.5, minZ: -4, maxZ: 38.5 }
-/** gap in the front fence: the way out to the street */
-export const GATE = { x0: -1.3, x1: 1.3 }
+/** gap in the front fence: the way out to the street, lined up with the
+    front door so the walk from one to the other is a straight line */
+export const GATE = { x0: 4.2, x1: 6.8 }
+/** the partition between the bedroom and the entry hall. Exported because
+    the desk room hangs its bookshelf on it — that shelf used to be on the
+    house's east wall, which is the entry's now. */
+export const PART_X = 3.4
+/** picket height: what the instanced fence model is scaled to */
+const FENCE_H = 1.9
+/**
+ * ...and how tall its collision box is, which is deliberately a little less.
+ * A box stops blocking the moment the feet clear its top, so the vault window
+ * is the time the hop spends above it — jumpV²/2·grav puts the apex at 2.08,
+ * and against a 1.9 box that window is about a twentieth of a second, or two
+ * handspans of travel: not enough to cross the box's own depth, so the fence
+ * read as unjumpable even though the arc technically cleared it. At 1.7 the
+ * window is a third of a second, which is a walkable metre. The other half of
+ * the fix is the depth below: half the padding, half the distance to cross.
+ */
+const FENCE_BLOCK_H = 1.7
+const FENCE_PAD = 0.22
 /** the backrooms seam: this span of the east living-room wall is dressed
     like wall but never blocks — walking into it noclips you into level 0
     (backrooms.ts owns everything past the paint) */
@@ -91,7 +127,16 @@ export const NOCLIP = { z0: 16.0, z1: 17.8 }
 const BATH = { minX: -7.6, maxX: -2.4, minZ: 10.5, maxZ: 16.6 }
 const HALL = { minX: BATH.maxX, maxX: 7.6, minZ: 10.5, maxZ: 14.0 }
 const DOOR_H = 4.7
-const BED_DOOR = { u0: 2.5, u1: 4.6 } // in the z=10.5 wall
+// Walk collision tracks the camera as a point; authored solids grow sideways
+// by this much to represent its shoulders. Wall pieces need the same margin
+// along their length, especially where a fixed jamb meets a dynamic door.
+const WALL_SHOULDER = 0.2
+// in the x=3.4 partition, spans z. At the corridor's north end, so the
+// bedroom opens where the entry meets the hall — and so the whole partition
+// south of it stays free wall for the bookshelf and the closet
+const BED_DOOR = { u0: 8.15, u1: 10.25 }
+const FRONT_DOOR = { u0: 4.45, u1: 6.55 } // in the z=-1.75 street wall
+export const FRONT_DOOR_X = (FRONT_DOOR.u0 + FRONT_DOOR.u1) / 2
 const BATH_DOOR = { u0: 11.6, u1: 13.7 } // in the x=-3 wall
 const ARCH = { u0: 0.0, u1: 3.4, h: 4.9 } // cased opening in the z=14 wall
 const BACK_DOOR = { u0: -4.6, u1: -2.5 } // in the z=24.5 wall
@@ -99,6 +144,11 @@ const BACK_WIN = { u0: 2.3, u1: 6.1, y0: 2.5, y1: 4.7 }
 const SINK_WIN = { u0: 20.5, u1: 22.1, y0: 2.9, y1: 4.3 }
 const BATH_WIN = { u0: 12.5, u1: 13.7, y0: 3.3, y1: 4.5 }
 const BEDROOM_WIN = { u0: 4.86, u1: 6.64, y0: 2.73, y1: 3.87 }
+/** the bedroom's street window — one of the two panes that used to be a
+    painted-on curtain glowing from a room that was not there */
+const FRONT_WIN = { u0: -5.7, u1: -3.5, y0: 2.5, y1: 4.15 }
+/** and the entry's: a narrow sidelight beside the front door */
+const ENTRY_WIN = { u0: 3.6, u1: 4.15, y0: 1.4, y1: 4.3 }
 
 /* ------------------------------------------------------- canvas textures */
 
@@ -162,11 +212,14 @@ const makeTileTexture = () =>
 const makeGrassTexture = () =>
   canvasTexture([256, 256], (ctx, w, h) => {
     const rand = seeded(0x97a55)
-    ctx.fillStyle = '#233618'
+    // tuned against the open world's lawns, not against midnight: this base
+    // was #233618 when the site never saw daylight, and once the sun rose the
+    // yard sat inside the bright suburb like a hole cut out of it
+    ctx.fillStyle = '#3d5326'
     ctx.fillRect(0, 0, w, h)
     for (let i = 0; i < 2600; i++) {
-      const g = 52 + rand() * 46
-      ctx.fillStyle = `rgba(${g * 0.55},${g},${g * 0.42},${0.25 + rand() * 0.5})`
+      const g = 78 + rand() * 54
+      ctx.fillStyle = `rgba(${g * 0.62},${g},${g * 0.42},${0.25 + rand() * 0.5})`
       ctx.fillRect(rand() * w, rand() * h, 1 + (rand() < 0.2 ? 1 : 0), 1 + (rand() < 0.3 ? 1 : 0))
     }
     // worn patches
@@ -242,12 +295,23 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     return t
   }
 
+  /*
+    Wall panels are PlaneGeometry cut to whatever span is left between the
+    doors and windows, so their UVs run 0..1 across a piece that might be two
+    units wide or twelve — a tiled canvas texture would stretch differently on
+    every panel of the same wall. world/surface.ts solves that by working from
+    world position instead of UVs, so the same procedural pass the city's
+    brickwork uses gives these render and boards, and a panel's width stops
+    mattering. Interiors get plaster; the outside gets siding.
+  */
   const wallMats = new Map<string, THREE.MeshStandardMaterial>()
-  const wallMat = (color: string) => {
-    let m = wallMats.get(color)
+  const wallMat = (color: string, surf: SurfaceId = SURF.plaster) => {
+    const key = `${color}|${surf}`
+    let m = wallMats.get(key)
     if (!m) {
       m = new THREE.MeshStandardMaterial({ color, roughness: 1 })
-      wallMats.set(color, m)
+      applyFixedSurface(m, surf)
+      wallMats.set(key, m)
     }
     return m
   }
@@ -270,8 +334,11 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   /**
    * A wall plane at `axis`=const, spanning [u0,u1] along the other axis,
    * floor to CEIL_H, with rectangular holes. Emits visual segments, a
-   * baseboard along solid floor spans, and one thick collision box per
-   * solid floor span (cutouts that reach the floor become walk-through).
+   * baseboard along solid floor spans, and thick collision boxes split only
+   * by cuts that reach the floor. A window does not split collision: keeping
+   * one box through its glass removes the exact AABB seams a point-body could
+   * otherwise ride through. Walk-through cuts retain a small overlap at each
+   * jamb to account for the player's shoulders.
    */
   const wall = (
     axis: 'x' | 'z',
@@ -281,10 +348,10 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     facing: 1 | -1,
     color: string,
     cuts: Cut[] = [],
-    o: { base?: boolean; obstacle?: boolean; h?: number } = {},
+    o: { base?: boolean; obstacle?: boolean; h?: number; surf?: SurfaceId } = {},
   ) => {
     const h = o.h ?? CEIL_H
-    const mat = wallMat(color)
+    const mat = wallMat(color, o.surf)
     const sorted = [...cuts].sort((a, b) => a.u0 - b.u0)
     const panel = (pu0: number, pu1: number, py0: number, py1: number) => {
       if (pu1 - pu0 < 0.01 || py1 - py0 < 0.01) return
@@ -320,27 +387,41 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       // adds up to a ladder onto it
       obstacles.push(noStand(
         axis === 'x'
-          ? new THREE.Box3(new THREE.Vector3(at - 0.4, 0, bu0), new THREE.Vector3(at + 0.4, h, bu1))
-          : new THREE.Box3(new THREE.Vector3(bu0, 0, at - 0.4), new THREE.Vector3(bu1, h, at + 0.4)),
+          ? new THREE.Box3(
+              new THREE.Vector3(at - 0.4, 0, bu0 - WALL_SHOULDER),
+              new THREE.Vector3(at + 0.4, h, bu1 + WALL_SHOULDER),
+            )
+          : new THREE.Box3(
+              new THREE.Vector3(bu0 - WALL_SHOULDER, 0, at - 0.4),
+              new THREE.Vector3(bu1 + WALL_SHOULDER, h, at + 0.4),
+            ),
       ))
     }
     let cursor = u0
     for (const c of sorted) {
       panel(cursor, c.u0, 0, h)
       base(cursor, c.u0)
-      block(cursor, c.u0)
       panel(c.u0, c.u1, 0, c.y0)
       panel(c.u0, c.u1, c.y1, h)
       if (c.y0 > 0.5) {
         // window: wall below it still blocks and keeps its baseboard
         base(c.u0, c.u1)
-        block(c.u0, c.u1)
       }
       cursor = c.u1
     }
     panel(cursor, u1, 0, h)
     base(cursor, u1)
-    block(cursor, u1)
+
+    // Windows are visual cuts only. Build collision in long uninterrupted
+    // runs and split it solely around an opening that actually reaches the
+    // floor (door, arch, or the deliberate backrooms seam).
+    let solidCursor = u0
+    for (const c of sorted) {
+      if (c.y0 > 0.5) continue
+      block(solidCursor, c.u0)
+      solidCursor = c.u1
+    }
+    block(solidCursor, u1)
   }
 
   /* ------------------------------------------------- windows and doors -- */
@@ -501,11 +582,11 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       : { cx: (u0 + u1) / 2, cz: at }
     // a shut door is a wall: block the doorway until the leaf swings clear
     const closedMin = axis === 'x'
-      ? new THREE.Vector3(at - 0.35, 0, u0)
-      : new THREE.Vector3(u0, 0, at - 0.35)
+      ? new THREE.Vector3(at - 0.4, 0, u0 - WALL_SHOULDER)
+      : new THREE.Vector3(u0 - WALL_SHOULDER, 0, at - 0.4)
     const closedMax = axis === 'x'
-      ? new THREE.Vector3(at + 0.35, CEIL_H, u1)
-      : new THREE.Vector3(u1, CEIL_H, at + 0.35)
+      ? new THREE.Vector3(at + 0.4, CEIL_H, u1 + WALL_SHOULDER)
+      : new THREE.Vector3(u1 + WALL_SHOULDER, CEIL_H, at + 0.4)
     // a shut door reaches the ceiling like the wall it stands in: same deal,
     // its top is not a ledge (and it collapses to a point when it opens)
     const block = noStand(new THREE.Box3(closedMin.clone(), closedMax.clone()))
@@ -566,18 +647,39 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   /* ============================================================ INTERIOR */
 
-  // -- bedroom shell (the desk scene's original room, now with a real door)
-  wall('z', HOUSE.minZ, HOUSE.minX, HOUSE.maxX, 1, '#3d3328')
+  // -- the street wall, shared by the bedroom and the entry: a window for
+  // one, the front door and its sidelight for the other. Every hole in it
+  // now has a room behind it
+  wall('z', HOUSE.minZ, HOUSE.minX, HOUSE.maxX, 1, '#3d3328', [
+    { u0: FRONT_WIN.u0, u1: FRONT_WIN.u1, y0: FRONT_WIN.y0, y1: FRONT_WIN.y1 },
+    { u0: ENTRY_WIN.u0, u1: ENTRY_WIN.u1, y0: ENTRY_WIN.y0, y1: ENTRY_WIN.y1 },
+    { u0: FRONT_DOOR.u0, u1: FRONT_DOOR.u1, y0: 0, y1: DOOR_H },
+  ])
+
+  // -- bedroom shell (the desk scene's original room, four metres narrower
+  // than it was: the east end is the entry hall now)
   wall('x', HOUSE.minX, HOUSE.minZ, 10.5, 1, '#4a3d30', [
     { u0: BEDROOM_WIN.u0, u1: BEDROOM_WIN.u1, y0: BEDROOM_WIN.y0, y1: BEDROOM_WIN.y1 },
   ])
-  wall('x', HOUSE.maxX, HOUSE.minZ, 10.5, -1, '#4a3d30')
-  wall('z', 10.5, HOUSE.minX, HOUSE.maxX, -1, '#50412f', [
+  wall('z', 10.5, HOUSE.minX, PART_X, -1, '#50412f')
+  // the partition, drawn from both sides; only the bedroom face registers the
+  // obstacle, or the doorway would be blocked by the other face's box
+  wall('x', PART_X, HOUSE.minZ, 10.5, -1, '#50412f', [
     { u0: BED_DOOR.u0, u1: BED_DOOR.u1, y0: 0, y1: DOOR_H },
   ])
+  wall('x', PART_X, HOUSE.minZ, 10.5, 1, '#4a4034', [
+    { u0: BED_DOOR.u0, u1: BED_DOOR.u1, y0: 0, y1: DOOR_H },
+  ], { obstacle: false })
+
+  // -- entry hall: east wall is the house's own, and its north end is open
+  // to the hall, so there is nothing else to build but the floor it shares
+  wall('x', HOUSE.maxX, HOUSE.minZ, 10.5, -1, '#4a4034')
+
   floorPlane(HOUSE.minX, HOUSE.maxX, HOUSE.minZ, 10.5, plankBedTex, 3.4)
   ceiling(HOUSE.minX, HOUSE.maxX, HOUSE.minZ, 10.5, '#3a3129')
   windowUnit('x', HOUSE.minX + 0.045, BEDROOM_WIN.u0, BEDROOM_WIN.u1, BEDROOM_WIN.y0, BEDROOM_WIN.y1)
+  windowUnit('z', HOUSE.minZ + 0.045, FRONT_WIN.u0, FRONT_WIN.u1, FRONT_WIN.y0, FRONT_WIN.y1)
+  windowUnit('z', HOUSE.minZ + 0.045, ENTRY_WIN.u0, ENTRY_WIN.u1, ENTRY_WIN.y0, ENTRY_WIN.y1)
 
   // -- bath
   wall('z', BATH.minZ, BATH.minX, BATH.maxX, 1, '#565f56')
@@ -592,10 +694,9 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   ceiling(BATH.minX, BATH.maxX, BATH.minZ, BATH.maxZ, '#3f4440')
   windowUnit('x', BATH.minX + 0.045, BATH_WIN.u0, BATH_WIN.u1, BATH_WIN.y0, BATH_WIN.y1, true)
 
-  // -- hall
-  wall('z', HALL.minZ, HALL.minX, HALL.maxX, 1, '#4a4034', [
-    { u0: BED_DOOR.u0, u1: BED_DOOR.u1, y0: 0, y1: DOOR_H },
-  ])
+  // -- hall. Its south wall stops at the partition: past that the entry
+  // corridor runs straight in, which is the corner the two share
+  wall('z', HALL.minZ, HALL.minX, PART_X, 1, '#4a4034')
   wall('x', HALL.minX, HALL.minZ, HALL.maxZ, 1, '#4a4034', [
     { u0: BATH_DOOR.u0, u1: BATH_DOOR.u1, y0: 0, y1: DOOR_H },
   ])
@@ -677,7 +778,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   })
 
   // -- doors; each swings away from whoever opens it, so no fixed side here
-  doorUnit('z', 10.5, BED_DOOR.u0, BED_DOOR.u1, 'u1', Math.PI * 0.56)
+  doorUnit('z', HOUSE.minZ, FRONT_DOOR.u0, FRONT_DOOR.u1, 'u0', Math.PI * 0.55)
+  doorUnit('x', PART_X, BED_DOOR.u0, BED_DOOR.u1, 'u0', Math.PI * 0.52)
   // the bath leaf stops shy of a right angle so it clears the pedestal sink
   doorUnit('x', BATH.maxX, BATH_DOOR.u0, BATH_DOOR.u1, 'u0', Math.PI * 0.44)
   doorUnit('z', HOUSE.maxZ, BACK_DOOR.u0, BACK_DOOR.u1, 'u0', Math.PI * 0.58, true)
@@ -689,15 +791,19 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   wall('z', HOUSE.maxZ + 0.14, -7.74, 7.74, 1, facadeColor, [
     { u0: BACK_DOOR.u0, u1: BACK_DOOR.u1, y0: 0, y1: DOOR_H },
     { u0: BACK_WIN.u0, u1: BACK_WIN.u1, y0: BACK_WIN.y0, y1: BACK_WIN.y1 },
-  ], { base: false, obstacle: false })
+  ], { base: false, obstacle: false, surf: SURF.plank })
   wall('x', HOUSE.minX - 0.14, HOUSE.minZ - 0.14, HOUSE.maxZ + 0.14, -1, facadeColor, [
     { u0: BEDROOM_WIN.u0, u1: BEDROOM_WIN.u1, y0: BEDROOM_WIN.y0, y1: BEDROOM_WIN.y1 },
     { u0: BATH_WIN.u0, u1: BATH_WIN.u1, y0: BATH_WIN.y0, y1: BATH_WIN.y1 },
     { u0: SINK_WIN.u0, u1: SINK_WIN.u1, y0: SINK_WIN.y0, y1: SINK_WIN.y1 },
-  ], { base: false, obstacle: false })
+  ], { base: false, obstacle: false, surf: SURF.plank })
   wall('x', HOUSE.maxX + 0.14, HOUSE.minZ - 0.14, HOUSE.maxZ + 0.14, 1, facadeColor,
-    [], { base: false, obstacle: false })
-  wall('z', HOUSE.minZ - 0.14, -7.74, 7.74, -1, facadeColor, [], { base: false, obstacle: false })
+    [], { base: false, obstacle: false, surf: SURF.plank })
+  wall('z', HOUSE.minZ - 0.14, -7.74, 7.74, -1, facadeColor, [
+    { u0: FRONT_WIN.u0, u1: FRONT_WIN.u1, y0: FRONT_WIN.y0, y1: FRONT_WIN.y1 },
+    { u0: ENTRY_WIN.u0, u1: ENTRY_WIN.u1, y0: ENTRY_WIN.y0, y1: ENTRY_WIN.y1 },
+    { u0: FRONT_DOOR.u0, u1: FRONT_DOOR.u1, y0: 0, y1: DOOR_H },
+  ], { base: false, obstacle: false, surf: SURF.plank })
   // fascia band ringing the roofline
   const fasciaMat = new THREE.MeshStandardMaterial({ color: '#2b241d', roughness: 0.9 })
   trackDisposable(fasciaMat)
@@ -714,13 +820,19 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   // -- ground: mowed lawn inside the property (the meadow beyond the fence
   // is outsideWorld's business now)
+  // It runs a few units past the fence on every side on purpose: the open
+  // world's terrain mesh cuts a rectangular hole around the property (see
+  // grid.ts's RESERVED) and drops whole quads, so its edge is ragged to
+  // within half a cell. The lawn oversails that raggedness, and sits a
+  // couple of centimetres under the interior floor so the two can't fight.
   const lawnMat = new THREE.MeshStandardMaterial({ roughness: 1, map: grassTex })
   trackDisposable(lawnMat)
   grassTex.repeat.set(9, 14)
+  const LAWN = { minX: -21, maxX: 21, minZ: -12, maxZ: 46.5 }
   const lawn = new THREE.Mesh(
-    new THREE.PlaneGeometry(YARD.maxX - YARD.minX, YARD.maxZ - YARD.minZ), lawnMat)
+    new THREE.PlaneGeometry(LAWN.maxX - LAWN.minX, LAWN.maxZ - LAWN.minZ), lawnMat)
   lawn.rotation.x = -Math.PI / 2
-  lawn.position.set(0, -0.02, (YARD.minZ + YARD.maxZ) / 2)
+  lawn.position.set(0, -0.02, (LAWN.minZ + LAWN.maxZ) / 2)
   lawn.receiveShadow = true
   root.add(lawn)
 
@@ -752,72 +864,40 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   /* ---------------------------------------------------- street face -- */
 
-  // the front of the house is on the walk to the gate now, so it has to
-  // read like a home from the road: a proper (never-opening) front door
-  // and two curtained windows glowing from rooms the floor plan keeps to
-  // itself — the oldest trick in the level-design book
+  // The facade used to be a set: a front door that never opened onto a room
+  // that was never there, flanked by two painted curtains lit from inside a
+  // solid wall. All three holes are real now — cut through both the interior
+  // wall and this facade, with the entry hall behind them — so the only
+  // dressing left out here is the doorstep and a porch lamp over it.
   const frontZ = HOUSE.minZ - 0.14
-  const frontDoorMat = new THREE.MeshStandardMaterial({ color: '#43301e', roughness: 0.7 })
-  trackDisposable(frontDoorMat)
-  const frontDoor = new THREE.Mesh(new THREE.BoxGeometry(2.1, DOOR_H, 0.14), frontDoorMat)
-  frontDoor.position.set(0, DOOR_H / 2, frontZ - 0.06)
-  frontDoor.castShadow = false
-  frontDoor.receiveShadow = true
-  root.add(frontDoor)
-  ;[-1.12, 1.12].forEach((x) => {
-    const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.16, DOOR_H + 0.14, 0.22), trimMat)
-    jamb.position.set(x, (DOOR_H + 0.14) / 2, frontZ - 0.04)
-    jamb.castShadow = false
-    root.add(jamb)
+  const FRONT_CX = (FRONT_DOOR.u0 + FRONT_DOOR.u1) / 2
+  const frontStep = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.16, 1.0), concreteMat)
+  frontStep.position.set(FRONT_CX, 0.08, HOUSE.minZ - 0.62)
+  frontStep.receiveShadow = true
+  root.add(frontStep)
+  // a slim canopy over the step, so the door reads as an entrance from the
+  // road rather than as a hole. Its box is head height and above, so it is
+  // never in a walk's way and needs no obstacle
+  const canopy = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.22, 1.5), trimMat)
+  canopy.position.set(FRONT_CX, DOOR_H + 0.6, HOUSE.minZ - 0.6)
+  canopy.castShadow = false
+  root.add(canopy)
+  ;[FRONT_CX - 1.5, FRONT_CX + 1.5].forEach((x) => {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.16, DOOR_H + 0.5, 0.16), trimMat)
+    post.position.set(x, (DOOR_H + 0.5) / 2, frontZ - 1.2)
+    post.castShadow = false
+    root.add(post)
+    obstacles.push(noStand(new THREE.Box3(
+      new THREE.Vector3(x - 0.22, 0, frontZ - 1.42),
+      new THREE.Vector3(x + 0.22, DOOR_H + 0.5, frontZ - 0.98),
+    )))
   })
-  const frontHeader = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.18, 0.22), trimMat)
-  frontHeader.position.set(0, DOOR_H + 0.1, frontZ - 0.04)
-  frontHeader.castShadow = false
-  root.add(frontHeader)
-  const frontKnob = new THREE.Mesh(
-    new THREE.SphereGeometry(0.085, 10, 8),
-    new THREE.MeshStandardMaterial({ color: '#b8a26a', roughness: 0.35, metalness: 0.6 }),
-  )
-  trackDisposable(frontKnob.material as THREE.Material)
-  frontKnob.position.set(0.72, 2.2, frontZ - 0.16)
-  frontKnob.castShadow = false
-  root.add(frontKnob)
 
-  const curtainMats: THREE.MeshStandardMaterial[] = []
-  const curtainWindow = (cx: number, y0: number, y1: number, w: number) => {
-    const mat = new THREE.MeshStandardMaterial({
-      color: '#4a3b28', roughness: 1,
-      emissive: new THREE.Color('#ffc98a'), emissiveIntensity: 1.1,
-    })
-    trackDisposable(mat)
-    curtainMats.push(mat)
-    const pane = new THREE.Mesh(new THREE.PlaneGeometry(w, y1 - y0), mat)
-    pane.position.set(cx, (y0 + y1) / 2, frontZ - 0.02)
-    pane.rotation.y = Math.PI
-    root.add(pane)
-    const rail = (rw: number, rh: number, x: number, y: number) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(rw, rh, 0.1), trimMat)
-      m.position.set(x, y, frontZ - 0.05)
-      m.castShadow = false
-      root.add(m)
-    }
-    rail(w + 0.22, 0.11, cx, y1 + 0.05)
-    rail(w + 0.22, 0.13, cx, y0 - 0.05)
-    rail(0.11, y1 - y0 + 0.22, cx - w / 2 - 0.05, (y0 + y1) / 2)
-    rail(0.11, y1 - y0 + 0.22, cx + w / 2 + 0.05, (y0 + y1) / 2)
-    rail(0.07, y1 - y0, cx, (y0 + y1) / 2)
-  }
-  curtainWindow(-4.3, 2.5, 4.1, 1.8)
-  curtainWindow(4.3, 2.5, 4.1, 1.8)
-
-  // stoop + a straight concrete walk from the front door to the gate
-  const stoop = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.16, 0.9), concreteMat)
-  stoop.position.set(0, 0.08, HOUSE.minZ - 0.6)
-  stoop.receiveShadow = true
-  root.add(stoop)
-  // spans the gap between the stoop's front edge (z -2.8) and the gate
-  const frontWalk = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.07, -2.8 - YARD.minZ), concreteMat)
-  frontWalk.position.set(0, 0.035, (-2.8 + YARD.minZ) / 2)
+  // a straight concrete walk from the doorstep to the gate, both now on the
+  // same line — the reason the gate moved when the door became real
+  const frontWalk = new THREE.Mesh(
+    new THREE.BoxGeometry(1.6, 0.07, HOUSE.minZ - 1.12 - YARD.minZ), concreteMat)
+  frontWalk.position.set(FRONT_CX, 0.035, (HOUSE.minZ - 1.12 + YARD.minZ) / 2)
   frontWalk.receiveShadow = true
   root.add(frontWalk)
   // gate posts cap the fence ends at the gap
@@ -831,12 +911,17 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   /* --------------------------------------------------------------- yard -- */
 
   // fence obstacles now; the picket meshes arrive with the furniture GLBs.
-  // 0.4 out on each side of a picket line and taller than the pickets, so
-  // the top is thin air — the yard is fenced, not walled with a walkway
+  // 0.4 out on each side of a picket line, and exactly as tall as the pickets
+  // the furnish pass instances (FENCE_H): the box used to stand a metre over
+  // them, which is why a fence you can see over could not be jumped. At this
+  // height the walk's apex clears it, so the gate is the polite way out of
+  // the yard rather than the only one. Still noStand — the top of a picket
+  // line is not a walkway, and resolveXZ stops blocking the moment the feet
+  // are above it, which is exactly the vault
   const fenceBlock = (x0: number, z0: number, x1: number, z1: number) =>
     obstacles.push(noStand(new THREE.Box3(
-      new THREE.Vector3(Math.min(x0, x1) - 0.4, 0, Math.min(z0, z1) - 0.4),
-      new THREE.Vector3(Math.max(x0, x1) + 0.4, 3, Math.max(z0, z1) + 0.4),
+      new THREE.Vector3(Math.min(x0, x1) - FENCE_PAD, 0, Math.min(z0, z1) - FENCE_PAD),
+      new THREE.Vector3(Math.max(x0, x1) + FENCE_PAD, FENCE_BLOCK_H, Math.max(z0, z1) + FENCE_PAD),
     )))
   fenceBlock(YARD.minX, YARD.minZ, YARD.minX, YARD.maxZ)
   fenceBlock(YARD.maxX, YARD.minZ, YARD.maxX, YARD.maxZ)
@@ -852,7 +937,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   const tuftTex = track(makeTuftTexture())
   const tuftMat = new THREE.MeshStandardMaterial({
     map: tuftTex, alphaTest: 0.42, side: THREE.DoubleSide,
-    color: '#88a068', roughness: 1,
+    color: '#9cb26d', roughness: 1,
   })
   trackDisposable(tuftMat)
   const tuftGeoA = new THREE.PlaneGeometry(1.05, 0.85)
@@ -883,7 +968,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     tuftSpot(HOUSE.maxX + 0.7 + tuftRand() * 4.9, -2 + tuftRand() * 24)
   for (let i = 0; i < 36; i++) {
     const x = YARD.minX + 0.8 + tuftRand() * (YARD.maxX - YARD.minX - 1.6)
-    if (Math.abs(x) < 1.4) continue // keep the front walk clear
+    // keep the front walk clear — it runs on the front door's centreline now
+    if (Math.abs(x - (FRONT_DOOR.u0 + FRONT_DOOR.u1) / 2) < 1.4) continue
     tuftSpot(x, YARD.minZ + 0.5 + tuftRand() * 1.4)
   }
   const tufts = new THREE.InstancedMesh(tuftGeo, tuftMat, tuftMats.length)
@@ -937,6 +1023,21 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   floorLampLight.position.set(7.0, 2.95, 21.2)
   const porchLight = addLight(new THREE.PointLight('#ffb869', 0, 10, 1.7), 6.5)
   porchLight.position.set(-2.0, 2.85, 25.75) // at the porch lantern's cage
+  const entryLight = addLight(new THREE.PointLight('#ffd9ae', 0, 9, 1.8), 6.5)
+  entryLight.position.set(5.5, 5.1, 4.6)
+  // ...and one under the front canopy, so the doorstep reads from the street
+  const stepLight = addLight(new THREE.PointLight('#ffc07a', 0, 8, 1.8), 5)
+  stepLight.position.set((FRONT_DOOR.u0 + FRONT_DOOR.u1) / 2, DOOR_H + 0.35, HOUSE.minZ - 0.6)
+  {
+    const mat = new THREE.MeshStandardMaterial({
+      color: '#2c1c08', emissive: new THREE.Color('#ffc069'), emissiveIntensity: 0,
+    })
+    trackDisposable(mat)
+    bulbs.push({ mat, on: 3.0 })
+    const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 0.5), mat)
+    bulb.position.copy(stepLight.position).setY(DOOR_H + 0.44)
+    root.add(bulb)
+  }
 
   const livkPendant = new THREE.SpotLight('#ffd9ae', 0, 0, 1.08, 0.85, 1.5)
   livkPendant.position.set(3.8, 5.4, 18.4)
@@ -1110,17 +1211,29 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     furnished = true
     const HPI = Math.PI / 2
 
-    /* bedroom */
+    /* bedroom. The dresser and the closet used to stand against the east
+       wall at x ~6.85; that wall is the entry hall's now, so both moved to
+       the new partition — same rotation, because the partition faces the
+       room the same way the old wall did. The closet keeps clear of the
+       bedroom door's z-span (5.2..7.3) and the desk-room bookshelf's. */
     // headboard to the hall wall, pillows beside the nightstand
     put(models.bed, 1.15, Math.PI, -5.72, 8.03, { pad: 0.12, top: 0.92 }) // comforter, not the headboard (1.79)
     const nstand = put(models.nightstand, 1.63, Math.PI, -3.2, 9.62, { pad: 0.08 })
     if (nstand) {
       put(models.alarmclock, 2.3, Math.PI - 0.3, -3.32, 9.58, { y: nstand.box.max.y })
     }
-    put(models.dresser, 1.08, -HPI, 6.86, 2.0, { pad: 0.1 })
-    put(models.closet, 1.49, -HPI, 6.83, 9.3, { pad: 0.1, noStand: true })
+    put(models.closet, 1.49, -HPI, 2.62, 1.55, { pad: 0.1, noStand: true })
     put(models.curtains, 0.82, HPI, -7.38, 5.75, { y: 0.86 })
     put(models.officechair, 2.05, Math.PI - 0.03, -0.15, 3.05, { pad: 0.16, top: 1.0 })
+
+    /* entry hall: a runner up the corridor, a plant in the dead corner by the
+       door, and the bedroom's old dresser doing duty as a hall console — the
+       one piece that genuinely had nowhere left to stand once the room lost
+       its east wall, and the one place it looks more at home than it did */
+    put(models.rug, [0.62, 1, 1.5], HPI, 5.6, 4.6, { y: 0.012 })
+    put(models.plant, 1.05, 2.2, 6.95, 0.4, { pad: 0.1, noStand: true })
+    const console2 = put(models.dresser, 1.02, HPI, 3.98, 2.6, { pad: 0.1 })
+    if (console2) put(models.mug, 0.85, 0.7, 4.05, 2.5, { y: console2.box.max.y })
 
     /* bath: tub along the west wall, sink by the door, toilet on the far
        wall — respaced when the room grew, so nothing crowds anything */
@@ -1216,13 +1329,14 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     dome(2.3, 12.25, 0.95, true)
     dome(-5.0, 13.55, 0.9, false)
     dome(-6.3, 20.5, 0.9, true)
+    dome(5.5, 4.6, 0.9, true) // entry hall
 
     /* yard */
     if (models.fence) {
       models.fence.scene.updateMatrixWorld(true)
       tmpBox.setFromObject(models.fence.scene)
       const modLen = tmpBox.max.x - tmpBox.min.x
-      const H = 1.9
+      const H = FENCE_H
       const mats: THREE.Matrix4[] = []
       const run = (x0: number, z0: number, x1: number, z1: number) => {
         const len = Math.hypot(x1 - x0, z1 - z0)
@@ -1249,9 +1363,27 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       run(GATE.x1, YARD.minZ, YARD.maxX, YARD.minZ)
       instancedFromGLB(models.fence, mats)
     }
-    put(models.tree, 4.6, 0, -7.5, 33.0, { pad: -0.8, noStand: true })
-    put(models.tree, 3.1, 2.1, 10.8, 30.0, { pad: -0.55, noStand: true })
-    put(models.tree, 3.4, 0.8, -11.4, 6.5)
+    // the yard's trees are the world's card-canopy kits now, not the CC GLB
+    // model — one garden with two art styles of tree read as a seam, and the
+    // seam ran along the fence
+    const yardTree = (
+      variant: number, scale: number, yaw: number, cx: number, cz: number,
+    ) => {
+      const t = buildKitTree('broadleaf', variant, scale, yaw, variant - 1)
+      t.group.position.set(cx, -0.1, cz)
+      t.group.updateMatrixWorld(true)
+      root.add(t.group)
+      for (const g of t.geos) trackDisposable(g)
+      if (t.solid) {
+        obstacles.push(noStand(new THREE.Box3(
+          new THREE.Vector3(cx - t.solid.r, -0.4, cz - t.solid.r),
+          new THREE.Vector3(cx + t.solid.r, t.solid.h, cz + t.solid.r),
+        )))
+      }
+    }
+    yardTree(0, 0.62, 0.4, -7.5, 33.0)
+    yardTree(1, 0.5, 2.1, 10.8, 30.0)
+    yardTree(2, 0.55, 0.8, -11.4, 6.5)
     put(models.bush, 1.35, 0.5, -11.8, 27.5)
     put(models.bush, 1.35, 2.2, 11.5, 36.5)
     put(models.bush, 1.35, 1.1, -11.0, 10.8)
@@ -1380,26 +1512,29 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     return true
   }
 
-  // porch slab bounds mirror the concrete mesh poured above the back door
-  const surfaceAt = (x: number, z: number): StepSurface =>
-    x > HOUSE.minX && x < HOUSE.maxX && z > HOUSE.minZ && z < HOUSE.maxZ
-      ? 'wood'
-      : x > -5.45 && x < -1.65 && z > HOUSE.maxZ && z < HOUSE.maxZ + 2.85
-        ? 'stone'
-        : 'grass'
+  /** what a footstep lands on inside the property line: planks within the
+      walls, concrete on the two slabs and the front walk, grass elsewhere.
+      Bounds mirror the meshes poured above, so moving one means moving both.
+      Everything past the fence is the open world's answer to give. */
+  const FRONT_CX_S = (FRONT_DOOR.u0 + FRONT_DOOR.u1) / 2
+  const surfaceAt = (x: number, z: number): StepSurface => {
+    if (x > HOUSE.minX && x < HOUSE.maxX && z > HOUSE.minZ && z < HOUSE.maxZ) return 'wood'
+    // back porch slab
+    if (x > -5.45 && x < -1.65 && z > HOUSE.maxZ && z < HOUSE.maxZ + 2.85) return 'stone'
+    // doorstep and the walk down to the gate
+    if (Math.abs(x - FRONT_CX_S) < 1.5 && z < HOUSE.minZ && z > HOUSE.minZ - 1.15) return 'stone'
+    if (Math.abs(x - FRONT_CX_S) < 0.8 && z <= HOUSE.minZ - 1.12 && z > YARD.minZ) return 'stone'
+    return 'grass'
+  }
 
   const setRoamLight = (k: number) => {
     for (const { light, on } of lights) light.intensity = on * k
     for (const { mat, on } of bulbs) mat.emissiveIntensity = on * k
   }
 
-  // daylight puts the fireflies to bed and washes out the curtain glow
+  // daylight puts the fireflies to bed
   const setDay = (day: number) => {
     flyMat.opacity = Math.max(0, 1 - day * 1.6)
-    const glow = 1.1 * (1 - day * 0.92)
-    for (const m of curtainMats) {
-      if (m.emissiveIntensity !== glow) m.emissiveIntensity = glow
-    }
   }
 
   const flagShadows = (p: THREE.Vector3) => {
@@ -1414,4 +1549,3 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     setRoamLight, setDay, flagShadows, shadowLights, furnish,
   }
 }
-
