@@ -458,7 +458,45 @@ async function main() {
   w1.send({ type: 'world-chat', text: 'still here' });
   assert.equal((await w2.nextOf('world-chat', 'sender survived a stray signal')).text, 'still here');
 
-  console.log('17. open world: roster, level-scoped snapshots, chat and voice signalling');
+  // identity: a look is an opaque 24-hex string this process relays without
+  // parsing, and a rename goes through the chat server's own nick because one
+  // socket carries one identity. Both have to reach the people standing next
+  // to you, and a look also has to survive into a late arrival's roster —
+  // otherwise somebody who joins after you painted yourself sees the default
+  // robot until you happen to repaint.
+  const LOOK_A = 'a8bfa6' + '2b3a44' + 'b8913f' + '8fe6b4';
+  w2.send({ type: 'world-look', look: LOOK_A });
+  const painted = await w1.nextOf('world-look', 'a repaint reaches the other walker');
+  assert.equal(painted.id, welcome2.you);
+  assert.equal(painted.look, LOOK_A, 'the pack is relayed byte for byte');
+
+  w2.send({ type: 'nick', name: 'painted-two' });
+  assert.equal((await w2.nextOf('nick-ok', 'the rename is accepted')).name, 'painted-two');
+  const renamed = await w1.nextOf('world-name', 'a rename reaches the other walker');
+  assert.equal(renamed.id, welcome2.you);
+  assert.equal(renamed.name, 'painted-two');
+
+  const w3 = connect(url);
+  await w3.opened;
+  w3.send({ type: 'hello', nick: 'walker-three' });
+  await w3.nextOf('hello-ok', 'w3 hello');
+  w3.send({ type: 'world-join', level: 'overworld' });
+  const welcome3 = await w3.nextOf('world-welcome', 'late arrival welcome');
+  const already = welcome3.players.find((p) => p.id === welcome2.you);
+  assert.equal(already.look, LOOK_A, 'a late arrival is told how everyone is painted');
+  assert.equal(already.name, 'painted-two', 'and under the name they renamed to');
+  assert.equal(
+    welcome3.players.find((p) => p.id === welcome1.you).look,
+    undefined,
+    'somebody who never repainted carries no look at all'
+  );
+  await w1.nextOf('world-enter', 'w1 sees w3 arrive');
+  await w2.nextOf('world-enter', 'w2 sees w3 arrive');
+  w3.ws.close();
+  await w1.nextOf('world-exit', 'w3 departure announced');
+  await w2.nextOf('world-exit', 'w2 hears it too');
+
+  console.log('17. open world: roster, level-scoped snapshots, chat, voice signalling, identity');
 
   // 17b. The fleet. This is the only world state the process holds and the
   //      only question it actually arbitrates, so the assertions that matter

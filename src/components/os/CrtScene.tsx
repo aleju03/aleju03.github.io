@@ -14,6 +14,7 @@ import type { Level, LevelLightRig } from '../../game/levels/types'
 import { buildPaperPlane } from '../../game/props/paperPlane'
 import type { HouseModels } from '../../game/levels/houseWorld'
 import { buildPlayerBody, type PlayerPose } from '../../game/player/playerBody'
+import { packLook, sanitizeLook, type PlayerLook } from '../../game/player/look'
 import type { RagdollEnv } from '../../game/player/ragdoll'
 import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
 import { createWalkController } from '../../game/player/walkController'
@@ -36,7 +37,8 @@ import {
 } from '../../game/net/protocol'
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
-import { createWorldNet, worldConfigured, type WorldStatus } from './worldNet'
+import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
+import WorldIdentity from './WorldIdentity'
 import { createProximityVoice, type VoiceMode } from './proximityVoice'
 import type { Session } from './osContext'
 import { track } from '../../analytics'
@@ -159,6 +161,19 @@ const loadPrefs = () => {
   }
   return { ...PREFS_DEFAULT }
 }
+/** the four colours the character screen edits. Kept beside the prefs and
+    apart from them: prefs are how you *see* the world, a look is how the
+    world sees you, and only one of the two travels */
+const LOOK_KEY = 'alejos-look'
+const loadLook = (): PlayerLook => {
+  try {
+    const raw = localStorage.getItem(LOOK_KEY)
+    if (raw) return sanitizeLook(JSON.parse(raw))
+  } catch {
+    /* private mode, or something that is not our JSON: the default robot */
+  }
+  return sanitizeLook(null)
+}
 /** the control line each machine puts in the HUD. Three media, three sets of
     verbs: what "space" does is a handbrake, a throttle blip or the collective
     depending on what you climbed into */
@@ -238,6 +253,11 @@ export default function CrtScene({
   const [locked, setLocked] = useState(false)
   // esc mid-walk frees the mouse and raises the pause menu
   const [paused, setPaused] = useState(false)
+  /** the pause screen has been up at least once this session. It carries a
+      second WebGL context (the character preview), so once built it is hidden
+      rather than unmounted — and it is not built at all until the first pause,
+      which keeps it off the stand-up frame */
+  const [everPaused, setEverPaused] = useState(false)
   const [prefs, setPrefs] = useState(loadPrefs)
   // --- the fleet -----------------------------------------------------------
   // a parked machine in reach, what is being driven, and the instrument
@@ -288,6 +308,23 @@ export default function CrtScene({
   const [voiceHud, setVoiceHud] = useState<VoiceHud>({
     available: false, enabled: false, mode: 'open', speaking: false, peers: 0, error: null,
   })
+  // --- who you are ---------------------------------------------------------
+  // The character screen's state. `look` is local first and shared second: it
+  // is applied to the body standing in the world the moment a swatch is
+  // clicked and only then put on the wire, so the panel never waits on a
+  // round trip to show you what you picked. `myName` is the opposite — the
+  // server owns it, and this is a mirror of whatever it last told us.
+  const [look, setLook] = useState(loadLook)
+  const [myName, setMyName] = useState('')
+  const [rename, setRename] = useState<{ pending: boolean; error: string | null }>({
+    pending: false, error: null,
+  })
+  /** the one-time "you are guest-08c9" nudge, dismissed by opening the panel,
+      by picking a name, or by the timer below */
+  const [namePrompt, setNamePrompt] = useState(false)
+  /** once per mounted scene, not once per reconnect: a dropped wifi must not
+      re-open the same suggestion behind somebody who already said no */
+  const namePromptSpent = useRef(false)
   const chatInputRef = useRef<HTMLInputElement>(null)
   const typingRef = useRef(false)
   const closeChat = () => {
@@ -310,6 +347,12 @@ export default function CrtScene({
   // the live roam prop, readable from inside the scene's build closure: a
   // /room entrance has it true before roamRef exists to be called
   const roamPropRef = useRef(roam)
+  const lookRef = useRef(look)
+  /** set by the scene effect: repaint the body standing in the world and tell
+      everyone else. Null while there is no scene, which is why the panel's
+      state lives out here rather than inside the closure */
+  const applyLookRef = useRef<((look: PlayerLook) => void) | null>(null)
+  const setNickRef = useRef<((name: string) => void) | null>(null)
   useEffect(() => {
     failRef.current = onFail
     stageRef.current = onStage
@@ -327,6 +370,27 @@ export default function CrtScene({
       /* private mode; the session still gets the values via prefsRef */
     }
   }, [prefs])
+  useEffect(() => {
+    lookRef.current = look
+    applyLookRef.current?.(look)
+    try {
+      localStorage.setItem(LOOK_KEY, JSON.stringify(look))
+    } catch {
+      /* private mode; the session keeps it in lookRef either way */
+    }
+  }, [look])
+  // the nudge only makes sense while somebody could be reading the plate over
+  // your head, so it waits for the socket rather than for the stand-up
+  useEffect(() => {
+    if (mp.status !== 'live' || !isMintedName(myName) || namePromptSpent.current) return
+    namePromptSpent.current = true
+    setNamePrompt(true)
+  }, [mp.status, myName])
+  useEffect(() => {
+    if (!namePrompt) return
+    const t = setTimeout(() => setNamePrompt(false), 14_000)
+    return () => clearTimeout(t)
+  }, [namePrompt])
 
   useEffect(() => {
     if (off) outroRef.current?.()
@@ -805,7 +869,10 @@ export default function CrtScene({
         // person it trails the camera so looking down shows your own legs; in
         // third person (v) the chase boom in chaseCam.ts backs the lens off
         // it, and a flop (x) hands the whole skeleton to the ragdoll
-        const rig = buildPlayerBody(EYE, 34) // same gravity as the walk tune
+        // same gravity as the walk tune, and whatever colours the character
+        // screen last saved: the body is built wearing them, so the third
+        // person camera never shows a frame of the default robot
+        const rig = buildPlayerBody(EYE, 34, lookRef.current)
         const body = rig.group
         body.visible = false
         scene.add(body)
@@ -1192,6 +1259,14 @@ export default function CrtScene({
         scene.add(avatars.root)
         let net: ReturnType<typeof createWorldNet> | null = null
         let voice: ReturnType<typeof createProximityVoice> | null = null
+        // the character screen's brush. Local first: the body you are standing
+        // in is repainted the instant a swatch is clicked, and the wire hears
+        // about it afterwards — a colour must never wait on a round trip, and
+        // out of the world there is no round trip to wait on
+        applyLookRef.current = (next) => {
+          rig.setLook(next)
+          net?.look(packLook(next))
+        }
         let chatKey = 0
         // which spawn offset is ours; the server hands out the lowest free one.
         // -1 is "not told yet", which is not the same as slot 0 (the authored
@@ -1239,7 +1314,13 @@ export default function CrtScene({
           net = createWorldNet({
             session: who,
             level: levels.current.id,
+            // read, not captured: a reconnect must carry whatever the player
+            // is wearing now, which may not be what they wore at join
+            look: () => packLook(lookRef.current),
             onStatus: (status) => setMp((m) => ({ ...m, status })),
+            onName: (name) => setMyName(name),
+            onNick: (result) =>
+              setRename(result.ok ? { pending: false, error: null } : { pending: false, error: result.error }),
             onMessage: (msg) => {
               switch (msg.type) {
                 case 'world-welcome':
@@ -1313,6 +1394,18 @@ export default function CrtScene({
                 case 'world-signal':
                   voice?.accept(msg.from, msg.data)
                   break
+                // somebody renamed or repainted. Both land on the roster
+                // first — a body that has not spawned yet reads it there —
+                // and only then on the meshes, if there are any
+                case 'world-name':
+                case 'world-look': {
+                  const entry = remote.identify(
+                    msg.id,
+                    msg.type === 'world-name' ? { name: msg.name } : { look: msg.look },
+                  )
+                  if (entry) avatars.reskin(msg.id, entry)
+                  break
+                }
               }
             },
           })
@@ -1326,6 +1419,7 @@ export default function CrtScene({
           })
           syncVoice()
           sayRef.current = (text) => net?.chat(text)
+          setNickRef.current = (name) => net?.setNick(name)
         }
 
         const leaveWorld = () => {
@@ -1334,6 +1428,7 @@ export default function CrtScene({
           net?.close()
           net = null
           sayRef.current = null
+          setNickRef.current = null
           spawnSlot = -1
           scattered = false
           seatWanted = null
@@ -1407,6 +1502,9 @@ export default function CrtScene({
                 ...fleet.where(v.id, camera.position),
               })),
             )
+            // and the first pause is what builds the screen at all — see the
+            // everPaused declaration
+            setEverPaused(true)
           }
           setPaused(on)
         }
@@ -2535,6 +2633,8 @@ export default function CrtScene({
       fleetRef.current = null
       enterRef.current = null
       leaveRef.current = null
+      applyLookRef.current = null
+      setNickRef.current = null
       disposeFleet?.()
       disposeFleet = null
       if (scene) {
@@ -2704,125 +2804,199 @@ export default function CrtScene({
           className="pointer-events-none absolute top-1/2 left-1/2 z-10 size-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-stone-400/70"
         />
       )}
-      {roam && walking && paused && (
-        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-          <div aria-hidden className="absolute inset-0 bg-stone-950/40" />
-          <div className="pointer-events-auto relative w-72 rounded-lg border border-stone-700 bg-stone-950/85 p-4 font-mono backdrop-blur-sm">
-            <div className="flex items-baseline justify-between">
+      {/* the nudge that exists so nobody walks a whole session as guest-08c9
+          without ever learning there was a choice. Not a button: at this
+          moment the mouse is usually captured and there is no cursor to click
+          one with, so it says where to go instead of being somewhere to go */}
+      {roam && walking && !paused && namePrompt && (
+        <p className="pointer-events-none absolute bottom-24 left-1/2 z-10 -translate-x-1/2 rounded-md border border-stone-700 bg-stone-950/80 px-3 py-1.5 font-mono text-[11px] text-stone-400 backdrop-blur-sm">
+          out here you are <span className="text-stone-200">{myName}</span>
+          <span className="ml-2 text-stone-600">esc to change that</span>
+        </p>
+      )}
+      {/* The pause screen. Two columns: you on the left, the knobs on the
+          right — a pause is mostly a moment to look at where you are, and the
+          old narrow single column buried the one thing worth looking at
+          behind a button.
+
+          It is mounted from the first pause of the session onward and merely
+          hidden in between, never unmounted. The character preview owns a
+          second WebGL context, and creating one per press of escape would
+          re-link its shaders every time; this way that cost is paid once, on
+          a frame where the world is already stopped. */}
+      {roam && walking && everPaused && (
+        <div
+          className={`pointer-events-none absolute inset-0 z-20 items-center justify-center ${
+            paused ? 'flex' : 'hidden'
+          }`}
+        >
+          <div aria-hidden className="absolute inset-0 bg-stone-950/55" />
+          <div className="pointer-events-auto relative flex max-h-[94%] w-[min(46rem,92%)] flex-col overflow-hidden rounded-xl border border-stone-700/70 bg-stone-950/90 font-mono shadow-2xl shadow-black/50 backdrop-blur-md">
+            <div className="flex items-baseline justify-between border-b border-stone-800/80 px-5 py-3">
               <p className="text-[13px] text-stone-200">paused</p>
               <p className="text-[10px] text-stone-600">esc resumes</p>
             </div>
-            <div className="mt-4 text-[11px] text-stone-400">
-              <span className="flex justify-between">
-                <span>camera</span>
-                <span className="text-stone-500">v</span>
-              </span>
-              <div className="mt-1.5 flex gap-1.5">
-                {([false, true] as const).map((third) => (
-                  <button
-                    key={String(third)}
-                    type="button"
-                    onClick={() => setPrefs((p) => ({ ...p, third }))}
-                    aria-pressed={prefs.third === third}
-                    className={`flex-1 cursor-pointer rounded-md border px-2 py-1 text-[11px] transition-colors ${
-                      prefs.third === third
-                        ? 'border-stone-400 bg-stone-800/70 text-stone-100'
-                        : 'border-stone-700 text-stone-500 hover:border-stone-500 hover:text-stone-300'
-                    }`}
-                  >
-                    {third ? 'third person' : 'first person'}
-                  </button>
-                ))}
+
+            <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5 sm:flex-row">
+              <WorldIdentity
+                look={look}
+                onLook={setLook}
+                name={myName}
+                // a registered account owns its username, and an offline
+                // socket has nobody to ask: in both cases the field explains
+                // itself rather than accepting a name that would never take
+                onRename={
+                  mp.status === 'live' && session?.kind !== 'user'
+                    ? (name) => {
+                        setNamePrompt(false)
+                        setRename({ pending: true, error: null })
+                        setNickRef.current?.(name)
+                      }
+                    : null
+                }
+                renameNote={
+                  session?.kind === 'user'
+                    ? 'signed in — this is your account name'
+                    : 'connect to the world to pick a name'
+                }
+                pending={rename.pending}
+                error={rename.error}
+                active={paused}
+              />
+
+              {/* the knobs, in the order you reach for them */}
+              <div className="flex min-w-0 flex-1 flex-col gap-4">
+                <div>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-[10px] tracking-wide text-stone-500 uppercase">
+                      camera
+                    </span>
+                    <span className="text-[10px] text-stone-600">v</span>
+                  </div>
+                  <div className="mt-1.5 flex gap-1.5">
+                    {([false, true] as const).map((third) => (
+                      <button
+                        key={String(third)}
+                        type="button"
+                        onClick={() => setPrefs((p) => ({ ...p, third }))}
+                        aria-pressed={prefs.third === third}
+                        className={`flex-1 cursor-pointer rounded-md border px-2 py-1.5 text-[11px] transition-colors ${
+                          prefs.third === third
+                            ? 'border-stone-400 bg-stone-800/70 text-stone-100'
+                            : 'border-stone-700 text-stone-500 hover:border-stone-500 hover:text-stone-300'
+                        }`}
+                      >
+                        {third ? 'third person' : 'first person'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="block">
+                  <span className="flex items-baseline justify-between">
+                    <span className="text-[10px] tracking-wide text-stone-500 uppercase">
+                      field of view
+                    </span>
+                    <span className="text-[10px] text-stone-400 tabular-nums">{prefs.fov}°</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={30}
+                    max={80}
+                    step={1}
+                    value={prefs.fov}
+                    onChange={(e) => setPrefs((p) => ({ ...p, fov: Number(e.target.value) }))}
+                    className="mt-1.5 w-full cursor-pointer accent-stone-400"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="flex items-baseline justify-between">
+                    <span className="text-[10px] tracking-wide text-stone-500 uppercase">
+                      mouse sensitivity
+                    </span>
+                    <span className="text-[10px] text-stone-400 tabular-nums">
+                      {prefs.sens.toFixed(2)}x
+                    </span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0.3}
+                    max={3}
+                    step={0.05}
+                    value={prefs.sens}
+                    onChange={(e) => setPrefs((p) => ({ ...p, sens: Number(e.target.value) }))}
+                    className="mt-1.5 w-full cursor-pointer accent-stone-400"
+                  />
+                </label>
+
+                {/* where the machines are. A fixed fleet in an endless world
+                    needs this: the boat lives on a coast two and a half
+                    kilometres out, and without a bearing that is not a
+                    destination, it is a rumour. "call it over" is the way back
+                    from having stranded one — it puts the machine on the
+                    nearest place it can legally stand, which is why the boat
+                    refuses unless there is water within reach */}
+                {fleetWhere.length > 0 && (
+                  <div>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-[10px] tracking-wide text-stone-500 uppercase">
+                        vehicles
+                      </span>
+                      <span className="text-[10px] text-stone-600">e to get in</span>
+                    </div>
+                    <ul className="mt-1.5 divide-y divide-stone-800/70 rounded-md border border-stone-800/70">
+                      {fleetWhere.map((v) => (
+                        <li
+                          key={v.id}
+                          className="flex items-center justify-between gap-2 px-2.5 py-1.5"
+                        >
+                          <span className="min-w-0 truncate text-[11px] text-stone-400">
+                            {v.label}
+                            <span className="ml-2 text-[10px] text-stone-600 tabular-nums">
+                              {v.dist < 1000
+                                ? `${Math.round(v.dist * 0.48)} m`
+                                : `${(v.dist * 0.00048).toFixed(1)} km`}{' '}
+                              {v.bearing}
+                            </span>
+                          </span>
+                          {v.dist > 80 && !driving && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!fleetRef.current?.recall(v.id))
+                                  setNotice(`no room for the ${v.label} here`)
+                              }}
+                              className="shrink-0 cursor-pointer rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-500 transition-colors hover:border-stone-500 hover:text-stone-300"
+                            >
+                              call it over
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             </div>
-            {/* where the machines are. A fixed fleet in an endless world
-                needs this: the boat lives on a coast two and a half
-                kilometres out, and without a bearing that is not a
-                destination, it is a rumour. "call it over" is the way back
-                from having stranded one — it puts the machine on the nearest
-                place it can legally stand, which is why the boat refuses
-                unless there is water within reach */}
-            {fleetWhere.length > 0 && (
-              <div className="mt-4 text-[11px] text-stone-400">
-                <span className="flex justify-between">
-                  <span>vehicles</span>
-                  <span className="text-stone-600">e to get in</span>
-                </span>
-                <ul className="mt-1.5 space-y-1">
-                  {fleetWhere.map((v) => (
-                    <li key={v.id} className="flex items-center justify-between gap-2">
-                      <span className="text-stone-500">
-                        {v.label}
-                        <span className="ml-1.5 text-stone-600 tabular-nums">
-                          {v.dist < 1000
-                            ? `${Math.round(v.dist * 0.48)} m`
-                            : `${(v.dist * 0.00048).toFixed(1)} km`}{' '}
-                          {v.bearing}
-                        </span>
-                      </span>
-                      {v.dist > 80 && !driving && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!fleetRef.current?.recall(v.id)) setNotice(`no room for the ${v.label} here`)
-                          }}
-                          className="shrink-0 cursor-pointer rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-500 transition-colors hover:border-stone-500 hover:text-stone-300"
-                        >
-                          call it over
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <label className="mt-3 block text-[11px] text-stone-400">
-              <span className="flex justify-between">
-                <span>field of view</span>
-                <span className="text-stone-500">{prefs.fov}°</span>
-              </span>
-              <input
-                type="range"
-                min={30}
-                max={80}
-                step={1}
-                value={prefs.fov}
-                onChange={(e) => setPrefs((p) => ({ ...p, fov: Number(e.target.value) }))}
-                className="mt-1.5 w-full cursor-pointer accent-stone-400"
-              />
-            </label>
-            <label className="mt-3 block text-[11px] text-stone-400">
-              <span className="flex justify-between">
-                <span>mouse sensitivity</span>
-                <span className="text-stone-500">{prefs.sens.toFixed(2)}x</span>
-              </span>
-              <input
-                type="range"
-                min={0.3}
-                max={3}
-                step={0.05}
-                value={prefs.sens}
-                onChange={(e) => setPrefs((p) => ({ ...p, sens: Number(e.target.value) }))}
-                className="mt-1.5 w-full cursor-pointer accent-stone-400"
-              />
-            </label>
-            <div className="mt-5 flex gap-2">
-              <button
-                type="button"
-                onClick={() => resumeRef.current?.()}
-                className="flex-1 cursor-pointer rounded-md border border-stone-600 bg-stone-800/70 px-3 py-1.5 text-[12px] text-stone-200 transition-colors hover:border-stone-400 hover:text-white"
-              >
-                resume
-              </button>
+
+            <div className="flex items-center gap-2 border-t border-stone-800/80 px-5 py-3">
               {onLeave && (
                 <button
                   type="button"
                   onClick={onLeave}
-                  className="flex-1 cursor-pointer rounded-md border border-stone-800 px-3 py-1.5 text-[12px] text-stone-500 transition-colors hover:border-stone-600 hover:text-stone-300"
+                  className="cursor-pointer rounded-md px-2.5 py-1.5 text-[11px] text-stone-500 transition-colors hover:text-stone-300"
                 >
                   leave the room
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => resumeRef.current?.()}
+                className="ml-auto cursor-pointer rounded-md border border-stone-500 bg-stone-800/80 px-6 py-1.5 text-[12px] text-stone-100 transition-colors hover:border-stone-300 hover:bg-stone-700/80 hover:text-white"
+              >
+                resume
+              </button>
             </div>
           </div>
         </div>

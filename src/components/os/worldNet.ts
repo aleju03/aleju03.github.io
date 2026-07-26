@@ -29,6 +29,8 @@ import {
 */
 
 const CHAT_URL = import.meta.env.VITE_CHAT_URL as string | undefined
+/** shared with chatRooms.ts and the arcade: one desktop, one guest nick */
+const NICK_KEY = 'alejos-nick'
 
 export type WorldStatus = 'offline' | 'connecting' | 'live'
 
@@ -49,6 +51,16 @@ export interface WorldNet {
   ) => void
   /** the local player stepped through a level seam */
   setLevel: (level: string) => void
+  /** repaint: the 24-hex pack from game/player/look.ts. Rare enough to be
+      unthrottled and small enough not to matter if it were not */
+  look: (packed: string) => void
+  /** rename. This is the *chat* server's `nick` message rather than anything
+      the world owns — one socket, one identity, and the arcade boards and the
+      plate over your head have to agree. The answer comes back through
+      `onNick`, never as an assumption: the server refuses names that belong
+      to registered accounts, and a client that renamed itself optimistically
+      would be walking around under a name nobody else can see */
+  setNick: (name: string) => void
   chat: (text: string) => void
   signal: (to: PlayerId, data: VoiceSignal) => void
   /** ask for a chair. The answer arrives as a world-seats naming us, or a
@@ -73,8 +85,27 @@ export interface WorldNetOpts {
   session: Session
   /** the level the player is standing in when the world is entered */
   level: string
+  /** the local look at join time, read rather than captured: a reconnect has
+      to carry whatever the player is wearing *now*, not what they wore when
+      the first socket opened */
+  look?: () => string | undefined
   onStatus: (status: WorldStatus) => void
   onMessage: (msg: WorldServerMessage) => void
+  /** what the server calls us: the hello's answer, and every accepted rename
+      after it. The welcome does not carry our own name — the roster is
+      everyone *else* — so this is the only way to know what the plate over
+      our own head says */
+  onName?: (name: string) => void
+  /** the server's verdict on a `setNick`. Only ever fired for a rename we
+      asked for */
+  onNick?: (result: { ok: true; name: string } | { ok: false; error: string }) => void
+}
+
+/** a name the server minted for an anonymous socket, i.e. nobody's choice.
+    Mirrors the `guest-${randomBytes(2)}` in server/src/index.js, and is the
+    whole test behind the "pick a name" nudge */
+export function isMintedName(name: string) {
+  return /^guest-[0-9a-f]{4}$/.test(name)
 }
 
 const SEND_HZ = 15
@@ -100,6 +131,9 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   let reconnectTimer = 0
   let level = opts.level
   let ice: RTCIceServer[] = []
+  /** a rename is in flight, so the next `nick-ok` or `error` on this socket
+      is its answer. Nothing else this socket sends can be answered by either */
+  let nickPending = false
 
   // last pose actually put on the wire, for the idle suppressor
   let lastSent = 0
@@ -151,7 +185,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
       // left off entirely so the server names us rather than refusing it
       const stored =
         opts.session.kind === 'guest'
-          ? (localStorage.getItem('alejos-nick') ?? opts.session.name)
+          ? (localStorage.getItem(NICK_KEY) ?? opts.session.name)
           : ''
       raw({ type: 'hello', token: opts.session.token, nick: stored || undefined })
     }
@@ -169,13 +203,44 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
         if (data.badToken) sessionExpired()
         retry = 0
         joined = true
-        // a reconnect re-enters the world by itself; the player never sees it
-        raw({ type: 'world-join', level })
+        // whatever nick the hello managed to claim, or the guest-xxxx the
+        // server minted when it could not
+        if (typeof data.you === 'string') opts.onName?.(data.you)
+        // a reconnect re-enters the world by itself; the player never sees it.
+        // The look rides along so nobody ever draws us in the wrong colours,
+        // not even for the tick between arriving and repainting
+        raw({ type: 'world-join', level, look: opts.look?.() })
         // force the next move() and vehicle() through, whatever the idle
         // suppressors think: the server we are talking to may be a different
         // process than the one that heard the last one
         sflags = -1
         vx = NaN
+        return
+      }
+      if (data.type === 'nick-ok') {
+        const name = String(data.name ?? '')
+        // the same key the chat app and the arcade read: one identity, and a
+        // name picked in the world has to be the one the desktop offers next
+        // time — including on this socket's own reconnect, which re-sends it
+        // in the hello
+        try {
+          localStorage.setItem(NICK_KEY, name)
+        } catch {
+          /* private mode; the name still holds for this connection */
+        }
+        opts.onName?.(name)
+        if (nickPending) {
+          nickPending = false
+          opts.onNick?.({ ok: true, name })
+        }
+        return
+      }
+      if (data.type === 'error' && nickPending) {
+        nickPending = false
+        opts.onNick?.({
+          ok: false,
+          error: String(data.message ?? 'That name did not take.'),
+        })
         return
       }
       if (data.type === 'world-welcome') {
@@ -193,6 +258,12 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     socket.onclose = () => {
       if (ws === socket) ws = null
       joined = false
+      // a rename that was in flight when the socket went down has no answer
+      // coming; the panel waiting on it must not spin forever
+      if (nickPending) {
+        nickPending = false
+        opts.onNick?.({ ok: false, error: 'Lost the connection. Try again.' })
+      }
       setStatus('offline')
       scheduleReconnect()
     }
@@ -277,6 +348,20 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     setLevel(next) {
       level = next
       inWorld({ type: 'world-level', level: next })
+    },
+
+    look(packed) {
+      inWorld({ type: 'world-look', look: packed })
+    },
+
+    setNick(name) {
+      const trimmed = name.trim()
+      if (!trimmed || nickPending || ws?.readyState !== WebSocket.OPEN) return
+      nickPending = true
+      // deliberately not `inWorld`: a rename is a property of the socket's
+      // identity, not of standing in the world, and the hello has landed by
+      // the time anything can call this
+      raw({ type: 'nick', name: trimmed })
     },
 
     chat(text) {

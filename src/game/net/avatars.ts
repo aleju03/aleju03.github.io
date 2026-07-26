@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { buildPlayerBody, type PlayerPose, type PlayerRig } from '../player/playerBody'
+import { unpackLook } from '../player/look'
 import type { RagdollEnv } from '../player/ragdoll'
 import { makeCollisionSet, type CollisionSet } from '../physics/collision'
 import { canvasTexture } from '../core/textures'
@@ -71,6 +72,11 @@ export interface RemoteAvatars {
   update: (world: RemoteWorld, dt: number, env: AvatarEnv) => void
   /** float a line of chat over a player's head for a few seconds */
   say: (id: PlayerId, text: string) => void
+  /** a player renamed or repainted. Both are rare and both are cheap: a
+      repaint is four `Color.set()` calls (never a relink), a rename is one
+      canvas the size of the word. A body that has not spawned yet needs
+      neither — `update` reads the roster on the way in */
+  reskin: (id: PlayerId, entry: { name: string; admin: boolean; look?: string }) => void
   dispose: () => void
 }
 
@@ -172,6 +178,11 @@ interface Avatar {
   group: THREE.Group
   name: THREE.Sprite
   nameTex: THREE.Texture
+  /** what the plate currently says, and what the body is currently painted
+      in: a rename or a repaint that changes nothing must not redraw a canvas */
+  nameText: string
+  nameAdmin: boolean
+  look: string | undefined
   badge: THREE.Sprite
   bubble: THREE.Sprite | null
   bubbleTex: THREE.Texture | null
@@ -205,8 +216,15 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   const BADGE_Y = eye * 1.34
   const BUBBLE_Y = eye * 1.5
 
+  const namePlate = (text: string, admin: boolean) =>
+    plaqueTexture(text, {
+      bg: admin ? 'rgba(157,85,66,0.82)' : 'rgba(12,16,20,0.62)',
+      fg: '#f2f5f8',
+      weight: admin ? '700' : '500',
+    })
+
   const spawn = (player: RemotePlayer): Avatar => {
-    const rig = buildPlayerBody(eye, grav)
+    const rig = buildPlayerBody(eye, grav, unpackLook(player.look))
     const group = rig.group
     group.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) {
@@ -215,11 +233,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       }
     })
 
-    const { tex: nameTex, aspect } = plaqueTexture(player.name, {
-      bg: player.admin ? 'rgba(157,85,66,0.82)' : 'rgba(12,16,20,0.62)',
-      fg: '#f2f5f8',
-      weight: player.admin ? '700' : '500',
-    })
+    const { tex: nameTex, aspect } = namePlate(player.name, player.admin)
     const name = makeSprite(nameTex, NAME_H, aspect)
     name.position.y = NAME_Y
     group.add(name)
@@ -232,6 +246,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     root.add(group)
     return {
       rig, group, name, nameTex, badge,
+      nameText: player.name, nameAdmin: player.admin, look: player.look,
       bubble: null, bubbleTex: null, bubbleUntil: 0,
       badgeK: 0, wasDown: false, clock: 0, seat: null,
     }
@@ -402,6 +417,24 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
           a.bubble.position.y = BUBBLE_Y + BADGE_H * a.badgeK * 0.6
         }
       }
+    },
+
+    reskin(id, entry) {
+      const a = avatars.get(id)
+      if (!a) return
+      if (entry.look !== a.look) {
+        a.look = entry.look
+        a.rig.setLook(unpackLook(entry.look))
+      }
+      if (entry.name === a.nameText && entry.admin === a.nameAdmin) return
+      a.nameText = entry.name
+      a.nameAdmin = entry.admin
+      const { tex, aspect } = namePlate(entry.name, entry.admin)
+      a.name.material.map = tex
+      a.name.material.needsUpdate = true
+      a.name.scale.set(NAME_H * aspect, NAME_H, 1)
+      a.nameTex.dispose()
+      a.nameTex = tex
     },
 
     say(id, text) {

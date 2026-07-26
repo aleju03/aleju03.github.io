@@ -127,6 +127,13 @@ const WORLD_SIGNAL_RATE_WINDOW_MS = 10_000;
 const WORLD_MAX_TEXT_LEN = 200;
 const WORLD_MAX_SIGNAL_LEN = 6_000; // one SDP blob; maxPayload is 8 KiB
 const WORLD_LEVEL_RE = /^[a-z0-9-]{1,24}$/;
+// A player's colours: four packed hex triplets from src/game/player/look.ts.
+// This process has no opinion about which of them is the visor and which is
+// the antenna — it is a fixed-length opaque string that gets relayed, exactly
+// like the SDP blobs beside it.
+const WORLD_LOOK_RE = /^[0-9a-f]{24}$/;
+const WORLD_LOOK_RATE_MAX = 30; // a swatch grid clicked through, per window
+const WORLD_LOOK_RATE_WINDOW_MS = 10_000;
 const WORLD_COORD_LIMIT = 1e7; // the planet is endless, the wire is not
 // The fleet: three machines, two chairs each, mirrored by WIRE_VEHICLES and
 // SEAT_* in src/game/net/protocol.ts. This process does not know what a
@@ -828,7 +835,11 @@ function handleDuelRematch(ws) {
 // client (src/game/world/), so the only thing that cannot be recomputed is
 // where the other people are. Three jobs, in order of traffic:
 //
-//   1. a roster — who is here, under what name (world-enter/world-exit)
+//   1. a roster — who is here, under what name, painted which way
+//      (world-enter/world-exit, and world-name/world-look when either
+//      changes mid-session). The look is a fixed-length opaque string this
+//      process relays without parsing; the name is the same `nick` every
+//      other socket on this server uses, because it is the same identity
 //   2. a snapshot loop — everyone's transform, ~15Hz, grouped by level so a
 //      visitor in the backrooms is not paying for the overworld's crowd
 //   3. a signalling relay — WebRTC offer/answer/ICE between two peers, so
@@ -845,6 +856,7 @@ const worldMoveRate = new WeakMap(); // ws -> [timestamps]
 const worldChatRate = new WeakMap();
 const worldSignalRate = new WeakMap();
 const worldSeatRate = new WeakMap();
+const worldLookRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
 
@@ -888,7 +900,10 @@ const r2 = (n) => Math.round(n * 100) / 100;
 const r3 = (n) => Math.round(n * 1000) / 1000;
 
 function worldRosterEntry(ws) {
-  return { id: ws.world.id, ...userPayload(ws) };
+  // `look` is left off entirely rather than sent as null: an absent look is
+  // the default robot on the client, and the roster is resent to every late
+  // arrival often enough to be worth the four bytes
+  return { id: ws.world.id, ...userPayload(ws), ...(ws.look ? { look: ws.look } : {}) };
 }
 
 /** The ICE servers a joining client should use. STUN is enough for most
@@ -1085,6 +1100,9 @@ function handleWorldJoin(ws, msg) {
   for (const other of worldPlayers.values()) taken.add(other.world.slot);
   let slot = 0;
   while (taken.has(slot)) slot++;
+  // the join may carry a look, so nobody ever sees the wrong colours — not
+  // even for the one tick between the world-enter and a world-look
+  if (typeof msg.look === 'string' && WORLD_LOOK_RE.test(msg.look)) ws.look = msg.look;
   ws.world = { id, slot, level, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED };
   worldPlayers.set(id, ws);
   const vehicles = worldVehicleRows();
@@ -1157,6 +1175,23 @@ function handleWorldLevel(ws, msg) {
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(w.id)) announceSeats();
   worldDirty = true;
+}
+
+// A repaint. The server stores the string and forwards it; it never parses
+// it, and the sender is left out of the broadcast because their own body is
+// already wearing it. `ws.look` outlives the world session on purpose — walk
+// out of the room and back in and you are still the robot you painted.
+function handleWorldLook(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (typeof msg.look !== 'string' || !WORLD_LOOK_RE.test(msg.look)) {
+    strike(ws);
+    return;
+  }
+  if (!allowWorld(worldLookRate, ws, WORLD_LOOK_RATE_MAX, WORLD_LOOK_RATE_WINDOW_MS)) return;
+  if (ws.look === msg.look) return;
+  ws.look = msg.look;
+  worldBroadcast({ type: 'world-look', id: w.id, look: msg.look }, ws);
 }
 
 function handleWorldChat(ws, msg) {
@@ -1455,6 +1490,11 @@ function handleMessage(ws, msg) {
       ws.nick = nick;
       send(ws, { type: 'nick-ok', name: nick });
       if (ws.room) broadcastRoomUsers(ws.room);
+      // one socket, one identity: a guest who renames themselves from the 3D
+      // world's own panel has to change on the plate over their head too, and
+      // the roster the other clients hold is the only copy of that name they
+      // have. Sent to everyone but us, who already got the nick-ok
+      if (ws.world) worldBroadcast({ type: 'world-name', id: ws.world.id, name: nick }, ws);
       return;
     }
     case 'join':
@@ -1539,6 +1579,9 @@ function handleMessage(ws, msg) {
       return;
     case 'world-vehicle':
       handleWorldVehicle(ws, msg);
+      return;
+    case 'world-look':
+      handleWorldLook(ws, msg);
       return;
     case 'peeko-monitor':
       handlePeekoMonitor(ws, msg);

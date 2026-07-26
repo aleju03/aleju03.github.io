@@ -51,6 +51,8 @@ export interface RemotePlayer {
   name: string
   admin: boolean
   registered: boolean
+  /** the 24-hex colour pack, or undefined for the default robot */
+  look?: string
   /** in the local player's level, and therefore drawn */
   here: boolean
   // --- resolved by sample(), all world space, y is the soles
@@ -86,6 +88,11 @@ export interface RemoteWorld {
   welcome: (you: PlayerId, tick: number, players: RosterEntry[]) => void
   enter: (player: RosterEntry) => void
   exit: (id: PlayerId) => void
+  /** somebody renamed or repainted. Returns the roster entry that changed, or
+      null for an id we have never heard of — `net/avatars.ts` needs to know
+      whether there is a plate to repaint, and the caller needs to know
+      whether the change was worth a line in the chat rail */
+  identify: (id: PlayerId, change: { name?: string; look?: string }) => RosterEntry | null
   /** a snapshot landed; `now` is local time, not the server's */
   tick: (players: PoseTuple[], now: number) => void
   /** advance playback to this instant; call once per frame before drawing */
@@ -120,6 +127,7 @@ function makePlayer(entry: RosterEntry): RemotePlayer {
     name: entry.name,
     admin: entry.admin,
     registered: entry.registered,
+    look: entry.look,
     here: false,
     x: 0, y: 0, z: 0,
     yaw: 0, pitch: 0, gait: 0,
@@ -178,6 +186,24 @@ export function createRemoteWorld(): RemoteWorld {
       forget(id)
     },
 
+    identify(id, change) {
+      const entry = roster.get(id)
+      if (!entry) return null
+      if (change.name !== undefined) entry.name = change.name
+      // an absent look is a real value here — "back to the default robot" —
+      // so the key's presence decides, not its truthiness
+      if ('look' in change) entry.look = change.look
+      // the live player mirrors the roster; tick() copies these across every
+      // snapshot anyway, but somebody standing still might not be in one for
+      // a second and their plate should not wait for them to move
+      const player = players.get(id)
+      if (player) {
+        player.name = entry.name
+        player.look = entry.look
+      }
+      return entry
+    },
+
     tick(list, now) {
       seen.clear()
       for (const [id, x, y, z, yaw, pitch, gait, f] of list) {
@@ -196,6 +222,7 @@ export function createRemoteWorld(): RemoteWorld {
         player.name = entry.name
         player.admin = entry.admin
         player.registered = entry.registered
+        player.look = entry.look
         const buf = buffers.get(id)!
         const last = buf[buf.length - 1]
         const jumped =

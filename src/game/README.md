@@ -416,6 +416,30 @@ be recomputed are where the other people are — and where they left the car.
   golden-angle offset and tests it against the level's own collision, walking
   around and then inward until it finds floor. Slot 0 is the authored point
   untouched, so single player is unchanged to the bit.
+- **Identity is a name and four colours, and neither is guessed.** A visitor
+  who walks out of the room without touching the desktop used to be
+  `guest-08c9` in the default robot, because the chat server mints a name for
+  every anonymous socket and there was nowhere to change the body. The pause
+  screen opens on you now — `components/os/WorldIdentity.tsx` is its left
+  column, standing beside the camera and sensitivity knobs rather than behind
+  a button, because looking at where you are is most of what a pause is for.
+  The name goes
+  through the chat server's existing `nick` (one socket, one identity — the
+  plate over your head, the chat rail and the arcade boards all have to agree,
+  and registered accounts are refused as they always were), and the look is
+  four hex colours from `player/look.ts`, packed into 24 characters the server
+  relays without ever parsing. Three things follow from how it is built.
+  Colours are **material uniforms, never material configuration**, so a
+  repaint is four `Color.set()` calls and can never relink a shader mid-walk —
+  the rule the root CLAUDE.md's boot-cost section exists for. They are picked
+  from **curated palettes rather than a colour well**, because the fastest way
+  to undo a scene's tone map is to let anyone type `#00ff00` into it. And the
+  preview in that panel is **the real rig** — `buildPlayerBody()` again in its
+  own small renderer, running its own idle springs — so what you pick is
+  exactly what everyone else sees. Watch the facing convention there: the body
+  is modelled facing +Z, and the scene's `facing + Math.PI` converts a compass
+  yaw where 0 means -Z. Copy that π into a preview and you are looking at the
+  back of your own head.
 - **Distance is done in WebAudio.** Each peer's stream lands on its own
   `PannerNode` with the listener riding the camera. Peers open at 55 units and
   drop at 80; the gap is what stops someone pacing the boundary from

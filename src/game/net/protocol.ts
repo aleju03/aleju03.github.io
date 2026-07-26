@@ -63,6 +63,11 @@ export interface RosterEntry {
   name: string
   admin: boolean
   registered: boolean
+  /** how this player painted their robot: the 24-hex pack from
+      `player/look.ts`. Absent from anyone who never opened the panel and from
+      any older client, and absence means the default body — a look is never a
+      reason for a body not to be drawn */
+  look?: string
 }
 
 // ---------------------------------------------------------------- the fleet
@@ -169,6 +174,31 @@ export interface WorldSignal {
   data: VoiceSignal
 }
 
+/* Identity changes hands twice over, because a name and a look are the two
+   halves of the same thing and they arrive by different routes. A name is
+   already the chat server's business — it is the `nick` message every socket
+   on this server understands — so the world does not re-own it; it only
+   forwards the result to the people standing next to you. A look is nobody
+   else's business, so the world owns it outright. Both are rare, both are
+   sent whole, and both are relayed without the server understanding a byte
+   of what they mean. */
+
+/** somebody renamed themselves. The roster entry and the plate over their
+    head both change; nothing else about them does */
+export interface WorldName {
+  type: 'world-name'
+  id: PlayerId
+  name: string
+}
+
+/** somebody repainted. `look` is a 24-hex pack, or absent for "back to the
+    default robot" */
+export interface WorldLook {
+  type: 'world-look'
+  id: PlayerId
+  look?: string
+}
+
 export type WorldServerMessage =
   | WorldWelcome
   | WorldEnter
@@ -178,6 +208,8 @@ export type WorldServerMessage =
   | WorldSignal
   | WorldSeats
   | WorldSeatDenied
+  | WorldName
+  | WorldLook
 
 // ---------------------------------------------------------------- client -> server
 
@@ -187,8 +219,13 @@ export type VoiceSignal =
   | { kind: 'ice'; candidate: RTCIceCandidateInit }
 
 export type WorldClientMessage =
-  | { type: 'world-join'; level: string }
+  /** `look` rides the join so a body is never drawn in the wrong colours even
+      for the one tick between arriving and repainting */
+  | { type: 'world-join'; level: string; look?: string }
   | { type: 'world-leave' }
+  /** repainted. Answered by a world-look to everyone else and by nothing at
+      all to us — the local body is already wearing it */
+  | { type: 'world-look'; look: string }
   | {
       type: 'world-move'
       x: number

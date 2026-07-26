@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { createRagdoll, type RagdollEnv } from './ragdoll'
 import { supportY } from '../physics/collision'
+import { DEFAULT_LOOK, type PlayerLook } from './look'
 
 /*
   The player's body: the same stubby service robot as before, but rebuilt as
@@ -104,6 +105,11 @@ export interface PlayerRig {
   trackSlide: (x: number, z: number) => void
   /** cancel any ragdoll/blend and zero the smoothed pose (level swap) */
   reset: () => void
+  /** repaint this body. Colour is a uniform on every material it touches, so
+      this is free and — importantly — can never relink a shader: a look
+      changed mid-walk must not cost the frame a compile (see the boot-cost
+      section in the root CLAUDE.md) */
+  setLook: (look: PlayerLook) => void
 }
 
 /** the eye height the proportions below were drawn for; the group scales
@@ -155,27 +161,57 @@ const RISE_FOLD = 0.42
 const EASE = (t: number) => 1 - Math.pow(1 - t, 3)
 const SMOOTH = (t: number) => t * t * (3 - 2 * t)
 
-export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
+export function buildPlayerBody(
+  eye: number,
+  grav = 34,
+  look: PlayerLook = DEFAULT_LOOK,
+): PlayerRig {
   const group = new THREE.Group()
   group.userData.dynamic = true // never caught by the static matrix freeze
 
-  // desk-peripheral palette: keycap cream, dark plastic, one rust accent
-  const bodyMat = new THREE.MeshStandardMaterial({ color: '#d9d4c9', roughness: 0.62 })
+  // desk-peripheral palette: keycap cream, dark plastic, one rust accent —
+  // the defaults in look.ts, and the four of these that are tintable are
+  // registered below so setLook can find them again (including the private
+  // clones the head is about to make)
+  const bodyMat = new THREE.MeshStandardMaterial({ color: DEFAULT_LOOK.shell, roughness: 0.62 })
   const darkMat = new THREE.MeshStandardMaterial({
-    color: '#2f3236', roughness: 0.55, metalness: 0.15,
+    color: DEFAULT_LOOK.trim, roughness: 0.55, metalness: 0.15,
   })
-  const accentMat = new THREE.MeshStandardMaterial({ color: '#9d5542', roughness: 0.66 })
+  const accentMat = new THREE.MeshStandardMaterial({ color: DEFAULT_LOOK.accent, roughness: 0.66 })
   const visorMat = new THREE.MeshStandardMaterial({
     color: '#12161a', roughness: 0.3, metalness: 0.2,
   })
   const eyeMat = new THREE.MeshStandardMaterial({
-    color: '#0a0d10', emissive: new THREE.Color('#a9d7ff'),
+    color: '#0a0d10', emissive: new THREE.Color(DEFAULT_LOOK.glow),
     emissiveIntensity: 2.2, roughness: 0.4,
   })
   const tipMat = new THREE.MeshStandardMaterial({
-    color: '#2c1c08', emissive: new THREE.Color('#ffb869'),
+    color: '#2c1c08', emissive: new THREE.Color(DEFAULT_LOOK.glow),
     emissiveIntensity: 1.6, roughness: 0.5,
   })
+
+  // which knob repaints which materials, and whether it writes `color` or
+  // `emissive`. The arrays grow when the head clones its skin, which is the
+  // whole reason this is a registry rather than four named variables — a
+  // shell colour that skipped the skull would repaint everything but the head
+  const shellMats = [bodyMat]
+  const trimMats = [darkMat]
+  const accentMats = [accentMat]
+  const glowMats = [eyeMat, tipMat]
+  /** base material -> the list its clones must join */
+  const roleOf = new Map<THREE.Material, THREE.MeshStandardMaterial[]>([
+    [bodyMat, shellMats],
+    [darkMat, trimMats],
+    [accentMat, accentMats],
+    [eyeMat, glowMats],
+    [tipMat, glowMats],
+  ])
+  const applyLook = (next: PlayerLook) => {
+    shellMats.forEach((m) => m.color.set(next.shell))
+    trimMats.forEach((m) => m.color.set(next.trim))
+    accentMats.forEach((m) => m.color.set(next.accent))
+    glowMats.forEach((m) => m.emissive.set(next.glow))
+  }
 
   const part = (geo: THREE.BufferGeometry, mat: THREE.Material, parent: THREE.Object3D) => {
     const m = new THREE.Mesh(geo, mat)
@@ -277,9 +313,18 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
   head.traverse((o) => {
     const m = o as THREE.Mesh
     if (!m.isMesh) return
-    m.material = (m.material as THREE.Material).clone()
-    headSkin.push(m.material as THREE.Material)
+    const src = m.material as THREE.Material
+    const clone = src.clone()
+    m.material = clone
+    headSkin.push(clone)
+    // a clone is a new material with the same role: register it, or a repaint
+    // would leave the head in the colours it was born in
+    roleOf.get(src)?.push(clone as THREE.MeshStandardMaterial)
   })
+
+  // the head's clones exist by now, so this is the first moment a repaint can
+  // reach the whole body
+  applyLook(look)
   let headShown = true
   const showHead = (v: boolean) => {
     if (headShown === v) return
@@ -1040,6 +1085,7 @@ export function buildPlayerBody(eye: number, grav = 34): PlayerRig {
       turnActive = false
       slideSet = false
     },
+    setLook: applyLook,
     update: (pose, env) => {
       showHead(pose.show > 0.12)
       if (mode === 'down') {
