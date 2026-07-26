@@ -58,6 +58,18 @@ export interface VehicleVoice {
    * `speed` 0..1 of the vehicle's top speed, `slip` 0..1 for tyre howl.
    */
   set: (rpm: number, load: number, speed: number, slip: number) => void
+  /**
+   * Where this machine is, relative to the listener: right, up and *back*
+   * along the camera's own axes, in world units. Somebody else's helicopter
+   * has to be somewhere, and (0, 0, 0) — the default, and what the machine
+   * you are sitting in passes — is the mix this module was tuned for.
+   *
+   * Deliberately not a PannerNode. A panner needs `ctx.listener` kept in step
+   * with the camera, and the only thing that does that here is the proximity
+   * voice mesh, which most visitors never switch on. Distance and a stereo
+   * pan computed on the CPU need nothing but the numbers already in hand.
+   */
+  place: (right: number, up: number, back: number) => void
   /** silence without tearing down: the pause menu, a hidden tab */
   mute: (on: boolean) => void
   dispose: () => void
@@ -148,8 +160,15 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
   let slapLfo: OscillatorNode | null = null
   let slapDepth: GainNode | null = null
   let slapBias: ConstantSourceNode | null = null
+  let pan: StereoPannerNode | null = null
   let running = false
   let muted = false
+  /** 0..1 distance attenuation, and where in the stereo field. Kept outside
+      the graph so `place()` can be called before `start()` and a machine that
+      is already a hundred units away does not announce itself at full volume
+      for the first frame */
+  let far = 1
+  let side = 0
 
   /** every parameter move is a short glide; a bare assignment per frame
       steps the signal and a stepped signal buzzes */
@@ -182,6 +201,8 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
     sources = []
     master?.disconnect()
     master = null
+    pan?.disconnect()
+    pan = null
     core = null
     lp = null
     bedGain = null
@@ -201,8 +222,13 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
 
     master = a.createGain()
     master.gain.setValueAtTime(0.0001, now)
-    master.gain.linearRampToValueAtTime(muted ? 0.0001 : 1, now + 0.25)
-    master.connect(a.destination)
+    master.gain.linearRampToValueAtTime(muted ? 0.0001 : far, now + 0.25)
+    // the pan sits between the master and the speakers so `mute` still owns
+    // one gain and one only. A machine at the listener's own position pans
+    // dead centre, which is the graph this module has always been
+    pan = a.createStereoPanner()
+    pan.pan.setValueAtTime(side, now)
+    master.connect(pan).connect(a.destination)
 
     // --- the pitched core: detuned oscillators through an opening lowpass ---
     lp = a.createBiquadFilter()
@@ -319,10 +345,11 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
     master.gain.linearRampToValueAtTime(0.0001, now + 0.22)
     // hold the reference until the fade has actually played out, or the
     // graph is collected mid-ramp and the engine cuts rather than dies
-    const dying = { oscs, sources, master, bias: slapBias }
+    const dying = { oscs, sources, master, pan, bias: slapBias }
     oscs = []
     sources = []
     master = null
+    pan = null
     slapBias = null
     setTimeout(() => {
       for (const o of dying.oscs) {
@@ -345,6 +372,7 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
         /* already stopped */
       }
       dying.master?.disconnect()
+      dying.pan?.disconnect()
     }, 320)
     core = null
     lp = null
@@ -360,7 +388,23 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
     stop,
     mute: (on) => {
       muted = on
-      if (master && a) to(master.gain, on ? 0.0001 : 1, 0.05)
+      if (master && a) to(master.gain, on ? 0.0001 : far, 0.05)
+    },
+    place: (right, up, back) => {
+      const d = Math.hypot(right, up, back)
+      // inverse-square with a soft core, cut to nothing at the fog line: the
+      // reference distance is about a car length, so sitting in the thing is
+      // full volume and standing at its door is most of it
+      const REF = 6
+      const CUT = 220
+      const raw = d > CUT ? 0 : 1 / (1 + (d / REF) * (d / REF))
+      far = raw < 0.0001 ? 0.0001 : raw
+      // and how far off the nose it is. Close up the pan collapses, because a
+      // machine you are sitting in has no side of the head to be on
+      side = d > 0.001 ? (right / d) * Math.min(1, d / 8) : 0
+      if (!a) return
+      if (master && !muted) to(master.gain, far, 0.08)
+      to(pan?.pan, side, 0.08)
     },
     set: (rpm, load, speed, slip) => {
       if (!running || !a) return

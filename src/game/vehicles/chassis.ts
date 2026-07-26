@@ -275,6 +275,42 @@ export const angleDelta = (a: number, b: number) => {
   return d
 }
 
+/* ------------------------------------------------------------ net driving -- */
+
+/**
+ * The motion implied by a network pose, in the machine's own frame.
+ *
+ * All three vehicles animate the same handful of cosmetics off it — wheels
+ * roll at the forward speed, a hull throws its wake at the planar one, a
+ * steering wheel and a rotor disc lean on the yaw rate — and none of them
+ * should be deriving it themselves. `yawRate` is measured against the yaw the
+ * machine had *last* frame rather than sent, for the same reason velocity is:
+ * what is animated then matches what is drawn, exactly.
+ */
+export interface NetMotion {
+  /** speed along the heading, signed. Reverse is genuinely negative here:
+      the wire carries the transform, and backing up is a direction */
+  f: number
+  /** speed regardless of direction */
+  planar: number
+  /** radians per second, from the yaw delta this frame */
+  yawRate: number
+}
+
+export const netMotion = (
+  p: { vx: number; vz: number; yaw: number },
+  prevYaw: number,
+  dt: number,
+  out: NetMotion,
+): NetMotion => {
+  const fx = -Math.sin(p.yaw)
+  const fz = -Math.cos(p.yaw)
+  out.f = p.vx * fx + p.vz * fz
+  out.planar = Math.hypot(p.vx, p.vz)
+  out.yawRate = dt > 0 ? angleDelta(prevYaw, p.yaw) / dt : 0
+  return out
+}
+
 /** the standard four-key axis pair, honouring both wasd and the arrows —
     read exactly as walkController reads them so the two never disagree */
 export const axes = (keys: ReadonlySet<string>, frozen: boolean) => ({

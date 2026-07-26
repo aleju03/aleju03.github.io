@@ -12,7 +12,7 @@ import { clamp, clearAt, SURFACE_FEEL } from './chassis'
 import { buildCar } from './car'
 import { buildBoat } from './boat'
 import { buildHeli } from './heli'
-import type { DriveEnv, DriveStep, Vehicle, VehicleId } from './types'
+import type { DriveEnv, DriveStep, NetPose, Vehicle, VehicleId } from './types'
 
 /*
   The fleet: three machines, where they live, and everything that has to
@@ -70,14 +70,33 @@ import type { DriveEnv, DriveStep, Vehicle, VehicleId } from './types'
     machinery: one voice at a time (you can only be in one), one particle pool
     for all of them.
 
+  - **who is in what.** Each machine seats two, and either chair can hold the
+    local player or somebody else's avatar. Only the driver's chair carries
+    the controls; the passenger gets the same lens and none of the input. The
+    seats themselves are arbitrated by the server (`net/protocol.ts`), because
+    two people reaching for the same door is the one question two browsers
+    cannot settle between themselves — but *everything* below is written so
+    that with no server at all it degrades to exactly the old single-player
+    behaviour, which is also what happens when `VITE_CHAT_URL` is unset.
+
+  A machine being driven from another browser is the one case where this
+  module does not run physics. It cannot: the local integrator and the
+  arriving transform would write the same six numbers every frame and the
+  visible result is a car that shivers. So a net-driven entry is placed by
+  `Vehicle.netStep` instead, which animates the cosmetics off the motion the
+  interpolation implies. The handoff back, when the far side gets out, needs
+  nothing at all: `netStep` leaves the machine's own state consistent, so
+  local physics picks it up mid-roll and it coasts to a stop.
+
   A note on world state, because this codebase is otherwise strict about not
-  having any: the fleet is **session state**, not world state. The world is a
-  pure function of coordinates and stays that way — nothing here is written
-  into it, nothing here is streamed, and a reload puts all three machines back
-  where they started. That is a deliberate choice rather than an omission: the
-  save-file story in the README is "store the diffs, not the world", and three
-  vehicle transforms are exactly the kind of diff it means. When persistence
-  arrives, this is the module that serialises.
+  having any: the fleet is **session state**, not world state, and that is
+  still true with the server in the picture. The planet remains a pure
+  function of coordinates; what the server holds is three transforms and six
+  seats, which is the "store the diffs, not the world" save file the README
+  describes, kept in memory for the length of a session rather than on disk.
+  Nothing here is streamed and nothing is written into the world. With no
+  server, or before anybody has driven anything, every client's own spawn
+  puts all three machines on the same probed home spots and they agree.
 */
 
 /** where each machine starts life. See the module header on the provenance
@@ -129,10 +148,15 @@ export interface FleetTickOpts {
 }
 
 export interface FleetStep {
-  /** the machine being driven, if any */
+  /** the machine whose controls the local player is holding, if any */
   driving: Vehicle | null
-  /** a parked machine in reach of a walker, for the interact prompt */
+  /** the machine the local player is *in*, driving or not */
+  riding: Vehicle | null
+  /** a machine in reach of a walker, for the interact prompt. A machine with
+      a driver in it still offers one — the other chair is the offer */
   prompt: Vehicle | null
+  /** which chair the prompt would put them in */
+  promptSeat: number
   /** something moved enough to be worth re-baking a shadow map over */
   moved: boolean
   /** the HUD's numbers, valid only while driving */
@@ -154,10 +178,28 @@ export interface ExitPlace {
   pitch: number
 }
 
+/** what the local player is doing with a machine, and what everyone else is
+    doing with the rest of the fleet. The scene owns the socket and hands this
+    down every frame; the registry never talks to the network itself */
+export interface FleetNetState {
+  /** per wire-order vehicle: who has the wheel, from this client's point of
+      view. `null` for "nobody, or me" — both mean local physics runs it */
+  driven: Array<NetPose | null>
+  /** per wire-order vehicle, per chair: taken by somebody who is not us. What
+      the interact prompt reads, so a full car offers nothing and a car with a
+      driver in it offers the other door */
+  taken: Array<[boolean, boolean]>
+}
+
 export interface VehicleFleet {
   root: THREE.Group
   readonly all: Vehicle[]
+  /** the machine whose controls we hold */
   readonly driving: Vehicle | null
+  /** the machine we are sitting in, either chair */
+  readonly riding: Vehicle | null
+  /** 0 driver, 1 passenger; meaningless unless `riding` */
+  readonly seat: number
   readonly cockpit: boolean
   /** flip the drive camera between chase and cockpit */
   toggleView: () => void
@@ -166,10 +208,23 @@ export interface VehicleFleet {
   turn: (dx: number, dy: number, sign: 1 | -1, sens: number) => void
   /** the machine a walker at `p` could get into, or null */
   nearest: (p: THREE.Vector3) => Vehicle | null
-  /** climb in. `yaw`/`pitch` are the walker's, so the camera can blend */
-  enter: (v: Vehicle, cam: THREE.PerspectiveCamera, yaw: number, pitch: number) => void
-  /** climb out; null means "not from here" (a helicopter in the air) */
+  /** climb in. `yaw`/`pitch` are the walker's, so the camera can blend;
+      `seat` is 0 for the controls and 1 for the other chair */
+  enter: (
+    v: Vehicle,
+    cam: THREE.PerspectiveCamera,
+    yaw: number,
+    pitch: number,
+    seat?: number,
+  ) => void
+  /** slide across without getting out: the passenger of a machine whose
+      driver just left takes the wheel where they sit */
+  takeSeat: (seat: number) => void
+  /** climb out; null means "not from here" (a helicopter in the air). A
+      passenger may always get out — they are not the one flying it */
   leave: (env: FleetEnvQueries) => ExitPlace | null
+  /** who is driving what, from the network. Call before `tick` */
+  setNet: (state: FleetNetState | null) => void
   /** one frame. Call it whether or not anyone is driving */
   tick: (o: FleetTickOpts) => FleetStep
   /** put every machine on its home spot and settle it. Call once the world
@@ -179,6 +234,16 @@ export interface VehicleFleet {
   /** bring a machine to the player. Returns false when there is nowhere for
       it to go — a boat with no water within reach, mostly */
   recall: (id: VehicleId, p: THREE.Vector3, env: FleetEnvQueries) => boolean
+  /** put a machine where the server says it was left. Only ever called on
+      joining: from then on a driven machine arrives frame by frame and a
+      parked one is nobody's business but this client's */
+  placeFromNet: (
+    id: VehicleId,
+    x: number,
+    z: number,
+    yaw: number,
+    env: FleetEnvQueries,
+  ) => void
   /** distance and compass bearing from a point, for the pause menu list */
   where: (id: VehicleId, p: THREE.Vector3) => { dist: number; bearing: string }
   /** the day cycle: headlamps, nav lights, reflections */
@@ -203,6 +268,12 @@ interface Entry {
   step: DriveStep | null
   /** its own dust clock, so emitters run at a rate rather than per frame */
   emit: number
+  /** somebody else's pose for this machine this frame, or null for "mine or
+      nobody's". Written by setNet, read by tick, never kept */
+  net: NetPose | null
+  /** its engine is audible: either we are in it, or it is being driven past
+      us. Held so start/stop happen on edges rather than every frame */
+  voiced: boolean
 }
 
 interface BuildOpts {
@@ -261,7 +332,10 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     const hull = makeHull(v.hull, PAD)
     box.hull = hull
     obstacles.push(box)
-    const e: Entry = { v, box, hull, step: null, emit: 0 }
+    const e: Entry = {
+      v, box, hull, step: null, emit: 0,
+      net: null, voiced: false,
+    }
     entries.push(e)
     byId.set(v.id, e)
   }
@@ -270,13 +344,21 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
   // a wheel that renders at the origin for the rest of the session
   markDynamic(root)
 
+  /** the machine we are sitting in, and which chair. `active` being set does
+      not imply we are driving it — `seat` says that */
   let active: Entry | null = null
+  let seat = 0
   let mountT = 0
   const fromPos = new THREE.Vector3()
   const fromQuat = new THREE.Quaternion()
   const toPos = new THREE.Vector3()
   const toQuat = new THREE.Quaternion()
   let hornHeld = false
+
+  /** the last thing the network said about the fleet, or null when there is
+      no server in the picture at all — which is the single-player case and
+      the one every default here falls back to */
+  let netState: FleetNetState | null = null
 
   const env: DriveEnv = {
     dt: SUBSTEP,
@@ -304,6 +386,28 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     fitHull(e.hull, e.box, p.x, p.y, p.z, e.v.yaw, DROP)
   }
 
+  /*
+    One frame of a machine somebody else is driving.
+
+    The physics is not merely skipped, it must not run: `Vehicle.netStep` is
+    the whole tick, and it is handed the *frame's* dt rather than a substep,
+    because there is nothing here to integrate stiffly — the springs already
+    ran on the driver's machine and their product arrived on the wire.
+
+    The box comes back afterwards like a parked machine's, and for a better
+    reason: a car being driven past you is exactly the thing you should not be
+    able to walk through.
+  */
+  const netStep = (e: Entry, dt: number, p: NetPose, q: FleetEnvQueries) => {
+    e.box.makeEmpty()
+    fillEnv(q)
+    env.dt = dt
+    const last = e.v.netStep(env, p)
+    e.step = last
+    if (e !== active) fitBox(e)
+    return last
+  }
+
   const step = (e: Entry, driven: boolean, dt: number, q: FleetEnvQueries) => {
     // its own box must not exist while it is asking the world what is under
     // it — see the header. Emptied, every test in collision.ts fails closed
@@ -326,8 +430,12 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       windscreen from a camera that is supposed to be eleven units behind.
       The symptom is a third-person view with no vehicle in it, which reads as
       the model having failed to load rather than as a collision bug.
+
+      The test is "are we inside it", not "are we driving it": a passenger in
+      a parked machine is just as inside it, and their boom is crushed by the
+      same box for the same reason.
     */
-    if (!driven) fitBox(e)
+    if (e !== active) fitBox(e)
     return last
   }
 
@@ -419,10 +527,17 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
 
   /* -------------------------------------------------------------- mount -- */
 
-  const enter = (v: Vehicle, camera: THREE.PerspectiveCamera, yaw: number, pitch: number) => {
+  const enter = (
+    v: Vehicle,
+    camera: THREE.PerspectiveCamera,
+    yaw: number,
+    pitch: number,
+    which = 0,
+  ) => {
     const e = byId.get(v.id)
     if (!e || active) return
     active = e
+    seat = which
     mountT = MOUNT_S
     fromPos.copy(camera.position)
     fromQuat.copy(camera.quaternion)
@@ -431,17 +546,33 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     // a cut. The pitch is the walker's too, damped — nobody gets into a car
     // still staring at their own feet
     cam.reset(v, yaw)
+    cam.seat = which
     cam.turn(0, (pitch * 0.5) / 0.0019, 1, 1)
-    v.mount()
+    // only the driver starts the engine. A passenger boarding a cold machine
+    // gets a cold machine, and boarding a running one changes nothing about
+    // it — which is what makes the rotor keep turning while people swap seats
+    if (which === 0) v.mount()
     vehicleDoor(true)
-    voices[v.id].start()
+  }
+
+  /** slide across inside the machine. The camera keeps its boom and its
+      free-look — this is a change of chair, not a boarding — and the engine
+      starts or stops as the controls change hands */
+  const takeSeat = (which: number) => {
+    if (!active || seat === which) return
+    seat = which
+    cam.seat = which
+    if (which === 0) active.v.mount()
+    else active.v.dismount()
   }
 
   const leave = (q: FleetEnvQueries): ExitPlace | null => {
     if (!active) return null
     const e = active
     const s = e.step
-    // you may not step out of something that is flying
+    // you may not step out of something that is flying — unless you are not
+    // the one flying it, in which case it is the pilot's problem and stepping
+    // out is still a bad idea, so it is refused for both chairs
     if (e.v.id === 'heli' && s && (!s.grounded || s.altitude > 1.2)) return null
     fillEnv(q)
     env.dt = SUBSTEP
@@ -449,10 +580,11 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     e.box.makeEmpty()
     const feetY = e.v.exitSpot(out, env)
     fitBox(e)
-    e.v.dismount()
+    // a passenger getting out must not stop the engine under the driver
+    if (seat === 0) e.v.dismount()
     vehicleDoor(false)
-    voices[e.v.id].stop()
     active = null
+    seat = 0
     mountT = 0
     return { x: out.x, z: out.z, feetY, yaw: cam.yaw, pitch: cam.pitch }
   }
@@ -460,15 +592,47 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
   /* --------------------------------------------------------------- tick -- */
 
   const result: FleetStep = {
-    driving: null, prompt: null, moved: false,
+    driving: null, riding: null, prompt: null, promptSeat: 0, moved: false,
     speed: 0, load: 0, altitude: 0, gear: 0, rpm: 0, boarding: false,
+  }
+
+  /** the machine's position in the listener's own frame, for `voice.place` */
+  const earTo = new THREE.Vector3()
+  const camAxis = new THREE.Vector3()
+
+  /** start, stop and place an engine. `inside` means the listener is sitting
+      in it, which is the mix every one of these voices was tuned at */
+  const voiceFor = (e: Entry, s: DriveStep, inside: boolean, cam3: THREE.Camera) => {
+    const voice = voices[e.v.id]
+    if (!e.voiced) {
+      e.voiced = true
+      voice.start()
+    }
+    if (inside) voice.place(0, 0, 0)
+    else {
+      earTo.copy(e.v.root.position).sub(cam3.position)
+      const m = cam3.matrixWorld.elements
+      const right = earTo.dot(camAxis.set(m[0], m[1], m[2]))
+      const up = earTo.dot(camAxis.set(m[4], m[5], m[6]))
+      const back = earTo.dot(camAxis.set(m[8], m[9], m[10]))
+      voice.place(right, up, back)
+    }
+    voice.set(s.rpm, s.load, Math.abs(s.speed) / 40, s.slip)
+  }
+
+  const hush = (e: Entry) => {
+    if (!e.voiced) return
+    e.voiced = false
+    voices[e.v.id].stop()
   }
 
   const tick = (o: FleetTickOpts): FleetStep => {
     const dt = Math.min(0.05, o.dt)
     root.visible = o.outdoors
     result.driving = null
+    result.riding = null
     result.prompt = null
+    result.promptSeat = 0
     result.moved = false
     result.speed = 0
     result.load = 0
@@ -480,24 +644,51 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     if (!o.outdoors) {
       // level 0: the machines are still there, they are just not anywhere the
       // player can reach. Freeze them rather than paying for them
+      for (const e of entries) hush(e)
       effects.update(dt)
       return result
     }
 
+    // only the driver's keys reach a machine. A passenger holding W is a
+    // passenger holding W
     env.keys = o.keys
     env.frozen = o.frozen
 
     for (const e of entries) {
-      const driven = e === active
-      if (!driven) {
+      const inside = e === active
+      const driven = inside && seat === 0
+      const p = e.net
+      // The range cull is about not paying to settle a parked machine nobody
+      // is near. It must not apply to one somebody is *driving*: netStep is
+      // a transform copy and a few cosmetics, it costs nothing, and skipping
+      // it strands the machine at the range boundary on everyone else's
+      // screen — a boat driven out along the coast simply stopping dead at
+      // 300 units while its driver sails on.
+      if (!inside && !p) {
         const d = e.v.root.position.distanceToSquared(o.playerPos)
         if (d > SIM_RANGE * SIM_RANGE) {
           // out of range: keep the box honest and stop paying for the rest
           fitBox(e)
+          hush(e)
           continue
         }
       }
-      const s = step(e, driven, dt, o.env)
+      let s: DriveStep | null
+      if (p) {
+        s = netStep(e, dt, p, o.env)
+      } else {
+        // The far side getting out needs no ceremony, and deliberately gets
+        // none. `netStep` left the machine's own state consistent — position,
+        // attitude, and the velocity the interpolation implied — so local
+        // physics simply picks it up from there. A re-settle (`placeAt`) was
+        // tried and is worse on both counts: it zeroes the velocity, so a
+        // machine abandoned mid-drive stops dead in the air instead of
+        // rolling to a halt, and on the helicopter it stops the rotor between
+        // two frames rather than letting it wind down over its eight seconds.
+        // The springs are the only thing genuinely out of date, and they
+        // converge on their own inside a fifth of a second.
+        s = step(e, driven, dt, o.env)
+      }
       if (!s) continue
       if (driven) {
         result.moved = result.moved || s.moved
@@ -510,8 +701,20 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
           if (s.surface === 'water') vehicleSplash(clamp(s.impact / 16, 0, 1))
           else vehicleImpact(clamp(s.impact / 22, 0, 1))
         }
-        voices[e.v.id].set(s.rpm, s.load, Math.abs(s.speed) / 40, s.slip)
+      } else if (inside) {
+        // riding along: the HUD is the driver's, but the machine's own
+        // numbers still belong on it and the moving caster is still moving
+        result.moved = result.moved || s.moved
+        result.speed = s.speed
+        result.load = s.load
+        result.altitude = s.altitude
+        result.gear = s.gear
+        result.rpm = s.rpm
       }
+      // an engine is running if somebody is at its controls — us, or a driver
+      // on the wire. A parked machine is silent whoever is sitting in it
+      if (driven || p) voiceFor(e, s, inside, o.camera)
+      else hush(e)
       emitFor(e, dt, o.env)
     }
     effects.update(dt)
@@ -519,8 +722,11 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     if (active) {
       const v = active.v
       const s = active.step
-      result.driving = v
-      // the horn: x is free while driving (there is no ragdoll at the wheel)
+      result.riding = v
+      if (seat === 0) result.driving = v
+      // the horn: x is free while driving (there is no ragdoll at the wheel).
+      // The passenger gets it too — it is the one control in the cabin that
+      // was never the driver's alone
       const hornNow = !o.frozen && o.keys.has('KeyX')
       if (hornNow && !hornHeld && v.id !== 'heli') vehicleHorn()
       hornHeld = hornNow
@@ -542,8 +748,20 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     }
 
     hornHeld = false
-    result.prompt = nearest(o.playerPos)
+    const at = nearest(o.playerPos)
+    result.prompt = at
+    result.promptSeat = at ? freeSeat(byId.get(at.id)!) : 0
     return result
+  }
+
+  /** which chair this machine would put a walker in, or -1 if it is full.
+      The wheel first: a machine with nobody in it is one you drive */
+  const freeSeat = (e: Entry) => {
+    const t = netState?.taken[entries.indexOf(e)]
+    if (!t) return 0
+    if (!t[0]) return 0
+    if (!t[1]) return 1
+    return -1
   }
 
   /*
@@ -562,6 +780,8 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     let bestD = Infinity
     for (const e of entries) {
       if (e === active) continue
+      // a machine with both chairs full is scenery, however close you stand
+      if (freeSeat(e) < 0) continue
       const q = e.v.root.position
       const d = Math.hypot(q.x - p.x, q.z - p.z)
       if (d < e.v.reach && d < bestD) {
@@ -593,7 +813,9 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
 
   const recall = (id: VehicleId, p: THREE.Vector3, q: FleetEnvQueries) => {
     const e = byId.get(id)
-    if (!e || e === active) return false
+    // ...and you may not summon a machine out from under the person driving
+    // it. It is theirs until they park it
+    if (!e || e === active || e.net) return false
     fillEnv(q)
     env.dt = SUBSTEP
     e.box.makeEmpty()
@@ -628,6 +850,22 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     return false
   }
 
+  const placeFromNet = (
+    id: VehicleId,
+    x: number,
+    z: number,
+    yaw: number,
+    q: FleetEnvQueries,
+  ) => {
+    const e = byId.get(id)
+    if (!e || e === active) return
+    fillEnv(q)
+    env.dt = SUBSTEP
+    e.box.makeEmpty()
+    e.v.placeAt(x, z, yaw, env)
+    fitBox(e)
+  }
+
   const where = (id: VehicleId, p: THREE.Vector3) => {
     const e = byId.get(id)
     if (!e) return { dist: 0, bearing: 'N' }
@@ -643,11 +881,16 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
 
   const sleep = () => {
     if (active) {
-      active.v.dismount()
-      voices[active.v.id].stop()
+      if (seat === 0) active.v.dismount()
       active = null
+      seat = 0
+    }
+    for (const e of entries) {
+      e.voiced = false
+      e.net = null
     }
     for (const k of Object.keys(voices) as VehicleId[]) voices[k].stop()
+    netState = null
     effects.clear()
     mountT = 0
   }
@@ -658,7 +901,13 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       return entries.map((e) => e.v)
     },
     get driving() {
+      return active && seat === 0 ? active.v : null
+    },
+    get riding() {
       return active ? active.v : null
+    },
+    get seat() {
+      return seat
     },
     get cockpit() {
       return cam.cockpit
@@ -669,10 +918,18 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     turn: (dx, dy, sign, sens) => cam.turn(dx, dy, sign, sens),
     nearest,
     enter,
+    takeSeat,
     leave,
+    setNet: (state) => {
+      netState = state
+      for (let i = 0; i < entries.length; i++) {
+        entries[i].net = state?.driven[i] ?? null
+      }
+    },
     tick,
     spawnAll,
     recall,
+    placeFromNet,
     where,
     setDay: (day, night, fog, sunEl) => {
       mats.setDay(day, night, fog, sunEl)

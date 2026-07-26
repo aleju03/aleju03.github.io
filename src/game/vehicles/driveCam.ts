@@ -66,6 +66,9 @@ export interface DriveCam {
   turn: (dx: number, dy: number, sign: 1 | -1, sens: number) => void
   /** chase or cockpit; the pause menu and v both write it */
   cockpit: boolean
+  /** which chair the lens belongs to. Only the cockpit view can tell — the
+      boom hangs off the machine, and a machine has one outside */
+  seat: number
   /** the heading the walker should adopt when they get out: where the player
       was actually looking, not where the machine was pointing */
   readonly yaw: number
@@ -87,6 +90,7 @@ export interface DriveCam {
 
 export function createDriveCam(): DriveCam {
   let cockpit = false
+  let seat = 0
   /** the boom's own heading, chasing the vehicle's */
   let boomYaw = 0
   let boomPitch = 0.16
@@ -142,6 +146,12 @@ export function createDriveCam(): DriveCam {
     },
     set cockpit(v: boolean) {
       cockpit = v
+    },
+    get seat() {
+      return seat
+    },
+    set seat(v: number) {
+      seat = v
     },
     turn: (dx, dy, sign, sens) => {
       const k = 0.0019 * sens
@@ -229,7 +239,7 @@ export function createDriveCam(): DriveCam {
       v.root.updateMatrixWorld()
 
       if (cockpit) {
-        anchor.copy(view.eye).applyMatrix4(v.root.matrixWorld)
+        anchor.copy(seat === 0 ? view.eye : view.eye2).applyMatrix4(v.root.matrixWorld)
         cam.position.copy(anchor)
         // the head rides the machine's own attitude, then looks where the
         // player looks. Reading the vehicle's quaternion rather than its yaw

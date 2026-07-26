@@ -51,6 +51,21 @@ export interface WorldNet {
   setLevel: (level: string) => void
   chat: (text: string) => void
   signal: (to: PlayerId, data: VoiceSignal) => void
+  /** ask for a chair. The answer arrives as a world-seats naming us, or a
+      world-seat-denied; nobody sits down on the strength of the request */
+  seat: (v: number, seat: number) => void
+  /** give up whichever chair we hold */
+  unseat: () => void
+  /** where the machine we are driving is; throttled like `move` */
+  vehicle: (
+    v: number,
+    x: number,
+    y: number,
+    z: number,
+    yaw: number,
+    pitch: number,
+    roll: number,
+  ) => void
   close: () => void
 }
 
@@ -95,6 +110,14 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   let spitch = NaN
   let sgait = NaN
   let sflags = -1
+  // and the same for the machine under us. A separate clock on purpose: the
+  // drive frame reports both, and one shared throttle would drop every other
+  // vehicle packet in favour of a pose that has not changed
+  let lastVehicle = 0
+  let vx = NaN
+  let vy = NaN
+  let vz = NaN
+  let vyaw = NaN
 
   const setStatus = (next: WorldStatus) => {
     if (status === next) return
@@ -148,8 +171,11 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
         joined = true
         // a reconnect re-enters the world by itself; the player never sees it
         raw({ type: 'world-join', level })
-        // force the next move() through, whatever the idle suppressor thinks
+        // force the next move() and vehicle() through, whatever the idle
+        // suppressors think: the server we are talking to may be a different
+        // process than the one that heard the last one
         sflags = -1
+        vx = NaN
         return
       }
       if (data.type === 'world-welcome') {
@@ -216,6 +242,36 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
       sgait = gait
       sflags = flags
       raw({ type: 'world-move', x, y, z, yaw, pitch, gait, f: flags })
+    },
+
+    vehicle(v, x, y, z, yaw, pitch, roll) {
+      if (!joined) return
+      const now = performance.now()
+      if (now - lastVehicle < SEND_MS) return
+      // A parked machine with the engine running still has to say so — a late
+      // arrival learns where it is from the welcome, but a machine that came
+      // to rest between two of their snapshots would otherwise hold the last
+      // *moving* pose on everyone else's screen
+      const still =
+        Math.abs(x - vx) < MOVE_EPS &&
+        Math.abs(y - vy) < MOVE_EPS &&
+        Math.abs(z - vz) < MOVE_EPS &&
+        Math.abs(yaw - vyaw) < TURN_EPS
+      if (still && now - lastVehicle < IDLE_MS) return
+      lastVehicle = now
+      vx = x
+      vy = y
+      vz = z
+      vyaw = yaw
+      raw({ type: 'world-vehicle', v, x, y, z, yaw, pitch, roll })
+    },
+
+    seat(v, which) {
+      inWorld({ type: 'world-seat', v, seat: which })
+    },
+
+    unseat() {
+      inWorld({ type: 'world-unseat' })
     },
 
     setLevel(next) {

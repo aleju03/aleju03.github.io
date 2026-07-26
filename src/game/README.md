@@ -59,6 +59,8 @@ net/                 the shared walk — see "Multiplayer" below
                      implements by hand. Pose bits, snapshot tuples
   remotePlayers.ts   createRemoteWorld() — the roster, the snapshot buffer,
                      and the interpolation that plays it back a beat late
+  remoteVehicles.ts  createRemoteFleet() — the same, for the three machines,
+                     plus the seat table that says who is in which chair
   avatars.ts         createRemoteAvatars() — one buildPlayerBody() per
                      player, plus the name plate, speaker badge and chat
                      bubble that ride over each head
@@ -73,7 +75,8 @@ props/
 
 Three machines, one per medium, because the world has a sea on it and high
 ranges beyond the one over town, and walking reaches neither in any
-reasonable time.
+reasonable time. Each seats two — the walk is shared, and a one-seat machine
+is a machine that splits a group up at the kerb.
 
 ```
 vehicles/
@@ -111,10 +114,28 @@ vehicles/
 
 - **The fleet is session state, not world state.** Everything in `world/` is a
   pure function of coordinates; these three transforms are the first mutable
-  thing in the runtime. Nothing is written into the world, nothing streams, and
-  a reload puts all three back where they started. When persistence arrives,
-  `registry.ts` is what serialises — which is exactly the "store the diffs, not
-  the world" story in the debts below.
+  thing in the runtime. Nothing is written into the world and nothing streams.
+  With a server in the picture they are also the only world state it holds —
+  three transforms and six seats, in memory, for the length of a session — so
+  a machine is where the last person to drive it left it, and a reload finds it
+  there rather than back home. That is the "store the diffs, not the world"
+  story from the debts below, half-built: `registry.ts` is still what would
+  serialise it to disk.
+- **Two chairs per machine, and only one of them steers.** The seat table is
+  the server's (`world-seat`/`world-seats`), because two people reaching for
+  the same door is the one question two clients cannot settle between
+  themselves; everything else about a vehicle stays client-side. A claim is a
+  round trip and the player does not sit down until it comes back — sitting
+  down optimistically means two people both get in and one is ejected a moment
+  later, which is worse than the 50 ms.
+- **A machine somebody else is driving must not be integrated locally.** The
+  local physics and the arriving transform write the same six numbers every
+  frame, and what you see is a car that shivers. `Vehicle.netStep` is the
+  whole tick for those: it copies the transform in and solves the cosmetics
+  *backwards* off the motion the interpolation implies — wheel spin from the
+  forward speed, steering from the yaw rate through the bicycle model, brake
+  lamps from deceleration. The handover back needs nothing: local physics
+  picks the machine up mid-roll and it coasts to a stop.
 - **Home spots were probed, not chosen.** The car is at the kerb outside the
   house (the street's asphalt runs z −14.4..−8.0), the helicopter one block
   north on the largest clear disc in the neighbourhood (11.3 units — which is
@@ -354,8 +375,8 @@ anything reaching for `import.meta.env`, a DOM WebSocket or `getUserMedia`
 stays on the React side, and only plain data crosses back.
 
 Nothing about the planet is ever sent. Every field out here is a pure function
-of (x, z), so both ends can recompute the world and the only thing that cannot
-be recomputed is where the other people are.
+of (x, z), so both ends can recompute the world and the only things that cannot
+be recomputed are where the other people are — and where they left the car.
 
 - **Playback runs in the past.** Snapshots arrive ~15 times a second and frames
   are drawn four times faster, so `remotePlayers.ts` renders two server ticks
@@ -378,6 +399,18 @@ be recomputed is where the other people are.
 - **The speaker badge reads the network's `speaking` bit, not the audio.** So
   someone shouting from across the valley, too far away for proximity voice to
   carry, still visibly has something to say.
+- **A passenger is a reparenting, not a pose.** Anyone sitting in a machine has
+  their body hung off that machine's own seat node and left there; their pose
+  stream is ignored for placement entirely. Placing a seated body at the
+  coordinates their client sends — the vehicle's, on a different clock, through
+  a different buffer — slides them around inside their own car by a few
+  centimetres whenever the two playbacks disagree. Welded to the seat they get
+  every attitude the machine has for free, which is the same deal the local
+  player's rig already had.
+- **Only the driver's transform travels, and only from the driver.** The server
+  drops a `world-vehicle` from anyone not holding seat 0 of that machine. It is
+  the one rule it enforces about vehicles, and it is enough: the wire cannot
+  carry two opinions about where a car is.
 - **Spawns are one authored point, so arrivals are scattered.** The server
   hands each socket the lowest free slot; `spawn.ts` turns it into a
   golden-angle offset and tests it against the level's own collision, walking

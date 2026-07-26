@@ -13,9 +13,18 @@ import {
   type Ring,
   type Station,
 } from './parts'
-import { axes, clamp, clearAt, damp, groundUnder, sweepBody } from './chassis'
+import {
+  axes,
+  clamp,
+  clearAt,
+  damp,
+  groundUnder,
+  netMotion,
+  sweepBody,
+  type NetMotion,
+} from './chassis'
 import type { VehicleMaterials } from './materials'
-import type { DriveEnv, DriveStep, Vehicle } from './types'
+import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 import type { HullStation, Solid } from '../physics/collision'
 
 /*
@@ -949,6 +958,12 @@ export function buildBoat(opts: BoatOpts): Vehicle {
   driverSeat.name = 'driverSeat'
   driverSeat.position.set(0, 1.18, 1.62)
   root.add(driverSeat)
+  // a leaning post is two-up. 0.95 to starboard keeps a seated body's
+  // shoulders inside a 2.3 half-beam with the gunwale still outboard of them
+  const passengerSeat = new THREE.Group()
+  passengerSeat.name = 'passengerSeat'
+  passengerSeat.position.set(0.95, 1.18, 1.62)
+  root.add(passengerSeat)
   markDynamic(root)
 
   /* ------------------------------------------------------------------ state */
@@ -1321,6 +1336,64 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     return step
   }
 
+  /* ------------------------------------------------------------ net drive -- */
+
+  /*
+    Somebody else's boat. As with the car, nothing integrates: the transform
+    lands, `writeTransform` puts the hull where it says (and re-fits the
+    solid, which is the one thing a walker on a jetty will notice), and the
+    two moving parts left are solved off the implied motion — the outboard
+    swings toward the turn the hull is actually making, and the propeller
+    spins at the note the wake is being thrown at.
+  */
+  const netM: NetMotion = { f: 0, planar: 0, yawRate: 0 }
+  let netYaw = 0
+
+  const netStep = (env: DriveEnv, p: NetPose) => {
+    const dt = env.dt
+    if (p.snapped) netYaw = p.yaw
+    netMotion(p, netYaw, dt, netM)
+    netYaw = p.yaw
+
+    pos.set(p.x, p.y, p.z)
+    yaw = p.yaw
+    pitch = p.pitch
+    roll = p.roll
+    vel.set(p.vx, p.vy, p.vz)
+    yawRate = netM.yawRate
+    writeTransform()
+
+    // a hull turns because the leg is over; from out here the only evidence
+    // is the turn itself, so read it back. Making way astern, the leg points
+    // the other way for the same swing
+    const want =
+      Math.abs(netM.f) > 1
+        ? clamp((netM.yawRate * 5) / netM.f, -1, 1)
+        : 0
+    steer = p.snapped ? want : damp(steer, want, 6, dt)
+
+    const planar = netM.planar
+    step.speed = netM.f
+    step.planar = planar
+    step.load = clamp(planar / TOP, 0, 1)
+    step.rpm = clamp(0.1 + 0.75 * (planar / TOP), 0, 1)
+    step.gear = 0
+    step.grounded = true
+    step.vy = p.vy
+    step.altitude = 0
+    step.slip = 0
+    step.braking = 0
+    step.surface = 'water'
+    step.impact = 0
+    step.moved = planar > 0.02 || Math.abs(netM.yawRate) > 0.002
+
+    outboard.rotation.y = steer * MAX_RUD
+    helmSpin.rotation.z = -steer * 2.6
+    propAngle = (propAngle + step.rpm * 30 * dt) % TAU
+    prop.rotation.z = propAngle
+    return step
+  }
+
   /* ------------------------------------------------------------- the rest -- */
 
   const placeAt = (x: number, z: number, heading: number, env: DriveEnv) => {
@@ -1390,6 +1463,7 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     verb: 'board',
     root,
     driverSeat,
+    passengerSeat,
     view: {
       back: 13,
       up: 4.2,
@@ -1397,11 +1471,18 @@ export function buildBoat(opts: BoatOpts): Vehicle {
       fov: 64,
       anchor: new THREE.Vector3(0, 1.2, 0.6),
       eye: new THREE.Vector3(0, 2.35, 1.3),
+      eye2: new THREE.Vector3(0.95, 2.35, 1.3),
     },
     size: { halfX: 2.3, halfZ: 6.5, height: 2.6 },
     hull: HULL,
     get yaw() {
       return yaw
+    },
+    get pitch() {
+      return pitch
+    },
+    get roll() {
+      return roll
     },
     solid,
     reach: 5,
@@ -1410,6 +1491,7 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     dismount: () => {},
     exitSpot,
     update,
+    netStep,
     setDay,
     dispose,
   }

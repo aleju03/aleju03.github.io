@@ -24,9 +24,11 @@ import {
   damp,
   groundNormal,
   groundUnder,
+  netMotion,
   sweepBody,
+  type NetMotion,
 } from './chassis'
-import type { DriveEnv, DriveStep, Vehicle } from './types'
+import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 import type { VehicleMaterials } from './materials'
 
 /*
@@ -1702,6 +1704,12 @@ export function buildCar(opts: CarOpts): Vehicle {
   driverSeat.name = 'driverSeat'
   driverSeat.position.set(DX, 0.88, 0.62)
   body.add(driverSeat)
+  // the other side of the same bench: this is left-hand drive, so the mirror
+  // of the driver's centreline is the passenger's
+  const passengerSeat = new THREE.Group()
+  passengerSeat.name = 'passengerSeat'
+  passengerSeat.position.set(-DX, 0.88, 0.62)
+  body.add(passengerSeat)
   root.add(body)
 
   const mounts: THREE.Object3D[] = []
@@ -2227,6 +2235,97 @@ export function buildCar(opts: CarOpts): Vehicle {
     syncLamps()
   }
 
+  /* ------------------------------------------------------------ net drive -- */
+
+  /*
+    Somebody else's car, on our screen.
+
+    Nothing here integrates. The six numbers are copied in and every moving
+    part is then solved *backwards* from them: the wheels roll at the speed the
+    interpolation implies, the front pair point where a car turning that hard
+    at that speed would have to be pointed, and the brake lamps come on when
+    the speed is falling. Deriving the steering from the yaw rate rather than
+    putting it on the wire is the same trade the velocity is: two more floats
+    fifteen times a second to tell us something the transform already knows.
+
+    The suspension is the one thing that is *not* solved. Its lengths are left
+    where the parked settle put them, because pitch and roll arrive on the
+    wire already — the springs are how a local car earns its attitude, and a
+    remote one is simply handed it.
+  */
+  const netM: NetMotion = { f: 0, planar: 0, yawRate: 0 }
+  let netYaw = 0
+  let netSpeed = 0
+
+  const netStep = (env: DriveEnv, p: NetPose) => {
+    const dt = env.dt
+    if (p.snapped) netYaw = p.yaw
+    netMotion(p, netYaw, dt, netM)
+    netYaw = p.yaw
+
+    pos.set(p.x, p.y, p.z)
+    yaw = p.yaw
+    pitch = p.pitch
+    roll = p.roll
+    vel.set(p.vx, 0, p.vz)
+    vy = p.vy
+    yawRate = netM.yawRate
+
+    // the bicycle model, run in reverse: a car of this wheelbase turning at
+    // this rate, at this speed, has its front wheels at this angle. Below a
+    // walking pace the relationship inverts into nonsense (a stationary car
+    // can yaw at any rate for zero steering), so it fades out down there
+    const useable = Math.abs(netM.f) > 1.2
+    const want = useable
+      ? clamp(Math.atan((netM.yawRate * WHEELBASE) / netM.f), -0.6, 0.6)
+      : 0
+    steer = p.snapped ? want : damp(steer, want, 9, dt)
+
+    for (let i = 0; i < 4; i++) {
+      const lx = CORNER[i][0]
+      const lz = CORNER[i][1]
+      mounts[i].position.set(lx, HARD_Y + lx * roll - lz * pitch - clamp(len[i], 0.02, LEN_MAX), lz)
+      if (i < 2) mounts[i].rotation.y = steer
+    }
+    spinAngle -= (netM.f * dt) / WHEEL_R
+    if (spinAngle < -TAU || spinAngle > TAU) spinAngle %= TAU
+    for (const sp of spins) sp.rotation.x = spinAngle
+    steerWheel.rotation.z = steer * STEER_RATIO
+
+    root.position.copy(pos)
+    root.rotation.y = yaw
+    body.rotation.set(pitch, 0, roll)
+
+    // slowing down hard is the only brake signal there is from out here, and
+    // it is the right one: what a watcher reads off the tail lamps is the car
+    // shedding speed, not the pedal being pressed
+    const decel = p.snapped || dt <= 0 ? 0 : (netSpeed - Math.abs(netM.f)) / dt
+    netSpeed = Math.abs(netM.f)
+    brakeK = damp(brakeK, clamp(decel / 12, 0, 1), 14, dt)
+    revShown = damp(revShown, 0.13 + 0.87 * clamp(Math.abs(netM.f) / TOP_SPEED, 0, 1), 14, dt)
+    slipK = damp(slipK, 0, 8, dt)
+
+    const surface = env.surfaceAt(pos.x, pos.z)
+    out.speed = netM.f
+    out.planar = netM.planar
+    out.load = clamp(netM.planar / TOP_SPEED, 0, 1)
+    out.rpm = clamp(revShown, 0, 1)
+    out.gear = netM.f < -0.5 ? -1 : 1
+    // a remote car is on the ground unless it is visibly off it: the dust
+    // needs an answer and there is no suspension here to ask
+    out.altitude = Math.max(0, pos.y - supportAt(pos.x, pos.z, pos.y + HARD_Y + 1, env))
+    out.grounded = out.altitude < 0.6
+    out.vy = p.vy
+    out.slip = slipK
+    out.braking = brakeK
+    out.surface = surface
+    out.impact = 0
+    out.moved = netM.planar > 0.02 || Math.abs(netM.yawRate) > 0.01
+    syncLamps()
+    refreshSolid()
+    return out
+  }
+
   /* ---------------------------------------------------------- the contract -- */
 
   const vehicle: Vehicle = {
@@ -2235,6 +2334,7 @@ export function buildCar(opts: CarOpts): Vehicle {
     verb: 'drive',
     root,
     driverSeat,
+    passengerSeat,
     view: {
       back: 11.5,
       up: 3.6,
@@ -2242,11 +2342,18 @@ export function buildCar(opts: CarOpts): Vehicle {
       fov: 62,
       anchor: new THREE.Vector3(0, 1.7, 0.2),
       eye: new THREE.Vector3(-0.78, 2.05, 0.35),
+      eye2: new THREE.Vector3(0.78, 2.05, 0.35),
     },
     size: SIZE,
     hull: HULL,
     get yaw() {
       return yaw
+    },
+    get pitch() {
+      return pitch
+    },
+    get roll() {
+      return roll
     },
     solid,
     reach: 4.2,
@@ -2318,6 +2425,8 @@ export function buildCar(opts: CarOpts): Vehicle {
       if (!driven) refreshSolid()
       return out
     },
+
+    netStep,
 
     setDay: (day) => {
       dayK = day

@@ -92,17 +92,25 @@ Arcade messages, same socket after `hello`:
 - `{type:'duel-dig', cell}` on your turn → `duel-dug {cell, by, mine, count, lives, turn, deadline}` to both; a 20s turn timeout digs a random tile for the staller. Numbers count both players' mines (duplicates included); any mine costs the digger a life, their own included
 - `duel-over {winner, reason, lives, mines}` reveals both minefields; `{type:'duel-rematch'}` from both seats restarts, `{type:'duel-leave'}` forfeits
 
-Open-world presence, same socket after `hello`. Unlike the duel this owns no
-rules: the world is a pure function of coordinates on every client, so the only
-thing that has to travel is who is where. Positions are client-authoritative,
-for the same reason the score caps are loose. `src/game/net/protocol.ts` is the
-typed specification this section implements — the socket has no version
-negotiation, so the two ship together.
+Open-world presence, same socket after `hello`. Unlike the duel this owns almost
+no rules: the world is a pure function of coordinates on every client, so the
+only thing that has to travel is who is where. Positions are
+client-authoritative, for the same reason the score caps are loose.
+`src/game/net/protocol.ts` is the typed specification this section implements —
+the socket has no version negotiation, so the two ship together.
 
-- `{type:'world-join', level}` → `{type:'world-welcome', you, tick, players:[{id,name,admin,registered}]}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`
+The *almost* is the fleet. Three machines with two chairs each are the one piece
+of world state this process holds, because "who has the wheel" is the one
+question two clients cannot answer between themselves. Even there the server
+simulates nothing: it hands out chairs and relays the transform of whoever is
+sitting in the driving one.
+
+- `{type:'world-join', level}` → `{type:'world-welcome', you, tick, players:[{id,name,admin,registered}], vehicles?, seats?}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`. The two optional fields catch a late arrival up on the fleet, and are absent while it is untouched — until somebody moves a machine, every client's own spawn agrees about where all three are
 - `{type:'world-move', x, y, z, yaw, pitch, gait, f}` — the hot path, ~15/s per client, dropped rather than punished above the rate cap. `y` is the soles, not the eye; `f` is a pose bitfield (grounded/run/crouch/swim/**speaking**/down) mirrored by `POSE` in protocol.ts
-- `{type:'world-tick', t, players:[[id,x,y,z,yaw,pitch,gait,f], ...]}` — broadcast every `WORLD_TICK_MS` while anything has changed, **grouped by level**, so a visitor in the backrooms never receives the overworld's crowd. Tuples rather than objects because a full lobby would otherwise spend more bytes on repeated key names than on positions. The list includes the recipient; clients filter themselves out. A player missing from it is not gone, they are somewhere else
-- `{type:'world-level', level}` — stepping through a level seam, which is what moves you between snapshot groups
+- `{type:'world-tick', t, players:[[id,x,y,z,yaw,pitch,gait,f], ...], vehicles?:[[v,x,y,z,yaw,pitch,roll], ...]}` — broadcast every `WORLD_TICK_MS` while anything has changed, **grouped by level**, so a visitor in the backrooms never receives the overworld's crowd. Tuples rather than objects because a full lobby would otherwise spend more bytes on repeated key names than on positions. The list includes the recipient; clients filter themselves out. A player missing from it is not gone, they are somewhere else. The vehicle rows are *not* grouped by level — three rows are cheaper than working out which level a parked car counts as being in, and a client applies only the ones somebody else is driving
+- `{type:'world-level', level}` — stepping through a level seam, which is what moves you between snapshot groups. It also gives up your seat: the fleet lives in one level
+- `{type:'world-seat', v, seat}` → `{type:'world-seats', seats:[[v,driver,passenger], ...]}` to everyone, or `{type:'world-seat-denied', v, seat}` to the loser of the race. `seat` 0 is the wheel, 1 the other chair, and `0` in the table means empty (ids start at 1). Taking a chair gives up the last one, which is also how you slide across into the driving seat. `{type:'world-unseat'}` gets out. Chairs are freed on a level change, on leaving the world and on a dropped socket — the machine stays where it was abandoned, only the seat is released
+- `{type:'world-vehicle', v, x, y, z, yaw, pitch, roll}` — the driver's transform, same rate and same rate limiter as `world-move`. **Accepted only from the socket holding seat 0 of that machine**, which is the entirety of the server's opinion about vehicle physics. Everyone else's client plays it back two ticks late and interpolates, exactly like a walking body
 - `{type:'world-chat', text}` → `{type:'world-chat', id, name, admin, registered, text, at}` to everyone in the world. Not stored: this is shouting across a field, not a room with history
 - `{type:'world-signal', to, data}` → `{type:'world-signal', from, data}` — the WebRTC offer/answer/ICE relay for proximity voice, forwarded verbatim between two peers in the same level. **No audio ever passes through this process**; peers talk browser to browser and the server only introduces them. A signal aimed at someone who just left or stepped through a seam is dropped in silence, because that race is one the caller already recovers from
 - `world-exit {id}` on departure; a socket closing leaves the world as well as its chat room and any duel

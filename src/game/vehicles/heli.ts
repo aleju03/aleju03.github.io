@@ -5,9 +5,10 @@ import {
 } from './parts'
 import type { VehicleMaterials } from './materials'
 import {
-  axes, clamp, clearAt, damp, groundNormal, groundUnder, sweepBody,
+  axes, clamp, clearAt, damp, groundNormal, groundUnder, netMotion, sweepBody,
+  type NetMotion,
 } from './chassis'
-import type { DriveEnv, DriveStep, Vehicle } from './types'
+import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 
 /*
   The helicopter: a two-seat piston machine, and the reason the far side of
@@ -1094,6 +1095,14 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   driverSeat.name = 'driverSeat'
   driverSeat.position.set(-0.8, 1.38, 0.06)
   root.add(driverSeat)
+  // the right-hand seat. This was always a two-seat piston machine — the
+  // rotor was sized for one (see registry.ts on the clear disc at home) —
+  // so the copilot's chair is the mirror of the pilot's and nothing else
+  // about the cabin has to change to hold somebody
+  const passengerSeat = new THREE.Group()
+  passengerSeat.name = 'passengerSeat'
+  passengerSeat.position.set(0.8, 1.38, 0.06)
+  root.add(passengerSeat)
   const pos = root.position
 
   let yaw = 0
@@ -1345,6 +1354,65 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
     return step
   }
 
+  /* ------------------------------------------------------------ net drive -- */
+
+  /*
+    Somebody else flying. The rotor is the whole of this machine's presence —
+    a helicopter crossing the sky with a still disc is a prop, not an aircraft
+    — so `spin` keeps ramping on exactly the clock the local one uses, which
+    also means the blade slap in sfx.ts is riding the same number for a remote
+    machine as for the one you are sitting in.
+
+    `running` is deliberately left alone. It belongs to mount/dismount, so
+    when the far-side pilot gets out and the registry stops calling this, the
+    ordinary parked update finds a stopped engine and winds the disc down over
+    its eight seconds instead of stopping it dead.
+  */
+  const netM: NetMotion = { f: 0, planar: 0, yawRate: 0 }
+  let netYaw = 0
+
+  const netStep = (env: DriveEnv, p: NetPose): DriveStep => {
+    const dt = env.dt
+    clock += dt
+    if (p.snapped) netYaw = p.yaw
+    netMotion(p, netYaw, dt, netM)
+    netYaw = p.yaw
+
+    pos.set(p.x, p.y, p.z)
+    yaw = p.yaw
+    pitch = p.pitch
+    roll = p.roll
+    vel.set(p.vx, p.vy, p.vz)
+
+    spin = Math.min(1, spin + dt * SPIN_UP)
+    rotorAngle = (rotorAngle + OMEGA * spin * dt) % TAU
+    tailAngle = (tailAngle + OMEGA * TAIL_RATIO * spin * dt) % TAU
+    writeTransform()
+    fitSolid()
+
+    const beat = Math.max(0, Math.sin(clock * BEACON_W))
+    const flash = beat * beat * beat * beat * beat * beat
+    model.beaconMat.emissiveIntensity =
+      0.08 + night * 0.18 + flash * (1.5 + day * 1.4 + night * 2.2) * (0.25 + 0.75 * spin)
+
+    const rest = restUnder(env)
+    landed = pos.y - rest < 0.35
+    step.speed = netM.f
+    step.planar = netM.planar
+    step.load = clamp(netM.planar / TOP_SPEED, 0, 1)
+    step.rpm = spin
+    step.gear = 0
+    step.grounded = landed
+    step.vy = p.vy
+    step.altitude = Math.max(0, pos.y - rest)
+    step.slip = 0
+    step.braking = 0
+    step.surface = env.surfaceAt(pos.x, pos.z)
+    step.impact = 0
+    step.moved = netM.planar > 0.02 || Math.abs(p.vy) > 0.02
+    return step
+  }
+
   const placeAt = (x: number, z: number, hdg: number, env: DriveEnv) => {
     pos.set(x, env.groundAt(x, z), z)
     yaw = hdg
@@ -1389,6 +1457,7 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
     verb: 'fly',
     root,
     driverSeat,
+    passengerSeat,
     view: {
       back: 15,
       up: 5.5,
@@ -1396,11 +1465,18 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
       fov: 60,
       anchor: new THREE.Vector3(0, 2.6, 1.0),
       eye: new THREE.Vector3(-0.8, 2.55, -0.7),
+      eye2: new THREE.Vector3(0.8, 2.55, -0.7),
     },
     size: SIZE,
     hull: HULL,
     get yaw() {
       return yaw
+    },
+    get pitch() {
+      return pitch
+    },
+    get roll() {
+      return roll
     },
     solid,
     reach: 5,
@@ -1413,6 +1489,7 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
     },
     exitSpot,
     update,
+    netStep,
     // the landing light is the fleet's business (setLamps); the nav lights,
     // the panel and the beacon are ours, because they are on whenever the sun
     // is not. The beacon keeps a daylight floor: a real anti-collision strobe

@@ -23,11 +23,18 @@ import { createCollisionDebug } from '../../game/physics/collisionDebug'
 import { createDisposer } from '../../game/core/disposer'
 import { footstep, landThump } from '../../game/core/sfx'
 import { buildFleet, type FleetEnvQueries } from '../../game/vehicles/registry'
-import type { VehicleId } from '../../game/vehicles/types'
+import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { setGfxTier } from '../../game/world/quality'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
 import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
-import { packPose, WORLD_MAX_TEXT_LEN } from '../../game/net/protocol'
+import {
+  packPose,
+  SEAT_DRIVER,
+  SEAT_PASSENGER,
+  WIRE_VEHICLES,
+  WORLD_MAX_TEXT_LEN,
+} from '../../game/net/protocol'
+import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, worldConfigured, type WorldStatus } from './worldNet'
 import { createProximityVoice, type VoiceMode } from './proximityVoice'
@@ -237,7 +244,15 @@ export default function CrtScene({
   // readout. All of it is HUD state, mirrored out of the sim on change only —
   // the numbers would otherwise re-render this component sixty times a second
   const [vehiclePrompt, setVehiclePrompt] = useState<{ label: string; verb: string } | null>(null)
-  const [driving, setDriving] = useState<{ id: VehicleId; label: string; cockpit: boolean } | null>(
+  const [driving, setDriving] = useState<{
+    id: VehicleId
+    label: string
+    cockpit: boolean
+    /** 0 at the controls, 1 along for the ride */
+    seat: number
+    /** what to call the person in that chair: driver/passenger, pilot/copilot */
+    crew: string
+  } | null>(
     null,
   )
   const [gauge, setGauge] = useState({ speed: 0, load: 0, altitude: 0, gear: 0 })
@@ -881,6 +896,59 @@ export default function CrtScene({
           fleetEnv.collision = level.collision
           return fleetEnv
         }
+        /*
+          The fleet's half of the network, once a frame.
+
+          Two directions, and they are not symmetric. Outbound is one machine:
+          the one whose wheel we are holding, reported at the socket's own
+          throttle. Inbound is the other two-and-a-bit: every machine somebody
+          else is driving, handed to the registry as a pose it must place
+          rather than integrate.
+
+          The seat table is folded in here too, as the `taken` flags the
+          interact prompt reads — which is what makes a car with a driver in it
+          offer its passenger door and a full one offer nothing at all.
+        */
+        const netDriven: Array<NetPose | null> = WIRE_VEHICLES.map(() => null)
+        const netTaken: Array<[boolean, boolean]> = WIRE_VEHICLES.map(() => [false, false])
+        const fleetNetState = { driven: netDriven, taken: netTaken }
+
+        const syncFleetNet = (now: number) => {
+          if (!net) {
+            fleet.setNet(null)
+            return
+          }
+          fleetNet.sample(now)
+          const me = remote.you
+          for (let i = 0; i < WIRE_VEHICLES.length; i++) {
+            const v = fleetNet.vehicles[i]
+            netDriven[i] = v.netDriven ? v : null
+            netTaken[i] = [
+              v.driver !== 0 && v.driver !== me,
+              v.passenger !== 0 && v.passenger !== me,
+            ]
+          }
+          fleet.setNet(fleetNetState)
+        }
+
+        /** the machines, put where the server last saw them. Only on joining */
+        const placeFleetFromNet = () => {
+          if (!fleetPlaced) return // spawnAll has not run yet; it calls back
+          const q = aimFleetEnv(levels.current)
+          for (const v of fleetNet.vehicles) {
+            if (v.known) fleet.placeFromNet(v.id, v.x, v.z, v.yaw, q)
+          }
+        }
+
+        /** the seat node a remote player is sitting in, for their avatar */
+        const seatFor = (id: number) => {
+          const at = fleetNet.seatOf(id)
+          if (!at) return null
+          const v = fleet.all.find((m) => m.id === at.vehicle)
+          if (!v) return null
+          return at.seat === SEAT_DRIVER ? v.driverSeat : v.passengerSeat
+        }
+
         let vHeld = false
         let xHeld = false
         let dbgHeld = false
@@ -905,7 +973,7 @@ export default function CrtScene({
         // prompt bookkeeping mirrored into React state only on change
         let nearNow = false
         let doorVerbNow: 'open' | 'close' | null = null
-        let vehicleNow: { id: VehicleId; label: string; verb: string } | null = null
+        let vehicleNow: { id: VehicleId; label: string; verb: string; seat: number } | null = null
         let pausedNow = false
         const gazeVec = new THREE.Vector3()
         const toScreen = new THREE.Vector3()
@@ -933,12 +1001,50 @@ export default function CrtScene({
           way the network, the level reset and the stand-down all read a
           position that is true, and a level cut cannot strand a walker under
           the sea while the car drives on.
+
+          And with other people about, a third: the chair has to be *granted*.
+          Pressing E sends a claim and nothing else happens until the server's
+          seat table comes back with our name in it — one round trip, against a
+          mount blend that lasts more than half a second, so it is not
+          something you can feel. Sitting down optimistically and standing back
+          up on a denial would be: two people reaching for the same door would
+          both get in, and one of them would be ejected a moment later. Offline
+          (no VITE_CHAT_URL, or a dropped socket) there is nobody to ask, so
+          the claim resolves immediately and this is the old single-player
+          path exactly.
         */
-        const enterVehicle = (id: VehicleId) => {
-          if (fleet.driving || levels.frozen || rig.down) return
+        /** a claim we have sent and not yet had answered */
+        let seatWanted: { id: VehicleId; seat: number } | null = null
+
+        const enterVehicle = (id: VehicleId, seat = SEAT_DRIVER) => {
+          if (fleet.riding || levels.frozen || rig.down) return
           const v = fleet.all.find((x) => x.id === id)
           if (!v) return
-          fleet.enter(v, camera, walk.yaw, walk.pitch)
+          if (net) {
+            // ask, and wait. `grantSeat` finishes the job when the table lands
+            seatWanted = { id, seat }
+            net.seat(WIRE_VEHICLES.indexOf(id), seat)
+            return
+          }
+          boardVehicle(id, seat)
+        }
+
+        /** actually get in. Either the server said so, or there is no server */
+        const boardVehicle = (id: VehicleId, seat: number) => {
+          if (fleet.riding || levels.frozen || rig.down) return
+          const v = fleet.all.find((x) => x.id === id)
+          if (!v) return
+          // the grant is a round trip late, and a player can walk out of reach
+          // inside one. Being teleported into a car you have turned your back
+          // on is worse than not getting in, so give the chair straight back
+          if (
+            Math.hypot(v.root.position.x - camera.position.x, v.root.position.z - camera.position.z) >
+            v.reach + 3
+          ) {
+            net?.unseat()
+            return
+          }
+          fleet.enter(v, camera, walk.yaw, walk.pitch, seat)
           walk.resetMotion()
           rig.reset()
           rig.sit()
@@ -946,18 +1052,24 @@ export default function CrtScene({
           // This is the same articulated avatar used on foot, not a vehicle's
           // approximation of it. The seat owns position and vehicle attitude;
           // the rig owns the one shared seated pose.
-          v.driverSeat.add(body)
+          seatNode(v, seat).add(body)
           body.position.set(0, 0, 0)
           body.rotation.set(0, Math.PI, 0)
           body.visible = true
           vehicleNow = null
           setVehiclePrompt(null)
-          setDriving({ id, label: v.label, cockpit: fleet.cockpit })
-          track('vehicle_entered', { kind: id })
+          setDriving({
+            id,
+            label: v.label,
+            cockpit: fleet.cockpit,
+            seat,
+            crew: crewLabel(id, seat),
+          })
+          track('vehicle_entered', { kind: id, seat })
         }
 
         const leaveVehicle = () => {
-          const v = fleet.driving
+          const v = fleet.riding
           if (!v) return
           const spot = fleet.leave(aimFleetEnv(levels.current))
           if (!spot) {
@@ -982,7 +1094,83 @@ export default function CrtScene({
           if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
           if (camera.position.z < 7) key.shadow.needsUpdate = true
           house.flagShadows(camera.position)
+          seatWanted = null
+          net?.unseat()
           setDriving(null)
+        }
+
+        /** the node a given chair hangs off */
+        const seatNode = (v: Vehicle, seat: number) =>
+          seat === SEAT_DRIVER ? v.driverSeat : v.passengerSeat
+
+        /** what the HUD calls the person in this chair. A helicopter has a
+            pilot and a copilot; a boat and a car do not */
+        const crewLabel = (id: VehicleId, seat: number) => {
+          if (seat === SEAT_DRIVER) return id === 'heli' ? 'pilot' : 'driver'
+          return id === 'heli' ? 'copilot' : 'passenger'
+        }
+
+        /*
+          The seat table landed. Four things can have happened, and all four
+          have to be handled from this one message, because it is the only
+          statement of fact there is:
+
+          - the chair we asked for is ours: get in
+          - we hold a chair we did not ask for and are not in: this is a
+            reconnect (a fresh id, an old body) — get in, it is genuinely ours
+          - we are in a chair the table does not give us: the server disagrees
+            with our own client, so get out. It wins
+          - the driver of the machine we are *riding* left: slide across
+        */
+        const applySeats = () => {
+          const held = fleetNet.mine
+          const riding = fleet.riding
+          if (held && !riding) {
+            const wanted = seatWanted
+            seatWanted = null
+            boardVehicle(held.vehicle, held.seat)
+            // boarding can still refuse — a level cut started, the body is a
+            // heap on the floor, they walked off during the round trip. Hand
+            // the chair straight back rather than holding one we are not in
+            if (!fleet.riding) {
+              net?.unseat()
+              return
+            }
+            // and if we were asking for the wheel but were handed the other
+            // chair, say so rather than letting the HUD imply we are driving
+            if (wanted && wanted.seat !== held.seat) setNotice('someone else is driving')
+            return
+          }
+          if (!held && riding) {
+            // ejected: the socket dropped and came back, or the server never
+            // agreed in the first place
+            leaveVehicle()
+            return
+          }
+          if (held && riding) {
+            if (held.vehicle !== riding.id) {
+              leaveVehicle()
+              return
+            }
+            if (held.seat !== fleet.seat) {
+              fleet.takeSeat(held.seat)
+              seatNode(riding, held.seat).add(body)
+              body.position.set(0, 0, 0)
+              body.rotation.set(0, Math.PI, 0)
+              setDriving((d) =>
+                d
+                  ? { ...d, seat: held.seat, crew: crewLabel(riding.id, held.seat), cockpit: fleet.cockpit }
+                  : d,
+              )
+            }
+            // the driver got out and left us sitting in a machine nobody is
+            // driving. Take the wheel rather than making the passenger climb
+            // out and back in through the other door
+            const state = fleetNet.vehicles[held.index]
+            if (held.seat === SEAT_PASSENGER && state.driver === 0) {
+              net?.seat(held.index, SEAT_DRIVER)
+            }
+          }
         }
 
         // --- the shared walk --------------------------------------------------
@@ -996,6 +1184,10 @@ export default function CrtScene({
         // with no browser under them; the socket and the WebRTC mesh are out
         // here because they are neither.
         const remote = createRemoteWorld()
+        // ...and the same for the machines. Kept beside the people rather than
+        // inside the fleet because it is network state, and the fleet is a
+        // renderer-side subsystem that must keep working with no socket at all
+        const fleetNet = createRemoteFleet()
         const avatars = createRemoteAvatars(EYE, 34)
         scene.add(avatars.root)
         let net: ReturnType<typeof createWorldNet> | null = null
@@ -1017,6 +1209,9 @@ export default function CrtScene({
           // the level system is built below this, so it starts out empty
           collision: makeCollisionSet({ minX: 0, maxX: 0, minZ: 0, maxZ: 0 }),
           eyePos: camera.position,
+          // anyone sitting in a machine is drawn in it, not at the
+          // coordinates their own client is sending
+          seatOf: seatFor,
         }
 
         const pushChat = (line: Omit<ChatLine, 'key'>) =>
@@ -1049,6 +1244,24 @@ export default function CrtScene({
               switch (msg.type) {
                 case 'world-welcome':
                   remote.welcome(msg.you, msg.tick, msg.players)
+                  fleetNet.setSelf(msg.you)
+                  fleetNet.setTick(msg.tick)
+                  // where the machines actually are. Placed, not interpolated
+                  // — there is no history to interpolate from, and the car may
+                  // be two kilometres from where our own spawn put it
+                  if (msg.vehicles) {
+                    fleetNet.place(msg.vehicles)
+                    placeFleetFromNet()
+                  }
+                  if (msg.seats) fleetNet.seats(msg.seats)
+                  // a reconnect arrives with a fresh id and an old body: if we
+                  // are still sitting in something, ask for the chair back
+                  if (fleet.riding) {
+                    const idx = WIRE_VEHICLES.indexOf(fleet.riding.id)
+                    if (idx >= 0) net?.seat(idx, fleet.seat)
+                  } else {
+                    applySeats()
+                  }
                   spawnSlot = msg.slot ?? 0
                   // the welcome usually lands mid stand-up, in which case the
                   // glide's own handoff does this; if it arrives late we step
@@ -1076,6 +1289,18 @@ export default function CrtScene({
                 }
                 case 'world-tick':
                   remote.tick(msg.players, performance.now())
+                  if (msg.vehicles) fleetNet.tick(msg.vehicles, performance.now())
+                  break
+                case 'world-seats':
+                  fleetNet.seats(msg.seats)
+                  applySeats()
+                  break
+                case 'world-seat-denied':
+                  // somebody was a round trip quicker to the door
+                  if (seatWanted) {
+                    seatWanted = null
+                    setNotice('that seat is taken')
+                  }
                   break
                 case 'world-chat':
                   pushChat({
@@ -1111,7 +1336,12 @@ export default function CrtScene({
           sayRef.current = null
           spawnSlot = -1
           scattered = false
+          seatWanted = null
           remote.clear()
+          // and hand the fleet back to local physics: with no socket, every
+          // machine is parked or ours, which is where this all started
+          fleetNet.clear()
+          fleet.setNet(null)
           // one last pass over an empty roster retires every body and its
           // sprites; the avatar system itself outlives a sit-down
           avatars.update(remote, 0, avatarEnv)
@@ -1191,13 +1421,13 @@ export default function CrtScene({
           // walk.turn it would silently spin the suspended walker's heading
           // and stand you down facing somewhere you never looked
           onTurn: (dx, dy, sign) =>
-            fleet.driving
+            fleet.riding
               ? fleet.turn(dx, dy, sign, prefsRef.current.sens)
               : walk.turn(dx, dy, sign, prefsRef.current.sens),
           // E: get out of whatever you are in, else the machine's prompt, else
           // a door's, else climb into whatever is parked in front of you
           onUse: () => {
-            if (fleet.driving) {
+            if (fleet.riding) {
               leaveVehicle()
               return true
             }
@@ -1210,7 +1440,7 @@ export default function CrtScene({
               return true
             }
             if (vehicleNow) {
-              enterVehicle(vehicleNow.id)
+              enterVehicle(vehicleNow.id, vehicleNow.seat)
               return true
             }
             return false
@@ -1240,6 +1470,11 @@ export default function CrtScene({
           onCutStart: () => {
             walk.haltPlanar()
             backrooms.noclipSound()
+            // the noclip cut is the one way out of a machine that does not go
+            // through leaveVehicle: the fleet lives in the overworld, and the
+            // server frees the chair on the level change anyway
+            seatWanted = null
+            net?.unseat()
           },
           onSwapped: (level, spawn) => {
             walk.resetMotion()
@@ -1419,8 +1654,9 @@ export default function CrtScene({
         const gaugeNow = { speed: -1, load: 0, altitude: -1, gear: -1 }
 
         const driveTick = (now: number, dt: number) => {
-          const v = fleet.driving
+          const v = fleet.riding
           if (!v) return
+          const driver = fleet.seat === SEAT_DRIVER
           const level = levels.current
           // the cut state machine still has to run — but no seam may fire at
           // the wheel, so it is never handed a live flag
@@ -1437,6 +1673,7 @@ export default function CrtScene({
           const feet = v.root.position.y
           walk.teleport(v.root.position.x, v.root.position.z, feet)
           walk.yaw = v.yaw
+          syncFleetNet(now)
           const fs = fleet.tick({
             dt,
             keys: input.keys,
@@ -1487,6 +1724,20 @@ export default function CrtScene({
                 down: false,
               }),
             )
+            // ...and the machine, but only if we are the one steering it. A
+            // passenger reporting the vehicle's transform would be a second
+            // opinion the server is right to ignore, and sending it anyway is
+            // a packet a second per passenger for nothing
+            if (driver) {
+              const idx = WIRE_VEHICLES.indexOf(v.id)
+              if (idx >= 0) {
+                net.vehicle(
+                  idx,
+                  v.root.position.x, v.root.position.y, v.root.position.z,
+                  v.yaw, v.pitch, v.roll,
+                )
+              }
+            }
             remote.sample(now, dt)
             avatarEnv.collision = level.collision
             avatarEnv.ceilingY = level.ceilingY
@@ -1543,10 +1794,11 @@ export default function CrtScene({
             the shadow flags and the network. It returns early rather than
             threading a `driving` flag through two hundred lines of walk code.
           */
-          if (fleet.driving) {
+          if (fleet.riding) {
             driveTick(now, dt)
             return
           }
+          syncFleetNet(now)
           // the boom hands the camera back to the head before anything reads
           // or integrates it; it takes it again just before render below
           chase.restore(camera)
@@ -1760,9 +2012,24 @@ export default function CrtScene({
           // door both win, because both are things you are standing right at
           const atVehicle =
             isNear || verb || rig.down || levels.frozen ? null : fs.prompt
-          if ((atVehicle ? atVehicle.id : null) !== (vehicleNow && vehicleNow.id)) {
+          // "drive" when the wheel is free, "ride" when it is not: the prompt
+          // is the only warning that somebody else is already in there
+          const atVerb = atVehicle
+            ? fs.promptSeat === SEAT_DRIVER
+              ? atVehicle.verb
+              : 'ride in'
+            : null
+          if (
+            (atVehicle ? atVehicle.id : null) !== (vehicleNow && vehicleNow.id) ||
+            atVerb !== (vehicleNow && vehicleNow.verb)
+          ) {
             vehicleNow = atVehicle
-              ? { id: atVehicle.id, label: atVehicle.label, verb: atVehicle.verb }
+              ? {
+                  id: atVehicle.id,
+                  label: atVehicle.label,
+                  verb: atVerb ?? atVehicle.verb,
+                  seat: fs.promptSeat,
+                }
               : null
             setVehiclePrompt(vehicleNow && { label: vehicleNow.label, verb: vehicleNow.verb })
           }
@@ -1832,6 +2099,10 @@ export default function CrtScene({
           if (!fleetPlaced) {
             fleetPlaced = true
             fleet.spawnAll(aimFleetEnv(levels.current))
+            // the welcome can beat the warm-up: if the server already told us
+            // where the machines are, spawnAll has just put them back on the
+            // home spots and this puts them where they really are
+            placeFleetFromNet()
           }
           // Stand at the actual front door, not at the bedroom spawn's x. The
           // exact live lighting state and caster set at this threshold are the
@@ -2242,8 +2513,12 @@ export default function CrtScene({
             ? 'wasd to move · click to grab the mouse · esc to leave'
             : driving
               ? // the controls change with the medium, so the line does too:
-                // a helicopter has a collective where a car has a handbrake
-                `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
+                // a helicopter has a collective where a car has a handbrake.
+                // A passenger has none of them, and saying so is kinder than
+                // letting them press W and conclude the game is broken
+                driving.seat !== 0
+                ? `along for the ride · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
+                : `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
               : `wasd move · space jump · shift run · ctrl crouch · v camera · x flop${
                   mp.status === 'live' ? ' · t chat · m mic' : ''
                 } · esc pauses`}
@@ -2266,6 +2541,9 @@ export default function CrtScene({
             )}
             {driving.id === 'heli' && <span>{gauge.altitude} up</span>}
             <span className="text-stone-600">{driving.label}</span>
+            {/* which chair, but only when it is not the obvious one: a lone
+                driver does not need telling that they are driving */}
+            {driving.seat !== 0 && <span className="text-stone-500">{driving.crew}</span>}
           </div>
           {/* a bar rather than a rev counter: it reads at a glance and it is
               the same number the engine note is riding */}

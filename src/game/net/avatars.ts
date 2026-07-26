@@ -37,6 +37,18 @@ import type { RemotePlayer, RemoteWorld } from './remotePlayers'
   seconds. The badge reads the network's `speaking` bit rather than the audio,
   so someone shouting from across the valley — too far for proximity voice to
   carry — still visibly has something to say.
+
+  Passengers are the fourth case, and they are a *reparenting*, not a pose.
+
+  A player sitting in a machine is not placed from their own pose stream at
+  all: their group is hung off the vehicle's own seat node and left there. It
+  has to work that way. The alternative is to place a seated body at the
+  coordinates their client is sending — which are the vehicle's, sampled on a
+  different clock, interpolated by a different buffer — and the result is a
+  driver sliding around inside their own car by a few centimetres every time
+  the two playbacks disagree. Hung off the seat, they are welded to the
+  bodywork exactly as the local player's rig is, and every attitude the
+  machine has is theirs for free.
 */
 
 export interface AvatarEnv {
@@ -47,6 +59,10 @@ export interface AvatarEnv {
   collision: CollisionSet
   /** the lens, for distance culling */
   eyePos: THREE.Vector3
+  /** the seat node this player is sitting in, or null for anyone on foot.
+      Supplied by the scene, which is the only side that knows both the seat
+      table and the fleet's scene graph */
+  seatOf?: (id: PlayerId) => THREE.Object3D | null
 }
 
 export interface RemoteAvatars {
@@ -164,6 +180,8 @@ interface Avatar {
   badgeK: number
   wasDown: boolean
   clock: number
+  /** the seat node this body is currently parented to, or null for the world */
+  seat: THREE.Object3D | null
 }
 
 export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
@@ -179,6 +197,9 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     groundY: 0,
     collision: makeCollisionSet({ minX: 0, maxX: 0, minZ: 0, maxZ: 0 }),
   }
+  /** a seated body's group position is local to the machine, so the distance
+      cull has to ask the matrix rather than read the vector */
+  const seatWorld = new THREE.Vector3()
 
   const NAME_Y = eye * 1.14
   const BADGE_Y = eye * 1.34
@@ -212,7 +233,31 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     return {
       rig, group, name, nameTex, badge,
       bubble: null, bubbleTex: null, bubbleUntil: 0,
-      badgeK: 0, wasDown: false, clock: 0,
+      badgeK: 0, wasDown: false, clock: 0, seat: null,
+    }
+  }
+
+  /** move a body between the world and a machine's seat. The rig's own pose
+      is set on the way in (the same fold the local player wears) and cleared
+      on the way out, so a player who gets out of a car does not walk away
+      still sitting down */
+  const reseat = (a: Avatar, seat: THREE.Object3D | null) => {
+    if (a.seat === seat) return
+    a.seat = seat
+    a.group.parent?.remove(a.group)
+    if (seat) {
+      seat.add(a.group)
+      a.group.position.set(0, 0, 0)
+      // the seat faces the machine's forward; the rig is built facing the
+      // other way, exactly as CrtScene turns the local body round
+      a.group.rotation.set(0, Math.PI, 0)
+      a.group.scale.setScalar(1)
+      a.rig.reset()
+      a.rig.sit()
+    } else {
+      root.add(a.group)
+      a.group.rotation.set(0, 0, 0)
+      a.rig.reset()
     }
   }
 
@@ -229,7 +274,8 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     const a = avatars.get(id)
     if (!a) return
     dropBubble(a)
-    root.remove(a.group)
+    // it may be hanging off a vehicle seat rather than off this root
+    a.group.parent?.remove(a.group)
     a.name.material.dispose()
     a.nameTex.dispose()
     a.badge.material.dispose()
@@ -267,6 +313,32 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
           a.rig.face(player.yaw)
         }
         a.clock += dt
+
+        // --- a seat wins over everything below ----------------------------
+        // Sitting in something is the one state that owns placement outright:
+        // no ragdoll (you cannot flop in a car), no walk pose, no ground
+        // solve. The seat node is the body's whole transform.
+        const seat = worldEnv.seatOf?.(id) ?? null
+        if (seat || a.seat) reseat(a, seat)
+        if (seat) {
+          a.group.getWorldPosition(seatWorld)
+          const seatVisible = seatWorld.distanceToSquared(worldEnv.eyePos) < CULL_DIST_SQ
+          a.group.visible = seatVisible
+          if (!seatVisible) continue
+          const to = player.speaking ? 1 : 0
+          a.badgeK += (to - a.badgeK) * (1 - Math.exp(-14 * dt))
+          const lit = a.badgeK > 0.02
+          a.badge.visible = lit
+          if (lit) {
+            a.badge.material.opacity = Math.min(1, a.badgeK * 1.2)
+            const s = BADGE_H * a.badgeK * (1 + Math.sin(a.clock * 7) * 0.07 * a.badgeK)
+            a.badge.scale.set(s, s, 1)
+          }
+          if (a.bubble && now > a.bubbleUntil) dropBubble(a)
+          if (a.bubble) a.bubble.position.y = BUBBLE_Y + BADGE_H * a.badgeK * 0.6
+          a.wasDown = player.down
+          continue
+        }
 
         // --- flops -------------------------------------------------------
         // A ragdoll is cosmetic, so it is simulated locally rather than

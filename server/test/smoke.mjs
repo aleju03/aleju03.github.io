@@ -458,11 +458,64 @@ async function main() {
   w1.send({ type: 'world-chat', text: 'still here' });
   assert.equal((await w2.nextOf('world-chat', 'sender survived a stray signal')).text, 'still here');
 
+  console.log('17. open world: roster, level-scoped snapshots, chat and voice signalling');
+
+  // 17b. The fleet. This is the only world state the process holds and the
+  //      only question it actually arbitrates, so the assertions that matter
+  //      are the refusals: a taken chair is refused, and a transform from
+  //      anyone but the driver is ignored outright.
+  // the table is broadcast whole, to everyone, including the claimant — so
+  // both sockets consume every announcement below
+  w1.send({ type: 'world-seat', v: 0, seat: 0 });
+  const seats1 = await w2.nextOf('world-seats', 'the seat table is broadcast');
+  await w1.nextOf('world-seats', 'the claimant hears it too');
+  assert.deepEqual(seats1.seats[0], [0, welcome1.you, 0], 'w1 has the wheel of the car');
+
+  // the same chair, a round trip later
+  w2.send({ type: 'world-seat', v: 0, seat: 0 });
+  const denied = await w2.nextOf('world-seat-denied', 'a taken chair is refused');
+  assert.equal(denied.v, 0);
+  assert.equal(denied.seat, 0);
+
+  // ...but the other one is free
+  w2.send({ type: 'world-seat', v: 0, seat: 1 });
+  const seats2 = await w1.nextOf('world-seats', 'the passenger seat is granted');
+  await w2.nextOf('world-seats', 'and the passenger hears it too');
+  assert.deepEqual(seats2.seats[0], [0, welcome1.you, welcome2.you], 'two up in the car');
+
+  // only the driver may say where the machine is
+  w2.send({ type: 'world-vehicle', v: 0, x: 999, y: 999, z: 999, yaw: 0, pitch: 0, roll: 0 });
+  w1.send({ type: 'world-vehicle', v: 0, x: 40.005, y: 2, z: -8, yaw: 0.5, pitch: 0.1, roll: -0.2 });
+  let vtick = await w2.nextOf('world-tick', 'a driven machine rides the snapshot');
+  while (!vtick.vehicles) vtick = await w2.nextOf('world-tick', 'waiting for the vehicle row');
+  assert.deepEqual(
+    vtick.vehicles[0],
+    [0, 40.01, 2, -8, 0.5, 0.1, -0.2],
+    'the driver\'s transform is relayed, rounded, and the passenger\'s is not'
+  );
+
+  // one body, one chair: claiming another gives up the last
+  w2.send({ type: 'world-seat', v: 2, seat: 0 });
+  const seats3 = await w1.nextOf('world-seats', 'moving between machines');
+  await w2.nextOf('world-seats', 'the mover hears it too');
+  assert.deepEqual(seats3.seats[0], [0, welcome1.you, 0], 'the car seat was given up');
+  assert.deepEqual(seats3.seats[2], [2, welcome2.you, 0], 'and the helicopter taken');
+
+  // a level seam is getting out
+  w2.send({ type: 'world-level', level: 'backrooms' });
+  const seats4 = await w1.nextOf('world-seats', 'a level change frees the chair');
+  await w2.nextOf('world-seats', 'the leaver hears it too');
+  assert.deepEqual(seats4.seats[2], [2, 0, 0], 'nobody flies into the backrooms');
+  w2.send({ type: 'world-level', level: 'overworld' });
+
   w1.ws.close();
   const exited = await w2.nextOf('world-exit', 'walker departure announced');
   assert.equal(exited.id, welcome1.you);
+  // a dropped driver must not leave the car locked forever
+  const seats5 = await w2.nextOf('world-seats', 'a dropped socket frees its seat');
+  assert.deepEqual(seats5.seats[0], [0, 0, 0], 'the abandoned car is claimable again');
   w2.ws.close();
-  console.log('17. open world: roster, level-scoped snapshots, chat and voice signalling');
+  console.log('17b. open world: seat arbitration, driver-only transforms, seats freed on exit');
 
   // 18. An admin session survives a restart. It used to live only in memory,
   //     so every deploy silently turned a still-logged-in admin into a guest:

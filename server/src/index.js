@@ -128,6 +128,14 @@ const WORLD_MAX_TEXT_LEN = 200;
 const WORLD_MAX_SIGNAL_LEN = 6_000; // one SDP blob; maxPayload is 8 KiB
 const WORLD_LEVEL_RE = /^[a-z0-9-]{1,24}$/;
 const WORLD_COORD_LIMIT = 1e7; // the planet is endless, the wire is not
+// The fleet: three machines, two chairs each, mirrored by WIRE_VEHICLES and
+// SEAT_* in src/game/net/protocol.ts. This process does not know what a
+// helicopter is and does not need to — a vehicle here is an index, a
+// transform and two seat holders.
+const WORLD_FLEET = 3;
+const WORLD_SEATS = 2;
+const WORLD_SEAT_RATE_MAX = 20; // door-handle spam, per window
+const WORLD_SEAT_RATE_WINDOW_MS = 10_000;
 
 const MAX_TEXT_LEN = 600;
 const HISTORY_LIMIT = 60;
@@ -825,6 +833,8 @@ function handleDuelRematch(ws) {
 //      visitor in the backrooms is not paying for the overworld's crowd
 //   3. a signalling relay — WebRTC offer/answer/ICE between two peers, so
 //      proximity voice is browser-to-browser and no audio touches this box
+//   4. the fleet — the one piece of world state that exists, and the one
+//      question clients cannot settle between themselves: who has the wheel
 //
 // Sockets stay in the world independently of chat: `ws.world` is set by
 // world-join and is the whole of a player's server-side state.
@@ -834,8 +844,19 @@ const worldPlayers = new Map(); // id -> ws
 const worldMoveRate = new WeakMap(); // ws -> [timestamps]
 const worldChatRate = new WeakMap();
 const worldSignalRate = new WeakMap();
+const worldSeatRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
+
+// The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
+// `set` says whether anyone has ever moved this machine, and until they have
+// the server has no opinion about where it is — every client's own spawn puts
+// it on the same probed home spot, so silence is the correct answer.
+const worldFleet = Array.from({ length: WORLD_FLEET }, () => ({
+  seats: new Array(WORLD_SEATS).fill(0),
+  set: false,
+  x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+}));
 
 // pose bits, mirrored by src/game/net/protocol.ts's POSE flags
 const W_GROUNDED = 1;
@@ -892,6 +913,107 @@ function worldBroadcast(payload, except = null) {
   }
 }
 
+/* -------------------------------------------------------------- the fleet */
+
+function worldSeatTable() {
+  return worldFleet.map((v, i) => [i, v.seats[0], v.seats[1]]);
+}
+
+/** the machines anyone has actually moved. An untouched fleet sends nothing */
+function worldVehicleRows() {
+  const rows = [];
+  for (let i = 0; i < worldFleet.length; i++) {
+    const v = worldFleet[i];
+    if (!v.set) continue;
+    rows.push([i, r2(v.x), r2(v.y), r2(v.z), r3(v.yaw), r3(v.pitch), r3(v.roll)]);
+  }
+  return rows;
+}
+
+function announceSeats() {
+  worldBroadcast({ type: 'world-seats', seats: worldSeatTable() });
+}
+
+/** take this player out of whatever they were sitting in. Returns whether
+    anything actually changed, so a routine leave does not broadcast a table
+    nobody's name appears in. */
+function clearSeatsOf(id) {
+  let changed = false;
+  for (const v of worldFleet) {
+    for (let s = 0; s < v.seats.length; s++) {
+      if (v.seats[s] === id) {
+        v.seats[s] = 0;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function handleWorldSeat(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (!allowWorld(worldSeatRate, ws, WORLD_SEAT_RATE_MAX, WORLD_SEAT_RATE_WINDOW_MS)) return;
+  if (!Number.isInteger(msg.v) || !Number.isInteger(msg.seat)) {
+    strike(ws);
+    return;
+  }
+  if (msg.v < 0 || msg.v >= WORLD_FLEET || msg.seat < 0 || msg.seat >= WORLD_SEATS) {
+    strike(ws);
+    return;
+  }
+  const v = worldFleet[msg.v];
+  const holder = v.seats[msg.seat];
+  if (holder !== 0 && holder !== w.id) {
+    // somebody beat them to the door by a round trip
+    send(ws, { type: 'world-seat-denied', v: msg.v, seat: msg.seat });
+    return;
+  }
+  // one body, one chair: taking a seat gives up the last one, which is also
+  // how sliding across from the passenger side to the wheel works
+  clearSeatsOf(w.id);
+  v.seats[msg.seat] = w.id;
+  announceSeats();
+}
+
+function handleWorldUnseat(ws) {
+  const w = ws.world;
+  if (!w) return;
+  if (clearSeatsOf(w.id)) announceSeats();
+}
+
+function handleWorldVehicle(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  // shares the move budget: a driver is not also sending walk poses that
+  // matter, and one client should not get two firehoses for changing seat
+  if (!allowWorld(worldMoveRate, ws, WORLD_MOVE_RATE_MAX, WORLD_MOVE_RATE_WINDOW_MS)) return;
+  if (!Number.isInteger(msg.v) || msg.v < 0 || msg.v >= WORLD_FLEET) {
+    strike(ws);
+    return;
+  }
+  const v = worldFleet[msg.v];
+  // the entirety of the server's opinion about physics: you may move the
+  // machine you are holding the wheel of, and no other
+  if (v.seats[0] !== w.id) return;
+  if (!finite(msg.x) || !finite(msg.y) || !finite(msg.z)) {
+    strike(ws);
+    return;
+  }
+  if (!finite(msg.yaw) || !finite(msg.pitch) || !finite(msg.roll)) {
+    strike(ws);
+    return;
+  }
+  v.set = true;
+  v.x = clampCoord(msg.x);
+  v.y = clampCoord(msg.y);
+  v.z = clampCoord(msg.z);
+  v.yaw = msg.yaw;
+  v.pitch = msg.pitch;
+  v.roll = msg.roll;
+  worldDirty = true;
+}
+
 // One snapshot per level, stringified once and pushed to everyone standing in
 // it — including its own subject, so the payload stays identical per level and
 // the client can reconcile against what the server thinks it said.
@@ -906,12 +1028,21 @@ function worldTick() {
     list.push(ws);
   }
   const t = Date.now();
+  // The fleet is not grouped by level. It is three rows, it only exists once
+  // anyone has moved a machine, and a client that is somewhere else simply
+  // ignores it — which is cheaper than the bookkeeping that would work out
+  // which level a parked car counts as being in.
+  const vehicles = worldVehicleRows();
   for (const [, list] of byLevel) {
     const players = list.map((ws) => {
       const p = ws.world;
       return [p.id, r2(p.x), r2(p.y), r2(p.z), r3(p.yaw), r3(p.pitch), r2(p.gait), p.f];
     });
-    const text = JSON.stringify({ type: 'world-tick', t, players });
+    const text = JSON.stringify(
+      vehicles.length > 0
+        ? { type: 'world-tick', t, players, vehicles }
+        : { type: 'world-tick', t, players },
+    );
     for (const ws of list) {
       if (ws.readyState === WebSocket.OPEN) ws.send(text);
     }
@@ -956,6 +1087,7 @@ function handleWorldJoin(ws, msg) {
   while (taken.has(slot)) slot++;
   ws.world = { id, slot, level, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED };
   worldPlayers.set(id, ws);
+  const vehicles = worldVehicleRows();
   send(ws, {
     type: 'world-welcome',
     you: id,
@@ -963,6 +1095,13 @@ function handleWorldJoin(ws, msg) {
     tick: WORLD_TICK_MS,
     ice: iceServers(),
     players: [...worldPlayers.values()].filter((o) => o !== ws).map(worldRosterEntry),
+    // where the machines were left, so an arrival does not spend the first
+    // seconds looking at a car that is really two kilometres up the coast.
+    // The seat table travels on its own condition: somebody can be sitting in
+    // a machine that has never been driven anywhere, and their body still has
+    // to be drawn in it
+    ...(vehicles.length > 0 ? { vehicles } : {}),
+    ...(worldFleet.some((v) => v.seats.some(Boolean)) ? { seats: worldSeatTable() } : {}),
   });
   worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   worldDirty = true;
@@ -974,7 +1113,11 @@ function leaveWorld(ws) {
   if (!w) return;
   ws.world = null;
   worldPlayers.delete(w.id);
+  // a dropped connection must not leave the car locked forever. The machine
+  // stays exactly where it was abandoned; only the chair is freed
+  const freed = clearSeatsOf(w.id);
   worldBroadcast({ type: 'world-exit', id: w.id });
+  if (freed) announceSeats();
   worldDirty = true;
   stopWorldTicker();
 }
@@ -1011,6 +1154,8 @@ function handleWorldLevel(ws, msg) {
     return;
   }
   w.level = msg.level;
+  // the fleet lives in one level; walking a seam out of it is getting out
+  if (clearSeatsOf(w.id)) announceSeats();
   worldDirty = true;
 }
 
@@ -1385,6 +1530,15 @@ function handleMessage(ws, msg) {
       return;
     case 'world-signal':
       handleWorldSignal(ws, msg);
+      return;
+    case 'world-seat':
+      handleWorldSeat(ws, msg);
+      return;
+    case 'world-unseat':
+      handleWorldUnseat(ws);
+      return;
+    case 'world-vehicle':
+      handleWorldVehicle(ws, msg);
       return;
     case 'peeko-monitor':
       handlePeekoMonitor(ws, msg);
