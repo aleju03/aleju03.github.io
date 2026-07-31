@@ -11,6 +11,7 @@ import {
 import type { CSSProperties } from 'react'
 import type { ProjectExtra, ShowcaseProject } from '../data/projects'
 import { lockPageForOverlay } from '../overlay'
+import { cue } from '../audio'
 import { techBrands } from '../data/techBrands'
 import { Lightbox } from './Lightbox'
 
@@ -166,13 +167,18 @@ export function ProjectModal({
   const { gallery, story, learned, extra } = project.details
   const shot = gallery[active]
 
-  // scroll lock + focus hand-off for the dialog's lifetime
+  // scroll lock + focus hand-off for the dialog's lifetime. The two cues ride
+  // the same effect rather than the click handlers, because a dialog can also
+  // be dismissed with Escape, with the backdrop, or by the route changing
+  // under it, and all of those deserve the door closing too
   useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     panelRef.current?.focus({ preventScroll: true })
     const unlock = lockPageForOverlay()
+    cue('open')
     return () => {
       unlock()
+      cue('close')
       previous?.focus({ preventScroll: true })
     }
   }, [])

@@ -102,7 +102,7 @@ export function noise(ctx: OfflineAudioContext, spec: NoiseSpec) {
 }
 
 /** 16-bit PCM WAV: the one container every browser decodes without a codec */
-export function encodeWav(buffer: AudioBuffer): Blob {
+export function encodeWav(buffer: AudioBuffer, scale = 1): Blob {
   const channels = buffer.numberOfChannels
   const frames = buffer.length
   const bytes = 44 + frames * channels * 2
@@ -130,7 +130,7 @@ export function encodeWav(buffer: AudioBuffer): Blob {
   let offset = 44
   for (let i = 0; i < frames; i++) {
     for (let c = 0; c < channels; c++) {
-      const sample = Math.max(-1, Math.min(1, data[c][i]))
+      const sample = Math.max(-1, Math.min(1, data[c][i] * scale))
       view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
       offset += 2
     }
@@ -142,16 +142,29 @@ export function encodeWav(buffer: AudioBuffer): Blob {
  * Renders one cue offline and returns an object URL Howler can load. The
  * rendering happens off the main thread, which is why cues are built lazily on
  * the visitor's first gesture rather than at import time.
+ *
+ * `peak` is the one number that decides whether a cue is heard at all, so it is
+ * measured rather than hoped for: the cue is rendered, its true peak is read
+ * back with peakOf, and the whole thing is scaled to land exactly on the
+ * requested level. That separates the two jobs cleanly. A cue's `build` owns
+ * the BALANCE between its own voices, in whatever gains read nicely; the peak
+ * owns how loud the finished cue is against every other cue. Before this
+ * existed the two were the same set of numbers, every cue was hand-gained to
+ * "quiet", and the bank measured -22 to -31 dBFS at the master bus, which on
+ * laptop speakers under a room is not quiet, it is off.
  */
 export async function renderCue(
   seconds: number,
   build: (ctx: OfflineAudioContext) => void,
-  channels = 1,
+  opts: { channels?: number; peak?: number } = {},
 ): Promise<string> {
+  const channels = opts.channels ?? 1
   const ctx = new OfflineAudioContext(channels, Math.ceil(seconds * SAMPLE_RATE), SAMPLE_RATE)
   build(ctx)
   const buffer = await ctx.startRendering()
-  return URL.createObjectURL(encodeWav(buffer))
+  const measured = peakOf(buffer)
+  const scale = opts.peak && measured > 1e-6 ? opts.peak / measured : 1
+  return URL.createObjectURL(encodeWav(buffer, scale))
 }
 
 /** peak sample across every channel, used by the level check in the tests */

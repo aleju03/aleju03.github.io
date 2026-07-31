@@ -95,7 +95,10 @@ export function SectionHeading({
   const total = Math.max(1, children.length)
 
   return (
-    <div ref={ref} className={className}>
+    // declared, not sniffed: `stations.ts` measures this block so the flight
+    // path knows where a chapter's type ends and can route its lane changes
+    // clear of it. See the "no ink on the type" note in flightPath.ts.
+    <div ref={ref} data-station-head className={className}>
       {(index || eyebrow) && (
         <div className="mb-5 flex items-center gap-4 font-mono text-xs tracking-[0.18em] text-stone-500 uppercase">
           {index && <span className="text-blue-600 dark:text-blue-400">{index}</span>}

@@ -28,9 +28,20 @@ import { useEffect, useRef } from 'react'
 import { motion, useReducedMotion, useScroll, useTransform } from 'motion/react'
 import { ArrowRightIcon } from '@phosphor-icons/react'
 import { SectionHeading } from './SectionHeading'
-import { warpToOs } from '../warp'
+import { prepareWarp, warpToOs } from '../warp'
 import { useI18n } from '../i18n'
 import { cue } from '../audio'
+
+/**
+ * Both ways into the machine announce themselves before they are taken. The
+ * trip's overlay is expensive to PROMOTE, not to draw (see warp.ts's header),
+ * so paying for it on hover or focus is the difference between a clean entry
+ * and a hitch in the first tenth of a second of it.
+ */
+const warpIntent = {
+  onPointerEnter: () => prepareWarp(),
+  onFocus: () => prepareWarp(),
+}
 
 export function Machine() {
   const { t } = useI18n()
@@ -86,6 +97,7 @@ export function Machine() {
             type="button"
             style={{ display: 'none' }}
             onClick={() => warpToOs()}
+            {...warpIntent}
             aria-label={t.machine.bootAria}
             className="mt-6 flex w-full max-w-[620px] cursor-pointer items-center justify-center"
           >
@@ -96,6 +108,7 @@ export function Machine() {
             <button
               type="button"
               onClick={() => warpToOs()}
+              {...warpIntent}
               className="group inline-flex h-12 items-center gap-2 rounded-full bg-blue-600 px-7 text-sm font-medium text-white transition hover:bg-blue-700 active:scale-[0.98] dark:hover:bg-blue-500"
             >
               {t.machine.boot}

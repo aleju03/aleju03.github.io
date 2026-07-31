@@ -30,6 +30,15 @@ export interface Station {
   /** document-space horizontal center, in CSS pixels */
   centerX: number
   width: number
+  /**
+   * Offset from `top` to the top of this section's chapter heading, or the
+   * section's full height where it has none. The flight path is drawn OVER the
+   * page, so it needs to know where the biggest type on the section begins: a
+   * lane change that finishes a few pixels late drags a dashed blue line
+   * across a 6rem display letter, which is the one place on the page where a
+   * graze reads as a mistake rather than as art direction.
+   */
+  headTop: number
 }
 
 export interface StationMap {
@@ -61,12 +70,14 @@ export function measureStations(): StationMap {
     if (!id || !isStationId(id) || found.has(id)) continue
     const r = el.getBoundingClientRect()
     if (r.width === 0 && r.height === 0) continue // display:none, not laid out yet
+    const head = el.querySelector<HTMLElement>('[data-station-head]')
     found.set(id, {
       id,
       top: r.top + scrollY,
       height: r.height,
       centerX: r.left + scrollX + r.width / 2,
       width: r.width,
+      headTop: head ? head.getBoundingClientRect().top - r.top : r.height,
     })
   }
 

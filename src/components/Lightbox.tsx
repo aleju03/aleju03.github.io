@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { motion, useReducedMotion } from 'motion/react'
 import { XIcon } from '@phosphor-icons/react'
 import { lockPageForOverlay } from '../overlay'
+import { cue } from '../audio'
 
 /**
  * Full-screen image viewer for inspecting dense screenshots (e.g. admin dashboards)
@@ -29,8 +30,10 @@ export function Lightbox({
     const previous = document.activeElement as HTMLElement | null
     ref.current?.focus({ preventScroll: true })
     const unlock = lockPageForOverlay()
+    cue('open')
     return () => {
       unlock()
+      cue('close')
       previous?.focus({ preventScroll: true })
     }
   }, [])

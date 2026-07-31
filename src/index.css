@@ -103,6 +103,18 @@ button:not(:disabled),
   cursor: pointer;
 }
 
+/* Cursor.tsx sets this on the root while its ring is standing in for the
+   pointer over a declared target, and clears it the moment the pointer leaves
+   one. Scoped to that state on purpose: hiding the system cursor site-wide is
+   what breaks text selection and anyone's accessibility pointer, and this way
+   a stalled rAF loop can only cost you the pointer while you are parked on a
+   card. `!important` because the rule above and Tailwind's cursor-* utilities
+   are both more specific than a root attribute. */
+html[data-cursor-swap],
+html[data-cursor-swap] * {
+  cursor: none !important;
+}
+
 ::selection {
   background-color: var(--color-blue-600);
   color: var(--color-stone-50);

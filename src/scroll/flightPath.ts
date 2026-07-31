@@ -14,9 +14,11 @@
   Two things shape the routing. That canvas paints ABOVE the page content below
   the hero (it is a z-10 fixed layer declared inside the first section), so the
   path must run in the gutters beside the text column and only cross it in the
-  whitespace between sections, never over a paragraph. And on narrow viewports
-  there are no gutters at all, so the lane collapses to the screen edge and the
-  ink thins out with it.
+  whitespace between sections, never over a paragraph and above all never over
+  a chapter heading, which is why stations measure where their type ends and
+  the lane change is clamped below it. And on narrow viewports there are no
+  gutters at all, so the lane collapses to the screen edge and the ink thins
+  out with it.
 
   Drawing is one InstancedMesh of stadium-shaped dashes generated in curve
   order, which makes the scroll reveal `mesh.count = front * total`, no
@@ -161,9 +163,20 @@ export function createFlightPath(opts: {
         // so the CRT sits a viewport-half into the section's document span
         push(x, station.top + Math.min(station.height * 0.5, view.H * 0.52))
       } else {
-        // run the lane down the section, so crossings land in the gaps between
-        push(x, station.top + station.height * 0.18)
-        push(x, station.top + station.height * 0.82)
+        // Run the lane down the section, so crossings land in the gaps between.
+        //
+        // Where the lane change ENDS is the whole game. The traverse arrives
+        // from the far lane on a long diagonal, so the entry point is the last
+        // moment the ink is anywhere near the text column, and it used to be a
+        // fraction of the section's height: fine for a tall section, wrong for
+        // a short one. 18% of the 709px experience section is 128px, its
+        // chapter heading starts at 133, and the tail of a traverse that has
+        // just crossed the whole page lands across the top of a 6rem letter.
+        // Clamping it above the measured heading puts the entire crossing in
+        // the seam between the sections, where there is nothing to hit.
+        const enter = Math.min(station.height * 0.18, Math.max(24, station.headTop - 45))
+        push(x, station.top + enter)
+        push(x, station.top + Math.max(enter + 40, station.height * 0.82))
       }
     }
     if (control.length < 2) return

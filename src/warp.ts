@@ -1,30 +1,48 @@
 import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT } from './events'
 
 /*
-  The trip between worlds. Clicking the wreck (or letting it swallow the
-  paper plane) doesn't hard-cut into AlejOS: a wormhole opens OUT of the
-  dead glass and eats the page. It's a fullscreen 2D canvas anchored on the
-  wreck's screen, inked in the site's stone palette with the contrail's
-  blue as the accent, and it plays in three acts. First the mouth: a hole
-  pops open to about the size of the glass and holds there while a shock
-  ring bursts off it and outer rings fall back in — unmistakably the PC's
-  doing. Then the tear: a crisp circular front (the theme toggle's wipe,
-  with teeth) accelerates over the still-visible page until it has consumed
-  the whole viewport. Then the ride: the boot event fires under the black
-  and the tunnel keeps streaming past, picking up speed, for as long as the
-  far side needs to raise its first frame — the 3D room builds its whole
-  house under this cover. That middle ride is transform/opacity-only DOM,
-  not the entry canvas: the compositor can keep it moving while room setup
-  blocks the main thread. When the scene announces itself (or immediately
-  after the minimum ride, if it was already up), the exit tears open FROM
-  the machine's spot in the room and slings you out in front of it.
+  The trip between worlds: the page is switched off, and a computer is switched
+  on in its place.
 
-  BlockName owns the wreck's 3D layout, so it registers a provider for the
-  glass's live viewport spot and size; anyone can then call warpToOs() and
-  the hole opens exactly where the plane gets pulled in. Without the
-  provider (or the 3D scene) the wreck's stage element anchors it instead.
-  The exit anchor arrives on OS_SCENE_READY_EVENT: CrtScene projects its
-  glass to viewport pixels, the flat bezel just says "center".
+  This site is about a CRT. There is one lying in the corner of the machine act,
+  you scroll it upright, it lights its tube, and clicking it takes you inside
+  the thing. So the transition is the tube: the picture collapses to a hot
+  scanline the way every monitor and television made before about 2006 did when
+  you hit the switch, the line holds while the far side loads, and then it opens
+  back out into AlejOS. Nothing about it is borrowed from anywhere else on the
+  internet, which is the point, and nothing about it needs explaining to anyone
+  who ever turned off a television.
+
+  It replaced a wormhole: a hole torn open on the glass, a tunnel of rings and
+  infalling specks, a second hole torn open at the far end. That was a good
+  effect attached to the wrong site. It was sci-fi in a room full of beige
+  plastic, it took a second and a half before the far side was even asked for,
+  and it was drawn on a full-screen 2D canvas, per frame, on the same main
+  thread that was about to spend four seconds building a 3D house.
+
+  Which is the other half of why this shape and not another. Three things run
+  during the trip, and all three are hostile to animation: the AlejOS chunk
+  evaluates, three.js links its shaders, and the room builds its geometry. The
+  main thread is simply gone for seconds at a time, in lumps of over a second.
+  So NOTHING here is drawn per frame and nothing here is drawn on the main
+  thread. The whole trip is four promoted layers moved by CSS transitions on
+  transform and opacity, which the compositor runs by itself; the ride can hold
+  for as long as the far side needs and the reveal cannot be stolen by the frame
+  the far side happens to announce itself on. The old exit was measured landing
+  inside a single 1233 ms stall, which is to say it was not seen at all.
+
+  The layers are also built BEFORE the click, on the first sign the visitor is
+  heading for the machine (`prepareWarp`, wired to hover and focus on the wreck
+  and its button). Promoting a full-screen layer over a live WebGL page costs
+  around a tenth of a second of raster the first time, and profiling the click
+  found the main thread 74% idle through it: it is not script and no amount of
+  care in the animation avoids it. It has to happen earlier or it happens on
+  screen. A visitor who never hovers (tab and enter, or the paper plane being
+  swallowed) pays it at the click, as before.
+
+  BlockName registers the wreck's live glass rect, so the line collapses onto
+  the exact screen you clicked and slides to the middle of the viewport while
+  it waits, rather than appearing from nowhere.
 */
 
 interface Mouth {
@@ -44,110 +62,195 @@ export function provideWarpOrigin(fn: () => Mouth) {
   }
 }
 
-const MOUTH_S = 0.45 // the hole popping open to glass size and holding
-const TEAR_S = 0.6 // the front sweeping out to consume the page
-const COVER_S = MOUTH_S + TEAR_S
-// the ride lasts at least this long past the cover, so the trip always
-// reads as a trip even when the far side was ready before we left
-const MIN_RIDE_S = 0.75
-// and never longer than this: a scene that never answers still gets revealed
-const MAX_RIDE_S = 12
-const EXIT_S = 0.85 // the far mouth opening onto the room
+/** the picture collapsing onto the line */
+const CLOSE_MS = 380
+/** the line drifting from the glass to the middle, under the wait */
+const CENTRE_MS = 900
+/** the ride never ends sooner than this, or the trip reads as a flicker */
+const MIN_RIDE_MS = 700
+/** and never later than this: a far side that never answers still gets shown */
+const MAX_RIDE_MS = 12000
+/** the line blooming back open onto the room */
+const OPEN_MS = 520
 
 const INK = '#0c0a09' // stone-950, same night the OS overlay sits on
-const STONE = '168,162,158' // stone-400
-const ACCENT = '96,165,250' // blue-400, the plane's contrail blue
+const ACCENT = '96,165,250' // blue-400, the site's one accent
+const FILAMENT = '#f5f5f4' // stone-100: a hot line is white, not blue
 
-/** The part of the trip that overlaps the cold 3D boot. Canvas rAF cannot
-    move while scene construction or a driver call owns the main thread;
-    these transform/opacity-only layers keep moving on the compositor. */
-const makeCompositorRide = () => {
+interface Cover {
+  /** collapse the picture onto the line, over the glass at `at` */
+  close: (at: Mouth) => void
+  /** the tube holding: scanlines, a rolling bar, the line drifting to centre */
+  hold: () => void
+  /** the tube coming back on, onto whatever is behind */
+  open: (done: () => void) => void
+  remove: () => void
+}
+
+let prepared: Cover | null = null
+
+/**
+ * The four layers, built inert and effectively invisible so this can be called
+ * long before it is used. Two solid-colour panes (which the compositor handles
+ * almost for free), one thin filament, and one texture layer carrying the
+ * scanlines, the rolling bar and the vignette as static backgrounds so that
+ * moving them is a transform and never a repaint.
+ */
+function buildCover(): Cover {
+  const H = () => window.innerHeight
+
   const layer = document.createElement('div')
   layer.setAttribute('aria-hidden', 'true')
-  layer.dataset.alejosWarpRide = 'true'
+  layer.dataset.alejosWarp = 'true'
   layer.style.cssText = [
     'position:fixed', 'inset:0', 'z-index:71', 'overflow:hidden',
-    `background:${INK}`, 'opacity:.001', 'pointer-events:none',
-    'transition:opacity 100ms linear', 'will-change:opacity', 'contain:strict',
+    'pointer-events:none', 'contain:strict',
   ].join(';')
 
   const style = document.createElement('style')
   style.textContent = `
-    @keyframes alejos-warp-depth {
-      0%   { transform:translate3d(-50%,-50%,0) scale(1.18) rotate(0deg); opacity:.12 }
-      14%  { opacity:.58 }
-      100% { transform:translate3d(-50%,-50%,0) scale(.82) rotate(3deg); opacity:.16 }
+    @keyframes alejos-warp-roll {
+      0%   { transform:translate3d(0,110%,0) }
+      100% { transform:translate3d(0,-110%,0) }
     }
     @keyframes alejos-warp-breathe {
-      0%,100% { transform:translate3d(-50%,-50%,0) scale(.88); opacity:.62 }
-      50%     { transform:translate3d(-50%,-50%,0) scale(1.12); opacity:.92 }
+      0%,100% { opacity:.85 }
+      50%     { opacity:1 }
     }
   `
   layer.appendChild(style)
 
-  const glow = document.createElement('div')
-  glow.style.cssText = [
-    'position:absolute', 'left:50%', 'top:50%', 'width:62vmax', 'height:62vmax',
-    'border-radius:9999px', 'will-change:transform,opacity',
-    `background:radial-gradient(circle,rgba(${ACCENT},.36) 0%,rgba(${ACCENT},.12) 34%,rgba(${ACCENT},0) 72%)`,
-    'animation:alejos-warp-breathe 1.7s ease-in-out infinite',
-  ].join(';')
-  layer.appendChild(glow)
-
-  // Each panel is one promoted layer. Its rings and rays are static children,
-  // so this is three compositor surfaces total instead of fifty enormous
-  // independently-rasterized circles fighting the scene for GPU memory.
-  for (let phase = 0; phase < 2; phase += 1) {
-    const panel = document.createElement('div')
-    panel.style.cssText = [
-      'position:absolute', 'left:50%', 'top:50%', 'width:142vmax', 'height:142vmax',
-      'will-change:transform,opacity',
-      `animation:alejos-warp-depth 2.2s linear ${phase ? -1.1 : 0}s infinite`,
+  // Each pane is a full-height sheet of ink parked off its own edge. Closing
+  // means sliding them in until they meet on the line; opening means sliding
+  // them back out. A solid-colour layer is the cheapest thing a compositor can
+  // be asked to move, which is the entire reason the picture is "collapsed"
+  // with two shutters rather than by scaling anything.
+  const pane = (edge: 1 | -1) => {
+    const el = document.createElement('div')
+    el.style.cssText = [
+      'position:absolute', 'left:0', 'right:0', 'top:0', 'height:100%',
+      `background:${INK}`, 'will-change:transform',
+      `transform:translate3d(0,${edge * 100}%,0)`,
     ].join(';')
-
-    for (let i = 0; i < 12; i += 1) {
-      const ring = document.createElement('div')
-      const size = 7 + i * 8
-      ring.style.cssText = [
-        'position:absolute', 'left:50%', 'top:50%',
-        `width:${size}%`, `height:${size}%`,
-        'transform:translate3d(-50%,-50%,0)', 'border-radius:9999px',
-        `border:${i % 5 === 0 ? 2 : 1}px solid ${
-          i % 5 === 0 ? `rgba(${ACCENT},.72)` : `rgba(${STONE},.58)`
-        }`,
-      ].join(';')
-      panel.appendChild(ring)
-    }
-
-    for (let i = 0; i < 24; i += 1) {
-      const spoke = document.createElement('div')
-      spoke.style.cssText = [
-        'position:absolute', 'left:50%', 'top:50%', 'width:0', 'height:0',
-        `transform:rotate(${(i * 137.508 + phase * 9) % 360}deg)`,
-      ].join(';')
-      const ray = document.createElement('div')
-      ray.style.cssText = [
-        'position:absolute', `left:${12 + ((i * 19) % 48)}vmax`, 'top:-1px',
-        `width:${2.2 + (i % 6) * 0.55}vmax`, `height:${i % 5 === 0 ? 2 : 1}px`,
-        `background:${i % 4 === 0 ? `rgba(${ACCENT},.76)` : 'rgba(231,229,228,.62)'}`,
-        'transform-origin:left center',
-      ].join(';')
-      spoke.appendChild(ray)
-      panel.appendChild(spoke)
-    }
-    layer.appendChild(panel)
+    return el
   }
+  const paneTop = pane(-1)
+  const paneBottom = pane(1)
+  layer.append(paneTop, paneBottom)
+
+  // the dead tube's own texture, over the ink: scanlines, the corner falloff,
+  // and one soft bar rolling up the screen the way a mistuned vertical hold
+  // used to. All three are static paint; only the bar moves, and it moves by
+  // transform
+  const tube = document.createElement('div')
+  tube.style.cssText = [
+    'position:absolute', 'inset:0', 'opacity:0', 'overflow:hidden',
+    'transition:opacity 260ms linear', 'will-change:opacity',
+    'background:' +
+      'repeating-linear-gradient(to bottom,rgba(231,229,228,.05) 0 1px,transparent 1px 3px),' +
+      `radial-gradient(ellipse at center,rgba(${ACCENT},.05) 0%,rgba(0,0,0,0) 55%,rgba(0,0,0,.5) 100%)`,
+  ].join(';')
+  const bar = document.createElement('div')
+  bar.style.cssText = [
+    'position:absolute', 'left:0', 'right:0', 'top:0', 'height:22%',
+    'will-change:transform',
+    'background:linear-gradient(to bottom,rgba(245,245,244,0) 0%,rgba(245,245,244,.05) 45%,rgba(245,245,244,.09) 55%,rgba(245,245,244,0) 100%)',
+    'animation:alejos-warp-roll 3.4s linear infinite',
+    'animation-play-state:paused',
+  ].join(';')
+  tube.appendChild(bar)
+  layer.appendChild(tube)
+
+  // the filament: the whole picture, squeezed into two pixels
+  const line = document.createElement('div')
+  line.style.cssText = [
+    'position:absolute', 'left:0', 'right:0', 'top:0', 'height:2px',
+    'opacity:0', `background:${FILAMENT}`,
+    `box-shadow:0 0 16px 2px rgba(${ACCENT},.8),0 0 52px 10px rgba(${ACCENT},.3)`,
+    'will-change:transform,opacity',
+  ].join(';')
+  layer.appendChild(line)
 
   document.body.appendChild(layer)
+  // one forced layout with nothing animating, so the promotion and first raster
+  // of all four surfaces is paid here rather than on a frame anyone is watching
+  void layer.offsetHeight
+
+  let removed = false
+  let y = 0
+
   return {
-    show: () => {
-      layer.style.opacity = '1'
+    close: (at) => {
+      const h = H()
+      y = Math.max(2, Math.min(h - 2, at.y))
+      // the line starts the width of the glass you clicked and snaps out to the
+      // full width as the shutters arrive: the picture is being squeezed out
+      // sideways, not just covered up
+      line.style.transition = 'none'
+      line.style.transform = `translate3d(0,${y}px,0) scaleX(${Math.max(0.04, (at.r * 2) / window.innerWidth)})`
+      line.style.opacity = '0'
+      void line.offsetHeight
+      line.style.transition = `transform ${CLOSE_MS}ms cubic-bezier(.6,0,.2,1),opacity 120ms linear`
+      paneTop.style.transition = `transform ${CLOSE_MS}ms cubic-bezier(.6,0,.2,1)`
+      paneBottom.style.transition = `transform ${CLOSE_MS}ms cubic-bezier(.6,0,.2,1)`
+      requestAnimationFrame(() => {
+        paneTop.style.transform = `translate3d(0,${y - h}px,0)`
+        paneBottom.style.transform = `translate3d(0,${y}px,0)`
+        line.style.transform = `translate3d(0,${y}px,0) scaleX(1)`
+        line.style.opacity = '1'
+      })
     },
-    hide: () => {
-      layer.style.opacity = '0'
+    hold: () => {
+      const h = H()
+      tube.style.opacity = '1'
+      bar.style.animationPlayState = 'running'
+      line.style.animation = 'alejos-warp-breathe 1.3s ease-in-out infinite'
+      // the picture settling into the middle of the tube while it warms, so the
+      // opening is symmetric wherever on the page you clicked from
+      y = h / 2
+      line.style.transition = `transform ${CENTRE_MS}ms cubic-bezier(.33,1,.68,1)`
+      paneTop.style.transition = `transform ${CENTRE_MS}ms cubic-bezier(.33,1,.68,1)`
+      paneBottom.style.transition = `transform ${CENTRE_MS}ms cubic-bezier(.33,1,.68,1)`
+      requestAnimationFrame(() => {
+        paneTop.style.transform = `translate3d(0,${y - h}px,0)`
+        paneBottom.style.transform = `translate3d(0,${y}px,0)`
+        line.style.transform = `translate3d(0,${y}px,0) scaleX(1)`
+      })
     },
-    remove: () => layer.remove(),
+    open: (done) => {
+      const h = H()
+      tube.style.opacity = '0'
+      line.style.animation = 'none'
+      line.style.opacity = '1'
+      // a beat of full brightness before anything moves: the flyback kicking in
+      window.setTimeout(() => {
+        paneTop.style.transition = `transform ${OPEN_MS}ms cubic-bezier(.16,1,.3,1)`
+        paneBottom.style.transition = `transform ${OPEN_MS}ms cubic-bezier(.16,1,.3,1)`
+        line.style.transition = `transform ${OPEN_MS}ms cubic-bezier(.16,1,.3,1),opacity 320ms linear`
+        paneTop.style.transform = `translate3d(0,${-h}px,0)`
+        paneBottom.style.transform = `translate3d(0,${h}px,0)`
+        // the filament blooming as it dies, the way the phosphor does
+        line.style.transform = `translate3d(0,${y}px,0) scaleX(1) scaleY(5)`
+        line.style.opacity = '0'
+      }, 110)
+      window.setTimeout(done, 110 + OPEN_MS + 60)
+    },
+    remove: () => {
+      if (removed) return
+      removed = true
+      layer.remove()
+    },
   }
+}
+
+/**
+ * Build the trip's layers now, so the click doesn't have to. Idempotent and
+ * safe to call on every hover; see the header for why this exists at all.
+ */
+export function prepareWarp(): void {
+  if (prepared || running || typeof window === 'undefined') return
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  prepared = buildCover()
 }
 
 export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
@@ -161,245 +264,54 @@ export function warpToOs(detail?: { app?: string; via?: 'plane' }) {
     boot()
     return
   }
-  const cv = document.createElement('canvas')
-  const ctx = cv.getContext('2d')
-  if (!ctx) {
-    boot()
-    return
-  }
   running = true
-  const W = window.innerWidth
-  const H = window.innerHeight
-  const dpr = Math.min(window.devicePixelRatio || 1, 2)
-  cv.width = Math.round(W * dpr)
-  cv.height = Math.round(H * dpr)
-  cv.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:70;pointer-events:none'
-  cv.setAttribute('aria-hidden', 'true')
-  ctx.scale(dpr, dpr)
-  document.body.appendChild(cv)
-  // Keep this barely non-zero during the entry so Chrome rasterizes and
-  // promotes it before the first expensive module evaluation begins.
-  const compositorRide = makeCompositorRide()
+  const cover = prepared ?? buildCover()
+  prepared = null
 
+  // the glass you clicked, or the wreck's stage, or the middle of the screen
   const stage = document.getElementById('os-wreck')?.getBoundingClientRect()
-  const o =
+  const at =
     origin?.() ??
     (stage
       ? { x: stage.left + stage.width * 0.36, y: stage.top + stage.height * 0.5, r: stage.width * 0.18 }
-      : { x: W / 2, y: H / 2, r: 60 })
-  const mouthR = Math.min(Math.max(o.r, 30), 130)
-  // the front must reach the farthest viewport corner to consume everything
-  const maxR = Math.hypot(Math.max(o.x, W - o.x), Math.max(o.y, H - o.y)) * 1.06
-  // stray matter caught in the pull: each speck loops from the rim down to
-  // the center of the tunnel, swirling tighter the closer it gets
-  const specks = Array.from({ length: 90 }, () => ({
-    ang: Math.random() * Math.PI * 2,
-    r: Math.random(),
-    fall: 0.35 + Math.random() * 0.5,
-    swirl: 0.4 + Math.random() * 1.2,
-    blue: Math.random() < 0.3,
-  }))
+      : { x: window.innerWidth / 2, y: window.innerHeight / 2, r: 90 })
 
-  // the far side fills these in: its first rendered frame says "open here"
-  let sceneReady = false
-  let exit: Mouth | null = null
-  const onReady = (e: Event) => {
-    sceneReady = true
-    const d = (e as CustomEvent<Partial<Mouth> | undefined>).detail
-    if (d && typeof d.x === 'number' && typeof d.y === 'number') {
-      exit = { x: d.x, y: d.y, r: typeof d.r === 'number' ? d.r : 60 }
-    }
+  cover.close(at)
+
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    cover.remove()
+    running = false
+  }
+
+  let opened = false
+  const open = () => {
+    if (opened || finished) return
+    opened = true
+    window.removeEventListener(OS_SCENE_READY_EVENT, onReady)
+    cover.open(finish)
+  }
+  // Timers, not rAF: nothing here is drawing, they only decide WHEN the far
+  // side gets to arrive, and a timer that slips because the room is building is
+  // a timer doing its job. What it starts runs on the compositor regardless.
+  let rideStart = 0
+  const onReady = () => {
+    const waited = performance.now() - rideStart
+    if (waited >= MIN_RIDE_MS) open()
+    else window.setTimeout(open, MIN_RIDE_MS - waited)
   }
   window.addEventListener(OS_SCENE_READY_EVENT, onReady)
 
-  const t0 = performance.now()
-  let last = t0
-  let bootQueued = false
-  let travel = 0 // tunnel distance, integrated so the ride can accelerate
-  let exitAt: number | null = null // ride time when the far mouth opened
-  const circle = (x: number, y: number, r: number) => {
-    ctx.beginPath()
-    ctx.arc(x, y, r, 0, Math.PI * 2)
-  }
-  const finish = () => {
-    cv.remove()
-    compositorRide.remove()
-    window.removeEventListener(OS_SCENE_READY_EVENT, onReady)
-    running = false
-  }
-  const frame = (now: number) => {
-    const t = (now - t0) / 1000
-    const dt = Math.min(0.1, (now - last) / 1000)
-    last = now
-    const p = Math.min(1, t / COVER_S)
-    if (p >= 1 && !bootQueued) {
-      // First promote and paint the compositor ride. Booting from the next
-      // animation frame guarantees the CSS tunnel exists before React/module
-      // evaluation gets a chance to monopolize the main thread.
-      bootQueued = true
-      compositorRide.show()
-      requestAnimationFrame(() => {
-        if (running) boot()
-      })
-    }
-    // the ride ends when the far side has a frame up (never before the
-    // minimum, never after the bail cap)
-    if (exitAt === null && t >= COVER_S + MIN_RIDE_S && (sceneReady || t >= COVER_S + MAX_RIDE_S)) {
-      exitAt = t
-      compositorRide.hide()
-    }
-    const q = exitAt === null ? 0 : Math.min(1, (t - exitAt) / EXIT_S)
-    if (q >= 1) {
-      finish()
-      return
-    }
-    // CSS owns the fully-covered part of the ride. Keeping only this timing
-    // heartbeat avoids wasting the main thread redrawing pixels no one sees;
-    // more importantly, the visible motion no longer depends on this rAF.
-    if (p >= 1 && exitAt === null) {
-      requestAnimationFrame(frame)
-      return
-    }
-    // cruise builds after the tear; the opening exit slings you out faster
-    const cruise = Math.min(1, Math.max(0, (t - COVER_S) / 0.9))
-    travel += dt * (0.5 + cruise * 1.35 + q * 1.6)
-
-    // once the page is consumed the mouth no longer has to anchor the
-    // wreck: the whole vortex glides toward where the far side will tear
-    // open, so the exit rips out of the drain's own eye instead of a
-    // second, disconnected spot
-    if (p >= 1) {
-      const target = exit ?? { x: W / 2, y: H / 2 }
-      const k = Math.min(1, dt * 5)
-      o.x += (target.x - o.x) * k
-      o.y += (target.y - o.y) * k
-    }
-
-    ctx.clearRect(0, 0, W, H)
-
-    // act one: the mouth pops open to the glass size and holds; act two:
-    // the tear, a cubic ramp from glass size to the whole viewport. The
-    // page stays untouched outside the front — the consuming reads like
-    // the theme toggle's wipe, not a fade
-    const discR =
-      t < MOUTH_S
-        ? Math.max(6, mouthR * (1 - Math.pow(1 - t / MOUTH_S, 3)))
-        : mouthR + (maxR - mouthR) * Math.pow(Math.min(1, (t - MOUTH_S) / TEAR_S), 3)
-
-    // the exit: a hole cut out of the ink, anchored on the machine in the
-    // room (or dead center when the far side is the flat bezel)
-    const ex = exit ?? { x: W / 2, y: H / 2, r: 60 }
-    const exitMaxR = Math.hypot(Math.max(ex.x, W - ex.x), Math.max(ex.y, H - ex.y)) * 1.06
-    const holeR = q > 0 ? exitMaxR * Math.pow(q, 2.4) : 0
-
-    // the cover: hard-edged ink with the far mouth cut out of it
-    ctx.fillStyle = INK
-    ctx.beginPath()
-    ctx.arc(o.x, o.y, discR, 0, Math.PI * 2)
-    if (holeR > 0) ctx.arc(ex.x, ex.y, holeR, 0, Math.PI * 2)
-    ctx.fill('evenodd')
-
-    // everything below lives inside the ink, never over the opened room
-    ctx.save()
-    ctx.beginPath()
-    ctx.arc(o.x, o.y, discR, 0, Math.PI * 2)
-    if (holeR > 0) ctx.arc(ex.x, ex.y, holeR, 0, Math.PI * 2)
-    ctx.clip('evenodd')
-    // the engine glow: a breathing blue core at the drain, so the ride
-    // reads as alive even on displays that swallow the dim rings
-    const breathe = (0.3 + 0.12 * Math.sin(t * 5.2)) * (1 - q)
-    const coreR = Math.max(60, discR * 0.5)
-    const core = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, coreR)
-    core.addColorStop(0, `rgba(${ACCENT},${breathe})`)
-    core.addColorStop(0.4, `rgba(${ACCENT},${breathe * 0.35})`)
-    core.addColorStop(1, `rgba(${ACCENT},0)`)
-    ctx.fillStyle = core
-    circle(o.x, o.y, coreR)
-    ctx.fill()
-    // tunnel rings falling toward the center; the pow spacing fakes depth
-    for (let i = 0; i < 22; i++) {
-      const ph = (((i / 22 - travel) % 1) + 1) % 1
-      const r = discR * Math.pow(ph, 2.3)
-      if (r < 2) continue
-      const a = (1 - ph) * 0.75 * (1 - q)
-      ctx.strokeStyle = i % 5 === 0 ? `rgba(${ACCENT},${a})` : `rgba(214,211,209,${a * 0.7})`
-      ctx.lineWidth = 1.4 + (1 - ph) * 2.6
-      circle(o.x, o.y, r)
-      ctx.stroke()
-    }
-    // the infalling specks, drawn as streaks pointing down the drain
-    ctx.lineWidth = 1.6
-    for (const s of specks) {
-      const ph = (((s.r - travel * s.fall * 2) % 1) + 1) % 1
-      const ang = s.ang + travel * s.swirl * 2 + (1 - ph) * 2.2
-      const r = discR * Math.pow(ph, 1.7)
-      const a = (1 - ph) * 0.85 * (1 - q)
-      ctx.strokeStyle = s.blue ? `rgba(${ACCENT},${a})` : `rgba(231,229,228,${a * 0.75})`
-      ctx.beginPath()
-      ctx.moveTo(o.x + Math.cos(ang) * r, o.y + Math.sin(ang) * r)
-      ctx.lineTo(o.x + Math.cos(ang - 0.06) * (r * 1.16 + 14), o.y + Math.sin(ang - 0.06) * (r * 1.16 + 14))
-      ctx.stroke()
-    }
-    ctx.restore()
-
-    // outer rings falling INTO the hole, hugging its edge however big it
-    // is — the page-side tell that the monitor is doing the pulling
-    if (t > 0.16 && p < 1) {
-      ctx.lineWidth = 1.1
-      for (let i = 0; i < 3; i++) {
-        const c = (((t * 0.85 + i / 3) % 1) + 1) % 1
-        const a = Math.sin(c * Math.PI) * 0.28
-        ctx.strokeStyle = i % 2 ? `rgba(${STONE},${a})` : `rgba(${ACCENT},${a})`
-        circle(o.x, o.y, discR + mouthR * 2.4 * (1 - c))
-        ctx.stroke()
-      }
-    }
-    // the shock ring of the mouth bursting open, flung off the glass
-    if (t < 0.32) {
-      const s = t / 0.32
-      ctx.strokeStyle = `rgba(${ACCENT},${(1 - s) * 0.55})`
-      ctx.lineWidth = 0.5 + 2.5 * (1 - s)
-      circle(o.x, o.y, mouthR * (0.3 + 2.4 * s))
-      ctx.stroke()
-    }
-    // a thin blue line rides the entry front while it still has page to eat
-    if (p < 1) {
-      ctx.strokeStyle = `rgba(${ACCENT},${0.5 * (1 - p * 0.5)})`
-      ctx.lineWidth = 1.5
-      circle(o.x, o.y, discR)
-      ctx.stroke()
-    }
-    // the first spark: the dead glass lights up before anything moves
-    if (t < 0.2) {
-      const a = (1 - t / 0.2) * 0.45
-      const g = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, mouthR * 1.4)
-      g.addColorStop(0, `rgba(${ACCENT},${a})`)
-      g.addColorStop(1, `rgba(${ACCENT},0)`)
-      ctx.fillStyle = g
-      circle(o.x, o.y, mouthR * 1.4)
-      ctx.fill()
-    }
-    // the far side breaking open: a flash where the tunnel gives way, then
-    // a blue front riding the growing mouth — the entry tear, mirrored
-    if (exitAt !== null) {
-      const f = Math.min(1, (t - exitAt) / 0.3)
-      if (f < 1) {
-        const a = (1 - f) * 0.5
-        const g = ctx.createRadialGradient(ex.x, ex.y, 0, ex.x, ex.y, Math.max(ex.r, 50) * 2.2)
-        g.addColorStop(0, `rgba(${ACCENT},${a})`)
-        g.addColorStop(1, `rgba(${ACCENT},0)`)
-        ctx.fillStyle = g
-        circle(ex.x, ex.y, Math.max(ex.r, 50) * 2.2)
-        ctx.fill()
-      }
-      if (holeR > 0) {
-        ctx.strokeStyle = `rgba(${ACCENT},${0.6 * (1 - q)})`
-        ctx.lineWidth = 1.5 + 2 * (1 - q)
-        circle(ex.x, ex.y, holeR)
-        ctx.stroke()
-      }
-    }
-    requestAnimationFrame(frame)
-  }
-  requestAnimationFrame(frame)
+  // the far side is only asked for once the ink has met in the middle, so the
+  // whole cold boot happens under a screen that is already black
+  window.setTimeout(() => {
+    cover.hold()
+    rideStart = performance.now()
+    window.setTimeout(open, MAX_RIDE_MS) // open() is idempotent; nothing to cancel
+    requestAnimationFrame(() => {
+      if (running) boot()
+    })
+  }, CLOSE_MS)
 }

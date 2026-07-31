@@ -2548,6 +2548,19 @@ export default function CrtScene({
             webgl.setScissorTest(false)
             webgl.setViewport(0, 0, warmSize.x, warmSize.y)
           }
+          // and repaint the picture this just destroyed. The context has no
+          // preserveDrawingBuffer (nothing that renders every frame wants to
+          // pay for one), so the browser is free to blank the buffer after it
+          // composites a frame, and it does. Rendering one scissored pixel
+          // into it therefore does not leave the other few million alone: it
+          // presents a frame that is transparent everywhere except that pixel.
+          // On the ordinary boot that lands while the camera is PARKED, so
+          // nothing was ever going to draw again, and the visitor watched the
+          // whole computer vanish a second after their boot screen came up,
+          // leaving the CSS3D screen floating in the dark on its own. The room
+          // survived because the room is not what got cleared; the picture of
+          // it was.
+          render()
         }
         /**
          * The same warm-up, off the boot's critical path.
