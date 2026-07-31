@@ -42,6 +42,7 @@ import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
+import { PREFS_KEY, loadPrefs } from './roamPrefs'
 import { createProximityVoice, type VoiceMode } from './proximityVoice'
 import type { Session } from './osContext'
 import { track } from '../../analytics'
@@ -177,25 +178,10 @@ const HOUSE_MODEL_KEYS = [
   'microwave', 'ceilinglight', 'fence', 'tree', 'bush', 'bushflower',
   'hedge', 'bench', 'lantern',
 ] as const
-/** walk-mode preferences the pause menu edits; the seated view stays fixed */
-const PREFS_KEY = 'alejos-roam-prefs'
-const PREFS_DEFAULT = { fov: 60, sens: 1, third: false }
-const loadPrefs = () => {
-  try {
-    const raw = localStorage.getItem(PREFS_KEY)
-    if (raw) {
-      const p = JSON.parse(raw) as { fov?: number; sens?: number; third?: boolean }
-      return {
-        fov: Math.min(80, Math.max(30, Number(p.fov) || PREFS_DEFAULT.fov)),
-        sens: Math.min(3, Math.max(0.3, Number(p.sens) || PREFS_DEFAULT.sens)),
-        third: p.third === true,
-      }
-    }
-  } catch {
-    /* fall through to defaults */
-  }
-  return { ...PREFS_DEFAULT }
-}
+/** how early a frame may arrive and still be counted against the limiter's
+    deadline, in ms. See walkTick: without it, a cap set to the panel's own
+    rate halves it, because half the frames land a few microseconds short */
+const FRAME_SLOP = 2
 /** the four colours the character screen edits. Kept beside the prefs and
     apart from them: prefs are how you *see* the world, a look is how the
     world sees you, and only one of the two travels */
@@ -1808,6 +1794,9 @@ export default function CrtScene({
         let pr = PR_CAP
         let emaMs = 16
         let prWait = 1.5
+        // the frame limiter's next deadline, kept beside the governor because
+        // the two read the same clock and argue about the same number
+        let nextFrame = 0
 
         /*
           The sun's map serves two casters that move at completely different
@@ -1996,6 +1985,39 @@ export default function CrtScene({
 
         const walkTick = (now: number) => {
           if (disposed || !roaming) return
+          /*
+            The frame limiter.
+
+            rAF hands out frames at the panel's cadence and there is no way to
+            ask for one in between, so a cap is served by *dropping* frames:
+            draw on the first frame at or past the deadline, then advance the
+            deadline by exactly one interval. Advancing it from itself rather
+            than from `now` is what makes the average land on the number the
+            dial says instead of on the nearest whole division of the refresh
+            rate — 160 on a 240 Hz panel is two frames drawn out of every
+            three, not the 120 a naive "has 6.25 ms passed?" test settles on.
+
+            It skips the whole tick, not just the render. The physics, the
+            streamer and the network are as much of the machine's evening as
+            the draw is, and dt is measured between drawn frames, so the walk
+            integrates the same distance either way.
+
+            Two corrections. FRAME_SLOP lets a frame arrive a hair early, since
+            without it a cap set to the panel's own rate silently halves it.
+            And if the deadline falls behind outright — a hitch, a hidden tab,
+            a card that cannot hold the cap anyway — it is resynced to now
+            rather than left to bank credit and spend it as a burst.
+          */
+          const cap = prefsRef.current.cap
+          const interval = cap > 0 ? 1000 / cap : 0
+          if (interval > 0) {
+            if (now < nextFrame - FRAME_SLOP) {
+              raf = requestAnimationFrame(walkTick)
+              return
+            }
+            nextFrame += interval
+            if (nextFrame < now) nextFrame = now + interval
+          }
           const rawMs = now - lastT
           const dt = Math.min(0.05, rawMs / 1000)
           lastT = now
@@ -2024,8 +2046,14 @@ export default function CrtScene({
             void loadWorldCovered()
           }
           prWait -= rawMs / 1000
-          if (prWait <= 0 && emaMs > 22 && pr > 1) {
-            pr = Math.max(1, pr - (emaMs > 45 ? 0.5 : 0.25))
+          // 22 ms is the budget with nothing capping the loop. Under the
+          // limiter the frame time *is* the interval by construction, so the
+          // budget has to clear it or a 30 fps cap reads as a card that cannot
+          // cope and sheds resolution it had no reason to. A cap of 60 or
+          // faster leaves these numbers exactly where they were.
+          const budget = Math.max(22, interval * 1.3)
+          if (prWait <= 0 && emaMs > budget && pr > 1) {
+            pr = Math.max(1, pr - (emaMs > budget * 2 ? 0.5 : 0.25))
             webgl?.setPixelRatio(pr)
             prWait = 1.2
           }
@@ -2607,10 +2635,12 @@ export default function CrtScene({
           input.setCursor('grab')
           // with the OS still running the tube keeps spilling light
           spill.intensity = liveRef.current ? 1.0 : 0
-          // fresh roam, fresh resolution budget
+          // fresh roam, fresh resolution budget and a limiter deadline that
+          // is not still holding a timestamp from the last one
           pr = PR_CAP
           emaMs = 16
           prWait = 1.5
+          nextFrame = 0
           webgl.setPixelRatio(pr)
           // announce ourselves while the stand-up glide plays, so the roster
           // and the first snapshots have landed by the time the controls do

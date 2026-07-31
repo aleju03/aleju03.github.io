@@ -3,6 +3,7 @@ import type { VehicleId } from '../../game/vehicles/types'
 import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
+import { FPS_CAPS, fpsCapLabel, type RoamPrefs } from './roamPrefs'
 
 /*
   The pause screen is a sheet of paper pinned to the bedroom wall.
@@ -226,13 +227,6 @@ function VehicleGlyph({ id }: { id: VehicleId }) {
   )
 }
 
-/** the roam preferences this screen edits; owned and persisted by CrtScene */
-export interface RoamPrefs {
-  fov: number
-  sens: number
-  third: boolean
-}
-
 export interface PauseScreenProps {
   /** the menu is actually up. False keeps it mounted, and the character
       preview's WebGL context alive, while hiding it outright */
@@ -437,6 +431,18 @@ export default function PauseScreen({
                   step={0.05}
                   display={`${prefs.sens.toFixed(2)}×`}
                   onChange={(sens) => onPrefs((p) => ({ ...p, sens }))}
+                />
+                {/* the dial rides on the index, not the number: the values are
+                    a list of detents and the spacing between them is not
+                    linear (30 to 45 is the same throw as 200 to 240) */}
+                <Dial
+                  label="frame limit"
+                  value={Math.max(0, FPS_CAPS.indexOf(prefs.cap))}
+                  min={0}
+                  max={FPS_CAPS.length - 1}
+                  step={1}
+                  display={fpsCapLabel(prefs.cap)}
+                  onChange={(i) => onPrefs((p) => ({ ...p, cap: FPS_CAPS[i] ?? 0 }))}
                 />
               </div>
             )}
