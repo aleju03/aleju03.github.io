@@ -1747,7 +1747,20 @@ export function buildCar(opts: CarOpts): Vehicle {
      costs a uniform upload; zero intensity and still visible costs a
      recompile. The dusk layout is exposed once under BootCover by
      `setLightWarmup`, then hidden again, so the threshold hits a cached program
-     without making those two unused slots a permanent daytime cost. */
+     without making those two unused slots a permanent daytime cost.
+
+     Re-checked against three 0.184.0: `projectObject` returns early on
+     `visible === false`, so an invisible light is not counted into
+     NUM_SPOT_LIGHTS and the mechanism above is real. The tempting one-liner,
+     pinning `visible = true` forever and driving intensity, does kill the dusk
+     threshold outright, at the price of two extra spot slots evaluated per
+     fragment on every lit surface in the scene, all day, to spare a
+     transition that both routes reaching the fleet already pay under a cover
+     (`/world` under BootCover, the front door under `loadWorldCovered`). It is
+     the wrong side of that trade while the warm-up stays covered. What would
+     change the answer is a *late* material never seen by the warm-up. A
+     remote player's body used to be exactly that, until playerBody's geometry
+     and this module's materials became shared. */
   const beams: THREE.SpotLight[] = []
   for (const s of [-1, 1]) {
     const l = new THREE.SpotLight(0xfff0d2, 0, 52, 0.42, 0.55, 1.2)

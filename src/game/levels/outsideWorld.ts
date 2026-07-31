@@ -9,7 +9,7 @@ import { YARD } from './houseWorld'
   ground under it (src/game/world/*). This module is the seam between them and
   the one thing the scene talks to.
 
-  It used to *be* the outside — a 104x82 rectangle of hand-placed street,
+  It used to *be* the outside: a 104x82 rectangle of hand-placed street,
   seven shell houses, a meadow disc and three rings of fake towers on the
   horizon, with a hard clamp at the edge. All of that is gone. The ground is
   now chunk-streamed procedural terrain with biomes, water, roads and real
@@ -20,7 +20,7 @@ import { YARD } from './houseWorld'
 
   - **it decides whether the planet exists at all.** The sky is eager and the
     world is not. Most visitors come for the desktop on the CRT, and building
-    an endless procedural planet — plus compiling its outdoor shader variants —
+    an endless procedural planet (plus compiling its outdoor shader variants)
     before they can read the screen was seconds charged to a boot that never
     needed it. So `buildOutsideWorld` puts up the sky, a fog-bound ground plane
     and nothing else, and `attachWorld()` brings in `src/game/world/*` through a
@@ -38,7 +38,7 @@ import { YARD } from './houseWorld'
 
   The one thing the room tier cannot skip is *something to see out of the
   windows*. Past the yard fence the streamed terrain is simply absent, which
-  reads as a void where the ground should be rather than as distance — so the
+  reads as a void where the ground should be rather than as distance, so the
   room tier lays one big plane at y=0 in the grass colour and lets the fog eat
   it, and hides it the moment real terrain arrives.
 */
@@ -80,13 +80,13 @@ export interface OutsideHandles {
       and under the troughs; this is the swell the water shader draws, so a
       boat rides the sea that is actually on screen */
   waveAt: (x: number, z: number) => number
-  /** true while the property owns the ground under this point — the house
+  /** true while the property owns the ground under this point: the house
       answers for its own lawn, porch and paths */
   onProperty: (x: number, z: number) => boolean
   /** the sun, whose stable shadow program is warmed by one covered render;
       strength and map updates sleep independently indoors and at night */
   sun: THREE.DirectionalLight
-  /** the shop door within reach the player is looking at, and its verb —
+  /** the shop door within reach the player is looking at, and its verb;
       same contract as the house's, so the scene can ask both in one breath */
   doorPrompt: (p: THREE.Vector3, gaze: THREE.Vector3) => 'open' | 'close' | null
   /** work that shop door */
@@ -104,8 +104,8 @@ export interface OutsideHandles {
   preloadWorld: () => void
   /**
    * Load and build `src/game/world/*`, replacing the room tier's placeholder
-   * ground. Idempotent and safe to call concurrently — every caller awaits the
-   * same promise — so the front door, the /world route and any future entrance
+   * ground. Idempotent and safe to call concurrently (every caller awaits the
+   * same promise), so the front door, the /world route and any future entrance
    * can all just ask.
    */
   attachWorld: () => Promise<void>
@@ -132,7 +132,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     The room tier's stand-in for the planet: one plane at y=0 in the grass
     colour, wide enough to reach past the fog. Looking out of a window with no
     terrain built shows the background through the gap where the ground should
-    be, which reads as a hole rather than as distance — this makes the gap
+    be, which reads as a hole rather than as distance; this makes the gap
     read as "ground, receding into fog", which is what fog is for.
 
     UNLIT on purpose. As a Lambert surface it took part in the sun's shadow
@@ -140,7 +140,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     horizontal bands out past the fence that re-shimmered every time the sun
     refreshed its hand-managed map, which reads as the whole outdoors flashing.
     A basic material cannot acne, cannot flicker with the light rig, and still
-    takes the fog — which is the only thing this plane is actually for. It goes
+    takes the fog, which is the only thing this plane is actually for. It goes
     away the instant real terrain exists.
   */
   const placeholderGround = new THREE.Mesh(
@@ -150,7 +150,21 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   placeholderGround.castShadow = false
   placeholderGround.receiveShadow = false
   placeholderGround.rotation.x = -Math.PI / 2
-  placeholderGround.position.y = -0.02 // just under the yard, so the lawn wins
+  /*
+    Under the yard, so the lawn wins. This has to be a real gap and it was not:
+    both planes sat at -0.02, exactly coplanar, and two coplanar planes with
+    `LessEqualDepth` do not resolve, they fight. Because they are tessellated
+    completely differently (the lawn is one 42x58 quad, this is one 1200x1200
+    quad) their interpolated depths disagree by a few ulps in a pattern that
+    depends on where the camera is, so the ground outside the window swapped
+    between the lawn's green and this one's olive in bands that moved on every
+    frame the player did and froze the moment they stood still.
+
+    A tenth of a unit is far more than the depth buffer needs to separate them
+    at this range (precision here is about 1.5 mm at 50 units and 6 mm at 100),
+    and far less than anyone can see as a step at the lawn's edge.
+  */
+  placeholderGround.position.y = -0.12
   placeholderGround.matrixAutoUpdate = false
   placeholderGround.updateMatrix()
   root.add(placeholderGround)
@@ -164,7 +178,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   /**
    * Fetch and parse the world modules without building anything. Pure I/O, so
    * it can run while somebody is walking around the house without costing a
-   * frame — which is the whole point: by the time they reach the front door the
+   * frame, which is the whole point: by the time they reach the front door the
    * download is already done and the covered wait is only the build and the
    * shader compile, not the network.
    */
@@ -240,7 +254,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     if (!w) placeholderMat.color.copy(groundBase).multiplyScalar(0.16 + 0.84 * state.day)
     if (active && w) {
       // the sky is the only thing here with a wall clock, so the wind takes
-      // its delta from the same place rather than from the walk loop — which
+      // its delta from the same place rather than from the walk loop, which
       // does not run during the intro flight, when the world is still visible
       const now = performance.now()
       const dt = lastT ? Math.min(0.1, (now - lastT) / 1000) : 0.016
@@ -255,7 +269,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
 
         And the fog goes with the ring, because it always has: the note in
         sky.ts explains that a 240-unit far plane hides an edge that is never
-        closer than 256. From the air both numbers have to grow together — fog
+        closer than 256. From the air both numbers have to grow together: fog
         alone would reveal the edge, a wider ring alone would be invisible
         behind the fog. The ramp tops out at 120 units up, past which the
         ground is more than half fog anyway and there is nothing left to see.
@@ -288,7 +302,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     across the moment the world arrives.
 
     The house pad is authored flat at y=0 and the generator holds the terrain
-    flat under it, so 0 is not a placeholder for the property — it is the same
+    flat under it, so 0 is not a placeholder for the property; it is the same
     answer the world would give. Only past the fence do they diverge, and past
     the fence is exactly where you cannot go until the world is here.
   */

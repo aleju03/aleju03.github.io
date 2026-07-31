@@ -643,6 +643,8 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   let shadowAngle = Number.NaN
   const SHADOW_TRAVEL = 10
   const SHADOW_TURN = THREE.MathUtils.degToRad(7)
+  /** how far past the house shell the daylight comes back up; see `indoor` */
+  const INDOOR_FADE = 1.6
 
   const update = (camPos: THREE.Vector3, todOverride?: number) => {
     const now = performance.now()
@@ -656,11 +658,33 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     const night = 1 - day
     const twilight = Math.max(0, 1 - Math.abs(sunEl) / 0.26)
     const moonUp = smooth01(moonEl / 0.3)
-    // how deep inside the house shell the camera is; damps the (shadowless)
-    // sun and the daylight ambience so noon can't torch the interior
+    /*
+      Is the camera in the house, damping the sun and the daylight ambience so
+      noon cannot torch the interior.
+
+      This used to ramp on how deep inside the shell the camera was:
+      `smooth01(min(dxIn, dzIn) / 1.1)`, zero at the wall and one a metre in.
+      That reads as a doorway transition and it is one, but the perimeter it
+      measures from is the whole rectangle, and most of that perimeter is not a
+      door. It is a wall with a window in it.
+
+      So walking up to any window ran the ramp backwards. Measured at noon,
+      over the last 0.8 units of the approach: the sun goes from 0.239 to 1.670
+      (seven times), the hemisphere boost from 1.63 to 2.83, and the sun's
+      shadows snap from off to fully on. These are global, so what changes is
+      not the light in the room, it is the light on the lawn, and the visible
+      bug is the ground outside shifting shade on every frame the player moves
+      and holding still the moment they stop.
+
+      Put the ramp outside the shell instead. Anywhere within the rectangle is
+      simply indoors, and the fade happens over the doorstep, where the player
+      really is leaving. The front door sits on `HOUSE.minZ` with about a
+      unit and a half of path beyond it, so the transition still completes
+      before they are properly out in the yard.
+    */
     const dxIn = Math.min(camPos.x - HOUSE.minX, HOUSE.maxX - camPos.x)
     const dzIn = Math.min(camPos.z - HOUSE.minZ, HOUSE.maxZ - camPos.z)
-    const indoor = smooth01(Math.min(dxIn, dzIn) / 1.1)
+    const indoor = smooth01(1 + Math.min(dxIn, dzIn) / INDOOR_FADE)
 
     state.day = day
     state.night = night

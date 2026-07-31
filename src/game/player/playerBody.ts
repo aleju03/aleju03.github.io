@@ -161,11 +161,59 @@ const RISE_FOLD = 0.42
 const EASE = (t: number) => 1 - Math.pow(1 - t, 3)
 const SMOOTH = (t: number) => t * t * (3 - 2 * t)
 
+/*
+  Every body is the same robot.
+
+  Nothing a caller passes in changes a single vertex: the look is four colours
+  on the materials, and the eye height scales the group. So the shapes belong
+  to the module, not to the rig: build them once and let every body share
+  them.
+
+  It is worth more than it sounds. `buildPlayerBody` runs for the local player
+  and again for every remote one, and each call used to allocate about thirty
+  geometries. A RoundedBoxGeometry is a segmented lathe rather than a cube, so
+  that is real construction plus a fresh GPU buffer per part per player, all of
+  it landing on the frame somebody joined.
+
+  Created on first use rather than at module load, because `src/game/` is
+  renderer-optional and has to import cleanly in Node with no document and no
+  GL context. Nothing disposes the set, which lives as long as the module and
+  therefore as long as the session, and `net/avatars.ts` despawn disposes materials
+  only, because a player leaving must not take everyone else's arms with them.
+*/
+const rounded = (w: number, h: number, d: number, seg: number, r: number) =>
+  new RoundedBoxGeometry(w, h, d, seg, r)
+let SHARED: Record<string, THREE.BufferGeometry> | null = null
+const bodyGeo = () =>
+  (SHARED ??= {
+    pelvis: rounded(0.92, 0.36, 0.58, 3, 0.12),
+    torso: rounded(1.08, 0.8, 0.68, 3, 0.16),
+    belly: rounded(0.5, 0.4, 0.1, 3, 0.06),
+    dot: new THREE.SphereGeometry(0.05, 10, 8),
+    shoulder: new THREE.SphereGeometry(0.17, 12, 10),
+    uarm: rounded(0.22, 0.52, 0.26, 3, 0.1),
+    elbow: new THREE.SphereGeometry(0.12, 10, 8),
+    farm: rounded(0.2, 0.48, 0.24, 3, 0.09),
+    hand: new THREE.SphereGeometry(0.15, 12, 10),
+    thigh: rounded(0.34, 0.66, 0.4, 3, 0.12),
+    knee: new THREE.SphereGeometry(0.14, 10, 8),
+    shin: rounded(0.3, 0.56, 0.36, 3, 0.1),
+    toe: rounded(0.34, 0.2, 0.5, 3, 0.08),
+    neck: new THREE.CylinderGeometry(0.13, 0.15, 0.18, 12),
+    skull: rounded(0.8, 0.62, 0.7, 3, 0.17),
+    visor: rounded(0.56, 0.3, 0.12, 3, 0.06),
+    eye: rounded(0.11, 0.15, 0.04, 2, 0.02),
+    ear: new THREE.CylinderGeometry(0.13, 0.13, 0.1, 12),
+    antenna: new THREE.CylinderGeometry(0.028, 0.028, 0.3, 8),
+    tip: new THREE.SphereGeometry(0.07, 10, 8),
+  })
+
 export function buildPlayerBody(
   eye: number,
   grav = 34,
   look: PlayerLook = DEFAULT_LOOK,
 ): PlayerRig {
+  const g = bodyGeo()
   const group = new THREE.Group()
   group.userData.dynamic = true // never caught by the static matrix freeze
 
@@ -242,22 +290,20 @@ export function buildPlayerBody(
   const shinR = bone(thighR, 0, -THIGH, 0)
 
   // pelvis: the dark hip block the legs plug into
-  part(new RoundedBoxGeometry(0.92, 0.36, 0.58, 3, 0.12), darkMat, pelvis).position.set(0, 0.08, 0)
+  part(g.pelvis, darkMat, pelvis).position.set(0, 0.08, 0)
 
   // torso: cream shell, dark belly screen, one status dot (faces +z)
-  part(new RoundedBoxGeometry(1.08, 0.8, 0.68, 3, 0.16), bodyMat, torso).position.set(0, 0.34, 0)
-  part(new RoundedBoxGeometry(0.5, 0.4, 0.1, 3, 0.06), visorMat, torso).position.set(0, 0.28, 0.31)
-  part(new THREE.SphereGeometry(0.05, 10, 8), tipMat, torso).position.set(0.3, 0.6, 0.32)
+  part(g.torso, bodyMat, torso).position.set(0, 0.34, 0)
+  part(g.belly, visorMat, torso).position.set(0, 0.28, 0.31)
+  part(g.dot, tipMat, torso).position.set(0.3, 0.6, 0.32)
 
   // arms: accent ball shoulders, dark segments, cream hands
-  const uarmGeo = new RoundedBoxGeometry(0.22, 0.52, 0.26, 3, 0.1)
-  const farmGeo = new RoundedBoxGeometry(0.2, 0.48, 0.24, 3, 0.09)
   const armPair = (ua: THREE.Group, fa: THREE.Group) => {
-    part(new THREE.SphereGeometry(0.17, 12, 10), accentMat, ua)
-    part(uarmGeo, darkMat, ua).position.set(0, -0.24, 0)
-    part(new THREE.SphereGeometry(0.12, 10, 8), darkMat, fa)
-    part(farmGeo, darkMat, fa).position.set(0, -0.2, 0)
-    const hand = part(new THREE.SphereGeometry(0.15, 12, 10), bodyMat, fa)
+    part(g.shoulder, accentMat, ua)
+    part(g.uarm, darkMat, ua).position.set(0, -0.24, 0)
+    part(g.elbow, darkMat, fa)
+    part(g.farm, darkMat, fa).position.set(0, -0.2, 0)
+    const hand = part(g.hand, bodyMat, fa)
     hand.position.set(0, -FARM, 0)
     return hand
   }
@@ -265,19 +311,16 @@ export function buildPlayerBody(
   const handR = armPair(uarmR, farmR)
 
   // legs: dark segments, accent knee, cream toe cap out front
-  const thighGeo = new RoundedBoxGeometry(0.34, 0.66, 0.4, 3, 0.12)
-  const shinGeo = new RoundedBoxGeometry(0.3, 0.56, 0.36, 3, 0.1)
-  const toeGeo = new RoundedBoxGeometry(0.34, 0.2, 0.5, 3, 0.08)
   const legPair = (th: THREE.Group, sh: THREE.Group) => {
-    part(thighGeo, darkMat, th).position.set(0, -0.32, 0)
-    part(new THREE.SphereGeometry(0.14, 10, 8), accentMat, sh)
-    part(shinGeo, darkMat, sh).position.set(0, -0.3, 0)
+    part(g.thigh, darkMat, th).position.set(0, -0.32, 0)
+    part(g.knee, accentMat, sh)
+    part(g.shin, darkMat, sh).position.set(0, -0.3, 0)
     // the toe cap hangs from its own ankle pivot so the sole can stay
     // level with the floor whatever the shin is doing
     const ankle = new THREE.Group()
     ankle.position.set(0, -SHIN + 0.08, 0)
     sh.add(ankle)
-    part(toeGeo, bodyMat, ankle).position.set(0, 0.02, 0.09)
+    part(g.toe, bodyMat, ankle).position.set(0, 0.02, 0.09)
     const foot = new THREE.Object3D() // ragdoll anchor at the sole
     foot.position.set(0, -SHIN, 0)
     sh.add(foot)
@@ -288,21 +331,20 @@ export function buildPlayerBody(
 
   // the head: small and set back to mostly dodge the first-person frustum;
   // the headSkin toggle below finishes the job without amputating shadows
-  part(new THREE.CylinderGeometry(0.13, 0.15, 0.18, 12), darkMat, head).position.set(0, 0, -0.04)
-  const skull = part(new RoundedBoxGeometry(0.8, 0.62, 0.7, 3, 0.17), bodyMat, head)
+  part(g.neck, darkMat, head).position.set(0, 0, -0.04)
+  const skull = part(g.skull, bodyMat, head)
   skull.position.set(0, 0.41, -0.08)
-  part(new RoundedBoxGeometry(0.56, 0.3, 0.12, 3, 0.06), visorMat, head).position.set(0, 0.44, 0.24)
+  part(g.visor, visorMat, head).position.set(0, 0.44, 0.24)
   ;[0.14, -0.14].forEach((x) => {
-    part(new RoundedBoxGeometry(0.11, 0.15, 0.04, 2, 0.02), eyeMat, head).position.set(x, 0.44, 0.295)
+    part(g.eye, eyeMat, head).position.set(x, 0.44, 0.295)
   })
-  const earGeo = new THREE.CylinderGeometry(0.13, 0.13, 0.1, 12)
   ;[1, -1].forEach((side) => {
-    const ear = part(earGeo, darkMat, head)
+    const ear = part(g.ear, darkMat, head)
     ear.rotation.z = Math.PI / 2
     ear.position.set(side * 0.44, 0.44, -0.08)
   })
-  part(new THREE.CylinderGeometry(0.028, 0.028, 0.3, 8), darkMat, head).position.set(0.18, 0.83, -0.22)
-  part(new THREE.SphereGeometry(0.07, 10, 8), tipMat, head).position.set(0.18, 1.01, -0.22)
+  part(g.antenna, darkMat, head).position.set(0.18, 0.83, -0.22)
+  part(g.tip, tipMat, head).position.set(0.18, 1.01, -0.22)
 
   // the head always casts shadows but must never block the lens riding it:
   // steeply pitched down, the frame bottom looks down-backward and finds

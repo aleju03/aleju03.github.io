@@ -139,6 +139,8 @@ export const FRONT_DOOR_X = (FRONT_DOOR.u0 + FRONT_DOOR.u1) / 2
 const BATH_DOOR = { u0: 11.6, u1: 13.7 } // in the x=-3 wall
 const ARCH = { u0: 0.0, u1: 3.4, h: 4.9 } // cased opening in the z=14 wall
 const BACK_DOOR = { u0: -4.6, u1: -2.5 } // in the z=24.5 wall
+/** centre of the back door, the property's other way out */
+export const BACK_DOOR_X = (BACK_DOOR.u0 + BACK_DOOR.u1) / 2
 const BACK_WIN = { u0: 2.3, u1: 6.1, y0: 2.5, y1: 4.7 }
 const SINK_WIN = { u0: 20.5, u1: 22.1, y0: 2.9, y1: 4.3 }
 const BATH_WIN = { u0: 12.5, u1: 13.7, y0: 3.3, y1: 4.5 }

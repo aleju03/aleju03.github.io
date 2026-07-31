@@ -121,13 +121,38 @@ export const heightAt = (x: number, z: number) => {
 
 /* --------------------------------------------------- the drawn surface -- */
 
+/*
+  Both lattice caches hold a working set that *moves*: the ring the player is
+  standing in. The world is a pure function, so a miss costs time and nothing
+  else, and both used to answer a full cache by clearing it outright.
+
+  That is only cheap while the cap is comfortably larger than the ring. It was
+  not. At RADIUS_HIGH the loaded ring is 13 chunks across, which at GRID = 4
+  over a 64-unit chunk is 209 lattice points a side, so 43,681 points, against a
+  ground cache capped at 40,000. The working set did not fit in its own cache,
+  so every helicopter flight dumped all of it, periodically, forever, and every
+  vertex of the ring was recomputed from the noise stack behind it.
+
+  So: caps above the ring they exist to hold, and eviction by age instead of a
+  clear. A Map iterates in insertion order, which for a cache whose keys sweep
+  across a plane is close enough to least-recently-used to not be worth an
+  access-order rewrite. Dropping the oldest quarter keeps everything the
+  player is standing on and loses the ground behind them.
+*/
+const trimCache = (m: Map<number, unknown>, cap: number) => {
+  if (m.size <= cap) return
+  let n = m.size - Math.floor(cap * 0.75)
+  for (const k of m.keys()) {
+    m.delete(k)
+    if (--n <= 0) break
+  }
+}
+
 /** heights at lattice points, shared by the mesh builders and the collision
     probe. Keyed on integer lattice coordinates, so the two can never disagree
-    about where the ground is. Cleared wholesale when it outgrows a ring's
-    worth of vertices — the world is a pure function, so a cold cache costs
-    time and nothing else. */
+    about where the ground is. */
 const latticeCache = new Map<number, number>()
-const CACHE_CAP = 120000
+const CACHE_CAP = 180000
 
 export const latticeHeight = (i: number, j: number) => {
   // pack two signed 21-bit lattice coords into one number key: cheaper than a
@@ -136,7 +161,7 @@ export const latticeHeight = (i: number, j: number) => {
   const hit = latticeCache.get(key)
   if (hit !== undefined) return hit
   const h = heightAt(OFF_X + i * GRID, OFF_Z + j * GRID)
-  if (latticeCache.size > CACHE_CAP) latticeCache.clear()
+  trimCache(latticeCache, CACHE_CAP)
   latticeCache.set(key, h)
   return h
 }
@@ -251,7 +276,9 @@ const PAVED_GREY = new Color('#6f6f66')
 const STRAW = new Color('#a89a58')
 
 const groundCache = new Map<number, GroundSample>()
-const GROUND_CACHE_CAP = 40000
+/** twice the 43,681-point RADIUS_HIGH ring, so the set the streamer is
+    actively walking over never evicts itself; see trimCache above */
+const GROUND_CACHE_CAP = 90000
 
 /** the ground vertex at lattice point (i, j): colour, pavedness, biome —
     exactly what the chunk mesh bakes there, cached like latticeHeight */
@@ -277,7 +304,7 @@ export const latticeGround = (i: number, j: number): GroundSample => {
     gc.lerp(STRAW, patch * patch * 0.5)
   }
   const out: GroundSample = { r: gc.r, g: gc.g, b: gc.b, paved, biome }
-  if (groundCache.size > GROUND_CACHE_CAP) groundCache.clear()
+  trimCache(groundCache, GROUND_CACHE_CAP)
   groundCache.set(key, out)
   return out
 }

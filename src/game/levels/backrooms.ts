@@ -551,6 +551,14 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
   root.visible = false
   scene.add(root)
 
+  /* Level 0's own randomness, seeded like everything else the module builds.
+     The maze already draws from `seeded()` per chunk; the flicker bursts, the
+     distant thuds and the hum's noise did not, and two of those are level
+     state rather than audio grain: what the lights are doing is part of what
+     the place *is*, and the hum's own noise buffers stay on Math.random()
+     under the exception core/sfx.ts spells out. */
+  const rnd = seeded(0x0b17_7005)
+
   // level 0 is lit like a spreadsheet: flat, even, shadowless
   root.add(new THREE.HemisphereLight('#ffedbc', '#96814f', 1.3))
   root.add(new THREE.AmbientLight('#cdb87f', 0.4))
@@ -772,8 +780,8 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
     // one shared clock drives every dying fixture; only ever one on screen
     flickClock += dt
     if (flickClock >= nextBurst) {
-      burstEnd = flickClock + 0.12 + Math.random() * 0.5
-      nextBurst = flickClock + 3.5 + Math.random() * 8
+      burstEnd = flickClock + 0.12 + rnd() * 0.5
+      nextBurst = flickClock + 3.5 + rnd() * 8
     }
     const inBurst = flickClock < burstEnd
     flickMat.emissiveIntensity = inBurst
@@ -795,7 +803,7 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
     // and every so often, something far away settles
     thudIn -= dt
     if (thudIn <= 0) {
-      thudIn = 25 + Math.random() * 45
+      thudIn = 25 + rnd() * 45
       distantThud()
     }
   }
@@ -805,7 +813,7 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
     stream(BR.spawn.x, BR.spawn.z)
     ensureHum()
     humTo(0.8)
-    thudIn = 18 + Math.random() * 25
+    thudIn = 18 + rnd() * 25
   }
 
   const leave = () => {

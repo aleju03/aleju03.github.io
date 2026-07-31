@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
-import { buildHouse, CEIL_H, FRONT_DOOR_X, HOUSE } from '../../game/levels/houseWorld'
+import { BACK_DOOR_X, buildHouse, CEIL_H, FRONT_DOOR_X, HOUSE } from '../../game/levels/houseWorld'
 import { buildOutsideWorld, type OutsideState } from '../../game/levels/outsideWorld'
 import { buildBackrooms } from '../../game/levels/backrooms'
 import { buildDeskRoom } from '../../game/levels/deskRoom'
@@ -14,7 +14,7 @@ import type { Level, LevelLightRig } from '../../game/levels/types'
 import { buildPaperPlane } from '../../game/props/paperPlane'
 import type { HouseModels } from '../../game/levels/houseWorld'
 import { buildPlayerBody, type PlayerPose } from '../../game/player/playerBody'
-import { packLook, sanitizeLook, type PlayerLook } from '../../game/player/look'
+import { packLook, sanitizeLook, unpackLook, type PlayerLook } from '../../game/player/look'
 import type { RagdollEnv } from '../../game/player/ragdoll'
 import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
 import { createWalkController } from '../../game/player/walkController'
@@ -41,7 +41,7 @@ import {
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
-import WorldIdentity from './WorldIdentity'
+import PauseScreen, { type PersonWhere } from './PauseScreen'
 import { createProximityVoice, type VoiceMode } from './proximityVoice'
 import type { Session } from './osContext'
 import { track } from '../../analytics'
@@ -107,14 +107,29 @@ interface CrtSceneProps {
 export type LoadStage = 'models' | 'world' | 'shaders' | 'stepping'
 
 /**
- * Standing at the front door, roughly. The room boots without the open world,
- * and this threshold is where somebody stops being a visitor to the desktop and
- * starts being someone who wants the planet — so it is where we go and get it.
+ * Standing at a way out, roughly. The room boots without the open world, and
+ * this threshold is where somebody stops being a visitor to the desktop and
+ * starts being someone who wants the planet, so it is where we go and get it.
  * Generous on purpose: paying a beat early is invisible under the cover, while
  * paying late means stepping out onto placeholder ground.
+ *
+ * There are two doors, and this used to know about one. Working the back door
+ * fetched nothing, so you walked out of it into the yard and stood on the
+ * stand-in plane with the planet never asked for.
  */
-function atFrontDoor(p: THREE.Vector3): boolean {
-  return Math.abs(p.x - FRONT_DOOR_X) < 3 && Math.abs(p.z - HOUSE.minZ) < 3.5
+function atExteriorDoor(p: THREE.Vector3): boolean {
+  return (
+    (Math.abs(p.x - FRONT_DOOR_X) < 3 && Math.abs(p.z - HOUSE.minZ) < 3.5) ||
+    (Math.abs(p.x - BACK_DOOR_X) < 3 && Math.abs(p.z - HOUSE.maxZ) < 3.5)
+  )
+}
+
+/** past the house's own footprint, by a margin, in any direction */
+function outsideShell(p: THREE.Vector3): boolean {
+  return (
+    p.x < HOUSE.minX - 1 || p.x > HOUSE.maxX + 1 ||
+    p.z < HOUSE.minZ - 1 || p.z > HOUSE.maxZ + 1
+  )
 }
 
 /** one line on the chat rail. `mine` is what tints it, not the name, so two
@@ -194,6 +209,12 @@ const loadLook = (): PlayerLook => {
   }
   return sanitizeLook(null)
 }
+/** the eight points the fleet's own bearings are rounded to, in the same
+    clockwise order and off the same north: screen north is -z */
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+const compassAt = (dx: number, dz: number) =>
+  COMPASS[(Math.round((Math.atan2(dx, -dz) / (Math.PI * 2)) * 8) + 8) % 8]
+
 /** the control line each machine puts in the HUD. Three media, three sets of
     verbs: what "space" does is a handbrake, a throttle blip or the collective
     depending on what you climbed into */
@@ -307,6 +328,8 @@ export default function CrtScene({
   const [fleetWhere, setFleetWhere] = useState<
     Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
   >([])
+  /** and its list of everyone else out there, taken at the same moment */
+  const [people, setPeople] = useState<PersonWhere[]>([])
   const fleetRef = useRef<{
     where: () => Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
     recall: (id: VehicleId) => boolean
@@ -1522,6 +1545,33 @@ export default function CrtScene({
                 ...fleet.where(v.id, camera.position),
               })),
             )
+            // and the same for the people. The roster knows everyone the
+            // server has told us about; `players` is the subset standing in
+            // our own level, so anybody in the backrooms is on the list with
+            // a name and no bearing, which is the honest answer
+            const others: PersonWhere[] = []
+            for (const [id, entry] of remote.roster) {
+              if (id === remote.you) continue
+              const body = remote.players.get(id)
+              others.push({
+                id,
+                name: entry.name,
+                admin: entry.admin,
+                shell: unpackLook(entry.look).shell,
+                ...(body
+                  ? {
+                      dist: Math.hypot(body.x - camera.position.x, body.z - camera.position.z),
+                      bearing: compassAt(
+                        body.x - camera.position.x,
+                        body.z - camera.position.z,
+                      ),
+                    }
+                  : {}),
+              })
+            }
+            // nearest first, and whoever is off in another level last
+            others.sort((a, b) => (a.dist ?? Infinity) - (b.dist ?? Infinity))
+            setPeople(others)
             // and the first pause is what builds the screen at all — see the
             // everPaused declaration
             setEverPaused(true)
@@ -1555,10 +1605,11 @@ export default function CrtScene({
             }
             if (doorVerbNow) {
               if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
-              // working the front door is the moment the world stops being
-              // optional. The cover goes up over the swing, so what the visitor
-              // sees is one short load and then an open door onto a real planet
-              if (!outside.hasWorld() && atFrontDoor(headPos)) void loadWorldCovered()
+              // working a door to the outside is the moment the world stops
+              // being optional. The cover goes up over the swing, so what the
+              // visitor sees is one short load and then an open door onto a
+              // real planet
+              if (!outside.hasWorld() && atExteriorDoor(headPos)) void loadWorldCovered()
               return true
             }
             if (vehicleNow) {
@@ -1718,6 +1769,9 @@ export default function CrtScene({
           if (zoom >= 1) {
             parked = true
             setIntro(false)
+            // the lens has stopped; spend the idle it just bought on the room
+            // behind it, which nothing has drawn yet
+            warmRoomWhenIdle()
             return // parked: stop rendering, the screen is live DOM now
           }
           raf = requestAnimationFrame(introTick)
@@ -1754,6 +1808,53 @@ export default function CrtScene({
         let pr = PR_CAP
         let emaMs = 16
         let prWait = 1.5
+
+        /*
+          The sun's map serves two casters that move at completely different
+          rates, and it used to be refreshed at the faster one's cadence for
+          both.
+
+          sky.ts already gates it: ten units of travel or seven degrees of solar
+          rotation. That is the right cadence for the *world*, whose shadows do
+          not change because you walked past them. It is the wrong cadence for
+          the player, who is in the same map: at ten units the shadow under
+          your own feet is most of a house behind you, so the walk and drive
+          ticks asked for a refresh of their own, unconditionally, on every
+          frame anything moved. That is a full depth pass over everything
+          standing inside the sun's 110-unit box, sixty times a second, all day,
+          to move one silhouette.
+
+          Ask on the error instead of on the frame. A quarter of a unit is well
+          under the width of the body casting it, so the shadow never visibly
+          detaches, and on foot that is one pass in three or four rather than
+          one per frame. The time clause covers a caster that moves without
+          travelling, such as a ragdoll settling or a suspension unloading. sky.ts's own
+          gate still runs on top, which is what keeps a turning sun honest while
+          you stand still.
+
+          The remaining waste is structural: the box is re-rendered whole to
+          move one caster. Fixing that properly means a second, tight shadow
+          camera for dynamic casters only, which is a new light, and a new
+          light is a new shader variant for every lit material in the scene, so
+          it is not a change to make casually here.
+        */
+        const SUN_FOLLOW_D2 = 0.25 * 0.25
+        const SUN_FOLLOW_MS = 100
+        const sunFollowAt = new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN)
+        let sunFollowT = -Infinity
+        const followSunShadow = (at: THREE.Vector3, now: number) => {
+          if (outside.sun.shadow.intensity <= 0.001) return
+          if (
+            Number.isFinite(sunFollowAt.x) &&
+            at.distanceToSquared(sunFollowAt) < SUN_FOLLOW_D2 &&
+            now - sunFollowT < SUN_FOLLOW_MS
+          ) {
+            return
+          }
+          sunFollowAt.copy(at)
+          sunFollowT = now
+          outside.sun.shadow.needsUpdate = true
+        }
 
         const lookAngles = (from: THREE.Vector3, target: THREE.Vector3) => {
           const dir = target.clone().sub(from).normalize()
@@ -1834,7 +1935,7 @@ export default function CrtScene({
             if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
             if (camera.position.z < 7) key.shadow.needsUpdate = true
             house.flagShadows(camera.position)
-            if (outside.sun.shadow.intensity > 0.001) outside.sun.shadow.needsUpdate = true
+            followSunShadow(v.root.position, now)
           }
           // everyone else. Kept in step with the walking branch below by hand:
           // both say where we are and play the others back, they just disagree
@@ -1905,12 +2006,21 @@ export default function CrtScene({
           // spent six seconds visibly struggling before it found the ratio it
           // was always going to end at, which is most of a first impression
           emaMs = emaMs * 0.93 + Math.min(100, rawMs) * 0.07
-          // The backstop behind the front door's own trigger. The door is the
-          // ordinary way out, but it is not the only one — an already-open door,
-          // a level cut, a future exit — and stepping past the front wall with
-          // no world under you is the one failure this must not have. Cheap: two
-          // compares, and only until the world exists.
-          if (!outside.hasWorld() && camera.position.z < HOUSE.minZ - 1) {
+          // The backstop behind the doors' own trigger. A door is the ordinary
+          // way out and not the only one: an already-open door, a level cut, a
+          // future exit. Stepping outside the shell with no world under you is
+          // the one failure this must not have, so the test is the whole
+          // footprint. It used to be `z < HOUSE.minZ - 1`, which is the front
+          // wall alone, so the back door dropped you into the yard standing on
+          // the stand-in plane and the planet was never fetched at all. Cheap:
+          // four compares against a flag that is only false until the world
+          // exists, and level-gated because the backrooms wander through these
+          // same coordinates a hundred units down.
+          if (
+            !outside.hasWorld() &&
+            levels.current.id === 'overworld' &&
+            outsideShell(camera.position)
+          ) {
             void loadWorldCovered()
           }
           prWait -= rawMs / 1000
@@ -2101,9 +2211,9 @@ export default function CrtScene({
             if (camera.position.z < 7) key.shadow.needsUpdate = true
             house.flagShadows(camera.position)
             // The sun's program stays invariant now, but its hand-managed map
-            // still follows a genuinely moving caster. This is the ordinary
-            // warmed draw, not a shader-mode switch at the front door.
-            if (outside.sun.shadow.intensity > 0.001) outside.sun.shadow.needsUpdate = true
+            // still follows a genuinely moving caster, on the error gate and not
+            // on every frame. See followSunShadow.
+            followSunShadow(camera.position, now)
           }
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
@@ -2365,51 +2475,108 @@ export default function CrtScene({
         }
 
         /**
-         * The /world lens opens facing the dead computer, so the furnished house
-         * behind it has not crossed the live camera's frustum yet. compileAsync
-         * links its programs but does not perform WebGLProgram's onFirstUse or
-         * upload geometry buffers; a visitor turning around used to pay both in
-         * one visible frame. Draw that one known view into a one-pixel viewport
-         * while BootCover still owns the screen. Outdoor drawables are already
-         * covered by warmForRoam and stay hidden here—without occlusion culling,
-         * the rear camera otherwise submits the whole world through the house.
-         * Its lights remain live so the house gets the real shader layout. This
-         * is intentionally not the old four-heading sweep described above.
+         * Pay the room's first draw into a one-pixel viewport.
+         *
+         * Every lens into this scene opens facing the computer. The /world
+         * entrance stands there, an ordinary boot flies the intro into the
+         * glass and parks, so the furnished house *behind* the camera has
+         * never crossed a frustum. compileAsync links a material's programs but
+         * does not run WebGLProgram's onFirstUse and does not upload a
+         * geometry's buffers; both happen on the first draw that touches them,
+         * and the visitor who stands up and turns round pays the whole room in
+         * the frames they turn through. Measured on an RTX 4070: one 180-degree
+         * turn cost five frames of 123-137 ms carrying 897 bufferData calls and
+         * five program links, with every other frame of the session at a locked
+         * 16.7 ms.
+         *
+         * Rather than guess which headings hide that cost, drop frustum culling
+         * for the one render. An unculled object is submitted whichever way the
+         * camera points, so a single pass touches every mesh in the room exactly
+         * once and no heading is left cold, which is what the old rear-only
+         * draw could not promise, and what made the even older four-heading
+         * sweep expensive. The outside stays hidden throughout: without
+         * occlusion culling an unculled world would submit the whole planet
+         * through the back wall, which is the trade that sweep lost on. Lights
+         * remain live so the house gets its real shader layout, and the player's
+         * body joins in, because it is invisible until the stand-up glide ends and
+         * would otherwise upload its rig on the frame it appears.
          */
-        const warmRoomRear = (at: THREE.Vector3, aim: { pitch: number; yaw: number }) => {
+        const isDrawable = (o: THREE.Object3D) =>
+          (o as THREE.Mesh).isMesh ||
+          (o as THREE.Points).isPoints ||
+          (o as THREE.Line).isLine ||
+          (o as THREE.Sprite).isSprite
+        const warmRoomDraw = (at: THREE.Vector3, aim: { pitch: number; yaw: number }) => {
           if (!webgl || !scene) return
           warmCam.fov = prefsRef.current.fov
           warmCam.aspect = W / H
           warmCam.rotation.order = 'YXZ'
           warmCam.updateProjectionMatrix()
           warmCam.position.copy(at)
-          warmCam.rotation.set(aim.pitch, aim.yaw + Math.PI, 0)
+          warmCam.rotation.set(aim.pitch, aim.yaw, 0)
           warmCam.updateMatrixWorld(true)
           applyLight(warmCam.position)
           webgl.getSize(warmSize)
           const hiddenOutside: THREE.Object3D[] = []
           outside.root.traverse((object) => {
-            if (
-              object.visible &&
-              ((object as THREE.Mesh).isMesh ||
-                (object as THREE.Points).isPoints ||
-                (object as THREE.Line).isLine ||
-                (object as THREE.Sprite).isSprite)
-            ) {
+            if (object.visible && isDrawable(object)) {
               object.visible = false
               hiddenOutside.push(object)
             }
           })
+          // after the outside is down, so its meshes are skipped here; a
+          // subtree that is hidden for another reason (the sleeping backrooms)
+          // is skipped too, and stays somebody else's cold start
+          const unculled: THREE.Object3D[] = []
+          scene.traverse((object) => {
+            if (object.visible && object.frustumCulled && isDrawable(object)) {
+              object.frustumCulled = false
+              unculled.push(object)
+            }
+          })
+          const bodyWas = body.visible
+          body.visible = true
           try {
             webgl.setScissorTest(true)
             webgl.setScissor(0, 0, 1, 1)
             webgl.setViewport(0, 0, 1, 1)
             webgl.render(scene, warmCam)
           } finally {
+            body.visible = bodyWas
+            for (const object of unculled) object.frustumCulled = true
             for (const object of hiddenOutside) object.visible = true
             webgl.setScissorTest(false)
             webgl.setViewport(0, 0, warmSize.x, warmSize.y)
           }
+        }
+        /**
+         * The same warm-up, off the boot's critical path.
+         *
+         * /world has to pre-pay it under BootCover because it opens standing and
+         * the visitor can turn immediately. An ordinary boot cannot afford that:
+         * building only the room is what took this route from 11.4 s to 4.1 s,
+         * and half a second of scenery nobody has asked for yet would be spent
+         * straight back. But that boot ends *parked on the glass*, and while the
+         * camera is parked nothing 3D renders at all: the screen is live DOM
+         * and the visitor is reading a login form. That idle window is free, and
+         * it is always several seconds long, because standing up means logging
+         * in first.
+         *
+         * requestIdleCallback with a timeout is exactly the contract wanted:
+         * take a quiet moment if there is one, take it anyway if there isn't.
+         * The flag is set on completion, not on scheduling, so a boot torn down
+         * mid-wait leaves nothing half-warmed behind.
+         */
+        let roomWarmed = false
+        const warmRoomWhenIdle = () => {
+          if (roomWarmed || disposed) return
+          const run = () => {
+            if (disposed || roaming || leaving || !webgl || !scene) return
+            roomWarmed = true
+            warmRoomDraw(SPAWN, lookAngles(SPAWN, front))
+          }
+          if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 2500 })
+          else setTimeout(run, 900)
         }
 
         const startRoam = (instant = false, spawnShadowsReady = false) => {
@@ -2577,6 +2744,9 @@ export default function CrtScene({
             render()
             if (zoom >= 1) {
               parked = true
+              // normally a no-op by now; it catches the visitor who stood up
+              // inside the idle window the intro's park had scheduled
+              warmRoomWhenIdle()
               return // parked again: the screen is live DOM from here
             }
             raf = requestAnimationFrame(flyTick)
@@ -2595,7 +2765,7 @@ export default function CrtScene({
         // the door prompt button routes here (E does the same via input)
         doorRef.current = () => {
           if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
-          if (!outside.hasWorld() && atFrontDoor(headPos)) void loadWorldCovered()
+          if (!outside.hasWorld() && atExteriorDoor(headPos)) void loadWorldCovered()
         }
         enterRef.current = () => {
           if (vehicleNow) enterVehicle(vehicleNow.id)
@@ -2730,9 +2900,22 @@ export default function CrtScene({
             // parallel. A short idle after the real shadow passes avoids making
             // the warm draw synchronously wait on work a human turn naturally
             // gives the driver time to finish.
-            await new Promise((resolve) => setTimeout(resolve, 250))
+            //
+            // It used to be a flat `setTimeout(250)`, which is a quarter second
+            // of boot spent whether or not the thread had anything left to do.
+            // Idle is the thing actually being waited for, so ask for it: this
+            // returns the moment the thread is quiet and still caps out at the
+            // same 250 ms on a thread that never is.
+            await new Promise<void>((resolve) => {
+              if (typeof requestIdleCallback === 'function') {
+                requestIdleCallback(() => resolve(), { timeout: 250 })
+              } else {
+                setTimeout(resolve, 60)
+              }
+            })
             if (disposed || !webgl || !scene || roaming || leaving) return
-            warmRoomRear(SPAWN, spawnAim)
+            roomWarmed = true
+            warmRoomDraw(SPAWN, spawnAim)
           }
           if (disposed || !webgl || !scene || roaming || leaving) return
           // startRoam reveals it only after the stand-up frame. Keeping it
@@ -2951,192 +3134,49 @@ export default function CrtScene({
           <span className="ml-2 text-stone-600">esc to change that</span>
         </p>
       )}
-      {/* The pause screen. Two columns: you on the left, the knobs on the
-          right — a pause is mostly a moment to look at where you are, and the
-          old narrow single column buried the one thing worth looking at
-          behind a button.
-
-          It is mounted from the first pause of the session onward and merely
-          hidden in between, never unmounted. The character preview owns a
-          second WebGL context, and creating one per press of escape would
-          re-link its shaders every time; this way that cost is paid once, on
-          a frame where the world is already stopped. */}
+      {/* The pause screen, which is a whole screen of its own. See
+          `PauseScreen.tsx`. It is mounted from the first pause of the session
+          onward and merely hidden in between, never unmounted: the character
+          preview inside it owns a second WebGL context, and creating one per
+          press of escape would re-link its shaders every time. This way that
+          cost is paid once, on a frame where the world is already stopped. */}
       {roam && walking && everPaused && (
-        <div
-          className={`pointer-events-none absolute inset-0 z-20 items-center justify-center ${
-            paused ? 'flex' : 'hidden'
-          }`}
-        >
-          <div aria-hidden className="absolute inset-0 bg-stone-950/55" />
-          <div className="pointer-events-auto relative flex max-h-[94%] w-[min(46rem,92%)] flex-col overflow-hidden rounded-xl border border-stone-700/70 bg-stone-950/90 font-mono shadow-2xl shadow-black/50 backdrop-blur-md">
-            <div className="flex items-baseline justify-between border-b border-stone-800/80 px-5 py-3">
-              <p className="text-[13px] text-stone-200">paused</p>
-              <p className="text-[10px] text-stone-600">esc resumes</p>
-            </div>
-
-            <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5 sm:flex-row">
-              <WorldIdentity
-                look={look}
-                onLook={setLook}
-                name={myName}
-                // a registered account owns its username, and an offline
-                // socket has nobody to ask: in both cases the field explains
-                // itself rather than accepting a name that would never take
-                onRename={
-                  mp.status === 'live' && session?.kind !== 'user'
-                    ? (name) => {
-                        setNamePrompt(false)
-                        setRename({ pending: true, error: null })
-                        setNickRef.current?.(name)
-                      }
-                    : null
-                }
-                renameNote={
-                  session?.kind === 'user'
-                    ? 'signed in — this is your account name'
-                    : 'connect to the world to pick a name'
-                }
-                pending={rename.pending}
-                error={rename.error}
-                active={paused}
-              />
-
-              {/* the knobs, in the order you reach for them */}
-              <div className="flex min-w-0 flex-1 flex-col gap-4">
-                <div>
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-[10px] tracking-wide text-stone-500 uppercase">
-                      camera
-                    </span>
-                    <span className="text-[10px] text-stone-600">v</span>
-                  </div>
-                  <div className="mt-1.5 flex gap-1.5">
-                    {([false, true] as const).map((third) => (
-                      <button
-                        key={String(third)}
-                        type="button"
-                        onClick={() => setPrefs((p) => ({ ...p, third }))}
-                        aria-pressed={prefs.third === third}
-                        className={`flex-1 cursor-pointer rounded-md border px-2 py-1.5 text-[11px] transition-colors ${
-                          prefs.third === third
-                            ? 'border-stone-400 bg-stone-800/70 text-stone-100'
-                            : 'border-stone-700 text-stone-500 hover:border-stone-500 hover:text-stone-300'
-                        }`}
-                      >
-                        {third ? 'third person' : 'first person'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <label className="block">
-                  <span className="flex items-baseline justify-between">
-                    <span className="text-[10px] tracking-wide text-stone-500 uppercase">
-                      field of view
-                    </span>
-                    <span className="text-[10px] text-stone-400 tabular-nums">{prefs.fov}°</span>
-                  </span>
-                  <input
-                    type="range"
-                    min={30}
-                    max={80}
-                    step={1}
-                    value={prefs.fov}
-                    onChange={(e) => setPrefs((p) => ({ ...p, fov: Number(e.target.value) }))}
-                    className="mt-1.5 w-full cursor-pointer accent-stone-400"
-                  />
-                </label>
-
-                <label className="block">
-                  <span className="flex items-baseline justify-between">
-                    <span className="text-[10px] tracking-wide text-stone-500 uppercase">
-                      mouse sensitivity
-                    </span>
-                    <span className="text-[10px] text-stone-400 tabular-nums">
-                      {prefs.sens.toFixed(2)}x
-                    </span>
-                  </span>
-                  <input
-                    type="range"
-                    min={0.3}
-                    max={3}
-                    step={0.05}
-                    value={prefs.sens}
-                    onChange={(e) => setPrefs((p) => ({ ...p, sens: Number(e.target.value) }))}
-                    className="mt-1.5 w-full cursor-pointer accent-stone-400"
-                  />
-                </label>
-
-                {/* where the machines are. A fixed fleet in an endless world
-                    needs this: the boat lives on a coast two and a half
-                    kilometres out, and without a bearing that is not a
-                    destination, it is a rumour. "call it over" is the way back
-                    from having stranded one — it puts the machine on the
-                    nearest place it can legally stand, which is why the boat
-                    refuses unless there is water within reach */}
-                {fleetWhere.length > 0 && (
-                  <div>
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-[10px] tracking-wide text-stone-500 uppercase">
-                        vehicles
-                      </span>
-                      <span className="text-[10px] text-stone-600">e to get in</span>
-                    </div>
-                    <ul className="mt-1.5 divide-y divide-stone-800/70 rounded-md border border-stone-800/70">
-                      {fleetWhere.map((v) => (
-                        <li
-                          key={v.id}
-                          className="flex items-center justify-between gap-2 px-2.5 py-1.5"
-                        >
-                          <span className="min-w-0 truncate text-[11px] text-stone-400">
-                            {v.label}
-                            <span className="ml-2 text-[10px] text-stone-600 tabular-nums">
-                              {v.dist < 1000
-                                ? `${Math.round(v.dist * 0.48)} m`
-                                : `${(v.dist * 0.00048).toFixed(1)} km`}{' '}
-                              {v.bearing}
-                            </span>
-                          </span>
-                          {v.dist > 80 && !driving && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!fleetRef.current?.recall(v.id))
-                                  setNotice(`no room for the ${v.label} here`)
-                              }}
-                              className="shrink-0 cursor-pointer rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-500 transition-colors hover:border-stone-500 hover:text-stone-300"
-                            >
-                              call it over
-                            </button>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 border-t border-stone-800/80 px-5 py-3">
-              {onLeave && (
-                <button
-                  type="button"
-                  onClick={onLeave}
-                  className="cursor-pointer rounded-md px-2.5 py-1.5 text-[11px] text-stone-500 transition-colors hover:text-stone-300"
-                >
-                  leave the room
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => resumeRef.current?.()}
-                className="ml-auto cursor-pointer rounded-md border border-stone-500 bg-stone-800/80 px-6 py-1.5 text-[12px] text-stone-100 transition-colors hover:border-stone-300 hover:bg-stone-700/80 hover:text-white"
-              >
-                resume
-              </button>
-            </div>
-          </div>
-        </div>
+        <PauseScreen
+          open={paused}
+          multiplayer={mp.status === 'live'}
+          prefs={prefs}
+          onPrefs={setPrefs}
+          fleet={fleetWhere}
+          people={people}
+          driving={!!driving}
+          onRecall={(id, label) => {
+            if (!fleetRef.current?.recall(id)) setNotice(`no room for the ${label} here`)
+          }}
+          identity={{
+            look,
+            onLook: setLook,
+            name: myName,
+            // a registered account owns its username, and an offline socket
+            // has nobody to ask: in both cases the field explains itself
+            // rather than accepting a name that would never take
+            onRename:
+              mp.status === 'live' && session?.kind !== 'user'
+                ? (name) => {
+                    setNamePrompt(false)
+                    setRename({ pending: true, error: null })
+                    setNickRef.current?.(name)
+                  }
+                : null,
+            renameNote:
+              session?.kind === 'user'
+                ? 'signed in, this is your account name'
+                : 'connect to the world to pick a name',
+            pending: rename.pending,
+            error: rename.error,
+          }}
+          onLeave={onLeave}
+          onResume={() => resumeRef.current?.()}
+        />
       )}
       {roam && walking && !paused && near && (
         <button

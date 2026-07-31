@@ -460,17 +460,50 @@ export function buildWorld(opts: Opts): WorldHandles {
   let curZ = Number.POSITIVE_INFINITY
   /** the live ring radius; the altitude ramp swaps it (see RADIUS_HIGH) */
   let radius = RADIUS
-  /** a running average of what one chunk costs to build, so the drain can
-      stop *before* it blows the frame rather than after. Testing the clock
-      only on the way in lets a single 27 ms jungle chunk through whatever the
-      budget says, and that one chunk is the hitch */
-  let chunkMs = 3
+  /** a running average of what one chunk costs to build, so the drain can stop
+      *before* it blows the frame rather than after. Testing the clock only on
+      the way in lets a single 27 ms jungle chunk through whatever the budget
+      says, and that one chunk is the hitch.
+
+      Kept per tier, because one average over all three is an average of things
+      that are not alike: a `bare` ocean chunk is ground and nothing else, a
+      `full` one in the middle of town carries every building, tree and fence
+      in its block. A single EMA blends them into a number that is wrong for
+      both: pessimistic enough to stop after one cheap chunk, optimistic
+      enough to start a second expensive one. The seeds are the measured shape
+      (bare cheap, full several times that); two crossings correct them. */
+  const chunkMs: Record<Tier, number> = { bare: 1.5, flora: 4, full: 6 }
 
   const key = (cx: number, cz: number) => `${cx},${cz}`
 
+  /*
+    Freeing a chunk's buffers is the one cost in here with no deadline.
+
+    By the time `drop` returns, the chunk is out of the scene graph, out of the
+    chunk map and out of the interior registry: nothing draws it and nothing
+    can find it again. All that is left is handing its geometries back to the
+    driver, and `BufferGeometry.dispose()` reaches `gl.deleteBuffer` on the
+    spot. That is fine for the one or two chunks a border crossing retires,
+    and not fine for the altitude ramp, where RADIUS_HIGH collapsing back to
+    RADIUS drops eighty-eight chunks and a few hundred buffers inside a single
+    frame, on the frame a helicopter is descending.
+
+    So queue the geometries and hand a few back per frame. Nothing observable
+    depends on when it happens.
+  */
+  const freeing: THREE.BufferGeometry[] = []
+  const FREE_PER_FRAME = 24
+  const freeSome = () => {
+    for (let i = 0; i < FREE_PER_FRAME; i++) {
+      const g = freeing.pop()
+      if (!g) break
+      g.dispose()
+    }
+  }
+
   const drop = (c: Chunk) => {
     root.remove(c.group)
-    for (const g of c.geos) g.dispose()
+    for (const g of c.geos) freeing.push(g)
     chunks.delete(key(c.cx, c.cz))
     unregisterInteriors(key(c.cx, c.cz))
   }
@@ -634,6 +667,7 @@ export function buildWorld(opts: Opts): WorldHandles {
       curZ = pcz
       restream(pcx, pcz, 0)
     }
+    freeSome()
     if (!queue.length) return
     // the budget rides the player's speed, and the drain stops when the *next*
     // chunk would not fit rather than when the last one already didn't
@@ -649,12 +683,34 @@ export function buildWorld(opts: Opts): WorldHandles {
       lens never opens onto a world still materialising */
   const drain = (budget: number, announce = true) => {
     const t0 = performance.now()
+    let built = 0
     for (;;) {
-      if (!queue.length) break
-      const spent = performance.now() - t0
-      if (spent > 0 && spent + chunkMs > budget) break
-      const w = queue.shift()
+      const w = queue[0]
       if (!w) break
+      /*
+        One chunk a frame is a floor, not an accident, and it is worth saying
+        so because the code used to express it by accident: the old guard was
+        `spent > 0 && ...`, which skipped the check on the first pass because
+        the clock had not moved yet. That worked, but it leaned on
+        `performance.now()` being coarse: a chunk built inside the timer's
+        resolution left `spent` at zero and the loop ran on, so the same line
+        could either apply the budget or ignore it depending on how the page
+        was isolated.
+
+        Say it directly instead. A chunk cannot be built in slices, and the
+        average one costs more than BUDGET_MS on its own, so applying the
+        budget to the first candidate too would leave the queue permanently
+        full and the front edge of the world permanently open inside the fog,
+        the one thing the fog exists to hide. What the budget governs is
+        everything after the first.
+
+        The real cap on a single chunk needs the build split into resumable
+        passes (ground, roads, buildings, flora, merge) so it can be stopped
+        partway. That is the same restructuring the worker move wants, and it
+        is not free to bolt on here.
+      */
+      if (built > 0 && performance.now() - t0 + chunkMs[w.tier] > budget) break
+      queue.shift()
       const have = chunks.get(key(w.cx, w.cz))
       let fade: ChunkFade | undefined
       if (announce) fade = { at: windUniforms.uTime.value }
@@ -671,7 +727,8 @@ export function buildWorld(opts: Opts): WorldHandles {
       }
       const c0 = performance.now()
       make(w.cx, w.cz, w.tier, fade)
-      chunkMs = chunkMs * 0.8 + (performance.now() - c0) * 0.2
+      chunkMs[w.tier] = chunkMs[w.tier] * 0.8 + (performance.now() - c0) * 0.2
+      built += 1
       // a chunk arriving inside the collision radius changed the boxes under
       // the player's feet, and refreshSolids only runs on a border crossing
       if (Math.max(Math.abs(w.cx - curX), Math.abs(w.cz - curZ)) <= SOLID_RADIUS) {

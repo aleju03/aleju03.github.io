@@ -294,11 +294,13 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     a.name.material.dispose()
     a.nameTex.dispose()
     a.badge.material.dispose()
-    // the body's own meshes: geometry and the six materials it built itself
+    // The six materials this body built itself, and nothing else. The
+    // geometry is deliberately left alone: every rig shares one module-level
+    // set (see playerBody.ts), so disposing it here would take the arms off
+    // everybody still standing, the local player included.
     a.group.traverse((o) => {
       const m = o as THREE.Mesh
       if (!m.isMesh) return
-      m.geometry.dispose()
       const mat = m.material
       if (Array.isArray(mat)) mat.forEach((x) => x.dispose())
       else mat.dispose()

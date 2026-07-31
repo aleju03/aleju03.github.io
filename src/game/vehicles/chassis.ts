@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { supportY, type CollisionSet, type Solid } from '../physics/collision'
+import { hullExit, supportY, type CollisionSet, type Solid } from '../physics/collision'
 import type { StepSurface } from '../core/sfx'
 import type { DriveEnv } from './types'
 
@@ -89,6 +89,8 @@ export interface SweepHit {
 const hit: SweepHit = {
   push: new THREE.Vector3(), at: new THREE.Vector3(), depth: 0, solid: null,
 }
+/** scratch for the hull branch of sweepBody, kept out of the loop */
+const exit = { px: 0, pz: 0, depth: 0 }
 
 /**
  * Where a *wall* is probed, as fractions of (halfX, halfZ): the four corners
@@ -153,6 +155,37 @@ export const sweepBody = (
   for (const b of set.boxes) {
     if (b === skip) continue
     if (b.max.y <= bottom || b.min.y >= top) continue
+    if (b.hull) {
+      /*
+        A machine is not the box that bounds it.
+
+        The AABB round a 9.4-unit car parked at forty-five degrees is half as
+        wide again as the car is long, and registry.ts's own header calls what
+        that leaves "an invisible wall parked next to the car". The walker has
+        read the oriented profile since hulls were added; this sweep did not,
+        so vehicle met vehicle, and a driver met a parked machine, through
+        two bounding boxes, at a couple of units off the paint.
+
+        Probe the same six points as a wall, against the profile instead of the
+        box. The box still fronts it as the broad phase (it is the hull's own
+        extent, so nothing that misses it can hit the hull), and the y-span
+        test above still uses the box's roofline, which can only over-report.
+      */
+      for (const [fx, fz] of PROBE) {
+        const lx = fx * halfX
+        const lz = fz * halfZ
+        const wx = centre.x + lx * c + lz * s
+        const wz = centre.z - lx * s + lz * c
+        if (!hullExit(b.hull, wx, wz, exit)) continue
+        if (exit.depth <= hit.depth) continue
+        hit.depth = exit.depth
+        hit.solid = b
+        hit.push.set(exit.px, 0, exit.pz)
+        hit.at.set(wx - centre.x, 0, wz - centre.z)
+      }
+      continue
+    }
+
     const bw = (b.max.x - b.min.x) * 0.5
     const bd = (b.max.z - b.min.z) * 0.5
 

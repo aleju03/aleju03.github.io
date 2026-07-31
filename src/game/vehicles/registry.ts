@@ -8,6 +8,7 @@ import {
   createVehicleVoice, vehicleDoor, vehicleHorn, vehicleImpact, vehicleSplash,
   type VehicleVoice,
 } from './sfx'
+import { seeded } from '../core/rand'
 import { clamp, clearAt, SURFACE_FEEL } from './chassis'
 import { buildCar } from './car'
 import { buildBoat } from './boat'
@@ -443,6 +444,13 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
 
   const dustColor = new THREE.Color()
   const FOAM = new THREE.Color('#dbeaee')
+  /* The emitters scatter, and they used to scatter out of Math.random().
+     core/rand.ts's rule is that nothing in here does: the sim has to be
+     reproducible for the headless-server plan, and "it's only particles"
+     is how a sim stops being reproducible one call site at a time. A single
+     stream is enough: the grain wanted is variety between puffs, not
+     independence between emitters. */
+  const fxRand = seeded(0x9e37_79b9)
   const emitFor = (e: Entry, dt: number, q: FleetEnvQueries) => {
     const s = e.step
     if (!s) return
@@ -463,7 +471,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
         while (e.emit > 1) {
           e.emit -= 1
           const a = (e.emit * 37.7 + performance.now() * 0.011) % (Math.PI * 2)
-          const r = 2.5 + Math.random() * 5.5
+          const r = 2.5 + fxRand() * 5.5
           const gy = q.groundAt(p.x + Math.cos(a) * r, p.z + Math.sin(a) * r)
           dustColor.setHex(feel.dust)
           effects.emit(
@@ -485,8 +493,8 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       e.emit += dt * (12 + 70 * k)
       while (e.emit > 1) {
         e.emit -= 1
-        const side = Math.random() < 0.5 ? 1 : -1
-        const bow = Math.random() < 0.55
+        const side = fxRand() < 0.5 ? 1 : -1
+        const bow = fxRand() < 0.55
         const along = bow ? -3.6 : 6.0
         const across = bow ? 1.5 * side : 1.1 * side
         const y = (q.waterY ?? p.y) + 0.1
@@ -510,7 +518,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     e.emit += dt * 70 * throwUp
     while (e.emit > 1) {
       e.emit -= 1
-      const side = Math.random() < 0.5 ? 1 : -1
+      const side = fxRand() < 0.5 ? 1 : -1
       const bx = p.x + fx * 2.6 + rx * 1.5 * side
       const bz = p.z + fz * 2.6 + rz * 1.5 * side
       dustColor.setHex(feel.dust)

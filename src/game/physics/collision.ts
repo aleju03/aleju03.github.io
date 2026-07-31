@@ -40,6 +40,37 @@ import * as THREE from 'three'
   resolveXZ/supportY: swap the linear scan for a spatial hash over the same
   CollisionSet contract (or graduate to a real physics lib) without touching
   any caller.
+
+  That is still the right shape, and it is worth writing down what makes it
+  more than an afternoon, because the hard part is not the grid.
+
+  `boxes` is a plain array that many owners mutate *in place*, with no
+  notification and no frame boundary: `fitHull` rewrites all six numbers of
+  every vehicle box each tick, the registry empties whichever one is being
+  driven, house and shop doors collapse a blocker to a point and set it back
+  when they close, debris empties one when it is knocked down, and the chunk
+  streamer's `refreshSolids` filters the whole array and re-pushes on every
+  border crossing. An index built over that goes stale silently, and a stale
+  broad phase is not a slow frame, it is a player walking through a wall.
+
+  Three properties make the difference and are worth designing to:
+   - Shrinking is free. A door or a debris box that gets smaller is still
+     inside the cells it was indexed into, so the index merely over-reports a
+     candidate and the existing per-box test rejects it. Only *growth* and
+     *movement* can be missed.
+   - The movers identify themselves. A box that moves carries a `hull`, which
+     is what a hull is for, so vehicles can stay in a short linear tail that every
+     query scans, and never enter the grid at all.
+   - Doors are the remaining case: they grow back to a `closedMin/closedMax`
+     that is fixed at construction, so indexing that envelope rather than the
+     live extent keeps them honest for free.
+
+  What is still needed is one explicit per-frame resync (the natural site is
+  `Level.update`, which CrtScene already calls exactly once a frame from both
+  the walk and drive ticks) plus a rebuild whenever the array's length changes.
+  Get the ordering wrong against the fleet tick and the bug is a one-frame
+  clip through a moving car, which is exactly the kind of thing that needs
+  driving to find rather than reading.
 */
 
 /** hard outer clamp, pre-shrunk by whatever shoulder margin the level wants */
@@ -326,6 +357,49 @@ export const resolveXZ = (
     else if (m === exitN) p.z = b.min.z
     else p.z = b.max.z
   }
+}
+
+/** where a world point sits inside a hull, and the shortest way out of it.
+    Returns false when the point is outside the profile; otherwise `depth` is
+    the distance to the nearest edge and (`px`, `pz`) is the world-space vector
+    that takes the point there.
+
+    Same geometry as `pushOutHull` below, asked as a measurement rather than as
+    a move: `pushOutHull` shoves the walker out of one solid on the spot, while
+    a vehicle sweep has to compare contacts across every solid it overlaps and
+    act on the deepest one only (adding several pushes together in a corner
+    ejects a car across the street). */
+export const hullExit = (
+  h: Hull,
+  x: number,
+  z: number,
+  out: { px: number; pz: number; depth: number },
+) => {
+  const dx = x - h.x
+  const dz = z - h.z
+  const lx = dx * h.cos - dz * h.sin
+  const lz = dx * h.sin + dz * h.cos
+  stationAt(h, lz, prof)
+  if (prof.hw <= 0) return false
+  if (lx <= -prof.hw || lx >= prof.hw) return false
+  const st = h.st
+  const exitL = lx + prof.hw
+  const exitR = prof.hw - lx
+  const exitN = lz - st[0].z
+  const exitF = st[st.length - 1].z - lz
+  const m = Math.min(exitL, exitR, exitN, exitF)
+  let nx = lx
+  let nz = lz
+  if (m === exitL) nx = -prof.hw
+  else if (m === exitR) nx = prof.hw
+  else if (m === exitN) nz = st[0].z
+  else nz = st[st.length - 1].z
+  const ox = nx - lx
+  const oz = nz - lz
+  out.depth = m
+  out.px = ox * h.cos + oz * h.sin
+  out.pz = -ox * h.sin + oz * h.cos
+  return true
 }
 
 /** the same push, done in the hull's own frame. The four ways out are the two

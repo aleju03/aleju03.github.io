@@ -21,9 +21,8 @@ import type { Slot } from './parts'
   world per update. Instead the env map is *painted*: a 128x64 equirectangular
   canvas holding the sky gradient, a horizon haze band, the ground colour and
   a hot sun blob, drawn from the same numbers sky.ts is already computing.
-  It is repainted only when the day has moved enough to notice, because three
-  re-runs its PMREM pass whenever the source texture is flagged, and that is a
-  cost worth paying twice a minute and not sixty times a second.
+  It is painted once, from the first sky the fleet is handed. See the note on
+  `setDay` for why repainting it was measurably pointless.
 
   The day cycle then drives `envMapIntensity` and a global tint on every
   material here, so a car parked at midnight is a dark shape with a cold sheen
@@ -260,23 +259,43 @@ export function createVehicleMaterials(track: {
     paint, paint2, trim, chrome, metal, glass, rubber, dark, lamp, lampRed, seat,
   }
 
-  // repainting the env map re-runs three's PMREM pass, so it happens on a
-  // coarse ladder of the day rather than continuously: sixteen steps over a
-  // full cycle is one repaint every thirty seconds of the 480s day, and the
-  // difference between two adjacent steps is invisible on a curved flank
-  let lastStep = -1
+  /* The env map is painted once, from the first sky this fleet is handed, and
+     never repainted. That is not a compromise. It is what was already
+     happening, minus the work.
+
+     It used to climb a sixteen-step ladder of the day, on the stated theory
+     that three re-runs its PMREM pass whenever the source texture is flagged.
+     It does not, for this texture. What the shader samples is not the equirect
+     canvas but the cubeUV render target WebGLCubeUVMaps builds out of it, and
+     `getPMREM` only rebuilds that target when `texture.isRenderTargetTexture`
+     is true (three 0.184.0). A CanvasTexture is never one, so the target is
+     generated on the first draw, cached against the texture, and returned
+     unchanged for the rest of the session. Every later `needsUpdate` repainted
+     8192 pixels and re-uploaded them for reflections that could not see them.
+
+     The timing was the other half of the bug. The ladder quantised `day`, the
+     smoothstepped 0..1 curve out of sky.ts rather than the clock, and `day` only
+     moves during twilight. So all sixteen no-op repaints fired inside the ~21
+     second dusk window and none of them fired anywhere else; the old comment's
+     "twice a minute" was never the shape it had.
+
+     What actually carries the day cycle here is `envMapIntensity` and the tint
+     below, which is why the frozen reflection has never been visible. The
+     known limitation is that a session that boots at night keeps a night sky
+     in the map through the following noon; fixing that properly means owning a
+     PMREMGenerator (and therefore the renderer) in here, which is a bigger
+     change than the reflection is worth. */
+  let envPainted = false
   const skyC = new THREE.Color()
   const groundC = new THREE.Color()
   const tinted: THREE.Material[] = [paint, paint2, trim, chrome, metal, glass, lamp, lampRed]
 
   const setDay = (day: number, night: number, fog: THREE.Color, sunEl: number) => {
-    const step = Math.round(day * 15)
-    if (envCtx && envTex && step !== lastStep) {
-      lastStep = step
-      const d = step / 15
-      skyC.lerpColors(SKY_NIGHT, SKY_DAY, d)
-      groundC.lerpColors(GROUND_NIGHT, GROUND_DAY, d)
-      paintEnv(envCtx, ENV_W, ENV_H, skyC, fog, groundC, sunEl, d)
+    if (envCtx && envTex && !envPainted) {
+      envPainted = true
+      skyC.lerpColors(SKY_NIGHT, SKY_DAY, day)
+      groundC.lerpColors(GROUND_NIGHT, GROUND_DAY, day)
+      paintEnv(envCtx, ENV_W, ENV_H, skyC, fog, groundC, sunEl, day)
       envTex.needsUpdate = true
     }
     // reflections fade with the light rather than the material changing: a
