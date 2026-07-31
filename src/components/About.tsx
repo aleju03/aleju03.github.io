@@ -1,4 +1,6 @@
 import { Reveal } from './Reveal'
+import { SectionHeading } from './SectionHeading'
+import { TechMarquee } from './TechMarquee'
 import { ToolsGrid } from './ToolsGrid'
 import { linkifyBio } from './linkifyBio'
 import { useI18n } from '../i18n'
@@ -7,14 +9,16 @@ export function About() {
   const { t } = useI18n()
 
   return (
-    <section id="about" className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800">
+    <section
+      id="about"
+      data-station="about"
+      className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800"
+    >
       <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
-        <div className="grid items-start gap-12 lg:grid-cols-[1fr_minmax(0,360px)] lg:gap-20">
+        <SectionHeading index="04">{t.sections.about}</SectionHeading>
+        <div className="mt-12 grid items-start gap-12 lg:grid-cols-[1fr_minmax(0,360px)] lg:gap-20">
           <Reveal>
-            <h2 className="text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
-              {t.sections.about}
-            </h2>
-            <div className="mt-6 max-w-[65ch] space-y-4 leading-relaxed text-stone-600 dark:text-stone-400">
+            <div className="max-w-[65ch] space-y-4 leading-relaxed text-stone-600 dark:text-stone-400">
               {t.about.paragraphs.map((paragraph) => (
                 <p key={paragraph}>{linkifyBio(paragraph)}</p>
               ))}
@@ -38,6 +42,8 @@ export function About() {
           </div>
         </Reveal>
       </div>
+      {/* the same words as type: decoration under the list, not instead of it */}
+      <TechMarquee />
     </section>
   )
 }

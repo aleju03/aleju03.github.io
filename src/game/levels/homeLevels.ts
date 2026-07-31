@@ -49,7 +49,13 @@ export function makeHomeLevels(
     // the terrain, which is also exactly 0 across the property: the house is
     // authored at y=0 and the generator holds a flat pad under it
     groundYAt: outside.groundYAt,
-    waterY: outside.waterY,
+    // a GETTER, not a snapshot: the sea does not exist until the world is
+    // attached (outsideWorld builds the room first and streams the planet in
+    // on demand), and this level object is constructed on the first frame —
+    // reading the value here would freeze the waterline at "no sea, ever"
+    get waterY() {
+      return outside.waterY
+    },
     collision: makeCollisionSet(
       { minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 },
       sharedObstacles,

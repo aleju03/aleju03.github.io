@@ -2,14 +2,17 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Nav } from './Nav'
 import { Progress } from './Progress'
 import { CommandPalette } from './CommandPalette'
+import { Cursor } from './Cursor'
 import { Hero } from './Hero'
 import { WorkGrid } from './WorkGrid'
 import { MoreProjects } from './MoreProjects'
 import { Experience } from './Experience'
 import { About } from './About'
+import { Machine } from './Machine'
 import { Contact } from './Contact'
 import { BOOT_OS_EVENT, OPEN_TERMINAL_EVENT } from '../events'
 import { isOsPath, isPcPath } from '../version'
+import { wireAudio } from '../audio/wire'
 
 const Terminal = lazy(() => import('./Terminal').then((m) => ({ default: m.Terminal })))
 const AlejOS = lazy(() => import('./os/AlejOS'))
@@ -79,11 +82,16 @@ function AlejOSLoader() {
 }
 
 export default function FullPortfolio() {
+  // the score attaches to the events spine, not to components; it waits for a
+  // gesture before it loads Howler or renders a single sample
+  useEffect(wireAudio, [])
+
   return (
     <>
       <Progress />
       <Nav />
       <CommandPalette />
+      <Cursor />
       <TerminalLoader />
       <AlejOSLoader />
       <main>
@@ -92,6 +100,7 @@ export default function FullPortfolio() {
         <MoreProjects />
         <Experience />
         <About />
+        <Machine />
       </main>
       <Contact />
     </>

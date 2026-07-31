@@ -9,6 +9,9 @@ import { onOverlayChange, overlayIsOpen, pageIsCovered } from '../overlay'
 import { provideWarpOrigin, warpToOs } from '../warp'
 import { THEME_FADE_MS } from '../theme'
 import { useI18n } from '../i18n'
+import { approach } from '../scroll/progress'
+import { onStationsChange, type StationMap } from '../scroll/stations'
+import { createFlightPath } from '../scroll/flightPath'
 
 /*
   The hero name as chunky 3D letter blocks. The canvas covers the WHOLE hero
@@ -41,6 +44,14 @@ import { useI18n } from '../i18n'
   scrolls along to keep it in view. Keys (including Space, which is purely
   the swoop) only register while the plane is on screen and the user
   isn't typing; arrow keys are left alone so the page always scrolls.
+
+  Because that world spans the whole document, it also carries the site's
+  spine: the flight path (src/scroll/flightPath.ts), a blue dashed contrail
+  drawn down the page by the scroll position, from the name to the machine,
+  with folded-paper waypoints opening at each section. It is laid out from the
+  station rects in document pixels using the same pinning math as `holder`,
+  and it is the reason this component smooths the scroll offset itself instead
+  of reading window.scrollY raw — see `approach` in src/scroll/progress.ts.
 
   At the foot of the page the same world holds the wreck: the OS's own
   computer (the AJU 700FD from CrtScene) lying tilted above the footer,
@@ -109,6 +120,10 @@ export default function BlockName({
     // maxTouchPoints catches mobile emulators that report a fine pointer
     const hintEl = hintRef.current
     const coarse = isCoarsePointer()
+    // Hero only mounts this component when motion is allowed, so this is
+    // belt-and-braces — but the flight path reads it to decide whether to draw
+    // itself statically, and that shouldn't depend on a caller's gating
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const canFlyControls =
       !coarse &&
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
@@ -279,6 +294,33 @@ export default function BlockName({
         outlineMat.dispose()
         streakMat.dispose()
       })
+
+      // the page's spine. It hangs off `scene` rather than `holder` because it
+      // is pinned to the document in its own right, and it borrows the letters'
+      // materials so the theme fade above reaches it without a second observer
+      const flight = createFlightPath({
+        accentColor: accentFaceMat.color,
+        paperMaterial: faceMat,
+        inkMaterial: outlineMat,
+        reduce,
+        coarse,
+      })
+      scene.add(flight.object)
+      disposers.push(() => {
+        scene.remove(flight.object)
+        flight.dispose()
+      })
+      let stations: StationMap | null = null
+      let viewReady = false
+      const relayoutFlight = () => {
+        if (viewReady && stations) flight.layout(stations, view)
+      }
+      disposers.push(
+        onStationsChange((next) => {
+          stations = next
+          relayoutFlight()
+        }),
+      )
       // the scene shrinks with the name on small screens, which left the plane
       // looking like a crumb on phones; scale it back up so it stays a toy
       const planeScale = coarse ? 1.7 : 1
@@ -535,7 +577,14 @@ export default function BlockName({
       let wreckHoverTarget = 0
       let wreckCursor: THREE.Mesh | null = null
       let wreckNode: THREE.Group | null = null
+      // the machine act scrubs the tube from dead to lit, so the glass material
+      // has to be reachable from the frame loop
+      let wreckGlassMat: THREE.MeshStandardMaterial | null = null
       const WRECK_TILT_Z = 0.26
+      // the dumped pose the wreck lies in until the machine act stands it up
+      const WRECK_REST = { x: 0.12, y: -0.55 }
+      const GLASS_DEAD = new THREE.Color('#0d100e')
+      const GLASS_LIT = new THREE.Color('#101c3a')
       if (wreckStage && wreckBtn) {
         new GLTFLoader().load('/os/models/computer.glb', (gltf) => {
           if (disposed) return
@@ -556,6 +605,7 @@ export default function BlockName({
             // (raycast, like CrtScene does) since it tilts up on its stand
             const glassMat = new THREE.MeshStandardMaterial({ color: '#0d100e', roughness: 0.35 })
             glass.material = glassMat
+            wreckGlassMat = glassMat
             model.updateMatrixWorld(true)
             const gb = new THREE.Box3().setFromObject(glass)
             const gc = gb.getCenter(new THREE.Vector3())
@@ -683,6 +733,8 @@ export default function BlockName({
         flightBounds.minX = -halfW - holder.position.x
         flightBounds.maxX = halfW - holder.position.x
         layoutWreck()
+        viewReady = true
+        relayoutFlight()
       }
       layout()
       // the parking spot sits to the right of the name, which on phones can
@@ -1043,6 +1095,7 @@ export default function BlockName({
       let raf = 0
       let revealed = false
       let last = performance.now()
+      let smoothScroll = window.scrollY
       const tick = (now: number) => {
         if (paused) {
           raf = 0
@@ -1056,6 +1109,32 @@ export default function BlockName({
         // the world is document-pinned: the camera rides the scroll position
         const scrollY = window.scrollY
         camera.position.y = -scrollY * view.wpp
+
+        // the flight path follows an eased scroll rather than the raw offset,
+        // so the line has inertia while the page itself scrolls natively
+        smoothScroll = approach(smoothScroll, scrollY, dt)
+        flight.update(smoothScroll, view.H, dt)
+
+        // The machine act pins its stage to the viewport with position:sticky,
+        // which means the wreck's DOCUMENT position moves every frame it is on
+        // screen — layoutWreck's `wr.top + window.scrollY` is only stable for
+        // an element in normal flow. Re-pin it while the act is in view (one
+        // rect read; the model is small) and scrub the act from the same rect.
+        let machineProgress = 0
+        const machineStation = stations?.byId.machine
+        if (machineStation) {
+          const top = machineStation.top - scrollY
+          if (top < view.H && top + machineStation.height > 0) {
+            layoutWreck()
+            // the act plays out over the section's scroll runway (its height
+            // less the one viewport the sticky stage occupies), front-loaded
+            // so the machine is standing before the CTA needs to be readable
+            const runway = Math.max(1, (machineStation.height - view.H) * 0.55)
+            machineProgress = THREE.MathUtils.clamp((scrollY - machineStation.top) / runway, 0, 1)
+          } else if (top <= 0) {
+            machineProgress = 1
+          }
+        }
 
         tiltX += (tiltTargetX - tiltX) * 0.06
         tiltY += (tiltTargetY - tiltY) * 0.06
@@ -1242,8 +1321,26 @@ export default function BlockName({
         if (wreckNode) {
           const pulling = wreckSuck > 0 || wreckCapture !== null
           wreckHover += (Math.max(wreckHoverTarget, pulling ? 1 : 0) - wreckHover) * 0.08
-          wreckNode.rotation.z = WRECK_TILT_Z * (1 - wreckHover * 0.45)
-          if (wreckCursor) wreckCursor.visible = pulling ? t % 0.3 < 0.17 : t % 1.06 < 0.58
+          // the machine act stands the wreck up as you scroll into it: the
+          // dumped tilt unwinds, the tube turns to face you, and the dead glass
+          // warms toward phosphor. `machine` is 0 everywhere else, so the
+          // hover/suction behaviour below is untouched off the act
+          const machine = machineProgress
+          const rise = machine * machine * (3 - 2 * machine)
+          wreckNode.rotation.z = WRECK_TILT_Z * (1 - wreckHover * 0.45) * (1 - rise)
+          wreckNode.rotation.x = WRECK_REST.x * (1 - rise)
+          wreckNode.rotation.y = WRECK_REST.y * (1 - rise * 0.82)
+          if (wreckGlassMat) {
+            wreckGlassMat.color.lerpColors(GLASS_DEAD, GLASS_LIT, rise)
+            wreckGlassMat.emissive.lerpColors(GLASS_DEAD, GLASS_LIT, rise * 0.9)
+          }
+          // a woken machine blinks its cursor with intent, like it is waiting
+          // for you to type; a dead one just idles
+          if (wreckCursor) {
+            const blink = pulling ? 0.3 : rise > 0.5 ? 0.52 : 1.06
+            const duty = pulling ? 0.17 : rise > 0.5 ? 0.3 : 0.58
+            wreckCursor.visible = t % blink < duty
+          }
         }
         // fly into the dead screen and the machine PULLS: crossing into the
         // glass radius at speed starts a suction the plane can still boost

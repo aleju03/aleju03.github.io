@@ -28,6 +28,12 @@ import type { LoadStage } from './CrtScene'
   it), and the compositor walks the bar there on its own. If a stage finishes
   early the next target simply takes over mid-transition.
 
+  This is no longer only a boot cover. The room now loads without the open
+  world, so opening the front door pulls the planet in behind this same cover
+  mid-session. `gone` latches on purpose — once a run is over this unmounts for
+  good — and AlejOS gives it a fresh `key` per load run rather than asking it to
+  un-latch, which keeps the fade honest on every run instead of only the first.
+
   Copy is English only, like the rest of AlejOS: the desktop, its windows and
   the walk HUD are all in-fiction and none of them are translated.
 */
@@ -36,13 +42,17 @@ import type { LoadStage } from './CrtScene'
     there. The durations are the measured wall clock of a cold first load —
     it is better for the bar to arrive early and wait than to still be at a
     tenth when the room appears */
-const STAGES: Record<LoadStage, { to: number; ms: number; label: string }> = {
+/** 'stepping' is StepOutCover's, not this component's — see LoadStage */
+const STAGES: Record<Exclude<LoadStage, 'stepping'>, { to: number; ms: number; label: string }> = {
   models: { to: 0.14, ms: 700, label: 'loading the room' },
   world: { to: 0.3, ms: 1200, label: 'building the world' },
   shaders: { to: 0.93, ms: 7000, label: 'compiling shaders' },
 }
 
-export default function BootCover({ stage }: { stage: LoadStage | null }) {
+/** the stages this cover draws; 'stepping' belongs to StepOutCover */
+type BootStage = Exclude<LoadStage, 'stepping'>
+
+export default function BootCover({ stage }: { stage: BootStage | null }) {
   const [gone, setGone] = useState(false)
   const done = stage === null
 

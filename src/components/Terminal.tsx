@@ -57,7 +57,7 @@ const HELP: [string, string][] = [
   ['theme', 'toggle light/dark'],
   ['boot', 'start AlejOS'],
   ['pc', 'AlejOS, no 3D'],
-  ['room', 'the room, no PC'],
+  ['world', 'the open world, no PC'],
   ['sudo hire-me', 'try it'],
   ['clear', 'clear screen (ctrl+l)'],
   ['exit', 'close terminal'],
@@ -115,7 +115,7 @@ export function TerminalView({ onExit, insideOS }: TerminalViewProps) {
         print(
           <div className="grid grid-cols-[10rem_1fr] gap-x-4">
             {HELP.filter(
-              ([c]) => !(insideOS && (c === 'boot' || c === 'pc' || c === 'room')),
+              ([c]) => !(insideOS && (c === 'boot' || c === 'pc' || c === 'world')),
             ).map(([c, desc]) => (
               <div key={c} className="contents">
                 <span className="text-blue-400">{c}</span>
@@ -215,23 +215,27 @@ export function TerminalView({ onExit, insideOS }: TerminalViewProps) {
       case 'boot':
       case 'alejos':
       case 'pc':
-      case 'room': {
+      case 'room':
+      case 'world': {
         if (insideOS) {
           print(<p className="text-stone-400">AlejOS is already running</p>)
           break
         }
-        // the two halves of the session, each reachable on its own: `pc` and
-        // `boot flat` skip the 3D room and go straight to the desktop, while
-        // `room` and `boot room` skip the machine and start you on your feet
+        // the ends of the session, each reachable on its own: `pc` and `boot
+        // flat` skip the 3D entirely, while `world` and `boot world` load the
+        // planet up front and start you on your feet. `room` is the old
+        // spelling of `world`, kept so muscle memory still works. A plain
+        // `boot` gets the room and streams the world only if you walk out.
         const flat = head === 'pc' || arg === 'flat'
-        const room = !flat && (head === 'room' || arg === 'room')
+        const world =
+          !flat && (head === 'world' || head === 'room' || arg === 'world' || arg === 'room')
         print(
           <p className="text-stone-300">
-            {room ? 'stepping into the room...' : `booting AlejOS${flat ? ' (no 3D)' : ''}...`}
+            {world ? 'loading the world...' : `booting AlejOS${flat ? ' (no 3D)' : ''}...`}
           </p>,
         )
         setTimeout(() => {
-          window.dispatchEvent(new CustomEvent(BOOT_OS_EVENT, { detail: { flat, room, via: 'terminal' } }))
+          window.dispatchEvent(new CustomEvent(BOOT_OS_EVENT, { detail: { flat, world, via: 'terminal' } }))
           onExit?.()
         }, 500)
         break

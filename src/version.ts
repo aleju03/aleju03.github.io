@@ -94,30 +94,45 @@ export function projectPath(slug: string) {
 export const HOME_PATH = '/'
 
 /**
- * AlejOS owns the address bar while it runs, and it has three entrances — the
- * same world, entered at different points:
+ * AlejOS owns the address bar while it runs, and it has three entrances,
+ * ordered here by how much they cost to load:
  *
- * - `/alejOS` — the full session: POST, boot, login, the desktop on a CRT
- *   inside the 3D room, which you can stand up from and walk.
- * - `/pc` — the machine on its own. The same desktop in its flat bezel, with
- *   no CrtScene, no game runtime and no portfolio page mounted behind it, so
+ * - `/pc` — the machine on its own. The desktop in its flat bezel, with no
+ *   CrtScene, no game runtime and no portfolio page mounted behind it, so
  *   nothing three.js-shaped ever loads.
- * - `/room` — the other half: the room, with the machine already dark. It
- *   skips the whole boot sequence and starts you on your feet in the house.
+ * - `/alejOS` — the full session: POST, boot, login, the desktop on a CRT
+ *   inside the 3D room. **The room and nothing past it**: the house, its
+ *   furniture and the sky out of its windows, but not the procedural planet
+ *   the front door opens onto. Stand up and walk the house for free; open the
+ *   front door and the world streams in behind a cover, once.
+ * - `/world` — the far end: everything loaded up front, the machine already
+ *   dark, and you start on your feet ready to walk out.
  *
- * `/pc` and `/room` are opposite ends of the same session, and each is the way
- * to ask deliberately for the half you came for. Small/touch/reduced-motion
- * devices land in the flat rendering from any of them — there is no room to
- * walk without the 3D — so `/room` degrades to the ordinary boot.
+ * That split is the point. Most visitors come for the desktop, and making them
+ * wait on an endless planet they may never look at was several seconds of
+ * chunk building and outdoor shader compilation charged to a boot that did not
+ * need it. `/pc` and `/world` are the two ends; `/alejOS` is the middle that
+ * pays for the planet only if you ask for it.
+ *
+ * Small/touch/reduced-motion devices land in the flat rendering from any of
+ * them — there is no room to walk without the 3D — so `/world` degrades to the
+ * ordinary boot.
  */
 export const OS_PATH = '/alejOS'
 export const PC_PATH = '/pc'
-export const ROOM_PATH = '/room'
+export const WORLD_PATH = '/world'
+/** the old name for WORLD_PATH; still honoured so shared links keep working */
+export const LEGACY_WORLD_PATH = '/room'
 
 /** true on any AlejOS entrance */
 export function isOsPath(pathname: string = window.location.pathname): boolean {
   const path = pathname.toLowerCase()
-  return path === OS_PATH.toLowerCase() || path === PC_PATH || path === ROOM_PATH
+  return (
+    path === OS_PATH.toLowerCase() ||
+    path === PC_PATH ||
+    path === WORLD_PATH ||
+    path === LEGACY_WORLD_PATH
+  )
 }
 
 /** true only on the flat entrance */
@@ -125,9 +140,10 @@ export function isPcPath(pathname: string = window.location.pathname): boolean {
   return pathname.toLowerCase() === PC_PATH
 }
 
-/** true only on the walk-the-room entrance */
-export function isRoomPath(pathname: string = window.location.pathname): boolean {
-  return pathname.toLowerCase() === ROOM_PATH
+/** true only on the walk-the-world entrance (or its old /room spelling) */
+export function isWorldPath(pathname: string = window.location.pathname): boolean {
+  const path = pathname.toLowerCase()
+  return path === WORLD_PATH || path === LEGACY_WORLD_PATH
 }
 
 /** client-side navigation for the simple version's real URLs */

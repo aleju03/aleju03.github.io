@@ -12,6 +12,7 @@ import {
 import { github, linkedin } from '../data/projects'
 import { currentTheme, onThemeChange, toggleThemeFrom, watchSystemTheme } from '../theme'
 import { OPEN_PALETTE_EVENT } from '../events'
+import { onSoundChange, setSoundEnabled, soundEnabled } from '../audio'
 import { useI18n } from '../i18n'
 
 const isMac = /mac/i.test(navigator.platform)
@@ -23,6 +24,7 @@ const LANGUAGES = [
 
 export function Nav() {
   const [theme, setThemeState] = useState(() => currentTheme())
+  const [sound, setSound] = useState(() => soundEnabled())
   const [langOpen, setLangOpen] = useState(false)
   const langRef = useRef<HTMLDivElement>(null)
   const { language, setLanguage, t } = useI18n()
@@ -36,9 +38,11 @@ export function Nav() {
   useEffect(() => {
     const offChange = onThemeChange(setThemeState)
     const offSystem = watchSystemTheme()
+    const offSound = onSoundChange(setSound)
     return () => {
       offChange()
       offSystem()
+      offSound()
     }
   }, [])
 
@@ -153,6 +157,29 @@ export function Nav() {
               </ul>
             )}
           </div>
+          {/* the score's kill switch. It reads as an equaliser rather than a
+              speaker: three bars that stand still when the sound is off and
+              breathe when it is on, so the state is legible without a label */}
+          <button
+            type="button"
+            onClick={() => setSoundEnabled(!sound)}
+            aria-pressed={sound}
+            aria-label={sound ? t.sound.on : t.sound.off}
+            className="group cursor-pointer rounded-full p-2 text-stone-500 transition-colors hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
+          >
+            <span aria-hidden className="flex h-[18px] w-[18px] items-end justify-center gap-[2.5px]">
+              {[0, 1, 2].map((bar) => (
+                <span
+                  key={bar}
+                  className={`w-[3px] rounded-full bg-current ${sound ? 'nav-eq' : ''}`}
+                  style={{
+                    height: sound ? '40%' : '22%',
+                    animationDelay: `${bar * 0.18}s`,
+                  }}
+                />
+              ))}
+            </span>
+          </button>
           <button
             type="button"
             onClick={(e) => toggleThemeFrom(e.clientX || innerWidth - 40, e.clientY || 32)}

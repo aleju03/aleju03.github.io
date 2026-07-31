@@ -1,9 +1,9 @@
 import { ArrowUpRightIcon, GithubLogoIcon, LinkedinLogoIcon } from '@phosphor-icons/react'
 import { email, github, linkedin } from '../data/projects'
 import { BOOT_OS_EVENT, OPEN_CHOOSER_EVENT } from '../events'
-import { warpToOs } from '../warp'
 import { LocalTime } from './LocalTime'
 import { Reveal } from './Reveal'
+import { SectionHeading } from './SectionHeading'
 import { useI18n } from '../i18n'
 import { track } from '../analytics'
 
@@ -25,15 +25,14 @@ export function Contact() {
         </Reveal>
       </div>
       <div className="relative mx-auto max-w-6xl px-5 py-20 sm:px-8 lg:py-24">
+        <SectionHeading index="06">{t.sections.contact}</SectionHeading>
         <Reveal>
-          <h2 className="text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
-            {t.sections.contact}
-          </h2>
-          <p className="mt-4 max-w-md leading-relaxed text-stone-600 dark:text-stone-400">
+          <p className="mt-6 max-w-md leading-relaxed text-stone-600 dark:text-stone-400">
             {t.contact.body}
           </p>
           <a
             href={`mailto:${email}`}
+            data-cursor="link"
             onClick={() => track('contact_click', { target: 'email' })}
             className="group mt-10 inline-flex max-w-full flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight text-blue-600 transition-colors hover:text-blue-700 sm:text-4xl lg:text-5xl dark:text-blue-400 dark:hover:text-blue-300"
           >
@@ -58,25 +57,9 @@ export function Contact() {
             </button>
           </p>
         </Reveal>
-        {/* the OS's own machine, dumped in the corner: BlockName draws the 3D
-            wreck over the stage span and reveals this button once the model
-            loads. Clicking it boots AlejOS; crashing the paper plane into its
-            screen takes the same trip. On large screens it shares the contact
-            block's vertical band (absolute, bottom right) so it adds no
-            height; on small ones it stacks below the email. Where the 3D
-            scene never mounts the button stays hidden and the page ends at
-            the footer as before. */}
-        <div className="flex justify-end">
-          <button
-            type="button"
-            style={{ display: 'none' }}
-            onClick={() => warpToOs()}
-            aria-label={t.contact.wreckAria}
-            className="mt-10 flex cursor-pointer flex-col items-center lg:absolute lg:right-8 lg:bottom-0 lg:mt-0"
-          >
-            <span id="os-wreck" aria-hidden className="block h-32 w-64 sm:h-40 sm:w-80" />
-          </button>
-        </div>
+        {/* the OS's machine used to sit in this corner as a small aside; it now
+            has its own chapter above (Machine.tsx), which owns the #os-wreck
+            stage BlockName draws the 3D model over */}
       </div>
       <footer className="border-t border-stone-200 dark:border-stone-800">
         <div className="mx-auto grid max-w-6xl gap-3 px-5 py-6 sm:px-8 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-center">

@@ -1,5 +1,6 @@
 import { ArrowUpRightIcon } from '@phosphor-icons/react'
 import { Reveal } from './Reveal'
+import { SectionHeading } from './SectionHeading'
 import { FlagDoodle } from './Doodles'
 import { useI18n, type Language } from '../i18n'
 import { STOPS, type Stop } from '../data/experience'
@@ -60,17 +61,16 @@ export function Experience() {
   return (
     <section
       id="experience"
+      data-station="experience"
       className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800"
     >
       <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
-        <Reveal>
-          <div className="flex items-end justify-between gap-6">
-            <h2 className="text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
-              {t.sections.experience}
-            </h2>
-            <FlagDoodle className="-mb-3 w-24 shrink-0 text-stone-800 sm:w-28 dark:text-stone-200" />
-          </div>
-        </Reveal>
+        <div className="flex items-end justify-between gap-6">
+          <SectionHeading index="03" className="min-w-0 flex-1">
+            {t.sections.experience}
+          </SectionHeading>
+          <FlagDoodle className="-mb-3 w-24 shrink-0 text-stone-800 sm:w-28 dark:text-stone-200" />
+        </div>
 
         <div className="relative mt-14">
           {/* the line: horizontal through the logos on desktop, vertical beside them on mobile */}

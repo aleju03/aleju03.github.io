@@ -27,7 +27,7 @@ export function Hero() {
   const [scrambled, setScrambled] = useState(false)
 
   return (
-    <section className="relative overflow-hidden">
+    <section data-station="hero" className="relative overflow-hidden">
       <Suspense fallback={null}>
         <HeroScene />
       </Suspense>

@@ -5,6 +5,8 @@ import {
   OPEN_PALETTE_EVENT,
   OPEN_TERMINAL_EVENT,
 } from './events'
+import { isOsPath } from './version'
+import { onScrollFrame } from './scroll/progress'
 
 /*
   Traffic capture, talking to the peeko store that lives in server/ (see
@@ -265,7 +267,7 @@ export function startAnalytics(): void {
       // boots those itself, and their $pageview already says which door it was
       via: typeof detail.via === 'string' ? detail.via : 'other',
       flat: detail.flat === true,
-      room: detail.room === true,
+      world: detail.world === true,
       app: typeof detail.app === 'string' ? detail.app : undefined,
     })
   })
@@ -274,6 +276,20 @@ export function startAnalytics(): void {
   window.addEventListener(OPEN_CHOOSER_EVENT, () => track('chooser_open'))
   window.addEventListener(NAVIGATE_EVENT, () => pageview())
   window.addEventListener('popstate', () => pageview())
+
+  // How far down the page people actually get: one event per quarter, each
+  // reported once. Skipped on the OS routes, which have no page to scroll —
+  // subscribing there would spin the scroll driver for nothing.
+  if (!isOsPath()) {
+    const marks = [0.25, 0.5, 0.75, 0.99]
+    let reached = 0
+    onScrollFrame(({ depth }) => {
+      while (reached < marks.length && depth >= marks[reached]) {
+        track('scroll_depth', { depth: Math.round(marks[reached] * 100) })
+        reached++
+      }
+    })
+  }
 
   // A tab being hidden is the last reliable moment to send: pagehide alone
   // misses the mobile case where the tab is backgrounded and then killed.

@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
 import { buildHouse, CEIL_H, FRONT_DOOR_X, HOUSE } from '../../game/levels/houseWorld'
-import { buildOutsideWorld } from '../../game/levels/outsideWorld'
+import { buildOutsideWorld, type OutsideState } from '../../game/levels/outsideWorld'
 import { buildBackrooms } from '../../game/levels/backrooms'
 import { buildDeskRoom } from '../../game/levels/deskRoom'
 import { makeHomeLevels } from '../../game/levels/homeLevels'
@@ -23,7 +23,10 @@ import { blockedAt, makeCollisionSet, supportY } from '../../game/physics/collis
 import { createCollisionDebug } from '../../game/physics/collisionDebug'
 import { createDisposer } from '../../game/core/disposer'
 import { footstep, landThump } from '../../game/core/sfx'
-import { buildFleet, type FleetEnvQueries } from '../../game/vehicles/registry'
+// the registry itself is loaded on demand with the rest of the world; only its
+// types are needed up front, and those cost nothing at runtime
+import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
+import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { setGfxTier } from '../../game/world/quality'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
@@ -95,7 +98,24 @@ interface CrtSceneProps {
 /** the three things a cold boot spends real time on, in the order it does.
     They are wall-clock unequal by a lot — shaders is most of it — so anything
     drawing a progress bar off these should weight them, not space them */
-export type LoadStage = 'models' | 'world' | 'shaders'
+/**
+ * 'stepping' is the odd one out: the other three are stages of a cold boot,
+ * this one is the mid-session load behind the front door. AlejOS renders it
+ * with StepOutCover rather than BootCover, because a progress bar slamming up
+ * over a door you just opened reads as a fault, not as a transition.
+ */
+export type LoadStage = 'models' | 'world' | 'shaders' | 'stepping'
+
+/**
+ * Standing at the front door, roughly. The room boots without the open world,
+ * and this threshold is where somebody stops being a visitor to the desktop and
+ * starts being someone who wants the planet — so it is where we go and get it.
+ * Generous on purpose: paying a beat early is invisible under the cover, while
+ * paying late means stepping out onto placeholder ground.
+ */
+function atFrontDoor(p: THREE.Vector3): boolean {
+  return Math.abs(p.x - FRONT_DOOR_X) < 3 && Math.abs(p.z - HOUSE.minZ) < 3.5
+}
 
 /** one line on the chat rail. `mine` is what tints it, not the name, so two
     visitors sharing a nickname still read their own words correctly */
@@ -345,7 +365,7 @@ export default function CrtScene({
   const prefsRef = useRef(prefs)
   const paperPlaneRef = useRef(paperPlane)
   // the live roam prop, readable from inside the scene's build closure: a
-  // /room entrance has it true before roamRef exists to be called
+  // /world entrance has it true before roamRef exists to be called
   const roamPropRef = useRef(roam)
   const lookRef = useRef(look)
   /** set by the scene effect: repaint the body standing in the world and tell
@@ -591,13 +611,13 @@ export default function CrtScene({
         // obstacle list, so a parked car is something you walk into — and, in
         // the same breath, something the chunk streamer must not mistake for
         // its own (it filters by identity, and these are never in its WeakSet)
-        const fleet = buildFleet({
-          scene,
-          obstacles,
-          trackTexture: disposer.texture,
-          trackDisposable: disposer.add,
-        })
-        disposeFleet = fleet.dispose
+        // ...but only once the world they are parked in exists. All three sit
+        // outside the property, so a room-only boot builds none of them and
+        // holds a null object in the same binding instead (emptyFleet.ts). The
+        // call sites below read `fleet` through this `let`, so the swap in
+        // attachWorld() reaches every one of them without touching any.
+        let fleet: VehicleFleet = emptyFleet()
+        disposeFleet = () => fleet.dispose()
         // F9: outline whatever the live level is testing the walk against.
         // Collision in here is a Box3 list with nothing drawn behind it, so a
         // solid that disagrees with the geometry it stands for is invisible by
@@ -813,7 +833,7 @@ export default function CrtScene({
           front.clone().add(normal.clone().multiplyScalar((gSize.y * h) / (divH * 2 * tanHalf)))
         let camEnd = camEndFor(H)
         // where the walk stands. Up here with the camera rather than down in
-        // the runtime block, because the /room entrance opens the lens on it
+        // the runtime block, because the /world entrance opens the lens on it
         // directly rather than gliding up to it from the chair
         const EYE = deskTop + 2.0 // standing eye height over this desk's scale
         const SPAWN = new THREE.Vector3(1.15, EYE, 2.55)
@@ -1307,7 +1327,7 @@ export default function CrtScene({
         const joinWorld = () => {
           if (net || !worldConfigured()) return
           // The room is walkable long before the desktop has been logged into
-          // — that is the whole of the /room entrance — so an absent session
+          // — that is the whole of the /world entrance — so an absent session
           // is a guest, not a reason to stay out of the world. The server
           // mints the guest-xxxx name, exactly as it does for the arcade.
           const who = sessionRef.current ?? { kind: 'guest' as const, name: '' }
@@ -1535,6 +1555,10 @@ export default function CrtScene({
             }
             if (doorVerbNow) {
               if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
+              // working the front door is the moment the world stops being
+              // optional. The cover goes up over the swing, so what the visitor
+              // sees is one short load and then an open door onto a real planet
+              if (!outside.hasWorld() && atFrontDoor(headPos)) void loadWorldCovered()
               return true
             }
             if (vehicleNow) {
@@ -1615,8 +1639,14 @@ export default function CrtScene({
           fog: sceneFog,
           bg: sceneBg,
         }
+        // the most recent sky the light pass composed. A fleet built mid-session
+        // (the world attaching behind the front door) has never seen a day
+        // cycle, and handing it this instead of nothing is what stops its paint
+        // and headlamps arriving one frame's worth of midday behind the room
+        let lastSky: OutsideState | null = null
         const applyLight = (at: THREE.Vector3 = camera.position) => {
           const sky = outside.update(at)
+          lastSky = sky
           const k = roamK
           hemi.color.copy(sky.hemiSky)
           hemi.groundColor.copy(sky.hemiGround)
@@ -1875,6 +1905,14 @@ export default function CrtScene({
           // spent six seconds visibly struggling before it found the ratio it
           // was always going to end at, which is most of a first impression
           emaMs = emaMs * 0.93 + Math.min(100, rawMs) * 0.07
+          // The backstop behind the front door's own trigger. The door is the
+          // ordinary way out, but it is not the only one — an already-open door,
+          // a level cut, a future exit — and stepping past the front wall with
+          // no world under you is the one failure this must not have. Cheap: two
+          // compares, and only until the world exists.
+          if (!outside.hasWorld() && camera.position.z < HOUSE.minZ - 1) {
+            void loadWorldCovered()
+          }
           prWait -= rawMs / 1000
           if (prWait <= 0 && emaMs > 22 && pr > 1) {
             pr = Math.max(1, pr - (emaMs > 45 ? 0.5 : 0.25))
@@ -2158,7 +2196,7 @@ export default function CrtScene({
 
           It deliberately does *not* sweep every chunk through a first draw.
           That was tried: a one-pixel viewport through four headings pulled
-          nearly four seconds of shader setup into one lump. The direct /room
+          nearly four seconds of shader setup into one lump. The direct /world
           entrance has one narrower exception below: its opening view faces the
           computer, and its exact reverse view measured a 633 ms first-turn
           stall on the reference GPU. One rear-heading draw pays only that
@@ -2190,7 +2228,87 @@ export default function CrtScene({
         /** the fleet is put down once during the covered warm-up and stays
             where the player leaves it for the rest of the session */
         let fleetPlaced = false
+        /**
+         * Bring in the planet: `src/game/world/*` and the vehicle registry,
+         * both behind dynamic imports, then swap the null fleet for the real
+         * one. Idempotent — `outside.attachWorld()` dedupes its own promise and
+         * the fleet is only built on the transition — so the front door, the
+         * /world boot and anything added later can all just await it.
+         *
+         * Deliberately NOT part of warmForRoam: the warm-up is a rendering
+         * concern that also runs on paths where the world already exists, while
+         * this is the one place the world comes into being.
+         */
+        let worldReady: Promise<void> | null = null
+        const ensureWorld = () => {
+          worldReady ??= (async () => {
+            const [, registry] = await Promise.all([
+              outside.attachWorld(),
+              import('../../game/vehicles/registry'),
+            ])
+            if (disposed || !scene) return
+            fleet = registry.buildFleet({
+              scene,
+              obstacles,
+              trackTexture: disposer.texture,
+              trackDisposable: disposer.add,
+            })
+            // the sky has been running since the first frame; hand the freshly
+            // built machines the day it is actually painting, or their paint and
+            // headlamps arrive one frame's worth of "midday" behind
+            if (lastSky) fleet.setDay(lastSky.day, lastSky.night, lastSky.fogColor, lastSky.sunEl)
+            fleet.setNet(fleetNetState)
+          })()
+          return worldReady
+        }
+        /**
+         * The world arriving mid-session, behind the boot cover.
+         *
+         * Reuses BootCover rather than inventing a second loading state: it is
+         * already built to animate on the compositor through a main thread that
+         * is blocked in multi-second lumps, which is exactly what compiling the
+         * outdoor shader variants does. Anything hand-rolled here would freeze
+         * for the part of the wait it exists to cover.
+         *
+         * Idempotent through `worldReady`, so the door, the walk-out backstop
+         * and a second press all land on one load.
+         */
+        let loadingWorld = false
+        const loadWorldCovered = async () => {
+          if (outside.hasWorld() || loadingWorld) return
+          loadingWorld = true
+          stageRef.current?.('stepping')
+          try {
+            await ensureWorld()
+            if (disposed) return
+            await warmForRoam(camera.position.clone())
+          } finally {
+            loadingWorld = false
+            if (!disposed) stageRef.current?.(null)
+          }
+        }
+        /**
+         * Bake the sun's shadow map once, under the cover.
+         *
+         * The sun is hand-managed (`shadow.autoUpdate = false`) like every other
+         * light in here, but it is NOT in bakeShadowsCovered's list — its one
+         * guaranteed bake used to be a side effect of warmForRoam, which every
+         * 3D boot ran. Once the room stopped loading the world, an ordinary boot
+         * stopped baking it, and a sun with no shadow map does not read as "no
+         * shadows": sky.ts damps the indoor ambience on the assumption that the
+         * house shell is casting, so the interior renders torched to flat
+         * daylight — the room reads as an empty blue-grey void.
+         *
+         * It belongs to the room, not to the world, so it runs on every boot.
+         */
+        const bakeSunCovered = () => {
+          if (!webgl || !scene) return
+          outside.sun.shadow.needsUpdate = true
+          render()
+        }
         const warmForRoam = async (at: THREE.Vector3) => {
+          await ensureWorld()
+          if (disposed) return
           outside.prime(at.x, at.z, 200)
           if (!webgl || !scene) return
           // Constructors leave all three machines at (0,0,0), hidden by the
@@ -2247,7 +2365,7 @@ export default function CrtScene({
         }
 
         /**
-         * The /room lens opens facing the dead computer, so the furnished house
+         * The /world lens opens facing the dead computer, so the furnished house
          * behind it has not crossed the live camera's frustum yet. compileAsync
          * links its programs but does not perform WebGLProgram's onFirstUse or
          * upload geometry buffers; a visitor turning around used to pay both in
@@ -2300,6 +2418,11 @@ export default function CrtScene({
           parked = false
           cancelAnimationFrame(raf)
           setIntro(false) // in case the intro flight was still going
+          // Standing up is the first sign somebody might go outside. Fetch the
+          // world's modules now — pure I/O, no building, so it costs no frame —
+          // and the covered wait at the front door is then only the build and
+          // the shader compile rather than the download as well.
+          outside.preloadWorld()
           webgl.domElement.style.pointerEvents = 'auto'
           input.setCursor('grab')
           // with the OS still running the tube keeps spilling light
@@ -2313,7 +2436,7 @@ export default function CrtScene({
           // and the first snapshots have landed by the time the controls do
           joinWorld()
           // push back from the desk and rise to standing height: kept short,
-          // lingering here made standing up feel mushy. The /room entrance
+          // lingering here made standing up feel mushy. The /world entrance
           // never sat down, so it opens standing instead of gliding up out
           // of a chair nobody watched it push back from
           const s0 = performance.now()
@@ -2340,7 +2463,7 @@ export default function CrtScene({
               scattered = false
               stepAside()
               body.visible = true
-              // A direct /room boot baked this exact body pose into the local
+              // A direct /world boot baked this exact body pose into the local
               // maps under BootCover. Other entrances warmed the shader but
               // not the shadow itself, because an invisible person must not
               // leave a silhouette beside the desk during the intro.
@@ -2472,6 +2595,7 @@ export default function CrtScene({
         // the door prompt button routes here (E does the same via input)
         doorRef.current = () => {
           if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
+          if (!outside.hasWorld() && atFrontDoor(headPos)) void loadWorldCovered()
         }
         enterRef.current = () => {
           if (vehicleNow) enterVehicle(vehicleNow.id)
@@ -2535,7 +2659,7 @@ export default function CrtScene({
         void firstCompile.then(async () => {
           if (disposed || roaming || leaving) return
           /*
-            Arriving already roaming (the /room entrance) means nobody is
+            Arriving already roaming (the /world entrance) means nobody is
             watching a machine boot, so the intro flight is skipped outright
             rather than flown only to walk away from.
 
@@ -2556,7 +2680,7 @@ export default function CrtScene({
           }
           // The property models used to attach after the intro. That left
           // their sun-depth variants outside the covered warm-up and made a
-          // fast /room arrival capable of meeting them for the first time at
+          // fast /world arrival capable of meeting them for the first time at
           // the doorstep. Finish the small model batch here instead.
           const entries = await housePromise
           if (disposed || !webgl || !scene || roaming || leaving) return
@@ -2568,7 +2692,7 @@ export default function CrtScene({
           // Make the player part of the covered shader warm-up too. Each body
           // mesh opts out of frustum culling, so the outdoor pass compiles its
           // surface and depth variants even though the warm camera faces away.
-          // On /room, keep it visible through the local bake: those maps then
+          // On /world, keep it visible through the local bake: those maps then
           // already contain the exact body pose the first live frame reveals.
           const spawnAim = lookAngles(SPAWN, front)
           walk.spawnAt(
@@ -2580,8 +2704,21 @@ export default function CrtScene({
           rig.face(spawnAim.yaw)
           poseBody()
           body.visible = true
-          await warmForRoam(SPAWN)
-          if (disposed || !webgl || !scene || roaming || leaving) return
+          // Only the /world entrance pays for the planet here. An ordinary boot
+          // is somebody coming to read the screen, and building the world plus
+          // compiling its outdoor variants was the single largest thing standing
+          // between them and the desktop — several seconds for scenery behind a
+          // door most visitors never open. The room is walkable without any of
+          // it; opening that door calls ensureWorld() and this same warm-up
+          // behind a cover of its own.
+          if (straightToRoom) {
+            await warmForRoam(SPAWN)
+            if (disposed || !webgl || !scene || roaming || leaving) return
+          } else {
+            // the room still needs the sun's shadow map, which warmForRoam
+            // happened to be the only thing baking
+            bakeSunCovered()
+          }
 
           if (!straightToRoom) body.visible = false
           await bakeShadowsCovered(() => disposed || roaming || leaving)

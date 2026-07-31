@@ -367,6 +367,23 @@ button:not(:disabled),
   transition-delay: 0s !important;
 }
 
+/* the nav's sound toggle: three bars that breathe while the score is playing.
+   Height, not transform, because the bars are bottom-aligned and only 3px
+   wide — this animates a handful of pixels on two elements, and the
+   equivalent scaleY would need a transform-origin fight with flex alignment */
+@keyframes nav-eq {
+  0%,
+  100% {
+    height: 30%;
+  }
+  50% {
+    height: 95%;
+  }
+}
+.nav-eq {
+  animation: nav-eq 1.1s ease-in-out infinite;
+}
+
 /* version chooser entrance: a single quiet fade-up, no motion library needed */
 @keyframes chooser-in {
   from {
@@ -399,7 +416,8 @@ button:not(:disabled),
 @media (prefers-reduced-motion: reduce) {
   .chooser-in,
   .nudge-in,
-  .nudge-out {
+  .nudge-out,
+  .nav-eq {
     animation: none !important;
   }
 }

@@ -50,6 +50,23 @@ const dictionaries = {
       contact: 'Get in touch',
       allRepositories: 'All repositories',
     },
+    /* the machine act: the chapter where the paper cover comes off and the
+       computer this whole site is secretly about stands up */
+    machine: {
+      chapter: 'AlejOS',
+      tearHint: 'drag to tear',
+      tapHint: 'tap to tear',
+      body:
+        'A desktop from 2001 that I keep adding things to. The chat and the arcade work. You can also get up from the chair and walk out the front door.',
+      boot: 'Boot it',
+      bootAria: 'Boot AlejOS',
+      status: 'Est. 2003',
+    },
+    sound: {
+      on: 'Sound on',
+      off: 'Sound off',
+      label: 'Sound',
+    },
     work: {
       viewDetails: 'View details for',
       source: 'Source',
@@ -95,8 +112,8 @@ const dictionaries = {
       desktopMode: 'desktop mode',
       bootPc: 'Boot AlejOS without the 3D',
       noThreeD: 'just the PC',
-      walkRoom: 'Walk the room',
-      skipTheBoot: 'skip the boot, no PC',
+      walkWorld: 'Walk the world',
+      loadTheWorld: 'load it all, skip the boot',
       sendEmail: 'Send an email',
       openGithub: 'Open GitHub profile',
       openLinkedin: 'Open LinkedIn profile',
@@ -175,6 +192,21 @@ const dictionaries = {
       contact: 'Hablemos',
       allRepositories: 'Todos los repositorios',
     },
+    machine: {
+      chapter: 'AlejOS',
+      tearHint: 'arrastra para romper',
+      tapHint: 'toca para romper',
+      body:
+        'Un escritorio del 2001 al que le sigo agregando cosas. El chat y el arcade funcionan. También puedes levantarte de la silla y salir por la puerta.',
+      boot: 'Encenderla',
+      bootAria: 'Arrancar AlejOS',
+      status: 'Est. 2003',
+    },
+    sound: {
+      on: 'Sonido activado',
+      off: 'Sonido desactivado',
+      label: 'Sonido',
+    },
     work: {
       viewDetails: 'Ver detalles de',
       source: 'Código',
@@ -220,8 +252,8 @@ const dictionaries = {
       desktopMode: 'modo escritorio',
       bootPc: 'Iniciar AlejOS sin el 3D',
       noThreeD: 'solo el PC',
-      walkRoom: 'Recorrer la habitación',
-      skipTheBoot: 'sáltate el arranque, sin PC',
+      walkWorld: 'Recorrer el mundo',
+      loadTheWorld: 'cárgalo todo, sáltate el arranque',
       sendEmail: 'Enviar correo',
       openGithub: 'Abrir perfil de GitHub',
       openLinkedin: 'Abrir perfil de LinkedIn',

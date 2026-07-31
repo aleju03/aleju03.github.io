@@ -3,6 +3,7 @@ import { AnimatePresence } from 'motion/react'
 import { ArrowUpRightIcon, ArrowsOutSimpleIcon, GithubLogoIcon } from '@phosphor-icons/react'
 import type { ShowcaseProject } from '../data/projects'
 import { Reveal } from './Reveal'
+import { SectionHeading } from './SectionHeading'
 import { TechList } from './TechList'
 import { ZigzagDoodle } from './Doodles'
 import { useI18n } from '../i18n'
@@ -47,6 +48,7 @@ function WorkCard({
       tabIndex={0}
       aria-haspopup="dialog"
       aria-label={`${detailsLabel} ${project.name}`}
+      data-cursor="open"
       onClick={onOpen}
       onFocus={() => primeProject(project)}
       onPointerDown={() => primeProject(project)}
@@ -167,18 +169,18 @@ export function WorkGrid() {
   }
 
   return (
-    <section id="work" className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800">
+    <section
+      id="work"
+      data-station="work"
+      className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800"
+    >
       <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
-        <Reveal>
-          <div className="flex items-center gap-5 sm:gap-10">
-            <h2 className="shrink-0 text-3xl font-semibold tracking-tighter text-stone-900 sm:text-4xl dark:text-stone-50">
-              {t.sections.selectedWork}
-            </h2>
-            <ZigzagDoodle className="hidden min-w-0 flex-1 text-stone-800 sm:block dark:text-stone-200" />
-            <ZigzagDoodle short className="min-w-0 flex-1 text-stone-800 sm:hidden dark:text-stone-200" />
-          </div>
+        <SectionHeading index="01">{t.sections.selectedWork}</SectionHeading>
+        <Reveal className="mt-8">
+          <ZigzagDoodle className="hidden w-full text-stone-800 sm:block dark:text-stone-200" />
+          <ZigzagDoodle short className="w-full text-stone-800 sm:hidden dark:text-stone-200" />
         </Reveal>
-        <Reveal className="mt-12">
+        <Reveal className="mt-8">
           <WorkCard
             project={featured}
             sourceLabel={t.work.source}

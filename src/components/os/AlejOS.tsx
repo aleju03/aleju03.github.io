@@ -20,7 +20,16 @@ import {
 } from '@phosphor-icons/react'
 import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT, SESSION_EXPIRED_EVENT } from '../../events'
-import { HOME_PATH, OS_PATH, PC_PATH, ROOM_PATH, isOsPath, isPcPath, isRoomPath } from '../../version'
+import {
+  HOME_PATH,
+  LEGACY_WORLD_PATH,
+  OS_PATH,
+  PC_PATH,
+  WORLD_PATH,
+  isOsPath,
+  isPcPath,
+  isWorldPath,
+} from '../../version'
 import { lockPageForOverlay } from '../../overlay'
 import { setViewer, track } from '../../analytics'
 import { APPS, glyphFor, isAppId } from './apps'
@@ -49,6 +58,7 @@ import { OsContext } from './osContext'
 import type { OsApi, Session } from './osContext'
 import { LoginScreen } from './LoginScreen'
 import BootCover from './BootCover'
+import StepOutCover from './StepOutCover'
 import type { LoadStage } from './CrtScene'
 import {
   DESKTOP,
@@ -81,14 +91,16 @@ import type { FsNode } from './fs'
 
   Two renderings, one desktop. The 3D one is the default where it can land,
   but a boot can ask for the flat bezel outright (`{ flat: true }` on the boot
-  event, or the /pc route) — same OS, none of the three.js. `{ room: true }`
-  (or /room) asks for the opposite half: the room with the machine already
-  dark, entering at the 'room' phase and skipping the whole boot sequence.
+  event, or the /pc route) — same OS, none of the three.js. `{ world: true }`
+  (or /world) asks for the far end instead: the open world loaded up front,
+  the machine already dark, entering at the 'room' phase and skipping the whole
+  boot sequence. An ordinary 3D boot builds only the room; the planet past the
+  front door streams in on demand if anyone actually opens that door.
   The request also picks which URL the session owns, so the three stay
   distinguishable on a reload or a trip through the back button: a device that
   merely fell back to flat still reads /alejOS, while someone who asked for
-  the machine keeps a shareable /pc and someone who asked for the room keeps
-  /room (each re-derived through isPcPath/isRoomPath on re-entry).
+  the machine keeps a shareable /pc and someone who asked for the world keeps
+  /world (each re-derived through isPcPath/isWorldPath on re-entry).
 */
 
 const CrtScene = lazy(() => import('./CrtScene'))
@@ -491,6 +503,18 @@ export default function AlejOS({
   // how far the 3D boot has got, for the cover over it (null once the first
   // frame is up). Only CrtScene ever writes it
   const [loadStage, setLoadStage] = useState<LoadStage | null>('models')
+  // There can be more than one load now: the boot builds only the room, and
+  // walking out of the front door pulls the open world in behind the same
+  // cover. BootCover unmounts for good at the end of a run, so each run gets a
+  // fresh key instead — counted here, where the transition is actually visible,
+  // rather than by asking the cover to notice it went backwards.
+  const [loadRun, setLoadRun] = useState(0)
+  const prevStageRef = useRef<LoadStage | null>('models')
+  const onLoadStage = useCallback((stage: LoadStage | null) => {
+    if (stage !== null && prevStageRef.current === null) setLoadRun((n) => n + 1)
+    prevStageRef.current = stage
+    setLoadStage(stage)
+  }, [])
   // standing up mid-session: the OS keeps running and the tube stays lit
   // while you walk the room; sitting back down resumes where you left off
   const [away, setAway] = useState(false)
@@ -685,7 +709,7 @@ export default function AlejOS({
     // the boot event's detail can name an app to open once someone logs in;
     // the contact section uses this to land visitors straight in the chat
     const detail = (
-      e as CustomEvent<{ app?: string; via?: string; flat?: boolean; room?: boolean }> | undefined
+      e as CustomEvent<{ app?: string; via?: string; flat?: boolean; world?: boolean }> | undefined
     )?.detail
     const want = detail?.app
     pendingAppRef.current = isAppId(want) ? want : null
@@ -694,18 +718,18 @@ export default function AlejOS({
     // someone asked for the machine and not the room — either through the
     // palette/terminal or by landing on /pc
     const flatOnly = detail?.flat === true || isPcPath()
-    // ...or for the room and not the machine: /room (and its palette/terminal
+    // ...or for the room and not the machine: /world (and its palette/terminal
     // twins) enters at the far end, tube already dark, no boot sequence
-    const roomOnly = !flatOnly && (detail?.room === true || isRoomPath())
+    const worldEntry = !flatOnly && (detail?.world === true || isWorldPath())
     // the 3D session only where it can land: mouse, big screen, motion ok
     const fancy =
       !flatOnly &&
       window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
       !window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
       window.innerWidth >= 640
-    // without the 3D there is no room to walk, so a /room request on a phone
+    // without the 3D there is no room to walk, so a /world request on a phone
     // degrades to the ordinary flat boot rather than to nothing
-    const entry: Phase = fancy ? (roomOnly ? 'room' : 'post') : 'boot'
+    const entry: Phase = fancy ? (worldEntry ? 'room' : 'post') : 'boot'
     setMode(fancy ? '3d' : 'flat')
     setPhase(entry)
     // advance the ref NOW, not at commit: this boot pushes /alejOS below, so
@@ -713,12 +737,18 @@ export default function AlejOS({
     // time in the same pass (still seeing 'off') and wipe this call's detail
     phaseRef.current = entry
     // make the session shareable: the OS owns its route while it runs, and
-    // which route says how you got in — /pc stays /pc and /room stays /room
+    // which route says how you got in — /pc stays /pc and /world stays /world
     // when shared, while a phone that merely fell back to the flat bezel (or
     // to the boot it asked to skip) still reads /alejOS
-    const path = flatOnly ? PC_PATH : entry === 'room' ? ROOM_PATH : OS_PATH
-    if (location.pathname.toLowerCase() !== path.toLowerCase())
-      history.pushState({ alejos: true }, '', path)
+    const path = flatOnly ? PC_PATH : entry === 'room' ? WORLD_PATH : OS_PATH
+    if (location.pathname.toLowerCase() !== path.toLowerCase()) {
+      // an old /room link is the same destination under its previous name, so
+      // normalise it in place — pushing would leave /room one Back away, where
+      // it would boot a second session
+      const legacy = location.pathname.toLowerCase() === LEGACY_WORLD_PATH
+      const write = legacy ? history.replaceState : history.pushState
+      write.call(history, { alejos: true }, '', path)
+    }
   }, [warmDesktop])
 
   useEffect(() => {
@@ -1511,7 +1541,13 @@ export default function AlejOS({
           {/* the wait before the room exists is mostly the driver linking
               shaders, and it used to be a black rectangle. BootCover holds
               until CrtScene reports its first frame */}
-          <BootCover stage={loadStage} />
+          {/* two different waits, two different covers: a cold boot gets the
+              honest progress bar, walking out of the front door gets a cut */}
+          {loadStage === 'stepping' ? (
+            <StepOutCover label="stepping outside" />
+          ) : (
+            <BootCover key={loadRun} stage={loadStage} />
+          )}
           <Suspense fallback={null}>
             <CrtScene
               off={phase === 'down'}
@@ -1524,7 +1560,7 @@ export default function AlejOS({
               onInteract={away ? sitDown : wake}
               onLeave={leaveRoom}
               onFail={() => setMode('flat')}
-              onStage={setLoadStage}
+              onStage={onLoadStage}
             >
               <div className="relative h-full w-full" onWheel={onScreenWheel}>
                 {screen}
