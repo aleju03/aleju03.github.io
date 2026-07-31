@@ -4,13 +4,13 @@
 
   It is deliberately NOT the tools list. `ToolsGrid` is a real <dl> of real
   links grouped by category, and turning that into a moving rail would make a
-  useful thing worse to use — you cannot click a chip that is sliding away, and
+  useful thing worse to use: you cannot click a chip that is sliding away, and
   the grouping carries meaning. So this is a separate, purely graphic band,
   aria-hidden, sitting under the list it decorates: the same words as type,
   moving, for the people who are looking rather than reading.
 
   The transform is written straight to the DOM from the shared scroll frame
-  rather than through React state — a marquee that re-renders a component tree
+  rather than through React state: a marquee that re-renders a component tree
   sixty times a second is the reason "just add a marquee" gets a reputation.
 */
 

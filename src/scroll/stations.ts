@@ -2,7 +2,7 @@
   The station registry: the shared answer to "where on the page is each section?".
 
   The flight path is a curve through the page, so it needs section positions in
-  DOCUMENT pixels — the same space BlockName pins its 3D world to (see the
+  DOCUMENT pixels, the same space BlockName pins its 3D world to (see the
   `layout()` note there: origin at the viewport center at scroll 0, camera slid
   down by the live scroll offset). Sections opt in by marking an element
   `data-station="work"`; nothing here knows what a section is beyond that
@@ -13,7 +13,7 @@
   one that bites hardest: Clash Display swapping in under the section headings
   moves every station below it. Consumers subscribe and re-layout.
 
-  React-free on purpose — the 3D side imports this directly, and it has to keep
+  React-free on purpose: the 3D side imports this directly, and it has to keep
   working if the runtime is ever driven without a DOM-heavy React tree above it.
 */
 

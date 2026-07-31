@@ -2,9 +2,9 @@
   The flight path: one blue dashed contrail drawn down the whole page by the
   visitor's scroll, from the hero name to the machine at the foot of the site.
 
-  This is the same line the site already draws three other ways — the dashes
+  This is the same line the site already draws three other ways (the dashes
   the paper plane inks behind itself, the looping stroke in the contact
-  illustration, the ZigzagDoodle beside each heading — promoted to the page's
+  illustration, the ZigzagDoodle beside each heading), promoted to the page's
   spine. It rides BlockName's canvas rather than a second one: that canvas is
   already fixed to the viewport with its world pinned to the DOCUMENT (origin
   at the viewport center at scroll 0, camera slid down by the live scroll
@@ -14,12 +14,12 @@
   Two things shape the routing. That canvas paints ABOVE the page content below
   the hero (it is a z-10 fixed layer declared inside the first section), so the
   path must run in the gutters beside the text column and only cross it in the
-  whitespace between sections — never over a paragraph. And on narrow viewports
+  whitespace between sections, never over a paragraph. And on narrow viewports
   there are no gutters at all, so the lane collapses to the screen edge and the
   ink thins out with it.
 
   Drawing is one InstancedMesh of stadium-shaped dashes generated in curve
-  order, which makes the scroll reveal `mesh.count = front * total` — no
+  order, which makes the scroll reveal `mesh.count = front * total`, no
   per-frame geometry work, one draw call. Only the nib (the lit dash at the
   drawing front) and the waypoint fans move each frame.
 */
@@ -59,7 +59,7 @@ const LANE: Record<string, number> = {
   machine: 0,
 }
 
-/** the stadium dash, drawn once and instanced — uniform scale, so the caps stay round */
+/** the stadium dash, drawn once and instanced: uniform scale, so the caps stay round */
 function dashGeometry(): THREE.ShapeGeometry {
   const half = DASH_ON / 2
   const r = DASH_HALF_W
@@ -194,7 +194,7 @@ export function createFlightPath(opts: {
 
     // Waypoints only where there is a real gutter to put them in. Below this
     // the lane is pressed against the text column, and a dart parked on it sits
-    // on top of a heading — which is how they first shipped, and it looked like
+    // on top of a heading, which is how they first shipped, and it looked like
     // debris rather than decoration.
     if (view.W < 1100) return
 
@@ -254,7 +254,7 @@ export function createFlightPath(opts: {
         nib.visible = false
       }
 
-      // a slow bob and a shallow roll — enough to look alive, no spin. Spinning
+      // a slow bob and a shallow roll: enough to look alive, no spin. Spinning
       // them was what made the old markers read as noise instead of objects
       for (const { wrap, dart, station, phase } of marks.values()) {
         dart.setReveal(stationProgress(station, smoothY, viewportH, 0.95, 0.45))

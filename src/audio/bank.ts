@@ -10,7 +10,7 @@
   seam. A drone loops seamlessly only if every oscillator completes a whole
   number of cycles across the loop, so each pad frequency is snapped to a
   multiple of 1/LOOP Hz, and each amplitude curve completes an integer number
-  of its own cycles too. That is also why there is no noise wash in the bed —
+  of its own cycles too. That is also why there is no noise wash in the bed:
   a noise buffer cannot meet at its own ends, and the click at the loop point
   is exactly the kind of detail that reads as amateur.
 */
@@ -24,7 +24,6 @@ export type CueName =
   | 'close'
   | 'whoosh'
   | 'draw'
-  | 'tear'
   | 'power'
   | 'boot'
 
@@ -69,7 +68,7 @@ function pad(
   osc.stop(LOOP)
 }
 
-/** the ambient bed — five voices of an E minor chord, breathing out of step */
+/** the ambient bed: five voices of an E minor chord, breathing out of step */
 export function renderBed(): Promise<string> {
   return renderCue(
     LOOP,
@@ -89,7 +88,7 @@ export const CUES: Record<CueName, () => Promise<string>> = {
   /** the smallest possible acknowledgement: hovers and focus moves */
   tick: () => renderCue(0.1, (ctx) => tone(ctx, { freq: 1400, to: 900, dur: 0.05, gain: 0.03 })),
 
-  /** a section arriving — a fifth, breathed rather than struck */
+  /** a section arriving: a fifth, breathed rather than struck */
   enter: () =>
     renderCue(1.1, (ctx) => {
       tone(ctx, { freq: 329.63, dur: 0.9, type: 'triangle', gain: 0.022 })
@@ -122,24 +121,22 @@ export const CUES: Record<CueName, () => Promise<string>> = {
       tone(ctx, { freq: 987.77, dur: 0.12, gain: 0.018 })
     }),
 
-  /** paper giving way: a wide dry rip with a little fibre crackle after it */
-  tear: () =>
-    renderCue(0.7, (ctx) => {
-      noise(ctx, { freq: 1500, to: 260, dur: 0.34, gain: 0.075, q: 0.6 })
-      noise(ctx, { at: 0.05, freq: 3200, to: 1400, dur: 0.2, gain: 0.03, q: 3 })
-      for (let i = 0; i < 5; i++) {
-        noise(ctx, { at: 0.22 + i * 0.055, freq: 2600, dur: 0.05, gain: 0.016, q: 4 })
-      }
-    }),
-
-  /** a CRT waking: the degauss thunk, then the tube's hum coming up */
+  /**
+   * A CRT waking: the degauss coil's shudder as the tube lights.
+   *
+   * This one fires from SCROLL POSITION, not from a click, which sets its
+   * whole budget: an unrequested sound has to be felt rather than heard. An
+   * earlier version voiced the flyback whistle as a 3.9kHz sine held for most
+   * of a second at a gain of 0.008, and the number is a lie: hearing peaks
+   * around 3-4kHz, so a "quiet" sustained tone up there is the loudest thing
+   * on the page and reads as an appliance beeping at you. Nothing above the
+   * bottom two octaves belongs in a cue the visitor did not ask for.
+   */
   power: () =>
-    renderCue(1.3, (ctx) => {
-      tone(ctx, { freq: 78, to: 46, dur: 0.42, type: 'triangle', gain: 0.09 })
-      noise(ctx, { freq: 220, to: 90, dur: 0.3, gain: 0.045, q: 0.7 })
-      // the 15.7kHz flyback whistle, an octave down so it reads without hurting
-      tone(ctx, { freq: 3900, at: 0.18, dur: 0.9, type: 'sine', gain: 0.008 })
-      tone(ctx, { freq: 120, at: 0.2, dur: 0.95, type: 'sine', gain: 0.02 })
+    renderCue(1.0, (ctx) => {
+      tone(ctx, { freq: 84, to: 42, dur: 0.38, type: 'triangle', gain: 0.055 })
+      noise(ctx, { freq: 190, to: 70, dur: 0.26, gain: 0.028, q: 0.6 })
+      tone(ctx, { freq: 128, at: 0.06, dur: 0.5, type: 'sine', gain: 0.013 })
     }),
 
   /** the warp into AlejOS: the boot chime's own intervals, taken at a run */

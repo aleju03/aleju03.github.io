@@ -10,6 +10,7 @@ import { provideWarpOrigin, warpToOs } from '../warp'
 import { THEME_FADE_MS } from '../theme'
 import { useI18n } from '../i18n'
 import { approach } from '../scroll/progress'
+import { createPhosphorScreen, type PhosphorScreen } from './phosphor'
 import { onStationsChange, type StationMap } from '../scroll/stations'
 import { createFlightPath } from '../scroll/flightPath'
 
@@ -24,7 +25,7 @@ import { createFlightPath } from '../scroll/flightPath'
   owns the static fallback and the reset button; this component reports
   readiness and scramble state through callbacks.
 
-  A paper plane shares the scene — the same dart that loops through the
+  A paper plane shares the scene: the same dart that loops through the
   contact illustration at the foot of the page, folded in 3D. WASD flies it
   (viewed from above, like a tabletop), Shift is a boost and Space is a
   swoop that breaks lateral grip so it carves wide sliding arcs. It inks a
@@ -35,7 +36,7 @@ import { createFlightPath } from '../scroll/flightPath'
   it reads "tap the plane to fly" instead, and tapping the plane toggles
   on-screen controls: a left-thumb joystick that maps to screen-space flight
   direction, plus swoop and boost buttons under the right thumb that feed
-  the same key set as the keyboard — so one thumb steers while the other
+  the same key set as the keyboard, so one thumb steers while the other
   swoops.
 
   The canvas is FIXED to the viewport and the world is pinned to the
@@ -51,7 +52,7 @@ import { createFlightPath } from '../scroll/flightPath'
   with folded-paper waypoints opening at each section. It is laid out from the
   station rects in document pixels using the same pinning math as `holder`,
   and it is the reason this component smooths the scroll offset itself instead
-  of reading window.scrollY raw — see `approach` in src/scroll/progress.ts.
+  of reading window.scrollY raw; see `approach` in src/scroll/progress.ts.
 
   At the foot of the page the same world holds the wreck: the OS's own
   computer (the AJU 700FD from CrtScene) lying tilted above the footer,
@@ -60,7 +61,7 @@ import { createFlightPath } from '../scroll/flightPath'
   whole thing perks up a little). Flying the plane into the glass wakes a
   suction: fight it and you can boost back out, hold course for about a
   second and the screen reels the plane down a spiral and swallows it,
-  warping into AlejOS — the same wormhole a click on the wreck opens.
+  warping into AlejOS, the same wormhole a click on the wreck opens.
 */
 
 const LINES = [
@@ -121,7 +122,7 @@ export default function BlockName({
     const hintEl = hintRef.current
     const coarse = isCoarsePointer()
     // Hero only mounts this component when motion is allowed, so this is
-    // belt-and-braces — but the flight path reads it to decide whether to draw
+    // belt-and-braces, but the flight path reads it to decide whether to draw
     // itself statically, and that shouldn't depend on a caller's gating
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const canFlyControls =
@@ -136,8 +137,8 @@ export default function BlockName({
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     // three's shader-error check reads the program info log on first use, and
-    // that read blocks the main thread until the driver has finished compiling
-    // — here that lands in the page's first paint. Nothing on this canvas
+    // that read blocks the main thread until the driver has finished
+    // compiling, which here lands in the page's first paint. Nothing on this canvas
     // authors a shader; see the longer note in os/CrtScene.tsx
     renderer.debug.checkShaderErrors = false
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.35 : 2))
@@ -190,7 +191,7 @@ export default function BlockName({
       if (target === themeMix) return // class churn (e.g. .theme-fade itself), not a theme flip
       cancelAnimationFrame(themeFadeRaf)
       // no .theme-fade means the circular wipe is revealing the new theme
-      // behind a moving edge — colors must land instantly to keep it crisp
+      // behind a moving edge: colors must land instantly to keep it crisp
       if (!document.documentElement.classList.contains('theme-fade')) {
         themeMix = target
         applyColors(themeMix)
@@ -278,7 +279,7 @@ export default function BlockName({
         slot.y += fontPreset.lineSpacing / 2
       }
 
-      // the paper plane: two creased wing panels rising from a folded keel —
+      // the paper plane: two creased wing panels rising from a folded keel:
       // the classic dart, the same one that loops through the contact
       // illustration at the foot of the page. The paper is the letters' cream
       // face material with a hair of extrusion so the sheet has an edge, and
@@ -374,7 +375,7 @@ export default function BlockName({
           (geo) => geo.rotateX(side * FOLD),
         )
       }
-      // the keel hangs under the fold — the spine you'd pinch to throw it; the
+      // the keel hangs under the fold, the spine you'd pinch to throw it; the
       // letters' darker side material reads as the shadowed inner crease
       sheet(
         [
@@ -411,7 +412,7 @@ export default function BlockName({
       holder.add(plane)
 
       // the contrail: the plane inks its path as the blue dashed line from the
-      // contact illustration — a ring buffer of quads stitched between
+      // contact illustration: a ring buffer of quads stitched between
       // consecutive tail positions, gated into dashes by distance flown and
       // fading through per-vertex alpha, so a carved loop draws the doodle's
       // looping dashes and then dissolves
@@ -575,8 +576,10 @@ export default function BlockName({
       let wreckSawOverlay = false
       let wreckHover = 0
       let wreckHoverTarget = 0
-      let wreckCursor: THREE.Mesh | null = null
+      let wreckScreenFace: PhosphorScreen | null = null
       let wreckNode: THREE.Group | null = null
+      // the tube degausses once, at the moment the act lights it
+      let wreckDegaussed = false
       // the machine act scrubs the tube from dead to lit, so the glass material
       // has to be reachable from the frame loop
       let wreckGlassMat: THREE.MeshStandardMaterial | null = null
@@ -584,7 +587,9 @@ export default function BlockName({
       // the dumped pose the wreck lies in until the machine act stands it up
       const WRECK_REST = { x: 0.12, y: -0.55 }
       const GLASS_DEAD = new THREE.Color('#0d100e')
-      const GLASS_LIT = new THREE.Color('#101c3a')
+      // the tube's own light is the picture now, so the glass under it only
+      // has to stop reading as a hole: a blue lit state framed the phosphor
+      const GLASS_LIT = new THREE.Color('#0b1a14')
       if (wreckStage && wreckBtn) {
         new GLTFLoader().load('/os/models/computer.glb', (gltf) => {
           if (disposed) return
@@ -600,9 +605,11 @@ export default function BlockName({
           })
           const glass = glassMesh as THREE.Mesh | null
           if (glass) {
-            // dead glass, with a lone terminal cursor blinking in the corner
-            // as the "still plugged in" tell — placed on the actual tube face
-            // (raycast, like CrtScene does) since it tilts up on its stand
+            // the tube's own picture, parked on the actual glass face. The
+            // model's UVs are not ours to trust, so this is a plane raycast
+            // onto the front of the tube (the same recipe CrtScene uses) with
+            // clean 0..1 coordinates of its own. Dead until the act lights it,
+            // apart from the one blinking cursor the shader draws through.
             const glassMat = new THREE.MeshStandardMaterial({ color: '#0d100e', roughness: 0.35 })
             glass.material = glassMat
             wreckGlassMat = glassMat
@@ -619,22 +626,20 @@ export default function BlockName({
               ? hit.face.normal.clone().transformDirection(glass.matrixWorld).normalize()
               : new THREE.Vector3(0, 0, 1)
             const anchor = hit ? hit.point.clone() : gc.clone()
-            const curGeo = new THREE.PlaneGeometry(gs.x * 0.07, gs.y * 0.16)
-            const curMat = new THREE.MeshBasicMaterial({ color: '#86efac' })
-            const cur = new THREE.Mesh(curGeo, curMat)
-            cur.position
-              .copy(anchor)
-              .addScaledVector(normal, gs.x * 0.03)
-              .add(new THREE.Vector3(-gs.x * 0.3, gs.y * 0.22, 0))
-            cur.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal)
+            // very nearly the whole glass: any margin left here reads as a
+            // coloured frame around the picture rather than as bezel, because
+            // the lit glass behind it is a different colour by design
+            const face = createPhosphorScreen(gs.x * 0.965, gs.y * 0.965)
+            face.mesh.position.copy(anchor).addScaledVector(normal, gs.z * 0.06 + gs.x * 0.012)
+            face.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal)
             // the model is at identity here, so world coords double as
-            // model-local ones; centering below moves the cursor along
-            model.add(cur)
-            wreckCursor = cur
+            // model-local ones; centering below moves the screen along
+            model.add(face.mesh)
+            wreckScreenFace = face
+            void document.fonts?.ready.then(() => face.repaint())
             disposers.push(() => {
               glassMat.dispose()
-              curGeo.dispose()
-              curMat.dispose()
+              face.dispose()
             })
           }
           // center the setup and normalize its height so layoutWreck can
@@ -656,12 +661,34 @@ export default function BlockName({
           }
           const hoverOff = () => {
             wreckHoverTarget = 0
+            wreckScreenFace?.release()
+          }
+          // the magnet is the pointer itself, with no press: a click on this
+          // stage already boots the OS, and asking for a drag on top of that
+          // would be two gestures fighting over one small piece of glass
+          const faceRay = new THREE.Raycaster()
+          const onFaceMove = (e: PointerEvent) => {
+            const face = wreckScreenFace
+            if (!face || e.pointerType === 'touch') return
+            const rect = el.getBoundingClientRect()
+            faceRay.setFromCamera(
+              new THREE.Vector2(
+                ((e.clientX - rect.left) / rect.width) * 2 - 1,
+                -((e.clientY - rect.top) / rect.height) * 2 + 1,
+              ),
+              camera,
+            )
+            const uv = faceRay.intersectObject(face.mesh, false)[0]?.uv
+            if (uv) face.pull(uv.x, uv.y)
+            else face.release()
           }
           wreckBtn.addEventListener('pointerenter', hoverOn)
           wreckBtn.addEventListener('pointerleave', hoverOff)
+          wreckBtn.addEventListener('pointermove', onFaceMove)
           disposers.push(() => {
             wreckBtn.removeEventListener('pointerenter', hoverOn)
             wreckBtn.removeEventListener('pointerleave', hoverOff)
+            wreckBtn.removeEventListener('pointermove', onFaceMove)
           })
           layoutWreck = () => {
             const wr = wreckStage.getBoundingClientRect()
@@ -1117,7 +1144,7 @@ export default function BlockName({
 
         // The machine act pins its stage to the viewport with position:sticky,
         // which means the wreck's DOCUMENT position moves every frame it is on
-        // screen — layoutWreck's `wr.top + window.scrollY` is only stable for
+        // screen; layoutWreck's `wr.top + window.scrollY` is only stable for
         // an element in normal flow. Re-pin it while the act is in view (one
         // rect read; the model is small) and scrub the act from the same rect.
         let machineProgress = 0
@@ -1175,7 +1202,7 @@ export default function BlockName({
         // paper plane: heading and velocity are separate so air grip is a real
         // force. Velocity splits into forward + lateral parts each frame; grip
         // bleeds the lateral slip, and the Space swoop nearly turns grip off
-        // while quickening the steering — that combination carves the wide
+        // while quickening the steering: that combination carves the wide
         // sliding arcs that ink the illustration's loops.
         const boost = keys.has('shift')
         const swooping = keys.has(' ')
@@ -1268,7 +1295,7 @@ export default function BlockName({
             .project(camera)
           // clamp onto the screen by the hint's measured size so a plane parked
           // near an edge (narrow viewports) can't drag any of the text out of
-          // view — the touch wording is wider than half the old fixed margin
+          // view: the touch wording is wider than half the old fixed margin
           const halfW = hintEl!.offsetWidth / 2 + 8
           const hx = THREE.MathUtils.clamp((hintWorld.x * 0.5 + 0.5) * view.W, halfW, view.W - halfW)
           const hy = THREE.MathUtils.clamp(
@@ -1334,17 +1361,21 @@ export default function BlockName({
             wreckGlassMat.color.lerpColors(GLASS_DEAD, GLASS_LIT, rise)
             wreckGlassMat.emissive.lerpColors(GLASS_DEAD, GLASS_LIT, rise * 0.9)
           }
-          // a woken machine blinks its cursor with intent, like it is waiting
-          // for you to type; a dead one just idles
-          if (wreckCursor) {
-            const blink = pulling ? 0.3 : rise > 0.5 ? 0.52 : 1.06
-            const duty = pulling ? 0.17 : rise > 0.5 ? 0.3 : 0.58
-            wreckCursor.visible = t % blink < duty
+          // the tube: the act's scrub paints its raster on, and it shakes the
+          // field out with one coil shudder the moment it lights, the way a
+          // real monitor does at power-on
+          if (wreckScreenFace) {
+            wreckScreenFace.setLit(rise)
+            wreckScreenFace.frame(dt)
+            if (!wreckDegaussed && rise > 0.42) {
+              wreckDegaussed = true
+              wreckScreenFace.degauss()
+            }
           }
         }
         // fly into the dead screen and the machine PULLS: crossing into the
         // glass radius at speed starts a suction the plane can still boost
-        // out of. Hold course for about a second and the screen wins — a
+        // out of. Hold course for about a second and the screen wins: a
         // scripted spiral reels the plane in, it shrinks into the glass, and
         // the warp swallows the page on the way into AlejOS (the same trip
         // as clicking the wreck). A plane parked on the glass is safe: only
@@ -1523,7 +1554,7 @@ export default function BlockName({
         }
       }
       // touch screens pause for any overlay; a fine pointer only when the
-      // page is fully hidden (AlejOS) — partial overlays like the palette
+      // page is fully hidden (AlejOS); partial overlays like the palette
       // keep the plane and letters alive behind them
       disposers.push(
         onOverlayChange((open, covered) => {

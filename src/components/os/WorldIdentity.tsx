@@ -4,6 +4,8 @@ import { buildPlayerBody, type PlayerPose, type PlayerRig } from '../../game/pla
 import { makeCollisionSet } from '../../game/physics/collision'
 import { makeGlowTexture } from '../../game/core/textures'
 import type { RagdollEnv } from '../../game/player/ragdoll'
+import { CIRCLED, INK, INK_SOFT, MARK } from './paper'
+import { Note, Rule } from './PaperMarks'
 import {
   ACCENT_SWATCHES,
   GLOW_SWATCHES,
@@ -14,9 +16,10 @@ import {
 } from '../../game/player/look'
 
 /*
-  Who you are in the shared world, and what you look like while being it —
-  the left-hand column of the pause screen (`CrtScene.tsx`), not a screen of
-  its own.
+  Who you are in the shared world, and what you look like while being it: the
+  character page of the pause screen (`PauseScreen.tsx`), not a screen of its
+  own. You are a Polaroid taped to that sheet of paper, and the knobs are
+  written on the paper beside you.
 
   It exists because of one screenshot. A visitor who walks out of the room
   without ever having touched the desktop is `guest-08c9` in an off-white
@@ -241,8 +244,8 @@ function BodyPreview({ look, active }: { look: PlayerLook; active: boolean }) {
   return <div ref={mountRef} className="h-full w-full" />
 }
 
-/** one knob: a name on the left, its eight choices flowing right. The label
-    column is fixed so the four rows read as a grid rather than as four
+/** one knob: a name on the left, its eight pots of paint flowing right. The
+    label column is fixed so the four rows read as a chart rather than as four
     unrelated lines */
 function Swatches({
   label,
@@ -256,34 +259,44 @@ function Swatches({
   onPick: (hex: string) => void
 }) {
   return (
-    <div className="flex items-center gap-2">
-      <p className="w-11 shrink-0 text-[10px] text-stone-500">{label}</p>
-      <div className="flex flex-wrap gap-1">
+    <div className="flex items-center gap-4">
+      <p className="font-display w-16 shrink-0 text-[17px] uppercase" style={{ color: INK_SOFT }}>
+        {label}
+      </p>
+      <div className="flex flex-wrap gap-2.5">
         {options.map((hex) => {
           const active = hex.toLowerCase() === value.toLowerCase()
           return (
-            <button
-              key={hex}
-              type="button"
-              aria-label={`${label} ${hex}`}
-              aria-pressed={active}
-              onClick={() => onPick(hex)}
-              style={{ backgroundColor: hex }}
-              className={`size-5 cursor-pointer rounded transition-transform ${
-                active
-                  // the ring rides outside the swatch, so the selected colour
-                  // is never partly covered by the thing marking it
-                  ? 'ring-2 ring-stone-200 ring-offset-1 ring-offset-stone-950'
-                  : 'hover:scale-110'
-              }`}
-            />
+            <span key={hex} className="relative">
+              <button
+                type="button"
+                aria-label={`${label} ${hex}`}
+                aria-pressed={active}
+                onClick={() => onPick(hex)}
+                style={{
+                  backgroundColor: hex,
+                  // never a perfect disc: a dab of paint put down by hand
+                  borderRadius: '50% 47% 53% 49% / 48% 52% 47% 53%',
+                  boxShadow: `inset 0 -2px 3px rgba(0,0,0,0.16), 0 1px 2px ${INK}44`,
+                }}
+                className="block size-7 cursor-pointer transition-transform hover:scale-110"
+              />
+              {/* the one in use is ringed with the same marker as everything
+                  else, outside the dab so the colour is never covered */}
+              <span
+                aria-hidden
+                className={`pointer-events-none absolute -inset-[5px] transition-opacity ${
+                  active ? 'opacity-100' : 'opacity-0'
+                }`}
+                style={CIRCLED}
+              />
+            </span>
           )
         })}
       </div>
     </div>
   )
 }
-
 
 export interface WorldIdentityProps {
   /** the look being edited; changes are applied live, to this preview and to
@@ -330,91 +343,151 @@ export default function WorldIdentity({
   const dirty = draft.trim() !== name && draft.trim().length > 0
 
   return (
-    // the width is not free: it is the narrowest column that fits a label and
-    // eight swatches on one line, and a wrapped swatch row turns four tidy
-    // rows into eight ragged ones with their labels floating between them
-    <div className="flex w-full flex-col gap-3 sm:w-64 sm:shrink-0">
-      {/* the body, given the room it deserves: this is the half of a pause
-          screen people actually want to look at */}
-      <div className="relative h-60 overflow-hidden rounded-md border border-stone-800 bg-[radial-gradient(ellipse_at_50%_35%,rgba(120,130,145,0.22),transparent_70%)]">
-        <BodyPreview look={look} active={active} />
-        <span className="pointer-events-none absolute right-2 bottom-1.5 text-[9px] text-stone-600">
+    // no stage, no card, no field: the body stands on the screen and the
+    // knobs are written beside it. On a narrow viewport the two stack and the
+    // body keeps the top, because it is the half people want to look at
+    <div className="flex flex-col items-start gap-7 sm:flex-row sm:gap-9">
+      {/* A Polaroid of you, taped to the sheet at a slightly different angle
+          than the sheet itself, because two things stuck to a wall by hand
+          are never parallel. The photo window stays dark: the body is lit
+          from a warm key and reads on paper the way a photograph does, not
+          the way a cutout would. */}
+      <div
+        className="relative shrink-0 self-start p-3 pb-9"
+        style={{
+          transform: 'rotate(2.4deg)',
+          background: 'linear-gradient(160deg, #fbf7ea, #efe7d3)',
+          boxShadow: `0 10px 22px rgba(30,20,10,0.45), 0 1px 0 rgba(255,255,255,0.7) inset`,
+        }}
+      >
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -top-3 left-1/2 h-6 w-20 -translate-x-1/2 rotate-[3deg]"
+          style={{
+            background: 'linear-gradient(90deg, rgba(246,240,224,.7), rgba(232,222,198,.55))',
+            boxShadow: '0 1px 3px rgba(60,44,26,0.28)',
+          }}
+        />
+        <div className="relative h-60 w-44 overflow-hidden sm:h-64 sm:w-48" style={{ background: '#221c17' }}>
+          {/* The only light it gets: a glow behind the shoulders.
+
+              It is sized `closest-side`, which is the whole trick: a gradient
+              is painted inside its element's box, so an ellipse still
+              carrying colour when it reaches an edge is chopped off square
+              there. Sized to the nearest side it has reached transparent
+              before every edge, including the corners, and there is nothing
+              left to cut. */}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(closest-side_at_50%_40%,rgba(224,150,100,0.3),transparent)]"
+          />
+          <BodyPreview look={look} active={active} />
+        </div>
+        <span
+          className="pointer-events-none absolute inset-x-0 bottom-2.5 text-center font-mono text-[11px]"
+          style={{ color: INK_SOFT }}
+        >
           drag to turn
         </span>
       </div>
 
-      <div>
-        <form
-          className="flex gap-1.5"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (onRename && dirty && !pending) onRename(draft.trim())
-          }}
-        >
-          <input
-            type="text"
-            value={draft}
-            maxLength={24}
-            disabled={!onRename || pending}
-            onChange={(e) => setDraft(e.target.value)}
-            // the OS shell and the roam input both listen at the window; while
-            // this field has focus the keys are its own
-            onKeyDown={(e) => e.stopPropagation()}
-            className="min-w-0 flex-1 rounded-md border border-stone-700 bg-stone-900/70 px-2 py-1.5 text-[12px] text-stone-200 outline-none placeholder:text-stone-700 focus:border-stone-500 disabled:text-stone-500"
-            placeholder="your name"
-          />
-          {onRename && dirty && (
-            <button
-              type="submit"
-              disabled={pending}
-              className="shrink-0 cursor-pointer rounded-md border border-stone-500 px-2.5 py-1.5 text-[11px] text-stone-200 transition-colors hover:border-stone-300 hover:text-white disabled:cursor-default disabled:border-stone-800 disabled:text-stone-700"
-            >
-              {pending ? '…' : 'set'}
-            </button>
-          )}
-        </form>
-        <p
-          className={`mt-1 text-[9px] ${error ? 'text-amber-400/90' : 'text-stone-600'}`}
-        >
-          {error ?? (onRename ? 'letters, numbers, spaces, _ . -' : renameNote)}
-        </p>
-      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-6">
+        <div>
+          <Note>name</Note>
+          {/* A name is the chat server's to give: it is the socket's `nick`,
+              the same one the chat rail and the arcade boards use, and it
+              refuses anything that belongs to a registered account. So when
+              there is nobody to ask (offline, or signed in to an account that
+              owns its username) this is not an input at all.
 
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-baseline justify-between">
-          <span className="text-[10px] tracking-wide text-stone-500 uppercase">colours</span>
-          <button
-            type="button"
-            onClick={() => onLook(randomLook())}
-            className="cursor-pointer text-[10px] text-stone-600 transition-colors hover:text-stone-300"
-          >
-            surprise me
-          </button>
+              It used to be a disabled one, which is worse than useless: a
+              caret-shaped field saying "your name" that swallows every key
+              you press reads as broken, not as unavailable. The note under it
+              says which of the two reasons applies. */}
+          {onRename ? (
+            <form
+              className="mt-1 flex items-baseline gap-4"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (dirty && !pending) onRename(draft.trim())
+              }}
+            >
+              <input
+                type="text"
+                value={draft}
+                maxLength={24}
+                disabled={pending}
+                onChange={(e) => setDraft(e.target.value)}
+                // the OS shell and the roam input both listen at the window; while
+                // this field has focus the keys are its own
+                onKeyDown={(e) => e.stopPropagation()}
+                className="font-display min-w-0 flex-1 bg-transparent text-[32px] uppercase outline-none"
+                style={{ color: INK }}
+                placeholder="your name"
+              />
+              {dirty && (
+                <button
+                  type="submit"
+                  disabled={pending}
+                  className="font-display shrink-0 cursor-pointer text-[19px] uppercase disabled:cursor-default"
+                  style={{ color: pending ? INK_SOFT : MARK }}
+                >
+                  {pending ? '…' : 'set'}
+                </button>
+              )}
+            </form>
+          ) : (
+            <p
+              className="font-display mt-1 truncate text-[32px] uppercase"
+              style={{ color: name ? INK : `${INK}55` }}
+            >
+              {name || 'nobody yet'}
+            </p>
+          )}
+          {/* the line it is written on */}
+          <Rule className="w-[80%]" color={`${INK}66`} />
+          <p className="mt-1 font-mono text-[11px]" style={{ color: error ? '#a8442e' : INK_SOFT }}>
+            {error ?? (onRename ? 'letters, numbers, spaces, _ . -' : renameNote)}
+          </p>
         </div>
-        <Swatches
-          label="shell"
-          options={SHELL_SWATCHES}
-          value={look.shell}
-          onPick={(shell) => onLook({ ...look, shell })}
-        />
-        <Swatches
-          label="trim"
-          options={TRIM_SWATCHES}
-          value={look.trim}
-          onPick={(trim) => onLook({ ...look, trim })}
-        />
-        <Swatches
-          label="joints"
-          options={ACCENT_SWATCHES}
-          value={look.accent}
-          onPick={(accent) => onLook({ ...look, accent })}
-        />
-        <Swatches
-          label="eyes"
-          options={GLOW_SWATCHES}
-          value={look.glow}
-          onPick={(glow) => onLook({ ...look, glow })}
-        />
+
+        <div className="flex flex-col gap-3">
+          <div className="flex items-baseline justify-between gap-4">
+            <Note>colours</Note>
+            <button
+              type="button"
+              onClick={() => onLook(randomLook())}
+              className="font-display cursor-pointer text-[17px] uppercase underline decoration-dotted underline-offset-4"
+              style={{ color: INK_SOFT }}
+            >
+              surprise me
+            </button>
+          </div>
+          <Swatches
+            label="shell"
+            options={SHELL_SWATCHES}
+            value={look.shell}
+            onPick={(shell) => onLook({ ...look, shell })}
+          />
+          <Swatches
+            label="trim"
+            options={TRIM_SWATCHES}
+            value={look.trim}
+            onPick={(trim) => onLook({ ...look, trim })}
+          />
+          <Swatches
+            label="joints"
+            options={ACCENT_SWATCHES}
+            value={look.accent}
+            onPick={(accent) => onLook({ ...look, accent })}
+          />
+          <Swatches
+            label="eyes"
+            options={GLOW_SWATCHES}
+            value={look.glow}
+            onPick={(glow) => onLook({ ...look, glow })}
+          />
+        </div>
       </div>
     </div>
   )

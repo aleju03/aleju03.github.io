@@ -4,20 +4,20 @@
   flight path threads.
 
   One sheet is drawn flat as a 2D outline, extruded paper-thin, folded, and
-  then outlined in the letters' side colour — the fold has to transform the
+  then outlined in the letters' side colour; the fold has to transform the
   GEOMETRY rather than the mesh, because the outline is derived from the folded
   result. Take the materials from the caller and share the Color instances:
   BlockName already lerps those on a 0..1 light->dark mix, so a sheet built
   here crossfades with the page's theme for free instead of needing its own
   observer.
 
-  Nothing in here touches the DOM or React — it is plain three.js geometry, and
+  Nothing in here touches the DOM or React: it is plain three.js geometry, and
   the caller owns disposal of everything the returned handles list.
 */
 
 import * as THREE from 'three'
 
-/** sheet thickness, in the hero world's units — a hair, so the paper has an edge */
+/** sheet thickness, in the hero world's units: a hair, so the paper has an edge */
 export const PAPER_THICKNESS = 0.07
 
 export interface PaperSheet {
@@ -68,8 +68,8 @@ const FOLD = 0.36
  * A miniature of the dart the hero flies, parked on the flight path with its
  * nose along the direction of travel. Nose points along +x, same as the big one.
  *
- * This replaced an earlier idea — radiating creased "petals" that unfolded at
- * each stop — which was abstract enough that it read as a crumpled scrap rather
+ * This replaced an earlier idea (radiating creased "petals" that unfolded at
+ * each stop), which was abstract enough that it read as a crumpled scrap rather
  * than as anything. A waypoint has to be legible at a glance and mean something:
  * a small paper plane on a contrail says "the flight stopped here" with no
  * explaining. Keep any future marker at least that readable.
@@ -107,7 +107,7 @@ export function createPaperDart(opts: {
       (geo) => geo.rotateX(side * FOLD),
     )
   }
-  // the keel hangs under the fold — the spine you would pinch to throw it
+  // the keel hangs under the fold, the spine you would pinch to throw it
   add(
     [
       [2.7, 0],

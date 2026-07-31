@@ -1,13 +1,13 @@
 /*
   One scroll driver for the whole page.
 
-  Everything that reacts to scroll — the 3D flight path, the tools marquee, the
-  audio cues — reads from this single rAF loop instead of attaching its own
+  Everything that reacts to scroll (the 3D flight path, the tools marquee, the
+  audio cues) reads from this single rAF loop instead of attaching its own
   `scroll` listener. Scroll events fire at unpredictable rates and land outside
   the frame, so per-listener smoothing would drift out of step; one loop keeps
   the DOM and the WebGL world describing the same moment.
 
-  Nothing here hijacks scrolling. The page scrolls natively — anchor links,
+  Nothing here hijacks scrolling. The page scrolls natively: anchor links,
   keyboard paging, `scroll-mt-16` and the paper plane's own `window.scrollTo`
   follow all keep working. What's smoothed is the *response*: `smoothY` chases
   the real offset with a frame-rate-independent lerp, so the 3D world has
@@ -23,7 +23,7 @@ import { onOverlayChange, pageIsCovered } from '../overlay'
 /**
  * How fast a smoothed value chases its target, in e-folds per second. Exported
  * because BlockName's render loop smooths the scroll itself rather than paying
- * for a second rAF loop to be told — sharing the constant is what keeps the
+ * for a second rAF loop to be told; sharing the constant is what keeps the
  * 3D world and the DOM consumers describing the same moment.
  */
 export const SCROLL_EASE = 12
@@ -42,7 +42,7 @@ export function approach(current: number, target: number, dt: number, rate = SCR
 export interface ScrollFrame {
   /** the browser's real scroll offset this frame */
   scrollY: number
-  /** the eased offset — what the 3D world should follow */
+  /** the eased offset: what the 3D world should follow */
   smoothY: number
   /** signed CSS pixels per second, smoothed; positive means scrolling down */
   velocity: number
@@ -108,12 +108,12 @@ function tick(now: number) {
   } else {
     smoothY = approach(smoothY, scrollY, dt)
   }
-  // A jump — an anchor link, scrollIntoView, restoring a deep scroll position —
+  // A jump (an anchor link, scrollIntoView, restoring a deep scroll position)
   // moves thousands of pixels in one frame, which as a raw derivative is tens of
-  // thousands of px/s. Consumers treat velocity as a physical force (the cloth
-  // gusts on it, the marquee is dragged by it), so an unclamped spike is not a
-  // big number, it is a sheet of paper exploding. Clamp to something a hand
-  // could actually produce.
+  // thousands of px/s. Consumers treat velocity as a physical force (the tube's
+  // vertical hold slips on it, the marquee is dragged by it), so an unclamped
+  // spike is not a big number, it is every consumer pinned at its limit for a
+  // second. Clamp to something a hand could actually produce.
   const instant = clampVelocity((smoothY - previous) / dt)
   velocity = approach(velocity, instant, dt, 8)
   if (Math.abs(velocity) < 0.5) velocity = 0

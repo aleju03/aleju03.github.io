@@ -6,8 +6,8 @@
   entrance) plays a fixed 600ms fade the moment a section crosses the viewport
   and is then done; this maps character offsets directly onto scroll position,
   so the type assembles under your thumb and runs backwards if you scroll back.
-  That difference — motion you are driving rather than motion that happened at
-  you — is most of what separates a portfolio from a piece of art direction.
+  That difference (motion you are driving rather than motion that happened at
+  you) is most of what separates a portfolio from a piece of art direction.
 
   Accessibility comes first, not after: the real string sits in an sr-only span
   so the heading is one clean text node to a screen reader, and the split
@@ -56,7 +56,7 @@ function splitWords(text: string) {
 }
 
 interface SectionHeadingProps {
-  /** the chapter marker, e.g. "01" — rendered in mono beside a rule */
+  /** the chapter marker, e.g. "01", rendered in mono beside a rule */
   index?: string
   children: string
   /** the eyebrow line under the number, when the section wants one */
@@ -68,7 +68,7 @@ interface SectionHeadingProps {
    * position. A heading inside a `position: sticky` stage holds a CONSTANT
    * viewport rect for as long as it is pinned, so self-scrubbing degenerates
    * to a frozen value and the characters never come out from behind their
-   * masks — the machine act passes its runway's progress in for exactly that.
+   * masks; the machine act passes its runway's progress in for exactly that.
    */
   progress?: MotionValue<number>
 }

@@ -2,7 +2,7 @@
   Every sound on this site is generated here, at runtime, and handed to Howler
   as a blob. Nothing audio is shipped.
 
-  That is not a purity exercise — it is the same rule the rest of the repo runs
+  That is not a purity exercise: it is the same rule the rest of the repo runs
   on (textures are drawn onto canvases, the OS's sound effects are oscillators,
   see os/sounds.ts) and it means the site carries no licence obligations and no
   audio payload. Howler still does the job it is good at: the pool, sprites,
@@ -14,7 +14,7 @@
   should sound like one instrument, because narratively they are.
 
   Levels matter here. CLAUDE.md's note that normalized clips run ~4x hotter
-  than this mix applies to synthesis too — every cue below is written to peak
+  than this mix applies to synthesis too: every cue below is written to peak
   well under 1.0 and is checked against the others, because a single cue
   mastered louder than the rest is the thing that makes a site feel cheap.
 */
@@ -101,7 +101,7 @@ export function noise(ctx: OfflineAudioContext, spec: NoiseSpec) {
   src.stop(at + dur)
 }
 
-/** 16-bit PCM WAV — the one container every browser decodes without a codec */
+/** 16-bit PCM WAV: the one container every browser decodes without a codec */
 export function encodeWav(buffer: AudioBuffer): Blob {
   const channels = buffer.numberOfChannels
   const frames = buffer.length
@@ -154,7 +154,7 @@ export async function renderCue(
   return URL.createObjectURL(encodeWav(buffer))
 }
 
-/** peak sample across every channel — used by the level check in the tests */
+/** peak sample across every channel, used by the level check in the tests */
 export function peakOf(buffer: AudioBuffer): number {
   let peak = 0
   for (let c = 0; c < buffer.numberOfChannels; c++) {

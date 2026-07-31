@@ -4,7 +4,7 @@
   Howler earns its place here for the unglamorous parts: one master bus, a
   playback pool so a fast hover can't stack forty AudioBufferSourceNodes, real
   fades, and the mobile unlock dance that every hand-rolled WebAudio layer gets
-  wrong the first time. What it plays is `bank.ts` — object URLs rendered in an
+  wrong the first time. What it plays is `bank.ts`: object URLs rendered in an
   OfflineAudioContext at runtime, so nothing audio ships with the site.
 
   Both Howler and the bank load lazily, on the visitor's first gesture. That is
@@ -13,7 +13,7 @@
   that actually matters.
 
   Two mute rules that are easy to get wrong and loud when you do. Reduced
-  motion means silence, full stop — someone who has asked the machine to calm
+  motion means silence, full stop: someone who has asked the machine to calm
   down has not asked for an ambient soundtrack. And the bed stops dead when
   AlejOS covers the page, because the OS has its own synthesized voice and two
   scores playing at once is just noise.
@@ -29,7 +29,7 @@ const STORAGE_KEY = 'sound'
  * The master level, set by measurement rather than taste. os/sounds.ts plays
  * straight into the destination at gains around 0.05, so that is the house
  * level this site already speaks at. The bank renders at peaks of 0.024–0.087,
- * and 0.85 lands them on top of the OS's cues instead of half a fader below —
+ * and 0.85 lands them on top of the OS's cues instead of half a fader below:
  * a page that is audibly quieter than the machine inside it sounds broken.
  */
 const MASTER = 0.85
@@ -64,8 +64,8 @@ function stored(): boolean | null {
 }
 
 /**
- * The visitor's answer, or ours. The default is on — the bed still waits for a
- * gesture before it can make a sound — but an explicit "off" always wins, and
+ * The visitor's answer, or ours. The default is on (the bed still waits for a
+ * gesture before it can make a sound), but an explicit "off" always wins, and
  * reduced motion overrides both.
  */
 export function soundEnabled(): boolean {

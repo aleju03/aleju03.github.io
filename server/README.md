@@ -1,8 +1,8 @@
 # AlejOS chat server
 
-Self-hosted WebSocket server behind the AlejOS login screen, the Chat Rooms app and the Games folder. Visitors register real accounts (stored in SQLite, scrypt-hashed passwords) or chat as guests, then talk in shared rooms — `#general`, `#projects`, `#random`. Room history persists so late joiners see the conversation. The same socket carries the arcade: shared per-game leaderboards (one best row per player per game) and Mine Duel, a turn-based 1v1 minesweeper with server-side matchmaking and game logic. Plain Node 22 ESM, no build step; dependencies are `ws` and `better-sqlite3` only.
+Self-hosted WebSocket server behind the AlejOS login screen, the Chat Rooms app and the Games folder. Visitors register real accounts (stored in SQLite, scrypt-hashed passwords) or chat as guests, then talk in shared rooms: `#general`, `#projects`, `#random`. Room history persists so late joiners see the conversation. The same socket carries the arcade: shared per-game leaderboards (one best row per player per game) and Mine Duel, a turn-based 1v1 minesweeper with server-side matchmaking and game logic. Plain Node 22 ESM, no build step; dependencies are `ws` and `better-sqlite3` only.
 
-v2 replaced the old 1:1 messenger protocol entirely — deploy the server and the frontend together.
+v2 replaced the old 1:1 messenger protocol entirely, so deploy the server and the frontend together.
 
 ## Environment variables
 
@@ -26,13 +26,13 @@ v2 replaced the old 1:1 messenger protocol entirely — deploy the server and th
 ## Analytics
 
 Traffic capture runs on [peeko](https://github.com/aleju03/peeko), in its own
-libsql/Turso database — never `chat.db`, since analytics rows are high-volume
+libsql/Turso database, never `chat.db`, since analytics rows are high-volume
 and would bloat the file chat reads from. `server/src/analytics.js` owns it.
 
 The split that matters is trust:
 
 - **`POST /peeko/capture` is public.** Browsers post to it cross-origin from the
-  static site, so it carries no token — a token shipped to a browser is not a
+  static site, so it carries no token. A token shipped to a browser is not a
   token. It is origin-checked against `ALLOWED_ORIGINS`, rate limited per IP,
   and can only ever append events. This is the only analytics route served over
   HTTP; `/peeko/monitor`, `/peeko/live` and the ticket routes are deliberately
@@ -45,7 +45,7 @@ Analytics messages, same socket after `hello`, all refused with
 `{type:'error', code:'forbidden'}` unless the session is the admin:
 
 - `{type:'peeko-monitor', rangeHours}` → `{type:'peeko-monitor', rangeHours, overview, topPaths, topReferrers, topCountries, bounce, recent}`
-- `{type:'peeko-breakdown', event, prop, rangeHours, distinct?}` → `{type:'peeko-breakdown', event, prop, rows}` — top-N of any property in the props bag, which is how the site's custom events (`project_view`, `app_open`, `os_boot`) are read
+- `{type:'peeko-breakdown', event, prop, rangeHours, distinct?}` → `{type:'peeko-breakdown', event, prop, rows}`. Top-N of any property in the props bag, which is how the site's custom events (`project_view`, `app_open`, `os_boot`) are read
 - `{type:'peeko-live', on}` → subscribes; each accepted event arrives as `{type:'peeko-event', event}`
 
 A failing analytics store never takes chat down: a bad token or an unreachable
@@ -55,7 +55,7 @@ database logs and leaves `analytics` null, and the dashboard reports
 **Country data.** An edge geo header (`cf-ipcountry`, `x-vercel-ip-country`, …)
 wins whenever one is present. Behind a plain Caddy none is, so the browser
 sends its IANA timezone as `?tz=` on the capture request and the server maps it
-to a country with `src/timezones.js` — generated from the system tzdata by
+to a country with `src/timezones.js`, generated from the system tzdata by
 `node scripts/gen-timezones.mjs`. It is a query param rather than a header or a
 body field because it has to survive `sendBeacon` and must not turn capture
 into a preflighted request. No IP database: a licensed file to keep updated, or
@@ -79,13 +79,13 @@ Everything is JSON over `/ws`. First message must be `hello`:
 - `{type:'msg', room, text, tmp}` → `{type:'ack', tmp, id, at}`; everyone else in the room gets `{type:'msg', room, message}`
 - `{type:'typing', room}` → forwarded to the room, throttled
 
-Messages carry `{from, admin, registered, text, at}` so the client can render badges. Session tokens — the admin's included — expire after 90 days and are swept hourly.
+Messages carry `{from, admin, registered, text, at}` so the client can render badges. Session tokens, the admin's included, expire after 90 days and are swept hourly.
 
-The admin has no `users` row (it authenticates against `ADMIN_TOKEN`, not the database), so its sessions live in their own `admin_tokens` table. They used to be in-memory only, which meant **every restart silently downgraded a still-logged-in admin to a guest**: the browser kept a session localStorage said was valid, the server no longer knew the token, and everything that socket did afterwards — arcade scores especially — was recorded under a guest name while the desktop still said "administrator". Clients now treat `badToken` in `hello-ok` as "this session is over" and return to the login screen rather than acting as an anonymous guest under a signed-in name.
+The admin has no `users` row (it authenticates against `ADMIN_TOKEN`, not the database), so its sessions live in their own `admin_tokens` table. They used to be in-memory only, which meant **every restart silently downgraded a still-logged-in admin to a guest**: the browser kept a session localStorage said was valid, the server no longer knew the token, and everything that socket did afterwards, arcade scores especially, was recorded under a guest name while the desktop still said "administrator". Clients now treat `badToken` in `hello-ok` as "this session is over" and return to the login screen rather than acting as an anonymous guest under a signed-in name.
 
 Arcade messages, same socket after `hello`:
 
-- `{type:'score-submit', game, score}` → `{type:'score-ok', game, best, improved, rank}`. Games and their caps live in `GAMES`; time-based games sort ascending. The `duel` board rejects submits — the match engine writes wins itself.
+- `{type:'score-submit', game, score}` → `{type:'score-ok', game, best, improved, rank}`. Games and their caps live in `GAMES`; time-based games sort ascending. The `duel` board rejects submits, because the match engine writes wins itself.
 - `{type:'score-top', game}` → `{type:'score-top', game, top: [...25], you: {score, rank} | null}`
 - `{type:'duel-queue'}` → `duel-queued`, then `duel-start {seat, players, size, mines, lives, deadline}` once paired
 - `{type:'duel-plant', cells: [5 indices]}` during the blind phase → `duel-planted` per seat (with `auto: true` plus your cells if the 45s clock planted for you), then `duel-phase {turn, deadline}`
@@ -96,7 +96,7 @@ Open-world presence, same socket after `hello`. Unlike the duel this owns almost
 no rules: the world is a pure function of coordinates on every client, so the
 only thing that has to travel is who is where. Positions are
 client-authoritative, for the same reason the score caps are loose.
-`src/game/net/protocol.ts` is the typed specification this section implements —
+`src/game/net/protocol.ts` is the typed specification this section implements,
 the socket has no version negotiation, so the two ship together.
 
 The *almost* is the fleet. Three machines with two chairs each are the one piece
@@ -105,24 +105,24 @@ question two clients cannot answer between themselves. Even there the server
 simulates nothing: it hands out chairs and relays the transform of whoever is
 sitting in the driving one.
 
-- `{type:'world-join', level, look?}` → `{type:'world-welcome', you, tick, players:[{id,name,admin,registered,look?}], vehicles?, seats?}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`. The two optional fields catch a late arrival up on the fleet, and are absent while it is untouched — until somebody moves a machine, every client's own spawn agrees about where all three are
-- `{type:'world-look', look}` → `{type:'world-look', id, look}` to everyone else. `look` is 24 hex characters — four packed colours from `src/game/player/look.ts` — and this process never parses it; it is stored on the socket and relayed, so a repaint survives walking out of the world and back in. A malformed one is a strike, not a silent drop, because only a hand-written client can send one. The join carries the same field so nobody is ever drawn in the wrong colours, not even for one tick
+- `{type:'world-join', level, look?}` → `{type:'world-welcome', you, tick, players:[{id,name,admin,registered,look?}], vehicles?, seats?}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`. The two optional fields catch a late arrival up on the fleet, and are absent while it is untouched. Until somebody moves a machine, every client's own spawn agrees about where all three are
+- `{type:'world-look', look}` → `{type:'world-look', id, look}` to everyone else. `look` is 24 hex characters, four packed colours from `src/game/player/look.ts`, and this process never parses it; it is stored on the socket and relayed, so a repaint survives walking out of the world and back in. A malformed one is a strike, not a silent drop, because only a hand-written client can send one. The join carries the same field so nobody is ever drawn in the wrong colours, not even for one tick
 - `{type:'nick', name}` → `{type:'nick-ok', name}` to the sender **and** `{type:'world-name', id, name}` to everyone else in the world. Renaming is not a world message at all: it is the chat server's existing nick, because one socket carries one identity and the plate over your head, the chat rail and the arcade boards all have to agree on it. Registered users are refused, as they always were
-- `{type:'world-move', x, y, z, yaw, pitch, gait, f}` — the hot path, ~15/s per client, dropped rather than punished above the rate cap. `y` is the soles, not the eye; `f` is a pose bitfield (grounded/run/crouch/swim/**speaking**/down) mirrored by `POSE` in protocol.ts
-- `{type:'world-tick', t, players:[[id,x,y,z,yaw,pitch,gait,f], ...], vehicles?:[[v,x,y,z,yaw,pitch,roll], ...]}` — broadcast every `WORLD_TICK_MS` while anything has changed, **grouped by level**, so a visitor in the backrooms never receives the overworld's crowd. Tuples rather than objects because a full lobby would otherwise spend more bytes on repeated key names than on positions. The list includes the recipient; clients filter themselves out. A player missing from it is not gone, they are somewhere else. The vehicle rows are *not* grouped by level — three rows are cheaper than working out which level a parked car counts as being in, and a client applies only the ones somebody else is driving
-- `{type:'world-level', level}` — stepping through a level seam, which is what moves you between snapshot groups. It also gives up your seat: the fleet lives in one level
-- `{type:'world-seat', v, seat}` → `{type:'world-seats', seats:[[v,driver,passenger], ...]}` to everyone, or `{type:'world-seat-denied', v, seat}` to the loser of the race. `seat` 0 is the wheel, 1 the other chair, and `0` in the table means empty (ids start at 1). Taking a chair gives up the last one, which is also how you slide across into the driving seat. `{type:'world-unseat'}` gets out. Chairs are freed on a level change, on leaving the world and on a dropped socket — the machine stays where it was abandoned, only the seat is released
-- `{type:'world-vehicle', v, x, y, z, yaw, pitch, roll}` — the driver's transform, same rate and same rate limiter as `world-move`. **Accepted only from the socket holding seat 0 of that machine**, which is the entirety of the server's opinion about vehicle physics. Everyone else's client plays it back two ticks late and interpolates, exactly like a walking body
+- `{type:'world-move', x, y, z, yaw, pitch, gait, f}`. The hot path, ~15/s per client, dropped rather than punished above the rate cap. `y` is the soles, not the eye; `f` is a pose bitfield (grounded/run/crouch/swim/**speaking**/down) mirrored by `POSE` in protocol.ts
+- `{type:'world-tick', t, players:[[id,x,y,z,yaw,pitch,gait,f], ...], vehicles?:[[v,x,y,z,yaw,pitch,roll], ...]}`. Broadcast every `WORLD_TICK_MS` while anything has changed, **grouped by level**, so a visitor in the backrooms never receives the overworld's crowd. Tuples rather than objects because a full lobby would otherwise spend more bytes on repeated key names than on positions. The list includes the recipient; clients filter themselves out. A player missing from it is not gone, they are somewhere else. The vehicle rows are *not* grouped by level, since three rows are cheaper than working out which level a parked car counts as being in, and a client applies only the ones somebody else is driving
+- `{type:'world-level', level}`. Stepping through a level seam, which is what moves you between snapshot groups. It also gives up your seat: the fleet lives in one level
+- `{type:'world-seat', v, seat}` → `{type:'world-seats', seats:[[v,driver,passenger], ...]}` to everyone, or `{type:'world-seat-denied', v, seat}` to the loser of the race. `seat` 0 is the wheel, 1 the other chair, and `0` in the table means empty (ids start at 1). Taking a chair gives up the last one, which is also how you slide across into the driving seat. `{type:'world-unseat'}` gets out. Chairs are freed on a level change, on leaving the world and on a dropped socket. The machine stays where it was abandoned, only the seat is released
+- `{type:'world-vehicle', v, x, y, z, yaw, pitch, roll}`. The driver's transform, same rate and same rate limiter as `world-move`. **Accepted only from the socket holding seat 0 of that machine**, which is the entirety of the server's opinion about vehicle physics. Everyone else's client plays it back two ticks late and interpolates, exactly like a walking body
 - `{type:'world-chat', text}` → `{type:'world-chat', id, name, admin, registered, text, at}` to everyone in the world. Not stored: this is shouting across a field, not a room with history
-- `{type:'world-signal', to, data}` → `{type:'world-signal', from, data}` — the WebRTC offer/answer/ICE relay for proximity voice, forwarded verbatim between two peers in the same level. **No audio ever passes through this process**; peers talk browser to browser and the server only introduces them. A signal aimed at someone who just left or stepped through a seam is dropped in silence, because that race is one the caller already recovers from
+- `{type:'world-signal', to, data}` → `{type:'world-signal', from, data}`. The WebRTC offer/answer/ICE relay for proximity voice, forwarded verbatim between two peers in the same level. **No audio ever passes through this process**; peers talk browser to browser and the server only introduces them. A signal aimed at someone who just left or stepped through a seam is dropped in silence, because that race is one the caller already recovers from
 - `world-exit {id}` on departure; a socket closing leaves the world as well as its chat room and any duel
 
-Voice needs a path between two browsers, and a minority of visitors — both ends
-behind a symmetric NAT — have none that STUN can find. `TURN_URLS` + `TURN_SECRET`
+Voice needs a path between two browsers, and a minority of visitors, both ends
+behind a symmetric NAT, have none that STUN can find. `TURN_URLS` + `TURN_SECRET`
 add a relay for exactly those pairs; leave them unset and nothing changes, which
 is the shipped default. Credentials are minted per join and expire after
 `TURN_TTL_S`, using coturn's `use-auth-secret` scheme (username is the expiry,
-password is its HMAC) — a static credential in the frontend bundle would be a
+password is its HMAC). A static credential in the frontend bundle would be a
 public password for your relay's bandwidth. Any coturn-compatible provider works.
 Note this is the one setting that puts audio through a server you pay for: only
 the calls that cannot connect directly are relayed, but those are real bytes.
@@ -173,6 +173,6 @@ chat.example.com {
 
 ## Frontend notes
 
-The frontend needs `VITE_CHAT_URL=wss://chat.example.com/ws` at build time. Without it, the AlejOS login screen still offers Guest, the Chat Rooms app falls back to the mail composer, and analytics capture goes quiet — `src/analytics.ts` derives its capture endpoint from the same variable (`wss://…/ws` → `https://…/peeko/capture`), so there is no second URL to configure.
+The frontend needs `VITE_CHAT_URL=wss://chat.example.com/ws` at build time. Without it, the AlejOS login screen still offers Guest, the Chat Rooms app falls back to the mail composer, and analytics capture goes quiet, since `src/analytics.ts` derives its capture endpoint from the same variable (`wss://…/ws` → `https://…/peeko/capture`), so there is no second URL to configure.
 
-To log in as admin, use the reserved username with `ADMIN_TOKEN` as the password on the AlejOS login screen. That session, and only that one, gets the **peeko** entry in the Start menu — the traffic dashboard.
+To log in as admin, use the reserved username with `ADMIN_TOKEN` as the password on the AlejOS login screen. That session, and only that one, gets the **peeko** entry in the Start menu: the traffic dashboard.

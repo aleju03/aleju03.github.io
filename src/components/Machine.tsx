@@ -1,44 +1,42 @@
 /*
-  The machine act — the site's punchline, given a chapter instead of a footnote.
+  The machine act: the site's punchline, given a chapter instead of a footnote.
 
-  Two halves. First a band of paper taped across the page (TearSheet) with the
-  chapter's opening printed on the wall behind it: rip the paper and you find
-  the terminal underneath. Then a pinned stage, ~200vh of runway with one
-  viewport stuck to the top, where the dead CRT that has been lying in the
-  corner of this site since the footer existed stands up as you scroll and
-  lights its tube.
+  A pinned stage: ~200vh of runway with one viewport stuck to the top, where
+  the dead CRT that has been lying in the corner of this site since the footer
+  existed stands up as you scroll, lights its tube and shows you a terminal.
+  The picture on that tube (and the magnet you can hold against it) is
+  `phosphor.ts`, mounted on the model itself by BlockName. It briefly lived
+  here instead, as a full-bleed band across the page with the same shader on
+  it, and the lesson was that a black rectangle is not a screen no matter what
+  you draw on it. A screen reads as a screen because it is bolted into a
+  computer, on a desk, at an angle, with a bezel around it.
 
-  The CRT itself is not rendered here. It lives in BlockName's canvas — the
-  document-pinned 3D world that also carries the name and the paper plane — and
+  The CRT itself is not rendered here. It lives in BlockName's canvas, the
+  document-pinned 3D world that also carries the name and the paper plane, and
   is drawn over whatever rect `#os-wreck` occupies. So this component owns the
   stage and the copy, and BlockName owns the model: enlarging the span here is
   what moves the machine. The one thing that had to change over there is that
   a STICKY stage's document position moves every frame, which `layoutWreck`'s
-  `rect.top + scrollY` cannot express — see the per-frame re-pin in its tick.
+  `rect.top + scrollY` cannot express. See the per-frame re-pin in its tick.
 
-  Nothing here gates the page. The copy is fully legible with the paper intact,
-  the CTA works whether or not you tore anything, and the whole act degrades to
-  a plain section under reduced motion.
+  Nothing here gates the page. The copy is legible before you touch the screen
+  and legible after, the CTA works either way, and the whole act degrades to a
+  plain section under reduced motion or on a browser with no WebGL.
 */
 
-import { Suspense, lazy, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { motion, useReducedMotion, useScroll, useTransform } from 'motion/react'
 import { ArrowRightIcon } from '@phosphor-icons/react'
 import { SectionHeading } from './SectionHeading'
 import { warpToOs } from '../warp'
 import { useI18n } from '../i18n'
-import { isCoarsePointer } from '../device'
 import { cue } from '../audio'
-
-const TearSheet = lazy(() => import('./TearSheet'))
 
 export function Machine() {
   const { t } = useI18n()
   const reduce = useReducedMotion()
   const runwayRef = useRef<HTMLDivElement>(null)
-  const [torn, setTorn] = useState(false)
   const poweredRef = useRef(false)
-  const coarse = typeof window !== 'undefined' && isCoarsePointer()
 
   const { scrollYProgress } = useScroll({
     target: runwayRef,
@@ -49,7 +47,7 @@ export function Machine() {
   const copyY = useTransform(scrollYProgress, [0, 0.35], reduce ? [0, 0] : [40, 0])
   const copyOpacity = useTransform(scrollYProgress, [0, 0.28], reduce ? [1, 1] : [0, 1])
   const ctaOpacity = useTransform(scrollYProgress, [0.34, 0.5], reduce ? [1, 1] : [0, 1])
-  // the heading is pinned, so it cannot scrub off its own rect — hand it the
+  // the heading is pinned, so it cannot scrub off its own rect, so hand it the
   // runway's progress over the stretch where the machine is standing up
   const headingProgress = useTransform(scrollYProgress, [0.02, 0.3], [0, 1])
 
@@ -67,32 +65,6 @@ export function Machine() {
 
   return (
     <section id="machine" className="scroll-mt-16 border-t border-stone-200 dark:border-stone-800">
-      {/* the paper cover, and the terminal printed on the wall behind it */}
-      <div className="relative h-[62vh] min-h-[320px] overflow-hidden bg-stone-950 sm:h-[70vh]">
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
-          <p
-            className="max-w-2xl font-mono text-sm leading-relaxed text-emerald-300/70 sm:text-base"
-            style={{ textShadow: '0 0 12px rgba(52,211,153,0.35)' }}
-          >
-            {t.machine.body}
-          </p>
-        </div>
-        {!reduce && (
-          <Suspense fallback={null}>
-            <TearSheet onOpen={() => setTorn(true)} />
-          </Suspense>
-        )}
-        {!reduce && (
-          <span
-            className={`pointer-events-none absolute inset-x-0 bottom-6 text-center font-mono text-xs tracking-[0.2em] text-stone-400 uppercase transition-opacity duration-500 ${
-              torn ? 'opacity-0' : 'opacity-100'
-            }`}
-          >
-            {coarse ? t.machine.tapHint : t.machine.tearHint}
-          </span>
-        )}
-      </div>
-
       {/* the pinned act: one viewport of stage over a long runway */}
       <div ref={runwayRef} data-station="machine" className="h-[200vh]">
         <div className="sticky top-0 flex h-dvh flex-col items-center justify-center overflow-hidden px-5 sm:px-8">
@@ -100,9 +72,12 @@ export function Machine() {
             style={{ y: copyY, opacity: copyOpacity }}
             className="mx-auto w-full max-w-6xl"
           >
-            <SectionHeading index="05" eyebrow={t.machine.status} progress={headingProgress}>
+            <SectionHeading index="05" progress={headingProgress}>
               {t.machine.chapter}
             </SectionHeading>
+            <p className="mt-5 max-w-xl text-sm leading-relaxed text-stone-600 sm:text-base dark:text-stone-400">
+              {t.machine.body}
+            </p>
           </motion.div>
 
           {/* BlockName draws the CRT over this span and reveals the button once

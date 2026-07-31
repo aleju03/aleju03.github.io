@@ -54,13 +54,9 @@ const dictionaries = {
        computer this whole site is secretly about stands up */
     machine: {
       chapter: 'AlejOS',
-      tearHint: 'drag to tear',
-      tapHint: 'tap to tear',
-      body:
-        'A desktop from 2001 that I keep adding things to. The chat and the arcade work. You can also get up from the chair and walk out the front door.',
+      body: 'Another take on this portfolio, with Windows XP vibes.',
       boot: 'Boot it',
       bootAria: 'Boot AlejOS',
-      status: 'Est. 2003',
     },
     sound: {
       on: 'Sound on',
@@ -194,13 +190,9 @@ const dictionaries = {
     },
     machine: {
       chapter: 'AlejOS',
-      tearHint: 'arrastra para romper',
-      tapHint: 'toca para romper',
-      body:
-        'Un escritorio del 2001 al que le sigo agregando cosas. El chat y el arcade funcionan. También puedes levantarte de la silla y salir por la puerta.',
+      body: 'Otra versión de este portafolio, estilo Windows XP.',
       boot: 'Encenderla',
       bootAria: 'Arrancar AlejOS',
-      status: 'Est. 2003',
     },
     sound: {
       on: 'Sonido activado',

@@ -5,8 +5,8 @@
   every far-apart component talks over, so subscribing to it here scores the
   palette, the terminal, the chooser, navigation and every route into the OS
   without putting a single `cue(...)` call inside those components. Only the
-  things with no window event behind them — the tear sheet, the machine act,
-  the cursor — call `cue` directly, and there are three of those.
+  things with no window event behind them (the tear sheet, the machine act,
+  the cursor) call `cue` directly, and there are three of those.
 
   Section arrivals are the one thing measured here rather than announced: an
   IntersectionObserver over the same `[data-station]` elements the flight path
@@ -54,7 +54,7 @@ export function wireAudio(): void {
   onThemeChange(() => cue('whoosh'))
 
   // one 'enter' the first time a chapter arrives, one 'draw' when its waypoint
-  // finishes unfolding — the two beats the flight path itself plays
+  // finishes unfolding, the two beats the flight path itself plays
   const entered = new Set<StationId>()
   const drawn = new Set<StationId>()
   let stations = measureStations()

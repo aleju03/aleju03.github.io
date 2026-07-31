@@ -1,9 +1,9 @@
 /*
   A fleet with no machines in it.
 
-  The three vehicles are the heaviest thing the runtime builds — three lofted
+  The three vehicles are the heaviest thing the runtime builds: three lofted
   procedural bodies with clearcoat paint and a painted env map, and about eight
-  thousand lines of module behind them — and every one of them is parked
+  thousand lines of module behind them, and every one of them is parked
   OUTSIDE: the car at the kerb, the helicopter a block north, the boat two and
   a half kilometres west. None of that is reachable, or visible, from inside the
   house. So a boot that only builds the room should not pay for any of it.
@@ -17,8 +17,8 @@
   registry in when the world attaches, and because the call sites close over the
   `fleet` BINDING rather than its value, they pick the real one up for free.
 
-  Type-only imports on purpose: this module must not pull `registry.ts` — and
-  through it car.ts, heli.ts and boat.ts — into the eager chunk, which is the
+  Type-only imports on purpose: this module must not pull `registry.ts` (and
+  through it car.ts, heli.ts and boat.ts) into the eager chunk, which is the
   entire point of it existing.
 */
 

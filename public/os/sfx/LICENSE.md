@@ -1,8 +1,8 @@
 # Sound credits
 
 The only recorded audio on the site: the house doors in roam mode
-(`doorCreak`/`doorLatch` in `src/game/core/sfx.ts`). Everything else — footsteps,
-landings, the UI and the backrooms hum — is synthesized at runtime with WebAudio.
+(`doorCreak`/`doorLatch` in `src/game/core/sfx.ts`). Everything else (footsteps,
+landings, the UI and the backrooms hum) is synthesized at runtime with WebAudio.
 
 ## CC BY 4.0 (attribution required)
 
@@ -16,7 +16,7 @@ All nine clips are cut from recordings by **Gravity Sound**, licensed CC BY 4.0
 | `door-close-2` | [Open and close closet door 3](https://commons.wikimedia.org/wiki/File:Open_and_close_closet_door_3_(Gravity_Sound).wav) | 2.43–2.95 |
 | `door-open-3`, `door-close-3`, `door-latch-3` | [Open and close bathroom door](https://commons.wikimedia.org/wiki/File:Open_and_close_bathroom_door_(Gravity_Sound).wav) | 0.80–1.48, 3.98–4.52, 4.79–5.22 |
 
-Modified — cut to the onset of each event (`door-open-1` splices the leaf popping
+Modified: cut to the onset of each event (`door-open-1` splices the leaf popping
 free straight onto its squeak, dropping the dead air between them), downmixed to
 32 kHz mono, high-passed at 85 Hz, denoised, faded at both ends, normalized to a
 common RMS with soft-knee limiting so one playback gain suits every variant, and

@@ -4,13 +4,13 @@
 
   Two decisions keep this from being the usual liability.
 
-  It never replaces the real cursor. The native pointer stays visible — this
+  It never replaces the real cursor. The native pointer stays visible; this
   ring rides behind it. Hiding the system cursor is the version of this effect
   that breaks text selection, breaks anyone relying on a large or high-contrast
   pointer, and leaves a site unusable the moment the rAF loop stalls.
 
   It never mounts where it does not belong. Touch and hybrid devices, coarse
-  pointers, and reduced motion all skip it entirely — same gate BlockName uses
+  pointers, and reduced motion all skip it entirely, same gate BlockName uses
   for the paper plane's flight controls, `maxTouchPoints` included, because
   emulators and 2-in-1s lie about `hover`.
 
@@ -76,8 +76,8 @@ export function Cursor() {
       if (next && !currentLabel) cue('tick')
       currentLabel = next
       // a ring that swells a little, not a disc that eats the paragraph it is
-      // hovering. The first version scaled 2.6x on a 36px ring — 94px of solid
-      // accent blue over the copy — which is the difference between a cursor
+      // hovering. The first version scaled 2.6x on a 36px ring (94px of solid
+      // accent blue over the copy), which is the difference between a cursor
       // with an opinion and a cursor in the way.
       targetScale = next ? 1.7 : 1
       label.textContent = next === 'link' || next === '' ? '' : next
@@ -98,7 +98,7 @@ export function Cursor() {
       x = approach(x, targetX, dt, 18)
       y = approach(y, targetY, dt, 18)
       scale = approach(scale, targetScale, dt, 14)
-      // position on the wrapper, scale on the ring alone — otherwise the label
+      // position on the wrapper, scale on the ring alone, otherwise the label
       // grows and drifts with the swell instead of staying put and legible
       wrap.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%)`
       ring.style.transform = `scale(${scale})`
