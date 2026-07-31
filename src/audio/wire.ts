@@ -10,10 +10,19 @@
   the scroll lock so that Escape and a backdrop click are scored the same as
   the close button.
 
-  Section arrivals are the one thing measured here rather than announced: an
-  IntersectionObserver over the same `[data-station]` elements the flight path
-  is built from, so the page's chapters and its score are keyed off one
-  definition of where a chapter is.
+  Nothing here is wired to the scroll any more. Section arrivals used to be
+  measured off the same `[data-station]` elements the flight path is built
+  from, firing `enter` when a chapter crossed 5% and `draw` when its waypoint
+  finished at 90%. It read beautifully in this file and it was, from the
+  visitor's side, a page that made about twenty noises while they read it
+  without ever being touched. The rule that replaced it is simple enough to
+  check against any new cue: score what the visitor DID, never where they got
+  to. Scrolling is not an action, it is the medium; a click, a key, a theme
+  toggle, a route change are actions.
+
+  The one deliberate exception lives outside this file, in Machine.tsx, where
+  `power` fires once from scroll position because it scores a visible act. One
+  is a flourish. Twenty-two is a mood, and not the intended one.
 */
 
 import {
@@ -24,8 +33,6 @@ import {
   OPEN_TERMINAL_EVENT,
 } from '../events'
 import { onThemeChange } from '../theme'
-import { onScrollFrame } from '../scroll/progress'
-import { measureStations, stationProgress, type StationId } from '../scroll/stations'
 import { cue, soundEnabled, startAudio } from './index'
 
 let wired = false
@@ -54,31 +61,4 @@ export function wireAudio(): void {
   window.addEventListener(NAVIGATE_EVENT, () => cue('tick'))
   window.addEventListener(BOOT_OS_EVENT, () => cue('boot'))
   onThemeChange(() => cue('whoosh'))
-
-  // one 'enter' the first time a chapter arrives, one 'draw' when its waypoint
-  // finishes unfolding, the two beats the flight path itself plays
-  const entered = new Set<StationId>()
-  const drawn = new Set<StationId>()
-  let stations = measureStations()
-  let sinceMeasure = 0
-
-  onScrollFrame(({ smoothY, viewportH, dt }) => {
-    sinceMeasure += dt
-    if (sinceMeasure > 1.5) {
-      sinceMeasure = 0
-      stations = measureStations()
-    }
-    for (const station of stations.list) {
-      if (station.id === 'hero') continue
-      const p = stationProgress(station, smoothY, viewportH)
-      if (p > 0.05 && !entered.has(station.id)) {
-        entered.add(station.id)
-        cue('enter')
-      }
-      if (p > 0.9 && !drawn.has(station.id)) {
-        drawn.add(station.id)
-        cue('draw')
-      }
-    }
-  })
 }

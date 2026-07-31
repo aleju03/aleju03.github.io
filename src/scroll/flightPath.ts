@@ -144,9 +144,20 @@ export function createFlightPath(opts: {
     // the lane: just outside the max-w-6xl (1152px) text column where the
     // viewport is wide enough to have a gutter, hard against the edge where it
     // isn't. `margin` keeps the ink off the scrollbar either way.
+    //
+    // The pick is a MIN, and it was a max, which is the same sentence read
+    // backwards: taking the larger of "beside the column" and "against the
+    // edge" means the wider the display, the further out the lane is flung, so
+    // on anything past about 1400px the contrail ran down the extreme edges of
+    // the screen with the waypoint darts half-clipped off both sides. The
+    // column is a fixed 1152px no matter how wide the window is, so the gutter
+    // beside it is the thing that grows, and the lane should stay pinned to
+    // the column it is a margin for. The edge case still works out: on a
+    // narrow viewport `view.W / 2 - margin` is the smaller number and wins,
+    // which is the "no gutter, hug the edge" branch.
     const margin = Math.min(56, view.W * 0.07)
     const columnHalf = Math.min(576, view.W / 2)
-    const laneOffset = Math.max(columnHalf + 28, view.W / 2 - margin)
+    const laneOffset = Math.min(columnHalf + 28, view.W / 2 - margin)
     const laneX = (sign: number) => view.W / 2 + sign * Math.min(laneOffset, view.W / 2 - margin * 0.6)
 
     const control: THREE.Vector3[] = []
@@ -254,25 +265,38 @@ export function createFlightPath(opts: {
       const drawn = Math.floor(front * dashCount)
       dashes.count = drawn
 
+      // the clock, advanced unconditionally. It used to live inside the nib
+      // branch below, which quietly coupled every waypoint's idle motion to
+      // "is the contrail still being drawn": before the line starts and after
+      // it finishes, `spin` stopped advancing and all the darts froze solid in
+      // mid-bob. A clock that only ticks while something else is on screen is
+      // not a clock.
+      spin += dt
+
       if (drawn > 1 && front < 1) {
         curve.getPointAt(front, point)
         curve.getTangentAt(front, tangent)
         nib.position.copy(point)
         nib.position.z = PATH_Z + 0.05
         nib.rotation.z = Math.atan2(tangent.y, tangent.x)
-        spin += dt
         nib.scale.setScalar(1.25 + Math.sin(spin * 5) * 0.18)
         nib.visible = true
       } else {
         nib.visible = false
       }
 
-      // a slow bob and a shallow roll: enough to look alive, no spin. Spinning
-      // them was what made the old markers read as noise instead of objects
+      // A slow bob and a shallow roll: enough to look alive, no spin, since
+      // spinning them was what made the old markers read as noise instead of
+      // objects. But the first pass at "slow" overshot into invisible: 0.18
+      // world units is 3.6 CSS px at this scale, spread over a nine-second
+      // cycle, which is a peak speed of two and a half pixels per second on a
+      // 43px object. That is not subtle motion, it is no motion, and the darts
+      // read as stickers. Roughly doubled in travel and taken about half again
+      // as fast, which is still well short of the spin that was rejected.
       for (const { wrap, dart, station, phase } of marks.values()) {
         dart.setReveal(stationProgress(station, smoothY, viewportH, 0.95, 0.45))
-        wrap.rotation.x = 0.5 + Math.sin(spin * 0.9 + phase) * 0.16
-        dart.group.position.y = Math.sin(spin * 0.7 + phase) * 0.18
+        wrap.rotation.x = 0.5 + Math.sin(spin * 1.25 + phase) * 0.26
+        dart.group.position.y = Math.sin(spin * 1.05 + phase) * 0.42
       }
     }
   }

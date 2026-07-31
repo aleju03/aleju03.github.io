@@ -101,6 +101,92 @@ export function noise(ctx: OfflineAudioContext, spec: NoiseSpec) {
   src.stop(at + dur)
 }
 
+/**
+ * Partial tables for `bar`: [frequency multiple, relative gain, decay multiple].
+ *
+ * The ratios are the whole trick. A real marimba bar is undercut on its
+ * underside until its first overtone sits near FOUR times the fundamental
+ * instead of two, and that single fact is most of why a marimba reads as a
+ * struck wooden object while a 2:1 stack reads as a flute or an organ. Higher
+ * partials also die faster than the fundamental, which is what the third
+ * number is for: it is the decay of a thin bright mode against the body of the
+ * note, and holding them all for the same time is what makes synthesized
+ * percussion sound like a synthesizer.
+ */
+export const MARIMBA = [
+  [1, 1, 1],
+  [3.94, 0.3, 0.45],
+  [9.2, 0.1, 0.22],
+] as const
+/** closer to harmonic and gentler on top: a muted piano rather than a bar */
+export const FELT = [
+  [1, 1, 1],
+  [2.01, 0.34, 0.6],
+  [3, 0.12, 0.35],
+] as const
+
+interface BarSpec {
+  freq: number
+  at?: number
+  /** seconds for the fundamental to fall away; partials scale off this */
+  decay?: number
+  gain?: number
+  partials?: readonly (readonly [number, number, number])[]
+  /** the mallet's contact transient, as a fraction of `gain`; 0 for none */
+  mallet?: number
+  /** where the mallet's noise sits: lower is a softer, felt-wrapped head */
+  malletHz?: number
+}
+
+/**
+ * One struck bar: the site's voice for anything the visitor did.
+ *
+ * This exists because the bank's cues used to be bare sines and triangles
+ * between 440Hz and 1400Hz, and a clean sine in the octave the ear is most
+ * sensitive in is the timbre of a smoke alarm, not of an interface. The fix is
+ * not "avoid pitch", though: a pitched sound with a CONSTANT pitch and a
+ * couple of inharmonic partials is a wooden object being tapped, which is
+ * exactly the register this page wants. What it must never do is glide. A hit
+ * whose pitch sweeps as it decays is a water droplet, and once you have heard
+ * one cue that way every cue in the bank sounds like a bubble.
+ */
+export function bar(ctx: OfflineAudioContext, spec: BarSpec) {
+  const at = spec.at ?? 0
+  const decay = spec.decay ?? 0.25
+  const level = spec.gain ?? 0.09
+  const partials = spec.partials ?? MARIMBA
+
+  for (const [ratio, amp, dscale] of partials) {
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    // set, never ramped: see the note above about gliding
+    osc.frequency.value = spec.freq * ratio
+    const dur = decay * dscale
+    gain.gain.setValueAtTime(0, at)
+    // a strike, so the attack is a millisecond and a half rather than the 20ms
+    // `tone` uses; any slower and the mallet reads as a swell
+    gain.gain.linearRampToValueAtTime(level * amp, at + 0.0015)
+    gain.gain.exponentialRampToValueAtTime(0.0008, at + dur)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start(at)
+    osc.stop(at + dur + 0.02)
+  }
+
+  const mallet = spec.mallet ?? 0.35
+  if (mallet > 0) {
+    // the contact itself: 20ms of noise, which is the difference between a bar
+    // that was hit and a bar that faded up out of nothing
+    noise(ctx, {
+      at,
+      dur: 0.02,
+      freq: spec.malletHz ?? 1400,
+      q: 0.7,
+      gain: level * mallet,
+    })
+  }
+}
+
 /** 16-bit PCM WAV: the one container every browser decodes without a codec */
 export function encodeWav(buffer: AudioBuffer, scale = 1): Blob {
   const channels = buffer.numberOfChannels
@@ -165,6 +251,40 @@ export async function renderCue(
   const measured = peakOf(buffer)
   const scale = opts.peak && measured > 1e-6 ? opts.peak / measured : 1
   return URL.createObjectURL(encodeWav(buffer, scale))
+}
+
+/**
+ * Loads a shipped audio file and returns an object URL for it, normalised to
+ * the same `peak` ladder every synthesized cue is measured against.
+ *
+ * This is the whole point of the function. A cue rendered here and a cue
+ * downloaded from a library are not comparable objects: library files arrive
+ * mastered near 0 dBFS, roughly four times hotter than this mix, so dropping
+ * one in next to the synth bank does not add a sound, it adds a sound that
+ * shouts over everything else. Decoding it, reading its true peak and
+ * re-encoding it at the declared level means the mix table in bank.ts stays
+ * the single place loudness is decided, no matter where the audio came from.
+ *
+ * Resolves null on any failure (missing file, format the browser will not
+ * decode) so the caller can fall back to the synthesized voice: a cue with no
+ * sample yet dropped in should sound like the old site, not like silence.
+ */
+export async function loadSample(url: string, peak?: number): Promise<string | null> {
+  try {
+    const response = await fetch(url)
+    if (!response.ok) return null
+    const bytes = await response.arrayBuffer()
+    // OfflineAudioContext decodes without needing a user gesture, and its own
+    // rate is irrelevant here: decodeAudioData resamples to it, which is fine
+    // because everything else in this file already runs at SAMPLE_RATE
+    const ctx = new OfflineAudioContext(1, 1, SAMPLE_RATE)
+    const buffer = await ctx.decodeAudioData(bytes)
+    const measured = peakOf(buffer)
+    const scale = peak && measured > 1e-6 ? peak / measured : 1
+    return URL.createObjectURL(encodeWav(buffer, scale))
+  } catch {
+    return null
+  }
 }
 
 /** peak sample across every channel, used by the level check in the tests */

@@ -23,7 +23,8 @@
 import type { Howl } from 'howler'
 import { pageIsCovered } from '../overlay'
 import { track } from '../analytics'
-import { CUES, type CueName } from './bank'
+import { CUES, PEAK, SAMPLES, type CueName } from './bank'
+import { loadSample } from './synth'
 
 const STORAGE_KEY = 'sound'
 /**
@@ -100,7 +101,12 @@ export async function startAudio(): Promise<void> {
     const names = Object.keys(CUES) as CueName[]
     await Promise.all(
       names.map(async (name) => {
-        const src = await CUES[name]()
+        // a recording if one is shipped for this cue, the synthesized voice
+        // otherwise, and the synthesized voice again if the recording will not
+        // load: a 404 in public/audio should degrade the sound design, not
+        // punch a silent hole in it
+        const file = SAMPLES[name]
+        const src = (file && (await loadSample(file, PEAK[name]))) || (await CUES[name]())
         sounds.set(name, new howler!.Howl({ src: [src], format: ['wav'], preload: true }))
       }),
     )

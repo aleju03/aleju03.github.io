@@ -32,7 +32,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { onOverlayChange, pageIsCovered } from '../overlay'
 import { approach } from '../scroll/progress'
-import { cue } from '../audio'
 
 function canHostCursor() {
   if (typeof window === 'undefined') return false
@@ -94,7 +93,13 @@ export function Cursor() {
       const el = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-cursor]') : null
       const next = el?.dataset.cursor ?? ''
       if (next === currentLabel) return
-      if (next && !currentLabel) cue('tick')
+      // no cue here, deliberately. This used to tick every time the pointer
+      // arrived on something interactive, which sounds restrained until you
+      // watch a real cursor: it crosses links on its way to somewhere else,
+      // it wanders while its owner reads, it re-enters the same element three
+      // times in a second. Hovering is not a decision, and scoring it makes
+      // the page chatter at people who have not asked it anything. The ring
+      // already swells, which is the acknowledgement this moment has earned.
       currentLabel = next
       // a ring that swells a little, not a disc that eats the paragraph it is
       // hovering. The first version scaled 2.6x on a 36px ring (94px of solid

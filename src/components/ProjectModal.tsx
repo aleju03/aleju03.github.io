@@ -167,10 +167,24 @@ export function ProjectModal({
   const { gallery, story, learned, extra } = project.details
   const shot = gallery[active]
 
-  // scroll lock + focus hand-off for the dialog's lifetime. The two cues ride
-  // the same effect rather than the click handlers, because a dialog can also
-  // be dismissed with Escape, with the backdrop, or by the route changing
-  // under it, and all of those deserve the door closing too
+  // scroll lock + focus hand-off for the dialog's lifetime. `open` rides the
+  // effect, but `close` cannot: this dialog lives inside an AnimatePresence
+  // and its exit animation runs a quarter of a second, so a cue in the cleanup
+  // plays after the panel has already gone, which reads as the site lagging
+  // rather than as the door shutting. The sound belongs to the moment the
+  // visitor asks for the close, not to the moment React finishes it. Every
+  // self-dismissal therefore goes through `dismiss`, and the cleanup only
+  // covers the case nothing else can: something unmounting the dialog from
+  // outside, like the route changing under it.
+  const dismissed = useRef(false)
+
+  const dismiss = () => {
+    if (dismissed.current) return
+    dismissed.current = true
+    cue('close')
+    onClose()
+  }
+
   useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     panelRef.current?.focus({ preventScroll: true })
@@ -178,7 +192,7 @@ export function ProjectModal({
     cue('open')
     return () => {
       unlock()
-      cue('close')
+      if (!dismissed.current) cue('close')
       previous?.focus({ preventScroll: true })
     }
   }, [])
@@ -186,7 +200,7 @@ export function ProjectModal({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
       e.stopPropagation()
-      onClose()
+      dismiss()
       return
     }
     if (e.key !== 'Tab' || !panelRef.current) return
@@ -217,7 +231,7 @@ export function ProjectModal({
         exit={{ opacity: 0 }}
         transition={{ duration: 0.25 }}
         style={{ willChange: 'opacity' }}
-        onClick={onClose}
+        onClick={dismiss}
         aria-hidden="true"
       />
       <motion.div
@@ -366,7 +380,7 @@ export function ProjectModal({
 
         <button
           type="button"
-          onClick={onClose}
+          onClick={dismiss}
           aria-label={labels.close}
           className="absolute top-3 right-5 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-stone-200 bg-white/90 text-stone-600 shadow-sm transition hover:scale-105 hover:text-stone-900 active:scale-95 dark:border-stone-700 dark:bg-stone-900/90 dark:text-stone-300 dark:hover:text-stone-100 sm:backdrop-blur"
         >
