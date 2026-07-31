@@ -142,6 +142,7 @@ const allProjects: AnyProject[] = [...showcase, ...secondary, ...more]
 // the Games folder ships on the desktop AND in Program Files, XP style;
 // fresh arrays each call so no node ends up in the tree twice
 const gameShortcuts = (): FsNode[] => [
+  appShortcut('Solitaire', 'solitaire'),
   appShortcut('Minesweeper', 'minesweeper'),
   appShortcut('Mine Duel', 'mineduel'),
   appShortcut('Pong', 'pong'),

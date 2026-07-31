@@ -35,9 +35,20 @@ const GRAVITY = 1400
 const FLAP_VY = -380
 const MAX_FALL = 520
 
-const ROCK_W = 64
-const ROCK_TIP_HW = 5
-const ROCK_BASE_HW = 28
+// the kit's rock is a 108x239 triangle and it only reads as rock at that
+// aspect: stretching one to span an arbitrary gap turns it into a spire or a
+// pancake. So rocks are drawn at their natural size with the tip on the gap
+// edge and the wide base running off past the ceiling or under the ground,
+// and it is gapY that is clamped (see the spawner) so both ends always reach.
+const ROCK_SRC_W = 108
+const ROCK_SRC_H = 239
+const ROCK_W = 84
+const ROCK_H = Math.round((ROCK_SRC_H * ROCK_W) / ROCK_SRC_W)
+/** silhouette measured off the sprite: the apex sits right of centre and drifts back */
+const ROCK_TIP_HW = (4 / ROCK_SRC_W) * ROCK_W
+const ROCK_BASE_HW = (52.5 / ROCK_SRC_W) * ROCK_W
+const ROCK_TIP_CX = (65.5 / ROCK_SRC_W) * ROCK_W
+const ROCK_BASE_CX = (53.5 / ROCK_SRC_W) * ROCK_W
 const SPAWN_EVERY = 1.6
 const GAP_START = 168
 const GAP_MIN = 132
@@ -202,27 +213,22 @@ const speedAt = (score: number) =>
   SPEED_START + (SPEED_MAX - SPEED_START) * Math.min(score / 30, 1)
 
 /**
- * circle vs the triangular rock: the half-width tapers linearly from the
- * base to the tip, so the check reads the rock's width at the plane's own
- * height instead of treating the whole thing as a box
+ * circle vs the triangular rock: `k` is how far down the sprite we are from
+ * its tip, in tip-to-base units, and both the half-width and the centre are
+ * read off the silhouette there, so the check follows the actual slope
+ * instead of treating the whole thing as a box. Past the base the profile
+ * just holds, which covers the part that runs off the top of the canvas.
  */
 function hitsRock(y: number, r: Rock): boolean {
-  const dx = Math.abs(PLANE_X - (r.x + ROCK_W / 2))
-  if (dx > ROCK_BASE_HW + HIT_R) return false
   const topSpan = r.gapY - r.gap / 2
   const botY = r.gapY + r.gap / 2
-  if (topSpan > 1 && y - HIT_R < topSpan) {
-    const at = clamp(y, 0, topSpan)
-    const hw = ROCK_TIP_HW + (ROCK_BASE_HW - ROCK_TIP_HW) * ((topSpan - at) / topSpan)
-    if (dx < hw + HIT_R * 0.75) return true
-  }
-  const botSpan = HORIZON - botY
-  if (botSpan > 1 && y + HIT_R > botY) {
-    const at = clamp(y, botY, HORIZON)
-    const hw = ROCK_TIP_HW + (ROCK_BASE_HW - ROCK_TIP_HW) * ((at - botY) / botSpan)
-    if (dx < hw + HIT_R * 0.75) return true
-  }
-  return false
+  const k =
+    y - HIT_R < topSpan ? (topSpan - y) / ROCK_H : y + HIT_R > botY ? (y - botY) / ROCK_H : -1
+  if (k < 0) return false
+  const t = clamp(k, 0, 1)
+  const hw = ROCK_TIP_HW + (ROCK_BASE_HW - ROCK_TIP_HW) * t
+  const cx = r.x + ROCK_TIP_CX + (ROCK_BASE_CX - ROCK_TIP_CX) * t
+  return Math.abs(PLANE_X - cx) < hw + HIT_R * 0.75
 }
 
 const FONT = '"Trebuchet MS", Verdana, sans-serif'
@@ -360,8 +366,10 @@ export function FlappyApp() {
         if (w.spawnIn <= 0) {
           w.spawnIn += SPAWN_EVERY
           const gap = gapAt(w.score)
-          const lo = gap / 2 + 52
-          const hi = HORIZON - gap / 2 - 48
+          // the gap may only sit where both rocks still reach their end of the
+          // canvas at natural size, or one of them floats in mid air
+          const lo = Math.max(gap / 2 + 52, HORIZON - ROCK_H - gap / 2)
+          const hi = Math.min(HORIZON - gap / 2 - 48, ROCK_H + gap / 2)
           w.rocks.push({
             x: W + ROCK_W,
             gapY: lo + Math.random() * (hi - lo),
@@ -467,8 +475,10 @@ export function FlappyApp() {
       const botY = r.gapY + r.gap / 2
       const down = sprites.get(theme.rockDown)
       const up = sprites.get(theme.rockUp)
-      if (down && topSpan > 1) ctx.drawImage(down, r.x, 0, ROCK_W, topSpan)
-      if (up && HORIZON - botY > 1) ctx.drawImage(up, r.x, botY, ROCK_W, HORIZON - botY + 6)
+      // natural size, tip on the gap edge; the base overshoots off-canvas and
+      // the ground layer, drawn after these, buries the bottom rock's foot
+      if (down) ctx.drawImage(down, r.x, topSpan - ROCK_H, ROCK_W, ROCK_H)
+      if (up) ctx.drawImage(up, r.x, botY, ROCK_W, ROCK_H)
     }
 
     const drawPuffs = (w: World) => {

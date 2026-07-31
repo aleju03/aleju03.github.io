@@ -575,15 +575,21 @@ export default function AlejOS({
     if (!el) return
     const measure = () => {
       const avail = el.clientWidth - GRID_PAD
-      const cw =
-        el.clientWidth < 640
-          ? Math.min(CELL_W, Math.floor(avail / Math.max(1, Math.floor(avail / MIN_CELL_W))))
-          : CELL_W
+      // As many columns as the width can actually hold. Flooring at the
+      // nominal cell width throws the remainder away, and the remainder is
+      // usually most of a column: a 1320px desktop kept 12 columns and left
+      // an 84px strip down the right that no icon could be dropped into,
+      // because moveIcon clamps to cols - 1. So take the extra column
+      // whenever there is any leftover, then divide the width between them,
+      // and only fall back when that would squeeze cells under MIN_CELL_W
+      // (which is what keeps a 390px phone at four columns).
+      const most = Math.max(1, Math.floor(avail / MIN_CELL_W))
+      const cols = Math.min(most, Math.max(1, Math.ceil(avail / CELL_W)))
       setGrid({
-        cols: Math.max(1, Math.floor(avail / cw)),
+        cols,
         // leave the taskbar (h-12) plus a little breathing room at the bottom
         rows: Math.max(1, Math.floor((el.clientHeight - GRID_PAD - 56) / CELL_H)),
-        cw,
+        cw: Math.min(CELL_W, Math.floor(avail / cols)),
       })
     }
     measure()

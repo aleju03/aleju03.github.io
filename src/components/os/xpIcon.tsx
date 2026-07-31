@@ -40,6 +40,7 @@ export const XP_ICON_NAMES = [
   'flappy',
   'vsrg',
   'mine-duel',
+  'solitaire',
 ] as const
 
 export type XpIconName = (typeof XP_ICON_NAMES)[number]

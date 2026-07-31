@@ -83,6 +83,9 @@ export const GAMES = {
   memory: { order: 'asc', min: 3_000, max: 3_600_000 }, // ms to clear the board
   2048: { order: 'desc', max: 4_000_000 },
   whack: { order: 'desc', max: 999 },
+  // Standard scoring only, and the timed bonus is 700000/seconds, so a very
+  // fast win lands in the low tens of thousands
+  solitaire: { order: 'desc', max: 30_000 },
   flappy: { order: 'desc', max: 9_999 },
   'vsrg-badapple': { order: 'desc', max: 2_000_000 },
   'vsrg-madeoffire': { order: 'desc', max: 2_000_000 },

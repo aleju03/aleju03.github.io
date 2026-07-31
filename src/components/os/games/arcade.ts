@@ -33,6 +33,7 @@ export const GAME_META: Record<string, { order: 'asc' | 'desc'; unit: 'pts' | 'm
   memory: { order: 'asc', unit: 'ms' },
   '2048': { order: 'desc', unit: 'pts' },
   whack: { order: 'desc', unit: 'pts' },
+  solitaire: { order: 'desc', unit: 'pts' },
   flappy: { order: 'desc', unit: 'pts' },
   'vsrg-badapple': { order: 'desc', unit: 'pts' },
   'vsrg-madeoffire': { order: 'desc', unit: 'pts' },

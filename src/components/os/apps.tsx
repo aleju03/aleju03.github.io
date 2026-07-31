@@ -17,6 +17,7 @@ import { Game2048App } from './games/Game2048App'
 import { WhackApp } from './games/WhackApp'
 import { FlappyApp } from './games/FlappyApp'
 import { VsrgApp } from './games/VsrgApp'
+import { SolitaireApp } from './games/SolitaireApp'
 import { MineDuelApp } from './games/MineDuelApp'
 import type { FsNode } from './fs'
 
@@ -47,6 +48,7 @@ export type AppId =
   | 'flappy'
   | 'vsrg'
   | 'mineduel'
+  | 'solitaire'
 
 export interface AppCtx {
   winId: string
@@ -232,6 +234,15 @@ export const APPS: Record<AppId, AppDef> = {
     h: 580,
     single: true,
     render: () => <VsrgApp />,
+  },
+  solitaire: {
+    // the board is a fixed 594px stage, so the window opens wide enough for it
+    name: 'Solitaire',
+    glyph: (s) => xpIcon('solitaire', s),
+    w: 620,
+    h: 560,
+    single: true,
+    render: (ctx) => <SolitaireApp close={ctx.close} />,
   },
   mineduel: {
     name: 'Mine Duel',

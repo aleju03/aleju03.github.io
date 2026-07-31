@@ -68,6 +68,16 @@ function displayPath(path: string): string {
 const inset =
   'rounded-sm border border-stone-400 bg-white px-2 py-1 text-xs text-stone-700 shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)]'
 
+/*
+  The icon view. Fixed-width cells in a wrapping flex row leave the tail of
+  every row unused: at the default window the pane fits five 88px columns but
+  not five 96px ones, so a whole column's worth of space sat empty on the
+  right. auto-fill packs as many columns as the pane can actually hold and
+  hands the slack to the cells, so the grid always reaches the far edge.
+*/
+const ICON_GRID =
+  'grid content-start gap-1 p-3 [grid-template-columns:repeat(auto-fill,minmax(5.5rem,1fr))]'
+
 interface ExplorerProps {
   winId: string
   initialPath?: string
@@ -351,7 +361,7 @@ export function ExplorerApp({ initialPath, setTitle }: ExplorerProps) {
           }}
         >
           {atComputer ? (
-            <div className="flex flex-wrap content-start gap-1 p-3">
+            <div className={ICON_GRID}>
               {DRIVES.map((d) => (
                 <button
                   key={d.path}
@@ -369,7 +379,7 @@ export function ExplorerApp({ initialPath, setTitle }: ExplorerProps) {
                     sounds.click()
                     setSelected(d.path)
                   }}
-                  className={`flex w-28 cursor-pointer flex-col items-center gap-1 rounded-md p-3 ${
+                  className={`flex cursor-pointer flex-col items-center gap-1 rounded-md p-3 ${
                     selected === d.path ? 'bg-blue-600/15' : 'hover:bg-blue-600/5'
                   }`}
                 >
@@ -381,9 +391,9 @@ export function ExplorerApp({ initialPath, setTitle }: ExplorerProps) {
           ) : items.length === 0 ? (
             <p className="p-4 text-xs text-stone-400">This folder is empty.</p>
           ) : (
-            <div className="flex flex-wrap content-start gap-1 p-3">
+            <div className={ICON_GRID}>
               {items.map((node) => (
-                <div key={node.name} data-fs-item={node.name} className="w-24">
+                <div key={node.name} data-fs-item={node.name}>
                   <button
                     type="button"
                     onClick={() => {

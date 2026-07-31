@@ -11,6 +11,14 @@ import { GameShell, Led, XP_BTN } from './ui'
   critters that rise inside a clipped window whose floor sits at the hole's
   midline; the hole's front lip is drawn on top so they really come out of
   the ground.
+
+  All of the art is SVG built here, because the house rule is that nothing
+  ships. What makes it read as a game rather than as nine dark ellipses on a
+  green box is that it is drawn as an *object*: a fairground cabinet with a
+  bolted frame, a lawn with its own blade pattern and mown stripes, and holes
+  that are earth mounds with a lip and a shaft rather than filled circles.
+  The same rule the CRT taught — a black rectangle is not a screen — is why a
+  green rectangle is not a lawn.
 */
 
 const HOLES = 9
@@ -56,7 +64,11 @@ const freshHoles = (): HoleSlot[] =>
 const now = () => performance.now()
 
 const MOLE_CSS = `
-@keyframes whack-pop { from { transform: translateY(102%) } to { transform: translateY(6%) } }
+@keyframes whack-pop {
+  0% { transform: translateY(102%) scaleY(1) }
+  70% { transform: translateY(0%) scaleY(1.06) }
+  100% { transform: translateY(6%) scaleY(1) }
+}
 @keyframes whack-bonk {
   0% { transform: translateY(6%) scale(1, 1) }
   35% { transform: translateY(24%) scale(1.18, 0.5) }
@@ -68,6 +80,17 @@ const MOLE_CSS = `
   35% { transform: scale(1.15) rotate(6deg); opacity: 1 }
   100% { transform: scale(1); opacity: 0 }
 }
+/* the ring of earth a surfacing mole kicks up, so a pop has weight */
+@keyframes whack-dust {
+  0% { transform: scale(0.35); opacity: 0.85 }
+  100% { transform: scale(1.5); opacity: 0 }
+}
+@keyframes whack-pop-score {
+  0% { transform: translateY(4px) scale(0.7); opacity: 0 }
+  25% { transform: translateY(-4px) scale(1.1); opacity: 1 }
+  100% { transform: translateY(-26px) scale(1); opacity: 0 }
+}
+@keyframes whack-sparkle { 0%, 100% { opacity: 0.15 } 50% { opacity: 0.9 } }
 `
 
 const MOLE_ANIM: Record<Mole['state'], string> = {
@@ -88,50 +111,112 @@ const HAMMER_CURSOR = `url("data:image/svg+xml,${MALLET_SVG}") 20 9, pointer`
 
 const pad3 = (n: number) => String(Math.max(0, Math.min(999, n))).padStart(3, '0')
 
+/** the fairground cabinet the lawn is sunk into, and the bolts holding it on */
+const CABINET =
+  'relative h-full rounded-md border border-[#5c1d10] bg-[linear-gradient(#c9553a,#a33a24_45%,#8c2e1b)] p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_2px_6px_rgba(0,0,0,0.3)]'
+const BOLT =
+  'pointer-events-none absolute z-20 h-2 w-2 rounded-full bg-[radial-gradient(circle_at_32%_30%,#fde9c8,#a07a49_60%,#5c4222)] shadow-[0_1px_1px_rgba(0,0,0,0.45)]'
+const SCRIM = 'absolute inset-0 z-30 flex items-center justify-center bg-emerald-950/50'
+const PLACARD =
+  'flex flex-col items-center gap-2 rounded-sm border border-stone-400 bg-stone-100 px-6 py-4 shadow-lg'
+
+/*
+  The critter, head and shoulders, framed so its paws land on the hole's lip.
+  Flat fills plus one darker rim and no gradients, which is what keeps nine of
+  them legible at 86 CSS px.
+*/
 function MoleSvg({ gold, hit }: { gold: boolean; hit: boolean }) {
-  const fur = gold ? '#d9a441' : '#8a5a33'
-  const furDark = gold ? '#a97e1f' : '#66422a'
-  const belly = gold ? '#f2d488' : '#c99e6b'
+  const fur = gold ? '#e0af45' : '#8b5c34'
+  const furDark = gold ? '#a4761b' : '#5d3c25'
+  const furLight = gold ? '#f3cd7c' : '#a6734a'
+  const muzzle = gold ? '#fbe9bd' : '#d8b291'
   return (
     <svg
-      viewBox="0 0 64 60"
+      viewBox="0 0 72 68"
       className="h-full w-full"
-      style={gold ? { filter: 'drop-shadow(0 0 5px rgba(251,191,36,0.75))' } : undefined}
+      style={gold ? { filter: 'drop-shadow(0 0 6px rgba(251,191,36,0.8))' } : undefined}
       aria-hidden="true"
     >
+      {/* ears, behind the head so only their rims show */}
+      <g fill={furDark}>
+        <circle cx="15" cy="22" r="7" />
+        <circle cx="57" cy="22" r="7" />
+      </g>
+      <g fill={furLight}>
+        <circle cx="15" cy="22" r="3.4" />
+        <circle cx="57" cy="22" r="3.4" />
+      </g>
+      {/* body: a bell that widens into the shoulders */}
       <path
-        d="M8 60 V28 C8 13 18 5 32 5 C46 5 56 13 56 28 V60 Z"
+        d="M7 68 V34 C7 17 18 7 36 7 C54 7 65 17 65 34 V68 Z"
         fill={fur}
         stroke={furDark}
-        strokeWidth="2"
+        strokeWidth="2.4"
       />
-      <ellipse cx="32" cy="42" rx="13" ry="16" fill={belly} />
+      <path d="M17 22 C21 13 28 9.5 36 9.5 C44 9.5 51 13 55 22 Z" fill={furLight} opacity="0.55" />
+      <path d="M36 40 C48 40 53 50 53 68 H19 C19 50 24 40 36 40 Z" fill={muzzle} opacity="0.85" />
+      <ellipse cx="36" cy="40" rx="15" ry="11.5" fill={muzzle} />
+      <ellipse cx="29.5" cy="41" rx="6" ry="5" fill="#fff" opacity="0.35" />
+      <ellipse cx="42.5" cy="41" rx="6" ry="5" fill="#fff" opacity="0.35" />
       {hit ? (
-        <g stroke="#2a1c12" strokeWidth="2" strokeLinecap="round">
-          <path d="M19 21 L25 27 M25 21 L19 27" />
-          <path d="M39 21 L45 27 M45 21 L39 27" />
+        <g stroke="#2b1a10" strokeWidth="2.6" strokeLinecap="round">
+          <path d="M20 24 L28 32 M28 24 L20 32" />
+          <path d="M44 24 L52 32 M52 24 L44 32" />
         </g>
       ) : (
-        <g fill="#2a1c12">
-          <circle cx="22" cy="24" r="2.6" />
-          <circle cx="42" cy="24" r="2.6" />
+        <g>
+          <ellipse cx="24" cy="28" rx="4.2" ry="4.6" fill="#2b1a10" />
+          <ellipse cx="48" cy="28" rx="4.2" ry="4.6" fill="#2b1a10" />
+          <circle cx="25.6" cy="26.4" r="1.5" fill="#fff" />
+          <circle cx="49.6" cy="26.4" r="1.5" fill="#fff" />
         </g>
       )}
-      <ellipse cx="32" cy="31" rx="4.5" ry="3.5" fill="#f2a0b5" stroke="#d97d98" strokeWidth="1" />
-      <rect x="28.6" y="35" width="3.2" height="4.5" rx="1" fill="#fff" />
-      <rect x="32.2" y="35" width="3.2" height="4.5" rx="1" fill="#fff" />
-      <g stroke={furDark} strokeWidth="1" opacity="0.55" strokeLinecap="round">
-        <path d="M24 31 L14 29 M24 34 L15 35" />
-        <path d="M40 31 L50 29 M40 34 L49 35" />
+      {/* nose, and the buck teeth under it */}
+      <path
+        d="M36 30.5 C40.5 30.5 42.5 33 42.5 35 C42.5 37.6 39 39.5 36 39.5 C33 39.5 29.5 37.6 29.5 35 C29.5 33 31.5 30.5 36 30.5 Z"
+        fill="#f0899f"
+        stroke="#cf6a80"
+        strokeWidth="1.2"
+      />
+      <circle cx="33.6" cy="34" r="1" fill="#a6455c" />
+      <circle cx="38.4" cy="34" r="1" fill="#a6455c" />
+      <path d="M36 39.5 V44" stroke="#b98a68" strokeWidth="1.2" strokeLinecap="round" />
+      <g fill="#fff" stroke="#c9b49b" strokeWidth="0.8">
+        <rect x="31.6" y="44" width="4.1" height="6" rx="1.4" />
+        <rect x="36.3" y="44" width="4.1" height="6" rx="1.4" />
       </g>
-      <g fill={belly} stroke={furDark} strokeWidth="1.5">
-        <ellipse cx="14" cy="53" rx="6.5" ry="7.5" />
-        <ellipse cx="50" cy="53" rx="6.5" ry="7.5" />
+      <g stroke={furDark} strokeWidth="1.1" opacity="0.6" strokeLinecap="round" fill="none">
+        <path d="M22 38 C16 36.5 12 36 8 36.5" />
+        <path d="M22 42 C16 42.5 12 43.5 9 45" />
+        <path d="M50 38 C56 36.5 60 36 64 36.5" />
+        <path d="M50 42 C56 42.5 60 43.5 63 45" />
       </g>
-      <g stroke={furDark} strokeWidth="1" strokeLinecap="round">
-        <path d="M12 47 L12 51 M16 47 L16 51" />
-        <path d="M48 47 L48 51 M52 47 L52 51" />
+      {/* paws hooked over the rim, claws and all */}
+      <g fill={muzzle} stroke={furDark} strokeWidth="1.8">
+        <ellipse cx="13" cy="60" rx="8" ry="8.5" />
+        <ellipse cx="59" cy="60" rx="8" ry="8.5" />
       </g>
+      <g stroke={furDark} strokeWidth="1.2" strokeLinecap="round">
+        <path d="M9.5 54 V58 M13 53.2 V57.6 M16.5 54 V58" />
+        <path d="M55.5 54 V58 M59 53.2 V57.6 M62.5 54 V58" />
+      </g>
+      {gold && (
+        <g>
+          {/* the five-pointer wears a crown, so its worth is on the sprite */}
+          <path
+            d="M23 12 L27.5 17 L31 8 L36 15 L41 8 L44.5 17 L49 12 L47 22 H25 Z"
+            fill="#ffd76a"
+            stroke="#a4761b"
+            strokeWidth="1.8"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M58 8 L59.4 11.6 L63 13 L59.4 14.4 L58 18 L56.6 14.4 L53 13 L56.6 11.6 Z"
+            fill="#fff"
+            style={{ animation: 'whack-sparkle 1.1s ease-in-out infinite' }}
+          />
+        </g>
+      )}
     </svg>
   )
 }
@@ -151,6 +236,115 @@ function BonkStar() {
         strokeWidth="2"
         strokeLinejoin="round"
       />
+    </svg>
+  )
+}
+
+/*
+  Every gradient, pattern and clip the field uses, mounted once. Nine holes
+  each carrying their own <defs> would put nine copies of the same ids in the
+  document; browsers resolve that to the first one and render fine, but it is
+  invalid and it is nine times the parse. Everything below refers to it by id.
+*/
+function FieldDefs() {
+  return (
+    <svg className="absolute h-0 w-0" aria-hidden="true">
+      <defs>
+        <linearGradient id="whack-turf" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#7cc24a" />
+          <stop offset="55%" stopColor="#4e9a34" />
+          <stop offset="100%" stopColor="#2f6b23" />
+        </linearGradient>
+        <radialGradient id="whack-vignette" cx="0.5" cy="0.42" r="0.72">
+          <stop offset="55%" stopColor="#000" stopOpacity="0" />
+          <stop offset="100%" stopColor="#0d2a10" stopOpacity="0.45" />
+        </radialGradient>
+        <pattern id="whack-blades" width="14" height="14" patternUnits="userSpaceOnUse">
+          <path
+            d="M2 13 C2.4 9 3.6 7.4 5 6 M7 14 C7.6 10.5 8.4 9 10 7.6 M11.5 12 C12 9.4 12.6 8.4 13.6 7.2"
+            stroke="#c9ee9a"
+            strokeWidth="0.9"
+            strokeLinecap="round"
+            fill="none"
+            opacity="0.3"
+          />
+        </pattern>
+        <radialGradient id="whack-soil" cx="0.5" cy="0.34" r="0.62">
+          <stop offset="0%" stopColor="#96663a" />
+          <stop offset="100%" stopColor="#523618" />
+        </radialGradient>
+        <radialGradient id="whack-shaft" cx="0.5" cy="0.26" r="0.8">
+          <stop offset="0%" stopColor="#33200f" />
+          <stop offset="55%" stopColor="#150c05" />
+          <stop offset="100%" stopColor="#000" />
+        </radialGradient>
+        {/* the near half of the mound, the part that occludes a rising mole */}
+        <clipPath id="whack-lip" clipPathUnits="userSpaceOnUse">
+          <rect x="0" y="26.5" width="120" height="30" />
+        </clipPath>
+      </defs>
+    </svg>
+  )
+}
+
+/*
+  The lawn: one SVG behind the holes carrying the blade pattern, a sun-warmed
+  top and a vignette, so the field has depth without nine more DOM layers. It
+  never re-renders during a round.
+*/
+function LawnArt() {
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      preserveAspectRatio="none"
+      viewBox="0 0 300 300"
+      aria-hidden="true"
+    >
+      <rect width="300" height="300" fill="url(#whack-turf)" />
+      <rect width="300" height="300" fill="url(#whack-blades)" />
+      {/* mown stripes, the thing that says a groundsman was here */}
+      <g fill="#ffffff" opacity="0.05">
+        <rect x="0" y="0" width="300" height="34" />
+        <rect x="0" y="68" width="300" height="34" />
+        <rect x="0" y="136" width="300" height="34" />
+        <rect x="0" y="204" width="300" height="34" />
+        <rect x="0" y="272" width="300" height="28" />
+      </g>
+      <rect width="300" height="300" fill="url(#whack-vignette)" />
+    </svg>
+  )
+}
+
+/*
+  A hole is an earth mound: soil thrown up around a shaft that darkens inward,
+  with clods scattered into the grass. `lip` draws the identical geometry
+  through a clip of its near half, so the piece that paints over a rising mole
+  can never drift out of register with the piece behind it.
+*/
+function Mound({ lip = false }: { lip?: boolean }) {
+  return (
+    <svg viewBox="0 0 120 56" className="h-full w-full" aria-hidden="true">
+      <g clipPath={lip ? 'url(#whack-lip)' : undefined}>
+        <ellipse cx="60" cy="30" rx="59" ry="25" fill="#3f6f26" />
+        <ellipse cx="60" cy="28" rx="57" ry="24" fill="url(#whack-soil)" />
+        <g fill="#6f4a26" opacity="0.9">
+          <ellipse cx="16" cy="36" rx="7" ry="3.2" />
+          <ellipse cx="103" cy="35" rx="6" ry="2.8" />
+          <ellipse cx="60" cy="48" rx="9" ry="3.4" />
+          <ellipse cx="35" cy="46" rx="5" ry="2.4" />
+          <ellipse cx="86" cy="47" rx="6" ry="2.6" />
+        </g>
+        <ellipse cx="60" cy="26.5" rx="45" ry="17.5" fill="url(#whack-shaft)" />
+        {/* light catching the near lip, shadow rolling off the far one */}
+        <path d="M17 24 A45 17.5 0 0 1 103 24" fill="none" stroke="#000" strokeWidth="3" opacity="0.35" />
+        <path
+          d="M17 30 A45 17.5 0 0 0 103 30"
+          fill="none"
+          stroke="#b3854c"
+          strokeWidth="1.8"
+          opacity="0.5"
+        />
+      </g>
     </svg>
   )
 }
@@ -367,102 +561,126 @@ export function WhackApp() {
         className="h-full p-2 outline-none select-none"
       >
         <style>{MOLE_CSS}</style>
-        <div
-          className="relative grid h-full touch-none grid-cols-3 grid-rows-3 rounded-md border border-emerald-900/50 bg-gradient-to-b from-emerald-500 to-emerald-700 p-1 shadow-[inset_0_2px_6px_rgba(0,0,0,0.25)]"
-          style={{ cursor: HAMMER_CURSOR }}
-        >
-          {moles.map((mole, i) => (
-            <div
-              key={i}
-              role="button"
-              aria-label={`Hole ${i + 1}`}
-              onPointerDown={(e) => {
-                e.stopPropagation()
-                fieldRef.current?.focus()
-                whack(i)
-              }}
-              className="relative"
-            >
-              <span className="absolute top-1 right-1.5 font-mono text-[10px] text-emerald-950/35">
-                {i + 1}
-              </span>
-              {/* the well */}
-              <div className="absolute bottom-3 left-1/2 h-11 w-24 -translate-x-1/2 rounded-[50%] bg-[#5b3a1e] p-[5px] shadow-[0_1px_0_rgba(255,255,255,0.25)]">
-                <div className="h-full w-full rounded-[50%] bg-stone-950 shadow-[inset_0_3px_4px_rgba(0,0,0,0.85)]" />
-              </div>
-              {/* the mole rises in a clipped window whose floor is the hole's midline */}
-              <div className="absolute bottom-[34px] left-1/2 h-[76px] w-20 -translate-x-1/2 overflow-hidden">
-                {mole && (
+        <FieldDefs />
+        <div className={CABINET}>
+          <span className={`${BOLT} top-1.5 left-1.5`} />
+          <span className={`${BOLT} top-1.5 right-1.5`} />
+          <span className={`${BOLT} bottom-1.5 left-1.5`} />
+          <span className={`${BOLT} bottom-1.5 right-1.5`} />
+          <div
+            className="relative grid h-full touch-none grid-cols-3 grid-rows-3 overflow-hidden rounded-sm shadow-[inset_0_3px_10px_rgba(0,0,0,0.45)]"
+            style={{ cursor: HAMMER_CURSOR }}
+          >
+            <LawnArt />
+            {moles.map((mole, i) => (
+              <div
+                key={i}
+                role="button"
+                aria-label={`Hole ${i + 1}`}
+                onPointerDown={(e) => {
+                  e.stopPropagation()
+                  fieldRef.current?.focus()
+                  whack(i)
+                }}
+                className="relative"
+              >
+                <span className="absolute top-1 right-1.5 font-mono text-[10px] text-emerald-950/30">
+                  {i + 1}
+                </span>
+                {/* the mound, far half */}
+                <div className="absolute bottom-2 left-1/2 h-14 w-[120px] -translate-x-1/2">
+                  <Mound />
+                </div>
+                {/* a mole rises in a clipped window whose floor is the shaft's midline */}
+                <div className="absolute bottom-[35px] left-1/2 h-[88px] w-[86px] -translate-x-1/2 overflow-hidden">
+                  {mole && (
+                    <div
+                      key={mole.seq}
+                      className="absolute inset-x-0 bottom-0 h-[81px] origin-bottom"
+                      style={{ animation: MOLE_ANIM[mole.state] }}
+                    >
+                      <MoleSvg gold={mole.kind === 'gold'} hit={mole.state === 'hit'} />
+                    </div>
+                  )}
+                </div>
+                {/* dust the pop kicks off the rim */}
+                {mole?.state === 'up' && (
                   <div
-                    key={mole.seq}
-                    className="absolute inset-x-1 bottom-0 h-[70px] origin-bottom"
-                    style={{ animation: MOLE_ANIM[mole.state] }}
-                  >
-                    <MoleSvg gold={mole.kind === 'gold'} hit={mole.state === 'hit'} />
+                    key={`dust-${mole.seq}`}
+                    className="pointer-events-none absolute bottom-[30px] left-1/2 h-6 w-[104px] -translate-x-1/2 rounded-[50%] border-[3px] border-[#c8a578]/70"
+                    style={{ animation: 'whack-dust 380ms ease-out forwards' }}
+                  />
+                )}
+                {mole?.state === 'hit' && (
+                  <>
+                    <div className="pointer-events-none absolute bottom-[96px] left-1/2 z-20 -translate-x-1/2">
+                      <BonkStar />
+                    </div>
+                    <span
+                      className={`pointer-events-none absolute bottom-[118px] left-1/2 z-20 -translate-x-1/2 font-mono text-sm font-bold [text-shadow:0_1px_0_rgba(0,0,0,0.55)] ${
+                        mole.kind === 'gold' ? 'text-amber-300' : 'text-white'
+                      }`}
+                      style={{ animation: 'whack-pop-score 400ms ease-out forwards' }}
+                    >
+                      +{mole.kind === 'gold' ? GOLD_POINTS : 1}
+                    </span>
+                  </>
+                )}
+                {/* the near half of the same mound, over the mole, for depth */}
+                <div className="pointer-events-none absolute bottom-2 left-1/2 z-10 h-14 w-[120px] -translate-x-1/2">
+                  <Mound lip />
+                </div>
+              </div>
+            ))}
+
+            {phase === 'idle' && (
+              <div className={SCRIM}>
+                <div className={PLACARD}>
+                  <div className="h-14 w-14">
+                    <MoleSvg gold={false} hit={false} />
                   </div>
-                )}
-              </div>
-              {mole?.state === 'hit' && (
-                <div className="pointer-events-none absolute bottom-[84px] left-1/2 z-20 -translate-x-1/2">
-                  <BonkStar />
-                </div>
-              )}
-              {/* front lip of the hole, drawn over the mole for depth */}
-              <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 h-[22px] w-24 -translate-x-1/2 overflow-hidden">
-                <div className="absolute -top-[22px] h-11 w-24 rounded-[50%] bg-[#5b3a1e] p-[5px]">
-                  <div className="h-full w-full rounded-[50%] bg-stone-950 shadow-[inset_0_-2px_3px_rgba(255,255,255,0.08)]" />
+                  <p className="text-sm font-semibold text-stone-700">whack-a-mole</p>
+                  <p className="text-xs text-stone-500">sixty seconds, whack whatever surfaces</p>
+                  <button
+                    type="button"
+                    onClick={start}
+                    className={`${XP_BTN} mt-1 px-4 py-1.5 text-xs font-medium text-stone-700`}
+                  >
+                    start
+                  </button>
                 </div>
               </div>
-            </div>
-          ))}
+            )}
 
-          {phase === 'idle' && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center rounded-md bg-emerald-950/45">
-              <div className="flex flex-col items-center gap-2 rounded-sm border border-stone-400 bg-stone-100 px-6 py-4 shadow-md">
-                <div className="h-12 w-12">
-                  <MoleSvg gold={false} hit={false} />
+            {phase === 'paused' && (
+              <div className={SCRIM}>
+                <p className="rounded-sm border border-stone-400 bg-stone-100 px-4 py-2 text-xs text-stone-600 shadow-md">
+                  paused · click to resume
+                </p>
+              </div>
+            )}
+
+            {phase === 'over' && ended && (
+              <div className={SCRIM}>
+                <div className={PLACARD}>
+                  <p className="text-xs text-stone-500">time is up</p>
+                  <p className="font-mono text-2xl font-bold text-stone-800">{ended.score}</p>
+                  {ended.improved && (
+                    <p className="rounded-sm bg-amber-200 px-2 py-0.5 text-[11px] font-medium text-amber-900">
+                      new best
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={start}
+                    className={`${XP_BTN} mt-1 px-4 py-1.5 text-xs font-medium text-stone-700`}
+                  >
+                    play again
+                  </button>
                 </div>
-                <p className="text-sm font-semibold text-stone-700">whack-a-mole</p>
-                <p className="text-xs text-stone-500">sixty seconds, whack whatever surfaces</p>
-                <button
-                  type="button"
-                  onClick={start}
-                  className={`${XP_BTN} mt-1 px-4 py-1.5 text-xs font-medium text-stone-700`}
-                >
-                  start
-                </button>
               </div>
-            </div>
-          )}
-
-          {phase === 'paused' && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center rounded-md bg-emerald-950/45">
-              <p className="rounded-sm border border-stone-400 bg-stone-100 px-4 py-2 text-xs text-stone-600 shadow-md">
-                paused · click to resume
-              </p>
-            </div>
-          )}
-
-          {phase === 'over' && ended && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center rounded-md bg-emerald-950/45">
-              <div className="flex flex-col items-center gap-2 rounded-sm border border-stone-400 bg-stone-100 px-6 py-4 shadow-md">
-                <p className="text-xs text-stone-500">time is up</p>
-                <p className="font-mono text-2xl font-bold text-stone-800">{ended.score}</p>
-                {ended.improved && (
-                  <p className="rounded-sm bg-amber-200 px-2 py-0.5 text-[11px] font-medium text-amber-900">
-                    new best
-                  </p>
-                )}
-                <button
-                  type="button"
-                  onClick={start}
-                  className={`${XP_BTN} mt-1 px-4 py-1.5 text-xs font-medium text-stone-700`}
-                >
-                  play again
-                </button>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </GameShell>
