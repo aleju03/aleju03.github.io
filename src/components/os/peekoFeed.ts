@@ -307,6 +307,22 @@ export function describeEvent(event: FeedEvent): Activity {
     case 'world_voice':
       return { kind: 'world', verb: 'opened', subject: 'their mic', detail: 'proximity voice' }
 
+    case 'house_sit':
+      return {
+        kind: 'world',
+        verb: 'sat down on',
+        subject: str(props, 'seat') ?? 'the furniture',
+        detail: null,
+      }
+
+    case 'house_tv':
+      return {
+        kind: 'world',
+        verb: 'turned on',
+        subject: 'the television',
+        detail: str(props, 'channel'),
+      }
+
     case 'contact_click': {
       const target = str(props, 'target')
       return {

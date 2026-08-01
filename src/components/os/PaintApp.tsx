@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { sounds } from './sounds'
-import { createNode, getNode, joinPath, listDir, writeImage } from './fs'
+import { alertBox } from './dialogs'
+import { pickPath } from './FileDialog'
+import { baseName, createNode, getNode, joinPath, parentPath, writeImage } from './fs'
 import { xpIcon } from './xpIcon'
 
 /*
@@ -1214,24 +1216,68 @@ export function PaintApp({ close, setTitle }: PaintProps) {
     sounds.open()
   }
 
-  const fileSave = () => {
-    finishPending()
+  /** write the canvas to a path, making the file if it is not there yet */
+  const writeCanvasTo = (full: string) => {
     const c = canvasRef.current
     if (!c) return
     const data = c.toDataURL('image/png')
+    const existing = getNode(full)
+    if (existing) {
+      const r = writeImage(full, data)
+      if (!r.ok) {
+        void alertBox('Save', r.error)
+        return
+      }
+      savedPathRef.current = full
+    } else {
+      const r = createNode(parentPath(full), { name: baseName(full), kind: 'image', src: data }, 'Save')
+      if (!r.ok) {
+        void alertBox('Save', r.error)
+        return
+      }
+      full = joinPath(parentPath(full), r.name)
+      savedPathRef.current = full
+    }
+    setFileName(baseName(full))
+    flashStatus(`Saved to ${full}`)
+    sounds.open()
+  }
+
+  const fileSaveAs = async () => {
+    finishPending()
+    const full = await pickPath({
+      mode: 'save',
+      title: 'Save As',
+      dir: savedPathRef.current ? parentPath(savedPathRef.current) : 'C:\\Pictures',
+      fileName,
+      accept: ['image'],
+      typeLabel: 'PNG (*.png)',
+      extension: '.png',
+    })
+    if (full) writeCanvasTo(full)
+  }
+
+  const fileSave = () => {
+    finishPending()
     const saved = savedPathRef.current
-    if (saved && writeImage(saved, data).ok) {
-      flashStatus(`Saved ${saved}`)
-      sounds.open()
+    // a picture that has never been saved, or one opened from the read-only
+    // set that ships with the OS, has to be told where to go first
+    if (!saved) {
+      void fileSaveAs()
       return
     }
-    const r = createNode('C:\\Pictures', { name: fileName, kind: 'image', src: data })
-    if (r.ok) {
-      savedPathRef.current = `C:\\Pictures\\${r.name}`
-      setFileName(r.name)
-      flashStatus(`Saved to C:\\Pictures\\${r.name}`)
-    } else flashStatus(r.error)
-    sounds.open()
+    writeCanvasTo(saved)
+  }
+
+  const fileOpenDialog = async () => {
+    const full = await pickPath({
+      mode: 'open',
+      title: 'Open',
+      dir: savedPathRef.current ? parentPath(savedPathRef.current) : 'C:\\Pictures',
+      accept: ['image'],
+      typeLabel: 'Image Files (*.png, *.webp)',
+    })
+    if (full) fileOpen(full)
   }
 
   const fileOpen = (path: string) => {
@@ -1376,23 +1422,14 @@ export function PaintApp({ close, setTitle }: PaintProps) {
 
   // ---------------------------------------------------------------- menus
 
-  const pictureItems: PMenuItem[] = (['C:\\Pictures', 'C:\\Pictures\\Wallpapers'] as const).flatMap(
-    (dir) =>
-      listDir(dir)
-        .filter((n) => n.kind === 'image' && n.src)
-        .map((n) => ({ label: n.name, action: () => fileOpen(joinPath(dir, n.name)) })),
-  )
-
   const menus: PMenu[] = [
     {
       title: 'File',
       items: [
         { label: 'New', shortcut: 'Ctrl+N', action: fileNew },
-        {
-          label: 'Open From Pictures',
-          sub: pictureItems.length ? pictureItems : [{ label: 'No pictures yet', disabled: true }],
-        },
+        { label: 'Open…', shortcut: 'Ctrl+O', action: () => void fileOpenDialog() },
         { label: 'Save', shortcut: 'Ctrl+S', action: fileSave },
+        { label: 'Save As…', action: () => void fileSaveAs() },
         { divider: true },
         { label: 'Exit', action: close },
       ],

@@ -24,6 +24,14 @@ Nothing is shipped that wasn't generated: every sound is synthesized at runtime 
 
 The room and the open world load separately: `/alejOS` builds the room only, and opening the front door streams the planet in behind a short cover. `/world` pays for all of it up front.
 
+The house works. Every cupboard, drawer, wardrobe and appliance door in it opens on the same key as the doors, the fridge has a light and something in it, you can sit on the sofa, and the television plays YouTube: an iframe behind a hole in the canvas, worked from the sofa with a and d, because the pointer belongs to the walk.
+
+## The desktop
+
+AlejOS is a shell, not a screenshot of one. The filesystem is one tree that every app shares, and it behaves like a filesystem: drag a file from an Explorer window onto the desktop and it moves, drop it on the Recycle Bin and it goes in, cut it in one window and paste it in another, press F2 to rename and Delete to bin it, Ctrl+Z to take any of that back. Right-click anything for Properties and it will tell you its type, its size in bytes and when it changed. Refusals arrive as message boxes, because "access is denied" belongs in a dialog with an OK button.
+
+The rest is the furniture that makes a machine feel inhabited: Open and Save As dialogs shared by Notepad and Paint, so a picture can be saved anywhere and then dragged somewhere else; three Explorer view modes with sortable Details columns; a taskbar that cascades and tiles its windows and hides them all with Show Desktop; Alt+Tab; a Run box that answers to `mspaint`, `winmine`, `sol` and a path; Task Manager, whose CPU graph is fed by this tab's real frame timing; a volume slider in the tray; and a screensaver that takes the tube after five idle minutes. Nothing on this list ships an asset — the icons are the only art, and the stars, the graph and every sound are drawn or synthesized at runtime.
+
 ## Development
 
 ```bash

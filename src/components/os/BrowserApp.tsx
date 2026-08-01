@@ -10,6 +10,7 @@ import {
   LinkedinLogoIcon,
   MapPinIcon,
   StarIcon,
+  WarningIcon,
 } from '@phosphor-icons/react'
 import { showcase, github, linkedin } from '../../data/projects'
 import { sounds } from './sounds'
@@ -25,6 +26,14 @@ import { getOsYear, subscribeOsYear } from './osYear'
   furniture. GitHub and LinkedIn refuse frames outright,
   so the browser renders its own period-correct pages for them instead;
   the GitHub ones pull live data from the public API.
+
+  Two rules keep it from feeling broken. **The archive is for the past only**:
+  at the present year a search goes straight to the live search engine and a
+  time-travelled page drops back out of the archive, because sending today's
+  web through a snapshot service is a slow round trip to fetch a copy of a
+  page that is already there. And **a refusal is a page, not a blank rectangle**
+  — see refusesFrames for why that has to be answered in advance rather than
+  detected.
 */
 
 const HOME = 'aleju://home'
@@ -51,19 +60,87 @@ const webBookmarks: Bookmark[] = [
   },
 ]
 
+/**
+ * Is the clock set to now? The Wayback Machine is the whole point of this
+ * browser at 2003, and dead weight at 2026: routing today's web through an
+ * archive costs a slow round trip to fetch a snapshot of a page that is
+ * already live. At the present year the browser is just a browser.
+ */
+function isPresent(): boolean {
+  return getOsYear() >= new Date().getFullYear()
+}
+
 function normalize(raw: string): string {
   const t = raw.trim()
   if (!t) return HOME
   if (t === HOME || t.startsWith('aleju://')) return HOME
   if (/^https?:\/\//i.test(t)) return t
   if (/^[\w-]+(\.[\w-]+)+/.test(t)) return `https://${t}`
-  // not a url: pretend we are a search engine and ask the wayback machine
-  return `https://web.archive.org/web/${getOsYear()}/https://www.google.com/search?q=${encodeURIComponent(t)}`
+  // not a url: pretend we are a search engine
+  const search = `https://www.google.com/search?q=${encodeURIComponent(t)}`
+  return isPresent() ? search : `https://web.archive.org/web/${getOsYear()}/${search}`
 }
 
 function timeTravel(url: string): string {
   if (url.includes('web.archive.org')) return url
   return `https://web.archive.org/web/${getOsYear()}/${url}`
+}
+
+/*
+  Sites that will not be framed, and are common enough to be worth knowing
+  about in advance.
+
+  There is no way to ask a page whether it will let itself be embedded, and no
+  way to find out afterwards either: a refused frame and a real one are
+  equally opaque to script (both throw on contentDocument, both fire load),
+  and Chrome paints its own grey error page inside the frame, so a fallback
+  cannot even hide behind it. Measured, not assumed. What is left is to
+  recognise the addresses people actually type and answer for them, instantly,
+  with a page that says what happened and offers the two ways out — the real
+  tab, or the archived copy, which does frame.
+*/
+const REFUSED_DOMAINS = [
+  'youtube.com',
+  'facebook.com',
+  'instagram.com',
+  'x.com',
+  'twitter.com',
+  'reddit.com',
+  'amazon.com',
+  'netflix.com',
+  'spotify.com',
+  'tiktok.com',
+  'apple.com',
+  'microsoft.com',
+  'stackoverflow.com',
+  'chatgpt.com',
+  'openai.com',
+  'anthropic.com',
+  'claude.ai',
+  'bing.com',
+  'duckduckgo.com',
+  'yahoo.com',
+  'discord.com',
+  'twitch.tv',
+  'whatsapp.com',
+  'notion.so',
+  'figma.com',
+  'medium.com',
+  'gmail.com',
+]
+
+function refusesFrames(url: string): boolean {
+  // the archive is the one thing here that always frames
+  if (url.includes('web.archive.org')) return false
+  let host: string
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return false
+  }
+  // google in all its country flavours, plus the list above and their subdomains
+  if (/(^|\.)google\.[a-z]{2,}(\.[a-z]{2,})?$/.test(host)) return true
+  return REFUSED_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`))
 }
 
 // what the address bar admits to: time travel happens through the Wayback
@@ -314,6 +391,63 @@ function LinkedinPage() {
   )
 }
 
+/*
+  The page IE showed when it could not show a page. The wording is the honest
+  version of it: the site is fine, it simply refuses to be opened inside
+  another page, and this browser is a frame inside a portfolio. Both ways out
+  are one click, and the archived copy is the interesting one — the Wayback
+  Machine has no such objection, so "look at it in 2003" actually works on
+  sites that will never load here directly.
+*/
+function RefusedPage({
+  host,
+  year,
+  url,
+  onTravel,
+}: {
+  host: string
+  year: number
+  url: string
+  onTravel: () => void
+}) {
+  const btn =
+    'cursor-pointer rounded-sm border border-stone-400 bg-stone-200 px-3 py-1.5 text-xs text-stone-800 shadow-[0_1px_0_rgba(255,255,255,0.8)_inset] transition active:scale-[0.98] hover:border-blue-600 hover:bg-stone-50'
+  return (
+    <div className="h-full overflow-y-auto bg-white">
+      <div className="mx-auto max-w-lg px-6 py-8">
+        <div className="flex items-start gap-3">
+          <WarningIcon size={30} weight="fill" className="mt-0.5 shrink-0 text-amber-500" />
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-stone-800">This page cannot be displayed</h2>
+            <p className="mt-1 font-mono text-xs break-all text-stone-500">{host}</p>
+          </div>
+        </div>
+
+        <p className="mt-4 text-sm leading-relaxed text-stone-600">
+          The site is up. It just refuses to be opened inside another page, and this browser is a
+          window inside a portfolio, so there is nothing to show. Most of the modern web does this.
+        </p>
+
+        <p className="mt-4 text-xs font-medium tracking-wide text-stone-500 uppercase">
+          You can still
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <a href={url} target="_blank" rel="noreferrer" className={btn} onClick={() => sounds.open()}>
+            Open {host} in a real tab ↗
+          </a>
+          <button type="button" className={btn} onClick={onTravel}>
+            Read the {year} copy in here
+          </button>
+        </div>
+        <p className="mt-3 text-[11px] leading-relaxed text-stone-400">
+          The archive has no objection to being framed, so the second one works even on sites that
+          will never load here directly. Set the year from the taskbar clock.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 interface BrowserProps {
   url?: string
   setTitle: (t: string) => void
@@ -322,19 +456,33 @@ interface BrowserProps {
 export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
   const [url, setUrl] = useState(() => (initialUrl ? normalize(initialUrl) : HOME))
   const [address, setAddress] = useState(() => displayUrl(url))
-  const [loading, setLoading] = useState(() => url !== HOME && !internalPage(url))
+  // a page we already know will be refused never gets a loading bar: there is
+  // nothing being fetched, and the answer is on screen immediately
+  const [loading, setLoading] = useState(
+    () => url !== HOME && !internalPage(url) && !refusesFrames(url),
+  )
   const [back, setBack] = useState<string[]>([])
   const [fwd, setFwd] = useState<string[]>([])
   // remount the iframe on reload even when the url is unchanged
   const [frameKey, setFrameKey] = useState(0)
   const year = useSyncExternalStore(subscribeOsYear, getOsYear)
 
-  // the taskbar clock changed the year: pages already viewed through the
-  // Wayback Machine jump to the new destination in time
+  /*
+    The taskbar clock changed the year. A page already being read through the
+    Wayback Machine jumps to the new destination in time — and if that
+    destination is the present, it stops going through the archive at all and
+    lands on the live site, which is what "the present" means.
+    Pages that were never time-travelled are left alone: changing the clock
+    should not drag a page you are reading into an archive you did not ask for.
+  */
   useEffect(
     () =>
       subscribeOsYear(() => {
-        setUrl((u) => u.replace(/(\/\/web\.archive\.org\/web\/)\d+\//, `$1${getOsYear()}/`))
+        setUrl((u) => {
+          if (!WAYBACK_RE.test(u)) return u
+          const bare = displayUrl(u)
+          return isPresent() ? bare : `https://web.archive.org/web/${getOsYear()}/${bare}`
+        })
       }),
     [],
   )
@@ -349,6 +497,7 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
   }, [url])
 
   const internal = useMemo(() => (url === HOME ? null : internalPage(url)), [url])
+  const refused = useMemo(() => url !== HOME && !internal && refusesFrames(url), [url, internal])
 
   useEffect(() => {
     setTitle(`${host} - Internet Explorer`)
@@ -363,7 +512,7 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
 
   const go = (raw: string, fromHistory = false) => {
     const next = normalize(raw)
-    const framed = next !== HOME && !internalPage(next)
+    const framed = next !== HOME && !internalPage(next) && !refusesFrames(next)
     if (next === url) {
       setFrameKey((k) => k + 1)
       setLoading(framed)
@@ -414,7 +563,7 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
           onClick={() => {
             sounds.click()
             setFrameKey((k) => k + 1)
-            setLoading(url !== HOME && !internal)
+            setLoading(url !== HOME && !internal && !refused)
           }}
         >
           <ArrowClockwiseIcon size={15} weight="bold" />
@@ -610,6 +759,16 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
               <LinkedinPage />
             )}
           </div>
+        ) : refused ? (
+          <RefusedPage
+            host={host}
+            year={year}
+            url={url}
+            onTravel={() => {
+              sounds.open()
+              go(timeTravel(url))
+            }}
+          />
         ) : (
           <>
             <iframe
@@ -637,7 +796,9 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
             ? `Opening ${host}…`
             : url === HOME || internal
               ? 'Done'
-              : `${host} (blank page? the site refuses frames; try ↗ or time travel)`}
+              : refused
+                ? `${host} refused to be displayed in this window`
+                : `${host} (blank page? the site refuses frames; try ↗ or time travel)`}
         </span>
         <span className="ml-auto hidden shrink-0 items-center gap-1 sm:flex">
           <GlobeIcon size={12} /> Internet zone

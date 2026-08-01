@@ -4,7 +4,8 @@ import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
 import {
-  DETAILS, FPS_CAPS, SCALE_MAX, SCALE_MIN, detailTier, fpsCapLabel, type RoamPrefs,
+  DETAILS, FPS_CAPS, SCALE_MAX, SCALE_MIN, VOL_MAX, VOL_MIN,
+  detailTier, fpsCapLabel, type RoamPrefs,
 } from './roamPrefs'
 import type { GfxTier } from '../../game/world/quality'
 
@@ -60,6 +61,10 @@ const CAMERAS = [
     for what a tier actually is once it is running */
 const DETAIL_WORDS = DETAILS.map((id) => ({ id, label: id }))
 const tierWord = (t: GfxTier) => (t === 'high' ? 'full' : 'lean')
+
+/** a volume, in the sheet's own voice: a dial at the bottom of its travel is
+    off, and "0%" is a number pretending that is a quantity */
+const volWord = (v: number) => (v <= 0 ? 'muted' : `${Math.round(v * 100)}%`)
 
 /** somebody else out in the world, as this screen lists them: who they are,
     what colour they painted their shell, and where they were standing when
@@ -486,7 +491,10 @@ export default function PauseScreen({
                 in each is the split itself — how the world looks on the left,
                 what it costs on the right — and the camera sits across the top
                 because it is the one row whose two phrases will not fit in
-                half the width, and because a mode is not a number. */}
+                half the width, and because a mode is not a number. Voice runs
+                across the bottom on the same reasoning: it is a third kind of
+                thing (how the world *sounds*), and it is only there at all
+                when there is somebody in it to talk to. */}
             {page === 'settings' && (
               <div className="grid gap-x-10 gap-y-7 sm:grid-cols-2">
                 <div className="sm:col-span-2">
@@ -560,6 +568,38 @@ export default function PauseScreen({
                     onChange={(i) => onPrefs((p) => ({ ...p, cap: FPS_CAPS[i] ?? 0 }))}
                   />
                 </div>
+
+                {/* One dial per direction, and no per-person mixer: the mesh
+                    is proximity-mixed, so whose voice is loud is already
+                    answered by where they are standing. 100% is a working
+                    level rather than a maximum, and the gain that makes it
+                    one lives in `proximityVoice`, under a limiter */}
+                {multiplayer && (
+                  <div className="grid gap-x-10 gap-y-7 sm:col-span-2 sm:grid-cols-2">
+                    <Dial
+                      label="your microphone"
+                      value={prefs.micVol}
+                      min={VOL_MIN}
+                      max={VOL_MAX}
+                      step={0.05}
+                      display={volWord(prefs.micVol)}
+                      onChange={(v) =>
+                        onPrefs((p) => ({ ...p, micVol: Math.round(v * 100) / 100 }))
+                      }
+                    />
+                    <Dial
+                      label="other voices"
+                      value={prefs.voiceVol}
+                      min={VOL_MIN}
+                      max={VOL_MAX}
+                      step={0.05}
+                      display={volWord(prefs.voiceVol)}
+                      onChange={(v) =>
+                        onPrefs((p) => ({ ...p, voiceVol: Math.round(v * 100) / 100 }))
+                      }
+                    />
+                  </div>
+                )}
               </div>
             )}
 

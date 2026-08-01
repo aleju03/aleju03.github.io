@@ -158,6 +158,22 @@ export function PeekoInsights({
         />
       </Panel>
 
+      <Panel title="Made themselves at home" hint="seats taken in the house">
+        <BarList
+          rows={rowsOf(breakdowns['house_sit:seat'])}
+          empty="Nobody sat down."
+          tone="bg-orange-600/20"
+        />
+      </Panel>
+
+      <Panel title="On the telly" hint="channels turned on">
+        <BarList
+          rows={rowsOf(breakdowns['house_tv:channel'])}
+          empty="The set stayed off."
+          tone="bg-indigo-600/20"
+        />
+      </Panel>
+
       <Panel title="Signed in" hint="visitors reaching the desktop">
         <BarList
           rows={rowsOf(breakdowns['os_login:kind'], labelFor.login)}

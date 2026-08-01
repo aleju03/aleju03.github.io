@@ -954,15 +954,18 @@ export function buildBoat(opts: BoatOpts): Vehicle {
   const root = new THREE.Group()
   root.name = 'boat'
   root.add(hull, greenLamp, helm, outboard, driver)
+  // y is the seated body's face, not its hips: `playerBody.sit()` hangs the
+  // fold from the eye, so a seat node and this machine's cockpit lens are the
+  // same height by construction
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(0, 1.18, 1.62)
+  driverSeat.position.set(0, 2.35, 1.62)
   root.add(driverSeat)
   // a leaning post is two-up. 0.95 to starboard keeps a seated body's
   // shoulders inside a 2.3 half-beam with the gunwale still outboard of them
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(0.95, 1.18, 1.62)
+  passengerSeat.position.set(0.95, 2.35, 1.62)
   root.add(passengerSeat)
   markDynamic(root)
 

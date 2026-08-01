@@ -42,6 +42,11 @@ import { DEFAULT_LOOK, type PlayerLook } from './look'
   the group onto the active machine's authored seat. Everything is smoothed
   and allocation-free per frame; the whole rig is ~30 small meshes over six
   materials.
+
+  One number decides how big all of it is, and it is not a stature: see
+  DESIGN_EYE below. A body is scaled onto the eye height it is built for,
+  standing or seated, because the eye line is the only part of it a camera
+  has to agree with.
 */
 
 export interface PlayerPose {
@@ -74,6 +79,14 @@ export interface PlayerRig {
   /** fold the live avatar into its vehicle pose. The vehicle supplies the
       seat transform; this method owns only the articulated body shape */
   sit: () => void
+  /**
+   * Draw the crown, or don't. The camera *is* the head in first person, so a
+   * visible one fills the lens with the inside of your own skull; `update`
+   * decides this per frame from the boom length, and anything that holds a
+   * pose *instead* of calling update (a vehicle seat, a sofa) has to say so
+   * itself.
+   */
+  showHead: (visible: boolean) => void
   /** hand the skeleton to the verlet sim, thrown with this velocity */
   flop: (vx: number, vy: number, vz: number) => void
   /** start blending back to the stance. The caller must have already moved
@@ -112,10 +125,6 @@ export interface PlayerRig {
   setLook: (look: PlayerLook) => void
 }
 
-/** the eye height the proportions below were drawn for; the group scales
-    itself so any actual camera height maps onto them */
-const DESIGN_EYE = 3.5
-
 // skeleton dimensions, design units, feet at y = 0
 const THIGH = 0.68
 const SHIN = 0.66
@@ -127,6 +136,37 @@ const SHOULDER_OFF = 0.48 // torso origin up to the shoulder line
 const NECK_OFF = 0.72 // torso origin up to the head bone
 const UARM = 0.48
 const FARM = 0.46
+// head bone up to the visor's eye line, and up to the tip of the antenna:
+// the two heights outside this module that anything ever needs
+const EYE_OFF = 0.44
+const CROWN_OFF = 1.08
+
+/*
+  How big a body is.
+
+  Every rig is the same drawing scaled by the standing eye height it is built
+  for, so the number it is scaled *onto* has to be where the eyes are in that
+  drawing, not how tall it is. A first-person lens rides at eye height, and
+  two people standing on the same ground have to meet each other's gaze.
+
+  It used to be scaled onto 3.5, a stature-ish number with nothing under it,
+  which put the drawn eye line at 2.72/3.5 = 0.78 of the lens looking at it.
+  Symmetrically, on both machines: everyone saw everyone else as a head
+  shorter than themselves and felt tall doing it, and the camera floated a
+  fifth of an eye height above its own crown.
+*/
+export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.72
+/** the top of the antenna: what anything floating over a head clears */
+export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 3.36
+/** the group's scale for a given standing eye height */
+export const bodyScale = (eye: number) => eye / DESIGN_EYE
+
+// the seated fold, in the same units: hips are wherever they end up, but the
+// eye is a fixed rise over the group's origin. See sit()
+const SIT_WAIST = 0.16
+const SIT_NECK = 0.58
+/** how far a seated body's eye sits above the group origin, design units */
+export const DESIGN_SEAT_EYE = SIT_WAIST + SIT_NECK + EYE_OFF // 1.18
 
 // ragdoll particle indices
 const P_PELV = 0
@@ -334,17 +374,18 @@ export function buildPlayerBody(
   part(g.neck, darkMat, head).position.set(0, 0, -0.04)
   const skull = part(g.skull, bodyMat, head)
   skull.position.set(0, 0.41, -0.08)
-  part(g.visor, visorMat, head).position.set(0, 0.44, 0.24)
+  part(g.visor, visorMat, head).position.set(0, EYE_OFF, 0.24)
   ;[0.14, -0.14].forEach((x) => {
-    part(g.eye, eyeMat, head).position.set(x, 0.44, 0.295)
+    part(g.eye, eyeMat, head).position.set(x, EYE_OFF, 0.295)
   })
   ;[1, -1].forEach((side) => {
     const ear = part(g.ear, darkMat, head)
     ear.rotation.z = Math.PI / 2
-    ear.position.set(side * 0.44, 0.44, -0.08)
+    ear.position.set(side * 0.44, EYE_OFF, -0.08)
   })
-  part(g.antenna, darkMat, head).position.set(0.18, 0.83, -0.22)
-  part(g.tip, tipMat, head).position.set(0.18, 1.01, -0.22)
+  // the antenna and its tip: the sphere's own radius is what CROWN_OFF adds
+  part(g.antenna, darkMat, head).position.set(0.18, CROWN_OFF - 0.25, -0.22)
+  part(g.tip, tipMat, head).position.set(0.18, CROWN_OFF - 0.07, -0.22)
 
   // the head always casts shadows but must never block the lens riding it:
   // steeply pitched down, the frame bottom looks down-backward and finds
@@ -377,7 +418,7 @@ export function buildPlayerBody(
     })
   }
 
-  const S = eye / DESIGN_EYE
+  const S = bodyScale(eye)
   group.scale.setScalar(S)
 
   // --- ragdoll ------------------------------------------------------------
@@ -1063,17 +1104,28 @@ export function buildPlayerBody(
       slideSet = true
     },
     sit: () => {
-      // Vehicle seats differ in position, but the body shape is shared: hips
-      // on the cushion, knees and elbows folded forward, hands together near
-      // the controls. CrtScene parents the group to the active seat after
-      // calling this, so pitch and roll come from the machine itself.
+      /*
+        Seats differ in position, but the body shape is shared: hips on the
+        cushion, knees and elbows folded forward, hands together near the
+        controls. CrtScene (or `net/avatars.ts`, for everyone else) parents the
+        group to the active seat after calling this, so pitch and roll come
+        from the machine itself.
+
+        The fold hangs from the *eye*, not the hips: the pelvis drops
+        DESIGN_SEAT_EYE below the group's origin, so the origin a seat node
+        gives it is where the face lands. That is the thing a seat is actually
+        fitted to: every cockpit lens in the fleet is authored at its own
+        seat's face height, and the sofa puts the camera there too. The hips
+        are left free to sink into a cushion, which is what a body that grew
+        has to do inside a cabin drawn around a smaller one.
+      */
       mode = 'up'
       showHead(true)
-      pelvis.position.set(0, 0, 0)
+      pelvis.position.set(0, -DESIGN_SEAT_EYE, 0)
       pelvis.rotation.set(0, 0, 0)
-      torso.position.set(0, 0.16, 0)
+      torso.position.set(0, SIT_WAIST, 0)
       torso.rotation.set(0.12, 0, 0)
-      head.position.set(0, 0.58, 0)
+      head.position.set(0, SIT_NECK, 0)
       head.rotation.set(-0.1, 0, 0)
 
       thighL.rotation.set(-1.25, 0, -0.04)
@@ -1128,6 +1180,7 @@ export function buildPlayerBody(
       slideSet = false
     },
     setLook: applyLook,
+    showHead,
     update: (pose, env) => {
       showHead(pose.show > 0.12)
       if (mode === 'down') {

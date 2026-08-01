@@ -1,0 +1,43 @@
+Rhythm Keys song and chart credits
+==================================
+
+Used by the Rhythm Keys app (src/components/os/games/VsrgApp.tsx). Every
+folder here is one track: song.mp3 as it ships in the beatmapset, and
+chart.json converted from that set's .osu by scripts/osu-chart.py (long
+notes become taps at their head, the game is tap-only).
+
+The music belongs to its artists and the charts to the mappers named below,
+both from the osu! community. Nothing here is mine, none of it is sold, and
+anyone who wants a track taken down can mail alejimenezu@gmail.com.
+
+4 keys
+------
+
+badapple/     Masayoshi Minoshima ft. nomico - Bad Apple!!
+              [Normal] by salodtg
+              https://osu.ppy.sh/beatmapsets/110651
+
+madeoffire/   Niko - Made Of Fire
+              [Can't get a comfortable spot for my right hand] by Utiba
+              https://osu.ppy.sh/beatmapsets/2477633
+
+freedomdive/  xi - FREEDOM DiVE
+              [C.Star's 4K Hyper] from Kuo Kyoka's set
+              https://osu.ppy.sh/beatmapsets/361806
+
+7 keys
+------
+
+darkplace/    Toby Fox - Dark Place
+              [Normal] by Rinley
+              https://osu.ppy.sh/beatmapsets/2399946
+
+asiandistractive/
+              Nekomata Gekidan - AsiaN distractive
+              [Leni's Advanced] from _Stan's set
+              https://osu.ppy.sh/beatmapsets/1070605
+
+quietusray/   xi - Quietus Ray
+              [Kyou's Another] from Kuo Kyoka's set
+              https://osu.ppy.sh/beatmapsets/374277
+</content>

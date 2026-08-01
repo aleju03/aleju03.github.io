@@ -155,7 +155,8 @@ export function ScoresPanel({
         </button>
       </div>
       {tabs.length > 1 && (
-        <div className="flex gap-1 border-b border-stone-300 px-2 pt-1.5">
+        // wraps: Rhythm Keys alone brings six boards, more than one row holds
+        <div className="flex flex-wrap gap-1 gap-y-0.5 border-b border-stone-300 px-2 pt-1.5">
           {tabs.map((t) => (
             <button
               key={t.id}

@@ -17,6 +17,11 @@
   next load. The menu is the one place that difference is visible, so the menu
   is where it has to be said out loud rather than papered over.
 
+  The two voice dials are here for the same reason the rest is: the pause
+  sheet moves them and `proximityVoice` reads them off the live record every
+  frame, and neither of those two modules is a place for a third copy of what
+  a sane volume is.
+
   Nothing in here touches the renderer or React; it is a record, a whitelist
   and a parser.
 */
@@ -44,11 +49,22 @@ export const detailTier = (detail: Detail, auto: GfxTier): GfxTier =>
 export const SCALE_MIN = 0.5
 export const SCALE_MAX = 1
 
+/** how far either voice dial may be pushed. Unity is already a working level
+    (`proximityVoice` carries its own makeup gain under the dial and a limiter
+    after it), so the range is there for a quiet microphone or a loud room */
+export const VOL_MIN = 0
+export const VOL_MAX = 2
+
 /** the roam preferences the pause menu edits; the seated view stays fixed */
 export interface RoamPrefs {
   fov: number
   sens: number
   third: boolean
+  /** how hot your own microphone goes out to everyone else */
+  micVol: number
+  /** and how loud everyone else comes back. Not per person: the mesh is
+      proximity-mixed, so the useful knob is the whole room's */
+  voiceVol: number
   /** frames per second the walk is allowed to draw; 0 is uncapped */
   cap: number
   /** how much world to build: the tier override, applied on the next load */
@@ -79,6 +95,14 @@ export const fpsCapLabel = (cap: number) => (cap === 0 ? 'no limit' : `${cap} fp
 export const PREFS_KEY = 'alejos-roam-prefs'
 const PREFS_DEFAULT: RoamPrefs = {
   fov: 60, sens: 1, third: false, cap: 160, detail: 'auto', scale: 1,
+  micVol: 1, voiceVol: 1,
+}
+
+/** a stored volume, which may be a 0 somebody meant: `Number(x) || d` would
+    quietly turn a muted dial back up on the next visit */
+const vol = (raw: unknown, fallback: number) => {
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.min(VOL_MAX, Math.max(VOL_MIN, n)) : fallback
 }
 
 export const loadPrefs = (): RoamPrefs => {
@@ -90,6 +114,8 @@ export const loadPrefs = (): RoamPrefs => {
         fov: Math.min(80, Math.max(30, Number(p.fov) || PREFS_DEFAULT.fov)),
         sens: Math.min(3, Math.max(0.3, Number(p.sens) || PREFS_DEFAULT.sens)),
         third: p.third === true,
+        micVol: vol(p.micVol, PREFS_DEFAULT.micVol),
+        voiceVol: vol(p.voiceVol, PREFS_DEFAULT.voiceVol),
         // a stored cap is checked against the detents rather than clamped to
         // their range: both ends are meaningful values, and anything in
         // between is a bead pointing at no tick at all

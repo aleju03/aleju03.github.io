@@ -136,6 +136,8 @@ export const BREAKDOWNS: BreakdownSpec[] = [
   { key: 'depth', event: 'scroll_depth', prop: 'depth', distinct: true },
   { key: 'contact', event: 'contact_click', prop: 'target' },
   { key: 'vehicles', event: 'vehicle_entered', prop: 'kind' },
+  { key: 'seats', event: 'house_sit', prop: 'seat' },
+  { key: 'channels', event: 'house_tv', prop: 'channel' },
   { key: 'logins', event: 'os_login', prop: 'kind', distinct: true },
 ]
 

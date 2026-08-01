@@ -7,13 +7,21 @@ import { formatScore, localBest, useArcade, useLeaderboard } from './arcade'
 import type { GameId } from './arcade'
 
 /*
-  Rhythm Keys, the Games folder's four-lane note game. Three real songs
-  with real community 4K charts (public/os/games/vsrg, credits in
-  NOTICE.txt): the mp3 plays through WebAudio and the AudioContext is the
-  judgment clock, so audio and timing can never drift apart. Charts were
-  converted from osu!mania beatmaps; long notes became taps at their head,
-  the game is tap-only on purpose. Long intros are skipped to two bars
-  before the first note, and a count-in ticks the player into the song.
+  Rhythm Keys, the Games folder's note game. Six real songs with real
+  community charts (public/os/games/vsrg, credits in NOTICE.txt): the mp3
+  plays through WebAudio and the AudioContext is the judgment clock, so
+  audio and timing can never drift apart. Charts were converted from
+  osu!mania beatmaps by scripts/osu-chart.py; long notes became taps at
+  their head, the game is tap-only on purpose. Long intros are skipped to
+  two bars before the first note, and a count-in ticks the player in.
+
+  It plays two key modes, four lanes and seven, and nothing in here is
+  written for a particular one: the lane count is the track's, the playfield
+  is laid out from it, and the run's per-lane arrays are sized by it. The
+  one thing that is genuinely per-mode is the bindings, because four fingers
+  and seven fingers do not want the same keys, so each mode keeps its own
+  row and its own localStorage entry and the select screen shows whichever
+  mode you are browsing.
 */
 
 // ---------------------------------------------------------------- tuning
@@ -22,25 +30,37 @@ import type { GameId } from './arcade'
 const PERFECT = 0.045
 const GREAT = 0.09
 
+/** the key modes the game ships charts for */
+const KEY_MODES = [4, 7] as const
+type KeyMode = (typeof KEY_MODES)[number]
+
 /*
   Lane keys are the player's, not mine. Bindings are KeyboardEvent.code —
   physical positions, so a chart plays the same on QWERTY, AZERTY or Dvorak —
   and the labels drawn on the receptors are derived from those codes rather
-  than stored alongside them, so the two can never disagree.
+  than stored alongside them, so the two can never disagree. One row per key
+  mode, stored apart: 4K's entry keeps its original name so nobody's existing
+  bindings are lost.
 */
-const KEYS_KEY = 'alejos-vsrg-keys'
-const DEFAULT_KEYS = ['KeyD', 'KeyF', 'KeyJ', 'KeyK']
+const KEYS_KEY: Record<KeyMode, string> = {
+  4: 'alejos-vsrg-keys',
+  7: 'alejos-vsrg-keys7',
+}
+const DEFAULT_KEYS: Record<KeyMode, string[]> = {
+  4: ['KeyD', 'KeyF', 'KeyJ', 'KeyK'],
+  7: ['KeyA', 'KeyS', 'KeyD', 'Space', 'KeyJ', 'KeyK', 'KeyL'],
+}
 
-function readKeys(): string[] {
+function readKeys(mode: KeyMode): string[] {
   try {
-    const raw = localStorage.getItem(KEYS_KEY)
+    const raw = localStorage.getItem(KEYS_KEY[mode])
     if (raw) {
       const v: unknown = JSON.parse(raw)
       if (
         Array.isArray(v) &&
-        v.length === 4 &&
+        v.length === mode &&
         v.every((c) => typeof c === 'string' && c.length > 0) &&
-        new Set(v).size === 4
+        new Set(v).size === mode
       ) {
         return v as string[]
       }
@@ -48,14 +68,39 @@ function readKeys(): string[] {
   } catch {
     /* unreadable or unavailable — fall back to the defaults */
   }
-  return [...DEFAULT_KEYS]
+  return [...DEFAULT_KEYS[mode]]
 }
 
-function storeKeys(codes: string[]) {
+function readAllKeys(): Record<KeyMode, string[]> {
+  return { 4: readKeys(4), 7: readKeys(7) }
+}
+
+function storeKeys(mode: KeyMode, codes: string[]) {
   try {
-    localStorage.setItem(KEYS_KEY, JSON.stringify(codes))
+    localStorage.setItem(KEYS_KEY[mode], JSON.stringify(codes))
   } catch {
     /* storage unavailable — the binding lasts for this session */
+  }
+}
+
+/** the key mode the select screen was last browsing */
+const MODE_KEY = 'alejos-vsrg-mode'
+
+function readMode(): KeyMode {
+  try {
+    const v = Number(localStorage.getItem(MODE_KEY))
+    if (KEY_MODES.includes(v as KeyMode)) return v as KeyMode
+  } catch {
+    /* storage unavailable */
+  }
+  return 4
+}
+
+function storeMode(mode: KeyMode) {
+  try {
+    localStorage.setItem(MODE_KEY, String(mode))
+  } catch {
+    /* fine without persistence */
   }
 }
 
@@ -155,6 +200,8 @@ interface TrackDef {
   credit: string
   blurb: string
   stars: number
+  /** how many lanes this chart is written for */
+  keys: KeyMode
   bpm: number
   seconds: number
   noteCount: number
@@ -169,6 +216,7 @@ const TRACKS: TrackDef[] = [
     credit: '[Normal] charted by salodtg',
     blurb: 'the one every rhythm game ends up with sooner or later',
     stars: 1,
+    keys: 4,
     bpm: 138,
     seconds: 196,
     noteCount: 456,
@@ -181,6 +229,7 @@ const TRACKS: TrackDef[] = [
     credit: "[Can't get a comfortable spot for my right hand] by Utiba",
     blurb: 'yes, that is the real difficulty name',
     stars: 2,
+    keys: 4,
     bpm: 163,
     seconds: 78,
     noteCount: 928,
@@ -193,10 +242,50 @@ const TRACKS: TrackDef[] = [
     credit: "[C.Star's 4K Hyper] from Kuo Kyoka's set",
     blurb: 'the 222 bpm rite of passage, full length',
     stars: 3,
+    keys: 4,
     bpm: 222,
     seconds: 257,
     noteCount: 2296,
     dir: 'freedomdive',
+  },
+  {
+    id: 'vsrg-darkplace',
+    title: 'Dark Place',
+    artist: 'Toby Fox',
+    credit: '[Normal] charted by Rinley',
+    blurb: 'slow enough to work out where your thumb goes',
+    stars: 1,
+    keys: 7,
+    bpm: 114,
+    seconds: 59,
+    noteCount: 133,
+    dir: 'darkplace',
+  },
+  {
+    id: 'vsrg-asiandistractive',
+    title: 'AsiaN distractive',
+    artist: 'Nekomata Gekidan',
+    credit: "[Leni's Advanced] from _Stan's set",
+    blurb: 'seven keys at a speed you can still think at',
+    stars: 2,
+    keys: 7,
+    bpm: 157,
+    seconds: 112,
+    noteCount: 853,
+    dir: 'asiandistractive',
+  },
+  {
+    id: 'vsrg-quietusray',
+    title: 'Quietus Ray',
+    artist: 'xi',
+    credit: "[Kyou's Another] from Kuo Kyoka's set",
+    blurb: 'the one my hands give out on first',
+    stars: 3,
+    keys: 7,
+    bpm: 200,
+    seconds: 115,
+    noteCount: 1247,
+    dir: 'quietusray',
   },
 ]
 
@@ -233,10 +322,15 @@ function fetchSong(dir: string) {
         fetch(`${base}/song.mp3`),
       ])
       if (!chartRes.ok || !audioRes.ok) throw new Error('song fetch failed')
-      const chart = (await chartRes.json()) as { bpm: number; notes: [number, number][] }
+      const chart = (await chartRes.json()) as {
+        bpm: number
+        keys?: number
+        notes: [number, number][]
+      }
       const raw = await audioRes.arrayBuffer()
       const notes = chart.notes.map(([ms, lane]) => ({ t: ms / 1000, lane }))
-      return { notes, bpm: chart.bpm, raw }
+      // charts predating the key-count field are all 4K
+      return { notes, bpm: chart.bpm, keys: chart.keys ?? 4, raw }
     })()
     cached.catch(() => songCache.delete(dir))
     songCache.set(dir, cached)
@@ -388,6 +482,8 @@ interface RunNote extends ChartNote {
 
 interface Run {
   notes: RunNote[]
+  /** how many lanes this chart plays on; every per-lane array is this long */
+  lanes: number
   /** per-lane note indices in time order, with a head pointer per lane */
   laneNotes: number[][]
   heads: number[]
@@ -431,7 +527,7 @@ const START_STATS: Stats = { score: 0, combo: 0, acc: 100 }
 /** anything more than the great window past due is gone; misses are silent */
 function sweepMisses(run: Run, now: number): boolean {
   let missed = false
-  for (let l = 0; l < 4; l++) {
+  for (let l = 0; l < run.lanes; l++) {
     const q = run.laneNotes[l]
     let head = run.heads[l]
     while (head < q.length) {
@@ -512,24 +608,43 @@ function buildResult(run: Run): RunResult {
 
 // ---------------------------------------------------------------- painting
 
-function drawNote(g: CanvasRenderingContext2D, cx: number, cy: number, r: number, laneIdx: number) {
-  // the classic scheme: stone-white outside lanes, xp blue inside
-  const inner = laneIdx === 1 || laneIdx === 2
+/*
+  The classic mania colouring, read off the lane's distance from the edge
+  rather than written out per key mode: white, blue, white, ... inwards, and
+  an odd lane count puts an amber thumb key in the middle. That lands on
+  white/blue/blue/white for 4K, which is what the game always looked like,
+  and white/blue/white/amber/white/blue/white for 7K.
+*/
+type Tint = 'white' | 'blue' | 'amber'
+
+function laneTint(laneIdx: number, lanes: number): Tint {
+  if (lanes % 2 === 1 && laneIdx * 2 === lanes - 1) return 'amber'
+  return Math.min(laneIdx, lanes - 1 - laneIdx) % 2 === 0 ? 'white' : 'blue'
+}
+
+const NOTE_FILL: Record<Tint, [string, string, string]> = {
+  white: ['#ffffff', '#dbd8d3', '#a8a29b'],
+  blue: ['#a9c8fa', '#3a72d4', '#1e4390'],
+  amber: ['#fef0c7', '#eab308', '#a16207'],
+}
+
+const NOTE_EDGE: Record<Tint, string> = {
+  white: 'rgba(50,46,40,0.55)',
+  blue: 'rgba(9,25,60,0.65)',
+  amber: 'rgba(69,45,4,0.6)',
+}
+
+function drawNote(g: CanvasRenderingContext2D, cx: number, cy: number, r: number, tint: Tint) {
   const grad = g.createRadialGradient(cx - r * 0.35, cy - r * 0.4, r * 0.15, cx, cy, r)
-  if (inner) {
-    grad.addColorStop(0, '#a9c8fa')
-    grad.addColorStop(0.55, '#3a72d4')
-    grad.addColorStop(1, '#1e4390')
-  } else {
-    grad.addColorStop(0, '#ffffff')
-    grad.addColorStop(0.55, '#dbd8d3')
-    grad.addColorStop(1, '#a8a29b')
-  }
+  const [hi, mid, lo] = NOTE_FILL[tint]
+  grad.addColorStop(0, hi)
+  grad.addColorStop(0.55, mid)
+  grad.addColorStop(1, lo)
   g.fillStyle = grad
   g.beginPath()
   g.arc(cx, cy, r, 0, Math.PI * 2)
   g.fill()
-  g.strokeStyle = inner ? 'rgba(9,25,60,0.65)' : 'rgba(50,46,40,0.55)'
+  g.strokeStyle = NOTE_EDGE[tint]
   g.lineWidth = 1.25
   g.stroke()
 }
@@ -562,7 +677,9 @@ function drawReceptor(
   g.arc(cx, cy, r - 1, 0, Math.PI * 2)
   g.stroke()
   g.fillStyle = pressed ? '#1e3a8a' : 'rgba(255,255,255,0.85)'
-  g.font = 'bold 12px ui-monospace, monospace'
+  // a spelled-out binding ("space", "shift") has to shrink to stay inside
+  // the receptor; a one or two character one keeps the readable size
+  g.font = `bold ${letter.length > 2 ? 9 : 12}px ui-monospace, monospace`
   g.textAlign = 'center'
   g.textBaseline = 'middle'
   g.fillText(letter, cx, cy + 1)
@@ -582,8 +699,9 @@ function drawFrame(
   g.fillStyle = '#101014'
   g.fillRect(0, 0, w, h)
 
-  const laneW = Math.min(78, Math.floor((w - 40) / 4))
-  const fieldW = laneW * 4
+  const lanes = run.lanes
+  const laneW = Math.min(78, Math.floor((w - 40) / lanes))
+  const fieldW = laneW * lanes
   const x0 = Math.round((w - fieldW) / 2)
   const receptorY = h - 78
   const noteR = Math.min(30, Math.floor(laneW * 0.4))
@@ -595,7 +713,7 @@ function drawFrame(
   g.fillRect(x0, 0, fieldW, h)
   g.strokeStyle = 'rgba(255,255,255,0.07)'
   g.lineWidth = 1
-  for (let l = 0; l <= 4; l++) {
+  for (let l = 0; l <= lanes; l++) {
     const x = x0 + l * laneW + 0.5
     g.beginPath()
     g.moveTo(x, 0)
@@ -615,7 +733,7 @@ function drawFrame(
   }
 
   // lane flashes rising from the receptors on each hit
-  for (let l = 0; l < 4; l++) {
+  for (let l = 0; l < lanes; l++) {
     const age = now - run.flashAt[l]
     if (age < 0 || age > 0.18) continue
     const a = 0.3 * (1 - age / 0.18)
@@ -630,15 +748,8 @@ function drawFrame(
   g.fillStyle = 'rgba(255,255,255,0.22)'
   g.fillRect(x0, receptorY, fieldW, 1)
 
-  for (let l = 0; l < 4; l++) {
-    drawReceptor(
-      g,
-      x0 + l * laneW + laneW / 2,
-      receptorY,
-      noteR + 2,
-      labels[l],
-      run.keysDown[l],
-    )
+  for (let l = 0; l < lanes; l++) {
+    drawReceptor(g, x0 + l * laneW + laneW / 2, receptorY, noteR + 2, labels[l] ?? '', run.keysDown[l])
   }
 
   // notes, centered on their moment in time
@@ -647,7 +758,7 @@ function drawFrame(
     if (n.state !== 0) continue
     const y = receptorY - (n.t - now) * pxPerSec
     if (y < -noteR || y > h + noteR) continue
-    drawNote(g, x0 + n.lane * laneW + laneW / 2, y, noteR, n.lane)
+    drawNote(g, x0 + n.lane * laneW + laneW / 2, y, noteR, laneTint(n.lane, lanes))
   }
 
   // the last judgment, popping briefly above the receptors
@@ -726,7 +837,7 @@ interface GameplayProps {
   onQuit: () => void
   /** restart this chart from the top */
   onRetry: () => void
-  /** the four lane bindings, as KeyboardEvent.code */
+  /** one lane binding per lane of this track, as KeyboardEvent.code */
   keys: string[]
 }
 
@@ -829,15 +940,23 @@ const Gameplay = memo(function Gameplay({
       const spb = 60 / bpm
       // long silent intros bore visitors: begin two bars before the action
       const skip = Math.max(0, notes[0].t - 8 * spb)
+      // the track's declared key mode owns the layout and the bindings, so a
+      // chart that disagreed with it gets folded into the lanes on screen
+      const lanes = track.keys
       const run: Run = {
-        notes: notes.map((n) => ({ ...n, state: 0 })),
-        laneNotes: [[], [], [], []],
-        heads: [0, 0, 0, 0],
+        notes: notes.map((n) => ({
+          ...n,
+          lane: Math.min(lanes - 1, Math.max(0, n.lane)),
+          state: 0,
+        })),
+        lanes,
+        laneNotes: Array.from({ length: lanes }, () => []),
+        heads: new Array<number>(lanes).fill(0),
         skip,
         duration: notes[notes.length - 1].t + 1.2,
         beat: spb,
-        keysDown: [false, false, false, false],
-        flashAt: [-1, -1, -1, -1],
+        keysDown: new Array<boolean>(lanes).fill(false),
+        flashAt: new Array<number>(lanes).fill(-1),
         lastJudge: null,
         errs: [],
         perfect: 0,
@@ -1118,7 +1237,15 @@ function Results({
   out of the rebind instead of reaching the desktop, and binding a key that
   happens to be a lane key does not also play a note.
 */
-function KeyBinds({ keys, onKeys }: { keys: string[]; onKeys: (k: string[]) => void }) {
+function KeyBinds({
+  mode,
+  keys,
+  onKeys,
+}: {
+  mode: KeyMode
+  keys: string[]
+  onKeys: (k: string[]) => void
+}) {
   const [capturing, setCapturing] = useState<number | null>(null)
 
   useEffect(() => {
@@ -1167,7 +1294,7 @@ function KeyBinds({ keys, onKeys }: { keys: string[]; onKeys: (k: string[]) => v
         onClick={() => {
           sounds.click()
           setCapturing(null)
-          onKeys([...DEFAULT_KEYS])
+          onKeys([...DEFAULT_KEYS[mode]])
         }}
         className={`${XP_BTN} px-1.5 py-0.5 text-[11px] text-stone-600`}
       >
@@ -1180,6 +1307,8 @@ function KeyBinds({ keys, onKeys }: { keys: string[]; onKeys: (k: string[]) => v
 // ---------------------------------------------------------------- track select
 
 function TrackSelect({
+  mode,
+  onMode,
   speed,
   onSpeed,
   syncMs,
@@ -1188,6 +1317,8 @@ function TrackSelect({
   keys,
   onKeys,
 }: {
+  mode: KeyMode
+  onMode: (m: KeyMode) => void
   speed: number
   onSpeed: (s: number) => void
   syncMs: number
@@ -1198,11 +1329,28 @@ function TrackSelect({
 }) {
   return (
     <div className="flex h-full flex-col gap-2 overflow-y-auto p-3">
-      <p className="text-xs text-stone-500">
-        Notes fall down four lanes. Press the matching key as each one crosses the line. Real
-        songs, real charts from the community.
-      </p>
-      {TRACKS.map((t) => {
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs text-stone-500">
+          Notes fall down the lanes. Press the matching key as each one crosses the line. Real
+          songs, real charts from the community.
+        </p>
+        <div className="flex shrink-0 gap-1">
+          {KEY_MODES.map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={m === mode}
+              onClick={() => onMode(m)}
+              className={`${XP_BTN} px-2 py-0.5 text-[11px] ${
+                m === mode ? 'font-semibold text-blue-800' : 'text-stone-600'
+              }`}
+            >
+              {m}K
+            </button>
+          ))}
+        </div>
+      </div>
+      {TRACKS.filter((t) => t.keys === mode).map((t) => {
         const best = localBest(t.id)
         return (
           <button
@@ -1232,7 +1380,7 @@ function TrackSelect({
         )
       })}
       <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-1">
-        <KeyBinds keys={keys} onKeys={onKeys} />
+        <KeyBinds mode={mode} keys={keys} onKeys={onKeys} />
       </div>
       <div className="flex items-center gap-1.5">
         <span className="text-[11px] text-stone-500">scroll speed</span>
@@ -1298,7 +1446,10 @@ export function VsrgApp() {
   const [screen, setScreen] = useState<Screen>({ kind: 'select' })
   const [speed, setSpeedState] = useState<number>(readSpeed)
   const [syncMs, setSyncState] = useState<number>(readSync)
-  const [keys, setKeysState] = useState<string[]>(readKeys)
+  const [mode, setModeState] = useState<KeyMode>(readMode)
+  // both rows live at once: the select screen shows the browsed mode's, and a
+  // run takes the row belonging to the chart it is playing
+  const [keys, setKeysState] = useState<Record<KeyMode, string[]>>(readAllKeys)
   const [stats, setStats] = useState<Stats>(START_STATS)
 
   // the game's context naps when the window closes, ready for next time
@@ -1332,11 +1483,20 @@ export function VsrgApp() {
     storeSync(v)
   }
 
-  const setKeys = useCallback((next: string[]) => {
+  const setKeys = useCallback(
+    (next: string[]) => {
+      sounds.click()
+      setKeysState((prev) => ({ ...prev, [mode]: next }))
+      storeKeys(mode, next)
+    },
+    [mode],
+  )
+
+  const setMode = (m: KeyMode) => {
     sounds.click()
-    setKeysState(next)
-    storeKeys(next)
-  }, [])
+    setModeState(m)
+    storeMode(m)
+  }
 
   // retry restarts the same chart from the top; the nonce remounts Gameplay,
   // which is what actually rebuilds the run
@@ -1365,16 +1525,26 @@ export function VsrgApp() {
       </div>
     )
 
+  // the hint reads the row the player is about to use, or is using
+  const hintKeys = keys[screen.kind === 'select' ? mode : screen.track.keys]
+
   return (
-    <GameShell tabs={TABS} you={name} header={header} hint={`${keys.map(keyLabel).join(' ')} hit the notes  ·  esc pauses  ·  r retries`}>
+    <GameShell
+      tabs={TABS}
+      you={name}
+      header={header}
+      hint={`${hintKeys.map(keyLabel).join(' ')} hit the notes  ·  esc pauses  ·  r retries`}
+    >
       {screen.kind === 'select' && (
         <TrackSelect
+          mode={mode}
+          onMode={setMode}
           speed={speed}
           onSpeed={setSpeed}
           syncMs={syncMs}
           onSync={setSync}
           onPlay={startTrack}
-          keys={keys}
+          keys={keys[mode]}
           onKeys={setKeys}
         />
       )}
@@ -1388,7 +1558,7 @@ export function VsrgApp() {
           onFinish={onFinish}
           onQuit={onQuit}
           onRetry={retry}
-          keys={keys}
+          keys={keys[screen.track.keys]}
         />
       )}
       {screen.kind === 'result' && (

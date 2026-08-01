@@ -15,6 +15,15 @@ export interface Session {
   admin?: boolean
 }
 
+/** one running window, as Task Manager and the taskbar see it */
+export interface OsTask {
+  id: string
+  app: string
+  title: string
+  minimized: boolean
+  active: boolean
+}
+
 export interface OsApi {
   session: Session
   openApp: (app: string, props?: Record<string, unknown>) => void
@@ -22,6 +31,14 @@ export interface OsApi {
   openPath: (path: string) => void
   logOff: () => void
   shutdown: () => void
+  /**
+   * What is running. Task Manager is an app like any other, so it cannot
+   * reach the window list directly; the shell hands it down here rather than
+   * the list becoming a second store that has to agree with React state.
+   */
+  tasks: OsTask[]
+  focusWindow: (id: string) => void
+  closeWindow: (id: string) => void
 }
 
 export const OsContext = createContext<OsApi | null>(null)

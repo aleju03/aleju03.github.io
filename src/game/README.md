@@ -43,11 +43,17 @@ player/
                      the level's floor and collision boxes
   chaseCam.ts        createChaseCam(): the third-person boom (v), collision-
                      clamped, which also frames a downed body
+  seating.ts         createSeating(): sitting on the furniture. A seat is a
+                     cushion, a facing and a spot to stand up onto; the walk
+                     freezes and the lens drops, and that is the whole of it
 levels/
   types.ts           the Level contract (collision, spawn, seams, ground, water)
   levelSystem.ts     createLevelSystem(): which level is live + the noclip cut
   homeLevels.ts      the two shipped levels: 'overworld' and 'backrooms'
   houseWorld.ts      procedural house + yard; owns the property line inward
+  fittings.ts        buildFittings(): the furniture that works. Hinges the
+                     GLBs' own door/drawer nodes, builds the interior behind
+                     each one, and answers the same interact key as a door
   outsideWorld.ts    the seam between sky.ts and world/; what the scene talks to
   sky.ts             domes, sun/moon, day cycle; returns per-frame light targets
   backrooms.ts       level 0: deterministic chunk-streamed easter egg
@@ -121,6 +127,16 @@ vehicles/
   there rather than back home. That is the "store the diffs, not the world"
   story from the debts below, half-built: `registry.ts` is still what would
   serialise it to disk.
+- **A seat node is where a face goes, not where hips go.** `playerBody.sit()`
+  hangs the seated fold from its own eye line, so each machine's `driverSeat`
+  and `passengerSeat` sit at the same height as its cockpit lens: one number
+  per machine instead of two that have to be kept in step, and a body that
+  changes size can never put its head through a roof. The three cabins were
+  still drawn around a body 30% smaller than the one that walks around now
+  (see the eye-line note in `playerBody.ts`), so they hold it with the hips
+  sunk through the cushion and the feet below the floor. Hidden in the car and
+  the boat, visible under the helicopter, and the honest fix is to grow all
+  three machines rather than to shrink the person sitting in them.
 - **Two chairs per machine, and only one of them steers.** The seat table is
   the server's (`world-seat`/`world-seats`), because two people reaching for
   the same door is the one question two clients cannot settle between
@@ -376,8 +392,8 @@ scattered, and no screenshot was ever going to say otherwise.
   should grow grass, add a height range in `grass.ts`'s `GRASS_HEIGHT`.
 - **A plant**: add a `PropKind`, write a `(v, vi) => Kit` maker in `props.ts`,
   and reference it from a biome's scatter table. Watch the scale: the eye is
-  at ~3.55 units, so a canopy wants its underside clear of 4.5 or the player
-  walks through the leaves. Kits opt into wind by painting parts `'leaf'`.
+  at ~3.84 units and the top of the head at ~4.75, so a canopy wants its
+  underside clear of 5 or the player walks through the leaves. Kits opt into wind by painting parts `'leaf'`.
 - **A tree specifically**: grow the skeleton with `wood(seed, cfg)` and hang
   the foliage on `crown(w, r, mid)`. Seed it off the variant index (`vi`), not
   off `v`, since `v` is the size knob and two variants at different heights are
@@ -512,6 +528,16 @@ be recomputed are where the other people are, and where they left the car.
   `PannerNode` with the listener riding the camera. Peers open at 55 units and
   drop at 80; the gap is what stops someone pacing the boundary from
   reconnecting forty times a minute.
+- **Loudness is a graph, not a hope.** The distance model on its own is not
+  loud enough to be a conversation: measured offline against the -20 dBFS a
+  browser's AGC leaves a voice track at, the first version delivered -28 dBFS
+  at three metres, which on a laptop speaker is silence. Every panner now
+  lands on one bus carrying a fixed makeup gain, the visitor's "other voices"
+  dial and a limiter; the microphone gets the matching trim ahead of its gate
+  and its own limiter behind it. Both dials live in `roamPrefs` and are edited
+  on the pause sheet, and there is deliberately no per-person mixer, because
+  the mesh is proximity-mixed: who is loud is already answered by where they
+  stand.
 
 Two things that look like mistakes and are not: the microphone is never handed
 straight to a peer connection (it goes mic → gate → `MediaStreamDestination`,
@@ -549,6 +575,17 @@ them still works.
 - **A new player mechanic**: it goes in `walkController.ts` (movement) or a
   sibling module, not in CrtScene. The controller only knows keys in,
   transform out.
+- **Something in the house that works**: a door, a drawer or an appliance
+  flap is one entry in `houseWorld`'s `furnish` naming the GLB node, and
+  `fittings.ts` solves the hinge edge and the swing direction off the placed
+  geometry, so nothing needs measuring by hand. Give it a `cavity` unless the
+  model has a modelled interior already; these carcasses are shells, and a
+  door that opens on nothing shows you the back of its own front panel. A new
+  seat is a `SeatSpec` pushed onto `handles.seats` (a cushion, a facing, and
+  a clear spot to stand up onto, because the seat's own collision box will
+  eject anyone put down inside it). Neither registers collision: a leaf is
+  thin and briefly open, and an AABB appearing mid-reach shoves the player
+  across the room.
 - **Assets**: procedural only (canvas textures, code-built geometry, WebAudio
   synthesis). GLB additions are CC assets and must be credited in
   `public/os/models/LICENSE.md`.

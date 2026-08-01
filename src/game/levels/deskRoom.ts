@@ -20,6 +20,12 @@ import { addBoxFrom, noStand, padXZ } from '../physics/collision'
 export interface DeskRoomHandles {
   /** world-space height of the desk surface; the room is scaled around it */
   deskTop: number
+  /** the desk's four drawer fronts and the carcass they slide out of. The
+      desk is this module's, but the machinery that makes a drawer work is
+      the house's (`levels/fittings.ts`), so the parts are published rather
+      than wired here */
+  drawers: THREE.Object3D[]
+  deskBox: THREE.Box3
   /** shared with buildHouse so the house matches the desk */
   darkWoodMat: THREE.MeshStandardMaterial
   windowGlassMat: THREE.MeshStandardMaterial
@@ -396,6 +402,10 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
 
   return {
     deskTop,
+    drawers: ['Desk_Drawer1', 'Desk_Drawer2', 'Desk_Drawer3', 'Desk_Drawer4']
+      .map((n) => desk.scene.getObjectByName(n))
+      .filter(Boolean) as THREE.Object3D[],
+    deskBox: new THREE.Box3().setFromObject(desk.scene),
     darkWoodMat,
     windowGlassMat,
     swapPeripherals: (oldKeyboard, oldMouse, mouse) => {

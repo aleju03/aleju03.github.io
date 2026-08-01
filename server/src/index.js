@@ -90,6 +90,9 @@ export const GAMES = {
   'vsrg-badapple': { order: 'desc', max: 2_000_000 },
   'vsrg-madeoffire': { order: 'desc', max: 2_000_000 },
   'vsrg-freedomdive': { order: 'desc', max: 2_000_000 },
+  'vsrg-darkplace': { order: 'desc', max: 2_000_000 },
+  'vsrg-asiandistractive': { order: 'desc', max: 2_000_000 },
+  'vsrg-quietusray': { order: 'desc', max: 2_000_000 },
   'mine-beginner': { order: 'asc', min: 1_000, max: 3_599_000 }, // ms
   'mine-intermediate': { order: 'asc', min: 3_000, max: 3_599_000 },
   'mine-expert': { order: 'asc', min: 8_000, max: 3_599_000 },

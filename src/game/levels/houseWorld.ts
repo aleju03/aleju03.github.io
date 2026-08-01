@@ -5,6 +5,8 @@ import { noStand, padXZ } from '../physics/collision'
 import { doorCreak, doorLatch, type StepSurface } from '../core/sfx'
 import { applyFixedSurface, SURF, type SurfaceId } from '../world/surface'
 import { buildKitTree } from '../world/treeMesh'
+import { buildFittings, facingOf, type FittingHandles, type FittingSpec } from './fittings'
+import type { SeatSpec } from '../player/seating'
 
 /** anything with a .scene group — a GLTFLoader result or a slice of one */
 export interface ModelLike {
@@ -35,20 +37,64 @@ export interface ModelLike {
   shut, and the doorway itself is an obstacle while the leaf is in the way.
   They cast no shadows so the baked maps stay valid. Working one creaks the
   hinge (core/sfx.ts) and a closing leaf clicks its latch home as it seats.
+
+  The furniture works too, and none of that machinery is here. This module
+  knows *which* pieces open, where their cushions are and where the
+  television's glass ended up; the three things that make those facts do
+  something live elsewhere, because none of them is about a house:
+
+  - `levels/fittings.ts` hinges the leaves. Every openable is one line in
+    `furnish` naming the GLB's own node ("doorLeft", "washerDoor") and what
+    is behind it, and the module works out the hinge edge, the swing
+    direction and the interior.
+  - `player/seating.ts` owns sitting down. The seats are published as plain
+    numbers (a cushion, a facing, a spot to stand up onto) and CrtScene hands
+    them to the walk.
+  - `components/os/houseTv.ts` owns the picture, because the picture is DOM.
+    `screen` here is only the measured tube face.
 */
 
 export interface HouseModels {
   [key: string]: ModelLike | undefined
 }
 
+/**
+ * Where a picture goes on a piece of furniture: the television's tube face,
+ * measured off the placed model. Deliberately a plain frame of reference
+ * rather than anything renderer-shaped: what hangs on it is DOM, and DOM
+ * belongs on the React side (`components/os/houseTv.ts`).
+ */
+export interface ScreenPlacement {
+  centre: THREE.Vector3
+  normal: THREE.Vector3
+  right: THREE.Vector3
+  up: THREE.Vector3
+  width: number
+  height: number
+}
+
 export interface HouseHandles {
   root: THREE.Group
-  /** door easing and firefly drift; call every roam frame */
+  /** door easing, working furniture and firefly drift; call every roam frame */
   update: (dt: number) => void
   /** the door within reach the player is looking at: which verb to prompt */
   doorPrompt: (p: THREE.Vector3, gaze: THREE.Vector3) => 'open' | 'close' | null
   /** work that door; a closed leaf swings away from the player's side */
   useDoor: (p: THREE.Vector3, gaze: THREE.Vector3) => boolean
+  /** the cupboard, drawer or appliance door being looked at */
+  propPrompt: (
+    p: THREE.Vector3,
+    gaze: THREE.Vector3,
+  ) => { verb: 'open' | 'close'; label: string } | null
+  /** work it */
+  useProp: (p: THREE.Vector3, gaze: THREE.Vector3) => boolean
+  /** hang a leaf that belongs to somebody else's furniture on the same key
+      (the desk in `deskRoom.ts` owns its own drawers) */
+  addFitting: (spec: FittingSpec) => void
+  /** every cushion in the house, published once the furniture lands */
+  seats: SeatSpec[]
+  /** the living-room television's tube face, once it has been placed */
+  screen: ScreenPlacement | null
   /** what a footstep lands on here: plank floors inside the walls, the
       concrete porch slab, grass everywhere else on the property */
   surfaceAt: (x: number, z: number) => StepSurface
@@ -275,6 +321,14 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   const root = new THREE.Group()
   scene.add(root)
+
+  /** the working furniture: every cupboard, drawer and appliance door. Built
+      up front and filled during furnish, because the leaves are model parts */
+  const fittings: FittingHandles = buildFittings({ parent: root, trackDisposable })
+  /** every cushion in the house, handed to the seating system after furnish */
+  const seats: SeatSpec[] = []
+  /** the television's tube face, once there is a television */
+  let screen: ScreenPlacement | null = null
 
   const track = (t: THREE.Texture) => {
     trackTexture(t)
@@ -1081,6 +1135,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   interface Placement {
     box: THREE.Box3
+    /** the placed clone, so a caller can go looking for its working parts */
+    group: THREE.Group
   }
   const put = (
     gltf: ModelLike | undefined,
@@ -1135,7 +1191,88 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       if (o.top !== undefined) solid.max.y = box.min.y + o.top
       obstacles.push(o.noStand ? noStand(solid) : solid)
     }
-    return { box }
+    return { box, group: g }
+  }
+
+  /*
+    The working parts of a placed piece.
+
+    Every leaf is registered against the *carcass* box, which is what tells
+    `fittings.ts` which way the piece faces and where its front is, and the
+    facing itself is read off the leaves rather than declared: these GLBs
+    come from three exporters and disagree about which way a model's front
+    is, but all of them put the doors on it.
+  */
+  const work = (
+    piece: Placement | null,
+    leaves: Record<string, Omit<FittingSpec, 'node' | 'fx' | 'fz' | 'piece'>>,
+  ) => {
+    if (!piece) return
+    const names = Object.keys(leaves)
+    const nodes = names.map((n) => piece.group.getObjectByName(n)).filter(Boolean)
+    if (!nodes.length) return
+    const f = facingOf(piece.box, nodes as THREE.Object3D[])
+    for (const name of names) {
+      const node = piece.group.getObjectByName(name)
+      if (node) fittings.add({ node, piece: piece.box, ...f, ...leaves[name] })
+    }
+  }
+
+  /*
+    Where the television's picture goes.
+
+    Not the model's UVs and not its bounding box: the tube face is a rounded
+    rectangle recessed behind the bezel, and either of those would put the
+    picture on the front of the *cabinet*. These are the numbers off tv.glb
+    itself (the 'metal' primitive's front plane, which is the only flat
+    light-grey face in the model and is exactly the glass), expressed in the
+    model's own space and carried into the world by the placed matrix, so
+    moving or re-scaling the set moves the picture with it.
+  */
+  const TUBE = { x0: -0.267, x1: -0.035, y0: 0.034, y1: 0.236, z: 0.0201 }
+  const tubeFace = (g: THREE.Group): ScreenPlacement => {
+    g.updateWorldMatrix(true, true)
+    const at = (x: number, y: number) =>
+      new THREE.Vector3(x, y, TUBE.z).applyMatrix4(g.matrixWorld)
+    const bl = at(TUBE.x0, TUBE.y0)
+    const br = at(TUBE.x1, TUBE.y0)
+    const tl = at(TUBE.x0, TUBE.y1)
+    const right = br.clone().sub(bl)
+    const up = tl.clone().sub(bl)
+    return {
+      centre: bl.clone().addScaledVector(right, 0.5).addScaledVector(up, 0.5),
+      // the model's front is its local -z; anything else and the picture
+      // would be pointing into the wall behind the set
+      normal: new THREE.Vector3(0, 0, -1).transformDirection(g.matrixWorld).normalize(),
+      right: right.clone().normalize(),
+      up: up.clone().normalize(),
+      width: right.length(),
+      height: up.length(),
+    }
+  }
+
+  /** the two halves of a side-by-side fridge, told apart by width: the
+      narrow one is the freezer, whichever way round the model is */
+  const fridgeDoors = (piece: Placement | null) => {
+    if (!piece) return
+    const width = (n: string) => {
+      const node = piece.group.getObjectByName(n)
+      if (!node) return 0
+      const b = new THREE.Box3().setFromObject(node)
+      return Math.max(b.max.x - b.min.x, b.max.z - b.min.z)
+    }
+    const freezer = width('doorLeft') <= width('doorRight') ? 'doorLeft' : 'doorRight'
+    const cold = { depth: 1.05, shelves: 3, stock: 9, lit: 1, tint: '#eceae3' }
+    work(piece, {
+      doorLeft: {
+        label: freezer === 'doorLeft' ? 'the freezer' : 'the fridge',
+        cavity: { ...cold, seed: 11, stock: freezer === 'doorLeft' ? 5 : 9 },
+      },
+      doorRight: {
+        label: freezer === 'doorRight' ? 'the freezer' : 'the fridge',
+        cavity: { ...cold, seed: 29, stock: freezer === 'doorRight' ? 5 : 9 },
+      },
+    })
   }
 
   /** clone every mesh of a GLB into instanced meshes at the given transforms */
@@ -1167,12 +1304,32 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
        room the same way the old wall did. The closet keeps clear of the
        bedroom door's z-span (5.2..7.3) and the desk-room bookshelf's. */
     // headboard to the hall wall, pillows beside the nightstand
-    put(models.bed, 1.15, Math.PI, -5.72, 8.03, { pad: 0.12, top: 0.92 }) // comforter, not the headboard (1.79)
+    const bed = put(models.bed, 1.15, Math.PI, -5.72, 8.03, { pad: 0.12, top: 0.92 }) // comforter, not the headboard (1.79)
+    if (bed) {
+      // perched on the edge, facing the room rather than the wall
+      seats.push({
+        label: 'the bed',
+        x: -4.5, z: 8.03,
+        cushionY: bed.box.min.y + 0.92,
+        yaw: -HPI,
+        stand: { x: -3.1, z: 8.03, y: bed.box.min.y },
+      })
+    }
     const nstand = put(models.nightstand, 1.63, Math.PI, -3.2, 9.62, { pad: 0.08 })
     if (nstand) {
       put(models.alarmclock, 2.3, Math.PI - 0.3, -3.32, 9.58, { y: nstand.box.max.y })
     }
-    put(models.closet, 1.49, -HPI, 2.62, 1.55, { pad: 0.1, noStand: true })
+    const closet = put(models.closet, 1.49, -HPI, 2.62, 1.55, { pad: 0.1, noStand: true })
+    work(closet, {
+      Closet_LeftDoor: {
+        label: 'the wardrobe',
+        cavity: { depth: 1.5, shelves: 2, stock: 5, tint: '#6b5744', seed: 3 },
+      },
+      Closet_RightDoor: {
+        label: 'the wardrobe',
+        cavity: { depth: 1.5, shelves: 2, stock: 5, tint: '#6b5744', seed: 7 },
+      },
+    })
     put(models.curtains, 0.82, HPI, -7.38, 5.75, { y: 0.86 })
     put(models.officechair, 2.05, Math.PI - 0.03, -0.15, 3.05, { pad: 0.16, top: 1.0 })
 
@@ -1203,6 +1360,10 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
     /* living room */
     const cab = put(models.tvcabinet, 4.4, Math.PI, 5.75, 14.75, { pad: 0.1 })
+    work(cab, {
+      doorLeft: { label: 'the cabinet', cavity: { depth: 0.8, shelves: 1, tint: '#4a3524' } },
+      doorRight: { label: 'the cabinet', cavity: { depth: 0.8, shelves: 1, tint: '#4a3524' } },
+    })
     const tv = put(models.tv, 4.4, Math.PI, 5.7, 14.78, { y: cab ? cab.box.max.y : 1.37 })
     if (tv) {
       // little standby LED so the dead tube feels plugged in
@@ -1215,35 +1376,117 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       trackDisposable(led.material as THREE.Material)
       led.position.set(tv.box.max.x - 0.28, tv.box.min.y + 0.34, tv.box.max.z - 0.04)
       root.add(led)
+      screen = tubeFace(tv.group)
     }
     put(models.roundrug, 1.6, 0, 4.9, 17.5, { y: 0.008 })
-    put(models.sofa, 1.3, Math.PI, 4.6, 19.7, { pad: 0.14, top: 1.0 }) // cushion, not the backrest (1.89)
+    const sofa = put(models.sofa, 1.3, Math.PI, 4.6, 19.7, { pad: 0.14, top: 1.0 }) // cushion, not the backrest (1.89)
+    if (sofa) {
+      // three cushions, two places worth sitting: dead centre of the set and
+      // one along, both facing the television across the coffee table. The
+      // stand-up spot is west of the sofa because everything else around it
+      // is furniture: the table in front, the loveseat behind, a wall east
+      const cushion = sofa.box.min.y + 1.0
+      for (const [i, x] of [4.0, 5.7].entries()) {
+        seats.push({
+          label: 'the sofa',
+          x, z: 19.6,
+          cushionY: cushion,
+          atTv: true,
+          yaw: 0, // the model is turned to face -z, and so is the television
+          stand: { x: 2.9, z: 19.4 + i * 0.5, y: sofa.box.min.y },
+        })
+      }
+    }
     // reading corner under the yard window, angled at the television
-    put(models.loveseat, 0.95, -HPI + 0.3, 5.0, 22.9, { pad: 0.12, top: 1.24 })
+    const loveseat = put(models.loveseat, 0.95, -HPI + 0.3, 5.0, 22.9, { pad: 0.12, top: 1.24 })
+    if (loveseat) {
+      seats.push({
+        label: 'the armchair',
+        atTv: true,
+        x: 5.0, z: 22.9,
+        cushionY: loveseat.box.min.y + 1.24,
+        yaw: -HPI + 0.3 + Math.PI,
+        stand: { x: 3.1, z: 22.4, y: loveseat.box.min.y },
+      })
+    }
     const ctable = put(models.coffeetable, 4.4, 0, 4.9, 17.15, { pad: 0.08 })
-    put(models.bookcase, 1.31, -HPI, 7.12, 23.1, { pad: 0.1, noStand: true })
+    const bookcase = put(models.bookcase, 1.31, -HPI, 7.12, 23.1, { pad: 0.1, noStand: true })
+    // the bookcase's lower compartments are modelled, so it needs no cavity
+    work(bookcase, {
+      BookCase_LeftDoor: { label: 'the bookcase' },
+      BookCase_RightDoor: { label: 'the bookcase' },
+    })
     put(models.floorlamp, 4.4, 0, 7.05, 21.2, { pad: 0.08, noStand: true })
     put(models.plant, 1.35, 2.6, -1.7, 15.0, { pad: 0.1, noStand: true })
 
     /* dining: chairs tucked in facing the table, not fleeing it */
     put(models.diningtable, 3.6, 0, -2.1, 19.8, { pad: 0.1 })
-    put(models.chair, 1.25, Math.PI, -2.9, 21.15, { pad: 0.05, top: 0.96 })
-    put(models.chair, 1.25, Math.PI + 0.12, -1.25, 21.15, { pad: 0.05, top: 0.96 })
-    put(models.chair, 1.25, 0.2, -2.05, 18.45, { pad: 0.05, top: 0.96 })
+    // these models face +z unturned, so a sitter faces rotY + π
+    for (const [x, z, rotY] of [
+      [-2.9, 21.15, Math.PI],
+      [-1.25, 21.15, Math.PI + 0.12],
+      [-2.05, 18.45, 0.2],
+    ] as const) {
+      const chair = put(models.chair, 1.25, rotY, x, z, { pad: 0.05, top: 0.96 })
+      if (chair) {
+        seats.push({
+          label: 'the chair',
+          x, z,
+          cushionY: chair.box.min.y + 0.96,
+          yaw: rotY + Math.PI,
+          // a dining chair has clear floor behind it, so the default
+          // stand-up spot (a step back out of the seat) is the right one
+        })
+      }
+    }
 
-    /* kitchen run along the west wall, fronts facing +x */
-    put(models.kfridge, 4.4, -HPI, -6.55, 17.45, { pad: 0.08, noStand: true })
-    put(models.kstove, 4.4, -HPI, -6.5, 19.6, { pad: 0.08, top: 1.72 })
-    put(models.ksink, 4.4, -HPI, -6.5, 21.6, { pad: 0.08, top: 1.72 }) // counter, not the tap
-    const kdrawer = put(models.kdrawer, 4.4, -HPI, -6.5, 23.55, { pad: 0.08, top: 1.72 })
+    /*
+      Kitchen run along the west wall, fronts facing +x.
+
+      The run is laid out from the bathroom's south wall northward and it is
+      *tight*: four carcasses at the old scale measured 7.96 against the 7.9
+      of wall they had to live on, and the difference came out of the fridge,
+      which stood a third of a unit inside the bathroom. You could see the
+      back of it from the tub, and once its doors worked you could swing one
+      through the wall. These walls are single planes with no thickness, so
+      "nearly flush" is not a thing here: anything over the line is in the
+      next room. The whole run is 4.32 rather than 4.4 and butted end to end,
+      which is what a kitchen looks like anyway, and it fits with room over.
+    */
+    const KIT = 4.32
+    const cupboard = { depth: 0.95, shelves: 1, stock: 3, tint: '#cfc9bb' } as const
+    fridgeDoors(put(models.kfridge, KIT, -HPI, -6.55, 17.74, { pad: 0.08, noStand: true }))
+    work(put(models.kstove, KIT, -HPI, -6.5, 19.8, { pad: 0.08, top: 1.69 }), {
+      door: {
+        label: 'the oven',
+        motion: 'drop',
+        cavity: { depth: 1.0, shelves: 2, tint: '#241f1b' },
+      },
+    })
+    // counter, not the tap
+    work(put(models.ksink, KIT, -HPI, -6.5, 21.65, { pad: 0.08, top: 1.69 }), {
+      door: { label: 'the cupboard', cavity: { ...cupboard, seed: 5 } },
+    })
+    const kdrawer = put(models.kdrawer, KIT, -HPI, -6.5, 23.51, { pad: 0.08, top: 1.69 })
+    work(kdrawer, {
+      door: { label: 'the cupboard', cavity: { ...cupboard, seed: 13 } },
+      drawer: { label: 'the drawer', motion: 'slide' },
+    })
     // one upper over the stove, a low one over the drawer stack; the stretch
     // of wall over the sink stays clear for its window
-    put(models.kupper, 4.4, -HPI, -7.02, 19.6, { y: 3.35 })
-    put(models.kupperl, 4.4, -HPI, -7.05, 23.55, { y: 3.55 })
+    work(put(models.kupper, KIT, -HPI, -7.02, 19.8, { y: 3.35 }), {
+      door: { label: 'the cabinet', cavity: { depth: 0.7, shelves: 1, stock: 4, tint: '#cfc9bb', seed: 17 } },
+    })
+    work(put(models.kupperl, KIT, -HPI, -7.05, 23.51, { y: 3.55 }), {
+      door: { label: 'the cabinet', cavity: { depth: 0.7, shelves: 1, stock: 3, tint: '#cfc9bb', seed: 23 } },
+    })
     if (kdrawer) {
-      put(models.toaster, 4.4, -HPI + 0.2, -6.42, 23.3, { y: kdrawer.box.max.y })
+      put(models.toaster, 4.4, -HPI + 0.2, -6.42, 23.26, { y: kdrawer.box.max.y })
     }
     const washer = put(models.washer, 4.4, 0, -1.5, 23.6, { pad: 0.08 })
+    work(washer, {
+      washerDoor: { label: 'the washer', cavity: { depth: 0.85, tint: '#8d949a' } },
+    })
     if (washer) {
       put(models.microwave, 4.4, 0, -1.5, 23.62, { y: washer.box.max.y })
     }
@@ -1381,7 +1624,9 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     lanternGlow(-0.95, 25.75, -Math.PI / 2, true) // arm reaches over the porch
     lanternGlow(6.6, 35.6, Math.PI + 0.6, false)
 
-    // freeze everything that just landed; door pivots stay live
+    // freeze everything that just landed; door pivots stay live, and so do
+    // the working furniture's: the freeze is a blanket traverse, so every
+    // hinge in the house has to opt back out of it after the fact
     root.updateMatrixWorld(true)
     root.traverse((o) => {
       o.matrixAutoUpdate = false
@@ -1389,6 +1634,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     doors.forEach((d) => {
       d.pivot.matrixAutoUpdate = true
     })
+    fittings.unfreeze()
   }
 
   /* ------------------------------------------------------------ runtime -- */
@@ -1403,6 +1649,10 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   })
 
   const update = (dt: number) => {
+    // the working furniture eases on the same clock as the doors. The shadow
+    // maps it dirties are re-baked by whoever pressed the key, not from here:
+    // this runs inside a Level's update, which has no way to report back
+    fittings.update(dt)
     // doors ease toward wherever the interact key last put them
     for (const d of doors) {
       const next = d.angle + (d.target - d.angle) * (1 - Math.exp(-5.5 * dt))
@@ -1517,5 +1767,12 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   return {
     root, update, doorPrompt, useDoor, surfaceAt,
     setRoamLight, setDay, flagShadows, shadowLights, furnish,
+    propPrompt: fittings.prompt,
+    useProp: fittings.use,
+    addFitting: fittings.add,
+    seats,
+    get screen() {
+      return screen
+    },
   }
 }

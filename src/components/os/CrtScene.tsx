@@ -18,6 +18,9 @@ import { packLook, sanitizeLook, unpackLook, type PlayerLook } from '../../game/
 import type { RagdollEnv } from '../../game/player/ragdoll'
 import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
 import { createWalkController } from '../../game/player/walkController'
+import { createSeating } from '../../game/player/seating'
+import { facingOf } from '../../game/levels/fittings'
+import { buildHouseTv, type TvHandles } from './houseTv'
 import { createRoamInput } from '../../game/core/input'
 import { blockedAt, makeCollisionSet, supportY } from '../../game/physics/collision'
 import { createCollisionDebug } from '../../game/physics/collisionDebug'
@@ -178,6 +181,16 @@ const HOUSE_MODEL_KEYS = [
   'microwave', 'ceilinglight', 'fence', 'tree', 'bush', 'bushflower',
   'hedge', 'bench', 'lantern',
 ] as const
+/*
+  The working furniture's prompts, worded here so the HUD stays a dumb button
+  and the sim keeps answering in its own terms: a fitting knows it is "the
+  freezer" and that it is shut, and nothing below the game runtime should
+  have to know how to say that in English.
+*/
+const tvVerb = (p: 'on' | 'off' | null) => (p ? `turn ${p} the tv` : null)
+const fittingVerb = (p: { verb: string; label: string } | null) =>
+  p ? `${p.verb} ${p.label}` : null
+const sitVerb = (label: string | null) => (label ? `sit on ${label}` : null)
 /** how early a frame may arrive and still be counted against the limiter's
     deadline, in ms. See walkTick: without it, a cap set to the panel's own
     rate halves it, because half the frames land a few microseconds short */
@@ -277,6 +290,14 @@ export default function CrtScene({
   const [near, setNear] = useState(false)
   // a house door in reach while walking; which verb its prompt should show
   const [doorVerb, setDoorVerb] = useState<'open' | 'close' | null>(null)
+  /** the working furniture: a cupboard, a seat or the television within reach,
+      already worded, because the sim knows what it is and the HUD does not */
+  const [propVerb, setPropVerb] = useState<string | null>(null)
+  /** sitting on something: what the HUD says you may get off, and whether
+      this particular cushion can see the television */
+  const [seated, setSeated] = useState<{ label: string; atTv: boolean } | null>(null)
+  /** the channel the set is showing, while you are sitting in front of it */
+  const [tvChannel, setTvChannel] = useState<string | null>(null)
   const [locked, setLocked] = useState(false)
   // esc mid-walk frees the mouse and raises the pause menu
   const [paused, setPaused] = useState(false)
@@ -370,6 +391,8 @@ export default function CrtScene({
   const outroRef = useRef<(() => void) | null>(null)
   const roamRef = useRef<((on: boolean) => void) | null>(null)
   const doorRef = useRef<(() => void) | null>(null)
+  /** the working furniture's button: a cupboard, the television, a cushion */
+  const propRef = useRef<(() => void) | null>(null)
   const resumeRef = useRef<(() => void) | null>(null)
   const failRef = useRef(onFail)
   const stageRef = useRef(onStage)
@@ -924,7 +947,22 @@ export default function CrtScene({
         body.visible = false
         scene.add(body)
         const chase = createChaseCam()
-        const BODY_BACK = 0.38 // eye sits ahead of the spine; keeps the chest out of frame
+        /*
+          Sitting down on the furniture.
+
+          Deliberately *not* a second tick the way driving is. A sofa does not
+          move, so the whole of sitting on one is: freeze the walk, park the
+          lens at cushion height, clamp the head to the pose the seat implies
+          and hold the body's seated rig. All four are four lines inside the
+          ordinary walk frame below, and every other thing that frame does
+          (the day cycle, the shadow flags, the crowd, the prompts) carries on
+          being true while you sit there.
+        */
+        const seating = createSeating(EYE)
+        const seatEye = new THREE.Vector3()
+        /** the living-room set, once its model has landed */
+        let tv: TvHandles | null = null
+        const BODY_BACK = 0.49 // eye sits ahead of the spine; keeps the chest out of frame
         const poseBody = () => {
           // the trailing offset fades with the real boom length, not the mode:
           // a wall that crushes the boom flat leaves a first-person body.
@@ -945,6 +983,35 @@ export default function CrtScene({
           // the body faces where the rig says it faces — standing, that
           // lags the camera and the head covers the gap (no statue-spin)
           body.rotation.y = rig.facing + Math.PI
+        }
+        /*
+          The seated body, which is `poseBody` with the walk taken out of it.
+
+          `rig.sit()` hangs the fold from the eye rather than the hips, so the
+          seat's *eye* height is the body's position, the same height the
+          lens goes to, which is what makes a sitter's head land where the
+          camera says their head is. The trailing offset still has to survive,
+          for the same reason it exists standing up: the camera is the head,
+          so a body planted exactly under it puts the inside of your own skull
+          across the whole first-person view. The fraction fades with the
+          boom, so third person shows the complete seated player and first
+          person shows their lap.
+        */
+        const poseSeated = (seat: { x: number; z: number; eyeY: number; yaw: number }) => {
+          const show = Math.min(1, chase.dist / 1.2)
+          // ...and the crown comes off in first person, the same way it does
+          // walking: `rig.update` would normally decide that, and a seated
+          // body is holding a pose instead of being driven
+          rig.showHead(show > 0.12)
+          const fp = 1 - show
+          const down = Math.max(0, -walk.pitch) / 1.35
+          const back = (BODY_BACK + 0.55 * down * down) * fp
+          body.position.set(
+            seat.x + Math.sin(seat.yaw) * back,
+            seat.eyeY,
+            seat.z + Math.cos(seat.yaw) * back,
+          )
+          body.rotation.y = seat.yaw + Math.PI
         }
         // reused every tick; the rig and boom read them, never keep them
         const rigPose: PlayerPose = {
@@ -1065,6 +1132,20 @@ export default function CrtScene({
 
         let vHeld = false
         let xHeld = false
+        /** a/d on the sofa is the channel dial, and it is an edge, not a hold */
+        let chHeld = false
+        /**
+         * Seconds left of "something in the house is still swinging".
+         *
+         * Every shadow map in here is hand-baked and only re-baked while the
+         * *player* moves, which is exactly wrong for a cupboard: you press E
+         * and then stand perfectly still watching a door swing out from under
+         * its own painted-on shadow. The house cannot report this itself, its
+         * update running inside a Level's, which returns nothing, so the press
+         * starts a clock and the tick treats it like body movement until the
+         * leaf has settled.
+         */
+        let propSwing = 0
         let dbgHeld = false
         /** F9, read the same way v and x are: edge-detected off the key set,
             and asked in both loops because either can be the live one */
@@ -1087,6 +1168,8 @@ export default function CrtScene({
         // prompt bookkeeping mirrored into React state only on change
         let nearNow = false
         let doorVerbNow: 'open' | 'close' | null = null
+        /** the working furniture's prompt, already worded */
+        let propVerbNow: string | null = null
         let vehicleNow: { id: VehicleId; label: string; verb: string; seat: number } | null = null
         let pausedNow = false
         const gazeVec = new THREE.Vector3()
@@ -1180,6 +1263,55 @@ export default function CrtScene({
             crew: crewLabel(id, seat),
           })
           track('vehicle_entered', { kind: id, seat })
+        }
+
+        /*
+          Take a seat, and get back out of one.
+
+          The walker is parked *on the cushion* rather than left standing
+          where it was, for the same reason `driveTick` parks it on the car:
+          it is what the level system, the network and `stopRoam` all read as
+          "where you are", and a body on the sofa whose walker is still on the
+          rug is a body two people disagree about. Standing up is the reverse
+          the walker is put down on the seat's own clear spot, because the
+          alternative is being ejected sideways by the sofa's own collision
+          box the frame after.
+        */
+        const takeSeat = () => {
+          if (fleet.riding || levels.frozen || rig.down) return false
+          const seat = seating.sit(headPos, headDir)
+          if (!seat) return false
+          walk.resetMotion()
+          walk.teleport(seat.x, seat.z, seat.cushionY)
+          const held = seating.hold(walk.yaw, walk.pitch)
+          walk.yaw = held.yaw
+          walk.pitch = held.pitch
+          chase.drop()
+          rig.reset()
+          rig.sit()
+          rig.face(seat.yaw)
+          poseSeated(seat)
+          body.visible = true
+          house.flagShadows(camera.position)
+          setSeated({ label: seat.label, atTv: seat.atTv })
+          track('house_sit', { seat: seat.label })
+          return true
+        }
+
+        const leaveSeat = () => {
+          const spot = seating.stand()
+          if (!spot) return false
+          rig.showHead(true) // rig.update owns it again from the next frame
+          chase.drop()
+          walk.resetMotion()
+          walk.teleport(spot.x, spot.z, spot.y)
+          rig.reset()
+          rig.face(walk.yaw)
+          poseBody()
+          house.flagShadows(camera.position)
+          setSeated(null)
+          setTvChannel(null)
+          return true
         }
 
         const leaveVehicle = () => {
@@ -1458,6 +1590,13 @@ export default function CrtScene({
           })
           voice = createProximityVoice({
             self: () => remote.you,
+            eye: EYE,
+            // the pause sheet's two dials, off the live record rather than a
+            // copy: the sheet writes prefs, the voice graph reads them
+            levels: () => ({
+              mic: prefsRef.current.micVol,
+              out: prefsRef.current.voiceVol,
+            }),
             // read per peer, not captured: a reconnect brings a fresh TURN
             // credential and the old one may already have expired
             ice: () => net?.ice ?? [],
@@ -1603,6 +1742,11 @@ export default function CrtScene({
               leaveVehicle()
               return true
             }
+            // sitting: E is the way back out, and nothing else is offered
+            if (seating.current) {
+              leaveSeat()
+              return true
+            }
             if (nearNow) {
               interactRef.current()
               return true
@@ -1615,6 +1759,20 @@ export default function CrtScene({
               // real planet
               if (!outside.hasWorld() && atExteriorDoor(headPos)) void loadWorldCovered()
               return true
+            }
+            // the house's own furniture: a cupboard to open, a television to
+            // switch on, a cushion to drop onto. All three are the same key
+            // and they never overlap, because you cannot stand in two places
+            if (propVerbNow) {
+              if (tv?.use(headPos, headDir)) {
+                if (tv.on) track('house_tv', { channel: tv.channel.label })
+                return true
+              }
+              if (house.useProp(headPos, headDir)) {
+                propSwing = 1.1 // long enough for the ease to settle
+                return true
+              }
+              if (takeSeat()) return true
             }
             if (vehicleNow) {
               enterVehicle(vehicleNow.id, vehicleNow.seat)
@@ -1647,6 +1805,11 @@ export default function CrtScene({
           onCutStart: () => {
             walk.haltPlanar()
             backrooms.noclipSound()
+            // whatever the house was doing, it is not doing it down there:
+            // the seat is in another level and the television is unhearable
+            // from one, having no spatialiser to fall silent with
+            leaveSeat()
+            tv?.silence()
             // the noclip cut is the one way out of a machine that does not go
             // through leaveVehicle: the fleet lives in the overworld, and the
             // server frees the chair on the level change anyway
@@ -2122,11 +2285,14 @@ export default function CrtScene({
           seamPt.set(camera.position.x, walk.feetY, camera.position.z)
           levels.tick(now, seamPt, fps)
           const level = levels.current
+          const sitting = seating.current
           const step = walk.update({
             dt,
             keys: input.keys,
-            // a downed body forfeits movement until it has stood back up
-            frozen: levels.frozen || rig.down,
+            // a downed body forfeits movement until it has stood back up, and
+            // so does a seated one: the seat owns the lens until E gives it
+            // back. Gravity and the crouch ease keep integrating either way
+            frozen: levels.frozen || rig.down || !!sitting,
             groundY: level.groundY,
             groundAt: level.groundYAt,
             ceilingY: level.ceilingY,
@@ -2134,6 +2300,29 @@ export default function CrtScene({
             collision: level.collision,
             fovBase: prefsRef.current.fov,
           })
+          if (sitting) {
+            // the walk wrote the standing eye over the cushion; put it back
+            // at the height of somebody sitting on it, and hold the head
+            // inside the arc the furniture implies
+            camera.position.copy(seating.eye(seatEye))
+            const held = seating.hold(walk.yaw, walk.pitch)
+            walk.yaw = held.yaw
+            walk.pitch = held.pitch
+            camera.rotation.set(held.pitch, held.yaw, 0)
+            poseSeated(sitting)
+            // a/d works the set from the sofa, the way a remote does: a dark
+            // tube wakes rather than skipping a channel it is not showing.
+            // Only from a seat that faces it: the keys are free on every
+            // cushion in the house, and the bed is not a remote control
+            const chNow = (input.keys.has('KeyD') ? 1 : 0) - (input.keys.has('KeyA') ? 1 : 0)
+            if (chNow && !chHeld && tv && sitting.atTv && !pausedNow) {
+              tv.turn(chNow)
+              setTvChannel(`${tv.channel.n} · ${tv.channel.label}`)
+            }
+            chHeld = chNow !== 0
+          } else {
+            chHeld = false
+          }
           // the sim reports footfalls and touchdowns; the level says what is
           // underfoot (the backrooms are carpet wall to wall), and crouched
           // steps land softer. Outdoors the answer has two owners: the house
@@ -2166,7 +2355,9 @@ export default function CrtScene({
             rig.settled &&
             ((xNow && !xHeld) ||
               ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].some((k) => input.keys.has(k)))
-          if (xNow && !xHeld && !rig.down && !levels.frozen) {
+          // (not from a chair: the ragdoll would land on the floor while the
+          // seat kept the lens on the cushion, watching an empty room)
+          if (xNow && !xHeld && !rig.down && !levels.frozen && !sitting) {
             // thrown with the walk's momentum plus a hop so it always tumbles
             rig.flop(step.vx, step.vy + 1.6, step.vz)
           } else if (wantsUp) {
@@ -2205,8 +2396,11 @@ export default function CrtScene({
           nHeld = nNow
           voice?.setPushing(input.keys.has('KeyB'))
           // the body plants its feet under the camera and faces the walk
-          // (or hangs from it, mid-hop) — unless the ragdoll owns it
-          if (!rig.ragdolling) poseBody()
+          // (or hangs from it, mid-hop), unless the ragdoll owns it, or a
+          // seat does: a sitter's body was placed on the cushion when they
+          // sat down and holds `rig.sit()`'s one pose until they get up,
+          // which is the same deal the vehicles' chairs get
+          if (!rig.ragdolling && !sitting) poseBody()
           rigPose.dt = dt
           rigPose.gait = step.gait
           rigPose.crouchK = walk.crouchK
@@ -2228,7 +2422,7 @@ export default function CrtScene({
           rigEnv.groundY = localFloor
           rigEnv.ceilingY = level.ceilingY
           rigEnv.collision = level.collision
-          rig.update(rigPose, rigEnv)
+          if (!sitting) rig.update(rigPose, rigEnv)
           // --- everyone else ------------------------------------------------
           // Say where we are, play the others back a couple of ticks in the
           // past, and put their voices where their bodies ended up. All of it
@@ -2246,7 +2440,9 @@ export default function CrtScene({
               packPose({
                 grounded: step.grounded,
                 run: step.run,
-                crouch: step.duck,
+                // the wire has no pose for "sitting on the sofa", and crouched
+                // is the one it does have that is not a lie about your height
+                crouch: step.duck || !!sitting,
                 swimming: step.swimming,
                 speaking: Boolean(voice?.speaking),
                 down: rig.down,
@@ -2268,7 +2464,10 @@ export default function CrtScene({
           // the player is the only moving shadow caster: re-bake just the
           // lights that can see them, only on frames where they moved (the
           // rig speaks up for motion the walker can't see: ragdoll, springs)
-          const bodyMoved = step.moved || rig.unrest()
+          if (propSwing > 0) propSwing -= dt
+          // a leaf still swinging counts as movement for the baked maps, even
+          // when the player who opened it has not shifted a foot
+          const bodyMoved = step.moved || rig.unrest() || propSwing > 0
           if (level.id === 'overworld' && bodyMoved) {
             // generous regions: a map must keep re-baking until the player is
             // fully out of its light's frustum, or their shadow strands there
@@ -2280,6 +2479,11 @@ export default function CrtScene({
             // on every frame. See followSunShadow.
             followSunShadow(camera.position, now)
           }
+          // the television has no spatialiser, being an iframe rather than a
+          // buffer on our own context, so its loudness is the listener's distance,
+          // taken here while the camera is still the head rather than after
+          // the boom has borrowed it
+          tv?.update(camera.position)
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
@@ -2305,6 +2509,24 @@ export default function CrtScene({
             doorVerbNow = verb
             setDoorVerb(verb)
           }
+          /*
+            ...and under the doors, the house's own furniture. Three things
+            answer here and they are asked in the order you would reach for
+            them: the television's buttons, then a cupboard's handle, then the
+            cushion of whatever you are standing in front of. Sitting down is
+            last because a seat is a big target and a drawer beside it is a
+            small one; a seat that outranked the drawer would swallow it.
+          */
+          const propVerb =
+            isNear || verb || rig.down || seating.current || level.id !== 'overworld'
+              ? null
+              : tvVerb(tv?.prompt(camera.position, gazeVec) ?? null) ??
+                fittingVerb(house.propPrompt(camera.position, gazeVec)) ??
+                sitVerb(seating.prompt(camera.position, gazeVec))
+          if (propVerb !== propVerbNow) {
+            propVerbNow = propVerb
+            setPropVerb(propVerb)
+          }
           // the fleet still ticks while you are on foot: a parked machine has
           // to settle onto the ground it is standing on, keep its collision box
           // under the walker's shoulder, and offer its prompt when you get
@@ -2322,7 +2544,9 @@ export default function CrtScene({
           // ...and its prompt is the lowest-priority one: the machine and a
           // door both win, because both are things you are standing right at
           const atVehicle =
-            isNear || verb || rig.down || levels.frozen ? null : fs.prompt
+            isNear || verb || propVerb || seating.current || rig.down || levels.frozen
+              ? null
+              : fs.prompt
           // "drive" when the wheel is free, "ride" when it is not: the prompt
           // is the only warning that somebody else is already in there
           const atVerb = atVehicle
@@ -2743,6 +2967,10 @@ export default function CrtScene({
           // are retired, and the microphone is released rather than left live
           // behind a desktop that gives no sign it is on
           leaveWorld()
+          // and so does the television: a set left playing behind a desktop
+          // is a voice in an empty room, and nothing 3D renders to explain it
+          tv?.silence()
+          leaveSeat()
           input.clearKeys()
           // out of whatever you were driving first: the engine has to stop,
           // and `levels.reset()` below hauls the walker home whether or not a
@@ -2779,10 +3007,12 @@ export default function CrtScene({
           }
           nearNow = false
           doorVerbNow = null
+          propVerbNow = null
           vehicleNow = null
           setWalking(false)
           setNear(false)
           setDoorVerb(null)
+          setPropVerb(null)
           setVehiclePrompt(null)
           setDriving(null)
           input.releaseLock()
@@ -2852,6 +3082,23 @@ export default function CrtScene({
           if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
           if (!outside.hasWorld() && atExteriorDoor(headPos)) void loadWorldCovered()
         }
+        // and the furniture's, which is the same chain E walks: get up first
+        // if you are sitting, otherwise work whatever is in front of you
+        propRef.current = () => {
+          if (seating.current) {
+            leaveSeat()
+            return
+          }
+          if (tv?.use(headPos, headDir)) {
+            if (tv.on) track('house_tv', { channel: tv.channel.label })
+            return
+          }
+          if (house.useProp(headPos, headDir)) {
+            propSwing = 1.1
+            return
+          }
+          takeSeat()
+        }
         enterRef.current = () => {
           if (vehicleNow) enterVehicle(vehicleNow.id)
         }
@@ -2900,6 +3147,10 @@ export default function CrtScene({
         cleanupDom = () => {
           removeResize()
           stopRoam() // which also leaves the world and drops the microphone
+          // the set's picture is DOM in the CSS3D layer, which no scene
+          // traversal is going to clean up on its way out
+          tv?.dispose()
+          tv = null
           avatars.dispose()
           input.dispose()
           prevCleanup?.()
@@ -2942,6 +3193,38 @@ export default function CrtScene({
           const models: HouseModels = { plant, mug }
           for (const e of entries) if (e) models[e[0]] = e[1]
           house.furnish(models)
+          /*
+            The furniture is in, so its working parts can be wired up.
+
+            The desk is the odd one out: it belongs to `deskRoom`, which built
+            it before the house existed, so its four drawers are published
+            there and registered here rather than inside furnish. Their facing
+            is read off the drawers themselves, which is why all four are
+            handed over at once: a desk has a pedestal on each side, and two
+            drawers off one of them would point the whole piece sideways.
+          */
+          const deskFacing = facingOf(deskRoom.deskBox, deskRoom.drawers)
+          for (const node of deskRoom.drawers) {
+            house.addFitting({
+              node,
+              label: 'the drawer',
+              piece: deskRoom.deskBox,
+              motion: 'slide',
+              ...deskFacing,
+            })
+          }
+          for (const seat of house.seats) seating.add(seat)
+          // and the television, which is the one thing in the house whose
+          // picture is DOM: it hangs in the same CSS3D scene as the computer's
+          // own screen, behind a hole punched in the canvas
+          if (house.screen) {
+            tv = buildHouseTv({
+              scene,
+              cssScene,
+              screen: house.screen,
+              trackDisposable: (d) => void disposer.add(d),
+            })
+          }
           disposer.textures.forEach((texture) => webgl?.initTexture(texture))
 
           // Make the player part of the covered shader warm-up too. Each body
@@ -3034,6 +3317,7 @@ export default function CrtScene({
       outroRef.current = null
       roamRef.current = null
       doorRef.current = null
+      propRef.current = null
       resumeRef.current = null
       fleetRef.current = null
       enterRef.current = null
@@ -3288,9 +3572,45 @@ export default function CrtScene({
           {doorVerb === 'open' ? 'open the door' : 'close the door'}
         </button>
       )}
+      {/* the house's own furniture: already worded by the sim, because only
+          the sim knows whether that is a freezer or a drawer */}
+      {roam && walking && !paused && !near && !doorVerb && propVerb && (
+        <button
+          type="button"
+          onClick={() => propRef.current?.()}
+          className="absolute bottom-14 left-1/2 z-10 -translate-x-1/2 cursor-pointer rounded-md border border-stone-700 bg-stone-950/80 px-3 py-1.5 font-mono text-[12px] text-stone-300 backdrop-blur-sm transition-colors hover:border-stone-500 hover:text-white"
+        >
+          <kbd className="mr-2 rounded border border-stone-600 bg-stone-800 px-1.5 py-0.5 text-[10px] text-stone-200">
+            E
+          </kbd>
+          {propVerb}
+        </button>
+      )}
+      {/* ...and once you are in it, the way back out, plus the dial. The
+          channel line only appears once you have actually turned the set on */}
+      {roam && walking && !paused && seated && (
+        <div className="absolute bottom-14 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
+          {tvChannel && (
+            <span className="rounded-md border border-stone-700 bg-stone-950/80 px-2.5 py-1 font-mono text-[11px] text-stone-400 backdrop-blur-sm">
+              ch {tvChannel}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => propRef.current?.()}
+            className="cursor-pointer rounded-md border border-stone-700 bg-stone-950/80 px-3 py-1.5 font-mono text-[12px] text-stone-300 backdrop-blur-sm transition-colors hover:border-stone-500 hover:text-white"
+          >
+            <kbd className="mr-2 rounded border border-stone-600 bg-stone-800 px-1.5 py-0.5 text-[10px] text-stone-200">
+              E
+            </kbd>
+            stand up
+            {seated.atTv && <span className="ml-2 text-stone-500">· a/d the telly</span>}
+          </button>
+        </div>
+      )}
       {/* the fleet's prompt is last in the stack because it is the one you can
           be standing at while also standing at something else */}
-      {roam && walking && !paused && !near && !doorVerb && vehiclePrompt && (
+      {roam && walking && !paused && !near && !doorVerb && !propVerb && !seated && vehiclePrompt && (
         <button
           type="button"
           onClick={() => enterRef.current?.()}

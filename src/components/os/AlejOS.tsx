@@ -15,8 +15,13 @@ import {
   CrownSimpleIcon,
   GithubLogoIcon,
   LinkedinLogoIcon,
+  PlayIcon,
   PowerIcon,
+  SpeakerHighIcon,
+  SpeakerSlashIcon,
+  SquaresFourIcon,
   UserIcon,
+  XIcon,
 } from '@phosphor-icons/react'
 import { github, linkedin } from '../../data/projects'
 import { BOOT_OS_EVENT, OS_SCENE_READY_EVENT, SESSION_EXPIRED_EVENT } from '../../events'
@@ -38,7 +43,7 @@ import type { XpIconName } from './xpIcon'
 import type { AppId } from './apps'
 import { Window } from './Window'
 import type { WinState } from './Window'
-import { sounds } from './sounds'
+import { getVolume, isMuted, setMuted, setVolume, sounds, subscribeVolume } from './sounds'
 import { getWallpaperId, subscribeWallpaper, wallpaperById } from './wallpapers'
 import {
   DEFAULT_OS_YEAR,
@@ -55,16 +60,43 @@ import { ScreenEffects } from './ScreenEffects'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { OsContext } from './osContext'
-import type { OsApi, Session } from './osContext'
+import type { OsApi, OsTask, Session } from './osContext'
 import { LoginScreen } from './LoginScreen'
 import BootCover from './BootCover'
 import StepOutCover from './StepOutCover'
 import type { LoadStage } from './CrtScene'
+import { DialogLayer, alertBox, closeAllDialogs, confirmBox } from './dialogs'
+import { showProperties } from './PropertiesSheet'
+import { showRunDialog } from './RunDialog'
+import { ScreensaverLayer } from './Screensaver'
+import {
+  canPasteInto,
+  clipCopy,
+  clipCut,
+  getClipboard,
+  isCut,
+  paste,
+  subscribeClipboard,
+} from './clipboard'
+import {
+  beginDrag,
+  canDrop,
+  dragLabel,
+  dropTargetAt,
+  endDrag as endDragStore,
+  getDrag,
+  performDrop,
+  subscribeDrag,
+  updateDrag,
+} from './dnd'
+import type { DragState } from './dnd'
 import {
   DESKTOP,
   MY_COMPUTER,
   RECYCLE_BIN,
+  baseName,
   createFolder,
+  createShortcut,
   createTextFile,
   emptyRecycleBin,
   getFsVersion,
@@ -74,8 +106,11 @@ import {
   recycleBinCount,
   removeNode,
   renameNode,
+  resolvePath,
   sortChildren,
   subscribeFs,
+  undoLabel,
+  undoLast,
 } from './fs'
 import type { FsNode } from './fs'
 
@@ -251,6 +286,137 @@ function ClockFlyout() {
   )
 }
 
+// --- the tray volume --------------------------------------------------------
+// XP's volume flyout is a narrow raised panel with a *vertical* trackbar: a
+// sunken groove, a wide short thumb with a green grip in it, and a square
+// Mute checkbox under it. None of that is an <input type="range">, and trying
+// to make one into it is a losing fight — the vendor pseudo-elements that
+// style a native slider disagree across engines about which axis is which
+// once the writing mode is vertical, and the look is the entire point of this
+// control. So it is drawn, and the keyboard contract (arrows, page, home/end)
+// is rebuilt by hand on a role="slider".
+
+const VOL_TRACK_H = 96
+const VOL_THUMB_H = 11
+
+function VolumeFlyout() {
+  const level = useSyncExternalStore(subscribeVolume, getVolume)
+  const muted = useSyncExternalStore(subscribeVolume, isMuted)
+  const trackRef = useRef<HTMLDivElement>(null)
+  const draggingRef = useRef(false)
+  const value = muted ? 0 : level
+
+  /*
+    Read the pointer as a fraction of the groove's own bounding rect rather
+    than converting through the desktop's scale: both numbers are in client
+    space, so whatever the CRT is doing to the screen DOM cancels out.
+  */
+  const setFromPointer = (clientY: number) => {
+    const el = trackRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const thumb = (VOL_THUMB_H * r.height) / VOL_TRACK_H
+    const travel = Math.max(1, r.height - thumb)
+    const t = 1 - (clientY - r.top - thumb / 2) / travel
+    setVolume(Math.min(1, Math.max(0, t)))
+  }
+
+  const nudge = (by: number) => setVolume(Math.min(1, Math.max(0, value + by)))
+
+  return (
+    <div className="flex w-[86px] flex-col items-center border border-[#8d8b7c] bg-[#ece9d8] px-2 py-2.5 shadow-[0_8px_20px_rgba(0,0,0,0.4),inset_1px_1px_0_rgba(255,255,255,0.85)]">
+      <p className="text-[11px] text-[#1b1b1b]">Volume</p>
+
+      <div
+        ref={trackRef}
+        role="slider"
+        tabIndex={0}
+        aria-label="Volume"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(value * 100)}
+        data-no-focus-ring
+        style={{ height: VOL_TRACK_H, width: 24 }}
+        className="relative my-2.5 cursor-pointer touch-none outline-none"
+        onPointerDown={(e) => {
+          draggingRef.current = true
+          e.currentTarget.setPointerCapture(e.pointerId)
+          setFromPointer(e.clientY)
+        }}
+        onPointerMove={(e) => draggingRef.current && setFromPointer(e.clientY)}
+        onPointerUp={() => {
+          draggingRef.current = false
+          // the click you hear is the level you just set, which is the only
+          // honest preview a volume control can give
+          sounds.click()
+        }}
+        onPointerCancel={() => (draggingRef.current = false)}
+        onKeyDown={(e) => {
+          const step =
+            e.key === 'PageUp' || e.key === 'PageDown' ? 0.2 : 0.05
+          if (e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === 'PageUp') {
+            e.preventDefault()
+            nudge(step)
+          } else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'PageDown') {
+            e.preventDefault()
+            nudge(-step)
+          } else if (e.key === 'Home') {
+            e.preventDefault()
+            setVolume(1)
+          } else if (e.key === 'End') {
+            e.preventDefault()
+            setVolume(0)
+          }
+        }}
+      >
+        {/* the sunken groove */}
+        <span
+          aria-hidden
+          className="absolute inset-y-0 left-1/2 w-[4px] -translate-x-1/2 bg-[#dedbcb] shadow-[inset_1px_1px_0_#83816f,inset_-1px_-1px_0_#ffffff]"
+        />
+        {/* the Luna thumb: light bevelled block, green grip through the middle */}
+        <span
+          aria-hidden
+          style={{
+            top: (1 - value) * (VOL_TRACK_H - VOL_THUMB_H),
+            width: 21,
+            height: VOL_THUMB_H,
+          }}
+          className="absolute left-1/2 -translate-x-1/2 rounded-[2px] border border-[#6f6d5e] bg-gradient-to-b from-[#fefefa] to-[#cbc8b6] shadow-[inset_0_1px_0_#ffffff]"
+        >
+          <span className="absolute inset-x-[3px] top-[3px] h-[3px] rounded-[1px] bg-gradient-to-b from-[#b9ef88] to-[#3d8c1c]" />
+        </span>
+      </div>
+
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={muted}
+        onClick={() => {
+          setMuted(!muted)
+          if (muted) sounds.click()
+        }}
+        className="flex w-full cursor-pointer items-center gap-1.5"
+      >
+        <span className="flex size-[13px] shrink-0 items-center justify-center border border-[#7f9db9] bg-white shadow-[inset_1px_1px_1px_rgba(0,0,0,0.14)]">
+          {muted && (
+            <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden>
+              <path
+                d="M1 4.5 L3.4 7 L8 1.8"
+                fill="none"
+                stroke="#14520f"
+                strokeWidth="1.7"
+                strokeLinecap="square"
+              />
+            </svg>
+          )}
+        </span>
+        <span className="text-[11px] text-[#1b1b1b]">Mute</span>
+      </button>
+    </div>
+  )
+}
+
 // --- the desktop icon grid ---------------------------------------------------
 // icons live on Windows-style cells: column-major flow by default, but any
 // icon can be dragged to a new cell and the arrangement sticks (localStorage).
@@ -260,6 +426,8 @@ interface Cell {
 }
 
 const ICON_POS_KEY = 'alejos-icon-pos'
+// the desktop's welcome tip is shown once per browser, ever
+const TIP_KEY = 'alejos-tip-seen'
 const CELL_W = 102
 const CELL_H = 78
 const GRID_PAD = 12
@@ -345,20 +513,51 @@ interface DesktopIconProps {
   renaming?: boolean
   /** light wallpapers use darker hover treatment; labels keep XP-style contrast */
   onLight: boolean
+  /** where a drop on this icon goes: a folder's path, or the bin */
+  dropPath?: string
+  /** something droppable is hovering over it right now */
+  dropLit?: boolean
+  /** marked by a cut and waiting for a paste */
+  dimmed?: boolean
+  /** the files this icon carries when dragged; empty means it only repositions */
+  dragPaths?: string[]
   onSelect: () => void
   onOpen: () => void
   onRename?: (next: string) => void
-  /** pixel delta (in desktop space) from the icon's resting cell, on drop */
-  onDragEnd: (dx: number, dy: number) => void
+  /**
+   * Let go. dx/dy are the pixel delta from the icon's resting cell, target is
+   * the drop target under the pointer — the desktop decides between the two,
+   * because that decision is the whole gesture: over open desktop this is a
+   * reposition, over a folder or the bin it is a file move.
+   */
+  onDragEnd: (dx: number, dy: number, target: string | null, copy: boolean) => void
 }
 
 // single click selects like a real desktop; double click (or tap, where
 // there is no hover) opens. data-icon makes the marquee hit-test find it.
 // holding and moving past a small threshold picks the icon up instead.
-function DesktopIcon({ id, label, glyph, cell, cw, selected, renaming, onLight, onSelect, onOpen, onRename, onDragEnd }: DesktopIconProps) {
+function DesktopIcon({
+  id,
+  label,
+  glyph,
+  cell,
+  cw,
+  selected,
+  renaming,
+  onLight,
+  dropPath,
+  dropLit,
+  dimmed,
+  dragPaths,
+  onSelect,
+  onOpen,
+  onRename,
+  onDragEnd,
+}: DesktopIconProps) {
   const dragRef = useRef<{ px: number; py: number; scale: number; moved: boolean } | null>(null)
   const suppressClick = useRef(false)
   const [lift, setLift] = useState<{ x: number; y: number } | null>(null)
+  const carries = dragPaths ?? []
 
   type Drag = NonNullable<typeof dragRef.current>
   const localDelta = (d: Drag, e: React.PointerEvent) => ({
@@ -379,8 +578,15 @@ function DesktopIcon({ id, label, glyph, cell, cw, selected, renaming, onLight, 
     if (!d) return
     const { x, y } = localDelta(d, e)
     if (!d.moved && Math.hypot(x, y) < 5) return
+    if (!d.moved && carries.length) {
+      // the icon itself is the drag image here, so no ghost is asked for
+      beginDrag(carries, e.clientX, e.clientY, { ghost: false })
+    }
     d.moved = true
     setLift({ x, y })
+    if (carries.length) {
+      updateDrag(e.clientX, e.clientY, dropTargetAt(e.clientX, e.clientY), e.ctrlKey)
+    }
   }
   const endDrag = (e: React.PointerEvent) => {
     const d = dragRef.current
@@ -388,7 +594,9 @@ function DesktopIcon({ id, label, glyph, cell, cw, selected, renaming, onLight, 
     setLift(null)
     if (d?.moved) {
       const { x, y } = localDelta(d, e)
-      onDragEnd(x, y)
+      const target = carries.length ? dropTargetAt(e.clientX, e.clientY) : null
+      endDragStore()
+      onDragEnd(x, y, target, e.ctrlKey)
       suppressClick.current = true
     }
   }
@@ -398,6 +606,7 @@ function DesktopIcon({ id, label, glyph, cell, cw, selected, renaming, onLight, 
     <button
       type="button"
       data-icon={id}
+      {...(dropPath ? { 'data-drop-path': dropPath } : {})}
       onClick={() => {
         if (suppressClick.current) {
           suppressClick.current = false
@@ -422,11 +631,25 @@ function DesktopIcon({ id, label, glyph, cell, cw, selected, renaming, onLight, 
         left: GRID_PAD + cell.col * cw,
         top: GRID_PAD + cell.row * CELL_H,
         width: cw - 6,
-        ...(lift && { transform: `translate(${lift.x}px, ${lift.y}px)`, zIndex: 3000 }),
+        // a lifted icon must not be hit-testable, or it would be the thing
+        // elementFromPoint finds under the cursor instead of the drop target
+        ...(lift && {
+          transform: `translate(${lift.x}px, ${lift.y}px)`,
+          zIndex: 3000,
+          pointerEvents: 'none' as const,
+        }),
       }}
       className={`pointer-events-auto absolute flex cursor-pointer touch-none flex-col items-center gap-1 rounded-md p-2 ${
         lift ? 'opacity-75' : ''
-      } ${selected ? 'bg-blue-700/30' : onLight ? 'hover:bg-stone-950/10' : 'hover:bg-white/15'}`}
+      } ${dimmed ? 'opacity-50' : ''} ${
+        dropLit
+          ? 'bg-blue-500/40 ring-2 ring-blue-300'
+          : selected
+            ? 'bg-blue-700/30'
+            : onLight
+              ? 'hover:bg-stone-950/10'
+              : 'hover:bg-white/15'
+      }`}
     >
       <span className={`${ink} [&_svg]:block`}>{glyph}</span>
       {renaming && onRename ? (
@@ -490,6 +713,40 @@ function BootScreen() {
 const sameSet = (a: Set<string>, b: Set<string>) =>
   a.size === b.size && [...a].every((v) => b.has(v))
 
+/**
+ * The thing under the cursor mid-drag. XP dragged a translucent copy of the
+ * icon with a count badge when there were several, and the badge is what
+ * makes a multi-file drag legible — four icons stacked under a cursor read
+ * as one icon that failed to render.
+ */
+function DragGhost({
+  drag,
+  toLocal,
+}: {
+  drag: DragState
+  toLocal: (x: number, y: number) => { x: number; y: number }
+}) {
+  const at = toLocal(drag.x, drag.y)
+  const head = getNode(drag.paths[0])
+  return (
+    <div
+      aria-hidden
+      style={{ left: at.x + 12, top: at.y + 10 }}
+      className="pointer-events-none absolute z-[8000] flex max-w-52 items-center gap-1.5 rounded-md border border-blue-300/60 bg-blue-900/70 px-2 py-1 opacity-90 shadow-lg backdrop-blur-[1px]"
+    >
+      <span className="shrink-0 [&_img]:block">{glyphFor(head, 18)}</span>
+      <span className="truncate text-[11px] font-medium text-white">
+        {dragLabel(drag.paths)}
+      </span>
+      {drag.copy && (
+        <span className="shrink-0 rounded-[3px] bg-white px-1 text-[10px] font-bold text-blue-800">
+          +
+        </span>
+      )}
+    </div>
+  )
+}
+
 export default function AlejOS({
   initialBoot,
   onPowerOff,
@@ -531,6 +788,16 @@ export default function AlejOS({
   const [activeId, setActiveId] = useState('')
   const [startOpen, setStartOpen] = useState(false)
   const [clockOpen, setClockOpen] = useState(false)
+  const [volumeOpen, setVolumeOpen] = useState(false)
+  // the tray balloon, once per session: it is where the desktop tells a
+  // first-time visitor that the files on it are actually draggable
+  const [balloon, setBalloon] = useState(false)
+  // Alt+Tab: null when the switcher is down, otherwise the highlighted index
+  const [switcher, setSwitcher] = useState<number | null>(null)
+  const [taskMenu, setTaskMenu] = useState<{ x: number; y: number; win: string | null } | null>(null)
+  // which windows Show Desktop took down, so pressing it again puts back
+  // those and only those
+  const [hiddenByShowDesktop, setHiddenByShowDesktop] = useState<string[] | null>(null)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [marquee, setMarquee] = useState<Rect | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; icon: string | null } | null>(null)
@@ -538,7 +805,9 @@ export default function AlejOS({
   const [refreshing, setRefreshing] = useState(false)
   const [desktopReady, setDesktopReady] = useState(false)
   const [iconPos, setIconPos] = useState<Record<string, Cell>>(loadIconPos)
-  const [grid, setGrid] = useState({ cols: 8, rows: 8, cw: CELL_W })
+  // the icon grid, plus the desktop's own size — Cascade and Tile need the
+  // stage in pixels, and this effect is already measuring it
+  const [grid, setGrid] = useState({ cols: 8, rows: 8, cw: CELL_W, w: 900, h: 600 })
   // true when this boot was the wreck swallowing the hero's paper plane:
   // the 3D room lays the dart on the bedroom rug as the other end of the trip
   const [planeInRoom, setPlaneInRoom] = useState(false)
@@ -565,6 +834,10 @@ export default function AlejOS({
   }, [wallpaper.src])
   const onLightWallpaper = Boolean(wallpaper.light)
   useSyncExternalStore(subscribeFs, getFsVersion)
+  const clip = useSyncExternalStore(subscribeClipboard, getClipboard)
+  const drag = useSyncExternalStore(subscribeDrag, getDrag)
+  const volume = useSyncExternalStore(subscribeVolume, getVolume)
+  const muted = useSyncExternalStore(subscribeVolume, isMuted)
   const desktopNodes = listDir(DESKTOP)
   const binCount = recycleBinCount()
 
@@ -590,6 +863,8 @@ export default function AlejOS({
         // leave the taskbar (h-12) plus a little breathing room at the bottom
         rows: Math.max(1, Math.floor((el.clientHeight - GRID_PAD - 56) / CELL_H)),
         cw: Math.min(CELL_W, Math.floor(avail / cols)),
+        w: el.clientWidth,
+        h: el.clientHeight,
       })
     }
     measure()
@@ -625,6 +900,107 @@ export default function AlejOS({
     sounds.click()
   }
 
+  // --- the desktop as a folder ---------------------------------------------
+  // Everything below treats C:\Desktop as what it is: a directory whose icons
+  // happen to be laid out on a grid. The same clipboard, the same drag store
+  // and the same undo history Explorer uses, so a file cut in a window really
+  // does paste out here.
+
+  /** fs paths behind the current selection; My Computer and the bin drop out */
+  const selectedPaths = (): string[] =>
+    [...selected].filter((id) => id.startsWith('fs:')).map((id) => joinPath(DESKTOP, id.slice(3)))
+
+  /** what a drag from this icon carries: the whole selection if it is in it */
+  const dragPathsFor = (id: string): string[] => {
+    if (!id.startsWith('fs:')) return []
+    const own = joinPath(DESKTOP, id.slice(3))
+    const sel = selectedPaths()
+    return selected.has(id) && sel.length > 1 ? sel : [own]
+  }
+
+  /**
+   * Where a drop on this icon goes. A folder swallows it; anything else
+   * hands it to the desktop behind it, because the icons cover most of the
+   * left edge of the screen and "you missed the gap between two icons" is
+   * not a thing a desktop should ever say. Dropping a desktop file onto
+   * another desktop file therefore resolves to a same-folder move, which
+   * canDrop rejects, which is what makes it fall through to a reposition.
+   */
+  const dropPathFor = (node: FsNode): string =>
+    node.kind === 'folder' ? joinPath(DESKTOP, node.name) : DESKTOP
+
+  const dropLit = (target: string | undefined) =>
+    Boolean(target && drag.active && drag.over === target && canDrop(drag.paths, target))
+
+  /**
+   * Let go of an icon. Over open desktop this is a reposition on the grid;
+   * over a folder, the bin or an open Explorer window it is a file move, and
+   * canDrop is what tells the two apart — a file dropped back on the desktop
+   * it already lives on is not a move, so it falls through to the grid.
+   */
+  const onIconDragEnd = (id: string, dx: number, dy: number, target: string | null, copy: boolean) => {
+    const paths = dragPathsFor(id)
+    if (target && paths.length && canDrop(paths, target)) {
+      const r = performDrop(paths, target, copy)
+      if (r.error) void alertBox('Move', r.error)
+      else if (r.done) {
+        sounds.open()
+        setSelected(new Set())
+      }
+      return
+    }
+    moveIcon(id, dx, dy)
+  }
+
+  /**
+   * The backstop. Every drag source settles its own drop (the icons here,
+   * the items in Explorer), and their pointerup bubbles through this handler
+   * with the store already cleared — so this normally does nothing. It exists
+   * for the one case they cannot cover: a source that is unmounted mid-drag,
+   * whose pointer never comes back up anywhere it can be heard, which would
+   * otherwise leave a ghost stuck to the cursor for the rest of the session.
+   */
+  const onDesktopDrop = (e: React.PointerEvent) => {
+    const d = getDrag()
+    if (!d.active) return
+    const target = dropTargetAt(e.clientX, e.clientY)
+    endDragStore()
+    if (target !== DESKTOP || !canDrop(d.paths, DESKTOP)) return
+    const r = performDrop(d.paths, DESKTOP, e.ctrlKey)
+    if (r.error) void alertBox('Move', r.error)
+    else if (r.done) sounds.open()
+  }
+
+  const deleteSelection = async () => {
+    const paths = selectedPaths()
+    if (paths.length === 0) return
+    const nodes = paths.map((p) => getNode(p)).filter(Boolean) as FsNode[]
+    const blocked = nodes.find((n) => n.system)
+    if (blocked) {
+      void alertBox('Delete File', `${blocked.name} ships with AlejOS and cannot be deleted.`, 'warn')
+      return
+    }
+    const what = paths.length === 1 ? `'${baseName(paths[0])}'` : `these ${paths.length} items`
+    if (!(await confirmBox('Confirm Delete', `Are you sure you want to send ${what} to the Recycle Bin?`)))
+      return
+    sounds.close()
+    for (const p of paths) {
+      const r = removeNode(p)
+      if (!r.ok) void alertBox('Delete File', r.error)
+    }
+    setSelected(new Set())
+  }
+
+  const pasteToDesktop = () => {
+    const r = paste(DESKTOP)
+    if (r.error) void alertBox('Paste', r.error)
+    else if (r.done) sounds.open()
+  }
+
+  const undoOnDesktop = () => {
+    if (undoLast()) sounds.click()
+  }
+
   /**
    * The machine is off for good: hand the address bar back to the site. On
    * /pc there is no site mounted underneath to hand it to, so the host is
@@ -642,6 +1018,8 @@ export default function AlejOS({
       setDownFrom(phase)
       setStartOpen(false)
       setMenu(null)
+      setTaskMenu(null)
+      closeAllDialogs()
       setDownMsg(false)
       setPhase('down')
       // the picture collapses to a bright line first, then the farewell text;
@@ -824,7 +1202,9 @@ export default function AlejOS({
         if (awayRef.current) leaveRoom()
         else if (startOpen) setStartOpen(false)
         else if (clockOpen) setClockOpen(false)
+        else if (volumeOpen) setVolumeOpen(false)
         else if (menu) setMenu(null)
+        else if (taskMenu) setTaskMenu(null)
         // in the room, esc means stand up; shutting down lives in the start menu
         else if (mode === '3d') standUp()
         else shutdown()
@@ -835,7 +1215,7 @@ export default function AlejOS({
       unlock()
       window.removeEventListener('keydown', onKey)
     }
-  }, [phase, startOpen, clockOpen, menu, mode, shutdown, leaveRoom, standUp])
+  }, [phase, startOpen, clockOpen, volumeOpen, menu, taskMenu, mode, shutdown, leaveRoom, standUp])
 
   const topZ = (list: OsWin[]) => list.reduce((max, w) => Math.max(max, w.z), 10)
 
@@ -888,13 +1268,22 @@ export default function AlejOS({
     setActiveId(id)
   }
 
-  const openPath = (path: string) => {
-    if (path === MY_COMPUTER) {
+  const openPath = (rawPath: string) => {
+    if (rawPath === MY_COMPUTER) {
       openApp('explorer', { path: MY_COMPUTER })
       return
     }
+    // a shortcut opens whatever it points at, not itself
+    const path = resolvePath(rawPath)
     const node = getNode(path)
-    if (!node) return
+    if (!node) {
+      void alertBox(
+        'Shortcut',
+        'The item this shortcut refers to has been changed or moved, so the shortcut no longer works.',
+        'warn',
+      )
+      return
+    }
     switch (node.kind) {
       case 'folder':
         openApp('explorer', { path })
@@ -916,6 +1305,10 @@ export default function AlejOS({
           window.open(node.url, '_blank', 'noreferrer')
         }
         break
+      case 'shortcut':
+        // resolvePath only hands one of these back when the chain loops
+        void alertBox('Shortcut', 'This shortcut points back at itself.', 'warn')
+        break
     }
   }
 
@@ -935,10 +1328,14 @@ export default function AlejOS({
   /** back to the welcome screen; `notice` explains an involuntary trip there */
   const logOff = useCallback((notice = '') => {
     sounds.close()
+    // a properties sheet left open over the login screen would outlive the
+    // session it was describing
+    closeAllDialogs()
     setWins([])
     setActiveId('')
     setStartOpen(false)
     setMenu(null)
+    setTaskMenu(null)
     setSelected(new Set())
     setSession(null)
     setViewer(null)
@@ -962,6 +1359,25 @@ export default function AlejOS({
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expire)
   }, [logOff])
 
+  // --- window management ----------------------------------------------------
+  // The taskbar's own menu, which is where XP kept the three commands that act
+  // on every window at once. Show Desktop remembers exactly what it minimised,
+  // so pressing it twice puts back what it took down and leaves alone the
+  // windows you had minimised yourself.
+
+  const tasks: OsTask[] = wins.map((w) => ({
+    id: w.id,
+    app: w.app,
+    title: w.title,
+    minimized: w.minimized,
+    active: activeId === w.id,
+  }))
+
+  const restoreWin = (id: string) => {
+    patchWin(id, { minimized: false })
+    focusWin(id)
+  }
+
   const osApi: OsApi = {
     session: session ?? { kind: 'guest', name: 'guest' },
     openApp: (app, props) => {
@@ -970,29 +1386,228 @@ export default function AlejOS({
     openPath,
     logOff: () => logOff(),
     shutdown: () => shutdown(),
+    tasks,
+    focusWindow: restoreWin,
+    closeWindow: closeWin,
   }
 
   const onTaskButton = (w: OsWin) => {
     sounds.click()
     if (w.minimized || activeId !== w.id) {
-      patchWin(w.id, { minimized: false })
-      focusWin(w.id)
+      restoreWin(w.id)
     } else {
       patchWin(w.id, { minimized: true })
     }
   }
 
+  const toggleShowDesktop = () => {
+    sounds.click()
+    if (hiddenByShowDesktop) {
+      const hidden = hiddenByShowDesktop
+      setHiddenByShowDesktop(null)
+      setWins((prev) => prev.map((w) => (hidden.includes(w.id) ? { ...w, minimized: false } : w)))
+      return
+    }
+    const open = wins.filter((w) => !w.minimized).map((w) => w.id)
+    if (open.length === 0) return
+    setHiddenByShowDesktop(open)
+    setWins((prev) => prev.map((w) => (open.includes(w.id) ? { ...w, minimized: true } : w)))
+  }
+
+  /** the area a window may occupy: the desktop minus the taskbar */
+  const stageSize = () => ({ w: grid.w, h: grid.h - 48 })
+
+  const cascadeWindows = () => {
+    sounds.click()
+    const { w: sw, h: sh } = stageSize()
+    let n = 0
+    setWins((prev) =>
+      prev.map((win) => {
+        if (win.minimized) return win
+        const step = 28 * n++
+        return {
+          ...win,
+          maximized: false,
+          x: 24 + step,
+          y: 18 + step,
+          w: Math.max(320, Math.min(win.w, sw - step - 60)),
+          h: Math.max(220, Math.min(win.h, sh - step - 40)),
+        }
+      }),
+    )
+  }
+
+  const tileWindows = () => {
+    sounds.click()
+    const { w: sw, h: sh } = stageSize()
+    const open = wins.filter((w) => !w.minimized)
+    if (open.length === 0) return
+    const cols = Math.ceil(Math.sqrt(open.length))
+    const rows = Math.ceil(open.length / cols)
+    const cw = Math.floor(sw / cols)
+    const ch = Math.floor(sh / rows)
+    const at = new Map(open.map((w, i) => [w.id, i]))
+    setWins((prev) =>
+      prev.map((win) => {
+        const i = at.get(win.id)
+        if (i === undefined) return win
+        return {
+          ...win,
+          maximized: false,
+          x: (i % cols) * cw,
+          y: Math.floor(i / cols) * ch,
+          w: Math.max(320, cw - 4),
+          h: Math.max(220, ch - 4),
+        }
+      }),
+    )
+  }
+
+  const taskbarMenuItems = (): MenuItem[] => [
+    { label: 'Cascade Windows', disabled: wins.length === 0, onClick: cascadeWindows },
+    { label: 'Tile Windows', disabled: wins.length === 0, onClick: tileWindows },
+    {
+      label: hiddenByShowDesktop ? 'Show Open Windows' : 'Show the Desktop',
+      onClick: toggleShowDesktop,
+    },
+    { divider: true },
+    { label: 'Task Manager', onClick: () => openApp('taskmgr') },
+    { divider: true },
+    { label: 'Properties', onClick: () => openApp('display') },
+  ]
+
+  const taskButtonMenuItems = (w: OsWin): MenuItem[] => [
+    { label: 'Restore', disabled: !w.minimized && !w.maximized, onClick: () => restoreWin(w.id) },
+    {
+      label: 'Minimize',
+      disabled: w.minimized,
+      onClick: () => patchWin(w.id, { minimized: true }),
+    },
+    {
+      label: 'Maximize',
+      disabled: w.maximized,
+      onClick: () => {
+        patchWin(w.id, { maximized: true, minimized: false })
+        focusWin(w.id)
+      },
+    },
+    { divider: true },
+    { label: 'Close', bold: true, shortcut: 'Alt+F4', onClick: () => closeWin(w.id) },
+  ]
+
+  /*
+    Alt+Tab, in the order a real one uses: most recently focused first, so the
+    first press flips between the two windows you are actually working in.
+    Some desktop environments eat the combination before the browser sees it,
+    which is out of our hands and costs nothing when it happens — the
+    switcher simply never opens. Ctrl+Shift+Esc is unclaimed everywhere and
+    rides along here as the other way in.
+  */
+  const zOrder = [...wins].sort((a, b) => b.z - a.z)
+
+  useEffect(() => {
+    if (phase !== 'on' || away) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'Escape') {
+        e.preventDefault()
+        openApp('taskmgr')
+        return
+      }
+      if (e.key !== 'Tab' || !e.altKey) return
+      e.preventDefault()
+      if (zOrder.length < 2) return
+      const n = zOrder.length
+      setSwitcher((i) => (i === null ? (e.shiftKey ? n - 1 : 1) : (i + (e.shiftKey ? -1 : 1) + n) % n))
+    }
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key !== 'Alt') return
+      setSwitcher((i) => {
+        if (i !== null && zOrder[i]) restoreWin(zOrder[i].id)
+        return null
+      })
+    }
+    const drop = () => setSwitcher(null)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onUp)
+    window.addEventListener('blur', drop)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onUp)
+      window.removeEventListener('blur', drop)
+    }
+    // deliberately re-bound every render: the handlers close over the current
+    // z-order, and a stale one would tab to whatever was on top a while ago
+  })
+
+  /*
+    The tip balloon, once per browser and then never again — the same
+    localStorage this machine keeps its files, its wallpaper and its icon
+    arrangement in. Per *session* would have been the easier flag and the
+    wrong one: a returning visitor already knows the icons drag, and being
+    told a second time reads as the site not remembering them.
+
+    The flag is written when the balloon actually appears rather than when
+    this effect runs, so a visitor who logs in and shuts down inside three
+    seconds has not silently spent their one showing.
+  */
+  useEffect(() => {
+    if (phase !== 'on' || away) return
+    try {
+      if (localStorage.getItem(TIP_KEY) === 'seen') return
+    } catch {
+      /* storage unavailable: it shows once per boot instead */
+    }
+    const show = window.setTimeout(() => {
+      setBalloon(true)
+      try {
+        localStorage.setItem(TIP_KEY, 'seen')
+      } catch {
+        /* storage unavailable */
+      }
+    }, 2600)
+    const hide = window.setTimeout(() => setBalloon(false), 13_000)
+    return () => {
+      window.clearTimeout(show)
+      window.clearTimeout(hide)
+    }
+  }, [phase, away])
+
   // --- desktop marquee selection (that blue thing) -------------------------
+  // Client pixels are not desktop pixels on the 3D CRT, which draws the whole
+  // screen DOM through a CSS3D transform: every conversion here divides by the
+  // scale the desktop is actually being drawn at, or the box lands somewhere
+  // other than under the cursor and selects the wrong icons.
+  const localScale = () => {
+    const root = desktopRef.current
+    if (!root) return 1
+    return root.getBoundingClientRect().width / root.offsetWidth || 1
+  }
+
+  /** viewport px to desktop px: where the ghost has to be drawn */
+  const toLocal = (x: number, y: number) => {
+    const root = desktopRef.current
+    if (!root) return { x, y }
+    const rect = root.getBoundingClientRect()
+    const scale = localScale()
+    return { x: (x - rect.left) / scale, y: (y - rect.top) / scale }
+  }
+
   const onDesktopPointerDown = (e: React.PointerEvent) => {
     if (!(e.target as HTMLElement).closest('[data-desktop-bg]')) return
+    desktopRef.current?.focus({ preventScroll: true })
     setStartOpen(false)
     setMenu(null)
+    setTaskMenu(null)
     setSelected(new Set())
     if (e.pointerType !== 'mouse' || e.button !== 0) return
     const root = desktopRef.current
     if (!root) return
     const rect = root.getBoundingClientRect()
-    marqueeOriginRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    const scale = localScale()
+    marqueeOriginRef.current = {
+      x: (e.clientX - rect.left) / scale,
+      y: (e.clientY - rect.top) / scale,
+    }
     root.setPointerCapture(e.pointerId)
   }
 
@@ -1001,8 +1616,9 @@ export default function AlejOS({
     const root = desktopRef.current
     if (!origin || !root) return
     const rect = root.getBoundingClientRect()
-    const cx = Math.min(Math.max(e.clientX - rect.left, 0), rect.width)
-    const cy = Math.min(Math.max(e.clientY - rect.top, 0), rect.height)
+    const scale = localScale()
+    const cx = Math.min(Math.max((e.clientX - rect.left) / scale, 0), root.clientWidth)
+    const cy = Math.min(Math.max((e.clientY - rect.top) / scale, 0), root.clientHeight)
     const m: Rect = {
       x: Math.min(origin.x, cx),
       y: Math.min(origin.y, cy),
@@ -1013,9 +1629,14 @@ export default function AlejOS({
     const hits = new Set<string>()
     root.querySelectorAll<HTMLElement>('[data-icon]').forEach((node) => {
       const r = node.getBoundingClientRect()
-      const left = r.left - rect.left
-      const top = r.top - rect.top
-      if (left < m.x + m.w && left + r.width > m.x && top < m.y + m.h && top + r.height > m.y) {
+      const left = (r.left - rect.left) / scale
+      const top = (r.top - rect.top) / scale
+      if (
+        left < m.x + m.w &&
+        left + r.width / scale > m.x &&
+        top < m.y + m.h &&
+        top + r.height / scale > m.y
+      ) {
         hits.add(node.dataset.icon as string)
       }
     })
@@ -1035,10 +1656,80 @@ export default function AlejOS({
     if (!iconEl && !target.closest('[data-desktop-bg]')) return
     e.preventDefault()
     const rect = root.getBoundingClientRect()
+    const scale = rect.width / root.offsetWidth || 1
     setStartOpen(false)
     const icon = iconEl?.dataset.icon ?? null
-    if (icon) setSelected(new Set([icon]))
-    setMenu({ x: e.clientX - rect.left, y: e.clientY - rect.top, icon })
+    // right-clicking inside a multi-selection keeps it, so "Delete" can mean
+    // all four of them; right-clicking outside one replaces it
+    if (icon && !selected.has(icon)) setSelected(new Set([icon]))
+    setMenu({ x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale, icon })
+  }
+
+  /*
+    Keyboard file management, but only when the desktop itself has the
+    keyboard. Every window in AlejOS lives inside this same div, so an
+    unguarded Delete here would also fire while someone is editing a file in
+    Notepad — the guard is that the event has to have come from the desktop
+    root or from an icon on it.
+  */
+  const onDesktopKeyDown = (e: React.KeyboardEvent) => {
+    if (renamingIcon) return
+    const t = e.target as HTMLElement
+    const mine = t === desktopRef.current || Boolean(t.closest('[data-icon]'))
+    if (!mine) return
+    const ctrl = e.ctrlKey || e.metaKey
+    const paths = selectedPaths()
+    if (ctrl && e.key.toLowerCase() === 'a') {
+      e.preventDefault()
+      setSelected(new Set(iconIds))
+      return
+    }
+    if (ctrl && e.key.toLowerCase() === 'c' && paths.length) {
+      e.preventDefault()
+      clipCopy(paths)
+      return
+    }
+    if (ctrl && e.key.toLowerCase() === 'x' && paths.length) {
+      e.preventDefault()
+      clipCut(paths.filter((p) => !getNode(p)?.system))
+      return
+    }
+    if (ctrl && e.key.toLowerCase() === 'v') {
+      e.preventDefault()
+      pasteToDesktop()
+      return
+    }
+    if (ctrl && e.key.toLowerCase() === 'z') {
+      e.preventDefault()
+      undoOnDesktop()
+      return
+    }
+    if (e.key === 'F5') {
+      e.preventDefault()
+      refreshDesktop()
+      return
+    }
+    if (e.key === 'F2' && selected.size === 1) {
+      const only = [...selected][0]
+      if (only.startsWith('fs:') && !getNode(joinPath(DESKTOP, only.slice(3)))?.system) {
+        e.preventDefault()
+        setRenamingIcon(only)
+      }
+      return
+    }
+    if (e.key === 'Delete' && paths.length) {
+      e.preventDefault()
+      void deleteSelection()
+      return
+    }
+    if (e.key === 'Enter' && selected.size === 1) {
+      const only = [...selected][0]
+      e.preventDefault()
+      if (only === 'my-computer') openApp('explorer', { path: MY_COMPUTER })
+      else if (only === 'recycle-bin') openApp('explorer', { path: RECYCLE_BIN })
+      else if (only === 'exit') exitToSite()
+      else if (only.startsWith('fs:')) openPath(joinPath(DESKTOP, only.slice(3)))
+    }
   }
 
   const commitIconRename = (node: FsNode, next: string) => {
@@ -1081,11 +1772,33 @@ export default function AlejOS({
         { label: 'Modified', onClick: () => { commitIconPos({}); sortChildren(DESKTOP, 'modified') } },
       ],
     },
-    { label: 'Refresh', onClick: refreshDesktop },
+    { label: 'Refresh', shortcut: 'F5', onClick: refreshDesktop },
     { divider: true },
-    { label: 'Paste', disabled: true },
-    { label: 'Paste Shortcut', disabled: true },
-    { label: 'Undo Delete', disabled: true },
+    {
+      label: 'Paste',
+      shortcut: 'Ctrl+V',
+      disabled: !canPasteInto(DESKTOP),
+      onClick: pasteToDesktop,
+    },
+    {
+      label: 'Paste Shortcut',
+      disabled: clip.paths.length === 0,
+      onClick: () => {
+        let made = false
+        for (const p of clip.paths) {
+          const r = createShortcut(p, DESKTOP)
+          if (!r.ok) void alertBox('Create Shortcut', r.error)
+          else made = true
+        }
+        if (made) sounds.open()
+      },
+    },
+    {
+      label: undoLabel() ? `Undo ${undoLabel()}` : 'Undo',
+      shortcut: 'Ctrl+Z',
+      disabled: !undoLabel(),
+      onClick: undoOnDesktop,
+    },
     { divider: true },
     {
       label: 'New',
@@ -1110,25 +1823,42 @@ export default function AlejOS({
     { label: 'Properties', onClick: () => openApp('display') },
   ]
 
+  const emptyBin = async () => {
+    if (binCount === 0) return
+    const ok = await confirmBox(
+      'Confirm Delete',
+      `Are you sure you want to permanently delete ${
+        binCount === 1 ? 'this item' : `these ${binCount} items`
+      }?`,
+      { icon: 'warn' },
+    )
+    if (!ok) return
+    sounds.close()
+    emptyRecycleBin()
+  }
+
   const iconMenuItems = (icon: string): MenuItem[] => {
     if (icon === 'my-computer') {
       return [
         { label: 'Open', bold: true, onClick: () => openApp('explorer', { path: MY_COMPUTER }) },
+        { label: 'Explore', onClick: () => openApp('explorer', { path: 'C:' }) },
         { divider: true },
-        { label: 'Properties', onClick: () => openApp('display') },
+        { label: 'Manage', onClick: () => openApp('taskmgr') },
+        {
+          label: 'Properties',
+          onClick: () => showProperties('', session?.name ?? 'guest'),
+        },
       ]
     }
     if (icon === 'recycle-bin') {
       return [
         { label: 'Open', bold: true, onClick: () => openApp('explorer', { path: RECYCLE_BIN }) },
         { divider: true },
+        { label: 'Empty Recycle Bin', disabled: binCount === 0, onClick: () => void emptyBin() },
+        { divider: true },
         {
-          label: 'Empty Recycle Bin',
-          disabled: binCount === 0,
-          onClick: () => {
-            sounds.close()
-            emptyRecycleBin()
-          },
+          label: 'Properties',
+          onClick: () => showProperties(RECYCLE_BIN, session?.name ?? 'guest'),
         },
       ]
     }
@@ -1139,18 +1869,41 @@ export default function AlejOS({
     const node = desktopNodes.find((n) => n.name === name)
     if (!node) return []
     const full = joinPath(DESKTOP, node.name)
+    const many = selectedPaths().length > 1 && selected.has(icon)
+    const targets = many ? selectedPaths() : [full]
+    const allMine = targets.every((p) => !getNode(p)?.system)
     return [
-      { label: 'Open', bold: true, onClick: () => openPath(full) },
+      { label: 'Open', bold: true, disabled: many, onClick: () => openPath(full) },
       { divider: true },
-      { label: 'Rename', disabled: node.system, onClick: () => setRenamingIcon(icon) },
+      { label: 'Cut', shortcut: 'Ctrl+X', disabled: !allMine, onClick: () => clipCut(targets) },
+      { label: 'Copy', shortcut: 'Ctrl+C', onClick: () => clipCopy(targets) },
+      {
+        label: 'Create Shortcut',
+        onClick: () => {
+          for (const p of targets) {
+            const r = createShortcut(p, DESKTOP)
+            if (!r.ok) void alertBox('Create Shortcut', r.error)
+          }
+        },
+      },
+      { divider: true },
+      {
+        label: 'Rename',
+        shortcut: 'F2',
+        disabled: node.system || many,
+        onClick: () => setRenamingIcon(icon),
+      },
       {
         label: 'Delete',
-        disabled: node.system,
-        onClick: () => {
-          const r = removeNode(full)
-          if (!r.ok) sounds.error()
-          else sounds.close()
-        },
+        shortcut: 'Del',
+        disabled: !allMine,
+        onClick: () => void deleteSelection(),
+      },
+      { divider: true },
+      {
+        label: 'Properties',
+        disabled: many,
+        onClick: () => showProperties(full, session?.name ?? 'guest'),
       },
     ]
   }
@@ -1160,17 +1913,28 @@ export default function AlejOS({
   const desktop = (
     <div
       ref={desktopRef}
-      className="relative h-full select-none"
+      tabIndex={-1}
+      data-no-focus-ring
+      className="relative h-full outline-none select-none"
       onPointerDown={onDesktopPointerDown}
       onPointerMove={onDesktopPointerMove}
-      onPointerUp={endMarquee}
+      onPointerUp={(e) => {
+        endMarquee()
+        onDesktopDrop(e)
+      }}
       onPointerCancel={endMarquee}
       onContextMenu={onDesktopContextMenu}
+      onKeyDown={onDesktopKeyDown}
     >
+      {/* the wallpaper doubles as the desktop's drop target: anything let go
+          over open ground lands in C:\Desktop */}
       <div
         aria-hidden
         data-desktop-bg="true"
-        className="absolute inset-0 bg-cover bg-center"
+        data-drop-path={DESKTOP}
+        className={`absolute inset-0 bg-cover bg-center ${
+          dropLit(DESKTOP) ? 'ring-4 ring-blue-400/70 ring-inset' : ''
+        }`}
         style={
           wallpaper.src
             ? { backgroundImage: `url(${wallpaper.src})` }
@@ -1190,12 +1954,14 @@ export default function AlejOS({
           cw={grid.cw}
           selected={selected.has('my-computer')}
           onLight={onLightWallpaper}
+          dropPath={DESKTOP}
           onSelect={() => setSelected(new Set(['my-computer']))}
           onOpen={() => openApp('explorer', { path: MY_COMPUTER })}
           onDragEnd={(dx, dy) => moveIcon('my-computer', dx, dy)}
         />
         {desktopNodes.map((node) => {
           const id = `fs:${node.name}`
+          const full = joinPath(DESKTOP, node.name)
           return (
             <DesktopIcon
               key={id}
@@ -1203,14 +1969,18 @@ export default function AlejOS({
               label={node.name}
               glyph={glyphFor(node, 34)}
               cell={iconCells[id]}
-          cw={grid.cw}
+              cw={grid.cw}
               selected={selected.has(id)}
               renaming={renamingIcon === id}
               onLight={onLightWallpaper}
+              dropPath={dropPathFor(node)}
+              dropLit={dropLit(dropPathFor(node))}
+              dimmed={isCut(full)}
+              dragPaths={dragPathsFor(id)}
               onSelect={() => setSelected(new Set([id]))}
-              onOpen={() => openPath(joinPath(DESKTOP, node.name))}
+              onOpen={() => openPath(full)}
               onRename={(next) => commitIconRename(node, next)}
-              onDragEnd={(dx, dy) => moveIcon(id, dx, dy)}
+              onDragEnd={(dx, dy, target, copy) => onIconDragEnd(id, dx, dy, target, copy)}
             />
           )
         })}
@@ -1222,6 +1992,8 @@ export default function AlejOS({
           cw={grid.cw}
           selected={selected.has('recycle-bin')}
           onLight={onLightWallpaper}
+          dropPath={RECYCLE_BIN}
+          dropLit={dropLit(RECYCLE_BIN)}
           onSelect={() => setSelected(new Set(['recycle-bin']))}
           onOpen={() => openApp('explorer', { path: RECYCLE_BIN })}
           onDragEnd={(dx, dy) => moveIcon('recycle-bin', dx, dy)}
@@ -1234,6 +2006,7 @@ export default function AlejOS({
           cw={grid.cw}
           selected={selected.has('exit')}
           onLight={onLightWallpaper}
+          dropPath={DESKTOP}
           onSelect={() => setSelected(new Set(['exit']))}
           onOpen={exitToSite}
           onDragEnd={(dx, dy) => moveIcon('exit', dx, dy)}
@@ -1273,6 +2046,12 @@ export default function AlejOS({
           </Window>
         ))}
       </div>
+
+      {/* what the cursor is carrying, when the source is not carrying itself:
+          drawn above the windows so a file dragged across one stays visible,
+          and never hit-testable, since it sits exactly where the drop target
+          has to be found */}
+      {drag.active && drag.ghost && <DragGhost drag={drag} toLocal={toLocal} />}
 
       {/* right-click menus: the XP desktop kit, or the icon's own menu */}
       <AnimatePresence>
@@ -1358,6 +2137,24 @@ export default function AlejOS({
                 <li>
                   <button
                     type="button"
+                    onClick={() => {
+                      setStartOpen(false)
+                      showRunDialog({
+                        openApp: (app, props) => {
+                          if (isAppId(app)) openApp(app, props)
+                        },
+                        openPath,
+                      })
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
+                  >
+                    <PlayIcon size={18} weight="fill" className="text-blue-700" />
+                    Run…
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
                     onClick={() => logOff()}
                     className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-stone-700 hover:bg-blue-600/10"
                   >
@@ -1406,8 +2203,97 @@ export default function AlejOS({
         )}
       </AnimatePresence>
 
+      {/* clicking anywhere else puts the volume panel away; the panel itself
+          lives up in the tray, anchored over the speaker it belongs to */}
+      {volumeOpen && (
+        <button
+          type="button"
+          aria-label="Close volume"
+          onClick={() => setVolumeOpen(false)}
+          className="absolute inset-0 cursor-default"
+        />
+      )}
+
+      {/* the tray balloon: one tip per session, pointing at the desktop it
+          is describing */}
+      <AnimatePresence>
+        {balloon && (
+          <motion.div
+            initial={{ opacity: 0, y: 10, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 10, scale: 0.96 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            // click-through except for its own close button: it sits over the
+            // bottom-left corner of the desktop for thirteen seconds, and a
+            // tip that eats a drop is worse than no tip
+            className="pointer-events-none absolute bottom-14 left-3 z-[5000] w-64 rounded-lg border border-stone-400 bg-[#ffffe1] p-3 shadow-xl shadow-stone-950/40"
+          >
+            <div className="flex items-start gap-2">
+              <span className="mt-0.5 shrink-0">{xpIcon('folder', 16)}</span>
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold text-stone-800">This is a real desktop</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-stone-600">
+                  Drag files between the desktop and any window, drop them on the Recycle Bin, cut
+                  and paste them, right-click anything. Everything you make stays in your browser.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close tip"
+                onClick={() => setBalloon(false)}
+                className="pointer-events-auto -mt-1 -mr-1 shrink-0 cursor-pointer rounded-sm p-0.5 text-stone-500 hover:bg-stone-950/10 hover:text-stone-800"
+              >
+                <XIcon size={11} weight="bold" />
+              </button>
+            </div>
+            {/* the tail, pointing down at the taskbar */}
+            <span className="absolute -bottom-[7px] left-8 size-3 rotate-45 border-r border-b border-stone-400 bg-[#ffffe1]" />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Alt+Tab */}
+      {switcher !== null && zOrder.length > 1 && (
+        <div className="absolute inset-0 z-[7000] flex items-center justify-center">
+          <div className="rounded-lg border border-blue-900 bg-stone-100/95 p-4 shadow-2xl shadow-stone-950/50">
+            <div className="flex flex-wrap justify-center gap-2">
+              {zOrder.map((w, i) => (
+                <span
+                  key={w.id}
+                  className={`flex size-14 items-center justify-center rounded-md border ${
+                    i === switcher ? 'border-blue-700 bg-blue-600/20' : 'border-transparent'
+                  }`}
+                >
+                  <span className="[&_img]:size-8 [&_svg]:size-8">{w.icon}</span>
+                </span>
+              ))}
+            </div>
+            <p className="mt-2 text-center text-xs text-stone-700">
+              {zOrder[switcher]?.title ?? ''}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* taskbar */}
-      <div className="os-taskbar absolute inset-x-0 bottom-0 z-[4000] flex h-12 items-stretch">
+      <div
+        className="os-taskbar absolute inset-x-0 bottom-0 z-[4000] flex h-12 items-stretch"
+        onContextMenu={(e) => {
+          const root = desktopRef.current
+          if (!root) return
+          e.preventDefault()
+          const rect = root.getBoundingClientRect()
+          const scale = localScale()
+          const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-task-win]')
+          setStartOpen(false)
+          setMenu(null)
+          setTaskMenu({
+            x: (e.clientX - rect.left) / scale,
+            y: (e.clientY - rect.top) / scale,
+            win: btn?.dataset.taskWin ?? null,
+          })
+        }}
+      >
         <button
           type="button"
           aria-label="Start"
@@ -1416,6 +2302,7 @@ export default function AlejOS({
             sounds.click()
             setMenu(null)
             setClockOpen(false)
+            setVolumeOpen(false)
             setStartOpen((o) => !o)
           }}
           className="os-start font-xp flex shrink-0 cursor-pointer items-center gap-1.5 pr-7 pl-2 text-xl font-semibold text-white italic"
@@ -1423,11 +2310,39 @@ export default function AlejOS({
           <AlejLogo size={30} outlined />
           start
         </button>
+
+        {/* quick launch, XP's own strip: show desktop plus the two things
+            people reach for most */}
+        <div className="hidden shrink-0 items-center gap-0.5 border-r border-white/20 px-1.5 sm:flex">
+          <button
+            type="button"
+            aria-label="Show the desktop"
+            title="Show the desktop"
+            onClick={toggleShowDesktop}
+            className="flex size-7 cursor-pointer items-center justify-center rounded-sm text-white/85 hover:bg-white/20 hover:text-white"
+          >
+            <SquaresFourIcon size={15} weight="bold" />
+          </button>
+          {(['browser', 'paint', 'terminal'] as AppId[]).map((app) => (
+            <button
+              key={app}
+              type="button"
+              aria-label={APPS[app].name}
+              title={APPS[app].name}
+              onClick={() => openApp(app)}
+              className="flex size-7 cursor-pointer items-center justify-center rounded-sm hover:bg-white/20"
+            >
+              {APPS[app].glyph(16)}
+            </button>
+          ))}
+        </div>
+
         <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-[5px]">
           {wins.map((w) => (
             <button
               key={w.id}
               type="button"
+              data-task-win={w.id}
               onClick={() => onTaskButton(w)}
               data-active={activeId === w.id && !w.minimized}
               className="os-task flex h-full min-w-0 max-w-44 cursor-pointer items-center gap-1.5 px-2 text-xs text-white"
@@ -1437,12 +2352,48 @@ export default function AlejOS({
             </button>
           ))}
         </div>
-        <div className="os-tray flex items-center gap-2 pr-2.5 pl-3.5">
+        <div className="os-tray flex items-center gap-1 pr-2.5 pl-3.5">
+          <div className="relative">
+            <button
+              type="button"
+              aria-label={muted ? 'Unmute' : 'Volume'}
+              data-open={volumeOpen}
+              onClick={() => {
+                sounds.click()
+                setStartOpen(false)
+                setClockOpen(false)
+                setVolumeOpen((o) => !o)
+              }}
+              className="flex cursor-pointer rounded-md p-1.5 text-white/85 transition-colors hover:bg-white/20 hover:text-white data-[open=true]:bg-white/20"
+            >
+              {muted || volume === 0 ? (
+                <SpeakerSlashIcon size={15} weight="bold" />
+              ) : (
+                <SpeakerHighIcon size={15} weight="bold" />
+              )}
+            </button>
+            <AnimatePresence>
+              {volumeOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 6 }}
+                  transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }}
+                  role="dialog"
+                  aria-label="Volume"
+                  className="absolute right-0 bottom-[calc(100%+10px)] z-[5000]"
+                >
+                  <VolumeFlyout />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
           <Clock
             open={clockOpen}
             onToggle={() => {
               sounds.click()
               setStartOpen(false)
+              setVolumeOpen(false)
               setMenu(null)
               setClockOpen((o) => !o)
             }}
@@ -1457,6 +2408,31 @@ export default function AlejOS({
           </button>
         </div>
       </div>
+
+      {/* the taskbar's own menus: one for a window button, one for the bar */}
+      <AnimatePresence>
+        {taskMenu && (
+          <ContextMenu
+            items={
+              taskMenu.win
+                ? (() => {
+                    const w = wins.find((x) => x.id === taskMenu.win)
+                    return w ? taskButtonMenuItems(w) : taskbarMenuItems()
+                  })()
+                : taskbarMenuItems()
+            }
+            x={taskMenu.x}
+            y={taskMenu.y}
+            onClose={() => setTaskMenu(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* modal boxes sit above the windows and below nothing */}
+      <DialogLayer />
+
+      {/* and the stars, when nobody has touched the machine for a while */}
+      <ScreensaverLayer enabled={phase === 'on' && !away} />
     </div>
   )
 

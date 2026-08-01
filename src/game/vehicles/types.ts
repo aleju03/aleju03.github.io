@@ -143,8 +143,11 @@ export interface Vehicle {
   /** the camera rules for this machine */
   view: DriveView
   /** local attachment for the live player rig while this machine is occupied.
-      Its origin is the seated avatar's pelvis and it inherits every attitude
-      transform the driver should ride (the car body, the boat hull, etc.) */
+      Its origin is the seated avatar's *eye*: `playerBody.sit()` hangs the
+      fold from there, so this is the same height as `view.eye` below and a
+      body that changes size can never put its head through a roof. It also
+      inherits every attitude transform the driver should ride (the car body,
+      the boat hull, etc.) */
   driverSeat: THREE.Object3D
   /** the same, for the chair without the controls. Whoever is in it — a
       remote player's avatar or the local one — rides exactly the same

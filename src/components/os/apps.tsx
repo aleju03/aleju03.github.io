@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { GaugeIcon } from '@phosphor-icons/react'
 import { TerminalView } from '../Terminal'
 import { isXpIconName, xpIcon } from './xpIcon'
 import { ExplorerApp } from './ExplorerApp'
@@ -10,6 +11,7 @@ import { MinesweeperApp } from './MinesweeperApp'
 import { PaintApp } from './PaintApp'
 import { DisplayApp } from './DisplayApp'
 import { PeekoApp } from './PeekoApp'
+import { TaskManagerApp } from './TaskManagerApp'
 import { PongApp } from './games/PongApp'
 import { SnakeApp } from './games/SnakeApp'
 import { MemoryApp } from './games/MemoryApp'
@@ -19,6 +21,7 @@ import { FlappyApp } from './games/FlappyApp'
 import { VsrgApp } from './games/VsrgApp'
 import { SolitaireApp } from './games/SolitaireApp'
 import { MineDuelApp } from './games/MineDuelApp'
+import { getNode, resolvePath } from './fs'
 import type { FsNode } from './fs'
 
 /*
@@ -39,6 +42,7 @@ export type AppId =
   | 'minesweeper'
   | 'paint'
   | 'display'
+  | 'taskmgr'
   | 'peeko'
   | 'pong'
   | 'snake'
@@ -90,6 +94,7 @@ export const APPS: Record<AppId, AppDef> = {
       <NotepadApp
         path={typeof ctx.props.path === 'string' ? ctx.props.path : undefined}
         setTitle={ctx.setTitle}
+        close={ctx.close}
       />
     ),
   },
@@ -161,6 +166,16 @@ export const APPS: Record<AppId, AppDef> = {
     single: true,
     render: (ctx) => <DisplayApp close={ctx.close} />,
   },
+  taskmgr: {
+    name: 'Task Manager',
+    // no shell32 icon says "task manager" at 48px, and this one is not
+    // pretending to be period software the way Paint and Minesweeper are
+    glyph: (s) => <GaugeIcon size={s} weight="fill" className="text-blue-700" />,
+    w: 460,
+    h: 480,
+    single: true,
+    render: () => <TaskManagerApp />,
+  },
   peeko: {
     name: 'peeko',
     // its own mascot rather than an XP icon: nothing in shell32 says
@@ -231,9 +246,10 @@ export const APPS: Record<AppId, AppDef> = {
     render: () => <FlappyApp />,
   },
   vsrg: {
+    // wide enough that a seven-lane chart still gets full-size receptors
     name: 'Rhythm Keys',
     glyph: (s) => xpIcon('vsrg', s),
-    w: 540,
+    w: 580,
     h: 580,
     single: true,
     render: () => <VsrgApp />,
@@ -261,6 +277,31 @@ export function isAppId(id: string | undefined): id is AppId {
   return Boolean(id && id in APPS)
 }
 
+/*
+  The shortcut arrow. XP stamped a small white tile with a curled arrow over
+  the bottom-left of whatever the shortcut pointed at, and that badge is the
+  only thing telling you the icon is a pointer rather than the file — so it
+  is drawn rather than downloaded, at a size that follows the icon it sits on.
+*/
+function shortcutBadge(size: number): ReactNode {
+  const s = Math.max(9, Math.round(size * 0.42))
+  return (
+    <span className="absolute bottom-0 left-0" style={{ width: s, height: s }}>
+      <svg viewBox="0 0 16 16" width={s} height={s} aria-hidden>
+        <rect x="0.5" y="0.5" width="15" height="15" fill="#fff" stroke="#6b7280" strokeWidth="1" />
+        <path
+          d="M4.5 12.5 V7.8 A2.6 2.6 0 0 1 7.1 5.2 H11"
+          fill="none"
+          stroke="#1c1917"
+          strokeWidth="1.6"
+          strokeLinecap="square"
+        />
+        <path d="M8.8 2.6 L12.4 5.2 L8.8 7.8 Z" fill="#1c1917" />
+      </svg>
+    </span>
+  )
+}
+
 /** icon for a filesystem node, shared by the desktop and Explorer */
 export function glyphFor(node: FsNode | null, size: number): ReactNode {
   const folder = xpIcon('folder', size)
@@ -276,5 +317,15 @@ export function glyphFor(node: FsNode | null, size: number): ReactNode {
       return xpIcon('url', size)
     case 'app':
       return isAppId(node.app) ? APPS[node.app].glyph(size) : folder
+    case 'shortcut': {
+      // resolve first: a shortcut to a shortcut would otherwise recurse here
+      const target = node.target ? getNode(resolvePath(node.target)) : null
+      return (
+        <span className="relative inline-block leading-none">
+          {glyphFor(target, size)}
+          {shortcutBadge(size)}
+        </span>
+      )
+    }
   }
 }

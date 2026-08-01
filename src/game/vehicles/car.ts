@@ -1697,18 +1697,26 @@ export function buildCar(opts: CarOpts): Vehicle {
      visible product of the suspension */
   const body = new THREE.Group()
   body.add(shell, driver, steerWheel)
-  // The real player rig is attached here while occupied. Unlike `root`, this
-  // group carries the suspension's pitch and roll, so the driver rides the
-  // body instead of staying uncannily level while the car moves underneath.
+  /* The real player rig is attached here while occupied. Unlike `root`, this
+     group carries the suspension's pitch and roll, so the driver rides the
+     body instead of staying uncannily level while the car moves underneath.
+
+     Its y is the seated body's *face*, not its hips (`playerBody.sit()`
+     hangs the fold from the eye), which is why it is the same 2.05 the
+     cockpit lens below uses: the lens sits at the avatar's face, so the two
+     numbers were always meant to be one. The hips end up around 0.4, sunk
+     through a cushion drawn at 1.00. This cabin is 1.65 tall inside and a
+     body is 2.06 from hip to crown, so something has to give, and the head
+     under the headliner is the half that anyone can see. */
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(DX, 0.88, 0.62)
+  driverSeat.position.set(DX, 2.05, 0.62)
   body.add(driverSeat)
   // the other side of the same bench: this is left-hand drive, so the mirror
   // of the driver's centreline is the passenger's
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(-DX, 0.88, 0.62)
+  passengerSeat.position.set(-DX, 2.05, 0.62)
   body.add(passengerSeat)
   root.add(body)
 

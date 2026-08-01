@@ -1,5 +1,7 @@
 import * as THREE from 'three'
-import { buildPlayerBody, type PlayerPose, type PlayerRig } from '../player/playerBody'
+import {
+  DESIGN_CROWN, DESIGN_EYE, buildPlayerBody, type PlayerPose, type PlayerRig,
+} from '../player/playerBody'
 import { unpackLook } from '../player/look'
 import type { RagdollEnv } from '../player/ragdoll'
 import { makeCollisionSet, type CollisionSet } from '../physics/collision'
@@ -85,9 +87,33 @@ const CULL_DIST = 190
 const CULL_DIST_SQ = CULL_DIST * CULL_DIST
 /** how long a chat line hangs over the head that said it */
 const BUBBLE_MS = 7_000
-const NAME_H = 0.42 // world units; the body is ~3.5 tall
-const BADGE_H = 0.5
-const BUBBLE_H = 0.4
+
+/*
+  What floats over a head, in the rig's own design units.
+
+  These are children of the body's group, which is *scaled* (see
+  `bodyScale`), so a height in world units gets multiplied by that scale on
+  its way to the screen and lands somewhere other than where it was written.
+  Written in design units they mean what they say, and, the point of it,
+  they can be stacked off DESIGN_CROWN, the actual top of the actual head,
+  instead of off a fraction of the eye height that happened to look right at
+  one body size. The badge used to sit two units clear of the crown, which is
+  a speaker glyph hanging in the sky over somebody.
+*/
+const NAME_H = 0.3
+const BADGE_H = 0.3
+const BUBBLE_H = 0.28
+/** the plate clears the antenna, the badge sits on the plate, the bubble on
+    the badge, each a hair apart, all measured from the crown up */
+const NAME_UP = 0.26
+const BADGE_UP = NAME_UP + 0.42
+const BUBBLE_UP = BADGE_UP + 0.36
+/** where that crown is over the group's own origin, which is not the same
+    place in both poses: standing, the origin is the soles; seated, `sit()`
+    hangs the body from its eye so the origin is the face. Everything floating
+    over the head moves with it or a driver's name ends up on the ceiling */
+const STAND_TOP = DESIGN_CROWN
+const SEAT_TOP = DESIGN_CROWN - DESIGN_EYE
 
 /** one speaker glyph, shared by every badge in the world: a cone and two
     arcs, drawn once. Sprite materials still get their own instance so each
@@ -193,6 +219,8 @@ interface Avatar {
   clock: number
   /** the seat node this body is currently parented to, or null for the world */
   seat: THREE.Object3D | null
+  /** the crown height the tags over this head are currently stacked on */
+  top: number
 }
 
 export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
@@ -211,10 +239,6 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   /** a seated body's group position is local to the machine, so the distance
       cull has to ask the matrix rather than read the vector */
   const seatWorld = new THREE.Vector3()
-
-  const NAME_Y = eye * 1.14
-  const BADGE_Y = eye * 1.34
-  const BUBBLE_Y = eye * 1.5
 
   const namePlate = (text: string, admin: boolean) =>
     plaqueTexture(text, {
@@ -235,21 +259,28 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
 
     const { tex: nameTex, aspect } = namePlate(player.name, player.admin)
     const name = makeSprite(nameTex, NAME_H, aspect)
-    name.position.y = NAME_Y
     group.add(name)
 
     const badge = makeSprite(speakerTexture(), BADGE_H, 1)
-    badge.position.y = BADGE_Y
     badge.visible = false
     group.add(badge)
 
     root.add(group)
-    return {
+    const a: Avatar = {
       rig, group, name, nameTex, badge,
       nameText: player.name, nameAdmin: player.admin, look: player.look,
       bubble: null, bubbleTex: null, bubbleUntil: 0,
-      badgeK: 0, wasDown: false, clock: 0, seat: null,
+      badgeK: 0, wasDown: false, clock: 0, seat: null, top: STAND_TOP,
     }
+    stackTags(a)
+    return a
+  }
+
+  /** re-stack whatever is floating over this head onto `a.top` */
+  const stackTags = (a: Avatar) => {
+    a.name.position.y = a.top + NAME_UP
+    a.badge.position.y = a.top + BADGE_UP
+    if (a.bubble) a.bubble.position.y = a.top + BUBBLE_UP
   }
 
   /** move a body between the world and a machine's seat. The rig's own pose
@@ -262,11 +293,15 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     a.group.parent?.remove(a.group)
     if (seat) {
       seat.add(a.group)
+      // the seat node is the seated eye and `sit()` hangs the body under it,
+      // so the group goes on it flat. Its scale is deliberately left alone:
+      // this body is the size it is, and forcing it to 1 to make it fit a
+      // cabin is how a player used to walk out of a car nine per cent shorter
+      // than they got into it
       a.group.position.set(0, 0, 0)
       // the seat faces the machine's forward; the rig is built facing the
       // other way, exactly as CrtScene turns the local body round
       a.group.rotation.set(0, Math.PI, 0)
-      a.group.scale.setScalar(1)
       a.rig.reset()
       a.rig.sit()
     } else {
@@ -274,6 +309,8 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       a.group.rotation.set(0, 0, 0)
       a.rig.reset()
     }
+    a.top = seat ? SEAT_TOP : STAND_TOP
+    stackTags(a)
   }
 
   const dropBubble = (a: Avatar) => {
@@ -352,7 +389,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
             a.badge.scale.set(s, s, 1)
           }
           if (a.bubble && now > a.bubbleUntil) dropBubble(a)
-          if (a.bubble) a.bubble.position.y = BUBBLE_Y + BADGE_H * a.badgeK * 0.6
+          if (a.bubble) a.bubble.position.y = a.top + BUBBLE_UP + BADGE_H * a.badgeK * 0.6
           a.wasDown = player.down
           continue
         }
@@ -416,7 +453,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
         if (a.bubble && now > a.bubbleUntil) dropBubble(a)
         if (a.bubble) {
           // ride above the badge only while the badge is actually there
-          a.bubble.position.y = BUBBLE_Y + BADGE_H * a.badgeK * 0.6
+          a.bubble.position.y = a.top + BUBBLE_UP + BADGE_H * a.badgeK * 0.6
         }
       }
     },
@@ -449,7 +486,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
         weight: '500',
       })
       const bubble = makeSprite(tex, BUBBLE_H, aspect)
-      bubble.position.y = BUBBLE_Y
+      bubble.position.y = a.top + BUBBLE_UP
       a.group.add(bubble)
       a.bubble = bubble
       a.bubbleTex = tex

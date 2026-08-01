@@ -9,9 +9,16 @@ import { WALLPAPERS } from './wallpapers'
   XP style ("Access is denied"). Anything the visitor creates is overlaid on
   top and persisted to localStorage, so their files survive a reboot.
   Components subscribe with useSyncExternalStore via subscribeFs/getFsVersion.
+
+  Every mutation goes through here, which is also why the undo stack lives
+  here rather than in the shell: dragging a file to the desktop, pasting a
+  copy and pressing Delete are three call sites in two components, but they
+  are one history. Each op records its own inverse as a thunk and pushes it,
+  with recording switched off while an undo runs so undoing does not push a
+  redo entry onto the same stack.
 */
 
-export type FsKind = 'folder' | 'text' | 'image' | 'app' | 'link'
+export type FsKind = 'folder' | 'text' | 'image' | 'app' | 'link' | 'shortcut'
 
 export interface FsNode {
   name: string
@@ -26,6 +33,8 @@ export interface FsNode {
   /** links: destination url; embed means "open in the AlejOS browser" */
   url?: string
   embed?: boolean
+  /** shortcuts: the path they point at, wearing the target's icon */
+  target?: string
   /** folders may carry a custom desktop icon (the Games folder's joystick) */
   icon?: string
   /** read-only: ships with the OS, cannot be renamed/deleted/edited */
@@ -90,6 +99,23 @@ const link = (name: string, url: string, embed = false): FsNode => ({
 
 // ---------------------------------------------------------------- system tree
 
+/*
+  Links as a person would type them into a text file: no scheme, no www, no
+  trailing slash, and percent-escapes decoded back into the letters they
+  stand for. The LinkedIn URL carries an accented surname, which reaches a
+  plain-text file as "alejandro-jim%C3%A9nez-ulloa" and reads like a bug.
+  Notepad turns whatever survives this back into a clickable link.
+*/
+function prettyUrl(url: string): string {
+  let out = url
+  try {
+    out = decodeURIComponent(url)
+  } catch {
+    /* malformed escape: show it as it came */
+  }
+  return out.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '')
+}
+
 const ABOUT_TXT = `Alejandro Jiménez
 full-stack developer, Costa Rica
 
@@ -105,8 +131,8 @@ languages
   spanish (factory default) · english (fluent)
 
 links
-  github   → ${github}
-  linkedin → ${linkedin}
+  github   → ${prettyUrl(github)}
+  linkedin → ${prettyUrl(linkedin)}
   email    → ${email}
 `
 
@@ -160,7 +186,7 @@ function projectFolder(p: AnyProject): FsNode {
       'readme.txt',
       `${p.name}\n${'-'.repeat(p.name.length)}\n\n${p.description}\n${
         p.tech ? `\nbuilt with: ${p.tech.join(', ')}\n` : ''
-      }\nlinks\n${p.live ? `  live   → ${p.live}\n` : ''}  source → ${p.repo}\n`,
+      }\nlinks\n${p.live ? `  live   → ${prettyUrl(p.live)}\n` : ''}  source → ${prettyUrl(p.repo)}\n`,
     ),
   ]
   if (p.live) children.push(link(`${p.liveLabel ?? p.name} (live)`, p.live, true))
@@ -307,16 +333,64 @@ function writableDir(dirPath: string): FsNode | { error: string } {
   return dir
 }
 
+// ---------------------------------------------------------------- undo
+// One history for the whole shell. Entries are inverse thunks, so an undo is
+// just "run the other direction" through these same functions — which is why
+// `recording` has to gate the push, or every undo would bury the entry it was
+// undoing under a fresh one.
+
+interface UndoEntry {
+  /** completes "Undo ..." in the menus */
+  label: string
+  run: () => void
+}
+
+const undoStack: UndoEntry[] = []
+const UNDO_DEPTH = 24
+let recording = true
+
+function record(label: string, run: () => void) {
+  if (!recording) return
+  undoStack.push({ label, run })
+  if (undoStack.length > UNDO_DEPTH) undoStack.shift()
+}
+
+/** what the next undo would reverse ("Delete", "Move"), or null for nothing */
+export function undoLabel(): string | null {
+  return undoStack[undoStack.length - 1]?.label ?? null
+}
+
+export function undoLast(): string | null {
+  const entry = undoStack.pop()
+  if (!entry) return null
+  recording = false
+  try {
+    entry.run()
+  } finally {
+    recording = true
+  }
+  return entry.label
+}
+
+/** lift a node straight out of its folder, with no trip through the bin */
+function detach(dir: FsNode, node: FsNode) {
+  dir.children = (dir.children ?? []).filter((c) => c !== node)
+  bump()
+}
+
 export function createNode(
   dirPath: string,
   node: Omit<FsNode, 'modified' | 'user' | 'system'> & { modified?: number },
+  undoLabelText = 'New',
 ): FsResult {
   const dir = writableDir(dirPath)
   if ('error' in dir) return { ok: false, error: dir.error }
   if (!VALID_NAME.test(node.name)) return { ok: false, error: 'That name is not allowed.' }
   const name = uniqueName(dir, node.name)
   dir.children ??= []
-  dir.children.push({ ...node, name, user: true, system: false, modified: Date.now() })
+  const made: FsNode = { ...node, name, user: true, system: false, modified: Date.now() }
+  dir.children.push(made)
+  record(undoLabelText, () => detach(dir, made))
   bump()
   return { ok: true, name }
 }
@@ -360,8 +434,13 @@ export function renameNode(path: string, newName: string): FsResult {
     (c) => c !== node && c.name.toLowerCase() === newName.toLowerCase(),
   )
   if (clash) return { ok: false, error: 'A file with that name already exists.' }
+  const was = node.name
   node.name = newName
   node.modified = Date.now()
+  record('Rename', () => {
+    node.name = was
+    bump()
+  })
   bump()
   return { ok: true, name: newName }
 }
@@ -373,13 +452,209 @@ export function removeNode(path: string): FsResult {
   if (!node || !dir?.children) return { ok: false, error: 'The file does not exist.' }
   if (node.system) return { ok: false, error: 'Access is denied.' }
   dir.children = dir.children.filter((c) => c !== node)
-  if (!isRecycled(path)) {
+  if (isRecycled(path)) {
+    // gone for good, so the only way back is the node we are still holding
+    record('Delete', () => {
+      bin.children ??= []
+      bin.children.push(node)
+      bump()
+    })
+  } else {
     bin.children ??= []
-    const name = uniqueName(bin, node.name)
-    bin.children.push({ ...node, name, origin: parentPath(path), modified: Date.now() })
+    const binned: FsNode = {
+      ...node,
+      name: uniqueName(bin, node.name),
+      origin: parentPath(path),
+      modified: Date.now(),
+    }
+    bin.children.push(binned)
+    record('Delete', () => {
+      bin.children = (bin.children ?? []).filter((c) => c !== binned)
+      dir.children ??= []
+      dir.children.push(node)
+      bump()
+    })
   }
   bump()
   return { ok: true, name: node.name }
+}
+
+/**
+ * Move a node into another folder. The whole point of the drag: an icon
+ * dropped somewhere else is this call, and so is a paste after a cut.
+ * Refuses the two moves that would corrupt the tree — a folder into itself,
+ * and a folder into its own descendant — because the tree is the store, so
+ * either one detaches a subtree from the root and loses it.
+ */
+export function moveNode(path: string, toDir: string): FsResult {
+  const node = getNode(path)
+  const from = getNode(parentPath(path))
+  if (!node || !from?.children) return { ok: false, error: 'The file does not exist.' }
+  if (node.system) return { ok: false, error: 'Access is denied. That item ships with AlejOS.' }
+  const dir = getNode(toDir)
+  if (!dir || dir.kind !== 'folder') return { ok: false, error: 'The destination does not exist.' }
+  if (dir === from) return { ok: true, name: node.name }
+  if (dir === node || isInside(node, dir)) {
+    return { ok: false, error: 'You cannot move a folder into itself.' }
+  }
+  if (dirIsProtected(toDir)) return { ok: false, error: 'Access is denied. That folder is read-only.' }
+  const was = node.name
+  const wasDir = parentPath(path)
+  from.children = from.children.filter((c) => c !== node)
+  node.name = uniqueName(dir, node.name)
+  node.user = true
+  node.modified = Date.now()
+  dir.children ??= []
+  dir.children.push(node)
+  record('Move', () => {
+    dir.children = (dir.children ?? []).filter((c) => c !== node)
+    node.name = was
+    const home = getNode(wasDir)
+    if (home?.kind === 'folder') {
+      home.children ??= []
+      home.children.push(node)
+    }
+    bump()
+  })
+  bump()
+  return { ok: true, name: node.name }
+}
+
+/** deep clone for copy/paste; the duplicate is the visitor's, so it persists */
+function cloneNode(node: FsNode): FsNode {
+  const copy: FsNode = { ...node, user: true, system: false, modified: Date.now() }
+  delete copy.origin
+  if (node.children) copy.children = node.children.map(cloneNode)
+  return copy
+}
+
+export function copyNode(path: string, toDir: string): FsResult {
+  const node = getNode(path)
+  if (!node) return { ok: false, error: 'The file does not exist.' }
+  const dir = getNode(toDir)
+  if (!dir || dir.kind !== 'folder') return { ok: false, error: 'The destination does not exist.' }
+  if (node.kind === 'folder' && (dir === node || isInside(node, dir))) {
+    return { ok: false, error: 'You cannot copy a folder into itself.' }
+  }
+  if (dirIsProtected(toDir)) return { ok: false, error: 'Access is denied. That folder is read-only.' }
+  const copy = cloneNode(node)
+  // XP's own naming: a duplicate beside the original is "Copy of x", and only
+  // then does the (2) counter take over
+  const taken = new Set((dir.children ?? []).map((c) => c.name.toLowerCase()))
+  copy.name = taken.has(node.name.toLowerCase())
+    ? uniqueName(dir, `Copy of ${node.name}`)
+    : node.name
+  dir.children ??= []
+  dir.children.push(copy)
+  record('Copy', () => detach(dir, copy))
+  bump()
+  return { ok: true, name: copy.name }
+}
+
+/** a shortcut wears the target's icon and opens whatever the target opens */
+export function createShortcut(targetPath: string, dirPath: string): FsResult {
+  const node = getNode(targetPath)
+  if (!node) return { ok: false, error: 'The file does not exist.' }
+  const stem = node.name.replace(/\.[a-z0-9]+$/i, '')
+  return createNode(
+    dirPath,
+    { name: `Shortcut to ${stem}`, kind: 'shortcut', target: targetPath },
+    'Create Shortcut',
+  )
+}
+
+/** follow a shortcut to the thing it points at; bounded, so a loop cannot hang */
+export function resolvePath(path: string): string {
+  let at = path
+  for (let hop = 0; hop < 8; hop++) {
+    const node = getNode(at)
+    if (node?.kind !== 'shortcut' || !node.target) return at
+    at = node.target
+  }
+  return at
+}
+
+/** is `dir` somewhere under `node`? guards the two moves that lose a subtree */
+function isInside(node: FsNode, dir: FsNode): boolean {
+  for (const child of node.children ?? []) {
+    if (child === dir || isInside(child, dir)) return true
+  }
+  return false
+}
+
+/**
+ * The generated tree is read-only, but its *folders* are not all the same:
+ * C:\Pictures has always taken Paint saves, and C:\Documents takes Notepad's.
+ * Everything else that ships with the OS refuses writes, so dropping a file
+ * into C:\Windows\system32 fails the way it should.
+ */
+const WRITABLE_SYSTEM_DIRS = ['c:\\documents', 'c:\\pictures', 'c:\\desktop']
+
+function dirIsProtected(dirPath: string): boolean {
+  const dir = getNode(dirPath)
+  if (!dir || !dir.system) return false
+  return !WRITABLE_SYSTEM_DIRS.includes(dirPath.toLowerCase())
+}
+
+/** can this folder take a dropped or pasted item? */
+export function canWriteTo(dirPath: string): boolean {
+  if (dirPath === RECYCLE_BIN) return true
+  const dir = getNode(dirPath)
+  return dir?.kind === 'folder' && !dirIsProtected(dirPath)
+}
+
+// ---------------------------------------------------------------- properties
+
+export interface FsStats {
+  bytes: number
+  files: number
+  folders: number
+}
+
+/**
+ * Size for the properties sheet. Text is its own length; an image is its data
+ * URL decoded back to bytes (base64 carries 3 bytes per 4 characters), which
+ * is the number a real Paint save would have written to disk.
+ */
+export function statNode(node: FsNode): FsStats {
+  if (node.kind === 'folder') {
+    const out: FsStats = { bytes: 0, files: 0, folders: 0 }
+    for (const child of node.children ?? []) {
+      const s = statNode(child)
+      out.bytes += s.bytes
+      out.files += child.kind === 'folder' ? s.files : s.files + 1
+      out.folders += child.kind === 'folder' ? s.folders + 1 : s.folders
+    }
+    return out
+  }
+  if (node.kind === 'text') return { bytes: (node.content ?? '').length, files: 0, folders: 0 }
+  if (node.kind === 'image' && node.src?.startsWith('data:')) {
+    const b64 = node.src.slice(node.src.indexOf(',') + 1)
+    const pad = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0
+    return { bytes: Math.max(0, Math.floor((b64.length * 3) / 4) - pad), files: 0, folders: 0 }
+  }
+  // links, app shortcuts and the images that are really files on the server:
+  // a plausible small size rather than a lie about zero
+  return { bytes: node.kind === 'image' ? 0 : 512 + node.name.length * 2, files: 0, folders: 0 }
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} bytes`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+const KIND_LABELS: Record<FsKind, string> = {
+  folder: 'File Folder',
+  text: 'Text Document',
+  image: 'Image File',
+  app: 'Application',
+  link: 'Internet Shortcut',
+  shortcut: 'Shortcut',
+}
+
+export function kindLabel(node: FsNode): string {
+  return KIND_LABELS[node.kind]
 }
 
 export function restoreNode(path: string): FsResult {
@@ -392,6 +667,12 @@ export function restoreNode(path: string): FsResult {
   delete rest.origin
   home.children ??= []
   home.children.push(rest)
+  record('Restore', () => {
+    home.children = (home.children ?? []).filter((c) => c !== rest)
+    bin.children ??= []
+    bin.children.push(node)
+    bump()
+  })
   bump()
   return { ok: true, name: node.name }
 }

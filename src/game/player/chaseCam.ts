@@ -43,11 +43,11 @@ export interface ChaseCam {
   drop: () => void
 }
 
-const BOOM = 5.0 // boom length at full blend; the 38° lens needs ~5 units
-// to hold the whole ~3-unit body in frame
-const DROP = 0.95 // boom anchor sits at the chest, not the eyes, so the
+const BOOM = 6.0 // boom length at full blend; the 38° lens needs about two
+// body heights to hold one in frame, and a body is ~4.2 units of eye height
+const DROP = 1.2 // boom anchor sits at the chest, not the eyes, so the
 // body rides centered instead of hanging off the frame bottom
-const FOCUS_DIST = 4.2
+const FOCUS_DIST = 4.6
 const FOCUS_PITCH = -0.55 // orbit height angle over a ragdoll
 const MARGIN = 0.28 // how far the lens keeps off walls, floor, ceiling
 const SAMPLES = 12

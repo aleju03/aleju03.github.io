@@ -1091,9 +1091,12 @@ const PROBES: Array<[number, number]> = [
 export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   const model = buildModel(opts.mats)
   const root = model.root
+  // y is the seated body's face, not its hips: `playerBody.sit()` hangs the
+  // fold from the eye, so a seat node and this machine's cockpit lens are the
+  // same height by construction
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(-0.8, 1.38, 0.06)
+  driverSeat.position.set(-0.8, 2.55, 0.06)
   root.add(driverSeat)
   // the right-hand seat. This was always a two-seat piston machine — the
   // rotor was sized for one (see registry.ts on the clear disc at home) —
@@ -1101,7 +1104,7 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   // about the cabin has to change to hold somebody
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(0.8, 1.38, 0.06)
+  passengerSeat.position.set(0.8, 2.55, 0.06)
   root.add(passengerSeat)
   const pos = root.position
 

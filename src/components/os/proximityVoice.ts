@@ -24,6 +24,20 @@ import type { RemotePlayer } from '../../game/net/remotePlayers'
   the gap between the two being what stops a player pacing a boundary from
   reconnecting forty times a minute.
 
+  Loudness is a graph, not a hope. Two gains hold the visitor's two dials
+  (`roamPrefs`' `micVol` and `voiceVol`, edited on the pause sheet): one trims
+  the microphone before the gate, the other is the bus every incoming panner
+  lands on. The bus carries a fixed makeup gain under the dial, because the
+  distance model alone cannot be loud enough: an inverse rolloff is already
+  a third of the way down at conversational range, HRTF panning costs a few
+  dB on top, and the first version of this ran all of that straight into
+  `ctx.destination` at unity, which is why two people standing in a field
+  could barely hear each other. A limiter sits after the bus so that boost
+  can never turn a shout into clipping. The mic trim is deliberately *before*
+  the analyser as well as before the gate: turning yourself up has to make
+  the voice gate open more readily, or a quiet speaker turns the dial up and
+  still gets cut off mid-word.
+
   Two details that are load-bearing and look like mistakes:
 
   - The microphone is never handed straight to a peer connection. It goes
@@ -58,7 +72,23 @@ const CONNECT_DIST = 55
 const DROP_DIST = 80
 /** the panner stops attenuating here; past it a voice is effectively gone */
 const MAX_AUDIBLE = 70
-const REF_DIST = 4
+/** inside this a voice is at full strength: the bubble two people stand in
+    to talk to each other, about three metres at this world's scale. It was 4,
+    which is close enough that anyone you could comfortably see was already
+    being attenuated */
+const REF_DIST = 8
+/** and how fast it falls off past that. Under 1 so the curve reaches across a
+    yard rather than dying at the edge of it */
+const ROLLOFF = 0.9
+/** what the bus adds under the visitor's dial. A voice track lands around
+    -20 dBFS after the browser's own AGC and the panner takes a chunk more;
+    unity here is a conversation you have to lean into */
+const VOICE_MAKEUP = 2.8
+/** how far up either dial may go, so a stored number cannot hand the graph
+    something it will scream through */
+const VOL_MAX = 2
+/** where a mouth is over a pair of feet, as a fraction of eye height */
+const MOUTH = 0.94
 
 /** voice-activity gate, in dBFS over the analyser's RMS */
 const VAD_ON_DB = -50
@@ -114,12 +144,38 @@ export interface ProximityVoice {
 export interface ProximityVoiceOpts {
   /** our own id, for deciding who offers */
   self: () => PlayerId | null
+  /** the walk's standing eye height, for putting a voice at head height over
+      the feet the network reports */
+  eye: number
+  /** the visitor's two dials, 0..2 each, read fresh every frame. Both are
+      checked against what is already on the graph before anything is set, so
+      asking every frame costs a pair of comparisons */
+  levels: () => { mic: number; out: number }
   /** the ICE servers to open the next peer with, read fresh each time: the
       server hands them over at join, and a TURN credential in them expires */
   ice: () => RTCIceServer[]
   send: (to: PlayerId, data: VoiceSignal) => void
   /** told whenever something user-visible changed, so the HUD can repaint */
   onChange: () => void
+}
+
+/**
+  A brick wall on a bus, both directions.
+
+  Measured offline against a -20 dBFS voice track, which is where a browser's
+  own AGC leaves one: at -6/12:1 the makeup gain still pushed peaks half a dB
+  past full scale at the top of the dial. At -10/20:1 the loudest thing either
+  chain can produce peaks at -1 dBFS, which is the point: a volume control
+  that can distort is a volume control people learn not to turn up.
+*/
+const limiterIn = (ctx: AudioContext) => {
+  const c = ctx.createDynamicsCompressor()
+  c.threshold.value = -10
+  c.knee.value = 0
+  c.ratio.value = 20
+  c.attack.value = 0.002
+  c.release.value = 0.2
+  return c
 }
 
 const loadMode = (): VoiceMode => {
@@ -155,16 +211,51 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
   let vadUntil = 0
   let spatialAcc = 0
 
-  // The send chain, built once and never rebuilt: gate -> destination, and the
-  // destination's track is what every peer connection carries for the whole
-  // session. Muting is `gate.gain = 0`, not a track swap.
+  // The send chain, built once and never rebuilt: trim -> gate -> destination,
+  // and the destination's track is what every peer connection carries for the
+  // whole session. Muting is `gate.gain = 0`, not a track swap.
+  const trim = ctx ? ctx.createGain() : null
   const gate = ctx ? ctx.createGain() : null
+  const outLimit = ctx ? limiterIn(ctx) : null
   const outDest = ctx ? ctx.createMediaStreamDestination() : null
-  if (gate && outDest) {
+  if (gate && outDest && outLimit) {
     gate.gain.value = 0
-    gate.connect(outDest)
+    // the trim can be pushed to +6 dB, and the browser's AGC is not on every
+    // platform: what leaves here is what everybody else hears, so it leaves
+    // through a limiter rather than as somebody's clipped track
+    gate.connect(outLimit)
+    outLimit.connect(outDest)
   }
   const outTrack = outDest?.stream.getAudioTracks()[0] ?? null
+
+  // ...and the return chain, likewise built once: every peer's panner lands on
+  // one bus, the bus carries the dial, and the limiter after it is what makes
+  // a boost above unity safe to offer at all
+  const bus = ctx ? ctx.createGain() : null
+  const limiter = ctx ? limiterIn(ctx) : null
+  if (ctx && bus && limiter) {
+    bus.gain.value = VOICE_MAKEUP
+    bus.connect(limiter)
+    limiter.connect(ctx.destination)
+  }
+  // what the graph is currently set to, so a per-frame read is two compares
+  let micVol = 1
+  let outVol = 1
+  const clampVol = (v: number) => (v > VOL_MAX ? VOL_MAX : v > 0 ? v : 0)
+  const applyLevels = () => {
+    if (!ctx) return
+    const want = opts.levels()
+    const m = clampVol(want.mic)
+    const o = clampVol(want.out)
+    if (m !== micVol) {
+      micVol = m
+      trim?.gain.setTargetAtTime(m, ctx.currentTime, 0.02)
+    }
+    if (o !== outVol) {
+      outVol = o
+      bus?.gain.setTargetAtTime(VOICE_MAKEUP * o, ctx.currentTime, 0.02)
+    }
+  }
 
   // scratch, reused per frame
   const camPos = new THREE.Vector3()
@@ -216,8 +307,8 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     panner.distanceModel = 'inverse'
     panner.refDistance = REF_DIST
     panner.maxDistance = MAX_AUDIBLE
-    panner.rolloffFactor = 1.1
-    panner.connect(ctx.destination)
+    panner.rolloffFactor = ROLLOFF
+    panner.connect(bus ?? ctx.destination)
 
     const peer: Peer = { pc, panner, el: null, source: null, caller }
     peers.set(id, peer)
@@ -268,6 +359,12 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
 
   const stopMic = () => {
     micSource?.disconnect()
+    // the trim stays in the graph, but it must not keep feeding a dead
+    // analyser or a second start would tap through two of them
+    if (trim && gate) {
+      trim.disconnect()
+      trim.connect(gate)
+    }
     micSource = null
     analyser = null
     samples = null
@@ -298,10 +395,12 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       analyser.fftSize = 1024
       analyser.smoothingTimeConstant = 0.4
       samples = new Float32Array(new ArrayBuffer(analyser.fftSize * 4))
-      // the detector taps ahead of the gate, so a shut gate can still hear
-      // you begin to speak
-      micSource.connect(analyser)
-      micSource.connect(gate!)
+      // the detector taps after the trim and ahead of the gate: a shut gate
+      // can still hear you begin to speak, and turning yourself up turns the
+      // gate's own threshold down with you
+      micSource.connect(trim!)
+      trim!.connect(analyser)
+      trim!.connect(gate!)
       enabled = true
     } catch (e) {
       error =
@@ -367,6 +466,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
 
     update(players, camera, dt) {
       if (!ctx) return
+      applyLevels()
 
       // --- the gate ------------------------------------------------------
       if (enabled) {
@@ -387,7 +487,14 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       const self = opts.self()
       camera.getWorldPosition(camPos)
       for (const [id, player] of players) {
-        const d = Math.hypot(player.x - camPos.x, player.y - camPos.y, player.z - camPos.z)
+        // head to head, like the panner below: `player.y` is a pair of feet,
+        // and measuring those against a lens puts an eye height of bias into
+        // every distance on flat ground
+        const d = Math.hypot(
+          player.x - camPos.x,
+          player.y + opts.eye * MOUTH - camPos.y,
+          player.z - camPos.z,
+        )
         const peer = peers.get(id)
         if (!peer && d < CONNECT_DIST && self !== null) {
           // one side calls, the other waits: lowest id dials
@@ -430,14 +537,16 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       for (const [id, peer] of peers) {
         const player = players.get(id)
         if (!player) continue
-        // the mouth, not the soles: a voice should come from head height
+        // the mouth, not the soles: a voice should come from head height, and
+        // the network reports where somebody's feet are
         const p = peer.panner
+        const mouthY = player.y + opts.eye * MOUTH
         if (p.positionX) {
           p.positionX.setTargetAtTime(player.x, t, 0.02)
-          p.positionY.setTargetAtTime(player.y + 3, t, 0.02)
+          p.positionY.setTargetAtTime(mouthY, t, 0.02)
           p.positionZ.setTargetAtTime(player.z, t, 0.02)
         } else {
-          p.setPosition(player.x, player.y + 3, player.z)
+          p.setPosition(player.x, mouthY, player.z)
         }
       }
     },
@@ -472,7 +581,11 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     dispose() {
       for (const id of [...peers.keys()]) closePeer(id)
       stopMic()
+      trim?.disconnect()
       gate?.disconnect()
+      outLimit?.disconnect()
+      bus?.disconnect()
+      limiter?.disconnect()
     },
   }
 }

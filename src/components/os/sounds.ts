@@ -3,9 +3,73 @@
   assets and nothing copyrighted. Everything is quiet, short, and built from
   the same few soft sine/triangle voices so the OS feels like one machine.
   The AudioContext is created lazily on the first user-gesture-driven call.
+
+  The tray's speaker owns the master level, which is why it is a multiplier
+  applied at play() rather than a number baked into each cue: the gains
+  inside a cue are its internal balance between voices, and scaling them
+  individually would change the shape of the sound instead of its loudness.
 */
 
 let ctx: AudioContext | null = null
+
+// --- master volume, driven by the tray speaker -----------------------------
+
+const VOL_KEY = 'alejos-volume'
+const volSubs = new Set<() => void>()
+
+function readVolume(): { level: number; muted: boolean } {
+  try {
+    const raw = localStorage.getItem(VOL_KEY)
+    if (raw) {
+      const v = JSON.parse(raw) as { level?: unknown; muted?: unknown }
+      return {
+        level: typeof v.level === 'number' ? Math.min(1, Math.max(0, v.level)) : 0.7,
+        muted: v.muted === true,
+      }
+    }
+  } catch {
+    /* storage unavailable or corrupt: fall through to the default */
+  }
+  return { level: 0.7, muted: false }
+}
+
+let master = readVolume()
+
+export function getVolume(): number {
+  return master.level
+}
+
+export function isMuted(): boolean {
+  return master.muted
+}
+
+export function subscribeVolume(fn: () => void): () => void {
+  volSubs.add(fn)
+  return () => volSubs.delete(fn)
+}
+
+function commitVolume() {
+  try {
+    localStorage.setItem(VOL_KEY, JSON.stringify(master))
+  } catch {
+    /* storage unavailable; the session still works in memory */
+  }
+  volSubs.forEach((fn) => fn())
+}
+
+export function setVolume(level: number) {
+  const next = Math.min(1, Math.max(0, level))
+  if (next === master.level && !master.muted) return
+  // dragging the slider off zero is also how you unmute, like the real tray
+  master = { level: next, muted: next === 0 ? master.muted : false }
+  commitVolume()
+}
+
+export function setMuted(muted: boolean) {
+  if (muted === master.muted) return
+  master = { ...master, muted }
+  commitVolume()
+}
 
 function audio(): AudioContext | null {
   if (typeof window === 'undefined') return null
@@ -30,6 +94,7 @@ interface Voice {
 }
 
 function play(voices: Voice[]) {
+  if (master.muted || master.level === 0) return
   const ac = audio()
   if (!ac) return
   const now = ac.currentTime
@@ -41,9 +106,10 @@ function play(voices: Voice[]) {
     osc.type = v.type ?? 'sine'
     osc.frequency.setValueAtTime(v.freq, at)
     if (v.to) osc.frequency.exponentialRampToValueAtTime(v.to, at + dur)
+    const peak = (v.gain ?? 0.06) * master.level
     gain.gain.setValueAtTime(0, at)
-    gain.gain.linearRampToValueAtTime(v.gain ?? 0.06, at + 0.012)
-    gain.gain.exponentialRampToValueAtTime(0.0008, at + dur)
+    gain.gain.linearRampToValueAtTime(peak, at + 0.012)
+    gain.gain.exponentialRampToValueAtTime(peak * 0.013, at + dur)
     osc.connect(gain).connect(ac.destination)
     osc.start(at)
     osc.stop(at + dur + 0.05)
