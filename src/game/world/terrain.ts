@@ -6,6 +6,7 @@ import {
 import {
   pavedAt, placeAt, roadAt, townGradedHeight, type Place, type Road,
 } from './settlements'
+import { landmarkGradedHeight } from './landmarks'
 import { GRID, OFF_X, OFF_Z, RESERVED } from './grid'
 import { BIOMES, URBAN_TINT, classify, type BiomeId } from './biomes'
 import type { StepSurface } from '../core/sfx'
@@ -15,7 +16,7 @@ import type { StepSurface } from '../core/sfx'
   and the one place that answers "how high is the world here" for both the
   mesh and the player's feet.
 
-  Three gradings sit on top of the raw elevation, in this order:
+  Four gradings sit on top of the raw elevation, in this order:
 
   - a settlement flattens its footprint onto a terrace, easing back into the
     landscape past the built rim (settlements.ts's townGradedHeight — the run
@@ -28,6 +29,12 @@ import type { StepSurface } from '../core/sfx'
     rides the hills lengthways while staying level underfoot. The bank either
     side runs longer the deeper the corridor cuts, which is what keeps a
     hillside cutting from standing as a 70-degree wall over the shoulder.
+  - a landmark levels the pad it stands on and eases out of it (landmarks.ts's
+    landmarkGradedHeight). It runs after the roads and never argues with them,
+    because a site with a road inside 26 units is thrown away at siting time
+    rather than reconciled here: a lighthouse is not worth a second earthwork
+    solver. Landmarks are also gated well outside every town, so the two
+    flattenings can never both be live at a point.
   - the property is pinned dead flat at y=0 with a short apron around it. The
     house is authored at y=0 and its doorstep is not negotiable; the home
     town's terrace is 0 for the same reason, so the apron has almost nothing
@@ -112,6 +119,7 @@ export const heightAt = (x: number, z: number) => {
     if (arms.length === 2 && arms[0][0] === 'z') arms.reverse()
     for (const [axis, line, dist, live, end] of arms) earthwork(axis, line, dist, live, end)
   }
+  h = landmarkGradedHeight(x, z, h)
   // the authored property, and a short apron so the lawn doesn't meet a bank
   const dx = Math.max(RESERVED.minX - x, x - RESERVED.maxX, 0)
   const dz = Math.max(RESERVED.minZ - z, z - RESERVED.maxZ, 0)

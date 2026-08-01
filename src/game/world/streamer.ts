@@ -382,15 +382,23 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
   mat.needsUpdate = true
 }
 
-export function buildWorld(opts: Opts): WorldHandles {
-  const { scene, obstacles, onNearDoors, onChunk, trackTexture, trackDisposable } = opts
-  const root = new THREE.Group()
-  scene.add(root)
-
-  /** every box this streamer has ever pushed; anything not in here is
-      authored content and must never be touched */
-  const worldOwned = new WeakSet<Solid>()
-
+/**
+ * The six materials a chunk is drawn with.
+ *
+ * Exported, and that is the point of it being a function at all: it used to
+ * be sixty lines inline in `buildWorld`, so anything that wanted to render
+ * chunks outside the game (`scripts/probe/`, above all) had to hand-roll its
+ * own set. A probe that hand-rolls these lies about the world in exactly the
+ * ways that matter most, since what the hand-rolled version always leaves out
+ * is the leaf texture's alpha test and the surface pass, i.e. the difference
+ * between a tree and a green slab and between brickwork and a grey rectangle.
+ * One shot taken that way sent a whole conversation chasing a tree problem
+ * that did not exist. Anything that draws a chunk calls this.
+ */
+export const makeChunkMats = (
+  trackTexture: (t: THREE.Texture) => void,
+  trackDisposable: (d: { dispose: () => void }) => void,
+): ChunkMats => {
   const detailTex = makeDetailTexture()
   detailTex.wrapS = detailTex.wrapT = THREE.RepeatWrapping
   trackTexture(detailTex)
@@ -449,10 +457,27 @@ export function buildWorld(opts: Opts): WorldHandles {
   })
   makeWaterStylized(waterMat)
   ;[groundMat, detailMat, glassMat, waterMat, leafMat, leafDepth].forEach(trackDisposable)
-  const mats: ChunkMats = {
+  return {
     ground: groundMat, detail: detailMat, glass: glassMat, water: waterMat,
     leaf: leafMat, leafDepth,
   }
+}
+
+export function buildWorld(opts: Opts): WorldHandles {
+  const { scene, obstacles, onNearDoors, onChunk, trackTexture, trackDisposable } = opts
+  const root = new THREE.Group()
+  scene.add(root)
+
+  /** every box this streamer has ever pushed; anything not in here is
+      authored content and must never be touched */
+  const worldOwned = new WeakSet<Solid>()
+
+  const mats = makeChunkMats(trackTexture, trackDisposable)
+  // the two the day cycle reaches into, narrowed back to what they actually
+  // are: ChunkMats types them as plain Materials because a chunk only needs
+  // to draw with them, and only this file dims the glass and tints the sea
+  const glassMat = mats.glass as THREE.MeshBasicMaterial
+  const waterMat = mats.water as THREE.MeshStandardMaterial
 
   const chunks = new Map<string, Chunk>()
   const queue: Array<{ cx: number; cz: number; tier: Tier; d: number; retier: boolean }> = []

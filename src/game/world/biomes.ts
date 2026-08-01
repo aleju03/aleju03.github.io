@@ -105,7 +105,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'broadleaf', per: 5, scale: [0.85, 1.15] },
       { kind: 'bush', per: 7, scale: [0.7, 1.2] },
     ], [
-      { kind: 'tuft', per: 210, scale: [0.7, 1.5] },
+      { kind: 'tuft', per: 145, scale: [0.7, 1.5] },
       { kind: 'rock', per: 3, scale: [0.4, 0.9] },
     ]),
 
@@ -115,7 +115,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'birch', per: 18, scale: [0.85, 1.1] },
       { kind: 'bush', per: 18, scale: [0.7, 1.25] },
     ], [
-      { kind: 'tuft', per: 160, scale: [0.6, 1.2] },
+      { kind: 'tuft', per: 112, scale: [0.6, 1.2] },
       { kind: 'shrub', per: 22, scale: [0.6, 1.1] },
     ]),
 
@@ -124,7 +124,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'pine', per: 36, scale: [0.8, 1.2] },
       { kind: 'shrub', per: 12, scale: [0.6, 1.0] },
     ], [
-      { kind: 'tuft', per: 60, scale: [0.5, 1.0] },
+      { kind: 'tuft', per: 44, scale: [0.5, 1.0] },
       { kind: 'rock', per: 8, scale: [0.5, 1.2] },
     ]),
 
@@ -133,7 +133,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'shrub', per: 9, scale: [0.5, 0.9] },
     ], [
       { kind: 'rock', per: 16, scale: [0.4, 1.3] },
-      { kind: 'tuft', per: 34, scale: [0.4, 0.8] },
+      { kind: 'tuft', per: 26, scale: [0.4, 0.8] },
     ]),
 
   snow: B('snow', ['#d9dfe4', '#c3ccd4'],
@@ -157,7 +157,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'acacia', per: 7, scale: [0.9, 1.2] },
       { kind: 'shrub', per: 10, scale: [0.6, 1.1] },
     ], [
-      { kind: 'tuft', per: 170, scale: [0.8, 1.7] },
+      { kind: 'tuft', per: 118, scale: [0.8, 1.7] },
       { kind: 'rock', per: 4, scale: [0.4, 1.0] },
     ]),
 
@@ -167,7 +167,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'palm', per: 18, scale: [0.9, 1.2] },
       { kind: 'bush', per: 30, scale: [0.9, 1.6] },
     ], [
-      { kind: 'tuft', per: 210, scale: [0.9, 1.8] },
+      { kind: 'tuft', per: 145, scale: [0.9, 1.8] },
       { kind: 'shrub', per: 34, scale: [0.8, 1.5] },
     ]),
 
@@ -177,7 +177,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'bush', per: 14, scale: [0.7, 1.2] },
     ], [
       { kind: 'reed', per: 180, scale: [0.8, 1.6] },
-      { kind: 'tuft', per: 80, scale: [0.7, 1.3] },
+      { kind: 'tuft', per: 56, scale: [0.7, 1.3] },
     ]),
 
   rock: B('rock', ['#6b665f', '#7a746b'],

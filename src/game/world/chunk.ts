@@ -16,8 +16,13 @@ import {
 } from './props'
 import { SURF } from './surface'
 import {
-  KIND_FOR, midriseBlock, shopFront, suburbHouse, tower, type BuildOut, type Lot,
+  BLOCK_KIND_FOR, BLOCK_KIND_RATE, KIND_FOR, chapel, midriseBlock, mixedUse,
+  parkingDeck, roundTower, shopFront, slabTower, tower, warehouse,
+  type BuildKind, type BuildOut, type Lot,
 } from './buildings'
+import { suburbHouse } from './houses'
+import { landmarkIn } from './landmarks'
+import { buildLandmark } from './structures'
 import { bakeBirth, PREBORN } from './fade'
 import type { InteriorRect } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
@@ -26,11 +31,17 @@ import type { SmashLayer, Smashable, SmashSet, Span } from './debris'
 /*
   One 64-unit block of world, built from nothing but its own coordinates.
 
-  A chunk is assembled in five passes — ground, water, streets, buildings,
-  scatter — and every one of them is a pure function of (cx, cz), so a chunk
-  rebuilt an hour later from the other side of the map is identical to the bit.
-  That is the property that lets the streamer throw chunks away the moment
-  they leave the ring instead of keeping a world in memory.
+  A chunk is assembled in six passes — ground, water, streets, buildings,
+  landmarks, scatter — and every one of them is a pure function of (cx, cz),
+  so a chunk rebuilt an hour later from the other side of the map is identical
+  to the bit. That is the property that lets the streamer throw chunks away the
+  moment they leave the ring instead of keeping a world in memory.
+
+  The buildings pass is a town's business and stops at the town limit
+  (settlements.ts decides where that is). The landmarks pass is the opposite:
+  it only ever fires outside one, and it is what stops the ninety-odd percent
+  of the world that is countryside from being landform and trees and nothing
+  else. world/landmarks.ts sites them, world/structures.ts builds them.
 
   Everything static merges into three geometries: ground (its own material,
   because it is the only thing that wants a tiling detail map), opaque detail
@@ -616,12 +627,86 @@ const buildBlock = (
     return
   }
 
+  const height = buildingHeightAt(place)
+
+  /** the ground a footprint has to sit on: its lowest corner, so no building
+      floats on the high side of a graded slope, and its highest, so an
+      enterable interior can grade a floor above the dirt. `fine` samples the
+      inside of the footprint too rather than only the corners: the terrain
+      lattice has a vertex every 4 units, and a hump between two corners once
+      stood 0.22 proud of a floor set by corners alone. */
+  const groundUnder = (bx: number, bz: number, w: number, d: number, fine: boolean) => {
+    let baseY = Infinity
+    let topY = -Infinity
+    const nu = fine ? Math.max(2, Math.ceil(w / 2.5)) : 1
+    const nv = fine ? Math.max(2, Math.ceil(d / 2.5)) : 1
+    for (let i = 0; i <= nu; i++)
+      for (let j = 0; j <= nv; j++) {
+        const cy = terrainY(bx - w / 2 + (w * i) / nu, bz - d / 2 + (d * j) / nv)
+        baseY = Math.min(baseY, cy)
+        topY = Math.max(topY, cy)
+      }
+    return [baseY, topY] as const
+  }
+
+  /** which way a footprint fronts: at the nearest street, which out here is
+      always a chunk border and therefore always a cardinal */
+  const facing = (bx: number, bz: number) => {
+    const dxEdge = Math.min(bx - ox, ox + CHUNK - bx)
+    const dzEdge = Math.min(bz - oz, oz + CHUNK - bz)
+    return dzEdge < dxEdge
+      ? (bz - oz < oz + CHUNK - bz ? Math.PI : 0)
+      : (bx - ox < ox + CHUNK - bx ? -Math.PI / 2 : Math.PI / 2)
+  }
+
+  const clearOfHome = (bx: number, bz: number, w: number, d: number) =>
+    !(bx - w / 2 < RESERVED.maxX + 4 && bx + w / 2 > RESERVED.minX - 4 &&
+      bz - d / 2 < RESERVED.maxZ + 4 && bz + d / 2 > RESERVED.minZ - 4)
+
+  const raise = (kind: BuildKind, lot: Lot) => {
+    switch (kind) {
+      case 'tower': tower(out, lot); break
+      case 'slab': slabTower(out, lot); break
+      case 'round': roundTower(out, lot); break
+      case 'midrise': midriseBlock(out, lot); break
+      case 'mixed': mixedUse(out, lot); break
+      case 'shop': shopFront(out, lot); break
+      case 'warehouse': warehouse(out, lot); break
+      case 'chapel': chapel(out, lot); break
+      case 'parking': parkingDeck(out, lot); break
+      default: suburbHouse(out, lot)
+    }
+  }
+
+  // ...and the occasional block is one thing rather than nine. A warehouse
+  // wants a run, a chapel wants a yard and a deck wants a footprint, so none
+  // of the three fits on a share of a block; putting them on whole ones is
+  // also the cheapest way to stop a district reading as one kit at a dozen
+  // heights, which no amount of extra rolls inside that kit ever fixes
+  if (rng() < BLOCK_KIND_RATE(place.district)) {
+    const kind = BLOCK_KIND_FOR(place.district, rng())
+    const w = inner * (0.7 + rng() * 0.18)
+    const d = inner * (0.7 + rng() * 0.18)
+    const bx = ox + CHUNK / 2 + (rng() - 0.5) * 3
+    const bz = oz + CHUNK / 2 + (rng() - 0.5) * 3
+    if (clearOfHome(bx, bz, w, d)) {
+      const [baseY, topY] = groundUnder(bx, bz, w, d, false)
+      // a block-scale shell carries a deeper plinth than a lot-scale one, so
+      // it takes a bumpier site before the ground starts eating it
+      if (baseY >= SEA_Y + 1 && topY - baseY <= 3.0) {
+        raise(kind, {
+          x: bx, z: bz, w, d, baseY, topY, height, face: facing(bx, bz), rng,
+        })
+        return
+      }
+    }
+  }
+
   // how the block is carved up: one big footprint downtown, a courtyard of
   // four in the mid-rise, a street of nine in the suburbs
   const n = place.district === 'downtown' ? (rng() < 0.55 ? 1 : 2)
     : place.district === 'midrise' ? 2 : 3
   const cell = inner / n
-  const height = buildingHeightAt(place)
 
   for (let gz = 0; gz < n; gz++)
     for (let gx = 0; gx < n; gx++) {
@@ -634,55 +719,44 @@ const buildBlock = (
       const d = cell * fill * (0.85 + rng() * 0.3)
       const bx = lo + (gx + 0.5) * cell + (rng() - 0.5) * cell * 0.12
       const bz = lz + (gz + 0.5) * cell + (rng() - 0.5) * cell * 0.12
-      if (
-        bx - w / 2 < RESERVED.maxX + 4 && bx + w / 2 > RESERVED.minX - 4 &&
-        bz - d / 2 < RESERVED.maxZ + 4 && bz + d / 2 > RESERVED.minZ - 4
-      ) continue
-      // face the nearest street
-      const dxEdge = Math.min(bx - ox, ox + CHUNK - bx)
-      const dzEdge = Math.min(bz - oz, oz + CHUNK - bz)
-      const face = dzEdge < dxEdge
-        ? (bz - oz < oz + CHUNK - bz ? Math.PI : 0)
-        : (bx - ox < ox + CHUNK - bx ? -Math.PI / 2 : Math.PI / 2)
-      // the ground the footprint has to sit on: its lowest corner, so no
-      // building floats on the high side of a graded slope — and no building
-      // at all where the corners disagree by more than the plinth can hide.
-      // The rim of a town is only half-graded now that the hills start there,
-      // and a house sunk to its windowsills reads as the ground eating it.
-      // A shell only needs the corners; an enterable shop grades its floor to
-      // `topY` and so must see any bump *inside* the footprint too — the
-      // terrain lattice has a vertex every 4 units, and a hump between the
-      // corners once stood 0.22 proud of a floor set by corners alone.
+      if (!clearOfHome(bx, bz, w, d)) continue
+      // no building at all where the corners disagree by more than the plinth
+      // can hide. The rim of a town is only half-graded now that the hills
+      // start there, and a house sunk to its windowsills reads as the ground
+      // eating it
       let kind = KIND_FOR(place.district, roll)
-      let baseY = Infinity
-      let topY = -Infinity
-      const nu = kind === 'shop' ? Math.max(2, Math.ceil(w / 2.5)) : 1
-      const nv = kind === 'shop' ? Math.max(2, Math.ceil(d / 2.5)) : 1
-      for (let i = 0; i <= nu; i++)
-        for (let j = 0; j <= nv; j++) {
-          const cy = terrainY(bx - w / 2 + (w * i) / nu, bz - d / 2 + (d * j) / nv)
-          baseY = Math.min(baseY, cy)
-          topY = Math.max(topY, cy)
-        }
+      const [baseY, topY] = groundUnder(bx, bz, w, d, kind === 'shop')
       if (baseY < SEA_Y + 1) continue
       if (topY - baseY > 2.2) continue
 
-      const lot: Lot = {
-        x: bx, z: bz, w, d, baseY, topY, height: height * (0.7 + rng() * 0.6), face, rng,
-      }
       // an enterable shop grades its floor up to the *highest* ground under
       // it and meets the street with a stoop; past a shin-and-a-bit of spread
       // the stoop turns into a staircase, so the lot builds a shell instead
       if (kind === 'shop' && topY - baseY > 1.2) {
         kind = place.district === 'midrise' ? 'midrise' : 'house'
       }
-      switch (kind) {
-        case 'tower': tower(out, lot); break
-        case 'midrise': midriseBlock(out, lot); break
-        case 'shop': shopFront(out, lot); break
-        default: suburbHouse(out, lot)
-      }
+      raise(kind, {
+        x: bx, z: bz, w, d, baseY, topY,
+        height: height * (0.7 + rng() * 0.6), face: facing(bx, bz), rng,
+      })
     }
+}
+
+/**
+ * The one thing this chunk might have standing in the open country: a
+ * lighthouse, a barn, a ring of stones (world/landmarks.ts decides, and
+ * world/structures.ts builds). At most one per chunk by construction, since
+ * the site grid is 400 units and its jitter keeps two sites 180 apart.
+ *
+ * The ground is read at the site rather than over the footprint, because
+ * everything except a shipwreck stands on a pad terrain.ts has already
+ * levelled out to `lm.r`, so the one sample is the whole footprint.
+ */
+const buildLandmarks = (cx: number, cz: number, out: BuildOut) => {
+  const lm = landmarkIn(cx, cz)
+  if (!lm || inReserved(lm.x, lm.z, 40)) return null
+  buildLandmark(out, lm, terrainY(lm.x, lm.z))
+  return lm
 }
 
 /* -------------------------------------------------------------- scatter */
@@ -856,6 +930,7 @@ export const buildChunk = (
 
   const poles = buildRoads(cx, cz, detail, glass, out.detailed, props)
   buildBlock(cx, cz, out, ground, leaves)
+  const landmark = buildLandmarks(cx, cz, out)
   // everything in `boxes` at this point is a building — the roads register
   // theirs separately and the scatter has not run yet — so this is the
   // footprint list the scatterer needs to keep trees out of people's living
@@ -869,6 +944,18 @@ export const buildChunk = (
   for (const r of interiors) {
     built.push(new THREE.Box3(
       new THREE.Vector3(r.minX, 0, r.minZ), new THREE.Vector3(r.maxX, 0, r.maxZ),
+    ))
+  }
+  // ...and a landmark clears its whole pad rather than just the boxes it
+  // registered. A ring of standing stones is nine thin solids with the site
+  // wide open between them, and a forest growing up through the middle of it
+  // is the difference between a monument and a clearing that happens to have
+  // rocks in it. Same phantom trick as an interior: never collided with, read
+  // only for its extents
+  if (landmark) {
+    built.push(new THREE.Box3(
+      new THREE.Vector3(landmark.x - landmark.r, 0, landmark.z - landmark.r),
+      new THREE.Vector3(landmark.x + landmark.r, 0, landmark.z + landmark.r),
     ))
   }
   for (const p of poles) boxes.push(p)

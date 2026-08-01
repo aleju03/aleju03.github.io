@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build && cp dist/index.html dist/404.html",
     "lint": "eslint .",
+    "shoot": "node scripts/shoot.mjs",
+    "measure": "node scripts/measure.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

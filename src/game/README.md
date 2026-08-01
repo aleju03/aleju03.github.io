@@ -228,6 +228,15 @@ world/
                   lattice, frayed by hashed segment dropout into T-junctions,
                   dead ends and double blocks, and the roads that run out
                   into the country
+  landmarks.ts    the second site grid: what stands in the *country*. One
+                  jittered candidate per 400 units, gated on biome, slope and
+                  a two-ring coast test, thrown out on roads, in towns and
+                  near the property. Also grades the pad its structure
+                  stands on, which the terrain reads per vertex, and which
+                  is one memoised lookup rather than the 3x3 scan every
+                  other site grid here pays for: siteOf's jitter keeps a
+                  site 0.19 * CELL clear of its cell edge, so no pad can
+                  reach out of its own cell
   props.ts        tree/cactus/rock kits, VARIANTS (6) shapes each, stamped
                   not instanced. Trunks are grown by wood(): a tube swept
                   along a wandering spine that flares into the ground and
@@ -237,7 +246,24 @@ world/
                   parasol), a baked dark-underside-to-lit-crown ramp, one
                   runtime-painted leaf texture (treeMesh.ts) shared by every
                   biome
-  buildings.ts    houses, walk-ups, towers, and enterable shopfronts
+  kitbash.ts      the stamp vocabulary every built thing shares: unit box,
+                  plane, cylinder, memoised frustum, and the five roof
+                  solids (gable, hip, gambrel, monopitch, barrel), plus
+                  box/panel/shaft/strut/put and the town's paint. Source
+                  geometry here is cached forever and never disposed, so
+                  anything parameterised is quantised and memoised or it
+                  leaks one geometry per chunk rebuild
+  houses.ts       the suburb: five house *plans* (gabled with an optional
+                  cross wing, cottage, ranch, townhouse, villa) rather than
+                  one kit with a dozen booleans on it, because what breaks a
+                  street up is plan, not dressing
+  buildings.ts    the town and the city: walk-ups, mixed use, towers (setback,
+                  slab, round), enterable shopfronts, and the three
+                  block-scale kits a lot is too small for (warehouse, chapel
+                  and churchyard, parking deck)
+  structures.ts   the nine landmark kits: lighthouse, tower windmill,
+                  farmstead, guyed radio mast, ruins, water tower, standing
+                  stones, log cabin, shipwreck
   surface.ts      the procedural surface pass: one aSurf float per stamp
                   picks brick, shingle, paving, bark... computed in the
                   fragment shader from world position, because merged
@@ -268,6 +294,31 @@ world/
   quality.ts      the graphics tier: every density and budget knob, read at
                   build time. New knobs go in the record, not beside it
 ```
+
+### Looking at it
+
+Booting the site to check a change out here costs a login, a boot sequence, a
+stand-up glide and a teleport. Two scripts skip all of that:
+
+```
+npm run shoot -- landmark:*            one of every landmark, one contact sheet
+npm run shoot -- biome:wetland --eye   a walker's eye line, to judge scale
+npm run shoot -- town:downtown --tod 0.78   dusk, when the glass pass lights up
+npm run shoot -- 240,320 --pick 400,300     what is under that pixel
+
+npm run measure -- kits        every prop kit: verts, cards, bounding box
+npm run measure -- chunks      build cost and vertex budget, by tier and zone
+npm run measure -- landmarks   site density and the kind mix
+npm run measure -- smoke       a few thousand chunks, catching exceptions
+```
+
+Reach for `measure` first. `src/game/` is renderer-free, so anything with a
+number in it is faster and more certain there, and it catches a class of bug a
+picture cannot: `measure kits` prints each kit's bounding box, which is how the
+reeds turned out to have been built upside down, hanging from y=0.04 down to
+y=-3.02 and therefore buried whole by every scatter since they were written. A
+prop that renders underground looks exactly like a prop that was never
+scattered, and no screenshot was ever going to say otherwise.
 
 ### Rules that hold it together
 
@@ -342,9 +393,23 @@ world/
   matter are `r` (the collision radius, which is also how high the near end
   rests when it lands) and `rTop` (what the *far* end rests on: a crown props
   a felled trunk up at a real angle, a lamp head does not).
-- **A building**: write a kit taking `(out: BuildOut, lot: Lot)` and hook it
-  into `KIND_FOR`. Respect `out.detailed`: on the outer ring it is a
+- **A building**: write a kit taking `(out: BuildOut, lot: Lot)`, add its name
+  to `BuildKind`, hook it into `KIND_FOR` (a share of a block) or
+  `BLOCK_KIND_FOR` (a whole one), and give it a case in `chunk.ts`'s `raise`.
+  Build it in the lot's own frame (`kitbash.ts`'s `frameOf`): `u` runs along
+  the frontage, `v` out toward the street, and the four cardinal facings fall
+  out of two sign flips. Respect `out.detailed`: on the outer ring it is a
   silhouette and window grids are the most expensive thing the city builds.
+- **A landmark**: add a kind to `LandmarkKind`, a footprint and pad to `SIZE`
+  (the pad must stay under `PAD_MAX` or the cheap single-cell lookup stops
+  being correct), a line or two in `eligible()`'s biome table, and a builder
+  in `structures.ts`. Two things to get right. **Weighting is by repetition**:
+  a kind listed twice for a biome is twice as likely there. And **facing is
+  either free or cardinal**: collision out here is an AABB, so anything
+  rectangular has to snap its yaw to a quarter turn (`site(lm, true)`) or it
+  is mostly invisible wall, exactly the way a car parked askew is. Measure the
+  hit rate with a Node probe before trusting a new gate: the site grid is a
+  multi-gate condition and those are always stricter than they read.
 - **Anything that sways**: call `applySway()` on its material. Merged geometry
   bakes an `aSway` weight through `MeshBuilder`; instanced geometry with a
   unit-height local space gets it from `position.y` for free.

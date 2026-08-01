@@ -29,3 +29,6 @@ dist-ssr
 
 # Demo apps for portfolio links — independent git clones, deployed to Vercel separately
 demos/
+
+# scripts/shoot.mjs writes here by default
+shots/

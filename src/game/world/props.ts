@@ -859,14 +859,25 @@ const boulder = (v: number): Kit => {
   return drain({ r: 1.9, h: 2.0 }, 2.6)
 }
 
-/** a fistful of blades, each a drooping leaf rather than a stick — a marsh is
-    mostly this, so it is worth the eight extra vertices apiece */
+/**
+ * A fistful of blades, each a drooping leaf rather than a stick: a marsh is
+ * mostly this, so it is worth the eight extra vertices apiece.
+ *
+ * The pitch is negative and that is not cosmetic. BLADE runs along +z, and a
+ * positive x rotation tips it *down*: at the +1.34 this carried until now,
+ * every blade of every reed hung from y=0.04 down to y=-3.02 in kit space,
+ * and `plant()` stamps a kit at ground level minus 0.15. Every reed in every
+ * wetland was therefore buried whole, 180 of them per chunk, drawing nothing.
+ * Measured with a bounding box over the built kit rather than seen, because
+ * an invisible prop looks exactly like a prop that was never scattered.
+ */
 const reed = (v: number): Kit => {
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2 + v * 3
     push(BLADE, 'leaf', new THREE.Matrix4().compose(
       new THREE.Vector3(Math.cos(a) * 0.2, 0, Math.sin(a) * 0.2),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(1.34 + (i % 2) * 0.14, -a, 0, 'YXZ')),
+      new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(-1.34 - (i % 2) * 0.14, -a, 0, 'YXZ')),
       new THREE.Vector3(0.42, 1, 2.6 + v * 0.9),
     ))
   }
@@ -875,16 +886,41 @@ const reed = (v: number): Kit => {
 
 /**
  * A clump of grass, for the mid distance where the real blade field
- * (world/grass.ts) has already faded out. Three squashed lumps rather than the
- * pair of crossed cards this started as: cards were cheaper by a few vertices
- * and looked it, turning edge-on into thin dark slivers that littered every
- * meadow with what read as scorch marks.
+ * (world/grass.ts) has faded out: that field reaches 47 units and `cover`
+ * builds to about 96, so this covers the ring between them.
+ *
+ * It was three squashed `NUB` lumps, and three squashed lumps is three solid
+ * green balls dropped on the lawn. At 210 a chunk it was also the single most
+ * repeated object in the world, so it was three solid green balls dropped on
+ * the lawn several thousand times, right where the player is standing, on top
+ * of a real blade field that was already drawing over it.
+ *
+ * Blades now, cut from the same `BLADE` the reeds and palm fronds use: five
+ * off one root, splayed and arcing outward on their own droop. The version
+ * before the lumps was crossed *cards*, and the lumps were the fix for it,
+ * so it is worth writing down why cards are still not the answer: edge-on a
+ * card is a sliver, and at ankle height those slivers read as scorch marks
+ * scattered over a meadow. A blade has thickness in every orientation
+ * because it is a shallow V, which is the whole reason BLADE exists.
+ *
+ * 75 vertices against 42, which biomes.ts paid for by thinning the tuft
+ * counts about a third. Inside 47 units the real field covers the loss and
+ * outside it nobody is counting blades.
  */
 const tuft = (v: number): Kit => {
-  push(NUB[0], 'leaf', at(0, 0.18, 0, 1.15 + v * 0.35, 0.66, 1.0))
-  push(NUB[2], 'leaf', at(0.36 - v * 0.6, 0.13, 0.24, 0.78, 0.5, 0.72))
-  push(NUB[1], 'leaf', at(-0.3 + v * 0.4, 0.11, -0.26, 0.62, 0.42, 0.6))
-  return drain(null, 0.6)
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 + v * 4.2
+    push(BLADE, 'leaf', new THREE.Matrix4().compose(
+      new THREE.Vector3(Math.cos(a) * 0.12, 0, Math.sin(a) * 0.12),
+      // negative pitch stands the blade up: BLADE runs along +z, so a
+      // *positive* x rotation lays it over and past a radian buries it (see
+      // the note on `reed`, which did exactly that for months)
+      new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(-1.12 - (i % 2) * 0.2 + v * 0.22, -a, 0, 'YXZ')),
+      new THREE.Vector3(0.34, 1, 0.72 + v * 0.34),
+    ))
+  }
+  return drain(null, 0.85)
 }
 
 const MAKERS: Record<PropKind, (v: number, vi: number) => Kit> = {

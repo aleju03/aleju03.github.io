@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>world probe</title>
+    <style>
+      html, body { margin: 0; background: #11151a; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <!-- Served by the dev server only: vite's build input is the root
+         index.html, so nothing in scripts/ ships. scripts/shoot.mjs drives
+         this page over CDP; opening it by hand shows the last shot. -->
+    <canvas id="c" width="16" height="16"></canvas>
+    <script type="module">
+      import { shoot, pick } from './probe.ts'
+      window.__probe = { shoot, pick, ready: true }
+    </script>
+  </body>
+</html>
