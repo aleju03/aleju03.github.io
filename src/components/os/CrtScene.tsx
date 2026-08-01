@@ -28,7 +28,7 @@ import { footstep, landThump } from '../../game/core/sfx'
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
-import { setGfxTier } from '../../game/world/quality'
+import { classifyGpu, setGfxTier, type GfxTier } from '../../game/world/quality'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
 import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
 import {
@@ -42,7 +42,7 @@ import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
-import { PREFS_KEY, loadPrefs } from './roamPrefs'
+import { PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
 import { createProximityVoice, type VoiceMode } from './proximityVoice'
 import type { Session } from './osContext'
 import { track } from '../../analytics'
@@ -286,6 +286,10 @@ export default function CrtScene({
       which keeps it off the stand-up frame */
   const [everPaused, setEverPaused] = useState(false)
   const [prefs, setPrefs] = useState(loadPrefs)
+  /** what the GPU sniff decided and what the world was actually built at; they
+      differ exactly when the visitor has overruled the sniff. Set once, when
+      the renderer is created, which is always long before a pause is possible */
+  const [tierInfo, setTierInfo] = useState<{ auto: GfxTier; built: GfxTier } | null>(null)
   // --- the fleet -----------------------------------------------------------
   // a parked machine in reach, what is being driven, and the instrument
   // readout. All of it is HUD state, mirrored out of the sim on change only —
@@ -467,8 +471,16 @@ export default function CrtScene({
           alpha: true,
           powerPreference: 'high-performance',
         })
-        const PR_CAP = Math.min(window.devicePixelRatio, 2)
-        webgl.setPixelRatio(PR_CAP)
+        // The renderer's resolution ceiling: the panel's own ratio, capped at
+        // 2 (past which the returns vanish and the cost keeps squaring), times
+        // whatever the visitor left the render-scale dial on. It is a `let`
+        // rather than the constant it used to be because that dial moves
+        // mid-roam, and the adaptive governor below sheds *from* this number,
+        // so the two have to be the same number.
+        const PR_BASE = Math.min(window.devicePixelRatio, 2)
+        let prScale = prefsRef.current.scale
+        let prCeil = PR_BASE * prScale
+        webgl.setPixelRatio(prCeil)
         webgl.setSize(W, H)
         webgl.shadowMap.enabled = true
         // PCFSoft is less prone to the blotchy VSM halos that show up around
@@ -480,24 +492,30 @@ export default function CrtScene({
         webgl.shadowMap.autoUpdate = true
         webgl.toneMapping = THREE.ACESFilmicToneMapping
         webgl.toneMappingExposure = 1.1
-        // classify the GPU and pick the graphics tier BEFORE any level
-        // builds: grass density, canopy fullness and the sun's shadow map
-        // are baked at construction time (world/quality.ts). Discrete cards
-        // get the dense tier; integrated, mobile and software renderers keep
-        // the lean one, with the pixel-ratio governor under both.
+        // Pick the graphics tier BEFORE any level builds: grass density,
+        // canopy fullness and the sun's shadow map are baked at construction
+        // time (world/quality.ts). The GPU string decides it by default, and
+        // the pause sheet's "detail" choice overrules that when it is not on
+        // auto — which is the whole reason the setting exists, since a regex
+        // over a driver string is wrong in both directions on real hardware.
+        // Both numbers are reported to the menu so it can say what the sniff
+        // found and whether the choice on the sheet still agrees with the
+        // world that got built.
+        let autoTier: GfxTier = 'medium'
         try {
           const gl = webgl.getContext()
           const info = gl.getExtension('WEBGL_debug_renderer_info')
-          const gpu = info
-            ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL))
-            : String(gl.getParameter(gl.RENDERER))
-          setGfxTier(
-            /intel|iris|uhd|mali|adreno|powervr|videocore|apple gpu|swiftshader|llvmpipe/i
-              .test(gpu) ? 'medium' : 'high',
+          autoTier = classifyGpu(
+            info
+              ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL))
+              : String(gl.getParameter(gl.RENDERER)),
           )
         } catch {
-          setGfxTier('medium')
+          /* no way to ask: the conservative answer, as before */
         }
+        const builtTier = detailTier(prefsRef.current.detail, autoTier)
+        setGfxTier(builtTier)
+        setTierInfo({ auto: autoTier, built: builtTier })
         // three only reads a program's link status when this is on, and that
         // read (getProgramInfoLog/getShaderInfoLog) blocks the main thread
         // until the driver has finished compiling — the exact stall
@@ -1790,8 +1808,9 @@ export default function CrtScene({
         let lastT = 0
         // adaptive resolution: if the walk can't hold frame rate, step the
         // pixel ratio down (never back up mid-roam, so it can't oscillate);
-        // each roam and each sit-down restores full crispness
-        let pr = PR_CAP
+        // each roam and each sit-down restores full crispness, and moving the
+        // render-scale dial restores it to the new ceiling on the next frame
+        let pr = prCeil
         let emaMs = 16
         let prWait = 1.5
         // the frame limiter's next deadline, kept beside the governor because
@@ -2046,14 +2065,32 @@ export default function CrtScene({
             void loadWorldCovered()
           }
           prWait -= rawMs / 1000
+          // The render-scale dial, taken the frame after it moves. It is a
+          // new ceiling *and* a fresh governor: the smoothed frame cost was
+          // measured at the old resolution, so leaving it would have a step
+          // down shed again immediately and a step up refuse to give anything
+          // back until the average had crawled out of the last one.
+          if (prefsRef.current.scale !== prScale) {
+            prScale = prefsRef.current.scale
+            prCeil = PR_BASE * prScale
+            pr = prCeil
+            emaMs = 16
+            prWait = 1.5
+            webgl?.setPixelRatio(pr)
+          }
           // 22 ms is the budget with nothing capping the loop. Under the
           // limiter the frame time *is* the interval by construction, so the
           // budget has to clear it or a 30 fps cap reads as a card that cannot
           // cope and sheds resolution it had no reason to. A cap of 60 or
           // faster leaves these numbers exactly where they were.
           const budget = Math.max(22, interval * 1.3)
-          if (prWait <= 0 && emaMs > budget && pr > 1) {
-            pr = Math.max(1, pr - (emaMs > budget * 2 ? 0.5 : 0.25))
+          // the floor is 1, or the ceiling itself once the dial is under it:
+          // somebody who has already chosen to render at 60% has made this
+          // decision by hand, and there is nothing left for the governor to
+          // take that they have not taken
+          const prFloor = Math.min(1, prCeil)
+          if (prWait <= 0 && emaMs > budget && pr > prFloor) {
+            pr = Math.max(prFloor, pr - (emaMs > budget * 2 ? 0.5 : 0.25))
             webgl?.setPixelRatio(pr)
             prWait = 1.2
           }
@@ -2636,8 +2673,13 @@ export default function CrtScene({
           // with the OS still running the tube keeps spilling light
           spill.intensity = liveRef.current ? 1.0 : 0
           // fresh roam, fresh resolution budget and a limiter deadline that
-          // is not still holding a timestamp from the last one
-          pr = PR_CAP
+          // is not still holding a timestamp from the last one. The ceiling is
+          // recomputed rather than reused: the dial is reachable from the
+          // pause sheet, and a pause can end in sitting down as easily as in
+          // resuming, so it may well have moved since the last roam
+          prScale = prefsRef.current.scale
+          prCeil = PR_BASE * prScale
+          pr = prCeil
           emaMs = 16
           prWait = 1.5
           nextFrame = 0
@@ -2732,7 +2774,7 @@ export default function CrtScene({
             pendant.shadow.needsUpdate = true
             key.shadow.needsUpdate = true
             // sit back down at full resolution; the governor only runs walking
-            pr = PR_CAP
+            pr = prCeil
             webgl.setPixelRatio(pr)
           }
           nearNow = false
@@ -3189,6 +3231,7 @@ export default function CrtScene({
           multiplayer={mp.status === 'live'}
           prefs={prefs}
           onPrefs={setPrefs}
+          tier={tierInfo}
           fleet={fleetWhere}
           people={people}
           driving={!!driving}

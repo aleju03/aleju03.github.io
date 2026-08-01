@@ -3,7 +3,10 @@ import type { VehicleId } from '../../game/vehicles/types'
 import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
-import { FPS_CAPS, fpsCapLabel, type RoamPrefs } from './roamPrefs'
+import {
+  DETAILS, FPS_CAPS, SCALE_MAX, SCALE_MIN, detailTier, fpsCapLabel, type RoamPrefs,
+} from './roamPrefs'
+import type { GfxTier } from '../../game/world/quality'
 
 /*
   The pause screen is a sheet of paper pinned to the bedroom wall.
@@ -45,6 +48,18 @@ import { FPS_CAPS, fpsCapLabel, type RoamPrefs } from './roamPrefs'
 const COMPASS_DEG: Record<string, number> = {
   N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315,
 }
+
+/** the camera, written out. `third` is a boolean in the prefs and two words
+    here, which is the one place the two shapes have to meet */
+const CAMERAS = [
+  { id: 'first', label: 'first person' },
+  { id: 'third', label: 'third person' },
+] as const
+
+/** the detail tiers, in the order they are written on the sheet, and the word
+    for what a tier actually is once it is running */
+const DETAIL_WORDS = DETAILS.map((id) => ({ id, label: id }))
+const tierWord = (t: GfxTier) => (t === 'high' ? 'full' : 'lean')
 
 /** somebody else out in the world, as this screen lists them: who they are,
     what colour they painted their shell, and where they were standing when
@@ -106,6 +121,62 @@ function Row({
       <span className="flex-1">{label}</span>
       {trailing}
     </button>
+  )
+}
+
+/**
+  The other kind of setting: a short list of words with the one in force
+  circled in pencil, and a pencil note on the right for whatever the words
+  cannot say themselves.
+
+  Anything with two or three states is written out rather than dialled,
+  because a slider that can only stop in three places is a slider pretending
+  to be a choice, and because the words are the label — "third person" needs
+  no caption and "70%" would.
+*/
+function Choice<T extends string>({
+  label,
+  note,
+  options,
+  value,
+  onPick,
+}: {
+  label: string
+  note?: ReactNode
+  options: ReadonlyArray<{ id: T; label: string }>
+  value: T
+  onPick: (v: T) => void
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-4">
+        <span className="font-display text-[21px] uppercase" style={{ color: INK }}>
+          {label}
+        </span>
+        {note}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-7">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            onClick={() => onPick(o.id)}
+            aria-pressed={value === o.id}
+            className="font-display relative px-1 py-0.5 text-[22px] uppercase"
+            style={{ color: value === o.id ? INK : INK_SOFT }}
+          >
+            {o.label}
+            <span
+              aria-hidden
+              className={`absolute -inset-x-2.5 -inset-y-1.5 transition-opacity ${
+                value === o.id ? 'opacity-100' : 'opacity-0'
+              }`}
+              style={CIRCLED}
+            />
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -235,6 +306,11 @@ export interface PauseScreenProps {
   multiplayer: boolean
   prefs: RoamPrefs
   onPrefs: (next: (p: RoamPrefs) => RoamPrefs) => void
+  /** what the GPU sniff decided, and what the running world was actually
+      built at; they differ exactly when `prefs.detail` has overruled the
+      sniff. Null only before the renderer has classified, which cannot
+      coincide with a pause */
+  tier: { auto: GfxTier; built: GfxTier } | null
   /** where the machines are, measured when the menu went up */
   fleet: Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
   /** and everyone else out there, measured at the same moment */
@@ -253,6 +329,7 @@ export default function PauseScreen({
   multiplayer,
   prefs,
   onPrefs,
+  tier,
   fleet,
   people,
   driving,
@@ -272,6 +349,28 @@ export default function PauseScreen({
   ]
   // drawn on the first pause and kept: see paper.ts
   const stock = useMemo(() => paperTexture(), [])
+
+  /*
+    The line beside "detail", which has three things to say and says exactly
+    one of them.
+
+    The tier is baked into merged chunk geometry, the two grass lattices and a
+    #define in the sky shader, all at construction, so a choice that disagrees
+    with the world standing outside is a *pending* choice and the sheet has to
+    admit it rather than let somebody stare at the same grass wondering. When
+    they do agree, the useful thing to print depends on which word is circled:
+    under "auto" the interesting fact is what the sniff came back with, since
+    that is invisible everywhere else and is the whole reason for overruling
+    it; under an explicit word there is nothing left to disclose, so the line
+    goes back to naming what the knob moves.
+  */
+  const detailNote = !tier
+    ? null
+    : detailTier(prefs.detail, tier.auto) !== tier.built
+      ? 'on the next load'
+      : prefs.detail === 'auto'
+        ? `it found ${tierWord(tier.auto)}`
+        : 'grass, trees, sky'
 
   // the arrows walk the menu, because a menu you can only mouse around is a
   // menu that forgot which device it is on. Escape stays CrtScene's (it is
@@ -381,69 +480,86 @@ export default function PauseScreen({
               <WorldIdentity {...identity} active={open && page === 'character'} />
             </div>
 
+            {/* Two columns, because the settings outgrew one: stacked, the
+                frame limiter fell off the bottom of the sheet on a laptop and
+                the right half of the paper was blank the whole time. What is
+                in each is the split itself — how the world looks on the left,
+                what it costs on the right — and the camera sits across the top
+                because it is the one row whose two phrases will not fit in
+                half the width, and because a mode is not a number. */}
             {page === 'settings' && (
-              <div className="flex max-w-lg flex-col gap-7">
-                <div>
-                  <div className="flex items-baseline justify-between gap-4">
-                    <span className="font-display text-[21px] uppercase" style={{ color: INK }}>
-                      camera
-                    </span>
-                    <Note>v toggles</Note>
-                  </div>
-                  {/* two words; the one you are in is circled */}
-                  <div className="mt-2 flex gap-7">
-                    {([false, true] as const).map((third) => (
-                      <button
-                        key={String(third)}
-                        type="button"
-                        onClick={() => onPrefs((p) => ({ ...p, third }))}
-                        aria-pressed={prefs.third === third}
-                        className="font-display relative px-1 py-0.5 text-[22px] uppercase"
-                        style={{ color: prefs.third === third ? INK : INK_SOFT }}
-                      >
-                        {third ? 'third person' : 'first person'}
-                        <span
-                          aria-hidden
-                          className={`absolute -inset-x-2.5 -inset-y-1.5 transition-opacity ${
-                            prefs.third === third ? 'opacity-100' : 'opacity-0'
-                          }`}
-                          style={CIRCLED}
-                        />
-                      </button>
-                    ))}
-                  </div>
+              <div className="grid gap-x-10 gap-y-7 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <Choice
+                    label="camera"
+                    note={<Note>v toggles</Note>}
+                    options={CAMERAS}
+                    value={prefs.third ? 'third' : 'first'}
+                    onPick={(v) => onPrefs((p) => ({ ...p, third: v === 'third' }))}
+                  />
                 </div>
 
-                <Dial
-                  label="field of view"
-                  value={prefs.fov}
-                  min={30}
-                  max={80}
-                  step={1}
-                  display={`${prefs.fov}°`}
-                  onChange={(fov) => onPrefs((p) => ({ ...p, fov }))}
-                />
-                <Dial
-                  label="mouse sensitivity"
-                  value={prefs.sens}
-                  min={0.3}
-                  max={3}
-                  step={0.05}
-                  display={`${prefs.sens.toFixed(2)}×`}
-                  onChange={(sens) => onPrefs((p) => ({ ...p, sens }))}
-                />
-                {/* the dial rides on the index, not the number: the values are
-                    a list of detents and the spacing between them is not
-                    linear (30 to 45 is the same throw as 200 to 240) */}
-                <Dial
-                  label="frame limit"
-                  value={Math.max(0, FPS_CAPS.indexOf(prefs.cap))}
-                  min={0}
-                  max={FPS_CAPS.length - 1}
-                  step={1}
-                  display={fpsCapLabel(prefs.cap)}
-                  onChange={(i) => onPrefs((p) => ({ ...p, cap: FPS_CAPS[i] ?? 0 }))}
-                />
+                <div className="flex flex-col gap-7">
+                  <Dial
+                    label="field of view"
+                    value={prefs.fov}
+                    min={30}
+                    max={80}
+                    step={1}
+                    display={`${prefs.fov}°`}
+                    onChange={(fov) => onPrefs((p) => ({ ...p, fov }))}
+                  />
+                  <Dial
+                    label="mouse sensitivity"
+                    value={prefs.sens}
+                    min={0.3}
+                    max={3}
+                    step={0.05}
+                    display={`${prefs.sens.toFixed(2)}×`}
+                    onChange={(sens) => onPrefs((p) => ({ ...p, sens }))}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-7">
+                  {/* how much world to build. See detailNote: this one is
+                      baked at construction and cannot be honoured until the
+                      next load, which the sheet says rather than hides */}
+                  <Choice
+                    label="detail"
+                    note={detailNote && <Note>{detailNote}</Note>}
+                    options={DETAIL_WORDS}
+                    value={prefs.detail}
+                    onPick={(detail) => onPrefs((p) => ({ ...p, detail }))}
+                  />
+                  {/* ...and how many pixels to draw it into. The opposite kind
+                      of knob: one number on the renderer, live on the next
+                      frame, and the ceiling the adaptive governor sheds from */}
+                  <Dial
+                    label="render scale"
+                    value={prefs.scale}
+                    min={SCALE_MIN}
+                    max={SCALE_MAX}
+                    step={0.05}
+                    display={`${Math.round(prefs.scale * 100)}%`}
+                    onChange={(v) =>
+                      // off the dial these arrive as 0.6000000000000001, which
+                      // is a number nobody wants written into localStorage
+                      onPrefs((p) => ({ ...p, scale: Math.round(v * 100) / 100 }))
+                    }
+                  />
+                  {/* the dial rides on the index, not the number: the values
+                      are a list of detents and the spacing between them is not
+                      linear (30 to 45 is the same throw as 200 to 240) */}
+                  <Dial
+                    label="frame limit"
+                    value={Math.max(0, FPS_CAPS.indexOf(prefs.cap))}
+                    min={0}
+                    max={FPS_CAPS.length - 1}
+                    step={1}
+                    display={fpsCapLabel(prefs.cap)}
+                    onChange={(i) => onPrefs((p) => ({ ...p, cap: FPS_CAPS[i] ?? 0 }))}
+                  />
+                </div>
               </div>
             )}
 

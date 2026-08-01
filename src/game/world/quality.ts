@@ -10,14 +10,32 @@
   everything was first tuned on, and the adaptive pixel-ratio governor in
   CrtScene remains the safety net under both.
 
-  CrtScene classifies the GPU (UNMASKED_RENDERER, with a conservative
-  fallback) and calls setGfxTier BEFORE any level builds — these values are
-  baked into geometry and materials at construction, not read per frame.
-  Headless probes never call it and get 'medium', which keeps jiti numbers
-  deterministic.
+  CrtScene reads the GPU string (UNMASKED_RENDERER, with a conservative
+  fallback), runs it past classifyGpu, and calls setGfxTier BEFORE any level
+  builds — these values are baked into geometry and materials at construction,
+  not read per frame. Headless probes never call it and get 'medium', which
+  keeps jiti numbers deterministic.
+
+  The sniff is a guess and will be wrong on real hardware in both directions
+  (an Arc or a Lunar Lake iGPU reads as integrated; a ten-year-old discrete
+  card reads as a real one), so the visitor can overrule it from the pause
+  sheet — `components/os/roamPrefs.ts` holds that choice and CrtScene resolves
+  the two here. Because everything in this record is *baked*, an overrule
+  lands on the next load rather than on the running world; the menu says so.
 */
 
 export type GfxTier = 'high' | 'medium'
+
+/**
+  What a GPU string is worth. Integrated, mobile and software renderers get
+  the lean tier everything was first tuned on; anything else is assumed to be
+  a discrete card. Kept beside the two records rather than at the call site,
+  because a classifier and the thing it classifies into drift apart otherwise.
+*/
+export const classifyGpu = (gpu: string): GfxTier =>
+  /intel|iris|uhd|mali|adreno|powervr|videocore|apple gpu|swiftshader|llvmpipe/i.test(gpu)
+    ? 'medium'
+    : 'high'
 
 export interface Gfx {
   /** lattice edge of the *far* grass field, at grass.ts's FAR_STEP; the pool

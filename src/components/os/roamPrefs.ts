@@ -9,9 +9,40 @@
   detents that only the menu knows about is a list the loader will happily
   accept a value from between.
 
+  Two of them are graphics knobs and they are deliberately different in kind,
+  because the renderer is. `scale` is live: it is one number on the renderer
+  and moving it repaints the next frame. `detail` is not: `world/quality.ts`
+  is baked into merged chunk geometry, two grass lattices and one #define in
+  the sky shader at construction time, so choosing it is a statement about the
+  next load. The menu is the one place that difference is visible, so the menu
+  is where it has to be said out loud rather than papered over.
+
   Nothing in here touches the renderer or React; it is a record, a whitelist
   and a parser.
 */
+
+import type { GfxTier } from '../../game/world/quality'
+
+/**
+  What the visitor may say about `world/quality.ts`'s tier. 'auto' trusts the
+  GPU sniff, which is a regex over a driver string and is wrong in both
+  directions on real hardware; the other two overrule it. Three words rather
+  than a slider, because there are exactly two tuned tier records and inventing
+  a third stop nobody has measured is how a menu starts lying.
+*/
+export const DETAILS = ['auto', 'lean', 'full'] as const
+export type Detail = (typeof DETAILS)[number]
+
+/** the tier a choice asks for, given what the sniff came back with */
+export const detailTier = (detail: Detail, auto: GfxTier): GfxTier =>
+  detail === 'auto' ? auto : detail === 'full' ? 'high' : 'medium'
+
+/** how far the render-scale dial may pull the renderer's pixel ratio down.
+    It only sheds: 1 is the panel's own ratio (itself already capped at 2, past
+    which the returns vanish and the cost keeps squaring), and the bottom is
+    where a 1x screen still reads as a picture rather than as a mosaic */
+export const SCALE_MIN = 0.5
+export const SCALE_MAX = 1
 
 /** the roam preferences the pause menu edits; the seated view stays fixed */
 export interface RoamPrefs {
@@ -20,6 +51,11 @@ export interface RoamPrefs {
   third: boolean
   /** frames per second the walk is allowed to draw; 0 is uncapped */
   cap: number
+  /** how much world to build: the tier override, applied on the next load */
+  detail: Detail
+  /** multiplier on the renderer's pixel ratio, and the ceiling the adaptive
+      governor sheds from. Live */
+  scale: number
 }
 
 /**
@@ -41,7 +77,9 @@ export const fpsCapLabel = (cap: number) => (cap === 0 ? 'no limit' : `${cap} fp
   who disagrees in either direction.
 */
 export const PREFS_KEY = 'alejos-roam-prefs'
-const PREFS_DEFAULT: RoamPrefs = { fov: 60, sens: 1, third: false, cap: 160 }
+const PREFS_DEFAULT: RoamPrefs = {
+  fov: 60, sens: 1, third: false, cap: 160, detail: 'auto', scale: 1,
+}
 
 export const loadPrefs = (): RoamPrefs => {
   try {
@@ -56,6 +94,12 @@ export const loadPrefs = (): RoamPrefs => {
         // their range: both ends are meaningful values, and anything in
         // between is a bead pointing at no tick at all
         cap: FPS_CAPS.includes(Number(p.cap)) ? Number(p.cap) : PREFS_DEFAULT.cap,
+        // likewise a whitelist, not a cast: an unknown word here would be
+        // carried all the way to a tier lookup that has no entry for it
+        detail: DETAILS.includes(p.detail as Detail)
+          ? (p.detail as Detail)
+          : PREFS_DEFAULT.detail,
+        scale: Math.min(SCALE_MAX, Math.max(SCALE_MIN, Number(p.scale) || PREFS_DEFAULT.scale)),
       }
     }
   } catch {

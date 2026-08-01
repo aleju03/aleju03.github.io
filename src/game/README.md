@@ -292,7 +292,10 @@ world/
                   re-cut past the fog when the walker outruns it. Session
                   state, like the fleet; nothing is written into a chunk
   quality.ts      the graphics tier: every density and budget knob, read at
-                  build time. New knobs go in the record, not beside it
+                  build time, plus the GPU sniff that picks between them. New
+                  knobs go in the record, not beside it. The visitor can
+                  overrule the sniff from the pause sheet ("detail"), which
+                  lands on the next load because these are baked
 ```
 
 ### Looking at it
