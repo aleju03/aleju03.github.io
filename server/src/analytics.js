@@ -23,10 +23,24 @@
 // exactly as it did before — same graceful-degradation deal the frontend
 // makes when VITE_CHAT_URL is missing.
 
-import { AnalyticsStore, createAnalyticsHandler, createDb } from '@aleju03/peeko';
+import { AnalyticsStore, createAnalyticsHandler, createDb, exec } from '@aleju03/peeko';
 import { countryForTimeZone } from './timezones.js';
 
 const CAPTURE_PATH = '/peeko/capture';
+
+// peeko's own read API clamps every range to 720 hours, so offering a longer
+// one on the dashboard would quietly answer with 30 days of data under a "90d"
+// label. The ceiling is peeko's, and it is repeated here so the two agree.
+const MAX_RANGE_HOURS = 720;
+
+// Columns in the traffic chart. Fixed, so the chart is the same width whatever
+// the range, and the bucket simply gets wider.
+const TIMELINE_BUCKETS = 48;
+
+// How much of the feed travels on each rollup. The dashboard stitches these
+// rows into per-visitor sessions client-side, so this is really "how far back a
+// session can reach", not "how many rows fit on screen".
+const FEED_LIMIT = 400;
 const CAPTURE_RATE_MAX = 120; // capture requests per window per ip (each may be a batch)
 const CAPTURE_RATE_WINDOW_MS = 60_000;
 const RATE_SWEEP_MS = 5 * 60_000;
@@ -102,6 +116,12 @@ export async function createAnalytics(options) {
     // "/" is the portfolio's front page, not landing-page noise — peeko drops
     // it by default, which for this site would hide most of the traffic
     feedExcludeRootPageview: false,
+    // peeko stamps every feed row with a clock label in this zone. The
+    // dashboard ignores it and formats from the epoch `ts` in the browser
+    // instead — a label rendered on a VPS is right for the VPS and wrong for
+    // whoever is reading it, which is how a visit at midnight came back
+    // reading 6am. The option stays set so anything else reading this store
+    // (a log line, a future export) gets my zone rather than UTC.
     displayTimeZone: options.timeZone ?? 'UTC',
     onDrop: (count) => console.warn(`analytics: dropped ${count} buffered events`),
   });
@@ -165,6 +185,97 @@ export async function createAnalytics(options) {
     return true;
   }
 
+  /**
+   * The three rollups peeko has no method for, read straight off the same
+   * table over the same libsql handle.
+   *
+   * They are one function because they share a window and are always wanted
+   * together, and they are raw SQL because peeko is deliberately a core rather
+   * than a dashboard: its read API covers what every site wants, and the shape
+   * of the rest is the site's own business.
+   */
+  async function derived(since, rangeHours) {
+    // The store buffers writes for a second before they land, and these read
+    // around peeko's own methods, which each flush for themselves.
+    await store.flush();
+
+    // Buckets are aligned to `since` rather than to the wall clock, so the
+    // newest one always ends at "now" and the chart never opens on a half-empty
+    // column. The clock labels above the axis are a separate, timezone-aware
+    // overlay on the client; these are just offsets into the range.
+    const bucketMs = Math.max(60_000, Math.ceil((rangeHours * 60 * 60_000) / TIMELINE_BUCKETS));
+    const [buckets, devices, seen, bots] = await Promise.all([
+      exec(db, `
+        select cast((ts - ?) / ? as integer) as b,
+          count(*) as events,
+          sum(case when event = '$pageview' then 1 else 0 end) as pageviews,
+          count(distinct distinct_id) as visitors
+        from analytics_events
+        where ts > ? and is_bot = 0 and distinct_id != 'server'
+        group by b order by b
+      `, [since, bucketMs, since]),
+      // Mirrors peeko's own deviceKindFor: the screen wins when it is a real
+      // number, the viewport is the fallback, and neither means unknown.
+      exec(db, `
+        select case
+            when coalesce(nullif(screen_width, 0), nullif(viewport_width, 0)) is null then 'unknown'
+            when coalesce(nullif(screen_width, 0), nullif(viewport_width, 0)) < 768 then 'mobile'
+            else 'desktop' end as kind,
+          count(distinct distinct_id) as n
+        from analytics_events
+        where ts > ? and is_bot = 0 and distinct_id != 'server'
+        group by kind order by n desc
+      `, [since]),
+      // New vs returning, over the whole retained table rather than the range:
+      // a visitor is new if the oldest row that still exists for them is inside
+      // it. Retention therefore bounds "returning" at 180 days, which is the
+      // honest answer rather than a wrong one.
+      exec(db, `
+        select count(*) as total, sum(case when first_ts > ? then 1 else 0 end) as fresh
+        from (
+          select distinct_id, min(ts) as first_ts, max(ts) as last_ts
+          from analytics_events where is_bot = 0 and distinct_id != 'server'
+          group by distinct_id
+        ) where last_ts > ?
+      `, [since, since]),
+      // Crawlers are stored and then filtered out of everything above, so
+      // without this line the dashboard cannot tell "quiet week" from "quiet
+      // week, plus four hundred hits from a search engine".
+      exec(db, 'select count(*) as n from analytics_events where ts > ? and is_bot = 1', [since]),
+    ]);
+
+    const byBucket = new Map();
+    for (const row of buckets.rows) {
+      const index = Number(row.b);
+      if (!Number.isFinite(index) || index < 0 || index >= TIMELINE_BUCKETS) continue;
+      byBucket.set(index, {
+        ts: since + index * bucketMs,
+        events: Number(row.events ?? 0),
+        pageviews: Number(row.pageviews ?? 0),
+        visitors: Number(row.visitors ?? 0),
+      });
+    }
+
+    const visitors = seen.rows[0];
+    return {
+      bucketMs,
+      // Dense on purpose: a gap in a bar chart has to be drawn as a gap, and
+      // the client should not have to reconstruct which columns are missing.
+      timeline: Array.from({ length: TIMELINE_BUCKETS }, (_, i) =>
+        byBucket.get(i) ?? { ts: since + i * bucketMs, events: 0, pageviews: 0, visitors: 0 }
+      ),
+      devices: devices.rows.map((row) => ({
+        kind: String(row.kind ?? 'unknown'),
+        count: Number(row.n ?? 0),
+      })),
+      visitors: {
+        total: Number(visitors?.total ?? 0),
+        fresh: Number(visitors?.fresh ?? 0),
+      },
+      bots: Number(bots.rows[0]?.n ?? 0),
+    };
+  }
+
   return {
     store,
 
@@ -202,33 +313,68 @@ export async function createAnalytics(options) {
       return true;
     },
 
-    /** The dashboard rollup. Admin-gated by the caller. */
-    async monitor(rangeHours) {
-      const range = Number.isFinite(rangeHours) ? Math.min(Math.max(rangeHours, 1), 24 * 90) : 24;
-      const [overview, paths, topReferrers, topCountries, bounce, recent] = await Promise.all([
-        store.getOverview({ rangeHours: range }),
-        // NOT getTopPaths: that one hardcodes `path != '/'` to answer "which
-        // other pages do people reach", which on a portfolio hides the single
-        // most visited page. The breakdown reads $pathname straight out of the
-        // props bag, so "/" ranks like any other route.
-        store.getBreakdown({ event: '$pageview', prop: '$pathname', rangeHours: range, limit: 12 }),
-        store.getTopReferrers({ rangeHours: range }),
-        store.getTopCountries({ rangeHours: range }),
-        store.getBounce({ rangeHours: range }),
-        store.getRecentFeed({ rangeHours: range, limit: 40 }),
-      ]);
-      const topPaths = paths.map(({ value, count }) => ({ path: value, count }));
-      return { rangeHours: range, overview, topPaths, topReferrers, topCountries, bounce, recent };
+    /**
+     * The dashboard rollup. Admin-gated by the caller.
+     *
+     * Everything peeko answers itself is asked for here; the three queries
+     * below it are ones peeko has no method for and that the dashboard needs
+     * (the shape of traffic over time, the device split, and how much of the
+     * range is people who had never been here before).
+     *
+     * No clock label is computed anywhere in this payload. Every time on the
+     * dashboard is derived from an epoch `ts` in the browser, because the only
+     * timezone that is ever right is the one the person reading it is in.
+     * `now` rides along so ages stay honest even against a skewed local clock.
+     */
+    async monitor({ rangeHours, country } = {}) {
+      const range = Number.isFinite(rangeHours)
+        ? Math.min(Math.max(rangeHours, 1), MAX_RANGE_HOURS)
+        : 24;
+      const now = Date.now();
+      const since = now - range * 60 * 60_000;
+      const feedCountry = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country)
+        ? country.toUpperCase()
+        : null;
+
+      const [overview, paths, topReferrers, topCountries, bounce, recent, extra] =
+        await Promise.all([
+          store.getOverview({ rangeHours: range, now }),
+          // NOT getTopPaths: that one hardcodes `path != '/'` to answer "which
+          // other pages do people reach", which on a portfolio hides the single
+          // most visited page. The breakdown reads $pathname straight out of the
+          // props bag, so "/" ranks like any other route.
+          store.getBreakdown({ event: '$pageview', prop: '$pathname', rangeHours: range, limit: 12, now }),
+          store.getTopReferrers({ rangeHours: range, limit: 12, now }),
+          store.getTopCountries({ rangeHours: range, limit: 30, now }),
+          store.getBounce({ rangeHours: range, now }),
+          store.getRecentFeed({ rangeHours: range, limit: FEED_LIMIT, country: feedCountry, now }),
+          derived(since, range),
+        ]);
+
+      return {
+        rangeHours: range,
+        country: feedCountry,
+        now,
+        overview,
+        topPaths: paths.map(({ value, count }) => ({ path: value, count })),
+        topReferrers,
+        topCountries,
+        bounce,
+        recent,
+        ...extra,
+      };
     },
 
     /** Top-N of any property on any event — the site's custom events. */
-    async breakdown({ event, prop, rangeHours, distinct }) {
-      const range = Number.isFinite(rangeHours) ? Math.min(Math.max(rangeHours, 1), 24 * 90) : 24;
+    async breakdown({ event, prop, rangeHours, distinct, limit }) {
+      const range = Number.isFinite(rangeHours)
+        ? Math.min(Math.max(rangeHours, 1), MAX_RANGE_HOURS)
+        : 24;
       return store.getBreakdown({
         event: event ?? null,
         prop,
         rangeHours: range,
-        limit: 12,
+        limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 50) : 12,
         distinct: distinct === true,
       });
     },

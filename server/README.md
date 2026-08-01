@@ -44,9 +44,13 @@ The split that matters is trust:
 Analytics messages, same socket after `hello`, all refused with
 `{type:'error', code:'forbidden'}` unless the session is the admin:
 
-- `{type:'peeko-monitor', rangeHours}` → `{type:'peeko-monitor', rangeHours, overview, topPaths, topReferrers, topCountries, bounce, recent}`
-- `{type:'peeko-breakdown', event, prop, rangeHours, distinct?}` → `{type:'peeko-breakdown', event, prop, rows}`. Top-N of any property in the props bag, which is how the site's custom events (`project_view`, `app_open`, `os_boot`) are read
+- `{type:'peeko-monitor', rangeHours, country?}` → `{type:'peeko-monitor', rangeHours, country, now, overview, topPaths, topReferrers, topCountries, bounce, recent, bucketMs, timeline, devices, visitors, bots}`. `country` filters the feed only (the aggregates stay whole-site); `now` is the server clock, which the dashboard ages rows against instead of the browser's
+- `{type:'peeko-breakdown', event, prop, rangeHours, distinct?, limit?}` → `{type:'peeko-breakdown', event, prop, rows}`. Top-N of any property in the props bag, which is how the site's custom events (`project_view`, `app_open`, `os_boot`) are read
 - `{type:'peeko-live', on}` → subscribes; each accepted event arrives as `{type:'peeko-event', event}`
+
+`rangeHours` is clamped to **720** at both ends, because that is peeko's own
+ceiling: asking for more would answer with 30 days of data under a longer
+label.
 
 A failing analytics store never takes chat down: a bad token or an unreachable
 database logs and leaves `analytics` null, and the dashboard reports
@@ -67,6 +71,21 @@ Two deliberate departures from peeko's defaults, both in `analytics.js`:
 `feedExcludeRootPageview` is off (on this site `/` is the front page, not
 landing-page noise), and the paths panel is built from `getBreakdown` on
 `$pathname` rather than `getTopPaths`, which hardcodes `path != '/'`.
+
+Three rollups have no peeko method behind them and are raw SQL on the same
+libsql handle, in `analytics.js`'s `derived()`: the bucketed **timeline** the
+traffic chart is drawn from (aligned to the start of the range, so the newest
+column always ends at "now"), the **device split**, and **new vs returning**
+visitors, plus a count of the bot rows every other number excludes. peeko is a
+core rather than a dashboard on purpose; its read API covers what every site
+wants, and the shape of the rest is the site's own business.
+
+**No clock label ever leaves this server.** peeko stamps each feed row with a
+`timestamp` in `ANALYTICS_TIME_ZONE`, and the dashboard ignores it: an evening
+visit came back reading 6am because the label was rendered in the VPS's zone
+and read six hours west of it. Every time on screen is derived in the browser
+from the epoch `ts`. The option stays set so anything else reading this store
+gets a sensible zone rather than UTC.
 
 ## Protocol sketch
 

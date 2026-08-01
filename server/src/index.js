@@ -1286,7 +1286,12 @@ function analyticsGuard(ws) {
 function handlePeekoMonitor(ws, msg) {
   if (!analyticsGuard(ws)) return;
   analytics
-    .monitor(Number(msg.rangeHours))
+    .monitor({
+      rangeHours: Number(msg.rangeHours),
+      // the dashboard's country filter: applied to the feed here rather than
+      // in the browser so a narrow filter still reaches back the full range
+      country: typeof msg.country === 'string' ? msg.country : null,
+    })
     .then((data) => send(ws, { type: 'peeko-monitor', ...data }))
     .catch((err) => sendError(ws, 'server', String(err?.message ?? 'query failed')));
 }
@@ -1304,6 +1309,7 @@ function handlePeekoBreakdown(ws, msg) {
       prop,
       rangeHours: Number(msg.rangeHours),
       distinct: msg.distinct === true,
+      limit: Number(msg.limit),
     })
     .then((rows) =>
       send(ws, { type: 'peeko-breakdown', event: msg.event ?? null, prop, rows })

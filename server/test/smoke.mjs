@@ -341,6 +341,32 @@ async function main() {
   assert.equal(monitor.rangeHours, 24);
   console.log('15. admin rollup counts pageviews, uniques, paths and referrers');
 
+  // 15b. The four rollups peeko has no method for, which are raw SQL in
+  // analytics.js and therefore the part of this payload nothing else checks.
+  assert.equal(monitor.timeline.length, 48, 'the traffic chart is a fixed width');
+  assert.ok(monitor.bucketMs > 0);
+  // Dense series: every column present, oldest first, one bucket apart.
+  assert.equal(monitor.timeline[1].ts - monitor.timeline[0].ts, monitor.bucketMs);
+  assert.ok(
+    monitor.timeline.reduce((sum, b) => sum + b.pageviews, 0) >= 2,
+    'the pageviews above are somewhere in the timeline'
+  );
+  assert.ok(
+    monitor.devices.some((d) => d.kind === 'desktop' && d.count >= 2),
+    'a 1920px screen is a desktop, and the split agrees with the feed row'
+  );
+  assert.ok(monitor.visitors.total >= 2 && monitor.visitors.fresh >= 2, 'nobody here has been before');
+  assert.equal(typeof monitor.bots, 'number');
+  // The dashboard ages every row against this rather than the browser's clock.
+  assert.ok(Math.abs(monitor.now - Date.now()) < 60_000, 'the server sends its own clock');
+  console.log('15b. rollup carries the timeline, device split, visitor split and server clock');
+
+  // 15c. The range is clamped to peeko's own 720-hour ceiling, so a longer ask
+  // cannot come back as 30 days of data wearing a bigger label.
+  dup.send({ type: 'peeko-monitor', rangeHours: 24 * 365 });
+  assert.equal((await dup.nextOf('peeko-monitor', 'clamped monitor')).rangeHours, 720);
+  console.log('15c. an over-long range is clamped rather than mislabelled');
+
   // 16. Breakdown reaches into custom event properties.
   await capture({
     batch: [

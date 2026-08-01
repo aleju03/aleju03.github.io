@@ -174,8 +174,11 @@ export const APPS: Record<AppId, AppDef> = {
         className="object-contain"
       />
     ),
-    w: 780,
-    h: 580,
+    // wider than anything else here because it is the only window that is a
+    // dashboard: three stat tiles and a bar chart on one row, and a feed row
+    // that has to carry a visitor, a sentence and an age without wrapping
+    w: 900,
+    h: 640,
     single: true,
     render: () => <PeekoApp />,
   },
