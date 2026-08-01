@@ -36,6 +36,15 @@ import { propSnap } from '../../game/core/sfx'
   moved a step, because every one of those is a postMessage into another
   origin's window.
 
+  **A lit tube throws no light on the room, and that is deliberate.** Every
+  lamp in this house is hand-baked, and a real one added here would change
+  the shader configuration and relink every material in the room the first
+  time somebody pressed the button. The usual dodge is the moon pool's: an
+  additive glow lying on the floor. It does not work here, because the floor
+  in front of a television is where the coffee table and the rug are, so the
+  quad either lands under the table where nobody sees it or floats up to
+  where it cuts through it. The picture is bright and it is the cue.
+
   **The channel table is the whole editorial surface.** Video ids rot; this
   is one array and swapping an id needs nothing else to change. A channel
   with no id is not a bug, it is dead air, and it renders as one.
@@ -148,35 +157,6 @@ export function buildHouseTv({ scene, cssScene, screen, trackDisposable }: Opts)
   hole.updateMatrix()
   scene.add(hole)
 
-  /*
-    A lit tube throws light on the room, and the room has no light to give it:
-    every lamp in here is hand-baked and a new one would change the shader
-    configuration and relink every material in the house the first time
-    somebody pressed the button. So the spill is a plane: an additive glow
-    on the floor in front of the set, the same trick the moonlight through
-    the bedroom window uses, and it fades up with the picture.
-  */
-  const spillMat = new THREE.MeshBasicMaterial({
-    color: '#9fc4e8',
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    fog: false,
-  })
-  trackDisposable(spillMat)
-  const spillGeo = new THREE.PlaneGeometry(screen.width * 4.5, screen.width * 3.2)
-  trackDisposable(spillGeo)
-  const spill = new THREE.Mesh(spillGeo, spillMat)
-  spill.rotation.x = -Math.PI / 2
-  spill.position
-    .copy(screen.centre)
-    .addScaledVector(screen.normal, screen.width * 1.5)
-    .setY(screen.centre.y - screen.height * 1.35)
-  spill.renderOrder = 11
-  spill.castShadow = false
-  scene.add(spill)
-
   // the DOM behind the hole. pointer-events stays off: the walk owns the
   // pointer, and an iframe that could take it would break the lock
   const el = document.createElement('div')
@@ -286,7 +266,6 @@ export function buildHouseTv({ scene, cssScene, screen, trackDisposable }: Opts)
       // off is off: the element goes, and with it the socket and the sound
       frame.remove()
       frame = null
-      spillMat.opacity = 0
     }
     propSnap(0.45)
   }
@@ -303,12 +282,9 @@ export function buildHouseTv({ scene, cssScene, screen, trackDisposable }: Opts)
 
   const update = (listener: THREE.Vector3) => {
     if (!on) return
+    if (!frame) return
     const d = listener.distanceTo(screen.centre)
     const k = Math.max(0, Math.min(1, (QUIET_AT - d) / (QUIET_AT - LOUD_AT)))
-    // the glow on the floor reads as the room lighting up, and it is the
-    // only cue that the set is on when you are behind it
-    spillMat.opacity = 0.16 * (0.35 + 0.65 * k)
-    if (!frame) return
     // one postMessage per step of five, not one per frame
     const want = Math.round((VOLUME * k * k) / 5) * 5
     if (want === sent) return
@@ -345,7 +321,6 @@ export function buildHouseTv({ scene, cssScene, screen, trackDisposable }: Opts)
     cssScene.remove(css)
     el.remove()
     scene.remove(hole)
-    scene.remove(spill)
   }
 
   return {
