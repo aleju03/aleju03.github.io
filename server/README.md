@@ -22,6 +22,31 @@ v2 replaced the old 1:1 messenger protocol entirely, so deploy the server and th
 | `ANALYTICS_RETENTION_DAYS` | no | `180` | Rows older than this are pruned hourly |
 | `ANALYTICS_SITE_HOSTS` | no | unset | Comma-separated hosts that count as real traffic in the live feed, e.g. `aleju03.github.io`. Keeps localhost and preview deploys out |
 | `ANALYTICS_TIME_ZONE` | no | `UTC` | IANA zone for the feed's clock labels |
+| `YT_SEARCH` | no | `on` | Set to `off` to unmount the browser's video search. Nothing else depends on it |
+
+## Video search
+
+`GET /yt/search?q=<words>` → `{results: [{id, title, author, length, views, thumb}]}`,
+origin-checked against `ALLOWED_ORIGINS` and rate limited to 20 searches a
+minute per IP. Identical queries are served from memory for half an hour, which
+is the limit that actually matters: each miss is a ~1.2 MB fetch.
+
+It exists for one window. AlejOS's Internet Explorer is an iframe, and
+essentially the whole modern web sets `x-frame-options`, google, bing and
+duckduckgo included, so a search box in there could only ever render a polite
+refusal. YouTube is the exception in one direction: the site refuses frames but
+`youtube-nocookie.com/embed` does not, so a *result* is playable in that window.
+Getting the list of results is the part a browser cannot do (the Data API wants
+a key that would ship in the bundle, and the old no-key `listType=search` embed
+has been dead since ~2020), so this reads `ytInitialData` out of the results
+page instead.
+
+That makes it the one route here that depends on somebody else's HTML. It is
+written to fail soft: the parser walks for `videoRenderer` nodes anywhere in the
+tree rather than following a path, an unparseable page is an empty list rather
+than a throw, and an empty list is never cached. `server/src/ytsearch.js` owns
+it, and the smoke test checks the parse against a hand-built payload rather than
+against YouTube.
 
 ## Analytics
 

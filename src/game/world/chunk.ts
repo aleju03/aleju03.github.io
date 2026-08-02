@@ -429,31 +429,171 @@ const buildRoads = (
       const pz = along === 'x' ? line + off : s
       return v.set(px, terrainY(px, pz) + lift, pz)
     }
-    /** an upward-facing panel of the deck */
+    /**
+     * `a` to `b`, cut wherever `origin + k * GRID` falls strictly between
+     * them, ordered from a to b.
+     *
+     * The deck does not sit on the ground, it *copies* it: flat panels
+     * re-sampling terrainY at their corners, floated LIFT over it. A panel
+     * that spans a crease in the mesh it is copying is a chord across that
+     * crease, and wherever the crease is convex the ground comes up through
+     * the asphalt. It did, on 2% of every deck out here, worst case 0.83 units
+     * proud — a green wedge lying across the tarmac.
+     *
+     * The ground creases on three families of lines, and a panel has to be cut
+     * on all three. Two are the lattice axes, which is what this does: a
+     * centreline always lands on one and the deck used to span the full
+     * 6.4-unit width in a single quad, so the crease ran down the middle of
+     * the road, and `strip` annexes junction squares by shifting from/to a
+     * ROAD_HALF, which turns 16 steps of GRID into 17 of 3.95 and leaves every
+     * corner on the strip half a cell off the lattice. The third is the
+     * diagonal each cell is split on (see `fan`).
+     *
+     * Raising LIFT is not the lever. It would need seventeen times the
+     * clearance, and that reads as a lip at the kerb.
+     */
+    const span = (origin: number, a: number, b: number) => {
+      const lo = Math.min(a, b)
+      const hi = Math.max(a, b)
+      const inner: number[] = []
+      for (let k = Math.ceil((lo - origin) / GRID); origin + k * GRID < hi - 1e-6; k++) {
+        const v = origin + k * GRID
+        if (v > lo + 1e-6) inner.push(v)
+      }
+      if (a > b) inner.reverse()
+      return [a, ...inner, b]
+    }
+    /** the lattice origins of the two road-space axes, in world coordinates */
+    const sOrigin = along === 'x' ? OFF_X : OFF_Z
+    const oOrigin = along === 'x' ? OFF_Z : OFF_X
+    /** a road-space point in world (x, z) */
+    const world = (s: number, w: number): [number, number] =>
+      along === 'x' ? [s, w] : [w, s]
+    /**
+     * How far a world point is past its own cell's diagonal.
+     *
+     * buildGround splits every cell `a -> d`, from (i, j) to (i+1, j+1), so
+     * the third family of creases runs at 45 degrees: (x - OFF_X) - (z -
+     * OFF_Z) = k * GRID. It is the one direction `span` cannot cut, because a
+     * rectangle cut by a diagonal is not made of rectangles — which is what
+     * `out.tri` is for. Left uncut it was the whole of the remainder: a
+     * saddle-shaped cell has the deck's diagonal and the ground's crossing,
+     * and the ground wins over half of it.
+     */
+    const acrossDiag = (x: number, z: number, k: number) =>
+      (x - OFF_X) - (z - OFF_Z) - k * GRID
+    const lay = (p: [number, number], lift: number, v: THREE.Vector3) =>
+      v.set(p[0], terrainY(p[0], p[1]) + lift, p[1])
+    /**
+     * A convex world-space polygon, laid on the ground facing up.
+     *
+     * Every piece that gets here lies inside a single ground triangle, so any
+     * triangulation of it samples the same plane and quads are free: they go
+     * out two at a time, which is what keeps the whole of this from costing
+     * half again as many vertices as the single quad it replaced.
+     */
+    const fan = (poly: Array<[number, number]>, lift: number, c: THREE.Color) => {
+      const n = poly.length
+      if (n < 3) return
+      // one winding test for the polygon; the pieces of it all inherit it
+      const [p, q, r] = poly
+      const ny = (q[1] - p[1]) * (r[0] - p[0]) - (q[0] - p[0]) * (r[1] - p[1])
+      // clipping leaves slivers where an edge grazes the diagonal; they are
+      // worth nothing and their normals are noise
+      if (Math.abs(ny) < 1e-9) return
+      const o = ny > 0 ? poly : [poly[0], ...poly.slice(1).reverse()]
+      let i = 1
+      for (; i + 2 < n; i += 2) {
+        lay(o[0], lift, rq0)
+        lay(o[i], lift, rq1)
+        lay(o[i + 1], lift, rq2)
+        lay(o[i + 2], lift, rq3)
+        out.quad(rq0, rq1, rq2, rq3, c)
+      }
+      if (i + 1 < n) {
+        lay(o[0], lift, rq0)
+        lay(o[i], lift, rq1)
+        lay(o[i + 1], lift, rq2)
+        out.tri(rq0, rq1, rq2, c)
+      }
+    }
+    /** one flat panel, already inside a lattice cell, split on its diagonal */
+    const panel = (
+      s0: number, s1: number, w0: number, w1: number, lift: number, c: THREE.Color,
+    ) => {
+      const rect: Array<[number, number]> = [
+        world(s0, w0), world(s0, w1), world(s1, w1), world(s1, w0),
+      ]
+      // which cell this is, and therefore which diagonal crosses it
+      const [mx, mz] = world((s0 + s1) / 2, (w0 + w1) / 2)
+      const k = Math.floor((mx - OFF_X) / GRID) - Math.floor((mz - OFF_Z) / GRID)
+      const d = rect.map(([x, z]) => acrossDiag(x, z, k))
+      if (d.every((v) => v >= -1e-6) || d.every((v) => v <= 1e-6)) {
+        fan(rect, lift, c)
+        return
+      }
+      // Sutherland-Hodgman, one half-plane at a time; a rectangle cut by a
+      // diagonal comes back as a triangle and a quad, or a triangle and a
+      // pentagon, so both sides go out as fans
+      for (const sign of [1, -1]) {
+        const half: Array<[number, number]> = []
+        for (let i = 0; i < rect.length; i++) {
+          const a = rect[i]
+          const b = rect[(i + 1) % rect.length]
+          const fa = sign * d[i]
+          const fb = sign * d[(i + 1) % rect.length]
+          if (fa >= -1e-9) half.push(a)
+          if ((fa > 1e-9 && fb < -1e-9) || (fa < -1e-9 && fb > 1e-9)) {
+            const t = fa / (fa - fb)
+            half.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+          }
+        }
+        if (half.length >= 3) fan(half, lift, c)
+      }
+    }
+    /** an upward-facing run of the deck, cut on every crease it crosses */
     const deck = (
       s0: number, s1: number, o0: number, o1: number, lift: number, c: THREE.Color,
     ) => {
-      // winding runs the other way for a north-south street, because the
-      // cross axis flips sign relative to the along axis
-      const [a0, a1] = along === 'x' ? [o0, o1] : [o1, o0]
-      at(s0, a0, lift, rq0)
-      at(s0, a1, lift, rq1)
-      at(s1, a1, lift, rq2)
-      at(s1, a0, lift, rq3)
-      out.quad(rq0, rq1, rq2, rq3, c)
+      const ss = span(sOrigin, s0, s1)
+      // the cross span arrives in road space; the lattice is in world space
+      const os = span(oOrigin, line + o0, line + o1)
+      for (let i = 0; i + 1 < ss.length; i++)
+        for (let j = 0; j + 1 < os.length; j++)
+          panel(ss[i], ss[i + 1], os[j], os[j + 1], lift, c)
     }
-    /** a vertical face at `off`, looking toward `outward` in road space */
+    /**
+     * A vertical face at `off`, looking toward `outward` in road space. Cut
+     * the same way: its top and bottom edges follow the ground too, so a kerb
+     * spanning a crease has the same wedge coming through its face. It is a
+     * line rather than a rectangle, so the diagonals it crosses are just
+     * another arithmetic progression of step GRID — the one the cell
+     * diagonals cut out of this line — and `span` can do it.
+     */
     const riser = (
       s0: number, s1: number, off: number, y0: number, y1: number,
       outward: number, c: THREE.Color,
     ) => {
-      const flip = (along === 'x') !== (outward > 0)
-      const [b0, b1] = flip ? [s1, s0] : [s0, s1]
-      at(b0, off, y0, rq0)
-      at(b1, off, y0, rq1)
-      at(b1, off, y1, rq2)
-      at(b0, off, y1, rq3)
-      out.quad(rq0, rq1, rq2, rq3, c)
+      const fixed = line + off
+      const ss = span(sOrigin, s0, s1)
+      // solve (x - OFF_X) - (z - OFF_Z) = k * GRID for whichever of the two
+      // this face runs along; either way it comes out as a step of GRID
+      const dOrigin = along === 'x'
+        ? OFF_X + (fixed - OFF_Z)
+        : OFF_Z + (fixed - OFF_X)
+      const cut: number[] = []
+      for (let i = 0; i + 1 < ss.length; i++)
+        cut.push(...span(dOrigin, ss[i], ss[i + 1]).slice(0, -1))
+      cut.push(ss[ss.length - 1])
+      for (let i = 0; i + 1 < cut.length; i++) {
+        const flip = (along === 'x') !== (outward > 0)
+        const [b0, b1] = flip ? [cut[i + 1], cut[i]] : [cut[i], cut[i + 1]]
+        at(b0, off, y0, rq0)
+        at(b1, off, y0, rq1)
+        at(b1, off, y1, rq2)
+        at(b0, off, y1, rq3)
+        out.quad(rq0, rq1, rq2, rq3, c)
+      }
     }
 
     for (let s = 0; s < steps; s++) {

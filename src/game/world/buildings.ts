@@ -365,7 +365,11 @@ export const chapel = (out: BuildOut, lot: Lot) => {
   box(out.solid, stone, cx, y + h / 2 - 0.6, cz, nw, h + 1.2, nd, 0, SURF.brick)
   box(out.solid, '#7d766a', cx, y + 0.5, cz, nw + 0.4, 1.2, nd + 0.4, 0, SURF.paving)
   const rise = naveW * 0.62
-  put(out.solid, PRISM, roofC, cx, y + h - 0.05, cz, 0, f.fx ? Math.PI / 2 : 0, 0,
+  // PRISM's ridge runs along its own x and `put` scales before it rotates, so
+  // a nave lying along world x wants no yaw at all: the quarter turn is what
+  // the *other* facing needs, and having it the wrong way round laid the ridge
+  // across the nave and left most of the roof off the building
+  put(out.solid, PRISM, roofC, cx, y + h - 0.05, cz, 0, f.fx ? 0 : Math.PI / 2, 0,
     naveL * 1.04, rise, naveW * 1.14, SURF.shingle)
   out.boxes.push(noStand(aabb(cx, y - 2, cz, nw / 2 + 0.3, y + h, nd / 2 + 0.3)))
 

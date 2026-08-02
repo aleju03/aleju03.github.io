@@ -14,8 +14,8 @@
          this page over CDP; opening it by hand shows the last shot. -->
     <canvas id="c" width="16" height="16"></canvas>
     <script type="module">
-      import { shoot, pick } from './probe.ts'
-      window.__probe = { shoot, pick, ready: true }
+      import { shoot, pick, preload, loadLife } from './probe.ts'
+      window.__probe = { shoot, pick, preload, loadLife, ready: true }
     </script>
   </body>
 </html>

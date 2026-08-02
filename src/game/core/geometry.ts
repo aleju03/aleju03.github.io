@@ -59,6 +59,12 @@ export interface MeshBuilder {
     a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3,
     color: THREE.Color,
   ) => void
+  /** the same, for a face that is genuinely three-sided. The roads want it:
+      what they lay has to be cut on the terrain lattice's own diagonal, and
+      a rectangle cut by a diagonal is not made of rectangles */
+  tri: (
+    a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, color: THREE.Color,
+  ) => void
   /**
    * Which procedural surface treatment everything stamped from now on gets
    * (see world/surface.ts). It is builder state rather than an argument
@@ -151,6 +157,19 @@ export function createMeshBuilder(withUV = false): MeshBuilder {
         if (withUV) uvs.push(0, 0)
       }
       idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    },
+    tri(a, b, c, color) {
+      const base = pos.length / 3
+      fn.copy(ab.subVectors(b, a)).cross(ad.subVectors(c, a)).normalize()
+      for (const p of [a, b, c]) {
+        pos.push(p.x, p.y, p.z)
+        norm.push(fn.x, fn.y, fn.z)
+        col.push(color.r, color.g, color.b)
+        sway.push(0)
+        surf.push(builder.surface)
+        if (withUV) uvs.push(0, 0)
+      }
+      idx.push(base, base + 1, base + 2)
     },
     get count() {
       return pos.length / 3

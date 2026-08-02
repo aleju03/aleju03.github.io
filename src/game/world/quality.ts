@@ -54,6 +54,13 @@ export interface Gfx {
   canopyK: number
   /** birds in the sky, total across every flock (one instanced draw) */
   birds: number
+  /** animals on the ground at once. Each is a skinned mesh with its own
+      mixer and its own draw call, so this one is a real budget rather than
+      a lattice edge — see world/fauna.ts */
+  fauna: number
+  /** people walking the streets of a town, likewise one articulated rig
+      each (world/pedestrians.ts) */
+  pedestrians: number
   /** the cloud shell's fourth FBM octave (ragged rims) and its high cirrus
       layer. Three extra noise samples over a third of the screen — free on a
       real card, not on a cold iGPU */
@@ -66,11 +73,11 @@ export interface Gfx {
 // that all of it was being spent at distances where none of it could be seen.
 const MEDIUM: Gfx = {
   grassSide: 144, grassNearSide: 144, flowerSide: 44, shadowMap: 1024, canopyK: 1,
-  birds: 26, richSky: false,
+  birds: 26, fauna: 8, pedestrians: 5, richSky: false,
 }
 const HIGH: Gfx = {
   grassSide: 224, grassNearSide: 224, flowerSide: 60, shadowMap: 2048, canopyK: 1.45,
-  birds: 54, richSky: true,
+  birds: 54, fauna: 14, pedestrians: 9, richSky: true,
 }
 
 export const gfx: Gfx = { ...MEDIUM }

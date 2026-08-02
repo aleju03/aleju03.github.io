@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-smoke-'));
@@ -303,6 +304,66 @@ async function main() {
     assert.equal(res.status, 404, `${route} must not be served`);
   }
   console.log('13. capture is origin-checked; monitor/live-ticket unreachable over http');
+
+  /*
+    13b. The browser's video search. The route is checked here; the *parse* is
+    checked against a hand-built payload rather than against YouTube, because
+    scraping ytInitialData is the part of this that rots and a test that needed
+    the network would only ever report on the network.
+  */
+  const ytBadOrigin = await fetch(`${httpBase}/yt/search?q=anything`, {
+    headers: { origin: 'https://evil.example' },
+  });
+  assert.equal(ytBadOrigin.status, 403);
+
+  const ytNoQuery = await fetch(`${httpBase}/yt/search`, { headers: { origin } });
+  assert.equal(ytNoQuery.status, 400);
+
+  const ytPreflight = await fetch(`${httpBase}/yt/search`, {
+    method: 'OPTIONS',
+    headers: { origin, 'access-control-request-method': 'GET' },
+  });
+  assert.equal(ytPreflight.status, 204);
+  assert.equal(ytPreflight.headers.get('access-control-allow-origin'), origin);
+
+  const payload = {
+    contents: {
+      // deliberately nested under junk: the parser walks for videoRenderer
+      // anywhere rather than following a path, so a new wrapper costs nothing
+      someNewWrapper: {
+        contents: [
+          { adRenderer: { ignored: true } },
+          {
+            videoRenderer: {
+              videoId: 'dQw4w9WgXcQ',
+              title: { runs: [{ text: 'A Song' }] },
+              ownerText: { runs: [{ text: 'A Channel' }] },
+              lengthText: { simpleText: '3:32' },
+              shortViewCountText: { simpleText: '1.6B views' },
+              thumbnail: { thumbnails: [{ url: 'https://i.ytimg.com/vi/x/hq.jpg' }] },
+            },
+          },
+          // the same id twice must not become two rows
+          { videoRenderer: { videoId: 'dQw4w9WgXcQ', title: { runs: [{ text: 'A Song' }] } } },
+        ],
+      },
+    },
+  };
+  const ytRows = parseResults(
+    `<script>var ytInitialData = ${JSON.stringify(payload)};</script>`,
+  );
+  assert.equal(ytRows.length, 1);
+  assert.equal(ytRows[0].id, 'dQw4w9WgXcQ');
+  assert.equal(ytRows[0].title, 'A Song');
+  assert.equal(ytRows[0].author, 'A Channel');
+  assert.equal(ytRows[0].length, '3:32');
+  // the thumbnail is derived, never the payload's own first entry, which is a
+  // 176 kB frame for a 96px box
+  assert.equal(ytRows[0].thumb, 'https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg');
+  // a page that has been rearranged past recognition is an empty list, never a throw
+  assert.deepEqual(parseResults('<html>nothing to see</html>'), []);
+  assert.deepEqual(parseResults('<script>var ytInitialData = {oops;</script>'), []);
+  console.log('13b. video search is origin-checked; result parse survives junk and dedupes');
 
   // 14. Admin subscribes to the live feed, then a capture arrives on it.
   dup.send({ type: 'peeko-live', on: true });

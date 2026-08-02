@@ -1,10 +1,15 @@
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
 import { makeChunkMats } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
 import { SEA_Y, sampleAt, terrainY } from '../../src/game/world/terrain'
 import { landmarkIn, type LandmarkKind } from '../../src/game/world/landmarks'
 import { placeAt, type District } from '../../src/game/world/settlements'
+import { buildFauna, loadFaunaModels, type FaunaModels } from '../../src/game/world/fauna'
+import { buildPedestrians } from '../../src/game/world/pedestrians'
+import type { Solid } from '../../src/game/physics/collision'
 import type { BiomeId } from '../../src/game/world/biomes'
 
 /*
@@ -61,6 +66,29 @@ export interface ShotSpec {
   rings: number
   /** 'full' | 'flora' | 'bare' */
   tier: 'full' | 'flora' | 'bare'
+  /** GLBs to stand in the shot, for judging a candidate model against the
+      world's own shading before any of it is wired into the runtime */
+  props?: Prop[]
+  /** seconds of fauna and pedestrians to simulate into the tile before the
+      shutter opens. Both systems place themselves around the *camera* at a
+      range sized for fog, so the probe shrinks that ring to the frame; what
+      is photographed is otherwise the live system, wandering, grazing and
+      following the pavement exactly as it does in the world */
+  life?: number
+}
+
+export interface Prop {
+  url: string
+  /** offset from the target, in world units */
+  dx: number
+  dz: number
+  /** heading in radians, and a uniform scale */
+  yaw: number
+  scale: number
+  /** an animation clip to freeze, and where in it. A bind pose is not what
+      the thing looks like in the world; a walk cycle at 0.4s is */
+  clip?: string
+  t: number
 }
 
 export interface ShotResult {
@@ -71,6 +99,10 @@ export interface ShotResult {
   biome: BiomeId
   district: District | null
   verts: number
+  /** what `life` put in the tile, so an empty street is distinguishable
+      from a street whose crowd all spawned behind the camera */
+  animals?: number
+  people?: number
 }
 
 /* ------------------------------------------------------------- searching -- */
@@ -189,6 +221,129 @@ const lightFor = (scene: THREE.Scene, tod: Tod, at: THREE.Vector3) => {
   scene.background = fog.clone().lerp(new THREE.Color('#ffffff'), 0.12)
 }
 
+/* ----------------------------------------------------------------- props -- */
+
+/*
+  A GLB standing on the terrain, so a candidate asset can be judged against
+  the world's real light rig and fog rather than against a turntable render.
+
+  Loading is a separate, awaited step because `shoot` is synchronous and its
+  one job is to build and draw in a single frame. Clips are sampled rather
+  than played: a still frame of a bind pose says nothing about whether a
+  walk cycle reads at fifty metres.
+*/
+const loaded = new Map<string, THREE.Group>()
+
+export const preload = async (urls: string[]) => {
+  const loader = new GLTFLoader()
+  const out: Record<string, { clips: string[]; verts: number; size: number[] }> = {}
+  for (const url of urls) {
+    const gltf = await loader.loadAsync(url)
+    const root = gltf.scene
+    root.animations = gltf.animations
+    loaded.set(url, root)
+    let verts = 0
+    root.traverse((o) => {
+      const m = o as THREE.Mesh
+      if (m.isMesh) verts += m.geometry.getAttribute('position').count
+    })
+    const box = new THREE.Box3().setFromObject(root)
+    const s = box.getSize(new THREE.Vector3())
+    out[url] = {
+      clips: gltf.animations.map((a) => a.name),
+      verts,
+      size: [s.x, s.y, s.z].map((n) => Math.round(n * 100) / 100),
+    }
+  }
+  return out
+}
+
+const addProps = (scene: THREE.Scene, x: number, z: number, props: Prop[]) => {
+  for (const p of props) {
+    const src = loaded.get(p.url)
+    if (!src) continue
+    const obj = cloneSkinned(src) as THREE.Group
+    if (src.animations.length) {
+      const clip = p.clip
+        ? src.animations.find((a) => a.name.toLowerCase() === p.clip!.toLowerCase())
+        : src.animations[0]
+      if (clip) {
+        const mixer = new THREE.AnimationMixer(obj)
+        mixer.clipAction(clip).play()
+        mixer.update(p.t)
+      }
+    }
+    const px = x + p.dx
+    const pz = z + p.dz
+    obj.position.set(px, terrainY(px, pz), pz)
+    obj.rotation.y = p.yaw
+    obj.scale.setScalar(p.scale)
+    obj.traverse((o) => {
+      const m = o as THREE.Mesh
+      if (m.isMesh) { m.castShadow = true; m.receiveShadow = true }
+    })
+    scene.add(obj)
+  }
+}
+
+/* ------------------------------------------------------------------ life -- */
+
+/*
+  The things that move: world/fauna.ts and world/pedestrians.ts, built into
+  the tile and ticked forward before the shutter opens.
+
+  Neither is world state, so neither exists in a chunk and neither would ever
+  appear in a shot taken the old way — which is precisely why they need to be
+  photographable: a grazing animation and a walk cycle are the two things a
+  number cannot tell you about. The simulation here is the real module, not a
+  stand-in; only the spawn ring is shrunk, because both are sized so that a
+  re-cut happens out where the fog hides it and this frame is fifty units
+  wide.
+*/
+let faunaModels: FaunaModels | null = null
+
+export const loadLife = async () => {
+  faunaModels ??= await loadFaunaModels()
+  return Object.keys(faunaModels)
+}
+
+const addLife = (
+  scene: THREE.Scene, x: number, z: number, gy: number, seconds: number,
+  obstacles: Solid[],
+) => {
+  const noop = () => {}
+  const fauna = buildFauna({
+    parent: scene, obstacles, trackDisposable: noop, ring: { near: 14, spread: 26 },
+  })
+  const faunaRoot = scene.children[scene.children.length - 1]
+  if (faunaModels) fauna.setModels(faunaModels)
+  const crowd = buildPedestrians({
+    parent: scene,
+    obstacles,
+    groundAt: terrainY,
+    trackDisposable: noop,
+    ring: { near: 8, spread: 20 },
+  })
+  const crowdRoot = scene.children[scene.children.length - 1]
+  // the camera stands at the target, so this is the pose everything places
+  // itself against — including the flee radius, which is why the herd is
+  // photographed a few seconds in rather than on its first frame
+  const at = new THREE.Vector3(x, gy, z)
+  const dt = 1 / 30
+  for (let t = 0; t < seconds; t += dt) {
+    fauna.update(at, dt)
+    crowd.update(at, dt)
+  }
+  // each builder appends exactly one root to the scene, in this order, and
+  // a live member of either is a visible child of it
+  const live = (root: THREE.Object3D | undefined) =>
+    root ? root.children.filter((c) => c.visible).length : 0
+  return {
+    animals: live(faunaRoot),
+    people: live(crowdRoot),
+  }
+}
+
 /* ---------------------------------------------------------------- shoot -- */
 
 let renderer: THREE.WebGLRenderer | null = null
@@ -243,6 +398,9 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     const c0 = chunkX(x)
     const d0 = chunkZ(z)
     const chunks: Chunk[] = []
+    // the tile's own solids, so the crowd and the herd argue with the same
+    // walls the shot is showing rather than walking through them
+    const boxes: Solid[] = []
     let verts = 0
     for (let dz = -spec.rings; dz <= spec.rings; dz++)
       for (let dx = -spec.rings; dx <= spec.rings; dx++) {
@@ -252,9 +410,13 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
           if (m.isMesh) { m.castShadow = true; m.receiveShadow = true }
         })
         chunks.push(c)
+        for (const b of c.boxes) boxes.push(b)
         scene.add(c.group)
         for (const g of c.geos) verts += g.getAttribute('position').count
       }
+
+    if (spec.props?.length) addProps(scene, x, z, spec.props)
+    const life = spec.life ? addLife(scene, x, z, gy, spec.life, boxes) : null
 
     const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.2, 900)
     if (spec.eye) {
@@ -281,6 +443,8 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
       label, x: Math.round(x), z: Math.round(z), y: Math.round(gy * 10) / 10,
       biome: s.biome, district: s.place.district,
       verts: Math.round(verts / chunks.length),
+      animals: life?.animals,
+      people: life?.people,
     })
   }
   return out

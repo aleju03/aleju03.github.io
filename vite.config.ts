@@ -82,9 +82,36 @@ function llmsTxt(): Plugin {
   }
 }
 
+/*
+  The OS browser's video search, mounted on the dev server.
+
+  It is the same handler the VPS runs (server/src/ytsearch.js, no dependencies
+  of its own), so there is one implementation rather than a mock that drifts.
+  Without this, `npm run dev` on a clean checkout has no VITE_CHAT_URL, so the
+  one search in AlejOS's Internet Explorer that can actually return something
+  is dead in the exact environment it gets worked on in.
+*/
+function videoSearch(): Plugin {
+  return {
+    name: 'yt-search-dev',
+    apply: 'serve',
+    async configureServer(server) {
+      const { createYouTubeSearch } = await import('./server/src/ytsearch.js')
+      const route = createYouTubeSearch({})
+      // mounted on everything rather than on '/yt/search', because connect
+      // strips a mount path off req.url and the handler matches the whole one
+      server.middlewares.use((req, res, next) => {
+        route?.handleHttp(req, res).then((handled) => {
+          if (!handled) next()
+        }, next)
+      })
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss(), llmsTxt()],
+  plugins: [react(), tailwindcss(), llmsTxt(), videoSearch()],
   build: {
     // Three.js is intentionally isolated behind idle/interaction-triggered 3D
     // features. Keep warnings for chunks larger than that known vendor split.

@@ -307,6 +307,16 @@ world/
                   instanced draw, a vertex-shader flap, and a ring that is
                   re-cut past the fog when the walker outruns it. Session
                   state, like the fleet; nothing is written into a chunk
+  fauna.ts        the same idea on the ground: a small herd around the camera
+                  that grazes, wanders and bolts when you get inside 14 units.
+                  Six CC0 species, one or two per biome, chosen by the ground
+                  each one is re-cut onto. The only downloaded models out
+                  here, loaded after the planet attaches and never awaited
+  pedestrians.ts  ...and the same idea in a town. Each is a buildPlayerBody()
+                  rig — the robot the player and every remote player wear —
+                  walking the sidewalk slab by sampling roadAt().walk rather
+                  than following a navmesh, and crossing the road where the
+                  pavement runs out at a junction
   quality.ts      the graphics tier: every density and budget knob, read at
                   build time, plus the GPU sniff that picks between them. New
                   knobs go in the record, not beside it. The visitor can
@@ -324,6 +334,10 @@ npm run shoot -- landmark:*            one of every landmark, one contact sheet
 npm run shoot -- biome:wetland --eye   a walker's eye line, to judge scale
 npm run shoot -- town:downtown --tod 0.78   dusk, when the glass pass lights up
 npm run shoot -- 240,320 --pick 400,300     what is under that pixel
+npm run shoot -- town:midrise --life 25     25s of animals and pedestrians,
+                                            simulated into the tile first
+npm run shoot -- biome:plains --glb /os/models/animals/fox.glb@5,-4:Walk~0.4
+                                            a candidate model in real light
 
 npm run measure -- kits        every prop kit: verts, cards, bounding box
 npm run measure -- chunks      build cost and vertex budget, by tier and zone
@@ -376,6 +390,29 @@ scattered, and no screenshot was ever going to say otherwise.
   you left ajar. Which also fixes the ids: they must not be a running count
   of smashables, because a `bare` chunk builds no lamps and every tree after
   them would renumber.
+- **What lives out here is session state, and it steers by sampling.** The
+  flocks, the herd and the crowd are all a fixed pool around the camera that
+  is re-cut past the fog when the player outruns it, none of it written into
+  a chunk and none of it on the wire, for the reason the fleet is: agreeing
+  on a grazing deer would mean the server simulating one. Where they *go* is
+  the same trick twice — the world already answers "is this water", "how
+  steep is this", "is this the sidewalk slab" for any point, so an animal
+  turning away from a river and a pedestrian turning a corner are both a
+  handful of field lookups along the heading they are on, never a navmesh or
+  a graph. A graph would have to be built, kept in sync with a street layout
+  that is a pure function of position, and streamed; the field is already
+  there. What they must *not* do is walk through the world: nothing collides
+  with them, so they collide with it, and a step is refused by clipping the
+  whole step as a segment against every solid — never by sampling a point in
+  front of the nose, which tunnels through every hedge and wall in a town.
+  Three numbers that had to be *measured* rather than reasoned about: a spawn
+  test alone does not keep animals off the roads (a deer placed nine units
+  clear wanders onto the tarmac within the minute, so the step test carries
+  the road check too); a pedestrian that turns round whenever it cannot step
+  forward paces back and forth over four units of pavement forever (2.3 u/s
+  walked against 0.7 u/s of progress) unless a turn just taken is allowed to
+  finish; and both systems together cost 0.01 ms/frame in open country and
+  0.15 ms in the busiest town, against 2520 solids.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs

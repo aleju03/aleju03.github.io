@@ -376,6 +376,20 @@ import type { VehicleMaterials } from './materials'
   closing at all — and a tree brushed off the wing at forty is still a tree
   that comes down. What happens to it after that is world/debris.ts's.
 
+  That test alone leaves one hole, and it is the one everybody finds first: a
+  car already *touching* a breakable can never break it. Contact removes the
+  closing component of the velocity every tick, so a car nosed into a bush
+  with the throttle buried never reaches 0.1 u/s, let alone the limit, and the
+  bush is a wall forever. Measured against the real collision set, an approach
+  at 5 u/s ended in a four-second dead stop with no way out but reverse. So a
+  light solid also yields to being *leant on*: while the throttle is held into
+  something under SHOVE_MAX, the drive force accumulates as work, and it goes
+  when that clears its limit — about a third of a second for a bush, a couple
+  for a dead tree. The gate is what keeps the original intent, that something
+  out there can stop a hatchback: a birch and up is over SHOVE_MAX and still
+  wants a genuine run-up, which is the difference between pushing through
+  undergrowth and pushing over a tree.
+
   The other thing that reports an `impact` is a landing, and the only honest
   measure of one is how fast a *spring* is closing — never `vy`. The old test
   was `grounded && vyPrev < -6 && vy > vyPrev`, and vy is the whole car's
@@ -1071,6 +1085,13 @@ const HOLD_MU = 1.05
 /** and what counts as stopped. 0.5 u/s is 0.24 m/s: below it the car is
     parked and the fall line is held, above it the fall line is free to pull */
 const HOLD_SPEED = 0.5
+/** the heaviest thing a standing shove can move, as a break limit. A bush
+    (2.5) and a cactus (7) yield to a lean; a birch (15) does not, and a
+    mature broadleaf (26) is what the world stops you with */
+const SHOVE_MAX = 10
+/** and how much work it takes, per unit of limit. Drive force on grass caps
+    around 10, so a bush goes in a third of a second and a dead tree in one */
+const SHOVE_COST = 1.4
 const BRAKE = 22 // 10.6 m/s^2, about 1.08 g: a good hatch on dry asphalt
 const HAND_LONG = 9
 const SHIFT_TIME = 0.17 // throttle cut, and therefore the dip in the note
@@ -1814,6 +1835,10 @@ export function buildCar(opts: CarOpts): Vehicle {
   const slamV = [0, 0, 0, 0]
   const contact = [true, true, true, true]
   let impactHold = 0
+  /** how much throttle has been spent leaning on the breakable currently
+      under the nose, and which one it is — see the shove rule below */
+  let shove = 0
+  let shoveOn: Solid | null = null
 
   /* the footprint the registry sizes a collision box from, and the one
      `sweepBody` argues with: the car's own measured half-extents, not a
@@ -2176,16 +2201,38 @@ export function buildCar(opts: CarOpts): Vehicle {
     )
     const breaks = hit.depth > 0 ? hit.solid?.breaks : undefined
     const rush = Math.hypot(vel.x, vel.z)
-    if (breaks && rush > breaks.limit) {
+    /* the shove: work spent pressing into whatever is under the nose. It
+       resets on losing contact or on meeting something else, so it is a
+       sustained push against one prop and not a tally across a hedge, and it
+       only counts while the drive is pointed the way the car is stuck */
+    if (!breaks || hit.solid !== shoveOn) {
+      shove = 0
+      shoveOn = breaks ? hit.solid : null
+    }
+    let shoved = false
+    if (breaks && breaks.limit <= SHOVE_MAX && Math.abs(drive) > 0.1) {
+      shove += Math.abs(drive) * dt
+      shoved = shove > breaks.limit * SHOVE_COST
+    }
+    if (breaks && (rush > breaks.limit || shoved)) {
       // it comes with us. No push, no reflection, no yaw — the car keeps its
       // line and pays for the prop out of its speed, which is the whole
       // difference between driving through a sapling and hitting a wall
       vel.multiplyScalar(1 - clamp((breaks.limit * 0.6) / rush, 0, 0.6))
       impact = Math.max(impact, rush * 0.3)
+      /* which way it leaves. A car with speed throws the prop down its own
+         line; a car that shoved it over from a standstill has no line to
+         speak of, and `vel / rush` at rest is a division by nothing, so the
+         nose does the talking and it flops away at walking pace */
+      const push = rush > 0.5
+      const dirX = push ? vel.x / rush : Math.sin(yaw) * -Math.sign(drive || 1)
+      const dirZ = push ? vel.z / rush : Math.cos(yaw) * -Math.sign(drive || 1)
       breaks.hit(
         pos.x + hit.at.x, pos.y + 0.5, pos.z + hit.at.z,
-        vel.x / rush, vel.z / rush, rush,
+        dirX, dirZ, push ? rush : breaks.limit,
       )
+      shove = 0
+      shoveOn = null
     } else if (hit.depth > 0) {
       const px = clamp(hit.push.x, -PUSH_CAP, PUSH_CAP)
       const pz = clamp(hit.push.z, -PUSH_CAP, PUSH_CAP)

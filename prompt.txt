@@ -1,0 +1,29 @@
+I want you to expand the open world in this repo (src/game/, src/game/world/) into a full
+physics sandbox at the level of Garry's Mod. It should be utterly fun and utterly solid:
+free flight/noclip on demand, a chat command console (spawn, tp, gravity, timescale,
+cleanup, undo, and whatever else a sandbox deserves), spawnable random props with real
+rigid-body physics that stack, topple and roll, a physgun-style beam to grab, drag, rotate,
+throw and freeze anything, and destructible buildings that come apart into debris you can
+keep playing with. Every single thing done at Garry's Mod quality, from the feel of the
+grab beam to the way a tower comes down.
+
+Decompose this into the smallest independently judgeable pieces yourself. Fan out
+sub-agents and have each tackle one piece individually. /loop on each piece and have
+separate fresh-context sub-agent check it: a really harsh critic that gets only the goal,
+the bar, the rules and the artifact, compares it blind side by side against actual Garry's
+Mod footage and screenshots, says which one is more fun and more convincing, and names the
+single biggest remaining gap. If Garry's Mod wins, the piece goes back to its builder.
+
+The critic must judge the real artifact, not the code. This repo has its own harness for
+that: `npm run shoot -- <target>` photographs the live world headlessly (use --pick t
+raycast what's under a pixel), and `npm run measure` runs the generator in Node and prints
+build costs. Use them, plus typecheck and the dev server, for every verdict. The rule
+the repo's CLAUDE.md and src/game/CLAUDE.md and they are non-negotiable: the game runtime
+stays React-free and headless-capable, chunk geometry stays merged and instanced with
+destruction built on debris.ts's span-lifting rather than a parallel system, nothing
+link shaders mid-walk, and the world is multiplayer, so decide honestly what travels the
+wire (the planet is a pure function of coordinates; a prop that moves is not).
+
+Maintain a live progress page I can watch without interrupting you. There is no fixed
+round count. Don't stop until each critic is utterly wowed with the quality when comp
+with the real Garry's Mod. Fan out sub-agents and ultracode.

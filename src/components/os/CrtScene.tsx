@@ -21,6 +21,7 @@ import { createWalkController } from '../../game/player/walkController'
 import { createSeating } from '../../game/player/seating'
 import { facingOf } from '../../game/levels/fittings'
 import { buildHouseTv, type TvHandles } from './houseTv'
+import { resetPcAudio, setPcListenerDistance } from './pcAudio'
 import { createRoamInput } from '../../game/core/input'
 import { blockedAt, makeCollisionSet, supportY } from '../../game/physics/collision'
 import { createCollisionDebug } from '../../game/physics/collisionDebug'
@@ -2487,6 +2488,10 @@ export default function CrtScene({
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
+          // and the computer is the same kind of speaker as the television:
+          // whatever the browser's window is playing has to come from the desk
+          // rather than from inside your head once you have walked away from it
+          setPcListenerDistance(dist)
           camera.getWorldDirection(gazeVec)
           // still the head here — chase.apply() only borrows the camera below
           headPos.copy(camera.position)
@@ -2970,6 +2975,9 @@ export default function CrtScene({
           // and so does the television: a set left playing behind a desktop
           // is a voice in an empty room, and nothing 3D renders to explain it
           tv?.silence()
+          // the computer is the one speaker that does *not* go quiet here,
+          // because you are sitting back down at it: back to full volume
+          resetPcAudio()
           leaveSeat()
           input.clearKeys()
           // out of whatever you were driving first: the engine has to stop,

@@ -951,6 +951,15 @@ export const VARIANTS = 6
  * The ordering is girth, not height. A cactus and a dead tree are brittle, a
  * mature broadleaf takes a genuine run-up, and the birch — a pole with no
  * taper in it — sits between them.
+ *
+ * A bush sits under all of them and deliberately near zero, because it is a
+ * pile of leaves and the number is what it takes to *stop* you as much as
+ * what it takes to break it. At 6 a bush was a wall to anything crossing a
+ * lawn at less than a jog, and once you were touching one you could never
+ * break it at all — contact eats the closing speed every tick, so the speed
+ * the test wants is a speed you can no longer reach. That second half is
+ * fixed in car.ts (the shove rule); this half is that undergrowth should
+ * never have been asking for a run-up.
  */
 export const SNAP: Partial<Record<PropKind, number>> = {
   broadleaf: 26,
@@ -960,7 +969,7 @@ export const SNAP: Partial<Record<PropKind, number>> = {
   acacia: 19,
   deadtree: 9,
   cactus: 7,
-  bush: 6,
+  bush: 2.5,
 }
 
 /** the variants of a kind, built once. Kit geometry is never disposed: it is

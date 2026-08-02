@@ -68,6 +68,14 @@ options
   --rings <n>          chunk rings per tile    (default 1, a 3x3)
   --tile <WxH>         tile size               (default 900x620)
   --cols <n>           contact-sheet columns   (default 3)
+  --glb <spec>         stand a model in every tile, to judge a candidate asset
+                       against the world's own light and fog. Repeatable.
+                       <url>[@dx,dz][:clip][~t][*scale][^yaw], e.g.
+                       --glb /os/models/animals/fox.glb@3,-2:Walk~0.4
+  --life <s>           simulate s seconds of fauna and pedestrians into
+                       every tile before the shutter opens (try 20). Both
+                       are session state and appear in no chunk, so this is
+                       the only way to photograph them
   --pick <x>,<y>       also raycast that pixel of tile 0 and print the hits
   --keep               leave chrome and vite running (for repeated shots)
 `)
@@ -95,6 +103,26 @@ const parseTarget = (s) => {
   throw new Error(`cannot parse target "${s}"`)
 }
 
+// `--glb <url>[@dx,dz][:clip][~t][*scale][^yaw]`. The url runs to the first
+// marker, so a path with slashes in it needs no quoting
+const parseProp = (s) => {
+  const cut = s.search(/[@:~*^]/)
+  const prop = {
+    url: cut === -1 ? s : s.slice(0, cut),
+    dx: 0, dz: 0, yaw: 0, scale: 1, t: 0, clip: undefined,
+  }
+  for (const [, mark, val] of (cut === -1 ? '' : s.slice(cut))
+    .matchAll(/([@:~*^])([^@:~*^]*)/g)) {
+    if (mark === '@') { const [x, z] = val.split(',').map(Number); prop.dx = x; prop.dz = z }
+    else if (mark === ':') prop.clip = val
+    else if (mark === '~') prop.t = Number(val)
+    else if (mark === '*') prop.scale = Number(val)
+    else prop.yaw = Number(val)
+  }
+  return prop
+}
+const props = argv.filter((a, i) => argv[i - 1] === '--glb').map(parseProp)
+
 const [tw, th] = String(flag('tile', '900x620')).split('x').map(Number)
 const spec = {
   targets: targets.map(parseTarget),
@@ -107,6 +135,8 @@ const spec = {
   tod: Number(flag('tod', 0.5)),
   rings: Number(flag('rings', 1)),
   tier: String(flag('tier', 'full')),
+  props,
+  life: Number(flag('life', 0)),
 }
 const outPath = resolve(
   flag('out', `shots/${targets[0].replace(/[^a-z0-9]+/gi, '-')}.png`),
@@ -207,13 +237,29 @@ await waitFor(() => evaluate('!!window.__probe?.ready'), 120, 250, 'the probe pa
 /* ----------------------------------------------------------------- shoot */
 
 const t0 = Date.now()
+if (props.length) {
+  const urls = [...new Set(props.map((p) => p.url))]
+  const info = await evaluate(
+    `window.__probe.preload(${JSON.stringify(urls)}).then(JSON.stringify)`,
+  )
+  for (const [url, m] of Object.entries(JSON.parse(info))) {
+    console.log(
+      `${url}  ${m.verts} verts  ${m.size.join(' x ')}  clips: ${m.clips.join(', ') || 'none'}`,
+    )
+  }
+}
+if (spec.life) {
+  const got = await evaluate('window.__probe.loadLife().then(JSON.stringify)')
+  console.log(`life: ${spec.life}s simulated, models ${JSON.parse(got).join(', ') || 'none'}`)
+}
 const found = await evaluate(`JSON.stringify(window.__probe.shoot(${JSON.stringify(spec)}))`)
 const rows = JSON.parse(found)
 for (const r of rows) {
   console.log(
     `${String(r.label).padEnd(22)} ${String(r.x).padStart(7)},${String(r.z).padStart(7)}` +
     `  y ${String(r.y).padStart(7)}  ${r.biome.padEnd(8)}` +
-    `${r.district ? ' ' + r.district : ''}  ${r.verts} verts`,
+    `${r.district ? ' ' + r.district : ''}  ${r.verts} verts` +
+    (r.animals === undefined ? '' : `  ${r.animals} animals, ${r.people} people`),
   )
 }
 

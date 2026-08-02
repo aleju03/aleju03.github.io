@@ -15,6 +15,8 @@ import {
 import { showcase, github, linkedin } from '../../data/projects'
 import { sounds } from './sounds'
 import { getOsYear, subscribeOsYear } from './osYear'
+import { YoutubePage } from './YoutubePage'
+import { youtubeTarget, searchUrl as videoSearchUrl, type YoutubeTarget } from './browserYouTube'
 
 /*
   Internet Explorer, AlejOS edition. Address bar plus back/forward/home, a
@@ -26,6 +28,14 @@ import { getOsYear, subscribeOsYear } from './osYear'
   furniture. GitHub and LinkedIn refuse frames outright,
   so the browser renders its own period-correct pages for them instead;
   the GitHub ones pull live data from the public API.
+
+  **YouTube is the exception that makes this a browser rather than an exhibit**
+  (browserYouTube.ts, YoutubePage.tsx). The site refuses frames like the rest,
+  but its *embed* is built to be framed, so the browser renders its own
+  YouTube: results off a small proxy on the VPS, the player from the real one.
+  Putting a song on is the one thing you can genuinely do in here. The sound
+  then belongs to the computer rather than to the page: stand up and it keeps
+  playing from the desk, quieter as you cross the room (pcAudio.ts).
 
   Two rules keep it from feeling broken. **The archive is for the past only**:
   at the present year a search goes straight to the live search engine and a
@@ -100,7 +110,8 @@ function timeTravel(url: string): string {
   tab, or the archived copy, which does frame.
 */
 const REFUSED_DOMAINS = [
-  'youtube.com',
+  // youtube.com is deliberately absent: the site refuses frames, but its embed
+  // does not, so internalPage answers for it with a real player instead
   'facebook.com',
   'instagram.com',
   'x.com',
@@ -157,6 +168,7 @@ function displayUrl(url: string): string {
 type InternalPage =
   | { type: 'github'; user: string; repo?: string }
   | { type: 'linkedin' }
+  | { type: 'youtube'; target: YoutubeTarget }
 
 /** pages we render ourselves because the real site refuses to be framed */
 function internalPage(url: string): InternalPage | null {
@@ -173,7 +185,33 @@ function internalPage(url: string): InternalPage | null {
     return { type: 'github', user: segs[0], repo: segs[1] }
   }
   if (host === 'linkedin.com') return { type: 'linkedin' }
+  const yt = youtubeTarget(url)
+  if (yt) return { type: 'youtube', target: yt }
   return null
+}
+
+/*
+  The words somebody typed into a search engine, dug back out of the url.
+
+  A search that lands on the refusal page is the one dead end in here that is
+  worth a second door: the query is right there in the address, and the video
+  search is the only one that can actually answer inside this window.
+*/
+function searchTermOf(url: string): string | null {
+  try {
+    const u = new URL(displayUrl(url))
+    const host = u.hostname.replace(/^www\./, '')
+    const engine =
+      /(^|\.)google\.[a-z]{2,}(\.[a-z]{2,})?$/.test(host) ||
+      host === 'bing.com' ||
+      host === 'duckduckgo.com' ||
+      host === 'search.yahoo.com'
+    if (!engine) return null
+    const q = u.searchParams.get('q') ?? u.searchParams.get('p') ?? ''
+    return q.trim() || null
+  } catch {
+    return null
+  }
 }
 
 interface GhUser {
@@ -403,12 +441,16 @@ function RefusedPage({
   host,
   year,
   url,
+  term,
   onTravel,
+  onVideoSearch,
 }: {
   host: string
   year: number
   url: string
+  term: string | null
   onTravel: () => void
+  onVideoSearch: () => void
 }) {
   const btn =
     'cursor-pointer rounded-sm border border-stone-400 bg-stone-200 px-3 py-1.5 text-xs text-stone-800 shadow-[0_1px_0_rgba(255,255,255,0.8)_inset] transition active:scale-[0.98] hover:border-blue-600 hover:bg-stone-50'
@@ -438,10 +480,16 @@ function RefusedPage({
           <button type="button" className={btn} onClick={onTravel}>
             Read the {year} copy in here
           </button>
+          {term && (
+            <button type="button" className={btn} onClick={onVideoSearch}>
+              Search videos for “{term}” in here
+            </button>
+          )}
         </div>
         <p className="mt-3 text-[11px] leading-relaxed text-stone-400">
           The archive has no objection to being framed, so the second one works even on sites that
           will never load here directly. Set the year from the taskbar clock.
+          {term && ' Video results play in this window, and out of this computer.'}
         </p>
       </div>
     </div>
@@ -465,6 +513,9 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
   const [fwd, setFwd] = useState<string[]>([])
   // remount the iframe on reload even when the url is unchanged
   const [frameKey, setFrameKey] = useState(0)
+  // the portal's own search field, held here so the "Videos" button beside it
+  // can read what was typed without submitting the web-search form
+  const [portalQuery, setPortalQuery] = useState('')
   const year = useSyncExternalStore(subscribeOsYear, getOsYear)
 
   /*
@@ -645,6 +696,13 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
               </p>
               <p className="mt-0.5 text-xs text-stone-500">your portal to the information superhighway</p>
 
+              {/*
+                Two buttons, because they are two different promises. "Search"
+                is a web search and lands on a refusal page nine times in ten,
+                which is the honest state of framing a 2026 site. "Videos" is
+                the one search in here that returns something you can actually
+                open, so it is offered next to it rather than buried.
+              */}
               <form
                 className="mt-4 flex gap-2"
                 onSubmit={(e) => {
@@ -658,6 +716,8 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
               >
                 <input
                   name="q"
+                  value={portalQuery}
+                  onChange={(e) => setPortalQuery(e.target.value)}
                   data-no-focus-ring
                   placeholder={`Search the web (of ${year})`}
                   aria-label="Search"
@@ -668,6 +728,16 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
                   className="cursor-pointer rounded-sm border border-stone-400 bg-stone-200 px-4 py-1.5 text-xs font-medium text-stone-800 shadow-[0_1px_0_rgba(255,255,255,0.8)_inset] hover:border-blue-600"
                 >
                   Search
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    sounds.open()
+                    go(videoSearchUrl(portalQuery.trim()))
+                  }}
+                  className="cursor-pointer rounded-sm border border-stone-400 bg-stone-200 px-4 py-1.5 text-xs font-medium text-stone-800 shadow-[0_1px_0_rgba(255,255,255,0.8)_inset] hover:border-red-600"
+                >
+                  Videos
                 </button>
               </form>
 
@@ -723,6 +793,21 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
                 Elsewhere on the early web
               </p>
               <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    sounds.open()
+                    go(videoSearchUrl(''))
+                  }}
+                  className="cursor-pointer rounded-md border border-stone-300 bg-white p-3 text-left shadow-sm transition hover:border-red-600 hover:shadow"
+                >
+                  <p className="text-sm font-medium text-blue-700 underline decoration-dotted underline-offset-2">
+                    youtube.com
+                  </p>
+                  <p className="mt-0.5 text-xs text-stone-500">
+                    the only site in here that plays, and it plays out of this computer
+                  </p>
+                </button>
                 {webBookmarks.map((b) => (
                   <button
                     key={b.url}
@@ -755,6 +840,8 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
                 repo={internal.repo}
                 go={go}
               />
+            ) : internal.type === 'youtube' ? (
+              <YoutubePage target={internal.target} go={go} />
             ) : (
               <LinkedinPage />
             )}
@@ -764,9 +851,14 @@ export function BrowserApp({ url: initialUrl, setTitle }: BrowserProps) {
             host={host}
             year={year}
             url={url}
+            term={searchTermOf(url)}
             onTravel={() => {
               sounds.open()
               go(timeTravel(url))
+            }}
+            onVideoSearch={() => {
+              sounds.open()
+              go(videoSearchUrl(searchTermOf(url) ?? ''))
             }}
           />
         ) : (

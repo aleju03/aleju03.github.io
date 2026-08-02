@@ -19,6 +19,7 @@ import { promisify } from 'node:util';
 import { WebSocketServer, WebSocket } from 'ws';
 import Database from 'better-sqlite3';
 import { createAnalytics } from './analytics.js';
+import { createYouTubeSearch } from './ytsearch.js';
 
 // ---------------------------------------------------------------- config
 
@@ -1269,6 +1270,16 @@ try {
   analytics = null;
 }
 
+// ------------------------------------------------------------- video search
+// The one search that works inside the OS's browser: everything else refuses
+// to be framed, and a YouTube embed does not. Off by default is not an option
+// worth having, since it costs nothing until somebody types in the address bar,
+// but YT_SEARCH=off switches it out if the VPS ever gets throttled for it.
+const ytSearch = createYouTubeSearch({
+  allowedOrigins: ALLOWED_ORIGINS,
+  enabled: (process.env.YT_SEARCH ?? 'on') !== 'off',
+});
+
 // Admin sockets watching the live event feed -> their unsubscribe function.
 const analyticsWatchers = new Map();
 
@@ -1617,25 +1628,21 @@ const server = http.createServer((req, res) => {
     res.end('ok');
     return;
   }
-  // The only public analytics route: browsers appending events. Reads happen
-  // over the authenticated WebSocket, never here.
-  if (analytics) {
-    analytics
-      .handleHttp(req, res)
-      .then((handled) => {
-        if (handled) return;
-        res.writeHead(404, { 'content-type': 'text/plain' });
-        res.end('not found');
-      })
-      .catch(() => {
-        if (res.headersSent) return res.end();
-        res.writeHead(500, { 'content-type': 'text/plain' });
-        res.end('error');
-      });
-    return;
-  }
-  res.writeHead(404, { 'content-type': 'text/plain' });
-  res.end('not found');
+  // Two public routes, tried in turn: the browser's video search, then the
+  // analytics capture. Analytics *reads* happen over the authenticated
+  // WebSocket, never here.
+  const routes = [ytSearch, analytics].filter(Boolean);
+  (async () => {
+    for (const route of routes) {
+      if (await route.handleHttp(req, res)) return;
+    }
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found');
+  })().catch(() => {
+    if (res.headersSent) return res.end();
+    res.writeHead(500, { 'content-type': 'text/plain' });
+    res.end('error');
+  });
 });
 
 server.on('upgrade', (req, socket, head) => {

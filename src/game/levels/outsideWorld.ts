@@ -48,6 +48,8 @@ type WorldModules = {
   streamer: typeof import('../world/streamer')
   terrain: typeof import('../world/terrain')
   birds: typeof import('../world/birds')
+  fauna: typeof import('../world/fauna')
+  pedestrians: typeof import('../world/pedestrians')
   debris: typeof import('../world/debris')
   shopDoors: typeof import('../world/shopDoors')
 }
@@ -56,6 +58,8 @@ interface WorldParts {
   mods: WorldModules
   world: ReturnType<WorldModules['streamer']['buildWorld']>
   birds: ReturnType<WorldModules['birds']['buildBirds']>
+  fauna: ReturnType<WorldModules['fauna']['buildFauna']>
+  pedestrians: ReturnType<WorldModules['pedestrians']['buildPedestrians']>
   debris: ReturnType<WorldModules['debris']['buildDebris']>
   shopDoors: ReturnType<WorldModules['shopDoors']['buildShopDoors']>
 }
@@ -185,14 +189,16 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   let modsPromise: Promise<WorldModules> | null = null
   const loadMods = () => {
     modsPromise ??= (async () => {
-      const [streamer, terrain, birds, debris, shopDoors] = await Promise.all([
+      const [streamer, terrain, birds, fauna, pedestrians, debris, shopDoors] = await Promise.all([
         import('../world/streamer'),
         import('../world/terrain'),
         import('../world/birds'),
+        import('../world/fauna'),
+        import('../world/pedestrians'),
         import('../world/debris'),
         import('../world/shopDoors'),
       ])
-      return { streamer, terrain, birds, debris, shopDoors }
+      return { streamer, terrain, birds, fauna, pedestrians, debris, shopDoors }
     })()
     return modsPromise
   }
@@ -200,7 +206,10 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   const attachWorld = () => {
     attaching ??= (async () => {
       const mods = await loadMods()
-      const { streamer, terrain, birds: birdsMod, debris: debrisMod, shopDoors: shopDoorsMod } = mods
+      const {
+        streamer, terrain, birds: birdsMod, fauna: faunaMod,
+        pedestrians: pedMod, debris: debrisMod, shopDoors: shopDoorsMod,
+      } = mods
       // the shops' hinged leaves: the streamer reports the near ring's door
       // specs, this manager owns the meshes, swing state and doorway blockers.
       // The sfx arrive here rather than inside the manager because core/sfx
@@ -234,8 +243,28 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       // they need the sky's daylight and the world's terrain height, and because
       // they must sleep with the streamer when another level is live
       const birds = birdsMod.buildBirds({ parent: root, trackDisposable })
+      /*
+        ...and the same seam for what lives on the ground. Both hang here for
+        the flocks' reason — they need the world's terrain height and they
+        must sleep with the streamer when another level is live — and both
+        are session state that never streams and never travels.
 
-      w = { mods, world, birds, debris, shopDoors }
+        The animals' models are the one download in `src/game/world`, and
+        they are deliberately *not* awaited: opening a front door must not
+        also wait on six GLBs, so the herd is built empty and populates
+        itself when they land. The pedestrians need nothing but the rig the
+        player is already wearing, so they are live immediately.
+      */
+      const fauna = faunaMod.buildFauna({ parent: root, obstacles, trackDisposable })
+      void faunaMod.loadFaunaModels().then((m) => fauna.setModels(m))
+      const pedestrians = pedMod.buildPedestrians({
+        parent: root,
+        obstacles,
+        groundAt: terrain.terrainY,
+        trackDisposable,
+      })
+
+      w = { mods, world, birds, fauna, pedestrians, debris, shopDoors }
       placeholderGround.visible = false
     })()
     return attaching
@@ -279,6 +308,8 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       w.shopDoors.update(dt)
       w.debris.update(dt)
       w.birds.update(camPos, dt, state.day, state.twilight)
+      w.fauna.update(camPos, dt)
+      w.pedestrians.update(camPos, dt)
       if (alt > 20) {
         const k = Math.min(1, (alt - 20) / 100)
         state.fogNear *= 1 + k * 0.5
