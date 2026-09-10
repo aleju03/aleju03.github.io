@@ -85,7 +85,7 @@ const dictionaries = {
       paragraphs: [
         "I'm a full-stack developer who likes shipping things end to end: the interface, the API behind it, and the server it all runs on.",
         'Most of my work runs on React and TypeScript up front, with Python or Node.js behind it. I deploy on Vercel for frontends and run my own server for the always-on pieces.',
-        "I've followed AI development closely since before ChatGPT, back in the text-davinci-002 days, and these days it's part of how I build. I lean on agent workflows and custom skills I write myself to move faster on whatever I'm working on, whatever the stack.",
+        'I like finding ways to make development a little smoother, whether that’s writing a script for a repetitive task or using AI to work through an idea. Building the little tools that help along the way is part of the fun for me.',
         "More than any of that, I care about how things feel. Whatever I ship should look good and feel good to use, whether you're on a phone or a big screen.",
       ],
     },
@@ -221,7 +221,7 @@ const dictionaries = {
       paragraphs: [
         'Soy un desarrollador full-stack al que le gusta construir las cosas completas: la interfaz, la API detrás y el servidor donde corre todo.',
         'Casi todo lo que hago usa React y TypeScript en el frontend, con Python o Node.js en el backend. Los frontends los despliego en Vercel, y tengo mi propio servidor para lo que necesita estar corriendo todo el tiempo.',
-        'Sigo de cerca el desarrollo de la IA desde antes de ChatGPT, en la época de text-davinci-002, y hoy es parte de cómo construyo. Me apoyo en flujos de trabajo con agentes y en skills que yo mismo escribo para avanzar más rápido en lo que sea que esté haciendo, sin importar el stack.',
+        'Me gusta buscar formas de hacer el desarrollo un poco más fluido, ya sea escribiendo un script para una tarea repetitiva o usando IA para explorar una idea. Crear pequeñas herramientas que me ayuden en el camino también es parte de lo que disfruto.',
         'Pero más que todo eso, me importa cómo se siente lo que hago. Quiero que todo se vea bien y sea agradable de usar, igual en el teléfono que en una pantalla grande.',
       ],
     },
