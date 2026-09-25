@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140" viewBox="10 10 140 140" fill="none">
+  <!--
+    SnakeDocker: a Snake-game snake whose body is a train of shipping
+    containers, coupled on the grid and about to eat the next job. Rough cream
+    ink, flat warm fill printed a hair out of register, one cobalt accent.
+    Drawn by hand, for a dark tile.
+  -->
+  <defs>
+    <filter id="rough" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="2" seed="17" result="n" />
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="3.5" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+    <rect id="box" x="-12" y="-12" width="24" height="24" rx="3" />
+    <path id="ribs-h" d="M -6 -6 V 6 M 0 -6 V 6 M 6 -6 V 6" />
+    <path id="ribs-v" d="M -6 -6 H 6 M -6 0 H 6 M -6 6 H 6" />
+    <path id="rivets" d="M -6 -6 h 0.1 M 6 -6 h 0.1 M -6 6 h 0.1 M 6 6 h 0.1" />
+    <rect id="head" x="52" y="38" width="30" height="28" rx="9" />
+    <rect id="job" x="16" y="49" width="13" height="13" rx="2" />
+  </defs>
+  <g filter="url(#rough)" stroke-linecap="round" stroke-linejoin="round">
+    <g fill="#44403c" transform="translate(3 3)">
+      <use href="#box" x="36" y="112" />
+      <use href="#box" x="66" y="112" />
+      <use href="#box" x="96" y="112" />
+      <use href="#box" x="126" y="112" />
+      <use href="#box" x="126" y="82" />
+      <use href="#box" x="126" y="52" />
+      <use href="#box" x="96" y="52" />
+      <use href="#head" />
+    </g>
+    <use href="#job" fill="#3b82f6" transform="translate(3 3)" />
+    <g stroke="#f1ebe0">
+      <g stroke-width="5">
+        <use href="#box" x="36" y="112" />
+        <use href="#box" x="66" y="112" />
+        <use href="#box" x="96" y="112" />
+        <use href="#box" x="126" y="112" />
+        <use href="#box" x="126" y="82" />
+        <use href="#box" x="126" y="52" />
+        <use href="#box" x="96" y="52" />
+        <use href="#head" />
+        <path d="M 48 112 H 54 M 78 112 H 84 M 108 112 H 114 M 126 100 V 94 M 126 70 V 64 M 114 52 H 108 M 84 52 H 82" />
+      </g>
+      <g stroke-width="3">
+        <use href="#ribs-h" x="36" y="112" />
+        <use href="#ribs-h" x="66" y="112" />
+        <use href="#ribs-h" x="96" y="112" />
+        <use href="#ribs-v" x="126" y="82" />
+        <use href="#ribs-h" x="96" y="52" />
+      </g>
+      <g stroke-width="4.5">
+        <use href="#rivets" x="126" y="112" />
+        <use href="#rivets" x="126" y="52" />
+      </g>
+      <use href="#job" stroke-width="4" />
+    </g>
+    <path d="M 52 57 H 42 L 37 52 M 42 57 L 37 62" stroke="#3b82f6" stroke-width="3.5" />
+    <circle cx="61" cy="47" r="5" fill="#f1ebe0" />
+    <circle cx="59.5" cy="47" r="2.2" fill="#18181b" />
+  </g>
+</svg>

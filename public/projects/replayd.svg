@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140" viewBox="10 10 140 140" fill="none">
+  <!--
+    replayd: a cassette with a pencil in the take-up reel, which is how you
+    used to put a tape back exactly where it was. The left spool is fuller
+    than the right: the tape remembers how far it got, the way Last-Event-ID
+    does. Rough cream ink, flat warm fill printed a hair out of register, one
+    cobalt accent. Drawn by hand, for a dark tile.
+  -->
+  <defs>
+    <filter id="rough" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="2" seed="11" result="n" />
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="3.5" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+    <rect id="body" x="12" y="40" width="136" height="90" rx="9" />
+    <rect id="label" x="24" y="50" width="112" height="52" rx="5" />
+    <rect id="window" x="44" y="66" width="72" height="28" rx="14" />
+    <path id="pencil" d="M 0 0 L 15 -6 H 60 V 6 H 15 Z" />
+    <path id="eraser" d="M 60 -6 H 70 Q 74 -6 74 -2 V 2 Q 74 6 70 6 H 60 Z" />
+    <clipPath id="glass"><use href="#window" /></clipPath>
+  </defs>
+  <g filter="url(#rough)" stroke-linecap="round" stroke-linejoin="round">
+    <use href="#body" fill="#44403c" transform="translate(3 3)" />
+    <use href="#body" stroke="#f1ebe0" stroke-width="5" />
+    <use href="#label" fill="#3b82f6" transform="translate(3 3)" />
+    <use href="#label" stroke="#f1ebe0" stroke-width="4" />
+    <path d="M 34 59 C 38 55 41 62 45 58 S 52 55 56 59 M 62 58 H 78" stroke="#f1ebe0" stroke-width="3" />
+    <use href="#window" fill="#18181b" />
+    <g clip-path="url(#glass)">
+      <circle cx="62" cy="80" r="15" fill="#44403c" />
+      <circle cx="98" cy="80" r="8" fill="#44403c" />
+    </g>
+    <use href="#window" stroke="#f1ebe0" stroke-width="4" />
+    <circle cx="62" cy="80" r="5" stroke="#f1ebe0" stroke-width="3" />
+    <circle cx="98" cy="80" r="5" stroke="#f1ebe0" stroke-width="3" />
+    <path d="M 40 130 L 46 114 H 114 L 120 130" stroke="#f1ebe0" stroke-width="4" />
+    <g fill="#f1ebe0">
+      <circle cx="60" cy="122" r="3" />
+      <circle cx="100" cy="122" r="3" />
+      <circle cx="20" cy="48" r="2.5" />
+      <circle cx="140" cy="48" r="2.5" />
+      <circle cx="20" cy="122" r="2.5" />
+      <circle cx="140" cy="122" r="2.5" />
+    </g>
+    <g transform="translate(98 80) rotate(-54)">
+      <use href="#pencil" fill="#18181b" />
+      <use href="#eraser" fill="#18181b" />
+      <use href="#pencil" fill="#44403c" transform="translate(2 2)" />
+      <use href="#eraser" fill="#3b82f6" transform="translate(2 2)" />
+      <use href="#pencil" stroke="#f1ebe0" stroke-width="4" />
+      <use href="#eraser" stroke="#f1ebe0" stroke-width="4" />
+      <path d="M 15 -6 V 6 M 55 -6 V 6" stroke="#f1ebe0" stroke-width="3" />
+    </g>
+  </g>
+</svg>

@@ -511,27 +511,27 @@ const secondaryEs: Record<string, Partial<SecondaryProject>> = {
   peeko: {
     description:
       'Analítica web para alojar en tu propio servidor, con SQLite como única base de datos. Imita a PostHog, así que un snippet de posthog-js existente funciona sin cambios: escribe los eventos por lotes, limpia los datos antiguos automáticamente, y ofrece una API de lectura y un feed en vivo por SSE.',
-    imageAlt: 'Mascota de peeko asomándose sobre una gráfica de analítica',
+    imageAlt: 'Marca de peeko, una cabecita asomándose sobre una tarjeta de dashboard',
   },
   kewa: {
     description:
       'Una cola de trabajos que cabe en una sola tabla de SQLite, sin broker aparte que administrar: fusiona trabajos duplicados al encolarlos, reintenta los fallidos con esperas crecientes, reparte los workers en carriles separados y descarta el exceso cuando se satura.',
-    imageAlt: 'Mascota de kewa, una fila de blobs naranjas',
+    imageAlt: 'Marca de kewa, una tira de turnos con el primer tiquete arrancado',
   },
   replayd: {
     description:
       'Server-Sent Events que se pueden reanudar: cada evento queda guardado en SQLite, y cuando un navegador pierde la conexión y vuelve, retoma justo donde iba y recibe exactamente los eventos que se perdió.',
-    imageAlt: 'Mascota de replayd, un botón de play envuelto en una flecha de replay',
+    imageAlt: 'Marca de replayd, un casete con un lápiz en el carrete',
   },
   SnakeDocker: {
     description:
       'Snake multijugador con procesamiento distribuido: workers especializados en Docker, balanceo dinámico de carga y juego por WebSockets.',
-    imageAlt: 'Logotipo de SnakeDocker',
+    imageAlt: 'Marca de SnakeDocker, una serpiente hecha de contenedores',
   },
   DocIndexer: {
     description:
       'Indexación y búsqueda distribuida de documentos: un coordinador en FastAPI reparte el procesamiento de texto entre workers usando colas de Redis.',
-    imageAlt: 'Marca de DocIndexer',
+    imageAlt: 'Marca de DocIndexer, un cajón de fichero con una ficha levantada',
   },
 }
 

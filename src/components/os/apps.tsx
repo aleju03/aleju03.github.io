@@ -178,16 +178,16 @@ export const APPS: Record<AppId, AppDef> = {
   },
   peeko: {
     name: 'peeko',
-    // its own mascot rather than an XP icon: nothing in shell32 says
-    // "analytics", and this app is not pretending to be period software
+    // its own mark rather than an XP icon: nothing in shell32 says
+    // "analytics", and this app is not pretending to be period software.
+    // The mark is cream ink drawn for a dark tile, so it brings one along
     glyph: (s) => (
-      <img
-        src="/projects/peeko.png"
-        alt=""
-        draggable={false}
+      <span
+        className="inline-flex items-center justify-center rounded-[22%] bg-zinc-900"
         style={{ width: s, height: s }}
-        className="object-contain"
-      />
+      >
+        <img src="/projects/peeko.svg" alt="" draggable={false} className="h-[88%] w-[88%]" />
+      </span>
     ),
     // wider than anything else here because it is the only window that is a
     // dashboard: three stat tiles and a bar chart on one row, and a feed row

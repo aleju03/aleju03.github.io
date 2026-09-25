@@ -1,28 +1,38 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140" viewBox="10 10 140 140" fill="none">
   <!--
-    DocIndexer mark: a document streaming one indexed line out through a gap
-    in its right edge, toward a worker node. Flat, two colors, drawn by hand.
+    DocIndexer: a card-catalogue drawer, the original inverted index. The
+    tabs step across three columns the way a catalogue's letters do, and one
+    card has been pulled up because the search found it. Rough cream ink,
+    flat warm fill printed a hair out of register, one cobalt accent. Drawn
+    by hand, for a dark tile.
   -->
-  <!-- document outline with a dog-ear fold; the right edge breaks where the line exits -->
-  <path
-    d="M 62 58 V 72 Q 62 80 54 80 H 28 Q 20 80 20 72 V 24 Q 20 16 28 16 H 47 L 62 31 V 46"
-    stroke="#fafaf9"
-    stroke-width="5.5"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
-  <!-- fold -->
-  <path
-    d="M 47 16 V 27 Q 47 31 51 31 H 62"
-    stroke="#fafaf9"
-    stroke-width="5.5"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
-  <!-- content lines -->
-  <path d="M 31 42 H 51" stroke="#fafaf9" stroke-width="5.5" stroke-linecap="round" />
-  <path d="M 31 66 H 45" stroke="#fafaf9" stroke-width="5.5" stroke-linecap="round" />
-  <!-- the indexed line leaving the document -->
-  <path d="M 31 54 H 70" stroke="#60a5fa" stroke-width="5.5" stroke-linecap="round" />
-  <circle cx="79" cy="54" r="5" fill="#60a5fa" />
+  <defs>
+    <filter id="rough" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="2" seed="23" result="n" />
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="3.5" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+    <!-- a card with a tab on its top edge, bottom hidden in the drawer -->
+    <path id="card" d="M 0 60 V 0 H 34 V -6 Q 34 -9 37 -9 H 53 Q 56 -9 56 -6 V 0 H 100 V 60 Z" />
+    <path id="card-a" d="M 0 60 V 0 H 6 V -6 Q 6 -9 9 -9 H 25 Q 28 -9 28 -6 V 0 H 100 V 60 Z" />
+    <path id="card-c" d="M 0 60 V 0 H 66 V -6 Q 66 -9 69 -9 H 85 Q 88 -9 88 -6 V 0 H 100 V 60 Z" />
+    <rect id="drawer" x="18" y="88" width="124" height="46" rx="6" />
+  </defs>
+  <g filter="url(#rough)" stroke-linecap="round" stroke-linejoin="round" stroke="#f1ebe0">
+    <!-- the found card, back of the drawer, pulled up -->
+    <g transform="translate(30 22)">
+      <use href="#card" fill="#3b82f6" stroke="none" transform="translate(3 3)" />
+      <use href="#card" stroke-width="4.5" />
+      <path d="M 10 10 H 64 M 10 19 H 46" stroke-width="3" />
+    </g>
+    <!-- the rest of the catalogue, filled in register so the stack stays legible -->
+    <use href="#card-a" x="30" y="52" fill="#44403c" stroke-width="4.5" />
+    <use href="#card-c" x="30" y="64" fill="#44403c" stroke-width="4.5" />
+    <use href="#card" x="30" y="76" fill="#44403c" stroke-width="4.5" />
+    <use href="#drawer" fill="#18181b" stroke="none" />
+    <use href="#drawer" fill="#44403c" stroke="none" transform="translate(3 3)" />
+    <use href="#drawer" stroke-width="5" />
+    <rect x="64" y="97" width="32" height="13" rx="2" fill="#18181b" stroke-width="3.5" />
+    <path d="M 70 103.5 H 86" stroke-width="2.5" />
+    <path d="M 68 119 Q 80 130 92 119" stroke-width="4.5" />
+  </g>
 </svg>
