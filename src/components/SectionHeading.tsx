@@ -15,8 +15,14 @@
   apparatus collapses to a plain heading with no motion values allocated.
 */
 
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { motion, useReducedMotion, useScroll, useTransform, type MotionValue } from 'motion/react'
+
+// where the reveal starts and finishes, as the heading's top edge against the
+// viewport: it finishes assembling while it is still in the upper half, so you
+// read a settled line rather than one still moving
+const FROM = 0.95
+const TO = 0.4
 
 /** one character, wiped up from behind its own mask on a slice of the scroll */
 function Char({
@@ -83,13 +89,38 @@ export function SectionHeading({
 }: SectionHeadingProps) {
   const ref = useRef<HTMLDivElement>(null)
   const reduce = useReducedMotion()
-  // the heading finishes assembling while it is still in the upper half of the
-  // viewport, so you read a settled line rather than one still moving
   const { scrollYProgress } = useScroll({
     target: ref,
-    offset: ['start 0.95', 'start 0.4'],
+    offset: [`start ${FROM}`, `start ${TO}`],
   })
-  const source = progress ?? scrollYProgress
+
+  // The last chapter sits too near the end of the document for its top ever to
+  // climb to TO: the page runs out first, and the line froze with its tail
+  // characters half out of their masks. So measure how much of the scrub the
+  // page can actually deliver to this heading and finish the line there.
+  const reach = useRef(1)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || progress) return
+    const measure = () => {
+      const vh = window.innerHeight
+      const top = el.getBoundingClientRect().top + window.scrollY
+      const maxScroll = document.documentElement.scrollHeight - vh
+      // where the heading's top lands in the viewport at the very bottom of the page
+      const lowest = (top - maxScroll) / vh
+      reach.current = Math.min(1, Math.max(0.2, (FROM - lowest) / (FROM - TO)))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(document.body)
+    window.addEventListener('resize', measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [progress])
+  const own = useTransform(scrollYProgress, (p) => Math.min(1, p / reach.current))
+  const source = progress ?? own
 
   const words = splitWords(children)
   const total = Math.max(1, children.length)
