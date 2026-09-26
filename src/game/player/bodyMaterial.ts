@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
-import { faceWindow } from './bodyShape'
+import { B, boneRestWorld, faceWindow } from './bodyShape'
 
 /*
   The one material a body is drawn with, and the reason a repaint is free.
@@ -24,9 +24,15 @@ import { faceWindow } from './bodyShape'
     painted this way is crisp at any mesh resolution, blinks by scaling one
     uniform, and costs no geometry variant: `uFace`, `uLid` and `uCostume`
     are per body;
-  - `uHideHead` discards the body's fragments in the colour pass. The camera
-    *is* the head in first person, and up close the body was the inside of
-    its own skull. The shadow pass draws with three's own depth material,
+  - `uHideHead` is the first-person lens. The lens rides inside the head,
+    so in the colour pass every vertex weighted to the head or an arm is
+    slid, before skinning, onto the neck or the shoulder it hangs from: the
+    skin folds shut into a smooth dome where the head was, and looking down
+    you see a closed bean, your own chest and belly. Cutting the top off
+    instead leaves the skin open, and from above an open skin is a hollow
+    cup with the road visible down each leg. The headgear is discarded. The
+    shadow pass draws with three's own depth material, which knows nothing
+    of any of this, so the body still casts whole. The shadow pass draws with three's own depth material,
     which knows nothing of the flag, so the body still casts.
 
   Every body builds its own instance (the palette is per body) but they all
@@ -63,6 +69,14 @@ const faceFor = (glow: string, out: THREE.Color) => {
   return out.set(lum > 0.35 ? FACE_DARK : FACE_LIGHT)
 }
 
+/** a bone's rest (bind) position as GLSL literal: the fold's pivots. The
+    head and the shoulders are not rotated in the bind pose, so rest and
+    bind positions agree for them */
+const v3 = (bone: number) => {
+  const p = boneRestWorld(bone, new THREE.Vector3())
+  return `${p.x.toFixed(4)}, ${p.y.toFixed(4)}, ${p.z.toFixed(4)}`
+}
+
 export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial {
   const pal = [FACE_LIGHT, look.shell, look.trim, look.accent, look.glow, INK, CHEEK, GLINT, HAIR].map(
     (c) => new THREE.Color(c),
@@ -96,6 +110,7 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
       .replace(
         '#include <common>',
         `#include <common>
+uniform float uHideHead;
 attribute float aRole;
 attribute vec2 aPart;
 varying float vRole;
@@ -107,7 +122,23 @@ varying vec3 vBind;`,
         `#include <begin_vertex>
 vRole = aRole;
 vPart = aPart;
-vBind = position;`,
+vBind = position;
+// the first-person fold: see below
+if (uHideHead > 0.5) {
+  float wHead = 0.0;
+  float wArmL = 0.0;
+  float wArmR = 0.0;
+  for (int i = 0; i < 4; i++) {
+    int b = int(skinIndex[i] + 0.5);
+    float w = skinWeight[i];
+    if (b == ${B.HEAD} || b == ${B.EYES} || b == ${B.POM}) wHead += w;
+    if (b == ${B.UARM_L} || b == ${B.FARM_L} || b == ${B.HAND_L}) wArmL += w;
+    if (b == ${B.UARM_R} || b == ${B.FARM_R} || b == ${B.HAND_R}) wArmR += w;
+  }
+  transformed = mix(transformed, vec3(${v3(B.HEAD)}), wHead);
+  transformed = mix(transformed, vec3(${v3(B.UARM_L)}), wArmL);
+  transformed = mix(transformed, vec3(${v3(B.UARM_R)}), wArmR);
+}`,
       )
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -165,11 +196,9 @@ float aaStep(float d) {
         '#include <color_fragment>',
         `#include <color_fragment>
 int role = int(vRole + 0.5);
-// under the first-person lens the head, the headgear and the arms are left
-// out of the colour pass (they still cast): the lens rides inside the head,
-// and an arm swung past it is a wall across the frame. Looking down, what is
-// left is what anybody sees of themselves: a belly and two feet
-if (uHideHead > 0.5 && (role != 1 || vBind.y > 1.45 || (vPart.x < 0.5 && vPart.y < 0.5))) discard;
+// under the first-person lens the headgear is left out of the colour pass
+// (it still casts), and the face is not painted on a head that is not there
+if (uHideHead > 0.5 && role != 1) discard;
 vec3 bodyCol = uPal[role];
 float facePanel = 0.0;
 if (role == 1) {
@@ -208,7 +237,7 @@ if (role == 1) {
   vec2 fq = vec2(vBind.x, vBind.y - uWin.z);
   float front = step(0.05, vBind.z) * trunk;
   float e = length(fq / uWin.xy);
-  facePanel = aaStep((e - 0.9) * uWin.y) * front;
+  facePanel = aaStep((e - 0.9) * uWin.y) * front * (1.0 - uHideHead);
   bodyCol = mix(bodyCol, uPal[0], facePanel);
   float faceSide = sign(fq.x + 1e-5);
   vec2 eq = vec2(abs(fq.x) - 0.33 * uWin.x, fq.y - 0.08 * uWin.y);

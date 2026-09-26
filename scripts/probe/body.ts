@@ -456,6 +456,11 @@ const firstPerson = (spec: BodySpec, snap: Snap) => {
     cam.rotation.order = 'YXZ'
     cam.rotation.set(pitch, 0, 0)
     snap(`fp pitch ${pitch}${speed ? ' walking' : ''}`, cam)
+    if (pitch === -1.3) {
+      // the same body as the lens draws it, seen from outside: what is kept
+      // of it under the first-person cut, and the cap over the cut
+      snap('fp body from outside', camAt(tw, th, new THREE.Vector3(a.x, a.y + 2.4, a.z), Math.PI - 0.9, 7, 3, 40))
+    }
     st.scene.remove(a.rig.group)
   }
 }
@@ -612,7 +617,7 @@ export const shootBody = (spec: BodySpec) => {
     if (a === 'closeup') return n + 4
     if (a === 'motion') return n + 8 * Object.keys(ACTIONS).length
     if (a.startsWith('strip')) return n + 8
-    if (a === 'fp') return n + 4
+    if (a === 'fp') return n + 5
     if (a === 'seat') return n + 9
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
     if (a === 'wardrobe') return n + WARDROBE.length

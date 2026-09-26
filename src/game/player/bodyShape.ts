@@ -451,7 +451,9 @@ const frameFor = (b: number): Frame => {
     // blended wide into the stump: a tight blend left a ring at the ankle
     // and the feet read as slippers
     const foot = ellipsoid(x, 0.095, 0.07, 0.15, 0.115, 0.21)
-    legs.push((px, py, pz) => smax(smin(stump(px, py, pz), foot(px, py, pz), 0.16), -py, 0.03))
+    // the sole a hair off the ground: exactly on it, its inside lost the
+    // depth test to the road and the first-person cap had two holes in it
+    legs.push((px, py, pz) => smax(smin(stump(px, py, pz), foot(px, py, pz), 0.16), 0.012 - py, 0.03))
   }
 
   const [aL, aR] = arms
