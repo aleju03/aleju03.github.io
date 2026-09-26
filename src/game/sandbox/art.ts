@@ -249,6 +249,12 @@ const cellUV = (name: string, sub?: readonly number[]) => {
   return [u0, v0, u1, v1] as const
 }
 
+/** the uv of a cell's centre, for geometry that samples one flat colour */
+export const cellCenter = (name: string): [number, number] => {
+  const [u0, v0, u1, v1] = cellUV(name)
+  return [(u0 + u1) / 2, (v0 + v1) / 2]
+}
+
 interface Layers {
   color: THREE.CanvasTexture
   glow: THREE.CanvasTexture

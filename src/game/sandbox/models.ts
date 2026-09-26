@@ -1442,7 +1442,38 @@ const plankGibs = (): GibSpec[] => {
 
 const chairGibs = (): GibSpec[] => CHAIR_PARTS.map((p) => boxGib(p.at, p.size, 1 / CHAIR_PARTS.length, wood('#b48a66'), p.rot))
 
+/** what is left of something that went off: scorched shell and a lid */
+const blastGibs = (id: 'barrel' | 'gascan' | 'propane'): GibSpec[] => {
+  const burnt = '#5a3a30'
+  const out: GibSpec[] = []
+  if (id === 'barrel') {
+    const { r, hh } = DIMS.drum
+    out.push({
+      at: [0, hh - 0.05, 0], half: [r, 0.05, r], share: 0.12,
+      mesh: cloneOf(() => model().cyl([0, 0, 0], r + 0.03, 0.1, { side: flat('#3a3a3c'), top: { cell: 'drum_lid' }, bottom: flat(burnt) }, { seg: 14 }).mesh()),
+    })
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2
+      out.push(boxGib([Math.cos(a) * r * 0.7, (i - 1) * 0.5, Math.sin(a) * r * 0.7], [0.9, 0.7, 0.06], 0.2,
+        { pz: { cell: 'drum_red', sub: [i / 3, 0.2, i / 3 + 0.25, 0.8], tint: '#8a7a70' }, all: flat(burnt) }, [0, -a + Math.PI / 2, 0.3 * (i - 1)]))
+    }
+  } else if (id === 'gascan') {
+    for (const s of [-1, 1]) out.push(boxGib([0, s * 0.25, 0], [0.8, 0.5, 0.06], 0.4, { pz: { cell: 'jerry', tint: '#8a7a70' }, all: flat(burnt) }, [0, 0, s * 0.3]))
+  } else {
+    const { r, hh } = DIMS.propane
+    out.push({
+      at: [0, hh - 0.3, 0], half: [r * 0.8, 0.18, r * 0.8], share: 0.2,
+      mesh: cloneOf(() => model().lathe([0, -0.17, 0], [[r, 0], [r * 0.92, 0.18], [r * 0.6, 0.3], [0.001, 0.34]], flat('#b8b9b2', 'gloss'), { seg: 12 }).mesh()),
+    })
+    for (let i = 0; i < 2; i++) out.push(boxGib([(i ? 1 : -1) * r * 0.6, -0.2, 0], [0.8, 0.9, 0.06], 0.3, { pz: { cell: 'propane', tint: '#8a8a80' }, all: flat(burnt) }, [0, i ? Math.PI / 2 : -Math.PI / 2, 0.4]))
+  }
+  return out
+}
+
 export const GIBS: Record<string, () => GibSpec[]> = {
+  barrel_explosive: memo(() => blastGibs('barrel')),
+  gascan: memo(() => blastGibs('gascan')),
+  propane: memo(() => blastGibs('propane')),
   crate: memo(() => crateGibs(DIMS.crate)),
   crate_small: memo(() => crateGibs(DIMS.crateSmall)),
   pallet: memo(palletGibs),

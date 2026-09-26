@@ -16,7 +16,7 @@ import { propMaterial as atlasMaterial } from './art'
   Units: a unit is about 0.42 m (the eye is 3.84 up), so a one-metre crate is
   2.4 units a side. Mass is kilograms. `density` is relative to water and is
   the whole of the buoyancy model: under 1 floats, and how far under 1 says
-  how high (a crate at 0.4 rides with 40% of itself under), over 1 sinks,
+  how high (a crate at 0.5 rides with half of itself under), over 1 sinks,
   slowed by drag. It is measured against the shape's bounding box, so a
   hollow thing (a bathtub, a drum) is given the density of the box it fills.
 

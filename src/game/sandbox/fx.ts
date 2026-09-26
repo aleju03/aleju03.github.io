@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { propMaterial } from './art'
+import { cellCenter, propMaterial } from './art'
 
 /*
   The sandbox's particles: fireballs, sparks, smoke, splinters, glass, melon
@@ -114,10 +114,13 @@ const pool = (geo: THREE.BufferGeometry, mat: THREE.Material, cap: number, behav
   }
 }
 
-/** a unit ball with its uvs pinned to the atlas's white cell */
+/** a unit shape with its uvs pinned to the atlas's white cell and a white
+    vertex colour (the atlas material multiplies by one; a geometry without
+    the attribute reads it as black) */
 const pinnedUV = (g: THREE.BufferGeometry, u: number, v: number) => {
   const t = g.getAttribute('uv')
   for (let i = 0; i < t.count; i++) t.setXY(i, u, v)
+  g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(t.count * 3).fill(1), 3))
   return g
 }
 
@@ -197,12 +200,7 @@ export const createFx = (o: FxOpts): Fx => {
 
   // the props' atlas material lends its white cell to the lit pools
   const litMat = propMaterial()
-  const whiteUV = (() => {
-    // the atlas maps 'white' somewhere; a 1x1 box geometry built by the art
-    // module would know where, but sampling any texel of a flat white cell is
-    // enough, so borrow the uv the art module wrote on a white face
-    return [0, 0] as [number, number]
-  })()
+  const whiteUV = cellCenter('white')
   const fireMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
   fireMat.name = 'sandbox-fire'
 
@@ -568,13 +566,5 @@ export const createFx = (o: FxOpts): Fx => {
     if (dirtyC && P.mesh.instanceColor) P.mesh.instanceColor.needsUpdate = true
   }
 
-  // spark and fire colours are set per step; seed the lit pools' colours
-  // so a slot drawn before its first step is not black
-  for (const P of [fire, sparks]) {
-    for (let i = 0; i < P.cap; i++) P.mesh.setColorAt(i, col.setRGB(1, 1, 1))
-  }
-  // sparks carry their colour from birth
-  const sparkStep = stepPool
-  void sparkStep
   return fx
 }
