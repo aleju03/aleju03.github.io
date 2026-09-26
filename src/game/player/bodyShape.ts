@@ -1,104 +1,104 @@
 import * as THREE from 'three'
+import {
+  ellipsoid, roundCone, segDist, smax, smin, surfaceNets, type Field,
+} from './isoSurface'
 
 /*
-  The drawing of the player character: one skinned soup, built once per
-  session and shared by every body in the world.
+  The drawing of the player character: one skinned surface, built once per
+  variant and shared by every body in the world.
 
-  The character is a jelly brawler in the Gang Beasts mould: one continuous
-  piece of flat-coloured gummy, hunched, with a pinched neck under a round
-  head that reads as its own shape, a narrow belly on short stumpy legs, and
-  two arms that come off the shoulders clear of the body, with air under the
-  armpit and down each side, thinner than the trunk and rounded at the end,
-  hanging to mid-thigh. The face is small dark marks in one of five
-  expressions (dots, sleepy, angry, surprised, one-eyed) hashed from the look. One piece of headgear out of eight:
-  a knotted cloth sweatband, a wrestler's mask, a bucket hat, a party hat, a
-  hard hat, a bandana, nothing, or a hood that drapes onto the shoulders; one
-  of five builds (brawler, round, skinny, tall, squat) that change girth and
-  how far the dome rises over the eyes; and one of four outfits (nothing, a
-  cape, a hooped vest, an animal onesie with ears and a tail) that change the
-  trunk's outline or blocking. All three are geometry variants of the one
-  body (8 x 5 x 4 of them, each built on first use and shared), so it is
-  still one draw call whatever it is. The character is in the colours,
-  the hat and the pose, not in the body: every hat's geometry is a variant of
-  the one body, so a body is still one draw call whatever it wears.
+  The character is a bean in the Fall Guys mould: a slim, soft capsule whose
+  top is the head, a face set into the front of it, short stubby arms that
+  grow out of the flanks and end in mittens, and two stumpy legs under it.
+  It is **one surface**. The body is written as a signed distance field (a
+  round cone for the bean, round cones for the limbs, ellipsoids for the
+  feet and the mittens) joined by a smooth minimum with a generous blend
+  where a limb meets the bean, polygonized once (`isoSurface.ts`), with its
+  normals taken from the field's gradient. There is nothing to line up and
+  nothing to tape on: the fillet at a shoulder or a hip is simply what the
+  field looks like there.
 
-  Two earlier drawings are worth remembering as warnings. A straight-sided
-  body on dark shorts and shoes read as three things stacked, a tin can on
-  trousers. A pastel pear with a tall dome and a pale belly patch read as a
-  plush mascot, the exact "too cute" the owner had already turned down.
+  The two drawings before it are worth keeping as warnings. A jelly brawler
+  built as separate parametric parts (a lathe for the trunk, tubes for the
+  arms, ellipsoid feet) read, up close, as exactly that: parts pushed into
+  each other, with a visible ring where every limb went in and a ball for
+  every hand. And a worker in a suit read as too cute and too much like the
+  game whose *rendering* the owner wanted, not its cast.
 
-  It is drawn for the look the whole game is rendered through (a low
-  internal resolution, posterized, outlined), so everything that carries
-  identity is a big flat block of one colour, and the material gives it a
-  slight gummy sheen and a soft rim so the bean reads as a volume rather than
-  as a cut-out.
+  Skin weights follow the same idea. Each vertex asks every part how far
+  away it is, and parts within a blend radius of the nearest share it, so
+  the fillet at a shoulder belongs half to the torso and half to the upper
+  arm and a raised arm stretches the flank with it rather than swinging a
+  sausage out of a hole. Inside a part the weights run smoothly along its
+  chain (pelvis, torso, head up the bean; upper arm, forearm, hand along an
+  arm), four influences, normalized. Two more things keep the one surface
+  from folding over itself when it bends, which is what linear blend
+  skinning does to any sharp joint: the weights are smoothed over the skin
+  itself wherever it is shared between the bean and a limb, and each
+  shoulder and hip has a helper bone on the same pivot that turns with part
+  of its limb (HELPERS), so a raised arm is two soft bends, not one crease.
+  `npm run measure -- body folds` counts what still folds on every
+  filmstrip; `npm run shoot -- body:folds --raw` shows where.
 
-  Why one skinned mesh rather than a mesh per part:
+  The arms are drawn in an A-pose, not hanging. That is the one thing the
+  bind pose has to get right for a single surface: an arm authored against
+  the flank is fused to it along its whole length by the blend, and the
+  first time it swings out it drags a web of body with it. So the bind pose
+  holds the arms out at ARM_BIND, the skeleton's rest (every rotation
+  identity) still hangs them straight down, and the difference lives in the
+  inverse bind matrices (`bindMatrixWorld`), so nothing that poses the rig
+  had to change.
 
-  - **Cost.** A town wears several of these. One draw call per body, two with
-    a shadow. `npm run measure -- body` prints the numbers.
-  - **Softness.** Real skin weights bend, which is the whole of a jelly body.
-    The bean is one lathe weighted from the pelvis up through the torso into
-    the head, with a third weight on a belly bone, so a lean folds it, the
-    head lags and bobbles as the top of the same blob, and the belly wobbles
-    on its own spring. Each limb is one tube blended across its elbow or
-    knee, so an arm is a noodle rather than two sticks and a ball.
-  - **Colour stays a uniform.** Every vertex carries a small `aRole` code and
-    `bodyMaterial.ts` looks the colour up in a per-body palette uniform. Four
-    `Color.set()` calls repaint a body and nothing can relink a shader. The
-    same code carries a head flag, which is how the first-person lens stops
-    seeing the inside of its own head without taking it out of the shadow map.
+  What is *not* geometry: the face, the costume's pattern and the blink are
+  painted in the fragment shader (`bodyMaterial.ts`) from the vertex's bind
+  position, because a painted shape on a smooth surface is crisp at any
+  resolution and costs no variant. A variant is a (headgear, build) pair;
+  the headgear pieces are their own closed fields polygonized at a finer
+  step and concatenated into the same buffer, so a body is still one draw
+  call whatever it wears.
 
-  Everything here is authored in *design units* in the rest pose (feet at
-  y = 0, facing +Z, arms hanging straight down), which is also the bind pose,
-  so a bone's inverse bind matrix is nothing but its rest position negated.
-  `playerBody.ts` owns the bones; this module only says where they are at
-  rest and which vertices follow which.
-
-  Headless-safe: plain BufferGeometry and arithmetic, nothing that needs a
-  document or a GL context, so `npm run measure -- body` can build it in Node.
+  Everything here is in *design units*, feet at y = 0, facing +Z. Headless:
+  plain arithmetic, typed arrays and a BufferGeometry, nothing that needs a
+  document or a GL context, so `npm run measure -- body` builds every
+  variant in Node.
 */
 
 /* ---------------------------------------------------------- dimensions -- */
 
-// stub legs: a jelly brawler is nearly all bean, and a short leg is what
-// makes every step a waddle and every stop a wobble
 export const THIGH = 0.36
 export const SHIN = 0.34
-/** the hip joints' height over the soles */
+/** the hip joints' height over the soles: inside the bean, which the stubby
+    legs come out of */
 export const HIP_Y = THIGH + SHIN // 0.70
 export const HIP_X = 0.24
 /** the foot bone's height over its sole */
 export const ANKLE_H = 0.1
 /** pelvis bone up to the torso bone. The bean is weighted across it */
 export const WAIST_OFF = 0.3
-// heavy shoulders: the widest part of the bean is up where the arms hang
-export const SHOULDER_X = 0.6
-export const SHOULDER_OFF = 0.66
-/** the shoulders ride the hunch forward (see `hz`), slouched */
-const SHOULDER_Z = 0.12
+/** the shoulder joints sit just inside the flank, so an arm grows out of it */
+export const SHOULDER_X = 0.5
+export const SHOULDER_OFF = 0.62
 /** torso bone up to the head bone: where the bean stops being body and
     starts being head, which is only ever a matter of weights */
 export const NECK_OFF = 0.95
-// tube arms long enough to swing well clear of the bean and to flop out of
-// its outline in a fall
-export const UARM = 0.5
-export const FARM = 0.46
-/** head bone up to the eyes: a face set into the upper bean, below the
-    band, not jammed up under it */
+/** stubby arms: a hanging mitten reaches the bottom of the bean */
+export const UARM = 0.38
+export const FARM = 0.34
+/** head bone up to the eyes */
 export const EYE_OFF = 0.24
-/** head bone up to the top of the bean: a small head on big shoulders */
+/** head bone up to the top of the bean */
 export const CROWN_OFF = 0.72
+/** the A-pose the arms are drawn in, radians out from hanging. See the header */
+export const ARM_BIND = 0.85
 
 /* ------------------------------------------------------------ bones ----- */
 
 /** bone slots, in skeleton order. `playerBody.ts` builds a THREE.Bone for
     each at these rest offsets; the geometry below is weighted by index.
-    POM is the knot at the back of the head (a band's, mask's or bandana's
-    tails swing off it) and PACK is the
-    belly, a jiggle bone the front of the bean is partly weighted to: both
-    keep the names they had when they were a pom-pom and a backpack, because
-    the rig's secondary springs are keyed on them */
+    POM is the knot at the back of the head (a band's or bandana's tails
+    swing off it), PACK the belly, a jiggle bone the front of the bean is
+    partly weighted to, and EYES only a pivot the blink is read off: both of
+    the latter two keep old names because the rig's springs are keyed on them */
 export const B = {
   PELVIS: 0,
   TORSO: 1,
@@ -118,98 +118,67 @@ export const B = {
   EYES: 15,
   POM: 16,
   PACK: 17,
+  // helpers: a shoulder and a hip at each limb's own pivot that turn with
+  // a share of the limb (HELPERS), so the skin round a joint bends
+  // over two bones instead of one. See the note above `followHelpers`
+  // in playerBody.ts
+  SHOULDER_L: 18,
+  SHOULDER_R: 19,
+  HIP_L: 20,
+  HIP_R: 21,
 } as const
-export const BONE_COUNT = 18
-
-/** the bean's extent, bottom (the seat of the shorts) to top of the head */
-export const BODY_Y0 = HIP_Y - 0.26
-const BODY_Y1 = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF - 0.02
-const BODY_ZS = 0.86
-/** the bean's radius at t in [0, 1] bottom to top: widest at the shoulders,
-    tapering quickly into a small head that ends in a short dome. The
-    control points are joined by a Catmull-Rom spline, which keeps the slope
-    running through each of them: a cosine blend between them came to a
-    standstill at every point, and the flat band it left at each one read as
-    a quilted jacket, rings stacked up the body */
-const PROF: Array<[number, number]> = [
-  [0, 0.44], [0.16, 0.5], [0.34, 0.52], [0.5, 0.52], [0.58, 0.47], [0.66, 0.35], [0.75, 0.42],
-  [0.85, 0.44], [1, 0.42],
+export const BONE_COUNT = 22
+/** each helper, the limb bone it follows, and how much of that limb's
+    rotation it takes */
+export const HELPERS: ReadonlyArray<readonly [number, number, number]> = [
+  [B.SHOULDER_L, B.UARM_L, 0.5], [B.SHOULDER_R, B.UARM_R, 0.5],
+  [B.HIP_L, B.THIGH_L, 0.55], [B.HIP_R, B.THIGH_R, 0.55],
 ]
+
 /*
-  The build: every body is one of three outlines, the same drawing scaled
-  differently in three bands (hips, shoulders, head), so a crowd is not six
-  copies of one shape wearing different hats. The player picks it (it rides
-  in the pupils' colour, see look.ts). The eye line never moves, because it
-  is what the camera agrees with, so height is varied where it can be: by how
-  far the dome rises over the eyes, which is most of what reads as tall.
+  The builds: every body is one of five beans, the same drawing with a
+  different bottom radius, top radius and dome height. The eye line never
+  moves, because it is what every camera agrees with (see playerBody's
+  DESIGN_EYE), so "tall" is a dome that rises further over the eyes and
+  "stubby" one that barely clears them.
 */
-export const BUILD_COUNT = 5
-/** how much wider than the brawler each build is at the shoulders: the rig
-    holds the arms that much further out, so they never sink into it */
-export const buildGirth = (b: number) => BUILDS[Math.max(0, Math.min(BUILD_COUNT - 1, b))].mid
-const BUILDS = [
-  { hip: 1, mid: 1, head: 1, crown: 1, leg: 1 }, // the brawler
-  { hip: 1.32, mid: 1.3, head: 0.95, crown: 0.9, leg: 1.2 }, // round: a ball on stumps
-  { hip: 0.72, mid: 0.74, head: 0.9, crown: 1.7, leg: 0.8 }, // skinny: a stick of a thing
-  { hip: 0.86, mid: 0.86, head: 0.88, crown: 3.4, leg: 0.95 }, // tall: a long domed head
-  { hip: 1.15, mid: 1.18, head: 1.08, crown: 0.35, leg: 1.12 }, // squat: flat-topped, wide
+interface Build {
+  /** bottom and top sphere radii of the bean */
+  rb: number
+  rt: number
+  /** their centres' heights */
+  yb: number
+  yt: number
+  /** front-to-back depth over width */
+  zs: number
+}
+const BUILD_DEFS: Build[] = [
+  { rb: 0.53, rt: 0.45, yb: 0.95, yt: 2.22, zs: 0.86 }, // the bean
+  { rb: 0.62, rt: 0.5, yb: 1.02, yt: 2.17, zs: 0.9 }, // chubby
+  { rb: 0.45, rt: 0.41, yb: 0.9, yt: 2.3, zs: 0.84 }, // slim
+  { rb: 0.5, rt: 0.43, yb: 0.93, yt: 2.52, zs: 0.86 }, // tall
+  { rb: 0.58, rt: 0.5, yb: 0.98, yt: 2.07, zs: 0.9 }, // stubby
 ]
-let build = BUILDS[0]
-const bandScale = (t: number) => {
-  const toMid = THREE.MathUtils.smoothstep(t, 0.05, 0.5)
-  const toHead = THREE.MathUtils.smoothstep(t, 0.6, 0.75)
-  return (build.hip + (build.mid - build.hip) * toMid) * (1 - toHead) + build.head * toHead
-}
-/** the hunch: the upper body carried forward of the hips, so the mass is up
-    and forward over slouched shoulders instead of a belly pushed out over
-    the feet. A pure function of height, applied to everything drawn */
-const hz = (y: number) => 0.16 * THREE.MathUtils.smoothstep(y, HIP_Y + 0.3, HIP_Y + 1.35)
-const beanR = (t: number) => {
-  let i = 1
-  while (i < PROF.length - 1 && PROF[i][0] < t) i++
-  const p0 = PROF[Math.max(0, i - 2)][1]
-  const p1 = PROF[i - 1][1]
-  const p2 = PROF[i][1]
-  const p3 = PROF[Math.min(PROF.length - 1, i + 1)][1]
-  const k = THREE.MathUtils.clamp((t - PROF[i - 1][0]) / (PROF[i][0] - PROF[i - 1][0]), 0, 1)
-  const r =
-    0.5 *
-    (2 * p1 + (-p0 + p2) * k + (2 * p0 - 5 * p1 + 4 * p2 - p3) * k * k +
-      (-p0 + 3 * p1 - 3 * p2 + p3) * k * k * k)
-  // a round bottom, and a round dome as tall as it is wide on top
-  const bot = t < 0.16 ? Math.sqrt(Math.max(0, 1 - ((0.16 - t) / 0.16) ** 2)) : 1
-  const top = t > 0.85 ? Math.sqrt(Math.max(0, 1 - ((t - 0.85) / 0.15) ** 2)) : 1
-  return r * bot * top * bandScale(t)
-}
-/** the stretch of everything above the eyes, per build: the eyes stay put
-    and the dome rises or settles over them. Drawing code works in unstretched
-    height `t` and places with `stretch`; anything that asks the surface a
-    question at a real height goes through `tOf`, which undoes it */
-const EYE_TOP = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF + 0.04
-const stretch = (y: number) => (y <= EYE_TOP ? y : EYE_TOP + (y - EYE_TOP) * build.crown)
-const unstretch = (y: number) => (y <= EYE_TOP ? y : EYE_TOP + (y - EYE_TOP) / build.crown)
-const tOf = (y: number) => (unstretch(y) - BODY_Y0) / (BODY_Y1 - BODY_Y0)
-
-const KNOT_UP = EYE_OFF + 0.2
-const HEAD_Z = hz(HIP_Y + WAIST_OFF + NECK_OFF + 0.2)
-const KNOT_Z = (() => {
-  const y = HIP_Y + WAIST_OFF + NECK_OFF + KNOT_UP
-  return hz(y) - beanR(THREE.MathUtils.clamp(tOf(y), 0, 1)) * BODY_ZS - 0.04
-})()
+export const BUILD_COUNT = BUILD_DEFS.length
+const clampBuild = (b: number) => Math.max(0, Math.min(BUILD_COUNT - 1, Math.floor(b)))
+/** how much wider than the default bean each build is: the rig holds the
+    arms that much further out, so a hanging arm never sinks into the flank */
+export const buildGirth = (b: number) => BUILD_DEFS[clampBuild(b)].rb / BUILD_DEFS[0].rb
+/** the bottom of the default bean over the soles */
+export const BODY_Y0 = BUILD_DEFS[0].yb - BUILD_DEFS[0].rb
+/** the eyes, and the middle of the face panel the shader paints */
+export const EYE_Y = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.19
 
 /** parent slot of each bone (-1: hangs off the group) and its offset from
     that parent at rest, design units */
 export const BONE_REST: Array<{ parent: number; at: [number, number, number] }> = [
   { parent: -1, at: [0, HIP_Y, 0] }, // pelvis
   { parent: B.PELVIS, at: [0, WAIST_OFF, 0] }, // torso
-  // the head pivots under its own lobe, which the hunch carries forward: a
-  // pivot left behind it swung the back of the head down through the neck
-  // every time the chin came up, and folded the neck inside out
-  { parent: B.TORSO, at: [0, NECK_OFF, HEAD_Z] }, // head
-  { parent: B.TORSO, at: [SHOULDER_X, SHOULDER_OFF, SHOULDER_Z] }, // upper arm L (+x)
+  { parent: B.TORSO, at: [0, NECK_OFF, 0] }, // head
+  { parent: B.TORSO, at: [SHOULDER_X, SHOULDER_OFF, 0] }, // upper arm L (+x)
   { parent: B.UARM_L, at: [0, -UARM, 0] },
   { parent: B.FARM_L, at: [0, -FARM, 0] },
-  { parent: B.TORSO, at: [-SHOULDER_X, SHOULDER_OFF, SHOULDER_Z] }, // upper arm R
+  { parent: B.TORSO, at: [-SHOULDER_X, SHOULDER_OFF, 0] }, // upper arm R
   { parent: B.UARM_R, at: [0, -UARM, 0] },
   { parent: B.FARM_R, at: [0, -FARM, 0] },
   { parent: B.PELVIS, at: [HIP_X, 0, 0] }, // thigh L
@@ -218,11 +187,14 @@ export const BONE_REST: Array<{ parent: number; at: [number, number, number] }> 
   { parent: B.PELVIS, at: [-HIP_X, 0, 0] }, // thigh R
   { parent: B.THIGH_R, at: [0, -THIGH, 0] },
   { parent: B.SHIN_R, at: [0, -SHIN + ANKLE_H, 0] },
-  { parent: B.HEAD, at: [0, EYE_OFF, 0.44] }, // eyes (blink pivot)
-  // the knot at the back that tails swing off: on the head's own surface,
-  // or the tails pivot about a point behind their root and come adrift
-  { parent: B.HEAD, at: [0, KNOT_UP, KNOT_Z - HEAD_Z] },
-  { parent: B.TORSO, at: [0, 0.02, 0.5] }, // belly
+  { parent: B.HEAD, at: [0, EYE_OFF, 0.38] }, // eyes (blink pivot)
+  // the knot at the back that tails swing off, on the head's own surface
+  { parent: B.HEAD, at: [0, EYE_OFF + 0.2, -0.38] },
+  { parent: B.TORSO, at: [0, 0.0, 0.42] }, // belly
+  { parent: B.TORSO, at: [SHOULDER_X, SHOULDER_OFF, 0] }, // shoulder helper L
+  { parent: B.TORSO, at: [-SHOULDER_X, SHOULDER_OFF, 0] }, // shoulder helper R
+  { parent: B.PELVIS, at: [HIP_X, 0, 0] }, // hip helper L
+  { parent: B.PELVIS, at: [-HIP_X, 0, 0] }, // hip helper R
 ]
 
 /** each bone's rest position in the model's frame, design units */
@@ -237,15 +209,34 @@ export const boneRestWorld = (i: number, out: THREE.Vector3): THREE.Vector3 => {
   return out
 }
 
+/** the rotation each bone is *drawn* at: identity except the upper arms,
+    held out in the A-pose */
+const bindRot = (i: number) =>
+  i === B.UARM_L ? ARM_BIND : i === B.UARM_R ? -ARM_BIND
+    : i === B.SHOULDER_L ? ARM_BIND * HELPERS[0][2] : i === B.SHOULDER_R ? -ARM_BIND * HELPERS[1][2] : 0
+/** a bone's world matrix in the bind pose (what the mesh was drawn around);
+    the inverse bind matrices are these inverted */
+export const bindMatrixWorld = (i: number, out: THREE.Matrix4): THREE.Matrix4 => {
+  const chain: number[] = []
+  for (let b = i; b !== -1; b = BONE_REST[b].parent) chain.unshift(b)
+  out.identity()
+  const m = new THREE.Matrix4()
+  for (const b of chain) {
+    const [x, y, z] = BONE_REST[b].at
+    m.makeRotationZ(bindRot(b)).setPosition(x, y, z)
+    out.multiply(m)
+  }
+  return out
+}
+
 /** the bones the first-person lens must not see: the head and its children */
 export const HEAD_BONES: ReadonlySet<number> = new Set([B.HEAD, B.EYES, B.POM])
 
 /* ------------------------------------------------------------ colours --- */
 
 /** what a vertex is painted with. SUIT, TRIM, ACCENT and GLOW are the look's
-    four (`PlayerLook`'s jelly, headgear detail, headgear and pupils); GLINT
-    is the whites of the eyes, and the rest are unused on this body but kept
-    so the palette layout is stable */
+    four (`PlayerLook`'s body, outfit detail, headgear and eyes); SKIN is the
+    face panel (the shader picks cream or ink from the eye colour) */
 export const ROLE = {
   SKIN: 0,
   SUIT: 1,
@@ -257,763 +248,856 @@ export const ROLE = {
   GLINT: 7,
   HAIR: 8,
 } as const
-/** added to a role code for anything the first-person lens must not draw */
+/** no longer stamped on any vertex (the lens hides the whole body), kept so
+    the role layout is stable */
 export const HEAD_FLAG = 16
 
-/* ------------------------------------------------------------ builder --- */
+/* ------------------------------------------------------------- the bean -- */
 
-interface Soup {
-  pos: number[]
-  nrm: number[]
-  si: number[]
-  sw: number[]
-  role: number[]
-  idx: number[]
+/** the numbers a variant is built from, resolved per build */
+interface Frame {
+  /** which build this is */
+  index: number
+  bd: Build
+  bean: Field
+  /** the bean's horizontal radius (x) at a height, and its depth there */
+  rx: (y: number) => number
+  /** the arms and legs as separate fields, for the weights */
+  arm: [Field, Field]
+  leg: [Field, Field]
+  /** the whole body */
+  body: Field
+  sh: [THREE.Vector3, THREE.Vector3]
+  dir: [THREE.Vector3, THREE.Vector3]
+  /** the blend radius where an arm (0 left, 1 right) or a leg meets the
+      bean, at a point: the fillet the field draws, and the band the
+      weights are shared over, which must be the same thing */
+  armK: (k: 0 | 1, x: number, y: number, z: number) => number
+  legK: (y: number) => number
 }
 
-/** which bones pull a vertex and how hard: two blended by w0, and optionally
-    a third (b2) taking a share w2 off the top of both */
-type Weigh = (
-  p: THREE.Vector3,
-) => [number, number, number] | [number, number, number, number, number]
-const rigid = (b: number): Weigh => () => [b, b, 1]
-/** blend two bones across a band of `axis` (the value where the weight is
-    half), soft over `half` either side of it: a smooth elbow, knee or waist */
-const blend = (
-  lo: number, hi: number, axisY: number, half: number,
-): Weigh => (p) => {
-  const t = THREE.MathUtils.clamp((p.y - (axisY - half)) / (2 * half), 0, 1)
-  const k = t * t * (3 - 2 * t)
-  // k is how far up the band: 1 belongs to the upper bone
-  return [hi, lo, k]
+/** Math.hypot is several times slower than this in V8, and the fields are
+    evaluated a few hundred thousand times per variant */
+const len = (a: number, b: number, c = 0) => Math.sqrt(a * a + b * b + c * c)
+
+const smooth = (e0: number, e1: number, x: number) => {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)))
+  return t * t * (3 - 2 * t)
 }
 
-const vA = new THREE.Vector3()
-const vB = new THREE.Vector3()
-const vC = new THREE.Vector3()
-const vD = new THREE.Vector3()
-const vN = new THREE.Vector3()
+const FRAMES: Array<Frame | null> = new Array(BUILD_COUNT).fill(null)
+const frameFor = (b: number): Frame => {
+  const cached = FRAMES[b]
+  if (cached) return cached
+  const bd = BUILD_DEFS[b]
+  const cone = roundCone(0, bd.yb, 0, 0, bd.yt, 0, bd.rb, bd.rt)
+  const izs = 1 / bd.zs
+  const bean: Field = (x, y, z) => cone(x, y, z * izs)
+  // the horizontal radius at a height, by bisection on the field itself, so
+  // headgear can sit on whatever the build drew; tabulated, because the
+  // weights ask it once per vertex
+  const radiusAt = (y: number) => {
+    let a = 0
+    let c = 1.5
+    if (bean(0, y, 0) > 0) return 0
+    for (let k = 0; k < 30; k++) {
+      const m = (a + c) / 2
+      if (bean(m, y, 0) < 0) a = m
+      else c = m
+    }
+    return a
+  }
+  const TAB = 128
+  const top = bd.yt + bd.rt
+  const tab = new Float32Array(TAB + 1)
+  for (let i = 0; i <= TAB; i++) tab[i] = radiusAt((i / TAB) * top)
+  const rx = (y: number) => {
+    const u = Math.max(0, Math.min(TAB, (y / top) * TAB))
+    const i = Math.min(TAB - 1, Math.floor(u))
+    return tab[i] + (tab[i + 1] - tab[i]) * (u - i)
+  }
 
+  const m = new THREE.Matrix4()
+  const sh: [THREE.Vector3, THREE.Vector3] = [new THREE.Vector3(), new THREE.Vector3()]
+  const dir: [THREE.Vector3, THREE.Vector3] = [new THREE.Vector3(), new THREE.Vector3()]
+  const arms: Field[] = []
+  const armRoot: THREE.Vector3[] = []
+  const armTip: THREE.Vector3[] = []
+  ;([[B.UARM_L, 1], [B.UARM_R, -1]] as const).forEach(([ub, side], k) => {
+    const S = sh[k].setFromMatrixPosition(bindMatrixWorld(ub, m))
+    const d = dir[k].set(side * Math.sin(ARM_BIND), -Math.cos(ARM_BIND), 0)
+    const E = S.clone().addScaledVector(d, UARM)
+    const W = E.clone().addScaledVector(d, FARM)
+    // one straight tapering cone from well inside the flank to the wrist:
+    // the root's round end is buried, so no shoulder pad stands proud of the
+    // body, and there is no second cone to blend at the elbow, because a
+    // smooth minimum swells wherever two parts meet and an arm of two
+    // blended cones read as a string of sausages
+    const G = S.clone().add(new THREE.Vector3(-side * 0.11, 0, 0))
+    const arm = roundCone(G.x, G.y, G.z, W.x, W.y, W.z, 0.13, 0.098)
+    // the mitten: a soft paddle a little wider than the wrist, flattened
+    // palm to back (the palm faces the body), part of the same surface
+    const C = W.clone().addScaledVector(d, 0.09)
+    // in the arm's plane, perpendicular to it, toward the body
+    const n = new THREE.Vector3(-side * Math.cos(ARM_BIND), -Math.sin(ARM_BIND), 0)
+    const wz = new THREE.Vector3(0, 0, 1)
+    const mitt = ellipsoid(C.x, C.y, C.z, 0.08, 0.14, 0.115, [n.x, n.y, n.z, d.x, d.y, d.z, wz.x, wz.y, wz.z])
+    // and a small thumb nub on the front edge, grown out of the mitten
+    const T0 = W.clone().addScaledVector(d, 0.04).addScaledVector(wz, 0.06)
+    const T1 = W.clone().addScaledVector(d, 0.1).addScaledVector(wz, 0.12).addScaledVector(n, 0.02)
+    const thumb = roundCone(T0.x, T0.y, T0.z, T1.x, T1.y, T1.z, 0.042, 0.036)
+    arms.push((x, y, z) => smin(smin(arm(x, y, z), mitt(x, y, z), 0.05), thumb(x, y, z), 0.035))
+    armRoot.push(S.clone())
+    armTip.push(W.clone().addScaledVector(d, 0.25))
+  })
+
+  const legs: Field[] = []
+  for (const side of [1, -1]) {
+    // drawn a hair wider than the hip bones and a little slimmer than the
+    // arms are long: two stumps closer than a couple of grid cells are one
+    // stump with a web between them, and a web folds the moment one leg
+    // swings forward and the other back
+    const x = side * (HIP_X + 0.03)
+    const stump = roundCone(x, HIP_Y + 0.06, 0, x, ANKLE_H + 0.06, 0.0, 0.165, 0.14)
+    // a rounded stub of a foot pushed a little forward, the sole flattened
+    const foot = ellipsoid(x, 0.1, 0.07, 0.14, 0.12, 0.21)
+    legs.push((px, py, pz) => smax(smin(stump(px, py, pz), foot(px, py, pz), 0.1), -py, 0.03))
+  }
+
+  const [aL, aR] = arms
+  const [lL, lR] = legs
+  const [SL, SR] = armRoot
+  const [TL, TR] = armTip
+  // a part further than this past its own bone cannot reach the blend, so
+  // it is not evaluated at all: most of the grid is nowhere near an arm
+  const ARM_R = 0.16 + 0.23
+  const LEG_R = 0.3 + 0.2
+  // a generous fillet where an arm leaves the flank, tightening along it so
+  // the arm is free of the body well before the elbow
+  const armK = (k: 0 | 1, x: number, y: number, z: number) => {
+    const S = k === 0 ? SL : SR
+    const ds = Math.sqrt((x - S.x) ** 2 + (y - S.y) ** 2 + (z - S.z) ** 2)
+    return 0.025 + 0.2 * (1 - smooth(0.1, 0.36, ds))
+  }
+  // and the same where the legs leave the bottom of the bean
+  const legK = (y: number) => 0.03 + 0.15 * smooth(0.28, 0.5, y)
+  const body: Field = (x, y, z) => {
+    let d = bean(x, y, z)
+    if (segDist(x, y, z, SL.x, SL.y, SL.z, TL.x, TL.y, TL.z) - ARM_R < d) d = smin(d, aL(x, y, z), armK(0, x, y, z))
+    if (segDist(x, y, z, SR.x, SR.y, SR.z, TR.x, TR.y, TR.z) - ARM_R < d) d = smin(d, aR(x, y, z), armK(1, x, y, z))
+    const kl = legK(y)
+    if (segDist(x, y, z, HIP_X + 0.03, HIP_Y + 0.06, 0, HIP_X + 0.03, 0.1, 0.07) - LEG_R < d) d = smin(d, lL(x, y, z), kl)
+    if (segDist(x, y, z, -HIP_X - 0.03, HIP_Y + 0.06, 0, -HIP_X - 0.03, 0.1, 0.07) - LEG_R < d) d = smin(d, lR(x, y, z), kl)
+    return d
+  }
+  const f: Frame = { index: b, bd, bean, rx, arm: [aL, aR], leg: [lL, lR], body, sh, dir, armK, legK }
+  FRAMES[b] = f
+  return f
+}
+
+/* ------------------------------------------------------------ weights --- */
+
+/** a vertex's bones and weights along the bean: pelvis into torso into
+    head by height, with the front of the belly partly on its jiggle bone */
+const beanChain = (fr: Frame, x: number, y: number, z: number, acc: Float32Array, w: number) => {
+  void x
+  const kPT = smooth(0.8, 1.4, y)
+  const kTH = smooth(1.72, 2.16, y)
+  let pel = 1 - kPT
+  let tor = kPT * (1 - kTH)
+  const hed = kTH
+  const r = Math.max(0.2, fr.rx(Math.min(Math.max(y, fr.bd.yb), fr.bd.yt)) * fr.bd.zs)
+  const front = smooth(0.15, 0.85, z / r)
+  const band = Math.max(0, 1 - Math.abs(y - 1.0) / 0.5)
+  const belly = 0.55 * front * band * band
+  pel *= 1 - belly
+  tor *= 1 - belly
+  // the flesh round a shoulder or a hip goes with the helper there
+  for (let k = 0; k < 2; k++) {
+    const S = fr.sh[k]
+    const cS = 1 - smooth(0.12, 0.4, len(x - S.x, y - S.y, z - S.z))
+    acc[k === 0 ? B.SHOULDER_L : B.SHOULDER_R] += w * tor * cS
+    tor *= 1 - cS
+    const hx = k === 0 ? HIP_X : -HIP_X
+    const cH = 1 - smooth(0.12, 0.4, len(x - hx, y - HIP_Y, z))
+    acc[k === 0 ? B.HIP_L : B.HIP_R] += w * pel * cH
+    pel *= 1 - cH
+  }
+  acc[B.PELVIS] += w * pel
+  acc[B.TORSO] += w * tor
+  acc[B.HEAD] += w * hed
+  acc[B.PACK] += w * belly
+}
+
+const armChain = (fr: Frame, k: 0 | 1, x: number, y: number, z: number, acc: Float32Array, w: number) => {
+  const S = fr.sh[k]
+  const d = fr.dir[k]
+  const s = (x - S.x) * d.x + (y - S.y) * d.y + (z - S.z) * d.z
+  const kE = smooth(UARM - 0.2, UARM + 0.16, s)
+  const kW = smooth(UARM + FARM - 0.1, UARM + FARM + 0.08, s)
+  const [ua, fa, ha] = k === 0 ? [B.UARM_L, B.FARM_L, B.HAND_L] : [B.UARM_R, B.FARM_R, B.HAND_R]
+  // the root of the arm shares with the shoulder helper
+  const root = 0.5 * (1 - smooth(0.0, 0.2, s))
+  acc[k === 0 ? B.SHOULDER_L : B.SHOULDER_R] += w * (1 - kE) * root
+  acc[ua] += w * (1 - kE) * (1 - root)
+  acc[fa] += w * kE * (1 - kW)
+  acc[ha] += w * kE * kW
+}
+
+const legChain = (k: 0 | 1, y: number, z: number, acc: Float32Array, w: number) => {
+  const [th, sn, ft] = k === 0 ? [B.THIGH_L, B.SHIN_L, B.FOOT_L] : [B.THIGH_R, B.SHIN_R, B.FOOT_R]
+  const kK = smooth(HIP_Y - THIGH - 0.16, HIP_Y - THIGH + 0.16, y)
+  const kF = (1 - smooth(ANKLE_H - 0.02, ANKLE_H + 0.2, y)) * (0.6 + 0.4 * smooth(-0.05, 0.14, z))
+  // and the top of a leg with the hip helper
+  const root = 0.7 * smooth(HIP_Y - 0.34, HIP_Y - 0.06, y)
+  acc[k === 0 ? B.HIP_L : B.HIP_R] += w * kK * root
+  acc[th] += w * kK * (1 - root)
+  acc[sn] += w * (1 - kK) * (1 - kF)
+  acc[ft] += w * (1 - kK) * kF
+}
+
+/** how much wider than the fillet the weights are shared over: a little,
+    so the weights change more slowly than the shape does. The band follows
+    the fillet (wide at the shoulder, tight down the arm), because a single
+    radius everywhere gave the flank beside a hanging elbow a share of the
+    arm, and swinging the arm out dragged a web of body with it, stretched
+    six times over */
+const SHARE_K = 1.1
+const acc = new Float32Array(BONE_COUNT)
+/** weights for a point of the body, written as 4 indices + 4 weights; also
+    returns how much of it is bean and how much leg (for the paint) */
+const weighBody = (
+  fr: Frame, x: number, y: number, z: number, full: Float32Array, o: number, part: Float32Array, po: number,
+) => {
+  acc.fill(0)
+  const d0 = fr.bean(x, y, z)
+  const d1 = fr.arm[0](x, y, z)
+  const d2 = fr.arm[1](x, y, z)
+  const d3 = fr.leg[0](x, y, z)
+  const d4 = fr.leg[1](x, y, z)
+  // each part shares with the bean over its own fillet: a vertex belongs to
+  // the bean and a part in proportion to how deep into their blend it is
+  const share = (d: number, k: number) => {
+    const t = Math.max(0, 1 - (d - d0) / (k * SHARE_K))
+    return t * t * t
+  }
+  const bean = (d: number, k: number) => {
+    const t = Math.max(0, 1 - (d0 - d) / (k * SHARE_K))
+    return t * t * t
+  }
+  const k1 = fr.armK(0, x, y, z)
+  const k2 = fr.armK(1, x, y, z)
+  const kl = fr.legK(y)
+  const w1 = share(d1, k1)
+  const w2 = share(d2, k2)
+  const w3 = share(d3, kl)
+  const w4 = share(d4, kl)
+  // the bean's own weight falls away as the vertex goes deeper into a part
+  const w0 = Math.min(bean(d1, k1), bean(d2, k2), bean(d3, kl), bean(d4, kl))
+  const sum = w0 + w1 + w2 + w3 + w4 || 1
+  beanChain(fr, x, y, z, acc, w0 / sum)
+  if (w1) armChain(fr, 0, x, y, z, acc, w1 / sum)
+  if (w2) armChain(fr, 1, x, y, z, acc, w2 / sum)
+  if (w3) legChain(0, y, z, acc, w3 / sum)
+  if (w4) legChain(1, y, z, acc, w4 / sum)
+  part[po] = w0 / sum
+  part[po + 1] = (w3 + w4) / sum
+  full.set(acc, o)
+}
+
+/*
+  Then the weights are smoothed over the mesh itself: a few rounds of each
+  vertex's weights moving halfway to its neighbours' average. Weights
+  computed per point from distances change as fast as the distances do, and
+  across a crease (an armpit, the back of a knee, the front of an ankle) that
+  is fast enough for linear blend skinning to fold the skin over itself when
+  the joint bends: the armpit of a raised arm showed as a scribble of
+  inside-out triangles. Smoothed along the surface, a joint's weights ramp
+  over a few rows of triangles instead, and only along the skin, so nothing
+  leaks across the gap between two legs or an arm and the flank.
+*/
+const SMOOTH_ROUNDS = 10
 /**
- * A parametric patch: `f(u, v, out)` for u, v in [0, 1], sampled on a grid
- * and triangulated. Normals are the cross product of the two partial
- * derivatives, taken numerically, so every primitive below (ellipsoids,
- * lathes, tubes, rounded boxes) is just a function; at a pole, where one
- * derivative vanishes, the normal falls back to the direction away from
- * `centre`, which is right for every closed shape here.
+ * Smooth `full` (V rows of BONE_COUNT weights) over the triangle mesh, but
+ * only in the band that starts at the vertices `seed` picks and grows by a
+ * ring each round. Everywhere else the weights are already smooth functions
+ * of position (the bean's height bands, an elbow's ramp), and sweeping the
+ * whole skin was most of what a variant cost to build.
  */
-const patch = (
-  s: Soup,
-  f: (u: number, v: number, out: THREE.Vector3) => void,
-  nu: number,
-  nv: number,
-  role: number,
-  weigh: Weigh,
-  centre: THREE.Vector3 | ((p: THREE.Vector3) => THREE.Vector3),
-  flip = false,
-) => {
-  const base = s.pos.length / 3
-  const e = 1e-3
-  for (let j = 0; j <= nv; j++) {
-    const v = j / nv
-    for (let i = 0; i <= nu; i++) {
-      const u = i / nu
-      f(u, v, vA)
-      f(Math.min(1, u + e), v, vB)
-      f(Math.max(0, u - e), v, vC)
-      vB.sub(vC)
-      f(u, Math.min(1, v + e), vC)
-      f(u, Math.max(0, v - e), vD)
-      vC.sub(vD)
-      vN.crossVectors(vC, vB)
-      const ctr = typeof centre === 'function' ? centre(vA) : centre
-      if (vN.lengthSq() < 1e-14) vN.subVectors(vA, ctr)
-      vN.normalize()
-      // point the normal away from the centre whatever the patch's winding
-      vD.subVectors(vA, ctr)
-      if (vN.dot(vD) < 0) vN.negate()
-      if (flip) vN.negate()
-      s.pos.push(vA.x, vA.y, vA.z)
-      s.nrm.push(vN.x, vN.y, vN.z)
-      const [b0, b1, w0, b2 = 0, w2 = 0] = weigh(vA)
-      s.si.push(b0, b1, b2, 0)
-      s.sw.push(w0 * (1 - w2), (1 - w0) * (1 - w2), w2, 0)
-      s.role.push(role)
+const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number, seed: (v: number) => boolean) => {
+  // neighbour lists, compressed
+  const deg = new Uint32Array(V + 1)
+  for (let t = 0; t < idx.length; t++) deg[idx[t] + 1] += 2
+  for (let v = 0; v < V; v++) deg[v + 1] += deg[v]
+  const nb = new Uint32Array(deg[V])
+  const fill = deg.slice(0, V)
+  for (let t = 0; t < idx.length; t += 3) {
+    for (let e = 0; e < 3; e++) {
+      const a = idx[t + e]
+      nb[fill[a]++] = idx[t + ((e + 1) % 3)]
+      nb[fill[a]++] = idx[t + ((e + 2) % 3)]
     }
   }
-  const row = nu + 1
-  for (let j = 0; j < nv; j++) {
-    for (let i = 0; i < nu; i++) {
-      const a = base + j * row + i
-      const b = a + 1
-      const c = a + row
-      const d = c + 1
-      // wound so the outward normal faces the viewer; fixed up per triangle
-      // below rather than trusted, because the parametrisations disagree
-      s.idx.push(a, c, b, b, c, d)
+  const inBand = new Uint8Array(V)
+  const band: number[] = []
+  for (let v = 0; v < V; v++) {
+    if (seed(v)) {
+      inBand[v] = 1
+      band.push(v)
     }
   }
-  // make every triangle's winding agree with its vertex normals
-  for (let t = s.idx.length - nu * nv * 6; t < s.idx.length; t += 3) {
-    const [i0, i1, i2] = [s.idx[t], s.idx[t + 1], s.idx[t + 2]]
-    vA.fromArray(s.pos, i0 * 3)
-    vB.fromArray(s.pos, i1 * 3).sub(vA)
-    vC.fromArray(s.pos, i2 * 3).sub(vA)
-    vD.crossVectors(vB, vC)
-    vN.fromArray(s.nrm, i0 * 3)
-      .add(vA.fromArray(s.nrm, i1 * 3))
-      .add(vA.fromArray(s.nrm, i2 * 3))
-    if (vD.dot(vN) < 0) {
-      s.idx[t + 1] = i2
-      s.idx[t + 2] = i1
+  const nx = new Float32Array(V * BONE_COUNT)
+  // which bones each vertex carries, as bits: a vertex only ever mixes the
+  // few bones around it, and looping all of them was most of the cost
+  const mask = new Uint32Array(V)
+  for (let v = 0; v < V; v++) {
+    let m = 0
+    for (let b = 0; b < BONE_COUNT; b++) if (full[v * BONE_COUNT + b] > 0) m |= 1 << b
+    mask[v] = m
+  }
+  const mix = new Uint32Array(V)
+  for (let r = 0; r < SMOOTH_ROUNDS; r++) {
+    // grow first, so this round already reaches one ring further
+    const n0 = band.length
+    for (let i = 0; i < n0; i++) {
+      const v = band[i]
+      for (let k = deg[v]; k < deg[v + 1]; k++) {
+        const u = nb[k]
+        if (!inBand[u]) {
+          inBand[u] = 1
+          band.push(u)
+        }
+      }
     }
-  }
-}
-
-/** an ellipsoid, optionally oriented by a basis and flattened below `floor` */
-const ellipsoid = (
-  s: Soup,
-  c: THREE.Vector3,
-  r: THREE.Vector3,
-  role: number,
-  weigh: Weigh,
-  seg: [number, number] = [14, 10],
-  basis?: THREE.Matrix4,
-  floor = -Infinity,
-  lump = 0,
-) => {
-  const m = basis ?? new THREE.Matrix4()
-  const centre = c.clone()
-  patch(
-    s,
-    (u, v, out) => {
-      const th = u * Math.PI * 2
-      const ph = v * Math.PI
-      const bump = lump ? 1 + lump * Math.sin(th * 5) * Math.sin(ph * 4) : 1
-      out.set(
-        Math.sin(ph) * Math.cos(th) * r.x * bump,
-        Math.cos(ph) * r.y * bump,
-        Math.sin(ph) * Math.sin(th) * r.z * bump,
-      )
-      out.applyMatrix4(m).add(c)
-      if (out.y < floor) out.y = floor
-    },
-    seg[0], seg[1], role, weigh, centre,
-  )
-}
-
-/** a round tube along a polyline (parallel-transported rings), capped with
-    hemispheres, radius interpolated along it */
-const tube = (
-  s: Soup,
-  path: THREE.Vector3[],
-  r0: number,
-  r1: number,
-  role: number,
-  weigh: Weigh,
-  seg = 10,
-  flat = 1,
-) => {
-  // arc length, for the radius profile
-  const L: number[] = [0]
-  for (let i = 1; i < path.length; i++) L.push(L[i - 1] + path[i].distanceTo(path[i - 1]))
-  const total = L[L.length - 1]
-  const at = (d: number, out: THREE.Vector3, tan: THREE.Vector3) => {
-    let i = 1
-    while (i < path.length - 1 && L[i] < d) i++
-    const k = THREE.MathUtils.clamp((d - L[i - 1]) / Math.max(1e-6, L[i] - L[i - 1]), 0, 1)
-    out.lerpVectors(path[i - 1], path[i], k)
-    tan.subVectors(path[i], path[i - 1]).normalize()
-  }
-  // frames: a reference normal carried along by projection (see props.ts's
-  // sweep on why an up-vector frame twists a limb inside out)
-  const steps = Math.max(2, Math.round(total / 0.05))
-  const rings: Array<{ p: THREE.Vector3; n: THREE.Vector3; b: THREE.Vector3; r: number }> = []
-  const tan = new THREE.Vector3()
-  const ref = new THREE.Vector3(1, 0, 0)
-  for (let k = 0; k <= steps; k++) {
-    const d = (k / steps) * total
-    const p = new THREE.Vector3()
-    at(d, p, tan)
-    ref.addScaledVector(tan, -ref.dot(tan))
-    if (ref.lengthSq() < 1e-6) ref.set(0, 0, 1).addScaledVector(tan, -tan.z)
-    ref.normalize()
-    const n = ref.clone()
-    const b = new THREE.Vector3().crossVectors(tan, n).normalize()
-    rings.push({ p, n, b, r: THREE.MathUtils.lerp(r0, r1, k / steps) })
-  }
-  const first = rings[0]
-  const last = rings[rings.length - 1]
-  const t0 = vA.subVectors(rings[1].p, first.p).normalize().clone()
-  const t1 = vA.subVectors(last.p, rings[rings.length - 2].p).normalize().clone()
-  // cap rings: a hemisphere's worth of shrinking rings past either end
-  const CAP = 4
-  const all: typeof rings = []
-  for (let k = CAP; k >= 1; k--) {
-    const a = (k / CAP) * (Math.PI / 2)
-    all.push({
-      p: first.p.clone().addScaledVector(t0, -Math.sin(a) * first.r),
-      n: first.n, b: first.b, r: first.r * Math.cos(a),
-    })
-  }
-  all.push(...rings)
-  for (let k = 1; k <= CAP; k++) {
-    const a = (k / CAP) * (Math.PI / 2)
-    all.push({
-      p: last.p.clone().addScaledVector(t1, Math.sin(a) * last.r),
-      n: last.n, b: last.b, r: last.r * Math.cos(a),
-    })
-  }
-  const mid = rings[Math.floor(rings.length / 2)].p
-  // the centre used for normal orientation must be local to each ring, or a
-  // bent tube's inner wall points the wrong way: sample it per vertex
-  const n = all.length - 1
-  const base = s.pos.length / 3
-  for (let j = 0; j <= n; j++) {
-    const R = all[j]
-    for (let i = 0; i <= seg; i++) {
-      const th = (i / seg) * Math.PI * 2
-      const cx = Math.cos(th)
-      const sy = Math.sin(th) * flat
-      vA.copy(R.p).addScaledVector(R.n, cx * R.r).addScaledVector(R.b, sy * R.r)
-      vN.copy(R.n).multiplyScalar(cx).addScaledVector(R.b, Math.sin(th) / flat)
-      if (j === 0 || j === n) vN.subVectors(vA, R.p)
-      // cap rings lean their normals along the axis
-      if (j < CAP) vN.addScaledVector(t0, -(1 - R.r / first.r) * 1.4)
-      if (j > n - CAP) vN.addScaledVector(t1, (1 - R.r / last.r) * 1.4)
-      vN.normalize()
-      s.pos.push(vA.x, vA.y, vA.z)
-      s.nrm.push(vN.x, vN.y, vN.z)
-      const [b0, b1, w0, b2 = 0, w2 = 0] = weigh(vA)
-      s.si.push(b0, b1, b2, 0)
-      s.sw.push(w0 * (1 - w2), (1 - w0) * (1 - w2), w2, 0)
-      s.role.push(role)
+    for (const v of band) {
+      const n = deg[v + 1] - deg[v]
+      const o = v * BONE_COUNT
+      let bits = mask[v]
+      for (let k = deg[v]; k < deg[v + 1]; k++) bits |= mask[nb[k]]
+      mix[v] = bits
+      for (let b = 0; bits; b++, bits >>>= 1) {
+        if (!(bits & 1)) continue
+        if (!n) {
+          nx[o + b] = full[o + b]
+          continue
+        }
+        let m = 0
+        for (let k = deg[v]; k < deg[v + 1]; k++) m += full[nb[k] * BONE_COUNT + b]
+        nx[o + b] = 0.5 * full[o + b] + (0.5 * m) / n
+      }
     }
-  }
-  void mid
-  const row = seg + 1
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < seg; i++) {
-      const a = base + j * row + i
-      const b = a + 1
-      const c = a + row
-      const d = c + 1
-      s.idx.push(a, b, c, b, d, c)
-    }
-  }
-  // agree the winding with the normals, as patch() does
-  for (let t = s.idx.length - n * seg * 6; t < s.idx.length; t += 3) {
-    const [i0, i1, i2] = [s.idx[t], s.idx[t + 1], s.idx[t + 2]]
-    vA.fromArray(s.pos, i0 * 3)
-    vB.fromArray(s.pos, i1 * 3).sub(vA)
-    vC.fromArray(s.pos, i2 * 3).sub(vA)
-    vD.crossVectors(vB, vC)
-    vN.fromArray(s.nrm, i0 * 3)
-    if (vD.dot(vN) < 0) {
-      s.idx[t + 1] = i2
-      s.idx[t + 2] = i1
+    for (const v of band) {
+      const o = v * BONE_COUNT
+      let bits = mix[v]
+      for (let b = 0; bits; b++, bits >>>= 1) if (bits & 1) full[o + b] = nx[o + b]
+      mask[v] = mix[v]
     }
   }
 }
 
-/* ------------------------------------------------------------- the body -- */
+/** the four heaviest bones in `acc`, normalized */
+const pick4 = (si: Uint16Array, sw: Float32Array, o: number) => {
+  let total = 0
+  for (let k = 0; k < 4; k++) {
+    let best = -1
+    let bw = 0
+    for (let b = 0; b < BONE_COUNT; b++) {
+      if (acc[b] > bw) {
+        bw = acc[b]
+        best = b
+      }
+    }
+    if (best < 0) {
+      si[o + k] = 0
+      sw[o + k] = 0
+      continue
+    }
+    si[o + k] = best
+    sw[o + k] = bw
+    total += bw
+    acc[best] = 0
+  }
+  for (let k = 0; k < 4; k++) sw[o + k] /= total || 1
+}
+
+/* ------------------------------------------------------------- surfaces -- */
+
+interface Piece {
+  pos: Float32Array
+  nrm: Float32Array
+  si: Uint16Array
+  sw: Float32Array
+  part: Float32Array
+  role: number
+  idx: Uint32Array
+}
+
+/** the grid step of the body and of the (smaller, thinner) headgear */
+const BODY_STEP = 0.047
+const GEAR_STEP = 0.033
+
+const BODY_SURF: Array<Piece | null> = new Array(BUILD_COUNT).fill(null)
+const bodySurface = (b: number): Piece => {
+  const cached = BODY_SURF[b]
+  if (cached) return cached
+  const fr = frameFor(b)
+  const { bd } = fr
+  const reachX = SHOULDER_X + (UARM + FARM + 0.3) * Math.sin(ARM_BIND) + 0.1
+  const depth = Math.max(bd.rb, bd.rt) * bd.zs + 0.05
+  const m = surfaceNets(fr.body, [-reachX, 0, -depth - 0.12], [reachX, bd.yt + bd.rt + 0.03, Math.max(depth, 0.34)], BODY_STEP)
+  const V = m.pos.length / 3
+  const si = new Uint16Array(V * 4)
+  const sw = new Float32Array(V * 4)
+  const part = new Float32Array(V * 2)
+  const full = new Float32Array(V * BONE_COUNT)
+  for (let v = 0; v < V; v++) {
+    weighBody(fr, m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2], full, v * BONE_COUNT, part, v * 2)
+  }
+  // the band: wherever the skin is shared between the bean and a limb
+  smoothWeights(full, m.idx, V, (v) => part[v * 2] > 0.002 && part[v * 2] < 0.998)
+  for (let v = 0; v < V; v++) {
+    acc.set(full.subarray(v * BONE_COUNT, v * BONE_COUNT + BONE_COUNT))
+    pick4(si, sw, v * 4)
+  }
+  const p: Piece = { pos: m.pos, nrm: m.nrm, si, sw, part, role: ROLE.SUIT, idx: m.idx }
+  BODY_SURF[b] = p
+  return p
+}
+
+/** one piece of headgear: a closed field in one paint, weighted like the
+    head under it (or swung off the knot, for tails) */
+const gearPiece = (
+  fr: Frame, f: Field, lo: [number, number, number], hi: [number, number, number], role: number,
+  tails?: THREE.Vector3,
+  step = GEAR_STEP,
+): Piece => {
+  // a generous Lipschitz allowance: flattened ellipsoids and a drooped brim
+  // overstate their distances, and a block wrongly skipped as far is a
+  // hole in a brim
+  const m = surfaceNets(f, lo, hi, step, 2.5)
+  const V = m.pos.length / 3
+  const si = new Uint16Array(V * 4)
+  const sw = new Float32Array(V * 4)
+  const part = new Float32Array(V * 2)
+  const body = bodySurface(fr.index)
+  const near = nearestOn(body)
+  const ni = new Int32Array(KN)
+  const nd = new Float64Array(KN)
+  for (let v = 0; v < V; v++) {
+    const x = m.pos[v * 3]
+    const y = m.pos[v * 3 + 1]
+    const z = m.pos[v * 3 + 2]
+    acc.fill(0)
+    // headgear moves with the skin it sits on: the weights of the nearest
+    // points of the bean, blended by inverse distance so they ramp the way
+    // the skin under them does, or the bean's own chain for anything well
+    // clear of it, like the tip of a party hat. Weighted on its own, a hood
+    // disagreed with the neck under it and folded
+    const n = near(x, y, z, ni, nd)
+    if (n) {
+      let tw = 0
+      for (let q = 0; q < n; q++) {
+        const wq = 1 / (nd[q] + 1e-4)
+        tw += wq
+        for (let k = 0; k < 4; k++) acc[body.si[ni[q] * 4 + k]] += body.sw[ni[q] * 4 + k] * wq
+      }
+      for (let b = 0; b < BONE_COUNT; b++) acc[b] /= tw
+    } else beanChain(fr, x, y, z, acc, 1)
+    if (tails) {
+      // a tail hangs off the knot: the further down it, the more it swings
+      const k = smooth(0.04, 0.16, len(x - tails.x, y - tails.y, z - tails.z))
+      for (let b = 0; b < BONE_COUNT; b++) acc[b] *= 1 - k
+      acc[B.POM] += k
+    }
+    pick4(si, sw, v * 4)
+  }
+  return { pos: m.pos, nrm: m.nrm, si, sw, part, role, idx: m.idx }
+}
+
+/** a lookup of the (up to) four bean vertices nearest a point, within
+    NEAR_R, through a hash of cells: headgear has a few thousand vertices
+    and the body five, so a brute-force search would cost more than the
+    surface. Fills `idx`/`d2` and returns how many it found */
+const NEAR_R = 0.3
+const KN = 4
+type Near = (x: number, y: number, z: number, idx: Int32Array, d2: Float64Array) => number
+const NEAR = new WeakMap<Piece, Near>()
+const nearestOn = (p: Piece): Near => {
+  const hit = NEAR.get(p)
+  if (hit) return hit
+  const C = 0.15
+  const cells = new Map<number, number[]>()
+  const key = (i: number, j: number, k: number) => ((i + 512) * 1024 + (j + 512)) * 1024 + (k + 512)
+  const V = p.pos.length / 3
+  for (let v = 0; v < V; v++) {
+    // only the bean's own skin: a hood's hem lies over the root of each arm,
+    // and hung off the arm it followed the arm about
+    if (p.part[v * 2] < 0.6) continue
+    const kk = key(Math.floor(p.pos[v * 3] / C), Math.floor(p.pos[v * 3 + 1] / C), Math.floor(p.pos[v * 3 + 2] / C))
+    let list = cells.get(kk)
+    if (!list) cells.set(kk, (list = []))
+    list.push(v)
+  }
+  const R = Math.ceil(NEAR_R / C)
+  const fn: Near = (x, y, z, idx, d2) => {
+    const ci = Math.floor(x / C)
+    const cj = Math.floor(y / C)
+    const ck = Math.floor(z / C)
+    let n = 0
+    const worst = () => (n < KN ? NEAR_R * NEAR_R : d2[n - 1])
+    // rings outward, stopping once a ring cannot beat the worst kept
+    for (let r = 0; r <= R; r++) {
+      if (n === KN && ((r - 1) * C) ** 2 > worst()) break
+      for (let i = ci - r; i <= ci + r; i++)
+        for (let j = cj - r; j <= cj + r; j++)
+          for (let k = ck - r; k <= ck + r; k++) {
+            if (Math.max(Math.abs(i - ci), Math.abs(j - cj), Math.abs(k - ck)) !== r) continue
+            const list = cells.get(key(i, j, k))
+            if (!list) continue
+            for (const v of list) {
+              const d = (p.pos[v * 3] - x) ** 2 + (p.pos[v * 3 + 1] - y) ** 2 + (p.pos[v * 3 + 2] - z) ** 2
+              if (d >= worst()) continue
+              // insertion into the sorted short list
+              let at = Math.min(n, KN - 1)
+              while (at > 0 && d2[at - 1] > d) {
+                d2[at] = d2[at - 1]
+                idx[at] = idx[at - 1]
+                at--
+              }
+              d2[at] = d
+              idx[at] = v
+              if (n < KN) n++
+            }
+          }
+    }
+    return n
+  }
+  NEAR.set(p, fn)
+  return fn
+}
 
 /** the headgear, in `look.ts`'s HATS order */
 export const HAT_COUNT = 8
+const BAND = 0
+const CAP = 1
+const BUCKET = 2
+const PARTY = 3
+const HARDHAT = 4
+const BANDANA = 5
+const HOOD = 7
 
-/** one geometry per headgear, built on first use and shared by every body
-    wearing it. A body changes hat by swapping `mesh.geometry` between these:
-    the attributes are the same layout on the same material, so a swap is a
-    buffer rebind and never a relink. Never dispose them: they are module
-    state */
-/** the outfits, in `look.ts`'s COSTUMES order: nothing, a cape, a hooped
-    vest, and an animal onesie (ears and a tail). Each changes the trunk's
-    outline or its colour blocking, not only the head */
+/** a ring hugging the bean's section at a height (optionally tilted by a
+    plane), with an elliptical tube `rt` thick out and `ry` tall */
+const bandField = (
+  fr: Frame, y0: number, tx: number, tz: number, out: number, ro: number, ry: number,
+): Field => {
+  const r0 = fr.rx(y0) + out
+  const izs = 1 / fr.bd.zs
+  return (x, y, z) => {
+    const q1 = len(x, z * izs) - r0
+    const q2 = y - (y0 + tx * x + tz * z)
+    const e = len(q1 / ro, q2 / ry)
+    return (e - 1) * Math.min(ro, ry)
+  }
+}
+
+/** a knot at the back of the head and two tails hanging off it */
+const knotAndTails = (fr: Frame, at: THREE.Vector3, role: number, long: number): Piece[] => {
+  const knot = ellipsoid(at.x, at.y, at.z, 0.1, 0.085, 0.08)
+  const tails: Field[] = [1, -1].map((s) => {
+    const a = roundCone(at.x + s * 0.03, at.y - 0.02, at.z - 0.02, at.x + s * 0.07, at.y - 0.12, at.z - 0.1, 0.055, 0.05)
+    const b = roundCone(
+      at.x + s * 0.07, at.y - 0.12, at.z - 0.1, at.x + s * 0.12, at.y - long, at.z - 0.15, 0.05, 0.042,
+    )
+    return (x, y, z) => smin(a(x, y, z), b(x, y, z), 0.03)
+  })
+  const f: Field = (x, y, z) => smin(knot(x, y, z), Math.min(tails[0](x, y, z), tails[1](x, y, z)), 0.04)
+  return [gearPiece(fr, f, [at.x - 0.3, at.y - long - 0.12, at.z - 0.35], [at.x + 0.3, at.y + 0.15, at.z + 0.14], role, at)]
+}
+
+const hatPieces = (fr: Frame, kind: number): Piece[] => {
+  const { bd } = fr
+  const crown = bd.yt + bd.rt
+  const zs = bd.zs
+  const R = bd.rt
+  const A = ROLE.ACCENT
+  const T = ROLE.TRIM
+  const box = (pad: number, yLo: number, yHi: number): [[number, number, number], [number, number, number]] => [
+    [-R - pad, yLo, -R * zs - pad],
+    [R + pad, yHi, R * zs + pad],
+  ]
+  switch (kind) {
+    case BAND: {
+      // the knotted cloth sweatband, worn tipped low over one brow, tied at
+      // the back with its tails hanging long. The one the owner kept
+      const y0 = EYE_Y + 0.2
+      const f = bandField(fr, y0, 0.07, 0.05, 0.015, 0.06, 0.075)
+      const back = new THREE.Vector3(0, y0 - 0.05 * fr.rx(y0) * zs, -fr.rx(y0) * zs - 0.03)
+      const [lo, hi] = box(0.12, y0 - 0.2, y0 + 0.2)
+      return [gearPiece(fr, f, lo, hi, A), ...knotAndTails(fr, back, A, 0.42)]
+    }
+    case CAP: {
+      // a baseball cap: a soft crown, a stiff peak out front in the detail
+      // colour and a button on top
+      const yc = EYE_Y + 0.14
+      const dome = ellipsoid(0, bd.yt, 0, R + 0.035, R + 0.05, (R + 0.035) * zs)
+      const shell: Field = (x, y, z) => smax(dome(x, y, z), yc - y, 0.02)
+      const fz = fr.rx(yc) * zs
+      const tilt = 0.22
+      const brim = ellipsoid(0, yc + 0.015, fz + 0.12, 0.25, 0.036, 0.2,
+        [1, 0, 0, 0, Math.cos(tilt), -Math.sin(tilt), 0, Math.sin(tilt), Math.cos(tilt)])
+      const button = ellipsoid(0, crown + 0.04, 0, 0.055, 0.035, 0.055)
+      const [lo, hi] = box(0.1, yc - 0.05, crown + 0.12)
+      return [
+        gearPiece(fr, (x, y, z) => Math.min(shell(x, y, z), button(x, y, z)), lo, hi, A),
+        gearPiece(fr, brim, [-0.3, yc - 0.12, fz - 0.12], [0.3, yc + 0.14, fz + 0.38], T, undefined, 0.02),
+      ]
+    }
+    case BUCKET: {
+      // a bucket hat: a soft crown and a floppy brim tipped down all round,
+      // a band where they meet
+      const yc = EYE_Y + 0.22
+      const r0 = fr.rx(yc) + 0.05
+      const izs = 1 / zs
+      const body = roundCone(0, yc, 0, 0, crown - 0.08, 0, r0, r0 * 0.72)
+      const top: Field = (x, y, z) => smax(body(x, y, z * izs), yc - y, 0.02)
+      const Rb = r0 + 0.18
+      const brim: Field = (x, y, z) => {
+        const rho = len(x, z * izs)
+        const yy = y - yc + 0.08 * Math.max(0, (rho - r0) / (Rb - r0)) ** 2
+        const dx = rho - Rb
+        const dy = Math.abs(yy) - 0.02
+        return (Math.min(Math.max(dx, dy), 0) + len(Math.max(dx, 0), Math.max(dy, 0)) - 0.025) * zs
+      }
+      const band = bandField(fr, yc + 0.06, 0, 0, 0.06, 0.035, 0.045)
+      const [lo, hi] = box(0.36, yc - 0.2, crown + 0.08)
+      return [
+        // the crown on the ordinary grid and only the thin brim on the fine
+        // one: the two overlap where they meet, which nobody can see
+        gearPiece(fr, top, [lo[0] + 0.2, lo[1] + 0.12, lo[2] + 0.2], [hi[0] - 0.2, hi[1], hi[2] - 0.2], A),
+        gearPiece(fr, brim, lo, [hi[0], yc + 0.08, hi[2]], A),
+        gearPiece(fr, band, lo, [hi[0], yc + 0.2, hi[2]], T),
+      ]
+    }
+    case PARTY: {
+      // a party hat perched off-true on the crown, two rings and a pom
+      const base = new THREE.Vector3(0.05, crown - 0.13, 0)
+      const ax = new THREE.Vector3(Math.sin(0.28), Math.cos(0.28), 0)
+      const Hh = 0.62
+      const tip = base.clone().addScaledVector(ax, Hh)
+      const cone = roundCone(base.x, base.y, base.z, tip.x, tip.y, tip.z, 0.25, 0.02)
+      const ring = (t: number): Field => {
+        const rAt = 0.25 + (0.02 - 0.25) * t + 0.012
+        return (x, y, z) => {
+          const px = x - base.x
+          const py = y - base.y
+          const pz = z - base.z
+          const a = px * ax.x + py * ax.y + pz * ax.z
+          const rho = len(px - ax.x * a, py - ax.y * a, pz - ax.z * a)
+          return len(rho - rAt, a - t * Hh) - 0.038
+        }
+      }
+      const r1 = ring(0.2)
+      const r2 = ring(0.52)
+      const pom = ellipsoid(tip.x, tip.y + 0.03, tip.z, 0.09, 0.09, 0.09)
+      // the base's round end dips well into the crown: a box that clipped
+      // it cut the cone open underneath
+      const lo: [number, number, number] = [-0.4, crown - 0.45, -0.4]
+      const hi: [number, number, number] = [0.5, crown + 0.7, 0.4]
+      return [
+        gearPiece(fr, cone, lo, hi, A),
+        gearPiece(fr, (x, y, z) => Math.min(r1(x, y, z), r2(x, y, z), pom(x, y, z)), lo, hi, T, undefined, 0.022),
+      ]
+    }
+    case HARDHAT: {
+      // a hard hat a size too big: a stiff shell with a rim all round, a
+      // peak out front and a ridge over the top
+      const yc = EYE_Y + 0.15
+      const dome = ellipsoid(0, bd.yt, 0, R + 0.08, R + 0.11, (R + 0.08) * zs)
+      const shell: Field = (x, y, z) => smax(dome(x, y, z), yc - y, 0.015)
+      const r0 = fr.rx(yc) + 0.1
+      const izs = 1 / zs
+      const rim: Field = (x, y, z) => {
+        const rho = len(x, z * izs)
+        const reach = r0 + 0.05 + 0.1 * smooth(0.2, 0.9, z / (r0 * zs))
+        const dx = rho - reach
+        const dy = Math.abs(y - yc - 0.01) - 0.012
+        return Math.min(Math.max(dx, dy), 0) + len(Math.max(dx, 0), Math.max(dy, 0)) - 0.015
+      }
+      const ridgeR = R + 0.1
+      const ridge: Field = (x, y, z) => {
+        const q = len(y - bd.yt, z * izs) - ridgeR
+        return smax(len(q, x) - 0.05, yc + 0.03 - y, 0.01)
+      }
+      const [lo, hi] = box(0.3, yc - 0.1, crown + 0.2)
+      return [
+        gearPiece(fr, (x, y, z) => smin(shell(x, y, z), rim(x, y, z), 0.03), lo, hi, A),
+        gearPiece(fr, ridge, lo, hi, T),
+      ]
+    }
+    case BANDANA: {
+      // cloth tied tight over the top, down lower at the back, knotted
+      // there with two tails in the detail colour
+      const yc = EYE_Y + 0.15
+      const dome = ellipsoid(0, bd.yt, 0, R + 0.022, R + 0.03, (R + 0.022) * zs)
+      const shell: Field = (x, y, z) => smax(dome(x, y, z), yc - 0.14 * smooth(0.1, -0.9, z / (R * zs)) - y, 0.02)
+      const back = new THREE.Vector3(0, yc - 0.05, -fr.rx(yc - 0.05) * zs - 0.02)
+      const [lo, hi] = box(0.1, yc - 0.25, crown + 0.08)
+      return [gearPiece(fr, shell, lo, hi, A), ...knotAndTails(fr, back, T, 0.36)]
+    }
+    case HOOD: {
+      // a hood up over the head and down onto the shoulders, the face
+      // looking out of it, two cords hanging from the front
+      // the hem clears the shoulders: the fillet where each arm grows out
+      // bulges up under a lower one and moves about inside it
+      const yBot = HIP_Y + WAIST_OFF + SHOULDER_OFF + 0.28
+      const fz = fr.rx(EYE_Y) * zs
+      const hole = ellipsoid(0, EYE_Y - 0.02, fz + 0.1, 0.34, 0.31, 0.42)
+      const shell: Field = (x, y, z) =>
+        smax(smax(fr.bean(x, y, z) - 0.055, yBot - y, 0.03), -hole(x, y, z), 0.035)
+      const cords: Field[] = [1, -1].map((s) => {
+        const z0 = fr.rx(yBot + 0.08) * zs * 0.82
+        return roundCone(s * 0.19, yBot + 0.08, z0 + 0.06, s * 0.21, yBot - 0.26, z0 + 0.12, 0.035, 0.035)
+      })
+      const [lo, hi] = box(0.18, yBot - 0.08, crown + 0.1)
+      return [
+        gearPiece(fr, shell, [lo[0] - 0.1, lo[1], lo[2] - 0.1], [hi[0] + 0.1, hi[1], hi[2] + 0.1], A),
+        gearPiece(fr, (x, y, z) => Math.min(cords[0](x, y, z), cords[1](x, y, z)), [-0.35, yBot - 0.4, 0], [0.35, yBot + 0.2, 0.7], T),
+      ]
+    }
+    default:
+      return [] // bare-headed
+  }
+}
+
+/* ------------------------------------------------------------ variants -- */
+
+/** the outfits (`look.ts`'s COSTUMES) and the faces are painted by the
+    material from uniforms, not drawn: see bodyMaterial.ts */
 export const COSTUME_COUNT = 4
-const CAPE = 1
-const STRIPES = 2
-const ONESIE = 3
-const SHARED: Array<THREE.BufferGeometry | null> =
-  new Array(HAT_COUNT * BUILD_COUNT * COSTUME_COUNT * 5).fill(null)
-/** the expressions: two dots, sleepy, angry, surprised, one-eyed */
 export const FACE_COUNT = 5
-const SLEEPY = 1
-const ANGRY = 2
-const SURPRISED = 3
-const ONE_EYE = 4
+
+/** one geometry per (headgear, build), built on first use and shared by
+    every body wearing it. A body changes by swapping `mesh.geometry`
+    between these: same attribute layout, same material, so a swap is a
+    buffer rebind and never a relink. Never dispose them: module state */
+const SHARED: Array<THREE.BufferGeometry | null> = new Array(HAT_COUNT * BUILD_COUNT).fill(null)
+/** how long the last variant took to build, ms (the measure prints it) */
+export let lastBuildMs = 0
 
 export const bodyGeometry = (
   hat = 0, buildIndex = 0, costumeIndex = 0, faceIndex = 0,
 ): THREE.BufferGeometry => {
-  const face = Math.max(0, Math.min(FACE_COUNT - 1, Math.floor(faceIndex)))
+  void costumeIndex
+  void faceIndex
   const kind = Math.max(0, Math.min(HAT_COUNT - 1, Math.floor(hat)))
-  const b = Math.max(0, Math.min(BUILD_COUNT - 1, Math.floor(buildIndex)))
-  const costume = Math.max(0, Math.min(COSTUME_COUNT - 1, Math.floor(costumeIndex)))
-  const key = ((kind * BUILD_COUNT + b) * COSTUME_COUNT + costume) * FACE_COUNT + face
+  const b = clampBuild(buildIndex)
+  const key = kind * BUILD_COUNT + b
   const cached = SHARED[key]
   if (cached) return cached
-  build = BUILDS[b]
-  const s: Soup = { pos: [], nrm: [], si: [], sw: [], role: [], idx: [] }
-  const rest = (i: number) => boneRestWorld(i, new THREE.Vector3())
-  const pelvisY = rest(B.PELVIS).y
-  const torsoY = rest(B.TORSO).y
-  const headY = rest(B.HEAD).y
-  const shoulderY = rest(B.UARM_L).y
-  const H = HEAD_FLAG
-  const MASK = 1
-
-  // --- the bean: pelvis into torso into head, with the belly's front on its
-  // own jiggle bone. Weighted in bands so every bend is soft: that is the
-  // difference between a jelly and a stack of parts
-  const lowBand = blend(B.PELVIS, B.TORSO, (pelvisY + torsoY) / 2 + 0.08, 0.26)
-  // a long soft band through the neck: a narrow neck weighted over a short
-  // one folded its own back through the face when the head nodded
-  const highBand = blend(B.TORSO, B.HEAD, headY - 0.02, 0.3)
-  const bellyY = rest(B.PACK).y
-  const bean: Weigh = (p) => {
-    const [b0, b1, w0] = p.y < (torsoY + headY) / 2 ? lowBand(p) : highBand(p)
-    const r = Math.max(0.01, beanR(THREE.MathUtils.clamp(tOf(p.y), 0, 1)))
-    const front = THREE.MathUtils.smoothstep(p.z / (r * BODY_ZS), 0.1, 0.8)
-    const band = Math.max(0, 1 - Math.abs(p.y - bellyY) / 0.45)
-    return [b0, b1, w0, B.PACK, 0.65 * front * band * band]
+  const t0 = typeof performance !== 'undefined' ? performance.now() : 0
+  const fr = frameFor(b)
+  const pieces = [bodySurface(b), ...hatPieces(fr, kind)]
+  let V = 0
+  let I = 0
+  for (const p of pieces) {
+    V += p.pos.length / 3
+    I += p.idx.length
   }
-  const axisAt = new THREE.Vector3()
-  const slice = (t0: number, t1: number, role: number, rings: number) =>
-    patch(
-      s,
-      (u, v, out) => {
-        const th = u * Math.PI * 2
-        const t = t0 + (t1 - t0) * v
-        const r = beanR(t)
-        const y = stretch(BODY_Y0 + (BODY_Y1 - BODY_Y0) * t)
-        out.set(Math.cos(th) * r, y, Math.sin(th) * r * BODY_ZS + hz(y))
-      },
-      // outward is judged from the axis at the vertex's own height: from one
-      // centre for the whole bean, the back of a pinched, hunched neck points
-      // more down than out, read as inward, and was wound inside out (a hole
-      // at the back of the neck you could see the eyes through)
-      24, rings, role, bean, (p) => axisAt.set(0, THREE.MathUtils.clamp(p.y, BODY_Y0 + 0.2, BODY_Y1 - 0.05), hz(p.y)),
-    )
-  // one gummy, one colour, bottom to crown. Everything from a little under
-  // the shoulders up is head-flagged, and so are the arms: the lens rides
-  // there, and looking down it saw the near plane cut the shoulders into a
-  // rim across the bottom of the frame with faceted forearms in front of it
-  const tNeck = tOf(shoulderY - 0.25)
-  const tHead = tOf(headY + 0.02)
-  if (costume === STRIPES) {
-    // hooped like a strongman's vest: the trunk in bands of the two colours
-    const tLo = tOf(pelvisY - 0.12)
-    const bands = 7
-    slice(0, tLo, ROLE.SUIT, 6)
-    for (let k = 0; k < bands; k++) {
-      const a = tLo + ((tNeck - tLo) * k) / bands
-      const b = tLo + ((tNeck - tLo) * (k + 1)) / bands
-      slice(a, b, k % 2 ? ROLE.SUIT : ROLE.TRIM, 3)
-    }
-  } else slice(0, tNeck, ROLE.SUIT, 22) // the body
-  slice(tNeck, tHead, ROLE.SUIT + H, 4) // the neck, which the lens must not see
-  // the head, which is the mask when the mask is worn
-  slice(tHead, 1, (kind === MASK ? ROLE.ACCENT : ROLE.SUIT) + H, 16)
-
-  // --- arms: long tube arms, shoulder to wrist, soft across the elbow, and a
-  // round fist. Long enough that a hanging fist reaches past the hips: a
-  // jelly brawler's arms are for grabbing, and a short arm cannot
-  // The arm grows out of the body rather than being stuck on it: the tube
-  // starts inside the shoulder, fat, and its root is weighted partly to the
-  // torso, so a raised arm pulls the shoulder's dough up with it instead of
-  // pivoting a cylinder against a capsule
-  for (const [ua, fa, hb, side] of [
-    [B.UARM_L, B.FARM_L, B.HAND_L, 1],
-    [B.UARM_R, B.FARM_R, B.HAND_R, -1],
-  ] as const) {
-    const sh = rest(ua)
-    const el = rest(fa)
-    const wr = rest(hb)
-    // a soft elbow: the bend is spread over a long band, so a bent arm curves
-    const elbow = blend(fa, ua, el.y, 0.17)
-    const root = sh.clone().add(new THREE.Vector3(-side * 0.1, 0.0, 0))
-    const armW: Weigh = (p) => {
-      const out = side * p.x
-      const inner = side * sh.x
-      // only the root, not the inner half of the whole hanging arm: that
-      // pinned a strip of every upper arm to the torso and pulled it into a
-      // web when the arm came up
-      // the end of the sausage is the hand, and swings with the hand bone
-      if (p.y < wr.y + 0.06) return [hb, fa, 0.8]
-      if (out >= inner || p.y < sh.y - 0.1) return elbow(p)
-      const k = THREE.MathUtils.smoothstep(out, inner - 0.14, inner)
-      return [ua, B.TORSO, 0.55 + 0.45 * k]
-    }
-    tube(
-      // not a ball on a stick: the hand is only the sausage's rounded end
-      s, [root, sh, el, wr.clone().add(new THREE.Vector3(0, -0.06, 0))], 0.18, 0.14, ROLE.SUIT + H,
-      armW, 10,
-    )
+  const pos = new Float32Array(V * 3)
+  const nrm = new Float32Array(V * 3)
+  const si = new Uint16Array(V * 4)
+  const sw = new Float32Array(V * 4)
+  const part = new Float32Array(V * 2)
+  const role = new Float32Array(V)
+  const idx = new Uint32Array(I)
+  let v0 = 0
+  let i0 = 0
+  for (const p of pieces) {
+    const n = p.pos.length / 3
+    pos.set(p.pos, v0 * 3)
+    nrm.set(p.nrm, v0 * 3)
+    si.set(p.si, v0 * 4)
+    sw.set(p.sw, v0 * 4)
+    part.set(p.part, v0 * 2)
+    role.fill(p.role, v0, v0 + n)
+    for (let k = 0; k < p.idx.length; k++) idx[i0 + k] = p.idx[k] + v0
+    v0 += n
+    i0 += p.idx.length
   }
-
-  // --- legs: stubby nubs of the same gummy, a round foot on each
-  for (const [th, sn, ft] of [
-    [B.THIGH_L, B.SHIN_L, B.FOOT_L],
-    [B.THIGH_R, B.SHIN_R, B.FOOT_R],
-  ] as const) {
-    const hip = rest(th)
-    const knee = rest(sn)
-    const ank = rest(ft)
-    // fat at the top and sunk into the body, the top weighted partly to the
-    // pelvis: a leg that is a stub of the same dough, not a peg in a hole
-    const knee2 = blend(sn, th, knee.y, 0.1)
-    const legW: Weigh = (p) => {
-      if (p.y <= hip.y) return knee2(p)
-      const k = THREE.MathUtils.smoothstep(p.y, hip.y, hip.y + 0.22)
-      return [B.PELVIS, th, 0.3 + 0.6 * k]
-    }
-    tube(
-      s,
-      [hip.clone().add(new THREE.Vector3(0, 0.24, 0)), hip, knee, ank.clone().add(new THREE.Vector3(0, 0.06, 0.03))],
-      0.25 * build.leg, 0.21 * build.leg, ROLE.SUIT, legW, 10,
-    )
-    // the foot swallows the end of the leg: a tall soft lump the stump runs
-    // down into, not a shoe with a padded collar round the ankle
-    ellipsoid(
-      // the stump runs straight into the ground and its own round end is the
-      // foot; this only pushes a toe out in front, narrower than the stump so
-      // there is no seam or cuff where the two meet
-      s, new THREE.Vector3(ank.x, 0.065, 0.1),
-      new THREE.Vector3(0.17 * build.leg, 0.1, 0.28),
-      ROLE.SUIT, (p) => (p.y > 0.2 ? [ft, sn, 0.6] : [ft, ft, 1]), [14, 10], undefined, 0.0,
-    )
-  }
-
-  /** a point on the head's surface at a height and a bearing (0 is +x, PI/2
-      straight ahead), lifted off it along the normal; and that normal */
-  const onHead = (y: number, th: number, lift: number, out: THREE.Vector3, nOut?: THREE.Vector3) => {
-    const r = beanR(THREE.MathUtils.clamp(tOf(y), 0, 1))
-    const rz = r * BODY_ZS
-    const x = Math.cos(th) * r
-    const z = Math.sin(th) * rz
-    const n = (nOut ?? new THREE.Vector3()).set(x / Math.max(1e-4, r * r), 0, z / Math.max(1e-4, rz * rz))
-    // a dome leans the normal up as the radius closes in toward the crown
-    const dr = beanR(THREE.MathUtils.clamp(tOf(y + 0.02), 0, 1)) - r
-    n.normalize()
-    n.y = -dr / 0.02 * 0.9
-    n.normalize()
-    return out.set(x, y, z + hz(y)).addScaledVector(n, lift)
-  }
-  const head = rigid(B.HEAD)
-  const tails = rigid(B.POM)
-
-  // --- the face: small dark marks on their own blink bone, and one of five
-  // expressions (dots, sleepy, angry, surprised, one-eyed). Big white googly
-  // eyes were what made the earlier ones a mascot
-  const eyeY = headY + EYE_OFF
-  const eyes = rigid(B.EYES)
-  const eyeFrames: Array<{ c: THREE.Vector3; m: THREE.Matrix4; side: THREE.Vector3; up: THREE.Vector3; n: THREE.Vector3 }> = []
-  for (const sign of [1, -1]) {
-    const n = new THREE.Vector3()
-    const th = Math.PI / 2 - sign * 0.42
-    const c = onHead(eyeY, th, -0.01, new THREE.Vector3(), n)
-    const sideV = new THREE.Vector3(0, 1, 0).cross(n).normalize()
-    const up = new THREE.Vector3().crossVectors(n, sideV).normalize()
-    const m = new THREE.Matrix4().makeBasis(sideV, up, n)
-    eyeFrames.push({ c, m, side: sideV, up, n })
-    if (face === ONE_EYE) continue
-    const r = face === SLEEPY
-      ? new THREE.Vector3(0.06, 0.022, 0.026)
-      : face === SURPRISED
-        ? new THREE.Vector3(0.07, 0.085, 0.03)
-        : new THREE.Vector3(0.048, 0.058, 0.028)
-    ellipsoid(s, c, r, ROLE.GLOW + H, eyes, [10, 8], m)
-    if (face === ANGRY) {
-      // a brow slanting down to the middle
-      tube(
-        s,
-        [
-          c.clone().addScaledVector(up, 0.09).addScaledVector(sideV, -sign * 0.07).addScaledVector(n, 0.01),
-          c.clone().addScaledVector(up, 0.13).addScaledVector(sideV, sign * 0.07).addScaledVector(n, 0.01),
-        ],
-        0.022, 0.022, ROLE.GLOW + H, head, 6,
-      )
-    }
-    if (face === SLEEPY) {
-      // a heavy lid over each eye
-      ellipsoid(s, c.clone().addScaledVector(up, 0.035), new THREE.Vector3(0.075, 0.035, 0.03), ROLE.SUIT + H, eyes, [10, 6], m)
-    }
-  }
-  if (face === ONE_EYE) {
-    const n = new THREE.Vector3()
-    const c = onHead(eyeY, Math.PI / 2, -0.01, new THREE.Vector3(), n)
-    const sideV = new THREE.Vector3(0, 1, 0).cross(n).normalize()
-    const up = new THREE.Vector3().crossVectors(n, sideV).normalize()
-    ellipsoid(s, c, new THREE.Vector3(0.07, 0.08, 0.03), ROLE.GLOW + H, eyes, [10, 8], new THREE.Matrix4().makeBasis(sideV, up, n))
-  }
-  if (face === SURPRISED || face === ANGRY) {
-    // a mouth: a little O, or a flat grim line
-    const n = new THREE.Vector3()
-    const c = onHead(eyeY - 0.17, Math.PI / 2, 0.0, new THREE.Vector3(), n)
-    const sideV = new THREE.Vector3(0, 1, 0).cross(n).normalize()
-    const up = new THREE.Vector3().crossVectors(n, sideV).normalize()
-    const m = new THREE.Matrix4().makeBasis(sideV, up, n)
-    ellipsoid(
-      s, c, face === SURPRISED ? new THREE.Vector3(0.045, 0.055, 0.025) : new THREE.Vector3(0.08, 0.016, 0.025),
-      ROLE.GLOW + H, head, [10, 6], m,
-    )
-  }
-
-  /** a ring round the head at a height, standing `lift` off it */
-  const ringAt = (y: number, lift: number, rad: number, role: number, flat = 2.2) => {
-    const pts: THREE.Vector3[] = []
-    for (let k = 0; k <= 28; k++) pts.push(onHead(y, (k / 28) * Math.PI * 2, lift, new THREE.Vector3()))
-    tube(s, pts, rad, rad, role, head, 8, flat)
-  }
-  /** a knot at the back of the head and two tails off it on the springy bone */
-  const knotAndTails = (role: number, long = 0.28) => {
-    // always at the knot bone, whatever the headgear: see KNOT_Z
-    const knot = rest(B.POM)
-    ellipsoid(s, knot, new THREE.Vector3(0.1, 0.085, 0.08), role, head, [8, 6])
-    for (const side of [1, -1]) {
-      tube(
-        s,
-        [
-          knot.clone(),
-          knot.clone().add(new THREE.Vector3(side * 0.06, -0.1, -0.1)),
-          knot.clone().add(new THREE.Vector3(side * 0.1, -long, -0.16)),
-        ],
-        0.055, 0.04, role, tails, 6, 0.45,
-      )
-    }
-  }
-  /** a cap over the head from a height to the crown, grown by `k` */
-  const cap = (y0: number, k: number, role: number, rings = 8) => {
-    const t0 = tOf(y0)
-    patch(
-      s,
-      (u, v, out) => {
-        const t = t0 + (1 - t0) * v
-        const r = beanR(Math.min(1, t)) * k
-        out.set(
-          Math.cos(u * Math.PI * 2) * r,
-          stretch(BODY_Y0 + (BODY_Y1 - BODY_Y0) * t) + (k - 1) * 0.3 * v,
-          Math.sin(u * Math.PI * 2) * r * BODY_ZS + hz(BODY_Y0 + (BODY_Y1 - BODY_Y0) * t),
-        )
-      },
-      22, rings, role, head, new THREE.Vector3(0, headY + 0.3, hz(headY)),
-    )
-  }
-  /** a surface of revolution about the head's axis: radius and height at t */
-  const rev = (prof: (t: number) => [number, number], role: number, seg: [number, number], tilt?: THREE.Matrix4) =>
-    patch(
-      s,
-      (u, v, out) => {
-        const [r, y] = prof(v)
-        out.set(Math.cos(u * Math.PI * 2) * r, y, Math.sin(u * Math.PI * 2) * r)
-        if (tilt) out.applyMatrix4(tilt)
-        out.z += hz(headY + 0.3)
-      },
-      seg[0], seg[1], role, head, new THREE.Vector3(0, prof(0.5)[1], 0),
-    )
-  const crownY = stretch(BODY_Y1)
-  const A = ROLE.ACCENT + H
-  const T = ROLE.TRIM + H
-
-  switch (kind) {
-    case 0: {
-      // the sweatband: low on the brow, right over the eyes, tails at the
-      // back, with a proper dome of head showing above it (set higher, it
-      // read from above as the lip of an open tin)
-      // cloth, not a halo: a thick knotted band, tied off-centre at the back
-      // with the tails hanging long, worn tipped low over one brow
-      const y = rest(B.POM).y + 0.04
-      const pts: THREE.Vector3[] = []
-      for (let k = 0; k <= 32; k++) {
-        const th = (k / 32) * Math.PI * 2
-        const yy = y + 0.05 * Math.sin(th) * 0.8 + 0.035 * Math.cos(th)
-        pts.push(onHead(yy, th, 0.03 + 0.008 * Math.sin(th * 7), new THREE.Vector3()))
-      }
-      tube(s, pts, 0.068, 0.068, A, head, 8, 1.1)
-      knotAndTails(A, 0.42)
-      break
-    }
-    case 1: {
-      // the wrestler's mask: the head itself is painted in the headgear colour
-      // (above), with a stripe over the crown, a rim round each eye and laces
-      // hanging at the back
-      const stripe: THREE.Vector3[] = []
-      for (let k = 0; k <= 16; k++) {
-        const a = (k / 16) * Math.PI // front to back over the top
-        const y = headY + 0.2 + (crownY - headY - 0.2) * Math.sin(a)
-        // straight up the middle of the face, over the crown and down the back
-        const r = beanR(THREE.MathUtils.clamp(tOf(y), 0, 1)) * BODY_ZS + 0.02
-        const p = new THREE.Vector3(0, y + (y > crownY - 0.05 ? 0.02 : 0), (a > Math.PI / 2 ? -r : r) + hz(y))
-        stripe.push(p)
-      }
-      tube(s, stripe, 0.05, 0.05, T, head, 8, 1)
-      for (const f of eyeFrames) {
-        const rim: THREE.Vector3[] = []
-        for (let k = 0; k <= 16; k++) {
-          const a = (k / 16) * Math.PI * 2
-          rim.push(
-            f.c.clone()
-              .addScaledVector(f.side, Math.cos(a) * 0.1)
-              .addScaledVector(f.up, Math.sin(a) * 0.11)
-              .addScaledVector(f.n, 0.004),
-          )
-        }
-        tube(s, rim, 0.026, 0.026, T, head, 6, 1)
-      }
-      knotAndTails(T, 0.34)
-      break
-    }
-    case 2: {
-      // the bucket hat: a soft crown and a floppy brim tipped down all round
-      const y0 = eyeY + 0.2
-      const r0 = beanR(tOf(y0)) + 0.05
-      rev((t) => [r0 * (1 - 0.12 * t) * (t > 0.85 ? Math.sqrt(Math.max(0, 1 - ((t - 0.85) / 0.15) ** 2)) : 1), y0 + (crownY + 0.12 - y0) * t], A, [22, 8])
-      rev((t) => [r0 + 0.24 * t, y0 - 0.09 * t * t], A, [24, 3])
-      ringAt(y0 + 0.07, 0.07, 0.04, T)
-      break
-    }
-    case 3: {
-      // the party hat: a striped cone perched off-true on the crown, a pom on top
-      const tilt = new THREE.Matrix4()
-        .makeTranslation(0.06, crownY - 0.1, 0)
-        .multiply(new THREE.Matrix4().makeRotationZ(-0.28))
-      const h = 0.62
-      rev((t) => [0.24 * (1 - t) + 0.005, h * t], A, [16, 6], tilt)
-      for (const at of [0.2, 0.5]) {
-        rev((t) => [(0.24 * (1 - at) + 0.012) + 0.02 * Math.sin(t * Math.PI), h * at + 0.05 * (t - 0.5)], T, [16, 3], tilt)
-      }
-      const tip = new THREE.Vector3(0, h + 0.03, 0).applyMatrix4(tilt)
-      ellipsoid(s, tip, new THREE.Vector3(0.085, 0.085, 0.085), T, head, [8, 6], undefined, -Infinity, 0.12)
-      break
-    }
-    case 4: {
-      // the hard hat: a stiff shell a size too big, a peak out front and a
-      // ridge over the top
-      const y0 = eyeY + 0.2
-      cap(y0, 1.12, A, 8)
-      rev((t) => [beanR(tOf(y0)) * 1.12 + 0.06 * t, y0 - 0.01 * t], A, [24, 2])
-      const peak: THREE.Vector3[] = []
-      for (let k = 0; k <= 10; k++) {
-        const th = Math.PI / 2 + (k / 10 - 0.5) * 1.6
-        peak.push(onHead(y0, th, 0.16, new THREE.Vector3()).setY(y0 - 0.02))
-      }
-      tube(s, peak, 0.1, 0.06, A, head, 6, 3.5)
-      const ridge: THREE.Vector3[] = []
-      for (let k = 0; k <= 12; k++) {
-        const a = (k / 12) * Math.PI
-        const y = y0 + 0.05 + (crownY + 0.1 - y0) * Math.sin(a)
-        ridge.push(new THREE.Vector3(0, y, Math.cos(a) * (beanR(tOf(Math.min(y, crownY))) * 1.12 * BODY_ZS) + hz(y)))
-      }
-      tube(s, ridge, 0.05, 0.05, T, head, 6, 1.4)
-      break
-    }
-    case 5: {
-      // the bandana: cloth tied tight over the top, knotted at the back with
-      // two long tails, and a few dots
-      const y0 = eyeY + 0.2
-      cap(y0, 1.035, A, 8)
-      knotAndTails(A, 0.34)
-      for (const [th, dy] of [[1.2, 0.12], [1.95, 0.1], [0.4, 0.18], [2.7, 0.2], [1.55, 0.3], [-0.5, 0.15], [3.6, 0.14]] as const) {
-        const n = new THREE.Vector3()
-        const p = onHead(y0 + dy, th, 0.05, new THREE.Vector3(), n)
-        const sideV = new THREE.Vector3(0, 1, 0).cross(n).normalize()
-        const up = new THREE.Vector3().crossVectors(n, sideV).normalize()
-        ellipsoid(s, p, new THREE.Vector3(0.04, 0.04, 0.012), T, head, [6, 4], new THREE.Matrix4().makeBasis(sideV, up, n))
-      }
-      break
-    }
-    case 7: {
-      // the hood: up over the head and draped down the back onto the
-      // shoulders, a rolled rim round the face. It changes the outline, which
-      // a hat on top of the same bean cannot
-      const y0 = eyeY + 0.13
-      cap(y0, 1.1, A, 8)
-      const yBot = shoulderY - 0.02
-      const drape = blend(B.TORSO, B.HEAD, headY + 0.02, 0.2)
-      patch(
-        s,
-        (u, v, out) => {
-          const th = Math.PI - 0.35 + u * (Math.PI + 0.7) // round the back, ear to ear
-          const y = y0 + (yBot - y0) * v
-          const r = beanR(THREE.MathUtils.clamp(tOf(y), 0, 1)) * 1.06 + 0.04 + 0.02 * v
-          out.set(Math.cos(th) * r, y, Math.sin(th) * r * BODY_ZS + hz(y))
-        },
-        16, 6, A, drape, new THREE.Vector3(0, (y0 + yBot) / 2, 0),
-      )
-      const rim: THREE.Vector3[] = []
-      for (let k = 0; k <= 16; k++) {
-        const th = Math.PI / 2 + (k / 16 - 0.5) * 2.9
-        const lift = Math.abs(k / 16 - 0.5) * 0.3
-        rim.push(onHead(y0 + lift, th, 0.07, new THREE.Vector3()))
-      }
-      tube(s, rim, 0.07, 0.07, T, head, 8, 1)
-      break
-    }
-    default:
-      break // bare-headed
-  }
-
-  // --- the outfit ---------------------------------------------------------
-  if (costume === CAPE) {
-    // a cape: tied at the throat, hanging off the shoulders down the back to
-    // the knees and flaring as it goes, which turns the bean into a triangle
-    // from behind and from the side
-    const yTop = shoulderY + 0.06
-    const yBot = HIP_Y * 0.75
-    const capeW = blend(B.PELVIS, B.TORSO, (pelvisY + torsoY) / 2, 0.3)
-    patch(
-      s,
-      (u, v, out) => {
-        const th = Math.PI + 0.25 + u * (Math.PI - 0.5) // across the back
-        const y = yTop + (yBot - yTop) * v
-        const r = beanR(THREE.MathUtils.clamp(tOf(Math.max(y, BODY_Y0 + 0.2)), 0, 1)) + 0.05 + 0.32 * v
-        out.set(Math.cos(th) * r, y, Math.sin(th) * r * BODY_ZS + hz(y) - 0.04 * v)
-      },
-      16, 8, ROLE.TRIM, capeW, new THREE.Vector3(0, (yTop + yBot) / 2, 0.2),
-    )
-    const tie: THREE.Vector3[] = []
-    for (let k = 0; k <= 16; k++) {
-      const th = Math.PI * 0.15 + (k / 16) * Math.PI * 0.7 // round the front of the neck
-      tie.push(onHead(yTop, th, 0.04, new THREE.Vector3()))
-    }
-    tube(s, tie, 0.055, 0.055, ROLE.TRIM, rigid(B.TORSO), 6)
-  } else if (costume === ONESIE) {
-    // an animal onesie: two round ears up top and a fat tail out the back,
-    // in the outfit colour
-    for (const side of [1, -1]) {
-      const n = new THREE.Vector3()
-      const p = onHead(crownY - 0.12, Math.PI / 2 + side * 1.2, 0.0, new THREE.Vector3(), n)
-      const up = new THREE.Vector3(side * 0.35, 1, 0.1).normalize()
-      const m = new THREE.Matrix4().makeBasis(
-        new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 0, 1)).normalize(),
-        up,
-        new THREE.Vector3(0, 0, 1),
-      )
-      ellipsoid(s, p.addScaledVector(up, 0.1), new THREE.Vector3(0.13, 0.17, 0.06), ROLE.TRIM + H, head, [10, 8], m)
-    }
-    const tailRoot = new THREE.Vector3(0, pelvisY + 0.1, -beanR(tOf(pelvisY + 0.1)) * BODY_ZS + hz(pelvisY + 0.1) + 0.06)
-    tube(
-      s,
-      [
-        tailRoot,
-        tailRoot.clone().add(new THREE.Vector3(0, 0.02, -0.16)),
-        tailRoot.clone().add(new THREE.Vector3(0.02, 0.12, -0.26)),
-      ],
-      0.15, 0.12, ROLE.TRIM, rigid(B.PELVIS), 8,
-    )
-  }
-
   const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.Float32BufferAttribute(s.pos, 3))
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(s.nrm, 3))
-  g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(s.si, 4))
-  g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(s.sw, 4))
-  g.setAttribute('aRole', new THREE.Float32BufferAttribute(s.role, 1))
-  g.setIndex(s.idx)
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3))
+  g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4))
+  g.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4))
+  g.setAttribute('aRole', new THREE.BufferAttribute(role, 1))
+  g.setAttribute('aPart', new THREE.BufferAttribute(part, 2))
+  g.setIndex(V > 65535 ? new THREE.BufferAttribute(idx, 1) : new THREE.BufferAttribute(new Uint16Array(idx), 1))
   g.computeBoundingBox()
   g.computeBoundingSphere()
   g.userData.shared = true
   SHARED[key] = g
-  build = BUILDS[0]
+  lastBuildMs = (typeof performance !== 'undefined' ? performance.now() : 0) - t0
+  warmLater()
   return g
+}
+
+/*
+  A variant costs a couple of dozen milliseconds to build, which is a
+  dropped frame if it is built the moment a stranger in a new hat walks
+  into view. So once the first body exists, the rest are built in the
+  background, one per idle period long enough to hold one (the browser's
+  own requestIdleCallback, never forced by a timeout): the dearest part,
+  each build's bean, first, then every headgear on every build. On the
+  desk, where the 3D layer draws nothing, that is all of them within a
+  second or two of boot; in a busy walk it may be none, and a variant is
+  then built when it is first worn, as before. Headless (no
+  requestIdleCallback) nothing is scheduled.
+*/
+type Idle = (cb: (d: { timeRemaining: () => number }) => void) => number
+let warming = false
+const warmLater = () => {
+  const ric = (globalThis as { requestIdleCallback?: Idle }).requestIdleCallback
+  if (warming || !ric) return
+  warming = true
+  const next = (): (() => void) | null => {
+    for (let b = 0; b < BUILD_COUNT; b++) if (!BODY_SURF[b]) return () => bodySurface(b)
+    for (let k = 0; k < SHARED.length; k++) {
+      if (!SHARED[k]) return () => bodyGeometry(Math.floor(k / BUILD_COUNT), k % BUILD_COUNT)
+    }
+    return null
+  }
+  const step = (d: { timeRemaining: () => number }) => {
+    const job = next()
+    if (!job) return
+    if (d.timeRemaining() >= 14) job()
+    ric(step)
+  }
+  ric(step)
+}
+
+/** the body's own field for a build: negative inside the skin. What the
+    measure uses to leave out of its fold count anything buried inside the
+    body, where nobody can see it (the underside of a hat, the inner face of
+    a hood) */
+export const bodyField = (buildIndex: number): Field => frameFor(clampBuild(buildIndex)).body
+
+/** build one variant from nothing (its bean, its headgear) and report the
+    milliseconds, without touching the cache anybody is drawing from: what
+    `npm run measure -- body` prints as the cost of meeting a stranger in a
+    new hat */
+export const timeVariant = (hat: number, buildIndex: number): number => {
+  const b = clampBuild(buildIndex)
+  const key = Math.max(0, Math.min(HAT_COUNT - 1, Math.floor(hat))) * BUILD_COUNT + b
+  const keep = [SHARED[key], BODY_SURF[b], FRAMES[b]] as const
+  SHARED[key] = null
+  BODY_SURF[b] = null
+  FRAMES[b] = null
+  const t0 = performance.now()
+  bodyGeometry(hat, b)
+  const ms = performance.now() - t0
+  SHARED[key] = keep[0]
+  BODY_SURF[b] = keep[1]
+  FRAMES[b] = keep[2]
+  return ms
 }
