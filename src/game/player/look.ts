@@ -3,14 +3,24 @@
   what "customising your character" is allowed to mean.
 
   The body in `playerBody.ts` is one skinned mesh whose every vertex names
-  the paint it wears (`bodyShape.ts`), and only four of those paints are
-  anybody's business: the work suit (body, sleeves, legs), the trim (gloves,
-  boots, belt, straps, the backpack's lid and the lamp's housing), the accent
-  (the beanie, its pom-pom and the backpack), and the glow of the headlamp.
-  The face is not on the list: skin, ink eyes, blush and the glint in the eye
-  are fixed, because a face that can be painted green reads as a bug rather
-  than as a choice, and because the face is what makes every one of these
-  the same friendly person in a different outfit.
+  the paint it wears (`bodyShape.ts`), and four of those paints are the
+  player's: the jelly itself (body, legs, arms, fists), the headgear, the
+  headgear's detail (its stripes, laces, band or trim), and the pupils. Plus
+  one choice that is not a colour: which headgear, out of seven (a sweatband,
+  a wrestler's mask, a bucket hat, a party hat, a hard hat, a bandana, or
+  nothing). That is the whole of the costume on purpose: a jelly brawler is
+  its colours and its hat.
+
+  **The hat rides in the colours.** The wire carries 24 hex characters and
+  the server checks them with one regex, so a fifth field would break every
+  server and every old client at once. Instead the hat is the low three bits
+  of the headgear colour's blue byte: every headgear swatch has those bits
+  clear, `packLook` writes the hat into them and `unpackLook` takes it back
+  out and clears them again, so the round trip is exact. An old client
+  reading a new pack sees a headgear colour off by at most 7/255 in blue,
+  which nobody can see; a new client reading an old pack gets a hat derived
+  deterministically from whatever the colour's low bits were, so everyone
+  still agrees on what everyone is wearing.
 
   The four field names are older than this body (they were a robot's shell,
   trim, accent joints and eye glow) and they stay, because they are the wire
@@ -33,52 +43,62 @@
 */
 
 export interface PlayerLook {
-  /** the work suit: the body, the sleeves and the legs. The biggest block of
-      colour on the body, and the one a player is recognised by */
+  /** the jelly: body, legs, arms and fists. The biggest block of colour on
+      the body, and the one a player is recognised by */
   shell: string
-  /** gloves, boots, belt, backpack straps and lid, the lamp's housing */
+  /** the headgear's detail: a mask's stripe and eye rims, a hat's band, a
+      party hat's rings, a hard hat's ridge */
   trim: string
-  /** the beanie, its pom-pom and the backpack */
+  /** the headgear itself */
   accent: string
-  /** the headlamp, and the glint it puts in a dark street */
+  /** the pupils */
   glow: string
+  /** which headgear, an index into HATS */
+  hat: number
 }
 
-/** a safety-orange work suit, a teal beanie, charcoal boots and gloves and a
-    warm lamp: the Lethal-ish employee the character was drawn as */
+/** the headgear, in wire order (see the header: the index rides in the low
+    bits of `accent`). No beanies */
+export const HATS = ['band', 'mask', 'bucket', 'party', 'hardhat', 'bandana', 'none'] as const
+export type HatKind = (typeof HATS)[number]
+
+/** a saturated green brawler in a red wrestler's mask */
 export const DEFAULT_LOOK: PlayerLook = {
-  shell: '#e2893f',
-  trim: '#3a3f47',
-  accent: '#3f8f86',
-  glow: '#ffd98a',
+  shell: '#3f9a38',
+  trim: '#f2eee0',
+  accent: '#c84028',
+  glow: '#1c1a22',
+  hat: 1,
 }
 
-/** suits are painted saturated and mid-light on purpose: the game is moving
-    to a low-resolution, posterized picture, and a colour block has to
-    survive being eight pixels wide and quantized. Pastels there turn to
-    grey and darks turn to the outline. Every entry was checked against the
-    world's ACES grade at noon and at dusk (`npm run shoot -- body:lineup`) */
+/** jellies are painted saturated on purpose: the game is rendered at a low
+    resolution through a posterize, and a colour block has to survive being
+    eight pixels wide and quantized. Pastels there turn to grey, and a pastel
+    jelly reads as a plush toy rather than a brawler. Every entry was checked
+    against the look at noon and at dusk (`npm run shoot -- body:lineup`) */
 export const SHELL_SWATCHES = [
-  '#e2893f', '#e8c24a', '#cf5a4a', '#4f86c6',
-  '#6aa35a', '#8a6cc0', '#e9e2d0', '#9aa3ad',
+  '#3f9a38', '#d2452f', '#e0a21a', '#2f6fcf',
+  '#8a4fc8', '#d9508f', '#1f9a8a', '#e8e2d2',
 ] as const
 
 export const TRIM_SWATCHES = [
-  '#3a3f47', '#2a2522', '#2b3a55', '#6b4a33',
-  '#4c5536', '#5a2e3a', '#5d6670', '#d9d6cf',
+  '#f2eee0', '#1c1c22', '#e0a21a', '#d2452f',
+  '#2f6fcf', '#3f9a38', '#8a4fc8', '#e06a1a',
 ] as const
 
+/** every headgear colour has the low three bits of its blue byte clear: that
+    is where the hat index goes (see the header) */
 export const ACCENT_SWATCHES = [
-  '#3f8f86', '#c9493f', '#e6b43c', '#3d6fb5',
-  '#e07aa0', '#5f9b4c', '#7d5bb0', '#eeeae0',
+  '#c84028', '#e8b818', '#2860c8', '#f0e8e0',
+  '#1c1c20', '#38a038', '#e86810', '#9048c8',
 ] as const
 
 export const GLOW_SWATCHES = [
-  '#ffd98a', '#f4f1dc', '#7fe8e8', '#9af0a0',
-  '#ff9ec0', '#ffae5c', '#9cc8ff', '#ff7a66',
+  '#1c1a22', '#2b3a55', '#4a2e22', '#1f4a3a',
+  '#5a1e2e', '#3a2a5a', '#f4f1e6', '#6a6f76',
 ] as const
 
-/** the field order the pack format freezes; changing it changes the wire */
+/** the colour field order the pack format freezes; changing it changes the wire */
 const FIELDS = ['shell', 'trim', 'accent', 'glow'] as const
 
 const HEX6 = /^#?([0-9a-f]{6})$/i
@@ -91,23 +111,37 @@ const hex6 = (value: unknown): string | null => {
   const m = HEX6.exec(value.trim())
   return m ? m[1].toLowerCase() : null
 }
-
-/** 24 hex characters, no separators and no leading hash: four colours is a
-    small enough payload that spending bytes on punctuation would be silly */
-export function packLook(look: PlayerLook): string {
-  return FIELDS.map((f) => hex6(look[f]) ?? hex6(DEFAULT_LOOK[f])!).join('')
+const clampHat = (h: unknown) =>
+  typeof h === 'number' && Number.isFinite(h) ? Math.max(0, Math.min(HATS.length - 1, Math.floor(h))) : null
+/** a colour with the low three bits of its blue byte replaced */
+const withLowBlue = (hex: string, bits: number) => {
+  const b = (parseInt(hex.slice(4, 6), 16) & ~7) | (bits & 7)
+  return hex.slice(0, 4) + b.toString(16).padStart(2, '0')
 }
 
-/** the inverse, total: anything that is not a well-formed pack (an old
-    client, a truncated field, somebody poking the socket) is the default
-    look rather than an error, because a missing look must never be a reason
-    for a body not to be drawn */
+/** 24 hex characters, no separators and no leading hash: four colours, with
+    the hat folded into the headgear colour's blue low bits */
+export function packLook(look: PlayerLook): string {
+  const hat = clampHat(look.hat) ?? DEFAULT_LOOK.hat
+  return FIELDS.map((f) => {
+    const hex = hex6(look[f]) ?? hex6(DEFAULT_LOOK[f])!
+    return f === 'accent' ? withLowBlue(hex, hat) : hex
+  }).join('')
+}
+
+/** the inverse, total: anything that is not a well-formed pack (a truncated
+    field, somebody poking the socket) is the default look rather than an
+    error, because a missing look must never be a reason for a body not to be
+    drawn. An old client's pack decodes to some hat or other, deterministically */
 export function unpackLook(packed: unknown): PlayerLook {
   if (typeof packed !== 'string' || !LOOK_RE.test(packed)) return { ...DEFAULT_LOOK }
   const out = {} as PlayerLook
   FIELDS.forEach((f, i) => {
     out[f] = `#${packed.slice(i * 6, i * 6 + 6)}`
   })
+  const bits = parseInt(out.accent.slice(5, 7), 16) & 7
+  out.hat = Math.min(bits, HATS.length - 1)
+  out.accent = `#${withLowBlue(out.accent.slice(1), 0)}`
   return out
 }
 
@@ -119,16 +153,18 @@ export function sanitizeLook(raw: unknown): PlayerLook {
     const hex = hex6(src[f])
     out[f] = hex ? `#${hex}` : DEFAULT_LOOK[f]
   }
+  out.accent = `#${withLowBlue(out.accent.slice(1), 0)}`
+  out.hat = clampHat(src.hat) ?? DEFAULT_LOOK.hat
   return out
 }
 
 export function looksEqual(a: PlayerLook, b: PlayerLook): boolean {
-  return FIELDS.every((f) => a[f].toLowerCase() === b[f].toLowerCase())
+  return FIELDS.every((f) => a[f].toLowerCase() === b[f].toLowerCase()) && a.hat === b.hat
 }
 
-/** one from each row. The "surprise me" button, and the reason the palettes
-    are curated: every combination this can produce is somebody you would be
-    happy to meet in the street */
+/** one from each row, and a hat. The "surprise me" button, and the reason the
+    palettes are curated: every combination this can produce is somebody you
+    would be happy to meet in the street */
 export function randomLook(rnd: () => number = Math.random): PlayerLook {
   const pick = <T>(list: readonly T[]) => list[Math.floor(rnd() * list.length) % list.length]
   return {
@@ -136,5 +172,6 @@ export function randomLook(rnd: () => number = Math.random): PlayerLook {
     trim: pick(TRIM_SWATCHES),
     accent: pick(ACCENT_SWATCHES),
     glow: pick(GLOW_SWATCHES),
+    hat: Math.floor(rnd() * HATS.length) % HATS.length,
   }
 }

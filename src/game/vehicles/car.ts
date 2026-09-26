@@ -1154,7 +1154,7 @@ export interface CarOpts {
 const SEAT_EYE_Y = 2.12
 /** forward of the robot's 0.62, which put a round head behind the B-pillar */
 const SEAT_Z = 0.2
-const SEAT_FIT = 0.66
+const SEAT_FIT = 0.6
 
 export function buildCar(opts: CarOpts): Vehicle {
   const { mats } = opts

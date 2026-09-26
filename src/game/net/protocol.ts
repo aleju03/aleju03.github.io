@@ -44,6 +44,9 @@ export const POSE = {
   speaking: 16,
   /** ragdolled or getting back up */
   down: 32,
+  /** noclip: floating, no ground under the pose. Without it a flyer reads
+      as someone frozen at the top of a jump */
+  fly: 64,
 } as const
 
 /** [id, x, y, z, yaw, pitch, gait, poseBits] — y is the soles, not the eye */
@@ -273,6 +276,7 @@ export function packPose(o: {
   swimming: boolean
   speaking: boolean
   down: boolean
+  fly?: boolean
 }): number {
   return (
     (o.grounded ? POSE.grounded : 0) |
@@ -280,6 +284,7 @@ export function packPose(o: {
     (o.crouch ? POSE.crouch : 0) |
     (o.swimming ? POSE.swimming : 0) |
     (o.speaking ? POSE.speaking : 0) |
-    (o.down ? POSE.down : 0)
+    (o.down ? POSE.down : 0) |
+    (o.fly ? POSE.fly : 0)
   )
 }

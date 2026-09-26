@@ -36,7 +36,9 @@ import {
     would change every lit program's light count as lamps came into range,
     which is a shader link mid-walk; a uniform array of the nearest sixteen
     changes nothing but numbers. This is what gives the night its lit
-    islands without costing it a single program.
+    islands without costing it a single program. The same trick gives an
+    explosion its flash (`lights.flash`, one pool with its own colour that
+    lights day or night), which as a PointLight would relink the world.
 
   Four things about it are load-bearing, and all four are easy to break.
 
@@ -121,7 +123,7 @@ export const LOOK_DEFAULTS: LookKnobs = {
   lines: 400,
   exposure: 1.1,
   levels: 13,
-  chroma: 0.02,
+  chroma: 0.012,
   dither: 0.2,
   grain: 0.012,
   outline: 0.62,
@@ -199,6 +201,14 @@ export interface FakeLights {
     outer: number
     inner: number
   }
+  /** one short-lived light with a colour of its own, day or night: an
+      explosion's flash (the sandbox's fx.ts writes it). Radius 0 is off */
+  flash: {
+    pos: THREE.Vector3
+    radius: number
+    /** colour times strength, HDR */
+    color: THREE.Color
+  }
 }
 
 /** how close to a whole number the upscale has to be before it snaps */
@@ -267,9 +277,10 @@ export const createPixelLook = (
       dir: new THREE.Vector3(0, 0, -1),
       color: new THREE.Color(0, 0, 0),
       range: 26,
-      outer: Math.cos(0.62),
-      inner: Math.cos(0.18),
+      outer: Math.cos(0.72),
+      inner: Math.cos(0.08),
     },
+    flash: { pos: new THREE.Vector3(), radius: 0, color: new THREE.Color(0, 0, 0) },
   }
 
   // HDR if the card can render into half floats, which every desktop WebGL2
@@ -342,6 +353,8 @@ export const createPixelLook = (
     uHeadDir: { value: new THREE.Vector3(0, 0, -1) },
     uHeadCol: { value: new THREE.Color() },
     uHeadK: { value: new THREE.Vector4() },
+    uFlash: { value: new THREE.Vector4() },
+    uFlashCol: { value: new THREE.Color() },
   }
   const gradeMat = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -475,6 +488,9 @@ export const createPixelLook = (
     U.uHeadDir.value.copy(hd.dir)
     U.uHeadCol.value.copy(hd.color)
     U.uHeadK.value.set(hd.range, hd.outer, hd.inner, hd.on ? 1 : 0)
+    const fl = lights.flash
+    U.uFlash.value.set(fl.pos.x, fl.pos.y, fl.pos.z, fl.radius)
+    U.uFlashCol.value.copy(fl.color)
   }
 
   const render = (scene: THREE.Scene, camera: THREE.Camera) => {

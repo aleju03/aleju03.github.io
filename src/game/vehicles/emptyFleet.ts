@@ -53,6 +53,7 @@ export function emptyFleet(): VehicleFleet {
     seat: 0,
     cockpit: false,
     toggleView: () => {},
+    puff: () => {},
     turn: () => {},
     nearest: () => null,
     enter: () => {},

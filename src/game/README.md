@@ -36,10 +36,10 @@ player/
                      gravity/jump/crouch, step-up and ledge falls over an
                      absolute feetY, footstep bob, sprint fov)
   playerBody.ts      buildPlayerBody() is the character: a soft little person
-                     in a work suit and beanie. Kinetic stance (waddle, lean,
+                     a Gang Beasts-style jelly brawler. Kinetic stance (waddle, lean,
                      turn bank, squash-and-stretch landing spring), world-
                      planted stepping feet solved with two-bone IK, sprung
-                     arms, jiggling head/pom-pom/backpack/mittens, idle
+                     arms, jiggling head/hat tails/belly/fists, idle
                      fidgets, the ragdoll, and a muscle-driven get-up. Also
                      the sandbox hooks: hit(), grab(), limbs, limbPos()
   bodyShape.ts       the drawing: one skinned mesh, shared by every body,
@@ -526,8 +526,23 @@ sandbox/
                 diagonal matches the mesh's), a fixed cuboid per world Solid
                 tracked by identity, and a kinematic convex hull per vehicle.
                 Streamed around the walker and around every unparked prop
-  kinds.ts      the kind table: shape, mass, friction, bounce, density, mesh.
-                Six placeholders (crate, barrel, ball, plank, cone, block)
+  kinds.ts      the kind table: shape, mass, friction, bounce, density, mesh,
+                and what it sounds like (surface), breaks into or goes off as
+  catalogue.ts  the forty-one kinds that ship, their physics, and `CATALOGUE`
+                / `CATEGORIES` (ids, nine categories, en/es names): the menu
+  models.ts     what each of them looks like, their atlas cells, and `GIBS`
+                (the pieces a breakable comes apart into)
+  art.ts        the one atlas, the one material, and `model()`, the builder
+                every prop is stamped with
+  batch.ts      props drawn as instances: each prop's mesh is a proxy, one
+                InstancedMesh per shape draws them all
+  breakables.ts damage, gibs, fuses, and the impact sounds' subscription
+  explosion.ts  explode(point, power, radius), onExplosion, and the maths that
+                knocks bodies flat (blastImpact, blastWatch)
+  fx.ts         the particles, the scorch and splat decals, and the flash
+  impactSounds.ts  modal synthesis per surface, breaks, booms; rate-limited
+  thumbnails.ts renderThumbnails(): spawn-menu icons, in a context of its own
+  propScenarios.ts  catalogue, chain, smash, crowd (and the turntable's lot)
   props.ts      the registry and the per-slice work: forces re-laid,
                 buoyancy at eight samples, impacts from the change in
                 velocity, poses kept for interpolation, parking and rescue
@@ -537,6 +552,18 @@ sandbox/
   sandbox.ts    createSandbox(): the facade, and the only thing CrtScene calls
   scenarios.ts  scripted physics (a site, a setup, a camera, a clock), shared
                 by the film harness and `measure physics`
+  bindings.ts   the one key table: every key the walk, the sandbox and its
+                tools answer to, by action (`held`, `axis`, `createEdges`,
+                `keyHint`). Nobody else spells a KeyboardEvent code
+  commands.ts   the console: a typed command registry with completion and
+                help in both languages, run against a `SandboxHost`
+  history.ts    undo (Z) and cleanup, one stack per owner (`historyOf(sb)`)
+  rules.ts      the shared knobs (gravity, timescale, cleanup of everyone's)
+                and the seam the network routes them through
+  places.ts     what `tp town:downtown` and `tp landmark:lighthouse` find
+  spawnlist.ts  the spawn menu's reading of catalogue.ts (the one list of
+                what can be spawned) and thumbnails.ts, plus each plate's
+                small print
   tools/        the tool belt and the physgun:
     types.ts      ToolInput (one frame of intent, filled by the keyboard or a
                   script) and HoldRecord (a hold as plain numbers, for the wire)
@@ -577,7 +604,23 @@ sb.queryBall(center, r, p => ...)
 sb.groundY(x, z); sb.restY(kind, x, z); sb.focus
 sb.gravity = -34; sb.timescale = 1
 sb.rapier; sb.physics                                   // the raw world, for joints
-registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, mesh? })
+registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, mesh?,
+               surface?, breaks?: { speed }, explodes?: { power, radius, speed } })
+
+sb.explode(at, power = 1, radius = 16)  // impulse, damage (chains), fx, boom
+sb.onExplosion(e => ...)   // { x, y, z, power, radius, source, pushed }
+sb.onBreak(e => ...)       // { id, kind, x, y, z, how: 'break'|'explode', gibs }
+sb.damage(id, dv, from?); sb.shatter(id); sb.ignite(id)
+sb.fx                      // explosion, debris, burn, dust, lightLook(look.lights)
+sb.ear(x, y, z, rightX, rightZ)          // the listener, once a frame
+
+// what the spawn menu reads (re-exported by sandbox.ts)
+CATALOGUE: { id, category, name: { en, es } }[]   CATEGORIES: { id, name }[]
+catalogueEntry(id); inCategory(category)
+await renderThumbnails(ids?, size = 96)  // [{ id, canvas }], pixel-art icons
+// spawn: sb.spawn(entry.id, { x, y: sb.restY(entry.id, x, z), z }, { yaw })
+// knock people over: blastImpact(e, feet, height, mass, out) -> rig.hit(...)
+//                    outside.knockPeople(blastWatch(e))
 ```
 
 A `Prop` carries `id`, `kind`, `body` (the Rapier body), `colliders`, `mesh`,
@@ -645,6 +688,30 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   between the two spots.
 - **Queries see what was stepped.** Rapier's broad phase updates in `step`, so
   a collider added this frame is invisible to a raycast until the next slice.
+- **One material, one atlas, one draw per shape.** Every prop, gib and bit of
+  debris is painted on `art.ts`'s atlas with `propMaterial()`, and a prop's
+  `mesh` is a `BatchProxy` that `batch.ts` writes into one InstancedMesh per
+  geometry after the draw. Move, scale, hide or tint (`proxy.tint`) the proxy;
+  never swap its material, which would be a new program mid-walk. 300 props on
+  a street draw in 122 calls through the look against 453 as meshes.
+- **Warm what you draw, by drawing it.** `compileAsync` links against the
+  lights as they are at the call, and a pass that draws with any other light
+  count links again. So the warm batch, every particle pool and one decal of
+  each material are drawn every frame (collapsed to nothing, never culled),
+  which puts their links in the first frame under the boot cover.
+  `npm run film -- props:links` counts `linkProgram` through a spawn of every
+  kind, a break of every breakable and a blast: it must print 0 and 0.
+- **Air is not solid.** Fire and smoke must not write alpha under one (that is
+  a hole) and must not write depth (the look outlines depth edges, and an
+  outlined puff is a boulder). They dissolve through a Bayer dither on
+  `gl_FragCoord` instead, which in the look's target is whole art pixels.
+- **A blast is a fake light.** A PointLight per explosion would relink every
+  lit program; `fx.lightLook` writes the flash into the pixel look's
+  `lights.flash` instead, and CrtScene calls it after dressing the look.
+- **A breakable is broken after the slice, never inside it.** Impacts are
+  collected and dealt in `life.step`; removing a body while Rapier is handing
+  out contact pairs is how you get a panic. A blast is hotter than a knock:
+  it sets an explosive off at half the blow and lights it at a fifth.
 - **The physgun's hold pays the weight outside its budget.** Every slice the
   grab point is pulled toward the target on the view ray by a spring solved
   implicitly (stable at any stiffness, dead still when held still), fed half
@@ -681,9 +748,19 @@ npm run film -- sandbox:pile --from x,y,z --to x,y,z --fov 40      or place the 
 npm run film -- sandbox:stack --raw    the bare frame, without the pixel look
 npm run film -- --list
 
+npm run film -- sandbox:catalogue      every prop on a town street
+npm run film -- sandbox:chain --start 0.3 --duration 2.6    barrels going up in a row
+npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
+npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
+npm run film -- props:turntable        every model four ways round
+npm run film -- props:thumbs           the spawn menu's icons
+npm run film -- props:sounds           every prop sound's peak, next to a footstep
+npm run film -- props:links            shader links on first spawn/break/blast
+
 npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
+
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
-                                       float physgun scenarios
+                                       float catalogue breaks blast physgun scenarios
 npm run measure -- physics walker      one section
 ```
 
@@ -696,8 +773,10 @@ spawned.
 
 ### How to add things
 
-- **A prop kind**: one entry in `kinds.ts`'s `KINDS` (or `registerKind()` from
-  your own module): a `ShapeSpec` (box, ball, cylinder, cone, hull, or a
+- **A prop kind**: a model in `models.ts` (built with `model()` on atlas
+  cells, centred on the body's origin, its numbers in `DIMS`) and a `def()`
+  in `catalogue.ts`, which registers the kind and lists it for the menu (or
+  `registerKind()` from your own module for something off the menu): a `ShapeSpec` (box, ball, cylinder, cone, hull, or a
   compound of them), mass in kg, friction, restitution, density relative to
   water, an optional `ballast` (a share of the mass as a point load, which
   lowers the centre of mass: a crate's contents), and a `mesh()` drawn around
@@ -714,6 +793,62 @@ spawned.
   `onBeforeSlice`, with `setVelocity` toward a target or `addForce`, or switch
   one to `kinematic` and `moveKinematic` it every slice. Per-frame writes land
   on the first slice only.
+
+### The console, the keys and undo
+
+The walk and the sandbox read keys through `bindings.ts` only: `held(keys,
+'noclip')`, `axis(keys, 'back', 'forward')`, and one `createEdges()` per
+scene for presses. Noclip is V and third person F5 (one line to swap back);
+in flight space rises, c sinks, shift is fast and ctrl slow, as in Garry's
+Mod. Hint copy names keys as `{noclip}` and `keyHint()` fills them in, so no
+string in either language can name a key the table does not.
+
+```ts
+registerCommand({ name, aliases?, args?: [{ name, type, optional?, choices? }],
+                  help: msg(en, es), run: (ctx) => { ctx.ok(msg(en, es)) } })
+historyOf(sb).record({ label: msg(en, es), kind?, props: ids, undo?, owner? })
+historyOf(sb).adopt(parentId, gibIds)      // gibs go with their parent's undo
+rules.propose('gravity', 0.5)              // 'applied' offline, 'sent' online
+```
+
+A second `registerCommand` under a taken name replaces it: that is the seam
+the props piece's real explosion replaces `explode` through. Handlers never
+touch the scene; they reach it through the `SandboxHost` CrtScene builds
+(teleport, noclip, time, fog, players, chat), and a missing capability is
+reported rather than thrown. Most commands are the typist's own business;
+gravity, timescale and `cleanup all` are the world's and go through
+`rules.ts`, which offline applies at once and online hands the request to
+`rules.transport` and waits for the server's `apply` (not wired yet; see
+rules.ts's header). Undo and cleanup filter by `history.me`, which CrtScene
+sets from the welcome's player id.
+
+The React side is `components/os/SandboxConsole.tsx` (a thermal receipt
+printer: t, enter or / opens it, /command runs, plain text chats online and
+works offline), `components/os/SpawnMenu.tsx` (a mail-order catalogue held
+up with q; its find line pins it open) and `components/os/Crosshair.tsx`
+(a pixel crosshair tinted by what it is on; the physgun reads the same
+`CrosshairAim`). Both overlays free the pointer, CrtScene's `onLock` knows
+an unlock they asked for is not esc, and an esc close waits for the key to
+come up before taking the pointer back, or Chrome spends the release on
+unlocking again. A spawn lands at the crosshair's hit, never within the
+walker's reach (`BODY_CLEAR`), and `host.spawned(ids)` pops it in: a scale
+overshoot, a ring of dust from the fleet's particle pool (`fleet.puff`, so
+no new material) and `sfx.spawnPop`.
+
+One rule that bit: **never touch a body from inside a Rapier query
+callback.** The query holds the world borrowed, the error thrown across the
+WASM boundary is lost, and the world stays borrowed: an explosion pushed
+nothing and the next `dispose` died. `queryBall` now collects first and calls
+back after.
+
+```
+npm run measure -- console     every command headless, undo/cleanup by owner,
+                               the rules seam, noclip against a wall
+npm run drive                  the real /world in headless Chrome: the
+                               console, the catalogue and a noclip film
+                               (shots/sandbox/*.png; --lang es, --fly-at)
+window.__sandbox.run('spawn crate 10')   dev: resolves with the printed lines
+```
 
 ## Multiplayer
 
@@ -832,9 +967,18 @@ the scene's own fog, with the sky pulled into it at the horizon and a warm
 glow toward the sun), exposure and ACES, the baked grade (`render/grade.ts`:
 two 32-cube LUTs, day and night, crossfaded by `setMood`), grain, and a
 posterize in OKLab whose Bayer dither lives only in a narrow seam between
-bands; then the vignette. A third pass upscales nearest-neighbour to the
+bands (the sky bands clean, with more steps and no seam, grain or chroma
+step, so a cloud is a set of flat shapes rather than a stain); then the
+vignette. A third pass upscales nearest-neighbour to the
 canvas, integer where the screen allows (1080p is exactly 3x, 1440p 4x), and
 a fourth redraws the glass holes at full resolution.
+
+The sky (`levels/sky.ts`) is painted for the look and owned with it: a day
+dome painted deeper than it reads, clouds drawn as hard-rimmed shapes in
+three flat tones so the posterize keeps them clean, a twilight band that
+peaks at the skyline, stars that wait for the twilight to finish, and a day
+curve under which 0.74 is golden hour and 0.78 the afterglow rather than
+night.
 
 `render/atmosphere.ts` turns a moment of the sky into the air's density and
 the night's lights, and CrtScene and the harness both use it: the haze is
@@ -852,7 +996,9 @@ and the governor's ceiling). `npm run shoot` draws every tile through the
 look; `--raw` skips it for a before and after, `--look
 '{"outline":0.8,"day":{"sat":0.9}}'` tunes it without an edit, `--lines`
 sets the tile's internal height (default: an exact 2x), and `--bench n`
-measures a frame against `--raw`. `--tile 1920x1080 --lines 360 --cols 1` is
+measures a frame against `--raw`. The harness swings a camera whose lens
+would land inside a building, or whose view of the target runs through one,
+to the nearest clear bearing, so the default yaw no longer photographs walls. `--tile 1920x1080 --lines 360 --cols 1` is
 1:1 with a 1080p screen.
 
 ### Rules for anything drawn through it
@@ -860,12 +1006,14 @@ measures a frame against `--raw`. `--tile 1920x1080 --lines 360 --cols 1` is
 These are what later art has to respect to look right in this pipeline, and
 every one of them has a failure you can see in a harness shot.
 
-- **Judge it through the look, never `--raw`.** The day grade compresses
-  chroma (a soft cap at OKLab 0.115), lifts black to 0.055 and pulls white to
-  0.95, and gathers every hue part of the way toward six anchors: brick 34°,
-  ochre 74°, olive 118°, teal 168°, slate 240° and plum 314° (OKLab hue).
-  A colour that looks right raw can land a family away, and the air will
-  take a share of anything more than a few dozen units off.
+- **Judge it through the look, never `--raw`.** By day the grade keeps
+  colour (a soft cap at OKLab 0.3, a gentle 15% pull toward six anchors:
+  brick 34°, ochre 74°, olive 118°, teal 168°, slate 240° and plum 314°), and
+  measured at noon a frame keeps 75-90% of its raw saturation; the murk is
+  the night table's and the air's, at dusk and after dark. A colour that
+  looks right raw can still land a band away, and the air takes a share of
+  anything a long way off. To check a change, shoot the same targets with
+  and without `--raw` and compare the mean HSL saturation per tile.
 - **Pick colours from the anchor families, and do not oversaturate to
   compensate.** Past the chroma cap extra saturation buys nothing but a hue
   that lands on the knee. If a whole biome needs a different mood, that is a
@@ -883,7 +1031,8 @@ every one of them has a failure you can see in a harness shot.
   Detail finer than a texel does not survive: it becomes dither noise.
 - **Silhouettes and creases are what get outlined, so build with them.**
   A pixel loses `outline` (0.62) of its light where a neighbour lies more
-  than `0.25 + 4.5%` of the depth behind it, and a fold between two faces
+  than `0.25 + 4.5%` of the depth behind it (inked after the air, and harder
+  and further out against the sky, so a roofline keeps its line), and a fold between two faces
   meeting at more than about 30 degrees gets a line of ink (lifted instead
   where the fold faces the eye) out to 90 units. Chunky, flat-shaded
   shapes with real depth separation read; a smooth-shaded gentle curve, a

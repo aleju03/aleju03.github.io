@@ -8,6 +8,8 @@
     node scripts/measure.mjs smoke         build a few thousand chunks, catch throws
     node scripts/measure.mjs physics       the sandbox: ground, cost, stacks,
                                            tunnelling, the walker, scenarios
+    node scripts/measure.mjs console       every console command run headless
+                                           against a real sandbox, and noclip
     node scripts/measure.mjs eval <file>   run your own probe with the world imported
 
   `src/game/` is renderer-free by design, so all of it runs here: fields, chunk
@@ -118,6 +120,19 @@ for (const [k, n] of [...tally].sort((a, b) => b[1] - a[1])) {
   body: `
 const { buildPlayerBody } = await import('${ROOT}/src/game/player/playerBody.ts')
 const { makeCollisionSet } = await import('${ROOT}/src/game/physics/collision.ts')
+const { bodyGeometry, HAT_COUNT } = await import('${ROOT}/src/game/player/bodyShape.ts')
+// every headgear variant: its vertex count, and anything non-finite in it
+for (let h = 0; h < HAT_COUNT; h++) {
+  const g = bodyGeometry(h)
+  const P = g.getAttribute('position'), Nn = g.getAttribute('normal'), R = g.getAttribute('aRole')
+  let badP = 0, badN = 0
+  const roles = new Set()
+  for (let i = 0; i < P.count; i++) {
+    if (!Number.isFinite(P.getX(i) + P.getY(i) + P.getZ(i))) { badP++; roles.add(R.getX(i)) }
+    if (!Number.isFinite(Nn.getX(i) + Nn.getY(i) + Nn.getZ(i))) { badN++; roles.add(R.getX(i)) }
+  }
+  console.log('hat ' + h + ': ' + P.count + ' verts' + (badP + badN ? '  NON-FINITE pos ' + badP + ' nrm ' + badN + ' roles ' + [...roles] : ''))
+}
 const env = { groundY: 0, collision: makeCollisionSet({ minX: -1e3, maxX: 1e3, minZ: -1e3, maxZ: 1e3 }) }
 let t0 = performance.now()
 const rigs = []
@@ -189,7 +204,17 @@ const held = r.limbPos(hand, new THREE.Vector3()).distanceTo(target)
 const heldSettled = r.settled
 r.grab(hand, null)
 let t = 0
-while (!r.settled && t < 600) { step(1); t++ }
+const trace = []
+const prevP = r.limbs.map((l) => r.limbPos(l.index, new THREE.Vector3()).clone())
+while (!r.settled && t < 600) {
+  step(1); t++
+  if (t % 60 === 0) {
+    let worst = 0, who = ''
+    r.limbs.forEach((l, i) => { const q = r.limbPos(l.index, new THREE.Vector3()); const v = q.distanceTo(prevP[i]) * 60; if (v > worst) { worst = v; who = l.name }; prevP[i].copy(q) })
+    trace.push(who + ':' + worst.toFixed(1))
+  } else r.limbs.forEach((l, i) => r.limbPos(l.index, prevP[i]))
+}
+if (t >= 600) console.log('never settled; fastest limb per second: ' + trace.join(' '))
 const settleS = t / 60
 r.getupSpot(p)
 r.group.position.set(p.x, 0, p.z)
@@ -228,8 +253,8 @@ const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
 // the sandbox's report lives in its own file (it is long, and it imports the
 // sandbox, which nothing else here needs); `physics <section>` runs one part
-if (what === 'physics') {
-  body = readFileSync(join(ROOT, 'scripts', 'measure', 'physics.js'), 'utf8')
+if (what === 'physics' || what === 'console') {
+  body = readFileSync(join(ROOT, 'scripts', 'measure', `${what}.js`), 'utf8')
     .replace(/'\.\.\/\.\.\/src\//g, `'${ROOT}/src/`)
 }
 if (what === 'eval') {
@@ -237,7 +262,7 @@ if (what === 'eval') {
   body = readFileSync(resolve(arg), 'utf8')
 }
 if (!body) {
-  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|physics [section]|eval <file>>`)
+  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|physics [section]|console|eval <file>>`)
   console.error('\nan `eval` file is plain JS with the whole world already imported:')
   console.error('  buildChunk tierFor kitsFor VARIANTS SNAP BIOMES classify')
   console.error('  landmarkIn landmarkAt LANDMARK_CELL placeAt roadAt')

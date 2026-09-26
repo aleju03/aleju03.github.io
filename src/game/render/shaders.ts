@@ -89,6 +89,9 @@ export const GRADE_FRAG = /* glsl */ `
   uniform vec3 uHeadDir;
   uniform vec3 uHeadCol;
   uniform vec4 uHeadK;
+  /** a flash (an explosion): world xyz and radius (0 off), colour*gain */
+  uniform vec4 uFlash;
+  uniform vec3 uFlashCol;
 
   out vec4 outColor;
 
@@ -200,8 +203,8 @@ export const GRADE_FRAG = /* glsl */ `
     // chroma cap and hue pull would otherwise turn an energy beam into the
     // same murky pastel as the sky behind it. It still takes ACES and the
     // posterize, so it bands and dithers like everything else
-    float glow = a >= 0.99 && a < 0.9985 ? 1.0 : 0.0;
-    if (glow > 0.5) a = 1.0;
+    float emits = a >= 0.99 && a < 0.9985 ? 1.0 : 0.0;
+    if (emits > 0.5) a = 1.0;
     float depth = texelFetch(tDepth, p, 0).x;
     bool sky = depth >= 0.999999;
     vec3 ray = viewRay(p);
@@ -246,11 +249,22 @@ export const GRADE_FRAG = /* glsl */ `
       if (uHeadK.w > 0.5) {
         vec3 d = wp - uHeadPos;
         float r = length(d);
+        // squared, so the beam fades out over its whole width instead of
+        // ending on a rim: a torch, not a projected disc
         float cone = smoothstep(uHeadK.y, uHeadK.z, dot(d / max(r, 1e-3), uHeadDir));
+        cone *= cone;
         float fall = 1.0 / (1.0 + (r / uHeadK.x) * (r / uHeadK.x) * 4.0);
         lit += uHeadCol * cone * fall;
       }
-      col += albedo * lit;
+      if (uFlash.w > 0.0) {
+        // a blast lights everything round it, above and below, by day too
+        vec3 d = wp - uFlash.xyz;
+        float k = clamp(1.0 - dot(d, d) / (uFlash.w * uFlash.w), 0.0, 1.0);
+        lit += uFlashCol * (k * k);
+      }
+      // an ordered jitter on the light itself, so the posterize cuts its
+      // falloff into dithered steps instead of concentric rings
+      col += albedo * lit * (1.0 + (bayer(p + ivec2(3, 2)) - 0.5) * 0.7);
 
       // ---- outlines, from depth alone -----------------------------------
       float fogK = uFog.z > 0.5 ? 1.0 - smoothstep(uFog.x, uFog.y, zc) : 1.0;
@@ -281,7 +295,6 @@ export const GRADE_FRAG = /* glsl */ `
         float lap = ((1.0 / zl + 1.0 / zr) + (1.0 / zu + 1.0 / zd) - 4.0 * ic) / ic;
         convex = smoothstep(uEdgeK.w, uEdgeK.w * 2.5, -lap);
       }
-      col *= 1.0 - sil * uEdge.x * fogK;
       col *= 1.0 - fold * (1.0 - convex) * uEdge.y * fogK;
       col *= 1.0 + convex * uEdge.z * fogK;
 
@@ -296,6 +309,17 @@ export const GRADE_FRAG = /* glsl */ `
       float toward = max(dot(dirW, uSunDir), 0.0);
       vec3 airCol = uAirCol + uSunGlow * pow(toward, 6.0);
       col = mix(col, airCol, air);
+
+      // the silhouette's ink goes on *after* the air, so a roofline a block
+      // away keeps its line instead of having it hazed off with the wall.
+      // Against the sky it is inked harder and fades less with the fog:
+      // that edge is the shape, and it is the one Lethal's ink carries
+      float farZ = uClip.y * 0.98;
+      bool skyBehind = max(max(zl, zr), max(zu, zd)) > farZ;
+      float silK = skyBehind
+        ? min(0.85, uEdge.x * 1.25) * max(fogK, 0.55)
+        : uEdge.x * fogK;
+      col *= 1.0 - sil * silK;
     } else {
       // ---- the sky, tied to the air --------------------------------------
       float toward = max(dot(dirW, uSunDir), 0.0);
@@ -317,14 +341,26 @@ export const GRADE_FRAG = /* glsl */ `
         vec3 off = toL - dirW * t;
         glow += exp(-dot(off, off) / (uHalo.y * uHalo.y));
       }
+      // jittered like the pools, or a halo in the sky (which bands with no
+      // dithered seam at all) posterizes into a stack of hard rings
+      glow *= 1.0 + (bayer(p + ivec2(1, 2)) - 0.5) * 0.9;
       col += uPoolCol * glow * uHalo.x;
+    }
+    // ...and the flash's, a ball of lit air a third of its radius across
+    if (uFlash.w > 0.0) {
+      float reach = sky ? 1e6 : range;
+      vec3 toL = uFlash.xyz - uCamPos;
+      float t = clamp(dot(toL, dirW), 0.0, reach);
+      vec3 off = toL - dirW * t;
+      float r = uFlash.w * 0.3;
+      col += uFlashCol * 0.18 * exp(-dot(off, off) / (r * r));
     }
 
     // ---- tone and grade -------------------------------------------------
     vec3 disp = toSrgb(aces(col));
     vec3 lutUv = disp * ((uLutSize - 1.0) / uLutSize) + 0.5 / uLutSize;
     vec3 graded = mix(texture(tLutA, lutUv).rgb, texture(tLutB, lutUv).rgb, uMood);
-    disp = mix(disp, graded, uGrade * (1.0 - glow));
+    disp = mix(disp, graded, uGrade * (1.0 - emits));
 
 
     // ---- banded posterize, in OKLab ------------------------------------
@@ -333,17 +369,24 @@ export const GRADE_FRAG = /* glsl */ `
     // it lives on the band edges (where a real posterized image flickers)
     // rather than as noise over flat colour
     vec3 lab = oklab(toLinear(disp));
-    lab.x += (hash(vec2(p) + fract(uFrame * 0.618) * 97.0) - 0.5) * uPost.w;
-    if (uPost.x > 0.5) {
+    if (sky) {
+      // The sky bands clean: more steps, no dithered seam, no grain and its
+      // own chroma untouched. A cloud is a soft gradient over a large area,
+      // and the ground's treatment turned every one into a blotch with a
+      // dithered halo round it
+      if (uPost.x > 0.5) lab.x = band(lab.x, uPost.x * 1.6, 0.5, 0.0);
+    } else if (uPost.x > 0.5) {
+      lab.x += (hash(vec2(p) + fract(uFrame * 0.618) * 97.0) - 0.5) * uPost.w;
       lab.x = band(lab.x, uPost.x, bayer(p), uPost.z);
       // chroma in polar form: the hue stays where it is and only its
       // strength steps. A square a/b grid put every near-grey (a wall, a
       // road, a cloud) right on a bin edge at half a step off neutral, and
-      // dithered it into a checker; here the first bin is widened so a grey
-      // is simply grey
+      // dithered it into a checker. The grid is fine enough that a muted
+      // colour keeps its hue: only what is under half a step goes grey (an
+      // earlier dead zone here rounded a whole grey-ish downtown to 0)
       float t2 = bayer(p.yx + ivec2(2, 1));
       float C = length(lab.yz);
-      float Cq = band(max(0.0, C - uPost.y * 0.35), 1.0 / uPost.y, t2, uPost.z);
+      float Cq = band(C, 1.0 / uPost.y, t2, uPost.z);
       lab.yz *= C > 1e-5 ? Cq / C : 0.0;
     }
     disp = toSrgb(clamp(fromOklab(lab), 0.0, 1.0));

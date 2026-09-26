@@ -235,11 +235,11 @@ const getUp = (a: Actor) => {
     drawn from look.ts's own palettes */
 const LOOKS: PlayerLook[] = [
   DEFAULT_LOOK,
-  { shell: '#4f86c6', trim: '#2b3a55', accent: '#e6b43c', glow: '#f4f1dc' },
-  { shell: '#e8c24a', trim: '#3a3f47', accent: '#c9493f', glow: '#ffd98a' },
-  { shell: '#6aa35a', trim: '#6b4a33', accent: '#e07aa0', glow: '#9af0a0' },
-  { shell: '#e9e2d0', trim: '#5a2e3a', accent: '#3d6fb5', glow: '#7fe8e8' },
-  { shell: '#8a6cc0', trim: '#2a2522', accent: '#eeeae0', glow: '#ff9ec0' },
+  { shell: '#e0a21a', trim: '#1c1c22', accent: '#2860c8', glow: '#1c1a22', hat: 2 },
+  { shell: '#2f6fcf', trim: '#d2452f', accent: '#f0e8e0', glow: '#1c1a22', hat: 3 },
+  { shell: '#d9508f', trim: '#1c1c22', accent: '#e8b818', glow: '#2b3a55', hat: 4 },
+  { shell: '#8a4fc8', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a22', hat: 5 },
+  { shell: '#d2452f', trim: '#e0a21a', accent: '#f0e8e0', glow: '#4a2e22', hat: 0 },
 ]
 
 /* -------------------------------------------------------------- the tiles -- */
@@ -263,7 +263,7 @@ const lineup = (spec: BodySpec, snap: Snap) => {
   const [tw, th] = spec.tile
   const st = stage(spec.tod)
   const yaw = 0 // facing -Z; the camera stands on -Z looking back at them
-  const people = LOOKS.map((look, i) => actor(st, look, st.x + (i - 2.5) * 3.1, st.z, yaw))
+  const people = LOOKS.map((look, i) => actor(st, look, st.x + (i - 2.5) * 3.8, st.z, yaw))
   // a few seconds of standing about, so every spring has settled into its
   // idle and the glances and blinks are wherever they happen to be
   for (let f = 0; f < 150; f++) for (const p of people) tick(p, st.env)
@@ -311,7 +311,7 @@ const lineup = (spec: BodySpec, snap: Snap) => {
 }
 
 /** one body, close: front, three-quarter, side and back, where a face,
-    a pom-pom and the colour blocks can actually be judged */
+    the headband and the colour blocks can actually be judged */
 const closeup = (spec: BodySpec, snap: Snap) => {
   const [tw, th] = spec.tile
   const st = stage(spec.tod)
@@ -472,7 +472,7 @@ const seats = (spec: BodySpec, snap: Snap) => {
     st.scene.add(v.root)
     for (const [seat, look] of [[v.driverSeat, LOOKS[0]], [v.passengerSeat, LOOKS[1]]] as const) {
       const rig = buildPlayerBody(EYE, GRAV, look)
-      rig.sit(seat.userData.fit ?? CABIN_FIT)
+      rig.sit(seat.userData.fit ?? CABIN_FIT, seat === v.passengerSeat)
       seat.add(rig.group)
       rig.group.position.set(0, 0, 0)
       rig.group.rotation.set(0, Math.PI, 0)

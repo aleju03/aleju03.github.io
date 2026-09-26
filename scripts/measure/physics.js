@@ -16,10 +16,19 @@
     physgun    the beam's controller, per kind: settle time and overshoot
                after a sideways step, jitter held still, a flick's throw
                speed, a freeze that holds and a thaw that falls
+    catalogue  every catalogue kind set down upright on flat ground: does it
+               stay upright, how fast it sleeps, where its mass sits
+    breaks     each breakable dropped from rising heights: the lowest fall
+               that breaks it, and what it leaves
+    blast      a row of red barrels set off at one end: how many go, how
+               far a crate beside them flies, and that one out of reach sleeps
     scenarios  every registered scenario, run to its end, with its report
 */
 import { createSandbox } from '../../src/game/sandbox/sandbox.ts'
 import { SCENARIOS, stageScenario, advanceScenario } from '../../src/game/sandbox/scenarios.ts'
+import '../../src/game/sandbox/propScenarios.ts'
+import { CATALOGUE } from '../../src/game/sandbox/catalogue.ts'
+import { KINDS } from '../../src/game/sandbox/kinds.ts'
 import { makeCollisionSet } from '../../src/game/physics/collision.ts'
 import { createWalkController } from '../../src/game/player/walkController.ts'
 import { createPhysgun, tune } from '../../src/game/sandbox/tools/physgun.ts'
@@ -184,12 +193,16 @@ if (want('tunnel')) {
   const { sb } = newSandbox()
   await sb.whenReady
   const focus = { x: flat.x, y: fy, z: flat.z }
+  // a crate or a plank that hits hard enough comes apart (breakables.ts):
+  // that is the wall holding, and where the gibs ended up says so
+  const broke = new Map()
+  sb.onBreak((e) => broke.set(e.id, e))
   const run = (label, setup, ok) => {
     sb.clear()
     const c = setup()
     for (let i = 0; i < 90; i++) sb.tick({ dt: 1 / 60, active: true, focus })
     const pass = ok(c)
-    console.log(`tunnel   ${pad(label, 52)} ${pass ? 'held' : '<-- TUNNELLED'}`)
+    console.log(`tunnel   ${pad(label, 52)} ${pass ? (broke.has(c) ? 'held (broke on it)' : 'held') : '<-- TUNNELLED'}`)
   }
   // a plank frozen upright as a 0.18-thick wall
   const wall = () => sb.spawn('plank', { x: flat.x + 10, y: fy + 3, z: flat.z }, {
@@ -202,7 +215,8 @@ if (want('tunnel')) {
       return sb.spawn(kind, { x: flat.x - 10, y: fy + 3, z: flat.z }, { velocity: { x: speed, y: 0, z: 0 }, quaternion: q })
     }, (id) => {
       const p = sb.get(id)
-      return p && p.body.translation().x < flat.x + 10
+      if (!p) return !!broke.get(id) && broke.get(id).x < flat.x + 10
+      return p.body.translation().x < flat.x + 10
     })
   }
   for (const kind of ['crate', 'ball', 'plank']) {
@@ -210,9 +224,116 @@ if (want('tunnel')) {
       sb.spawn(kind, { x: flat.x, y: fy + 30, z: flat.z }, { velocity: { x: 0, y: -250, z: 0 } }),
     (id) => {
       const p = sb.get(id)
-      return p && p.body.translation().y > fy - 0.5
+      if (!p) return !!broke.get(id) && broke.get(id).y > fy - 0.5
+      return p.body.translation().y > fy - 0.5
     })
   }
+  sb.dispose()
+}
+
+/* ---------------------------------------------------------- catalogue -- */
+if (want('catalogue')) {
+  // each kind stood upright a hair over flat ground and watched for four
+  // seconds: a well-made kind lands, stays the way up it was drawn, and sleeps
+  const { sb } = newSandbox()
+  await sb.whenReady
+  const focus = { x: flat.x, y: fy, z: flat.z }
+  const up = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const bad = []
+  for (const e of CATALOGUE) {
+    sb.clear()
+    const y = sb.restY(e.id, flat.x, flat.z)
+    const id = sb.spawn(e.id, { x: flat.x, y: y + 0.05, z: flat.z })
+    const p = sb.get(id)
+    let sleptAt = -1
+    for (let i = 0; i < 240; i++) {
+      sb.tick({ dt: 1 / 60, active: true, focus })
+      if (sleptAt < 0 && p.body.isSleeping()) sleptAt = (i + 1) / 60
+    }
+    const r = p.body.rotation()
+    q.set(r.x, r.y, r.z, r.w)
+    up.set(0, 1, 0).applyQuaternion(q)
+    const tilt = Math.acos(Math.min(1, up.y)) * 180 / Math.PI
+    const t = p.body.translation()
+    const com = p.body.localCom()
+    const k = KINDS[e.id]
+    // round things lying down turn about their own axis as they settle;
+    // for those, "upright" is only whether they came to rest
+    const round = e.id === 'pipe' || e.id === 'ball'
+    const note = tilt > 5 && !round ? '  <-- FELL OVER'
+      : sleptAt < 0 && round ? '  (still rolling down the site\'s slope)'
+        : sleptAt < 0 ? '  <-- NEVER SLEPT' : ''
+    if (note.startsWith('  (')) {
+      console.log(`catalogue ${pad(e.id, 17)} ${pad(k.mass + ' kg', 8)} rolling at ${f(Math.hypot(p.body.linvel().x, p.body.linvel().z), 2)} u/s${note}`)
+      continue
+    }
+    if (note) bad.push(e.id)
+    console.log(`catalogue ${pad(e.id, 17)} ${pad(k.mass + ' kg', 8)} com y ${f(com.y, 2).padStart(5)}  ` +
+      `tilt ${f(tilt, 1).padStart(4)} deg  sank ${f(y - t.y, 3)}  asleep at ${sleptAt < 0 ? '-' : f(sleptAt, 2)} s` +
+      `  ${k.surface ?? 'wood'}${k.breaks ? ' breaks@' + k.breaks.speed : ''}${k.explodes ? ' explodes@' + k.explodes.speed : ''}${note}`)
+  }
+  console.log(`catalogue ${CATALOGUE.length} kinds, ${bad.length ? bad.join(', ') + ' misbehaved' : 'every one upright and asleep'}`)
+  sb.dispose()
+}
+
+/* -------------------------------------------------------------- breaks -- */
+if (want('breaks')) {
+  const { sb } = newSandbox()
+  await sb.whenReady
+  const focus = { x: flat.x, y: fy, z: flat.z }
+  let gibs = 0
+  sb.onBreak((e) => (gibs = e.gibs.length))
+  for (const e of CATALOGUE.filter((c) => KINDS[c.id].breaks)) {
+    let at = -1
+    let left = 0
+    for (const h of [0.5, 1, 2, 3, 4, 6, 8, 10, 13, 16, 20, 25, 30, 40]) {
+      sb.clear()
+      gibs = 0
+      const id = sb.spawn(e.id, { x: flat.x, y: sb.restY(e.id, flat.x, flat.z) + h, z: flat.z })
+      for (let i = 0; i < 120; i++) sb.tick({ dt: 1 / 60, active: true, focus })
+      if (!sb.get(id)) {
+        at = h
+        left = gibs
+        break
+      }
+    }
+    console.log(`breaks   ${pad(e.id, 12)} breaks at ${KINDS[e.id].breaks.speed} u/s: dropped from ${at < 0 ? 'over 40' : at} units it comes apart into ${left} pieces`)
+  }
+  sb.dispose()
+}
+
+/* --------------------------------------------------------------- blast -- */
+if (want('blast')) {
+  const { sb } = newSandbox()
+  await sb.whenReady
+  const focus = { x: flat.x, y: fy, z: flat.z }
+  const barrels = []
+  for (let k = 0; k < 6; k++) {
+    const x = flat.x + k * 5.2
+    barrels.push(sb.spawn('barrel_explosive', { x, y: sb.restY('barrel_explosive', x, flat.z), z: flat.z }))
+  }
+  const near = sb.spawn('crate', { x: flat.x + 2.6, y: sb.restY('crate', flat.x + 2.6, flat.z + 3.5), z: flat.z + 3.5 })
+  const far = sb.spawn('crate', { x: flat.x - 30, y: sb.restY('crate', flat.x - 30, flat.z), z: flat.z })
+  for (let i = 0; i < 60; i++) sb.tick({ dt: 1 / 60, active: true, focus })
+  const booms = []
+  let t = 0
+  sb.onExplosion((e) => booms.push({ t, x: e.x, pushed: e.pushed }))
+  let nearTop = 0
+  sb.damage(barrels[0], 1000)
+  const ms = []
+  for (let i = 0; i < 240; i++) {
+    t = (i + 1) / 60
+    ms.push(sb.tick({ dt: 1 / 60, active: true, focus }).ms)
+    const p = sb.get(near)
+    if (p) nearTop = Math.max(nearTop, p.body.translation().y - fy)
+  }
+  const farP = sb.get(far)
+  ms.sort((a, b) => a - b)
+  console.log(`blast    ${booms.length}/6 barrels went off in ${f(booms.length ? booms[booms.length - 1].t : 0, 2)} s ` +
+    `(${booms.map((b) => f(b.t, 2)).join(' ')}); the crate beside the first ${sb.get(near) ? 'survived' : 'broke'}, ` +
+    `peak ${f(nearTop, 1)} units up; the one 30 units away ${farP && farP.body.isSleeping() ? 'slept through it' : 'moved'}; ` +
+    `${sb.stats.gibs} gibs; worst tick ${f(ms[ms.length - 1], 2)} ms, median ${f(ms[ms.length >> 1], 2)}`)
   sb.dispose()
 }
 
