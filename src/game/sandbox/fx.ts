@@ -249,12 +249,23 @@ void main() {
   vec3 c = instanceMatrix[3].xyz;
   vec2 sz = vec2(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz));
   vec4 mv = modelViewMatrix * vec4(c, 1.0);
+  // no sprite may fill the screen: the glow is held to about a fifth of
+  // the view's height at its distance, the fire to a third (a blast beside
+  // the lens whited out most of the frame, and the barrels and bodies in it
+  // with it)
+  float lim = -mv.z * (uMode < 1.5 ? 0.22 : 0.34);
+  sz = min(sz, vec2(lim));
   mv.xy += position.xy * sz * 2.0;
-  // air and fire are drawn at their near face, not their middle: a quad
-  // through a puff's centre is cut in a hard straight line by any wall the
-  // puff reaches, and smoke against a building read as grey discs stuck to
-  // it. (The glow keeps its middle, so the light stays behind a crate)
-  if (uMode > 1.5) mv.z += min(sz.x, sz.y) * 0.9;
+  // smoke is drawn at its near face, not its middle: a quad through a
+  // puff's centre is cut in a hard straight line by any wall the puff
+  // reaches, and it read as grey discs stuck to the building. Glow and fire
+  // keep their middles, so a barrel in front of the blast is in front of it
+  // and one behind is behind it
+  if (uMode > 1.5 && uMode < 2.5) mv.z += min(sz.x, sz.y) * 0.9;
+  // a hot tongue is drawn a little forward of its middle, a cool one at
+  // it: the heart of the fire shows through the cooler rind round it, the
+  // way additive fire would, instead of being buried by it
+  if (uMode > 2.5) mv.z += min(sz.x, sz.y) * clamp((vCol.r - 0.7) * 2.0, 0.0, 1.0);
   gl_Position = projectionMatrix * mv;
 }
 `
@@ -273,6 +284,14 @@ float bayer(vec2 p) {
   int b[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
   return (float(b[i]) + 0.5) / 16.0;
 }
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
 void main() {
   // the radius, jittered by the ordered dither so a band's edge is a seam
   // of whole art pixels rather than a smooth ramp
@@ -287,43 +306,42 @@ void main() {
     if (r > 0.42) discard;
     gl_FragColor = vec4(vCol * 0.6, uGlowA);
   } else if (uMode < 2.5) {
-    // smoke: a ragged edge (so neighbouring puffs merge into one cloud
-    // instead of showing each rim) and three steps of opacity, the last one
-    // dithered out rather than ending on a line
-    float ang = atan(vUv.y, vUv.x);
-    float e = 0.86 + 0.09 * sin(ang * 5.0 + vSeed * 40.0) + 0.05 * sin(ang * 11.0 - vSeed * 17.0);
-    if (r > e) discard;
-    float q = r / e;
-    float a = (q < 0.5 ? 0.92 : q < 0.76 ? 0.62 : 0.4) * vA;
-    if (q > 0.76 && bayer(gl_FragCoord.xy + 1.0) > 1.0 - (q - 0.76) * 3.0) discard;
+    // smoke: a lumpy blob off value noise (a different lump on every slot,
+    // never a repeated star), in four steps of opacity from a dense middle
+    // to a thin rim, the steps' seams dithered, so a cloud of them thins
+    // into the sky instead of ending on a cut edge
+    float n = vnoise(vUv * 2.0 + vSeed * vec2(13.0, 29.0));
+    float d = length(vUv) + (bayer(gl_FragCoord.xy) - 0.5) * 0.12;
+    float edge = 0.62 + 0.36 * n;
+    if (d > edge) discard;
+    float q = d / edge;
+    float a = (q < 0.4 ? 0.85 : q < 0.65 ? 0.6 : q < 0.85 ? 0.36 : 0.16) * vA;
     // a lit crown and a shaded belly, as a puff lit from above
-    float lit = vUv.y > 0.35 ? 1.18 : vUv.y < -0.45 ? 0.8 : 1.0;
+    float lit = vUv.y > 0.35 ? 1.16 : vUv.y < -0.45 ? 0.82 : 1.0;
     gl_FragColor = vec4(vCol * lit * uShade * a, a);
   } else {
-    // flame: one tongue of a fireball. The edge is ragged all round and
-    // licks upward, flickering with time, so a crowd of them is one fire
-    // with a torn silhouette rather than a bunch of balls; no depth and no
-    // ink, so there is no rim between them. Heat (instance red) falls from
-    // the middle out through four flat bands, white-yellow to orange tips;
-    // soot (instance green) turns a tongue into a dark lick of smoke, lit
-    // only by the scene
-    float ang = atan(vUv.y, vUv.x);
-    float up = max(0.0, vUv.y);
-    float e = 0.62
-      + 0.14 * sin(ang * 5.0 + vSeed * 40.0 + uTime * 9.0)
-      + 0.08 * sin(ang * 9.0 - vSeed * 23.0 - uTime * 14.0)
-      + up * up * (0.35 + 0.3 * sin(ang * 7.0 + vSeed * 17.0 + uTime * 11.0));
-    if (r > e) discard;
-    float heat = vCol.r * (1.05 - 0.9 * r / e);
-    vec3 c = heat > 0.85 ? vec3(3.6, 3.1, 1.8)
-      : heat > 0.6 ? vec3(3.0, 1.9, 0.42)
-      : heat > 0.36 ? vec3(2.1, 0.72, 0.1)
-      : vec3(1.05, 0.24, 0.05);
-    c = mix(c, vec3(0.035, 0.03, 0.028) * max(uShade, 0.3), vCol.g);
-    // written as a light (GLOW_ALPHA): the look inks nothing over it, so
-    // neither the rims of the tongues nor the outlines of whatever stands
-    // behind the fire show through it, and the grade leaves its orange as
-    // saturated as it is drawn
+    // flame: one tongue of a fireball, a teardrop narrowing upward whose
+    // edge is value noise scrolling up through it, so it licks and never
+    // repeats a shape. Heat (instance red, set hottest for the tongues at
+    // the heart of the blast and cooling with age) falls from its middle
+    // out through four flat bands: white-yellow, yellow, orange, red tips.
+    // Written as a light (GLOW_ALPHA) so the look inks no rim round it and
+    // grades none of its colour away, and with depth, so the tongues and
+    // everything flying through them sort front to back
+    vec2 p = vUv;
+    p.y += 0.15;
+    float n = vnoise(p * 2.2 + vec2(vSeed * 17.0, vSeed * 31.0 - uTime * 2.6));
+    float n2 = vnoise(p * 4.6 + vec2(vSeed * 7.0, -uTime * 4.5));
+    float w = 1.0 - 0.5 * clamp(p.y, 0.0, 1.0);
+    float d = length(vec2(p.x / max(w, 0.3), p.y * 0.78));
+    float edge = 0.5 + 0.34 * n + 0.14 * n2;
+    if (d > edge) discard;
+    float q = d / edge;
+    float heat = vCol.r * (1.12 - 0.85 * q) + (bayer(gl_FragCoord.xy) - 0.5) * 0.1;
+    vec3 c = heat > 0.8 ? vec3(5.0, 4.2, 2.4)
+      : heat > 0.58 ? vec3(3.2, 1.9, 0.3)
+      : heat > 0.36 ? vec3(1.7, 0.42, 0.04)
+      : vec3(0.85, 0.14, 0.02);
     gl_FragColor = vec4(c, uGlowA);
   }
 }
@@ -334,7 +352,9 @@ const spriteMaterial = (mode: 0 | 1 | 2 | 3) => {
     fragmentShader: SPRITE_FRAG,
     uniforms: { uMode: { value: mode }, uShade: { value: 1 }, uGlowA: { value: GLOW_ALPHA }, uTime: { value: 0 } },
     transparent: true,
-    depthWrite: false,
+    // the flames sort among themselves and with the props by depth; they
+    // are marked as a light, so the look draws no outline where they do
+    depthWrite: mode === 3,
   })
   m.blending = THREE.CustomBlending
   m.blendEquation = THREE.AddEquation
@@ -487,8 +507,12 @@ export const createFx = (o: FxOpts): Fx => {
   root.add(core)
 
   /* decals: a small ring of flat quads, two materials, one program */
+  // lit, like the road it lies on: an unlit dark decal is a fixed colour
+  // the look's lamp and flash light then divide by the dusk's ambient to
+  // recover an albedo from, and at dusk the scorch came out as a bright
+  // orange ring on the asphalt
   const mkDecalMat = (tex: THREE.Texture) => {
-    const m = new THREE.MeshBasicMaterial({
+    const m = new THREE.MeshLambertMaterial({
       map: tex, alphaTest: 0.5, transparent: false,
       polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
     })
@@ -597,7 +621,7 @@ export const createFx = (o: FxOpts): Fx => {
       // tumbling out of the middle is seen through it, and its inner disc
       // is marked as a light so nothing inks or grades it
       emit(glows, at.x, at.y + 1.2, at.z, 0, 2, 0, rnd(0.28, 0.34), R * 0.28 * k, R * 0.28 * k, 1,
-        3.2, 2.8, 2.2, { grow: 1.6, drag: 3 })
+        2.4, 2.05, 1.6, { grow: 1.6, drag: 3 })
       for (let i = 0; i < 4; i++) {
         dir(0.15, d3)
         const o = R * rnd(0.12, 0.22)
@@ -617,32 +641,41 @@ export const createFx = (o: FxOpts): Fx => {
         emit(jets, at.x, at.y + 0.8, at.z, d3[0] * sp, d3[1] * sp, d3[2] * sp, rnd(0.16, 0.28), w, w, len,
           1.6, 1.35, 1.0, { drag: 7, fadeAt: 0.35 })
       }
-      // the fireball behind the light: tongues of flame of every size, from
-      // a lick the size of a crate's corner to one as big as the barrel
-      // cluster, torn at the edge (see the sprite shader), hottest in the
-      // middle of the blast and cooler at the rim, rolling up and out as the
-      // glow dies, with licks of dark soot among them for contrast
+      // the fireball behind the light: tongues of flame of every size,
+      // spread through a volume round the blast (so props fly in front of
+      // some and behind others), the slow ones at the heart white-yellow and
+      // the fast outer ones cooling to orange and red, all of them rising
+      // (fire.step gives flame its own buoyancy) and shrinking as they go
       const tongues2 = Math.round(18 + 8 * k)
       for (let i = 0; i < tongues2; i++) {
         dir(0.05, d3)
         const big = Math.random()
-        const s = (0.4 + big * big * 1.6) * k
-        const sp = rnd(5, 15) * k * (1.2 - big * 0.6)
-        // the middle of the blast burns white-yellow, the big outer
-        // tongues orange: heat falls with size
-        const heat = rnd(0.95, 1.2) * (1 - 0.3 * big) + (i < 6 ? 0.15 : 0)
-        emit(fire, at.x + d3[0] * 0.8, at.y + 0.9 + d3[1] * 0.8, at.z + d3[2] * 0.8,
-          d3[0] * sp, d3[1] * sp + rnd(4, 9), d3[2] * sp, rnd(0.45, 0.85), s, s, s, heat, 0, 0,
-          { grow: rnd(1.3, 1.8), drag: 4, delay: rnd(0.04, 0.14), fadeAt: 0.55 })
+        const s = (0.45 + big * big * 1.5) * k
+        const out = Math.random()
+        const sp = (3 + out * 12) * k
+        const heat = 1.25 - 0.5 * out - 0.2 * big
+        const o = 0.4 + out * 1.4
+        emit(fire, at.x + d3[0] * o, at.y + 0.9 + d3[1] * o, at.z + d3[2] * o,
+          d3[0] * sp, d3[1] * sp + rnd(3, 7), d3[2] * sp, rnd(0.4, 0.75), s, s * 1.15, s, heat, 0, 0,
+          { grow: rnd(1.25, 1.55), drag: 4, delay: rnd(0.04, 0.14), fadeAt: 0.3 })
       }
-      // (at the top and the rim, where soot rolls out of a fireball, not in
-      // the middle where it would cover the heart)
-      for (let i = 0; i < 5; i++) {
+      // and its crown: tongues let go late from the heart that climb on
+      // their own as the ball below them shrinks
+      for (let i = 0; i < 7; i++) {
+        const s = rnd(0.5, 0.95) * k
+        emit(fire, at.x + rnd(-0.8, 0.8), at.y + 1.8 + rnd(0, 1), at.z + rnd(-0.8, 0.8),
+          rnd(-1.5, 1.5), rnd(9, 14), rnd(-1.5, 1.5), rnd(0.45, 0.7), s, s * 1.3, s, rnd(0.95, 1.15), 0, 0,
+          { grow: 1.3, drag: 2, delay: rnd(0.2, 0.4), fadeAt: 0.35 })
+      }
+      // soot rolling off the top and the rim as the fire goes: smoke, not
+      // flame, so it is soft-edged and see-through rather than a dark stamp
+      for (let i = 0; i < 6; i++) {
         dir(0.35, d3)
-        const s = rnd(0.9, 1.6) * k
-        emit(fire, at.x + d3[0] * 2.8, at.y + 2.8 + d3[1], at.z + d3[2] * 2.8,
-          d3[0] * 4, rnd(5, 9), d3[2] * 4, rnd(0.5, 0.8), s, s, s, 0.25, 1, 0,
-          { grow: rnd(1.4, 1.9), drag: 3, delay: rnd(0.2, 0.4), fadeAt: 0.5 })
+        const s = rnd(1.0, 1.7) * k
+        const g = rnd(0.08, 0.13)
+        emit(puffs, at.x + d3[0] * 2.4, at.y + 2.6 + d3[1], at.z + d3[2] * 2.4,
+          d3[0] * 3, rnd(5, 8), d3[2] * 3, rnd(1.6, 2.4), s, s, 1, g, g * 0.95, g * 0.9,
+          { grow: rnd(1.8, 2.4), drag: 0.8, spin: 0, delay: rnd(0.25, 0.45), fadeAt: 0.25 })
       }
       // sparks: streaks flung far and falling
       const n = Math.round(26 + 14 * k)
@@ -666,7 +699,7 @@ export const createFx = (o: FxOpts): Fx => {
       for (let i = 0; i < 16; i++) {
         const d = rnd(0.15, 1.2)
         const s = rnd(1.1, 1.8) * k * (0.8 + d * 0.3)
-        const g = rnd(0.14, 0.2)
+        const g = rnd(0.2, 0.28)
         emit(puffs, at.x + rnd(-0.8, 0.8), at.y + 1 + rnd(0, 1.5), at.z + rnd(-0.8, 0.8),
           rnd(-0.4, 0.4), rnd(4, 7), rnd(-0.4, 0.4), rnd(2.4, 3.4), s, s, 1, g, g * 0.95, g * 0.9,
           { delay: d, grow: rnd(2, 2.8), drag: 0.5, spin: 0, fadeAt: 0.3 })
@@ -817,17 +850,19 @@ export const createFx = (o: FxOpts): Fx => {
       smokeMat.uniforms.uShade.value = Math.min(1.1, Math.max(0.1, (amb.r * 0.3 + amb.g * 0.59 + amb.b * 0.11) * SHADE))
       const f = lights.flash
       if (flash.t < 1.4) {
-        // for the first three frames a hard white flash wide enough to light
-        // the street, the fronts across it and everything standing near
-        // (and the look draws a third of its radius as lit air, which is
-        // the frame washing out for an instant), then the fireball's orange
-        // glow falling away over most of a second
+        // for the first three frames a whiter flash that lights the street,
+        // the fronts across it and everything standing near, then the
+        // fireball's orange glow falling away over most of a second. It is
+        // held under what whites out the frame: the look also draws a third
+        // of its radius as lit air, and at twice this a blast beside the
+        // lens washed seventy per cent of the picture, bodies and barrels
+        // with it
         const t = flash.t
         const blink = t < 0.05 ? 1 : Math.max(0, 1 - (t - 0.05) / 0.06)
         const glow = Math.exp(-t * 2.6) * (0.85 + 0.15 * Math.sin(t * 60))
-        const g = flash.power * (3.6 * blink + 3.2 * glow)
+        const g = flash.power * (0.8 * blink + 2.2 * glow)
         f.pos.set(flash.x, flash.y, flash.z)
-        f.radius = flash.r * (1 + 0.55 * blink)
+        f.radius = flash.r
         f.color.setRGB(g * 1.0, g * (0.52 + 0.4 * blink), g * (0.18 + 0.62 * blink))
       } else if (flash.burn > 0.01) {
         const g = flash.burn * (0.9 + 0.3 * Math.sin(flash.t * 31) * Math.sin(flash.t * 17))
@@ -924,7 +959,7 @@ export const createFx = (o: FxOpts): Fx => {
       P.v[i3] *= drag
       P.v[i3 + 2] *= drag
       if (P.behave === 'fall' || P.behave === 'spark') P.v[i3 + 1] -= G * h
-      else P.v[i3 + 1] = P.v[i3 + 1] * drag + (P.behave === 'fire' || P.behave === 'jet' ? 1.5 : 0.6) * h
+      else P.v[i3 + 1] = P.v[i3 + 1] * drag + (P.behave === 'fire' ? 7 : P.behave === 'jet' ? 1.5 : 0.6) * h
       P.p[i3] += P.v[i3] * h
       P.p[i3 + 1] += P.v[i3 + 1] * h
       P.p[i3 + 2] += P.v[i3 + 2] * h
@@ -978,7 +1013,7 @@ export const createFx = (o: FxOpts): Fx => {
           // lit by a fire, and only dims a little as it spreads)
           const a = t < f0 ? Math.min(1, age / 0.08) : Math.max(0, 1 - (t - f0) / (1 - f0))
           P.alpha.setX(i, P === dust ? a * 0.6 : a)
-          const dk = P === dust ? 1 - 0.2 * t : 1 - 0.55 * t
+          const dk = P === dust ? 1 - 0.2 * t : 1 - 0.4 * t
           col.setRGB(P.c[i3] * dk, P.c[i3 + 1] * dk, P.c[i3 + 2] * dk)
           P.mesh.setColorAt(i, col)
           dirtyC = true

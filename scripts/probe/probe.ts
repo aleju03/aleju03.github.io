@@ -700,8 +700,15 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     // walls the shot is showing rather than walking through them
     const boxes: Solid[] = []
     let verts = 0
-    for (let dz = -spec.rings; dz <= spec.rings; dz++)
-      for (let dx = -spec.rings; dx <= spec.rings; dx++) {
+    // By water, one ring more: a sea is flat and open to the sky, so the
+    // edge of a 3x3 is a hard line across it a hundred units off, where the
+    // game's ring (and its fog) would carry it on to the horizon
+    let rings = spec.rings
+    for (let a = 0; a < 8 && rings === spec.rings; a++) {
+      if (terrainY(x + Math.cos(a) * 90, z + Math.sin(a) * 90) < SEA_Y) rings = spec.rings + 2
+    }
+    for (let dz = -rings; dz <= rings; dz++)
+      for (let dx = -rings; dx <= rings; dx++) {
         const c = buildChunk(c0 + dx, d0 + dz, spec.tier, mats)
         c.group.traverse((o) => {
           const m = o as THREE.Mesh
