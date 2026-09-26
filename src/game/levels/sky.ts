@@ -195,10 +195,10 @@ const makeTwilightTexture = () =>
   canvasTexture([64, 128], (ctx, w, h) => {
     const g = ctx.createLinearGradient(0, 0, 0, h)
     g.addColorStop(0, 'rgba(255,150,80,0)')
-    g.addColorStop(0.35, 'rgba(255,145,72,0.16)')
-    g.addColorStop(0.583, 'rgba(255,190,120,0.62)')
-    g.addColorStop(0.78, 'rgba(255,170,96,0.3)')
-    g.addColorStop(1, 'rgba(255,170,96,0)')
+    g.addColorStop(0.35, 'rgba(255,120,60,0.12)')
+    g.addColorStop(0.583, 'rgba(255,125,60,0.5)')
+    g.addColorStop(0.78, 'rgba(255,110,60,0.2)')
+    g.addColorStop(1, 'rgba(255,110,60,0)')
     ctx.fillStyle = g
     ctx.fillRect(0, 0, w, h)
   })
@@ -473,7 +473,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
            // front of it there, and uHaze below puts it in the same air. The
            // fade is only the last degree or so, where the dome's own far side
            // would otherwise show through under the fog line
-           float horizon = smoothstep(0.0, 0.022, dir.y);
+           // faded over the lowest few degrees rather than cut: from any
+           // height the deck used to end on a ruler-straight line
+           float horizon = smoothstep(0.0, 0.09, dir.y);
            if (horizon < 0.004) {
              gl_FragColor.a = 0.0;
            } else {
@@ -492,7 +494,15 @@ export function buildSky(opts: BuildOpts): SkyHandles {
              float cov = smoothstep(cover + 0.03, cover + 0.05, f);
              float f2 = cFbm(p + normalize(uSunDir) * 0.3);
              float litK = clamp(0.5 + (f - f2) * 7.5, 0.0, 1.0);
-             litK = floor(litK * 2.999) * 0.5;
+             // a massed form: the dense core is lit, the thin fringe and the
+             // base sit in the cloud's own shade, so it reads as a volume
+             // with a lit side rather than as a stencil of one tone
+             float core = smoothstep(cover + 0.04, cover + 0.2, f);
+             float under = smoothstep(0.02, 0.2, dir.y);
+             litK = clamp(litK * 0.55 + core * 0.45, 0.0, 1.0) * mix(0.55, 1.0, under);
+             // two tones, lit and shaded: with three, a deck of any cover
+             // broke into a camouflage of patches rather than into clouds
+             litK = 0.4 + 0.6 * step(0.45, litK);
              vec3 col = mix(uCloudShade, uCloudLit, litK);
              // the silver lining: the edge of a cloud in front of the sun,
              // as one flat step rather than a gradient
@@ -505,7 +515,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
                vec3 q = vec3(dir.x, dir.y * 0.22, dir.z) * 5.6
                         + vec3(uCloudTime * 0.032, 0.0, uCloudTime * 0.021);
                float wisp = cNoise(q) * 0.66 + cNoise(q * 2.4) * 0.34;
-               float aw = smoothstep(0.5, 0.78, wisp) * 0.5 * (1.0 - cov);
+               // hard-edged and sparse: a soft half-alpha veil over the blue
+               // posterized into a camouflage of pale patches across the deck
+               float aw = smoothstep(0.7, 0.72, wisp) * 0.8 * (1.0 - cov);
                a = cov + aw;
                col = mix(mix(uCloudShade, uCloudLit, 0.9), col, cov / max(a, 0.001));
              #endif
@@ -668,10 +680,14 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   // a clear blue air rather than a pale grey one: it is what distance is
   // painted in by day, and a grey here made every horizon overcast
   const FOG_DAY = new THREE.Color('#8ab8e8')
-  // a clear amber, applied hard: a half-strength brown over the blue-grey
-  // day air mixed to a mauve, and a dusk seen from any height was one pink
-  // smog plane
-  const FOG_DUSK = new THREE.Color('#dc9a62')
+  // The dusk air is cool. It was mauve (a half-strength brown over the day's
+  // blue-grey), then amber, and both times everything past twenty-five
+  // metres, sky, towers, crowns and fog alike, became one warm plane the
+  // shapes dissolved into. A low sun's warmth belongs to the light itself
+  // (the sun's colour, the disc, the horizon band, the lamps); the air and
+  // the shadows it fills stay grey-blue, which is what keeps the masses
+  // separate and the frame from reading as sepia
+  const FOG_DUSK = new THREE.Color('#7c8799')
   const HEMI_SKY_NIGHT = new THREE.Color('#66748f')
   const HEMI_SKY_DAY = new THREE.Color('#cfe2f2')
   const HEMI_GROUND_NIGHT = new THREE.Color('#2a231a')
@@ -685,7 +701,7 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   // a cumulus's shadow side is a light blue-grey, not a storm: with the
   // darker shade the whole deck read as grey paper by the time it was graded
   const CLOUD_SHADE_DAY = new THREE.Color('#c4d5ea')
-  const CLOUD_SHADE_DUSK = new THREE.Color('#d0877a')
+  const CLOUD_SHADE_DUSK = new THREE.Color('#6d7488')
   const CLOUD_SHADE_NIGHT = new THREE.Color('#1a2233')
 
   const birth = performance.now()
@@ -776,7 +792,7 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     starTwinkle.value = (now - birth) / 1000
     // stars wait for the twilight to go: drawn over the orange band they
     // read as a seam between two skies, not as a sky getting darker
-    starFade.value = night * night * Math.pow(1 - twilight, 4)
+    starFade.value = night * night * Math.pow(1 - smooth01(twilight / 0.45), 2)
 
     // sun and moon ride inside the camera-parked dome now, so their positions
     // are offsets, not world coordinates; lookAt still wants world space
@@ -826,8 +842,10 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     // lightly: tinting the whole dome amber took the blue out of the zenith,
     // and a dusk sky is blue overhead and orange only at the skyline, which
     // is the twilight band's job
-    dayMat.color.setRGB(1, 1, 1).lerp(DOME_DUSK, twilight * 0.4)
-    twilightMat.opacity = twilight * 0.8
+    dayMat.color.setRGB(1, 1, 1).lerp(DOME_DUSK, twilight * 0.15)
+    // a deep orange at part strength: added over the pale horizon air at
+    // full strength it summed to an overexposed white stripe
+    twilightMat.opacity = twilight * 0.55
     hazeMat.opacity = night
 
     // clouds: white cotton at noon, embers at the horizon crossings, a faint
