@@ -50,7 +50,7 @@ import * as THREE from 'three'
 /* ---------------------------------------------------------- dimensions -- */
 
 export const THIGH = 0.52
-export const SHIN = 0.5
+export const SHIN = 0.6
 /** the hip joints' height over the soles */
 export const HIP_Y = THIGH + SHIN // 1.02
 export const HIP_X = 0.2
@@ -62,8 +62,12 @@ export const SHOULDER_X = 0.42
 export const SHOULDER_OFF = 0.5
 /** torso bone up to the head bone, which is the chin pivot, not the middle */
 export const NECK_OFF = 0.74
-export const UARM = 0.32
-export const FARM = 0.3
+// long enough to leave the body's outline: a flung arm or a splayed leg that
+// stays inside the silhouette of the trunk turns a ragdoll into a sack with
+// a hat on it. Forearms and shins carry most of the length, so the body keeps
+// its chunky trunk and the limbs read as rubber hose rather than as stubs
+export const UARM = 0.4
+export const FARM = 0.4
 /** the head bone up to the middle of the skull, and the skull's radii */
 const HEAD_CY = 0.44
 const HEAD_CZ = 0.02
@@ -465,8 +469,8 @@ const roundBox = (
     and narrowing into the shoulders, so the arms hang off a slope rather than
     a ledge. Radius and height at t in [0, 1] */
 /** the bottom of the body (the seat of the suit) and its top, at rest */
-export const BODY_Y0 = 0.84
-const BODY_Y1 = 2.06
+export const BODY_Y0 = HIP_Y - 0.18
+const BODY_Y1 = HIP_Y + 1.04
 const BODY_ZS = 0.8
 const bodyR = (t: number) => {
   const round = Math.pow(Math.max(0, Math.sin(Math.PI * t)), 0.58)

@@ -1152,7 +1152,9 @@ export interface CarOpts {
     keeps the beanie under the roof skin and the seat of the pants above the
     floor at that height */
 const SEAT_EYE_Y = 2.12
-const SEAT_FIT = 0.68
+/** forward of the robot's 0.62, which put a round head behind the B-pillar */
+const SEAT_Z = 0.2
+const SEAT_FIT = 0.66
 
 export function buildCar(opts: CarOpts): Vehicle {
   const { mats } = opts
@@ -1739,14 +1741,14 @@ export function buildCar(opts: CarOpts): Vehicle {
      (playerBody's CABIN_FIT) until it clears both the floor and the roof. */
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(DX, SEAT_EYE_Y, 0.62)
+  driverSeat.position.set(DX, SEAT_EYE_Y, SEAT_Z)
   driverSeat.userData.fit = SEAT_FIT
   body.add(driverSeat)
   // the other side of the same bench: this is left-hand drive, so the mirror
   // of the driver's centreline is the passenger's
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(-DX, SEAT_EYE_Y, 0.62)
+  passengerSeat.position.set(-DX, SEAT_EYE_Y, SEAT_Z)
   passengerSeat.userData.fit = SEAT_FIT
   body.add(passengerSeat)
   root.add(body)
@@ -2419,8 +2421,8 @@ export function buildCar(opts: CarOpts): Vehicle {
       stretch: 3.5,
       fov: 62,
       anchor: new THREE.Vector3(0, 1.7, 0.2),
-      eye: new THREE.Vector3(-0.78, SEAT_EYE_Y, 0.35),
-      eye2: new THREE.Vector3(0.78, SEAT_EYE_Y, 0.35),
+      eye: new THREE.Vector3(-0.78, SEAT_EYE_Y, SEAT_Z - 0.2),
+      eye2: new THREE.Vector3(0.78, SEAT_EYE_Y, SEAT_Z - 0.2),
     },
     size: SIZE,
     hull: HULL,

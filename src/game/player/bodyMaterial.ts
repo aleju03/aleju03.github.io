@@ -50,6 +50,7 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
     uPal: { value: pal },
     uGlowK: { value: 1.6 },
     uHideHead: { value: 0 },
+    uFaceLift: { value: 1 },
   }
   const material = new THREE.MeshStandardMaterial({ roughness: 0.78, metalness: 0 })
   material.name = 'playerBody'
@@ -57,6 +58,7 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
     shader.uniforms.uPal = uniforms.uPal
     shader.uniforms.uGlowK = uniforms.uGlowK
     shader.uniforms.uHideHead = uniforms.uHideHead
+    shader.uniforms.uFaceLift = uniforms.uFaceLift
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -78,6 +80,7 @@ vRole = aRole - 16.0 * vHead;`,
 uniform vec3 uPal[9];
 uniform float uGlowK;
 uniform float uHideHead;
+uniform float uFaceLift;
 varying float vRole;
 varying float vHead;`,
       )
@@ -93,12 +96,19 @@ diffuseColor.rgb = uPal[role];`,
         `#include <emissivemap_fragment>
 float lit = (role == 4 ? 1.0 : 0.0) + (role == 7 ? 0.35 : 0.0);
 totalEmissiveRadiance += uPal[role] * lit * uGlowK;
+// a soft rim on the whole body, and a floor of light under the face: at dusk
+// the scene's light falls away and a face with nothing of its own goes to a
+// black disc under the hat, which is the one part of this body that has to
+// read. uFaceLift scales both; it is a uniform, so tuning it relinks nothing
+float rim = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.5);
+float face = (role == 0 || role == 6) ? 1.0 : 0.0;
+totalEmissiveRadiance += uPal[role] * uFaceLift * (face * (0.07 + 0.22 * rim) + 0.1 * rim);
 // the face's ink and the eyes' glints are glossier than cloth: a sharper
 // highlight is what makes an eye read as wet rather than painted on
 roughnessFactor = (role == 5 || role == 7) ? 0.32 : roughnessFactor;`,
       )
   }
-  material.customProgramCacheKey = () => 'playerBody-v1'
+  material.customProgramCacheKey = () => 'playerBody-v2'
 
   return {
     material,

@@ -72,7 +72,8 @@ import { makeBodyMaterial } from './bodyMaterial'
   flail after it. Three things keep it from landing as one lump, which it
   did: the limbs are flung outward from the trunk the instant it goes limp
   (`fling`), mittens and boots windmill through the first second of a flight
-  (`flail`), and once on the ground a weak pull in the ground plane spreads
+  (`flail`) while being pulled out wide and down as if to catch the ground,
+  and once on the ground a weak pull in the ground plane spreads
   them into a spread-eagle and levels the shoulders so the heap rolls onto
   its back or front (`sprawl`), with generous one-sided separations keeping
   arms a belly's width off the body throughout. The get-up is physical too, which is the part the robot
@@ -496,12 +497,20 @@ export function buildPlayerBody(
         { a: P_HANDL, b: P_HANDR, min: 0.8, stiff: 0.3 },
         { a: P_ELL, b: P_BELLY, min: 0.78, stiff: 0.4 },
         { a: P_ELR, b: P_BELLY, min: 0.78, stiff: 0.4 },
-        { a: P_HANDL, b: P_BELLY, min: 1.0, stiff: 0.35 },
-        { a: P_HANDR, b: P_BELLY, min: 1.0, stiff: 0.35 },
+        { a: P_HANDL, b: P_BELLY, min: 1.15, stiff: 0.35 },
+        { a: P_HANDR, b: P_BELLY, min: 1.15, stiff: 0.35 },
         { a: P_HANDL, b: P_PELV, min: 0.75, stiff: 0.35 },
         { a: P_HANDR, b: P_PELV, min: 0.75, stiff: 0.35 },
         { a: P_HANDL, b: P_HEAD, min: 0.72, stiff: 0.35 },
         { a: P_HANDR, b: P_HEAD, min: 0.72, stiff: 0.35 },
+        // and never tucked under the chest or behind the pack: a mitten
+        // folded under a body lying on its front is a limb nobody can see
+        { a: P_HANDL, b: P_CHEST, min: 0.95, stiff: 0.35 },
+        { a: P_HANDR, b: P_CHEST, min: 0.95, stiff: 0.35 },
+        { a: P_HANDL, b: P_PACK, min: 0.8, stiff: 0.3 },
+        { a: P_HANDR, b: P_PACK, min: 0.8, stiff: 0.3 },
+        { a: P_FOOTL, b: P_BELLY, min: 0.9, stiff: 0.3 },
+        { a: P_FOOTR, b: P_BELLY, min: 0.9, stiff: 0.3 },
         { a: P_KNEEL, b: P_BELLY, min: 0.62, stiff: 0.35 },
         { a: P_KNEER, b: P_BELLY, min: 0.62, stiff: 0.35 },
         { a: P_HEAD, b: P_KNEEL, min: 0.75, stiff: 0.35 },
@@ -1016,14 +1025,14 @@ export function buildPlayerBody(
     // asked for), so the push-off is drawn in the first frames of the air:
     // the hips start low, squashed, and spring out through a stretch
     if (takeoff) {
-      springP = -0.3
-      springV = 3.2
+      springP = -0.36
+      springV = 4.2
     }
-    if (pose.landing > 0) springV -= Math.min(pose.landing, 22) * 0.1
+    if (pose.landing > 0) springV -= Math.min(pose.landing, 22) * 0.14
     // soft and bouncy: a landing squashes, overshoots into a stretch and
     // wobbles back, rather than dipping once and stopping
     springV += (-75 * springP - 7 * springV) * dt
-    springP = Math.max(-0.58, springP + springV * dt)
+    springP = Math.max(-0.7, springP + springV * dt)
 
     airK += ((pose.grounded ? 0 : 1) - airK) * ease(pose.grounded ? 14 : 9)
     fallK += ((pose.vy < 0 ? 1 : 0) - fallK) * ease(7)
@@ -1099,9 +1108,9 @@ export function buildPlayerBody(
     )
     // squash on a landing, stretch on the way up, breathe standing still
     const squash = THREE.MathUtils.clamp(
-      1 + springP * 2.0 + airK * (1 - fallK) * 0.1 + breathe * 0.014 + stretchK * 0.07 +
+      1 + springP * 2.6 + airK * (1 - fallK) * 0.14 + breathe * 0.014 + stretchK * 0.07 +
         Math.abs(stepS) * 0.03 * gait,
-      0.7, 1.15,
+      0.55, 1.2,
     )
     const bulge = 1 / Math.sqrt(squash)
     torso.scale.set(bulge, squash, bulge)
@@ -1211,10 +1220,13 @@ export function buildPlayerBody(
     // behind, and on the way down both reach apart for the ground. Which one
     // leads alternates with the stride, so a run of hops does not repeat
     const lead = Math.floor(stepT) % 2 === 0 ? 1 : -1
-    const leadThigh = -1.3 + fallK * 0.9
-    const leadShin = 1.55 - fallK * 1.1
-    const trailThigh = 0.4 - fallK * 0.2
-    const trailShin = 1.15 - fallK * 0.55
+    // rising, the legs are still extended from the shove, trailing long
+    // under the body; the knee only comes up at the top, and falling both
+    // reach apart for the ground
+    const leadThigh = -0.55 - fallK * 0.45
+    const leadShin = 0.35 + fallK * 0.75
+    const trailThigh = 0.55 - fallK * 0.3
+    const trailShin = 0.25 + fallK * 0.65
     const airSplay = 0.1 + fallK * 0.22
     qInv.copy(pelvis.quaternion).invert()
     const solveLeg = (
@@ -1284,7 +1296,7 @@ export function buildPlayerBody(
     // one, so a swing fed through them arrived at a seventh of its size and
     // the arms hung at the hips. The springs ride on top of it, for the lag,
     // the flop and everything the body's accelerations do to them
-    const swingAmt = stepS * (0.9 + 0.45 * runK) * gait
+    const swingAmt = stepS * (1.15 + 0.25 * runK) * gait
     const swingF = swingAmt * mCos
     const swingS = swingAmt * mSin * 0.7
     // a loose bend at rest: an arm hanging dead straight reads as a mannequin
@@ -1296,7 +1308,7 @@ export function buildPlayerBody(
     // rising the arms go up with the jump; falling they stay up and out
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them
-    const airX = airK * (0.6 + fallK * 1.4)
+    const airX = airK * (1.5 + fallK * 0.6)
     const swayLX = (Math.sin(idleT * 1.7) * 0.07 + Math.sin(idleT * 0.83 + 1.3) * 0.05) * idleK - 0.12
     const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.07 + Math.sin(idleT * 0.94 + 2.1) * 0.05) * idleK - 0.12
     const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.06 * idleK
@@ -1308,10 +1320,10 @@ export function buildPlayerBody(
     const rock = -stepS * moveK * 0.9
     if (takeoff) {
       // arms thrown up and out with the jump
-      sprS[1] -= 9
-      sprS[7] -= 9
-      sprS[3] += 4
-      sprS[9] += 4
+      sprS[1] -= 16
+      sprS[7] -= 16
+      sprS[3] += 6
+      sprS[9] += 6
     }
     if (pose.landing > 0) {
       const jolt = Math.min(pose.landing, 18) * 0.14
@@ -1337,8 +1349,8 @@ export function buildPlayerBody(
     const wag = waveK * Math.sin(fidgetT * 11) * 0.55
     const look = lookK * 0.9 // both hands up in front, looked at
     // forearms pump with the upper arms when running, lag them walking
-    const pumpL = -Math.max(0, -swingF) * (0.35 + 0.5 * runK)
-    const pumpR = -Math.max(0, swingF * 0.93) * (0.35 + 0.5 * runK)
+    const pumpL = -Math.max(0, -swingF) * (0.6 + 0.3 * runK)
+    const pumpR = -Math.max(0, swingF * 0.93) * (0.6 + 0.3 * runK)
     const clampX = (v: number) => THREE.MathUtils.clamp(v, SH_X_LO, SH_X_HI)
     const shLX = clampX(
       spring(0, swingF * 0.5 - airX + swayLX - push - upL - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) +
@@ -1352,7 +1364,7 @@ export function buildPlayerBody(
       4, -(elbowBase + airK * 0.4 + riseFold * 0.4 + look * 1.3) * (1 - stretchK * 0.8) + pumpL,
       // the forearm lags its upper arm: swing the shoulder forward and the
       // elbow is thrown open, then folds after it, which is the follow-through
-      KE, CE, -sprS[1] * 3.5, dt, EL_LO, EL_HI,
+      KE, CE, -sprS[1] * 6, dt, EL_LO, EL_HI,
     )
     const shRX = clampX(
       spring(6, -swingF * 0.47 - airX + swayRX - push - upR - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) -
@@ -1366,7 +1378,7 @@ export function buildPlayerBody(
       10,
       -(elbowBase + 0.03 + airK * 0.4 + riseFold * 0.4 + look * 1.3) *
         (1 - stretchK * 0.8) - waveK * 0.9 + wag + pumpR,
-      KE, CE, -sprS[7] * 3.5, dt, EL_LO, EL_HI,
+      KE, CE, -sprS[7] * 6, dt, EL_LO, EL_HI,
     )
     // shoulder z: positive spreads each arm outward, whichever side it is on
     uarmL.rotation.set(shLX, 0, shLZ)
@@ -1434,8 +1446,8 @@ export function buildPlayerBody(
       hips, all of it a little upward. What turns "a body fell over" into
       "a body was *thrown*": the trunk takes the blow, the limbs trail it */
   const FLING: Array<[number, number, number]> = [
-    [P_HANDL, P_CHEST, 7], [P_HANDR, P_CHEST, 7], [P_ELL, P_CHEST, 4], [P_ELR, P_CHEST, 4],
-    [P_FOOTL, P_PELV, 4.5], [P_FOOTR, P_PELV, 4.5], [P_KNEEL, P_PELV, 2.5], [P_KNEER, P_PELV, 2.5],
+    [P_HANDL, P_CHEST, 11], [P_HANDR, P_CHEST, 11], [P_ELL, P_CHEST, 6], [P_ELR, P_CHEST, 6],
+    [P_FOOTL, P_PELV, 6], [P_FOOTR, P_PELV, 6], [P_KNEEL, P_PELV, 3.5], [P_KNEER, P_PELV, 3.5],
   ]
   const fling = () => {
     const up = yA.subVectors(rag.pts[P_CHEST], rag.pts[P_PELV]).normalize()
@@ -1453,8 +1465,30 @@ export function buildPlayerBody(
       and only while they are clear of the ground */
   const FLAIL = [P_HANDL, P_HANDR, P_FOOTL, P_FOOTR, P_ELL, P_ELR]
   const flail = (dt: number, env: RagdollEnv) => {
-    if (downTime > 1.3 || grabs > 0) return
-    const amp = 70 * S * (1 - downTime / 1.3) * dt
+    if (downTime > 1.6 || grabs > 0) return
+    // the reach: while the chest is still off the ground, both mittens are
+    // pulled out to either side of it and down toward the ground, arms wide,
+    // the way anything with arms tries to catch itself. It is a velocity
+    // nudge, so the tumble still wins, but it is why a falling body is an X
+    // rather than a sack
+    const chest = rag.pts[P_CHEST]
+    const floorC = env.groundAt ? env.groundAt(chest.x, chest.z) : env.groundY
+    if (chest.y > floorC + 1.3 * S) {
+      const spine = vTmp.subVectors(rag.pts[P_CHEST], rag.pts[P_PELV]).normalize()
+      const lat = vTmp2.subVectors(rag.pts[P_SHL], rag.pts[P_SHR])
+      lat.addScaledVector(spine, -lat.dot(spine))
+      if (lat.lengthSq() > 1e-6) {
+        lat.normalize()
+        // a spring acceleration toward each target, per second squared
+        const reachK = 45 * (1 - downTime / 1.6) * dt
+        for (const [i, side] of [[P_HANDL, 1], [P_HANDR, -1]] as const) {
+          dirTmp.copy(chest).addScaledVector(lat, side * 1.5 * S).addScaledVector(spine, 0.2 * S)
+          dirTmp.y -= 0.6 * S
+          rag.kick(i, dirTmp.sub(rag.pts[i]).multiplyScalar(reachK))
+        }
+      }
+    }
+    const amp = 110 * S * (1 - downTime / 1.6) * dt
     for (let k = 0; k < FLAIL.length; k++) {
       const i = FLAIL[k]
       const p = rag.pts[i]
@@ -1481,10 +1515,10 @@ export function buildPlayerBody(
   const sprawlK = new Float32Array(P_COUNT)
   const SPRAWL: Array<[number, number, number, number]> = [
     // particle, from (chest 1 / pelvis 0), sideways, along the spine
-    [P_HANDL, 1, 1.2, 0.35], [P_HANDR, 1, -1.2, 0.35],
-    [P_ELL, 1, 0.75, 0.15], [P_ELR, 1, -0.75, 0.15],
-    [P_FOOTL, 0, 0.5, -1.0], [P_FOOTR, 0, -0.5, -1.0],
-    [P_KNEEL, 0, 0.35, -0.55], [P_KNEER, 0, -0.35, -0.55],
+    [P_HANDL, 1, 1.6, 0.45], [P_HANDR, 1, -1.6, 0.45],
+    [P_ELL, 1, 0.95, 0.2], [P_ELR, 1, -0.95, 0.2],
+    [P_FOOTL, 0, 0.75, -1.2], [P_FOOTR, 0, -0.75, -1.2],
+    [P_KNEEL, 0, 0.5, -0.65], [P_KNEER, 0, -0.5, -0.65],
   ]
   const sprawl = () => {
     const spine = dirTmp.subVectors(rag.pts[P_CHEST], rag.pts[P_PELV])
@@ -1499,7 +1533,7 @@ export function buildPlayerBody(
     const lat = vTmp2.set(spine.z, 0, -spine.x)
     // left is whichever way the left shoulder already is
     if (lat.dot(vTmp.subVectors(rag.pts[P_SHL], rag.pts[P_SHR])) < 0) lat.negate()
-    const k = 0.014 * Math.min(1, (downTime - 0.45) * 2)
+    const k = 0.028 * Math.min(1, (downTime - 0.45) * 2)
     for (const [i, from, side, along] of SPRAWL) {
       const base = rag.pts[from === 1 ? P_CHEST : P_PELV]
       sprawlTo[i]
