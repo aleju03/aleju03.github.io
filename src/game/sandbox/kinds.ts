@@ -17,8 +17,8 @@ import { createMeshBuilder } from '../core/geometry'
   barrel a 200-litre drum lying about empty, the heavy block a jersey-barrier
   slab of concrete that a player cannot shove. Mass is kilograms. `density` is
   relative to water and is the whole of the buoyancy model: under 1 floats,
-  and how far under 1 says how high (a crate at 0.4 rides with 40% of itself
-  under), over 1 sinks, slowed by drag.
+  and how far under 1 says how high (a crate at 0.5 rides with half of
+  itself under), over 1 sinks, slowed by drag.
 
   Shapes are Rapier's primitives, chosen for how they roll rather than for
   how they look: the barrel is a true cylinder so it rolls straight and
@@ -63,6 +63,12 @@ export interface PropKind {
   density: number
   linearDamping?: number
   angularDamping?: number
+  /** a share of the mass carried as a point load at a local position (a
+      crate's contents resting on its floor). It lowers the centre of mass
+      without changing the shape, which is what lets a crate float level at
+      half its depth: a uniform cube at that density is only stable resting
+      on an edge, and floats like a diamond */
+  ballast?: { share: number; at: [number, number, number] }
   /** draw it once, centred on the body's origin; each prop gets a clone that
       shares the geometry and material. Omitted, the prop has no mesh (which
       is what a headless run and a debris piece with its own mesh both want) */
@@ -250,7 +256,11 @@ export const KINDS: Record<string, PropKind> = {
     // glued slab and landed as a raft, rather than coming apart as it fell
     friction: 0.42,
     restitution: 0.22,
-    density: 0.4,
+    // wood crates ride about half under, and level: the load on the floor
+    // puts the centre of mass a seventh of the side low, past the twelfth of
+    // the side a cube at this draft needs to float flat rather than on an edge
+    density: 0.5,
+    ballast: { share: 0.35, at: [0, -CRATE * 0.85, 0] },
     mesh: crateMesh(CRATE),
   },
   barrel: {

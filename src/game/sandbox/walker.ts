@@ -31,12 +31,15 @@ import type { Props, Prop } from './props'
     contact normal. Each contact is also *recorded*, because a push is two
     things: the walker stops, and the prop is shoved.
   - **The shove** is applied once a frame from those records: an impulse
-    that would bring the prop's speed along the contact up to the walk's
-    (a little more for something light, so a ball is kicked ahead of your
-    feet rather than dribbled), capped at PUSH_FORCE. Against friction that
-    cap is what makes mass matter: a 35 kg crate slides at a walk, a 900 kg
-    block does not move, and the walker, having been stopped by the push-out,
-    advances exactly as fast as the prop gives way.
+    toward a speed that falls with the prop's mass (`shoveSpeed`: a ball is
+    kicked ahead of your feet at more than a walk, a plank goes at a walk, a
+    crate at about a third of one), capped at PUSH_FORCE. The first version
+    aimed every prop at the walk's own speed and a 35 kg crate went ten units
+    in two and a half seconds, which reads as cardboard; a Source player
+    leaning on a crate nudges it. Against friction the cap is the rest of
+    what makes mass matter: a 900 kg block does not move at all. The walker,
+    stopped by the push-out, advances exactly as fast as the prop gives way,
+    so leaning on something heavy slows you to its pace.
   - **Weight and riding.** Standing on a prop presses it down with the
     walker's weight at the foot (a plank seesaws, a floating crate settles
     lower), and when it moves the walker is carried by the displacement of
@@ -63,7 +66,12 @@ const MANTLE = 0.3
 /** a face steeper than this is not a floor */
 const FLOOR_NY = 0.45
 /** the most force a walker can put into a prop, kg*u/s² */
-export const PUSH_FORCE = 2600
+export const PUSH_FORCE = 1500
+/** the speed a shove works a prop up to, as a share of the walk's: a
+    prop of SHOVE_KG goes at a walk, lighter ones faster (up to a kick),
+    heavier ones slower in proportion */
+const SHOVE_KG = 12
+export const shoveSpeed = (mass: number) => Math.min(1.3, Math.max(0.12, SHOVE_KG / mass))
 /** what a walker weighs, kg */
 export const WALKER_MASS = 80
 
@@ -266,8 +274,7 @@ export const createWalker = (pw: PhysicsWorld, props: Props): Walker => {
         if (vIn < 0.1) continue
         const v = p.prop.body.linvel()
         const vp = v.x * p.dx + v.z * p.dz
-        const light = Math.min(1, Math.max(0, 1 - p.prop.mass / 40))
-        const want = vIn * (1 + 0.45 * light)
+        const want = vIn * shoveSpeed(p.prop.mass)
         const j = Math.min(cap, p.prop.mass * (want - vp))
         if (j <= 0) continue
         // at the height of the prop's own centre where the body can reach it,

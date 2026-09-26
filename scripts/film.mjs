@@ -33,7 +33,10 @@ const flag = (name, fallback) => {
   return i === -1 ? fallback : argv[i + 1]
 }
 const has = (name) => argv.includes(`--${name}`)
-const VALUED = new Set(['frames', 'tile', 'cols', 'fps', 'size', 'tod', 'duration', 'rings', 'out'])
+const VALUED = new Set([
+  'frames', 'tile', 'cols', 'fps', 'size', 'tod', 'duration', 'rings', 'out',
+  'start', 'from', 'to', 'yaw', 'dist', 'height', 'fov',
+])
 const targets = argv.filter((a, i) => !a.startsWith('--') && !(argv[i - 1]?.startsWith('--') && VALUED.has(argv[i - 1].slice(2))))
 
 if (argv.includes('--help') || argv.includes('-h') || (!targets.length && !has('list'))) {
@@ -54,6 +57,16 @@ options
   --size <WxH>     video size                     (default 960x600)
   --tod <0..1>     time of day                    (default the scenario's)
   --duration <s>   override the scenario's length
+  --start <s>      first still's time (e.g. --start 5 --duration 7 --frames 11
+                   is 0.2 s apart from 5 to 7)
+
+camera (every run prints the shot it used, so start from that)
+  --from x,y,z     put the lens here...
+  --to x,y,z       ...looking at this
+  --yaw <rad>      or orbit the scenario's target: bearing (0 = +x)
+  --dist <n>       distance from the target
+  --height <n>     height over the target
+  --fov <deg>      lens
   --rings <n>      chunk rings built around the site (default 2)
   --out <dir>      default shots/film
   --keep           leave chrome and vite running
@@ -104,6 +117,13 @@ for (const id of ids) {
     raw: argv.includes('--raw'),
     ...(flag('tod', null) !== null ? { tod: Number(flag('tod')) } : {}),
     ...(flag('duration', null) !== null ? { duration: Number(flag('duration')) } : {}),
+    ...(flag('start', null) !== null ? { start: Number(flag('start')) } : {}),
+    ...(flag('from', null) !== null ? { from: String(flag('from')).split(',').map(Number) } : {}),
+    ...(flag('to', null) !== null ? { to: String(flag('to')).split(',').map(Number) } : {}),
+    ...(flag('yaw', null) !== null ? { yaw: Number(flag('yaw')) } : {}),
+    ...(flag('dist', null) !== null ? { dist: Number(flag('dist')) } : {}),
+    ...(flag('height', null) !== null ? { height: Number(flag('height')) } : {}),
+    ...(flag('fov', null) !== null ? { fov: Number(flag('fov')) } : {}),
   }
   const t0 = Date.now()
   let res
@@ -122,6 +142,7 @@ for (const id of ids) {
   console.log(`${id.padEnd(16)} at ${res.x},${res.z}  ${res.report}`)
   console.log(`${''.padEnd(16)} ${res.msPerFrame.toFixed(2)} ms/frame of sandbox tick (median)  ` +
     `${sheetPath}  (${Date.now() - t0} ms)`)
+  console.log(`${''.padEnd(16)} shot: --from ${res.from.join(',')} --to ${res.to.join(',')} --fov ${res.fov}`)
 
   if (video) {
     const v = await probe.evaluate(
