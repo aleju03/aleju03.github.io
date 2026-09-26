@@ -120,7 +120,8 @@ for (const id of ids) {
   const sheetPath = join(outDir, `${name}.png`)
   writeFileSync(sheetPath, png)
   console.log(`${id.padEnd(16)} at ${res.x},${res.z}  ${res.report}`)
-  console.log(`${''.padEnd(16)} ${res.msPerFrame.toFixed(2)} ms/frame of sandbox tick (median)  ` +
+  console.log(`${''.padEnd(16)} ${res.msPerFrame.toFixed(2)} ms/frame of sandbox tick (median), ` +
+    `${res.links} programs linked after warm-up  ` +
     `${sheetPath}  (${Date.now() - t0} ms)`)
 
   if (video) {
@@ -152,7 +153,8 @@ for (const id of ids) {
       else failed = true
     }
     rmSync(dir, { recursive: true, force: true })
-    console.log(`${''.padEnd(16)} ${v.frames} frames at ${fps} fps -> ${outs.join(', ')}`)
+    const vl = await probe.evaluate('window.__film.videoLinks()')
+    console.log(`${''.padEnd(16)} ${v.frames} frames at ${fps} fps, ${vl} programs linked after warm-up -> ${outs.join(', ')}`)
   }
 }
 

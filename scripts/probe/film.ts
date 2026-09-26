@@ -37,7 +37,7 @@ import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook
 
 /** modules that register scenarios when imported; one line per new file */
 const SCENARIO_MODULES: Array<() => Promise<unknown>> = [
-  // e.g. () => import('../../src/game/sandbox/physgunScenarios'),
+  () => import('../../src/game/sandbox/tools/scenarios'),
 ]
 
 export interface FilmSpec {
@@ -63,10 +63,17 @@ export interface FilmResult {
   report: string
   /** milliseconds of sandbox tick per simulated frame, median */
   msPerFrame: number
+  /** programs linked after the scene's warm-up: a tool whose first use
+      links a shader shows up here, and it should be zero */
+  links: number
   frames: number
 }
 
 let renderer: THREE.WebGLRenderer | null = null
+/** programs linked since the last build's warm-up */
+let links = 0
+/** the look's internal lines, for anything sized in pixels */
+let lookLines = 540
 /** the game's own post pass, so a film is judged through the real look */
 let look: PixelLook | null = null
 let lookRaw = false
@@ -79,6 +86,10 @@ interface Stage {
   chunks: Chunk[]
   ticks: number[]
   duration: number
+  /** the scenario's render side, if it has one */
+  pres: ReturnType<NonNullable<Scenario['present']>> | null
+  /** last drawn time, for the render side's dt */
+  drawnAt: number
 }
 let stage: Stage | null = null
 
@@ -142,13 +153,23 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   const cam = new THREE.PerspectiveCamera(shot.fov ?? 50, w / h, 0.2, 900)
   cam.position.set(...shot.from)
   cam.lookAt(new THREE.Vector3(...shot.to))
-  stage = { s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration }
+  const pres = s.present ? s.present(c, scene, cam) : null
+  stage = {
+    s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration, pres, drawnAt: 0,
+  }
   // link every program before the first still: an uncompiled material's
   // first draw can land a frame late, which films as props that are not
   // there yet (the game pays the same cost under its boot cover)
   if (renderer) await renderer.compileAsync(scene, cam)
   // the first frame: the ground and solids under the site are built here
   sb.tick({ dt: 0, active: true, focus: { x: c.x, y: c.y, z: c.z } })
+  // ...and a render side's staged warm-up is drawn once and put away, the
+  // way CrtScene's boot cover does it; links are counted from here on
+  if (pres && renderer) {
+    draw(renderer, stage)
+    pres.warmed?.()
+  }
+  links = 0
   return stage
 }
 
@@ -161,6 +182,14 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
   renderer?.dispose()
   lookRaw = raw
   renderer = new THREE.WebGLRenderer({ canvas, antialias: raw })
+  lookLines = lines || h
+  // count every link, so a first use that compiles something is visible
+  const gl = renderer.getContext()
+  const link = gl.linkProgram.bind(gl)
+  gl.linkProgram = (p: WebGLProgram) => {
+    links++
+    link(p)
+  }
   renderer.setPixelRatio(1)
   renderer.setSize(w, h, false)
   if (raw) {
@@ -180,6 +209,23 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
 const draw = (r: THREE.WebGLRenderer, st: Stage) => {
   if (look && !lookRaw) look.render(st.scene, st.cam)
   else r.render(st.scene, st.cam)
+}
+
+/** the moving camera and the render side, for a frame drawn at time t */
+const prep = (st: Stage, t: number) => {
+  const dt = Math.max(0, t - st.drawnAt)
+  st.drawnAt = t
+  if (st.s.lens) {
+    const shot = st.s.lens(st.c, t)
+    st.cam.position.set(...shot.from)
+    st.cam.lookAt(shot.to[0], shot.to[1], shot.to[2])
+    if (shot.fov && shot.fov !== st.cam.fov) {
+      st.cam.fov = shot.fov
+      st.cam.updateProjectionMatrix()
+    }
+    st.cam.updateMatrixWorld()
+  }
+  st.pres?.frame(t, dt, lookLines)
 }
 
 const advance = (st: Stage, to: number) => {
@@ -221,6 +267,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     const row = Math.floor(i / cols)
     r.setViewport(col * tw, (rows - row - 1) * th, tw, th)
     r.setScissor(col * tw, (rows - row - 1) * th, tw, th)
+    prep(st, t)
     draw(r, st)
     label(col * tw + 8, row * th + th - 30, `t = ${t.toFixed(2)} s`)
     if (i === 0) label(col * tw + 8, row * th + 8, `${st.s.id}: ${st.s.title}`, true)
@@ -233,6 +280,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     report: st.s.report ? st.s.report(st.c) : '',
     msPerFrame: median(st.ticks),
     frames: spec.frames,
+    links,
   }
 }
 
@@ -258,6 +306,7 @@ export const videoFrame = () => {
   const size = renderer.getSize(new THREE.Vector2())
   renderer.setViewport(0, 0, size.x, size.y)
   renderer.setScissor(0, 0, size.x, size.y)
+  prep(st, t)
   draw(renderer, st)
   labels.innerHTML = ''
   label(8, size.y - 30, `${st.s.id}  t = ${t.toFixed(2)} s`)
@@ -267,3 +316,6 @@ export const videoFrame = () => {
 
 export const videoReport = () =>
   stage ? (stage.s.report ? stage.s.report(stage.c) : '') : ''
+
+/** programs linked since the warm-up of the current film */
+export const videoLinks = () => links
