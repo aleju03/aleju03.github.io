@@ -870,12 +870,18 @@ The React side is `components/os/SandboxConsole.tsx` (a thermal receipt
 printer: t, enter or / opens it, /command runs, plain text chats online and
 works offline), `components/os/SpawnMenu.tsx` (a mail-order catalogue held
 up with q; its find line pins it open) and `components/os/Crosshair.tsx`
-(a pixel crosshair tinted by what it is on; the physgun reads the same
-`CrosshairAim`). Both overlays free the pointer, CrtScene's `onLock` knows
+(a 15-cell pixel crosshair with a one-cell ink ring, tinted by what it is
+on; the physgun reads the same `CrosshairAim`; in third person the scene
+projects the gaze's hit through the boom and hides the mark while your own
+body covers it). The catalogue is paginated like a printed one, three rows
+of four to a page as the window allows, and the curled corner turns it. Both overlays free the pointer, CrtScene's `onLock` knows
 an unlock they asked for is not esc, and an esc close waits for the key to
 come up before taking the pointer back, or Chrome spends the release on
 unlocking again. A spawn lands at the crosshair's hit, never within the
-walker's reach (`BODY_CLEAR`), and `host.spawned(ids)` pops it in: a scale
+walker's reach (`BODY_CLEAR`), is stacked on a prop only when it is one
+thing, not round, onto a top it fits, otherwise goes to the ground and steps
+sideways (never away, which is behind the pile) until it is clear of what
+is already there; round things get a nudge away from the viewer; and `host.spawned(ids)` pops it in: a scale
 overshoot, a ring of dust from the fleet's particle pool (`fleet.puff`, so
 no new material) and `sfx.spawnPop`.
 
