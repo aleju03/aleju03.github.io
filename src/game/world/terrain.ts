@@ -288,6 +288,28 @@ const groundCache = new Map<number, GroundSample>()
     actively walking over never evicts itself; see trimCache above */
 const GROUND_CACHE_CAP = 90000
 
+/**
+ * The ground at a point given its height and slope: colour, pavedness and
+ * biome, uncached. latticeGround is this, memoised at the lattice; the far
+ * field (farfield.ts) calls it straight, at its own coarser vertices, so a
+ * mountain four kilometres off is coloured by the same rules as the one
+ * under your feet without flooding the lattice cache with points nobody
+ * will ever stand on.
+ */
+export const groundSample = (x: number, z: number, y: number, slope: number): GroundSample => {
+  const biome = biomeAt(x, z, y, slope)
+  const place = placeAt(x, z)
+  const paved = pavedAt(place, roadAt(x, z, place))
+  const [a, b, t] = tintAt(x, z, biome, paved)
+  gc.set(a).lerp(gc2.set(b), t)
+  if (paved > 0 && paved < 1) gc.lerp(PAVED_GREY, paved * 0.5)
+  if (paved <= 0 && BIOMES[biome].surface === 'grass') {
+    const patch = noise2(x * 0.041, z * 0.041, S_PATCH)
+    gc.lerp(STRAW, patch * patch * 0.5)
+  }
+  return { r: gc.r, g: gc.g, b: gc.b, paved, biome }
+}
+
 /** the ground vertex at lattice point (i, j): colour, pavedness, biome —
     exactly what the chunk mesh bakes there, cached like latticeHeight */
 export const latticeGround = (i: number, j: number): GroundSample => {
@@ -301,17 +323,7 @@ export const latticeGround = (i: number, j: number): GroundSample => {
     (latticeHeight(i + 1, j) - latticeHeight(i - 1, j)) / (2 * GRID),
     (latticeHeight(i, j + 1) - latticeHeight(i, j - 1)) / (2 * GRID),
   )
-  const biome = biomeAt(x, z, y, slope)
-  const place = placeAt(x, z)
-  const paved = pavedAt(place, roadAt(x, z, place))
-  const [a, b, t] = tintAt(x, z, biome, paved)
-  gc.set(a).lerp(gc2.set(b), t)
-  if (paved > 0 && paved < 1) gc.lerp(PAVED_GREY, paved * 0.5)
-  if (paved <= 0 && BIOMES[biome].surface === 'grass') {
-    const patch = noise2(x * 0.041, z * 0.041, S_PATCH)
-    gc.lerp(STRAW, patch * patch * 0.5)
-  }
-  const out: GroundSample = { r: gc.r, g: gc.g, b: gc.b, paved, biome }
+  const out = groundSample(x, z, y, slope)
   trimCache(groundCache, GROUND_CACHE_CAP)
   groundCache.set(key, out)
   return out

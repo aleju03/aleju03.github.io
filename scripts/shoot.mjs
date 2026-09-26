@@ -325,6 +325,7 @@ for (const r of rows) {
     `  y ${String(r.y).padStart(7)}  ${r.biome.padEnd(8)}` +
     `${r.district ? ' ' + r.district : ''}  ${r.verts} verts` +
     (r.draws === undefined ? '' : `  ${r.draws} meshes`) +
+    (r.far ? `  far ${r.far.tiles} tiles ${r.far.tris} tris, reach ${r.far.reach}, fog ${r.far.fog}, lens ${r.far.camFar} ${r.far.dbg}` : '') +
     (r.animals === undefined ? '' : `  ${r.animals} animals, ${r.people} people`),
   )
 }

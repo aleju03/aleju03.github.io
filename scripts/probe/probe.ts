@@ -19,7 +19,7 @@ import {
   BIOME_AIR, airForSky, lightsForSky, nearestLamps,
 } from '../../src/game/render/atmosphere'
 import type { SkyState } from '../../src/game/levels/sky'
-import { altitudeOf, fogForAltitude, viewFarFor } from '../../src/game/levels/altitude'
+import { altitudeOf, domeScaleFor, fogForAltitude, viewFarFor } from '../../src/game/levels/altitude'
 import { windUniforms } from '../../src/game/world/wind'
 
 /*
@@ -137,6 +137,8 @@ export interface ShotResult {
   people?: number
   /** altitude tiles: meshes drawn (after frustum culling is not counted) */
   draws?: number
+  /** altitude tiles: what the far field holds */
+  far?: { tiles: number; verts: number; tris: number; pending: number; reach?: number; dbg?: string; fog?: number[]; camFar?: number; alt?: number }
 }
 
 /* ------------------------------------------------------------- searching -- */
@@ -218,8 +220,9 @@ const resolveAllLandmarks = () => landmarkRings(() => true, 9)
 const HEMI_ROAM = 1.5
 const noop = () => {}
 
-export const lightFor = (scene: THREE.Scene, tod: Tod, cam: THREE.Vector3) => {
+export const lightFor = (scene: THREE.Scene, tod: Tod, cam: THREE.Vector3, far = 900) => {
   const sky = buildSky({ parent: scene, trackTexture: noop, trackDisposable: noop })
+  sky.setScale(domeScaleFor(far))
   const st = sky.update(cam, tod)
   // sky.ts only asks for a sun map while the sun is strong enough to cast
   // one, and CrtScene bakes it once under the boot cover regardless. A still
@@ -252,7 +255,7 @@ const lampD2 = new Float32Array(16)
 const sunDir = new THREE.Vector3()
 export const dressLook = (
   look: PixelLook, scene: THREE.Scene, st: SkyState, cam: THREE.Camera,
-  biome: string | null, lamps: number[] = [], headlamp = true, alt = 0,
+  biome: string | null, lamps: number[] = [], headlamp = true, alt = 0, reach = 0,
 ) => {
   look.setMood(st.night * (1 - st.twilight))
   let sun: THREE.DirectionalLight | null = null
@@ -264,7 +267,8 @@ export const dressLook = (
   const s = sun as THREE.DirectionalLight | null
   if (s) sunDir.subVectors(s.position, s.target.position).normalize()
   airForSky(
-    look.air, st, BIOME_AIR[biome ?? ''] ?? 1, sunDir, s ? s.color : new THREE.Color(), alt,
+    look.air, st, BIOME_AIR[biome ?? ''] ?? 1, sunDir, s ? s.color : new THREE.Color(),
+    alt, reach, SEA_Y,
   )
   cam.updateMatrixWorld()
   const cp = cam.getWorldPosition(new THREE.Vector3())
@@ -450,29 +454,34 @@ const altTile = (
   const world = buildWorld({
     scene, obstacles: [], trackTexture: noop, trackDisposable: noop,
   })
-  // the first update picks the ring radius for this height (and builds one
-  // chunk under the frame budget); prime then builds the rest with none
+  // the first update plans the far field and picks the ring for this height;
+  // the far field is then built whole (a game spreads it over frames), the
+  // ring re-picked now that it exists, and primed with no frame budget
+  world.update(cam.position.x, cam.position.z, 1 / 60, camAlt)
+  world.primeFar(cam.position.x, cam.position.z, camAlt, 1e5)
   world.update(cam.position.x, cam.position.z, 1 / 60, camAlt)
   world.prime(cam.position.x, cam.position.z, 1e9)
   // every chunk dissolves in over world/fade.ts's FADE_S from its birth
-  // stamp; a still frame wants them all arrived
+  // stamp; a still frame wants them all arrived, and the far field's mask
+  // wants to know they have
   windUniforms.uTime.value += 30
   world.update(cam.position.x, cam.position.z, 0, camAlt)
-  const st = lightFor(scene, spec.tod, cam.position)
-  fogForAltitude(st, camAlt)
+  const reach = world.farReach(cam.position.x, cam.position.z)
+  cam.far = viewFarFor(camAlt, reach)
+  cam.updateProjectionMatrix()
+  const st = lightFor(scene, spec.tod, cam.position, cam.far)
+  fogForAltitude(st, camAlt, reach)
   const fog = scene.fog as THREE.Fog
   fog.near = st.fogNear
   fog.far = st.fogFar
   world.setNight(st.night)
   world.setWaterTint(st.fogColor, st.day)
-  cam.far = viewFarFor(camAlt)
-  cam.updateProjectionMatrix()
   if (look) {
     const lampBuf = new Float32Array(16 * 3)
     const n = world.nearLamps(cam.position.x, cam.position.z, lampBuf, 16)
     dressLook(
       look, scene, st, cam, airGround(cam.position.x, cam.position.z),
-      Array.from(lampBuf.subarray(0, n * 3)), false, camAlt,
+      Array.from(lampBuf.subarray(0, n * 3)), false, camAlt, reach,
     )
   }
   tiles.push({ scene, cam, chunks: [] })
@@ -492,6 +501,7 @@ const altTile = (
   return {
     label, x: Math.round(x), z: Math.round(z), y: Math.round(gy * 10) / 10,
     biome: s.biome, district: s.place.district, verts, draws,
+    far: { ...world.farStats(), dbg: (() => { const g = scene.getObjectByName('far-field'); const t = g?.children[0]; const m = t?.children[0] as THREE.Mesh | undefined; return JSON.stringify({ vis: t?.visible, n: t?.children.length, bs: m?.geometry.boundingSphere, y: m?.geometry.getAttribute('position').getY(0) }) })(), reach: Math.round(reach), fog: [Math.round(fog.near), Math.round(fog.far)], camFar: Math.round(cam.far), alt: Math.round(camAlt) },
   }
 }
 

@@ -76,6 +76,16 @@ export interface SkyHandles {
   /** the world's one moving shadow caster. Its castShadow flag is stable;
       strength and explicit map updates handle indoor/night transitions */
   sun: THREE.DirectionalLight
+  /**
+   * Scale everything that stands for "infinitely far away" about the camera.
+   * A sphere centred on the eye projects the same at any radius, so this
+   * changes nothing on screen but depth: the domes are drawn in the
+   * transparent pass with the depth test on, so at their 430 units they
+   * used to cover any terrain past them. The far field (world/farfield.ts)
+   * reaches kilometres, and levels/altitude.ts's far plane grows with it;
+   * the dome grows too, to just inside that plane
+   */
+  setScale: (k: number) => void
 }
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
@@ -848,5 +858,11 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     return state
   }
 
-  return { update, sun: sunLight }
+  return {
+    update,
+    sun: sunLight,
+    setScale: (k) => {
+      if (dome.scale.x !== k) dome.scale.setScalar(k)
+    },
+  }
 }

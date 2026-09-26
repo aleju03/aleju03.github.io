@@ -2304,7 +2304,17 @@ export default function CrtScene({
             lampCount = overworld ? outside.nearLamps(p.x, p.z, lampBuf, 16) : 0
           }
           airSun.subVectors(outside.sun.position, outside.sun.target.position).normalize()
-          airForSky(look.air, sky, airBiome, airSun, outside.sun.color)
+          const ov = outside.view
+          airForSky(
+            look.air, sky, airBiome, airSun, outside.sun.color,
+            overworld ? ov.alt : 0, overworld ? ov.reach : 0, Math.max(-100, outside.waterY),
+          )
+          // from the air the lens reaches the far field's rim (levels/altitude.ts)
+          const wantFar = overworld ? ov.far : 900
+          if (camera.far !== wantFar) {
+            camera.far = wantFar
+            camera.updateProjectionMatrix()
+          }
           // the backrooms carry their own fog and no sky: no air, no lamps
           if (!overworld) look.air.max = 0
           airAmb.copy(hemi.color).multiplyScalar(hemi.intensity)

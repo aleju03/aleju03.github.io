@@ -74,6 +74,10 @@ export interface Gfx {
       the bands and the outlines read as drawn. A cold iGPU gets a hair less,
       which only matters on odd screen sizes */
   pixelLines: number
+  /** rings of the far field (world/farfield.ts), each twice the reach of
+      the one inside it: 3 reaches 2 km past the camera, 4 reaches 4 km.
+      Baked like the rest, because a ring is geometry */
+  farLevels: number
 }
 
 // The two lattices are deliberately the same size on each tier, which puts
@@ -82,11 +86,11 @@ export interface Gfx {
 // that all of it was being spent at distances where none of it could be seen.
 const MEDIUM: Gfx = {
   grassSide: 144, grassNearSide: 144, flowerSide: 44, shadowMap: 1024, canopyK: 1,
-  birds: 26, fauna: 8, pedestrians: 5, richSky: false, pixelLines: 340,
+  birds: 26, fauna: 8, pedestrians: 5, richSky: false, pixelLines: 340, farLevels: 3,
 }
 const HIGH: Gfx = {
   grassSide: 224, grassNearSide: 224, flowerSide: 60, shadowMap: 2048, canopyK: 1.45,
-  birds: 54, fauna: 14, pedestrians: 9, richSky: true, pixelLines: 360,
+  birds: 54, fauna: 14, pedestrians: 9, richSky: true, pixelLines: 360, farLevels: 4,
 }
 
 export const gfx: Gfx = { ...MEDIUM }

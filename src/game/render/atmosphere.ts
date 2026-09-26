@@ -73,9 +73,8 @@ const HEAD_GAIN = 0.9
  */
 export const airForSky = (
   air: Air, s: SkyNumbers, biome: number, sunDir: THREE.Vector3, sunColor: THREE.Color,
-  alt = 0,
+  alt = 0, reach = 0, baseY = 0,
 ) => {
-  void alt
   const out = 1 - s.indoor
   // the haze distance: open at noon, closing in through twilight to night
   // noon is thin on purpose: a friendly day has contrast half a kilometre
@@ -86,9 +85,20 @@ export const airForSky = (
   const woods = 1 + (biome - 1) * (1 - 0.6 * s.day)
   // the twilight no longer thickens it: from a height, a dusk that did
   // turned everything past thirty metres into one mauve plane
-  const dist = (300 * s.day + 90 * (1 - s.day)) * woods
-  air.start = 8
+  // From the air (levels/altitude.ts, world/farfield.ts): the camera is
+  // above most of the haze, so the air thins (a longer e-folding distance)
+  // and takes its height into account (liftK: a ray looking down crosses
+  // only the top of it), and where the far field ends the air takes all of
+  // it. `alt` is the camera's height over the ground under it, `reach` how
+  // far the far field goes, `baseY` where the haze layer sits (the sea)
+  const lift = Math.min(1, Math.max(0, (alt - 15) / 110))
+  const dist = (300 * s.day + 90 * (1 - s.day)) * woods * (1 + 1.6 * lift)
+  air.start = 8 + 30 * lift
   air.dist = dist
+  air.liftK = lift
+  air.liftBase = baseY
+  air.liftScale = 150
+  air.edge = lift > 0 && reach > 0 ? reach * 0.97 : 0
   air.max = (0.36 + 0.36 * dark - 0.08 * s.twilight) * out
   air.planes = 0
   // warm hazy air by day: the sky module's fog is a cool pale blue, which

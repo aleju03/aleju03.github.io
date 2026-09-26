@@ -24,17 +24,36 @@ export const altitudeK = (alt: number) => Math.min(1, Math.max(0, (alt - 20) / 1
 /**
  * Stretch the scene fog for a camera `alt` units over the ground. The
  * ground-level numbers are the sky's; this only ever lengthens them.
+ *
+ * `reach` is how far the far field (world/farfield.ts) covers the ground
+ * past the camera without a gap. With it, the fog opens out to the far
+ * field's rim and the look's air (render/atmosphere.ts, which takes the same
+ * altitude) does the layering, height-aware, instead of a wall at 380 units.
+ * Without it (the far field not built yet) the old ramp stands, which only
+ * has to hide the edge of the widened chunk ring.
  */
-export const fogForAltitude = (fog: { fogNear: number; fogFar: number }, alt: number) => {
+export const fogForAltitude = (
+  fog: { fogNear: number; fogFar: number }, alt: number, reach = 0,
+) => {
   const k = altitudeK(alt)
   if (k <= 0) return
-  fog.fogNear *= 1 + k * 0.5
-  fog.fogFar *= 1 + k * 0.55
+  if (reach <= 0) {
+    fog.fogNear *= 1 + k * 0.5
+    fog.fogFar *= 1 + k * 0.55
+    return
+  }
+  // opens early: at 40 up a third of the way, most of it by 80
+  const e = Math.pow(k, 0.6)
+  fog.fogNear += (reach * 0.35 - fog.fogNear) * e
+  fog.fogFar += (reach * 1.2 - fog.fogFar) * e
 }
 
 /** the camera's far plane at this height. It must clear the sky dome's
-    radius outright (see the root CLAUDE.md), which 900 does at any height */
-export const viewFarFor = (alt: number) => {
-  void alt
-  return 900
-}
+    radius outright (see the root CLAUDE.md), which 900 does; from the air it
+    must also clear the far field's rim, corners included */
+export const viewFarFor = (alt: number, reach = 0) =>
+  reach > 0 && altitudeK(alt) > 0 ? Math.max(900, reach * 1.8) : 900
+
+/** the sky dome's scale for a far plane: its outermost shell (430 units at
+    scale 1) just inside the plane, never smaller than it was built */
+export const domeScaleFor = (far: number) => Math.max(1, (far * 0.92) / 430)

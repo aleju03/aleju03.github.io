@@ -15,6 +15,8 @@ import { buildGrass, type GrassHandles } from './grass'
 import { makeLeafTexture } from './treeMesh'
 import { texelate } from '../render/texel'
 import { nearestLamps } from '../render/atmosphere'
+import { buildFarField } from './farfield'
+import { FADE_S } from './fade'
 
 /*
   The ring of chunks around the player, and the budget that keeps building it
@@ -60,6 +62,17 @@ const RADIUS = 4
     at 384, which is what a widened fog needs in front of it. It costs forty
     more chunks, almost all of them the cheap 'bare' tier at that range */
 const RADIUS_HIGH = 6
+/** ...unless the far field (world/farfield.ts) has the view past the ring
+    covered, in which case the ring from the air shrinks to the chunks that
+    carry trees and the far field draws everything beyond: its terrain,
+    canopy and town impostors cost a fraction of forty 'bare' chunks and
+    reach ten times as far */
+const RADIUS_FAR = 3
+/** milliseconds a frame the far field may build in: plenty from the air,
+    where it is what the player is looking at, and a trickle on the ground,
+    only when the chunk queue is empty, so it is ready before anyone flies */
+const FAR_MS_AIR = 2.5
+const FAR_MS_GROUND = 0.6
 /** chunks whose boxes are live in the collision set, as a Chebyshev radius */
 const SOLID_RADIUS = 1
 /** how much `prime` always builds, however little time it is given. Two rings
@@ -159,6 +172,14 @@ export interface WorldHandles {
   /** the collision boxes of a loaded chunk, live set or not (the sandbox's
       props can roll out of the nine chunks the walker collides with) */
   solidsIn: (cx: number, cz: number) => readonly Solid[] | null
+  /** how far past (x, z) the far field reaches without a gap, 0 until its
+      rings exist: the fog and the camera's far plane open to this */
+  farReach: (x: number, z: number) => number
+  /** build the far field around a point now, up to `ms` milliseconds: the
+      harness, which has no frames to spread it over */
+  primeFar: (x: number, z: number, alt: number, ms: number) => void
+  /** what the far field is drawing, for the harness */
+  farStats: () => { tiles: number; verts: number; tris: number; pending: number }
   /** the nearest `max` light fixtures to (x, z) in the loaded chunks, as
       world xyz triples into `out`; returns how many. For the look's lamp
       pools. Walks a 5x5 of chunks, so ask when the walker has moved rather
@@ -493,6 +514,14 @@ export function buildWorld(opts: Opts): WorldHandles {
   const waterMat = mats.water as THREE.MeshStandardMaterial
 
   const chunks = new Map<string, Chunk>()
+  /** when each chunk's ground is solid (its birth fade over), on the wind
+      clock; the far field is discarded under a chunk only from then */
+  const solidAt = new Map<string, number>()
+  const far = buildFarField({ parent: root, water: waterMat.color, trackDisposable })
+  const chunkSolid = (cx: number, cz: number) => {
+    const t = solidAt.get(key(cx, cz))
+    return t !== undefined && windUniforms.uTime.value >= t
+  }
   const queue: Array<{ cx: number; cz: number; tier: Tier; d: number; retier: boolean }> = []
   let curX = Number.POSITIVE_INFINITY
   let curZ = Number.POSITIVE_INFINITY
@@ -543,6 +572,7 @@ export function buildWorld(opts: Opts): WorldHandles {
     root.remove(c.group)
     for (const g of c.geos) freeing.push(g)
     chunks.delete(key(c.cx, c.cz))
+    solidAt.delete(key(c.cx, c.cz))
     unregisterInteriors(key(c.cx, c.cz))
   }
 
@@ -550,6 +580,7 @@ export function buildWorld(opts: Opts): WorldHandles {
     const c = buildChunk(cx, cz, tier, mats, fade)
     root.add(c.group)
     chunks.set(key(cx, cz), c)
+    solidAt.set(key(cx, cz), fade && fade.from === undefined ? fade.at + FADE_S : -Infinity)
     registerInteriors(key(cx, cz), c.interiors)
     // before anything can see it: a chunk rebuilt over ground the player has
     // already cleared must arrive already cleared
@@ -692,7 +723,11 @@ export function buildWorld(opts: Opts): WorldHandles {
     // the ring widens with height, in step with the fog (see RADIUS_HIGH).
     // The two thresholds are apart on purpose: a helicopter hovering exactly
     // on one number would otherwise rebuild the entire world every second
-    const wantRadius = radius === RADIUS ? (alt > 46 ? RADIUS_HIGH : RADIUS) : alt < 32 ? RADIUS : RADIUS_HIGH
+    // From the air the far field takes over past the flora ring as soon as
+    // it has the whole view covered; until then the old wide ring stands in
+    far.update(x, z, alt, chunkSolid)
+    const high = far.complete ? RADIUS_FAR : RADIUS_HIGH
+    const wantRadius = radius === RADIUS ? (alt > 46 ? high : RADIUS) : alt < 32 ? RADIUS : high
     const pcx = chunkX(x)
     const pcz = chunkZ(z)
     if (wantRadius !== radius) {
@@ -706,11 +741,13 @@ export function buildWorld(opts: Opts): WorldHandles {
       restream(pcx, pcz, 0)
     }
     freeSome()
-    if (!queue.length) return
-    // the budget rides the player's speed, and the drain stops when the *next*
-    // chunk would not fit rather than when the last one already didn't
-    const budget = BUDGET_MS + (BUDGET_MAX - BUDGET_MS) * Math.min(1, speed / BUDGET_SPEED)
-    drain(budget)
+    if (queue.length) {
+      // the budget rides the player's speed, and the drain stops when the
+      // *next* chunk would not fit rather than when the last one already didn't
+      const budget = BUDGET_MS + (BUDGET_MAX - BUDGET_MS) * Math.min(1, speed / BUDGET_SPEED)
+      drain(budget)
+    }
+    far.work(far.visible ? FAR_MS_AIR : queue.length ? 0 : FAR_MS_GROUND)
   }
 
   const TIER_RANK: Record<Tier, number> = { bare: 0, flora: 1, full: 2 }
@@ -820,9 +857,20 @@ export function buildWorld(opts: Opts): WorldHandles {
       return queue.length
     },
     solidsIn: (cx, cz) => chunks.get(key(cx, cz))?.boxes ?? null,
+    farReach: (x, z) => (far.visible ? far.reach(x, z) : 0),
+    primeFar: (x, z, alt, ms) => {
+      far.update(x, z, alt, chunkSolid)
+      const t0 = performance.now()
+      while (far.pending && performance.now() - t0 < ms) {
+        far.work(ms)
+        far.update(x, z, alt, chunkSolid)
+      }
+    },
+    farStats: () => ({ ...far.stats(), pending: far.pending }),
     nearLamps,
     setNight: (night) => {
       glassMat.opacity = night
+      far.setNight(night)
     },
     setWaterTint: (sky, sun) => {
       waterMat.color.lerpColors(WATER_NIGHT, WATER_DAY, sun)
