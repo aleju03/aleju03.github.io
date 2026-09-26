@@ -74,10 +74,10 @@ export const GRADE_DAY: Grade = {
   contrast: 0.45,
   gamma: 1.02,
   sat: 1.05,
-  shadowSat: 0.6,
+  shadowSat: 0.8,
   chromaCap: 0.17,
   shadowTint: [245, 0.03],
-  highlightTint: [78, 0.022],
+  highlightTint: [78, 0.01],
   anchors: [32, 72, 122, 175, 238, 312],
   pull: 0.38,
 }

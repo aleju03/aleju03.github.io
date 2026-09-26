@@ -423,7 +423,7 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
       cam.lookAt(x, gy + spec.height * 0.32, z)
     }
     const sky = lightFor(scene, spec.tod, cam.position)
-    look?.setMood(sky.night)
+    look?.setMood(sky.night * (1 - sky.twilight))
     // the lattice is pinned under whatever it is updated at: the target, so
     // an orbit shot has turf where it is looking rather than under the lens
     buildGrass({ parent: scene, trackDisposable: noop }).update(x, z)

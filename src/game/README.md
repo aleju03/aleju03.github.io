@@ -646,7 +646,7 @@ every one of them has a failure you can see in a harness shot.
   through `texelate()` (nearest magnification, mipmapped minification).
   Detail finer than a texel does not survive: it becomes dither noise.
 - **Silhouettes and creases are what get outlined, so build with them.**
-  A pixel loses `outline` (0.7) of its light where a neighbour lies more
+  A pixel loses `outline` (0.6) of its light where a neighbour lies more
   than `0.25 + 4.5%` of the depth behind it, and a fold lifts or darkens where the second
   difference of 1/z says so, which is zero on any plane. Chunky, flat-shaded
   shapes with real depth separation read; a smooth-shaded gentle curve, a

@@ -1916,8 +1916,10 @@ export default function CrtScene({
           sceneFog.near = sky.fogNear
           sceneFog.far = sky.fogFar
           sceneBg.copy(sky.fogColor)
-          // the grade leans toward its night table as the light goes
-          look.setMood(sky.night)
+          // the grade leans toward its night table as the light goes, but
+          // not through the twilight: golden hour is the warmest moment of
+          // the day, and the night table's drained chroma would grey it out
+          look.setMood(sky.night * (1 - sky.twilight))
           levels.current.overrideLight?.(lightRig)
         }
 
