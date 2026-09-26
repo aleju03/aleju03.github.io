@@ -53,8 +53,11 @@ player/
                      into speeds and asks whether one is running a body over
   bodyContact.ts     bodies meeting bodies: the walker against pedestrians and
                      other players as upright cylinders measured off each
-                     rig's own mesh. Lean (push apart), charge, tackle, stomp,
-                     trample, through one indexed `Bumpable` interface
+                     rig's own mesh, plus both bodies' posed limbs (a
+                     sprint's lean leads with the head and arms, and a knock
+                     must fire when they arrive, not after they are drawn
+                     inside somebody). Lean (push apart), charge, tackle,
+                     stomp, trample, through one indexed `Bumpable` interface
   chaseCam.ts        createChaseCam(): the third-person boom (v), collision-
                      clamped, which also frames a downed body
   seating.ts         createSeating(): sitting on the furniture. A seat is a
@@ -936,6 +939,9 @@ npm run film -- sandbox:bump           the walker leaning on, charging, landing 
 npm run measure -- bodies              the same run headless, a 400-approach sweep for
                                        the closest two bodies ever get, the contact
                                        pass's cost, and a shove between two players
+npm run film -- sandbox:bump --start 3 --duration 4.2 --frames 12 --yaw 0 --dist 17 --height 4
+                                       the charge side-on: on a moving lens --yaw/--dist/
+                                       --height orbit the walker, --from/--to pin the lens
 
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
                                        rest determinism float catalogue breaks blast physgun scenarios

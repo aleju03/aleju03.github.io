@@ -146,6 +146,8 @@ interface Stage {
   sky: SkyState
   /** the scenario's render side, if it has one */
   pres: ReturnType<NonNullable<Scenario['present']>> | null
+  /** the command line's lens flags, which a moving lens must answer to too */
+  lensFlags: Pick<FilmSpec, 'from' | 'to' | 'yaw' | 'dist' | 'height' | 'fov'>
   /** last drawn time, for the render side's dt */
   drawnAt: number
   /** people standing about, for the blasts to knock over */
@@ -290,6 +292,7 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   const pres = s.present ? s.present(c, scene, cam) : null
   stage = {
     s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration, sky, bodies, pres, drawnAt: 0,
+    lensFlags: { from: spec.from, to: spec.to, yaw: spec.yaw, dist: spec.dist, height: spec.height, fov: spec.fov },
   }
   // link every program before the first still: an uncompiled material's
   // first draw can land a frame late, which films as props that are not
@@ -426,10 +429,26 @@ const draw = (r: THREE.WebGLRenderer, st: Stage) => {
 const aimLens = (st: Stage, t: number) => {
   if (!st.s.lens) return
   const shot = st.s.lens(st.c, t)
-  st.cam.position.set(...shot.from)
-  st.cam.lookAt(shot.to[0], shot.to[1], shot.to[2])
-  if (shot.fov && shot.fov !== st.cam.fov) {
-    st.cam.fov = shot.fov
+  // the flags still mean what they say on a moving lens: --from pins the
+  // lens there (still following the subject unless --to pins that too),
+  // --to pins what it looks at, and --yaw/--dist/--height orbit whatever
+  // the scenario's lens is following, frame by frame
+  const f = st.lensFlags
+  const to = f.to ?? shot.to
+  let from = f.from ?? shot.from
+  if (!f.from && (f.yaw !== undefined || f.dist !== undefined || f.height !== undefined)) {
+    const dx = shot.from[0] - to[0]
+    const dz = shot.from[2] - to[2]
+    const yaw = f.yaw ?? Math.atan2(dz, dx)
+    const dist = f.dist ?? Math.hypot(dx, dz)
+    const height = f.height ?? shot.from[1] - to[1]
+    from = [to[0] + Math.cos(yaw) * dist, to[1] + height, to[2] + Math.sin(yaw) * dist]
+  }
+  st.cam.position.set(...(from as [number, number, number]))
+  st.cam.lookAt(to[0], to[1], to[2])
+  const fov = f.fov ?? shot.fov
+  if (fov && fov !== st.cam.fov) {
+    st.cam.fov = fov
     st.cam.updateProjectionMatrix()
   }
   st.cam.updateMatrixWorld()
@@ -586,7 +605,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     from: st.cam.userData.shot.from.map((n: number) => Math.round(n * 10) / 10),
     to: st.cam.userData.shot.to.map((n: number) => Math.round(n * 10) / 10),
     fov: st.cam.userData.shot.fov,
-    hash: st.sb.stateHash(),
+    hash: st.s.hash ? st.s.hash(st.c) : st.sb.stateHash(),
   }
 }
 
