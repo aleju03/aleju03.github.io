@@ -28,9 +28,13 @@ import { makeBodyMaterial } from './bodyMaterial'
   acceleration and banks into turns, and a landing drops the hips on a damped
   spring in proportion to the impact.
 
-  A run is its own gait rather than a faster walk: longer bounding strides
-  with a flight between them, the trunk pitched well forward, elbows bent
-  and pumping, heels kicking up behind.
+  A run is its own gait rather than a faster walk: long bounding strides
+  with a real flight between them (the planted leg toes off before the
+  swinging one lands, and the hips peak in the air rather than at the
+  footfall), the trunk pitched well forward, elbows bent and pumping, heels
+  kicking up behind. The arm swing in both gaits runs a little behind the
+  legs and out sideways as well as fore and aft, with the forearm later
+  still, and every footfall bounces the arms out.
 
   In the air the body is never a stick: a jump leaves out of a squashed
   crouch that springs into a stretch (the walker has no wind-up, so the
@@ -75,7 +79,9 @@ import { makeBodyMaterial } from './bodyMaterial'
   (`flail`) while being pulled out wide and down as if to catch the ground,
   and once on the ground a weak pull in the ground plane spreads
   them into a spread-eagle and levels the shoulders so the heap rolls onto
-  its back or front (`sprawl`), with generous one-sided separations keeping
+  its back or front (`sprawl`; a heap that lands face down is rolled over
+  onto its back about its own spine, because a body face down under a big
+  hat is only a hat), with generous one-sided separations keeping
   arms a belly's width off the body throughout. The get-up is physical too, which is the part the robot
   before it faked: beginRecover() keeps the sim running and drives every
   particle toward the standing pose with muscle springs that tighten over a
@@ -813,7 +819,7 @@ export function buildPlayerBody(
     head.position.copy(REST[B.HEAD])
     head.updateMatrixWorld()
     head.getWorldPosition(vRest)
-    stepJiggle(jHead, vRest, 150, 7, 0, 0.2 * s, dt)
+    stepJiggle(jHead, vRest, 100, 5.5, 0, 0.24 * s, dt)
     vTmp2.subVectors(jHead.p, vRest)
     torso.getWorldQuaternion(qW)
     vTmp2.applyQuaternion(qW.invert()).multiplyScalar(1 / s)
@@ -1051,7 +1057,7 @@ export function buildPlayerBody(
     // part says which foot is airborne, the fraction is its swing phase
     // a run is a different gait, not a faster walk: bounding strides with a
     // flight between them, so fewer, longer steps rather than a scurry
-    strideNow += (0.95 + 0.55 * runK - strideNow) * ease(4)
+    strideNow += (0.95 + 0.9 * runK - strideNow) * ease(4)
     const prevStep = Math.floor(stepT)
     if (pose.grounded) {
       stepT += (speed * dt) / (strideNow * S)
@@ -1075,15 +1081,18 @@ export function buildPlayerBody(
     // alive in a body doing nothing
     const shift = Math.sin(idleT * 0.55 + 1.1) * Math.sin(idleT * 0.21) * 0.05 * idleK * (1 - riseFold)
     const waddleX = -stepS * (0.085 - 0.03 * runK) * moveK + shift
-    const dip = -Math.abs(stepS) * (0.07 + 0.03 * runK) * gait
-    const pop = runK * gait * (1 - Math.abs(stepS)) * 0.16
+    const dip = -Math.abs(stepS) * 0.07 * gait * (1 - runK)
+    // a run's hips are lowest just after a foot lands and highest in the
+    // flight before the next one does (see the toe-off in the feet below)
+    const stepFrac = stepT - Math.floor(stepT)
+    const pop = runK * gait * (0.5 - 0.5 * Math.cos(2 * Math.PI * (stepFrac - 0.35))) * 0.2
     pelvis.position.set(waddleX, hipH + dip + pop + bounceY + breathe * 0.006, 0)
     const waddleRoll = stepS * (0.17 - 0.06 * runK) * moveK + shift * 1.2
     // the get-up hunch is not gated by pose.show: it is the shape of the
     // action, not flair, and the lens is off the head for the whole of it
     const lean =
       (THREE.MathUtils.clamp(fwdS * 0.03 + accF * 0.035, -0.4, 0.55) + pose.crouchK * 0.28 +
-        runK * gait * 0.32) * show +
+        runK * gait * 0.5) * show +
       riseFold * 0.55 - stretchK * 0.12
     // centripetal lean: bank into a turn only as fast as the feet are
     // actually carrying the body
@@ -1112,7 +1121,10 @@ export function buildPlayerBody(
         Math.abs(stepS) * 0.03 * gait,
       0.55, 1.2,
     )
-    const bulge = 1 / Math.sqrt(squash)
+    const bulge = Math.pow(squash, -0.8)
+    // and the trunk sinks into the hips as it squashes, so the belly (which
+    // is weighted to the pelvis) compresses too, not just the chest
+    torso.position.y -= (1 - Math.min(1, squash)) * 0.4
     torso.scale.set(bulge, squash, bulge)
 
     // head: keeps the gaze on the camera line, in both axes, for outside
@@ -1186,7 +1198,9 @@ export function buildPlayerBody(
         // a high little knee lift: short legs have to pick their feet up
         // running, the heel kicks up high behind in the first half of the swing
         swingFoot.y += Math.sin(frac * Math.PI) * (0.13 + 0.08 * runK) * S * Math.min(1, speed) +
-          runK * Math.sin(Math.min(1, frac * 1.6) * Math.PI) * 0.22 * S
+          runK * Math.sin(Math.min(1, frac * 1.6) * Math.PI) * 0.22 * S +
+          // and it is still up late in the swing, so the flight has both feet
+          runK * Math.sin(Math.pow(frac, 1.4) * Math.PI) * 0.2 * S
       } else {
         // standing: a foot left far from its socket shuffles home; otherwise
         // feet stay put
@@ -1237,9 +1251,11 @@ export function buildPlayerBody(
       side: 1 | -1,
       airThighX: number,
       airShinX: number,
+      lift: number,
     ) => {
       // foot: world -> body -> pelvis frame
       vFoot.copy(foot).sub(group.position).applyQuaternion(qGroupInv).multiplyScalar(1 / S)
+      vFoot.y += lift
       vFoot.y += bounceY
       vFoot.sub(pelvis.position).applyQuaternion(qInv)
       vHip.set(side * HIP_X, 0, 0)
@@ -1273,8 +1289,20 @@ export function buildPlayerBody(
       ankle.position.copy(REST[side === 1 ? B.FOOT_L : B.FOOT_R])
       ankle.rotation.set(tilt * 0.9 * (1 - airK) + 0.5 * airK, 0, 0)
     }
-    solveLeg(thighL, shinL, ankleL, plantedL, 1, lead > 0 ? leadThigh : trailThigh, lead > 0 ? leadShin : trailShin)
-    solveLeg(thighR, shinR, ankleR, plantedR, -1, lead < 0 ? leadThigh : trailThigh, lead < 0 ? leadShin : trailShin)
+    // the toe-off: running, the planted foot leaves the ground before the
+    // swinging one lands, so every stride has a moment with both feet in the
+    // air. The planted sole stays where it is in the world; only the leg
+    // solved over it lets go
+    const toeOff = pose.grounded ? runK * gait * ramp(0.5, 0.95, stepFrac) * 0.34 : 0
+    const swingingL = Math.floor(stepT) % 2 === 0
+    solveLeg(
+      thighL, shinL, ankleL, plantedL, 1,
+      lead > 0 ? leadThigh : trailThigh, lead > 0 ? leadShin : trailShin, swingingL ? 0 : toeOff,
+    )
+    solveLeg(
+      thighR, shinR, ankleR, plantedR, -1,
+      lead < 0 ? leadThigh : trailThigh, lead < 0 ? leadShin : trailShin, swingingL ? toeOff : 0,
+    )
     wasGrounded = pose.grounded
 
     // arms: the targets say where the arms WANT to be (counter-swing along
@@ -1296,16 +1324,30 @@ export function buildPlayerBody(
     // one, so a swing fed through them arrived at a seventh of its size and
     // the arms hung at the hips. The springs ride on top of it, for the lag,
     // the flop and everything the body's accelerations do to them
-    const swingAmt = stepS * (1.15 + 0.25 * runK) * gait
+    //
+    // And it is *none* of the springs' business. Feeding even part of it
+    // through them is worse than useless: at walking cadence they are driven
+    // well above their own ring, and a spring driven past resonance answers
+    // upside down, so the half that went through them cancelled the half
+    // that did not and the mittens never left the hips. Instead the swing
+    // runs a little behind the legs (phase-lagged on the step clock), so the
+    // arms trail the stride the way a loose shoulder does, and it swings out
+    // sideways as well as fore and aft, which is what makes it visible from
+    // the side as well as from the front
+    const ampW = (1.55 + 0.3 * runK) * gait
+    const swingAt = (lag: number) => Math.sin(Math.PI * (stepT - lag)) * ampW
+    const swingAmt = swingAt(0.12)
     const swingF = swingAmt * mCos
     const swingS = swingAmt * mSin * 0.7
+    const swingOut = Math.abs(swingAmt) * 0.32
+    // the forearm follows the upper arm later still, so it is bent coming
+    // forward and trails open going back
+    const lagEl = swingAt(0.32) * mCos
     // a loose bend at rest: an arm hanging dead straight reads as a mannequin
-    const elbowBase = 0.45 + 0.9 * runK * gait
-    // a round belly holds the arms off the body; a fall flings them wide
+    const elbowBase = 0.35 + 0.5 * runK * gait
     // held well out from the body, standing or not: a round belly and a
-    // loose shoulder, never glued to the hips
-    const spread = 0.5 + breathe * 0.05 + airK * (0.5 + fallK * 0.9) + runK * gait * 0.15
-    // rising the arms go up with the jump; falling they stay up and out
+    // loose shoulder, never glued to the hips; a fall flings them wide
+    const spread = 0.5 + breathe * 0.05 + airK * (0.5 + fallK * 0.9) + runK * gait * 0.15 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them
     const airX = airK * (1.5 + fallK * 0.6)
@@ -1324,6 +1366,11 @@ export function buildPlayerBody(
       sprS[7] -= 16
       sprS[3] += 6
       sprS[9] += 6
+    }
+    // every footfall bounces the arms out a little, like a loose sleeve
+    if (pose.grounded && Math.floor(stepT) !== prevStep && gait > 0.25) {
+      sprS[3] += 2.2 * gait
+      sprS[9] += 2.2 * gait
     }
     if (pose.landing > 0) {
       const jolt = Math.min(pose.landing, 18) * 0.14
@@ -1349,12 +1396,11 @@ export function buildPlayerBody(
     const wag = waveK * Math.sin(fidgetT * 11) * 0.55
     const look = lookK * 0.9 // both hands up in front, looked at
     // forearms pump with the upper arms when running, lag them walking
-    const pumpL = -Math.max(0, -swingF) * (0.6 + 0.3 * runK)
-    const pumpR = -Math.max(0, swingF * 0.93) * (0.6 + 0.3 * runK)
+    const pumpL = -Math.max(0, -lagEl) * (0.75 + 0.35 * runK)
+    const pumpR = -Math.max(0, lagEl * 0.93) * (0.75 + 0.35 * runK)
     const clampX = (v: number) => THREE.MathUtils.clamp(v, SH_X_LO, SH_X_HI)
     const shLX = clampX(
-      spring(0, swingF * 0.5 - airX + swayLX - push - upL - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) +
-        swingF * 0.6,
+      spring(0, -airX + swayLX - push - upL - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) + swingF,
     )
     const shLZ = spring(
       2, spread + swingS + swayLZ + riseFold * 0.1 + stretchK * 0.25, KS, CS, slingZ + rock, dt,
@@ -1367,8 +1413,7 @@ export function buildPlayerBody(
       KE, CE, -sprS[1] * 6, dt, EL_LO, EL_HI,
     )
     const shRX = clampX(
-      spring(6, -swingF * 0.47 - airX + swayRX - push - upR - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) -
-        swingF * 0.56,
+      spring(6, -airX + swayRX - push - upR - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) - swingF * 0.93,
     )
     const shRZ = spring(
       8, spread - swingS + swayRZ + riseFold * 0.1 + stretchK * 0.25 + waveZ, KS, CS, -slingZ - rock, dt,
@@ -1542,6 +1587,31 @@ export function buildPlayerBody(
         .addScaledVector(spine, along * S)
       sprawlTo[i].y = rag.pts[i].y
       sprawlK[i] = k
+    }
+    // a heap that ended up face down is rolled over onto its back: face down
+    // under a big hat, all anybody sees is a teal disc, while on its back the
+    // face, the belly and all four limbs are on show
+    // It rolls over a shoulder, the way a body does: one shoulder and the
+    // belly are lifted, and the levelling below is held off while it turns,
+    // since level shoulders are exactly what stops a body rolling
+    const faceDown = rag.pts[P_BELLY].y < rag.pts[P_PACK].y - 0.05 * S
+    if (faceDown && downTime < 3.5) {
+      // a real roll: an angular acceleration about the spine, applied to
+      // every particle alike (v += alpha dt, axis x r), signed so the belly
+      // turns up. A kick on one shoulder only argued with the rest of a heap
+      // thirteen times its mass lying on the ground with friction
+      const axis = yA.subVectors(rag.pts[P_CHEST], rag.pts[P_PELV]).normalize()
+      const c = rag.pts[P_PELV]
+      xA.subVectors(rag.pts[P_BELLY], c)
+      zA.crossVectors(axis, xA)
+      const sign = zA.y >= 0 ? 1 : -1
+      const alpha = 22 * Math.min(1, (downTime - 0.45) * 2) * sign / 60
+      for (let i = 0; i < P_COUNT; i++) {
+        xA.subVectors(rag.pts[i], c)
+        rag.kick(i, zA.crossVectors(axis, xA).multiplyScalar(alpha))
+      }
+      rag.drive(sprawlTo, sprawlK)
+      return
     }
     // and the shoulders level with each other, which rolls a body lying on
     // its side over onto its back or its front (whichever it is nearer):
