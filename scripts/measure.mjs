@@ -6,6 +6,8 @@
     node scripts/measure.mjs chunks        build cost and vertex budget
     node scripts/measure.mjs landmarks     site density and the kind mix
     node scripts/measure.mjs smoke         build a few thousand chunks, catch throws
+    node scripts/measure.mjs physics       the sandbox: ground, cost, stacks,
+                                           tunnelling, the walker, scenarios
     node scripts/measure.mjs eval <file>   run your own probe with the world imported
 
   `src/game/` is renderer-free by design, so all of it runs here: fields, chunk
@@ -134,12 +136,18 @@ if (bad) process.exitCode = 1
 
 const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
+// the sandbox's report lives in its own file (it is long, and it imports the
+// sandbox, which nothing else here needs); `physics <section>` runs one part
+if (what === 'physics') {
+  body = readFileSync(join(ROOT, 'scripts', 'measure', 'physics.js'), 'utf8')
+    .replace(/'\.\.\/\.\.\/src\//g, `'${ROOT}/src/`)
+}
 if (what === 'eval') {
   if (!arg) { console.error('measure.mjs eval <file.js>'); process.exit(1) }
   body = readFileSync(resolve(arg), 'utf8')
 }
 if (!body) {
-  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|eval <file>>`)
+  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|physics [section]|eval <file>>`)
   console.error('\nan `eval` file is plain JS with the whole world already imported:')
   console.error('  buildChunk tierFor kitsFor VARIANTS SNAP BIOMES classify')
   console.error('  landmarkIn landmarkAt LANDMARK_CELL placeAt roadAt')
@@ -151,7 +159,9 @@ if (!body) {
 
 // esbuild resolves `three` from the entry file's directory upward, so the
 // entry has to live inside the project even though the output does not
-const stage = join(ROOT, 'node_modules', '.cache', 'world-measure')
+// one stage per run: node_modules may be shared between worktrees, and two
+// runs writing the same entry.js (and deleting it on exit) race each other
+const stage = join(ROOT, 'node_modules', '.cache', `world-measure-${process.pid}`)
 mkdirSync(stage, { recursive: true })
 const entry = join(stage, 'entry.js')
 writeFileSync(entry, PRELUDE + body)
@@ -161,6 +171,6 @@ const build = spawnSync('npx', [
   `--outfile=${out}`, '--log-level=error',
 ], { stdio: 'inherit', cwd: ROOT })
 if (build.status !== 0) process.exit(build.status ?? 1)
-const run = spawnSync(process.execPath, [out], { stdio: 'inherit' })
+const run = spawnSync(process.execPath, [out, ...(what === 'physics' && arg ? [arg] : [])], { stdio: 'inherit' })
 rmSync(stage, { recursive: true, force: true })
 process.exit(run.status ?? 0)

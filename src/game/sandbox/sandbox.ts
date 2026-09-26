@@ -1,0 +1,446 @@
+import * as THREE from 'three'
+import type { CollisionSet, Solid } from '../physics/collision'
+import { chunkX, chunkZ } from '../world/grid'
+import { terrainY } from '../world/terrain'
+import { createGround, type Ground } from './ground'
+import { KINDS, propMaterial, registerKind, shapeExtents, type PropKind } from './kinds'
+import {
+  createPhysicsWorld, GROUPS, loadRapier, type PhysicsWorld, type Rapier, type RCollider,
+} from './physics'
+import {
+  createProps, type ImpactEvent, type Prop, type PropId, type PropMode, type Props,
+  type QuatLike, type SpawnOpts, type Vec3Like,
+} from './props'
+import { createWalker, type Walker, type WalkerState } from './walker'
+
+/*
+  The sandbox: one facade over the physics world, the ground it stands on,
+  the props and the walker's place among them. This is the only thing the
+  scene and the other sandbox systems (the physgun, the console, destruction,
+  the network) hold, and `tick` is the only thing CrtScene calls, once a frame.
+
+  It exists before Rapier does. `createSandbox` is synchronous and cheap, and
+  starts the Rapier download itself; until that lands `ready` is false, `tick`
+  does nothing, and spawns are queued (their ids are handed out at once, so a
+  caller can hold on to what it asked for). So creating it never blocks a
+  frame, and it can be created at the moment the world attaches, under the
+  boot cover, which is where its one material is compiled (the `warm` mesh,
+  parked far below the world where it is never drawn but is seen by
+  `compileAsync`).
+
+  A frame is:
+    1. the ground ring follows the focus (the walker, or whatever `focus`
+       says when nobody is walking) and every prop that is not parked;
+    2. the walker's shoves from this frame's walk are applied, the prop it
+       is standing on is found, and its kinematic mirror is aimed;
+    3. as many fixed slices as the frame's dt buys, each laying forces
+       (buoyancy, the walker's weight, whatever a tool hooks in with
+       `onBeforeSlice`) and each checking for impacts and lost bodies;
+    4. every mesh drawn between its last two poses, and the walker carried
+       with whatever they are riding.
+
+  It is renderer-free: with no `parent` it builds no meshes and runs in Node,
+  which is what `npm run measure -- physics` and the film harness drive.
+*/
+
+export type { ImpactEvent, Prop, PropId, PropKind, PropMode, QuatLike, SpawnOpts, Vec3Like, WalkerState }
+export { KINDS, registerKind }
+
+export interface SandboxOpts {
+  /** where prop meshes go; omit to run headless */
+  parent?: THREE.Object3D | null
+  /** the overworld's collision set: its boxes become static colliders, and
+      the walker seam is attached to it as `dynamic` */
+  collision: CollisionSet
+  /** the waterline, read live (the sea does not exist until the world does) */
+  waterY?: () => number
+  /** the drawn swell on top of it */
+  waveAt?: (x: number, z: number) => number
+  /** the solids of any loaded chunk, for props outside the walker's nine */
+  chunkSolids?: (cx: number, cz: number) => readonly Solid[] | null | undefined
+  /** hand the walker seam to `collision` (default true) */
+  walker?: boolean
+}
+
+export interface SandboxTick {
+  dt: number
+  /** false holds the simulation still: another level, the pause sheet */
+  active: boolean
+  /** the walker, when somebody is on foot */
+  walker?: WalkerState | null
+  /** what the ring centres on when nobody is walking (a driver, a camera) */
+  focus?: Vec3Like
+}
+
+export interface SandboxFrame {
+  /** fixed slices taken this frame */
+  steps: number
+  /** props awake */
+  awake: number
+  /** awake props within shadow range of the focus: the scene re-bakes the
+      sun's map while this is non-zero */
+  moving: number
+  /** milliseconds this tick cost */
+  ms: number
+}
+
+export interface RayHit {
+  distance: number
+  point: THREE.Vector3
+  normal: THREE.Vector3
+  /** the prop hit, if it was one */
+  prop: Prop | null
+  /** the world solid hit, if it was one */
+  solid: Solid | null
+  /** true when it was the terrain */
+  ground: boolean
+}
+
+export interface Sandbox {
+  readonly ready: boolean
+  readonly whenReady: Promise<void>
+  /** every prop mesh hangs off this */
+  readonly root: THREE.Group
+  /** a mesh carrying every sandbox material, for a covered compile */
+  readonly warm: THREE.Object3D
+  tick: (t: SandboxTick) => SandboxFrame
+
+  /* props */
+  spawn: (kind: string, at: Vec3Like, opts?: SpawnOpts) => PropId
+  remove: (id: PropId) => boolean
+  /** remove every prop */
+  clear: () => void
+  get: (id: PropId) => Prop | undefined
+  forEach: (fn: (p: Prop) => void) => void
+  readonly count: number
+  getTransform: (id: PropId, pos: THREE.Vector3, quat?: THREE.Quaternion) => boolean
+  setTransform: (id: PropId, pos: Vec3Like, quat?: QuatLike) => void
+  getVelocity: (id: PropId, lin: THREE.Vector3, ang?: THREE.Vector3) => boolean
+  setVelocity: (id: PropId, lin?: Vec3Like, ang?: Vec3Like) => void
+  applyImpulse: (id: PropId, impulse: Vec3Like, at?: Vec3Like) => void
+  /** a force for the coming slice; call from an `onBeforeSlice` hook */
+  addForce: (id: PropId, force: Vec3Like, at?: Vec3Like) => void
+  freeze: (id: PropId) => void
+  unfreeze: (id: PropId) => void
+  setMode: (id: PropId, mode: PropMode) => void
+  moveKinematic: (id: PropId, pos: Vec3Like, quat?: QuatLike) => void
+  wake: (id: PropId) => void
+
+  /* events and hooks; each returns its unsubscribe */
+  onImpact: (fn: (e: ImpactEvent) => void) => () => void
+  onSpawn: (fn: (p: Prop) => void) => () => void
+  onRemove: (fn: (p: Prop) => void) => () => void
+  /** runs ahead of every fixed slice, with the slice length */
+  onBeforeSlice: (fn: (h: number) => void) => () => void
+  onAfterSlice: (fn: (h: number) => void) => () => void
+
+  /* queries */
+  /** the first prop, solid or ground along a ray (props and world only;
+      never the walker or a vehicle) */
+  raycast: (origin: Vec3Like, dir: Vec3Like, maxDist: number, opts?: { props?: boolean; world?: boolean }) => RayHit | null
+  /** every prop overlapping a ball */
+  queryBall: (center: Vec3Like, r: number, fn: (p: Prop) => void) => void
+  /** the drawn ground height */
+  groundY: (x: number, z: number) => number
+  /** the height at which a kind, upright, rests on the ground here */
+  restY: (kind: string, x: number, z: number) => number
+
+  /** where the last tick was centred: the walker's eye, or its `focus` */
+  readonly focus: THREE.Vector3
+
+  /* the console's knobs */
+  gravity: number
+  timescale: number
+
+  /** the raw world, for systems that need more than the verbs (joints) */
+  readonly rapier: Rapier | null
+  readonly physics: PhysicsWorld | null
+  readonly stats: {
+    props: number
+    awake: number
+    chunks: number
+    solids: number
+    vehicles: number
+    time: number
+  }
+  dispose: () => void
+}
+
+interface Live {
+  pw: PhysicsWorld
+  ground: Ground
+  props: Props
+  walker: Walker | null
+}
+
+export function createSandbox(opts: SandboxOpts): Sandbox {
+  const root = new THREE.Group()
+  root.name = 'sandbox'
+  if (opts.parent) opts.parent.add(root)
+
+  // the one material, on a shape far below anything, never drawn but always
+  // visible to compileAsync (see the header)
+  const warm = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), propMaterial())
+  warm.position.set(0, -1e4, 0)
+  warm.castShadow = true
+  warm.receiveShadow = true
+  warm.frustumCulled = true
+  if (opts.parent) root.add(warm)
+
+  let live: Live | null = null
+  let disposed = false
+  let gravity = -34
+  let timescale = 1
+  let reservedId = 1
+  const queued: Array<(l: Live) => void> = []
+  const beforeFns = new Set<(h: number) => void>()
+  const afterFns = new Set<(h: number) => void>()
+  // the facade owns the listener sets, so a subscription made before Rapier
+  // landed is as good as one made after; the props module gets one forwarder
+  const listeners = {
+    impact: new Set<(e: ImpactEvent) => void>(),
+    spawn: new Set<(p: Prop) => void>(),
+    remove: new Set<(p: Prop) => void>(),
+  }
+
+  const whenReady = loadRapier().then((R) => {
+    if (disposed) return
+    const pw = createPhysicsWorld(R)
+    pw.gravity = gravity
+    pw.timescale = timescale
+    const ground = createGround({ pw, collision: opts.collision, chunkSolids: opts.chunkSolids })
+    const props = createProps({
+      pw,
+      ground,
+      root: opts.parent ? root : null,
+      waterY: opts.waterY ?? (() => -1e6),
+      waveAt: opts.waveAt,
+    })
+    const walker = opts.walker === false ? null : createWalker(pw, props)
+    if (walker) {
+      opts.collision.dynamic = walker.provider
+      props.isPlayer = walker.isPlayer
+    }
+    live = { pw, ground, props, walker }
+    props.onImpact((e) => {
+      for (const fn of listeners.impact) fn(e)
+    })
+    props.onSpawn((p) => {
+      for (const fn of listeners.spawn) fn(p)
+    })
+    props.onRemove((p) => {
+      for (const fn of listeners.remove) fn(p)
+    })
+    for (const op of queued) op(live)
+    queued.length = 0
+  })
+
+  const frameOut: SandboxFrame = { steps: 0, awake: 0, moving: 0, ms: 0 }
+  const focusAt = new THREE.Vector3()
+  const SHADOW_RANGE2 = 90 * 90
+
+  const tick = (t: SandboxTick): SandboxFrame => {
+    frameOut.steps = 0
+    frameOut.moving = 0
+    const l = live
+    if (!l) return frameOut
+    const t0 = performance.now()
+    const w = t.walker ?? null
+    const fx = w ? w.eye.x : (t.focus?.x ?? 0)
+    const fz = w ? w.eye.z : (t.focus?.z ?? 0)
+    focusAt.set(fx, w ? w.eye.y : (t.focus?.y ?? 0), fz)
+    // the ground under the focus, so a spawn at arm's length has a floor
+    const cx = chunkX(fx)
+    const cz = chunkZ(fz)
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) l.ground.need(cx + dx, cz + dz)
+    l.props.frame(fx, fz)
+    l.ground.sync()
+    l.walker?.frame(t.active ? w : null, t.dt)
+    if (t.active) {
+      frameOut.steps = l.pw.advance(
+        t.dt,
+        (h, k, n) => {
+          l.props.beforeSlice(h)
+          l.walker?.beforeSlice(k, n)
+          l.ground.slice(k, n)
+          for (const fn of beforeFns) fn(h)
+        },
+        (h) => {
+          l.props.afterSlice(h)
+          for (const fn of afterFns) fn(h)
+        },
+      )
+      l.props.draw(l.pw.alpha)
+      l.walker?.carry(w)
+    }
+    frameOut.awake = l.props.awake
+    if (frameOut.awake) {
+      l.props.forEach((p) => {
+        if (p.parked || p.mode !== 'dynamic' || p.body.isSleeping()) return
+        const t2 = p.body.translation()
+        if ((t2.x - fx) ** 2 + (t2.z - fz) ** 2 < SHADOW_RANGE2) frameOut.moving++
+      })
+    }
+    frameOut.ms = performance.now() - t0
+    return frameOut
+  }
+
+  const run = (op: (l: Live) => void) => {
+    if (live) op(live)
+    else queued.push(op)
+  }
+  const tmpDir = new THREE.Vector3()
+
+  const sb: Sandbox = {
+    get ready() {
+      return live !== null
+    },
+    whenReady,
+    root,
+    warm,
+    tick,
+    spawn: (kind, at, o = {}) => {
+      if (live) return live.props.spawn(kind, at, o)
+      const id = o.id ?? reservedId++
+      if (id >= reservedId) reservedId = id + 1
+      const pos = { x: at.x, y: at.y, z: at.z }
+      queued.push((l) => void l.props.spawn(kind, pos, { ...o, id }))
+      return id
+    },
+    remove: (id) => (live ? live.props.remove(id) : false),
+    clear: () => run((l) => l.props.clear()),
+    get: (id) => live?.props.get(id),
+    forEach: (fn) => live?.props.forEach(fn),
+    get count() {
+      return live ? live.props.count : queued.length
+    },
+    getTransform: (id, pos, quat) => (live ? live.props.getTransform(id, pos, quat) : false),
+    setTransform: (id, pos, quat) => run((l) => l.props.setTransform(id, pos, quat)),
+    getVelocity: (id, lin, ang) => (live ? live.props.getVelocity(id, lin, ang) : false),
+    setVelocity: (id, lin, ang) => run((l) => l.props.setVelocity(id, lin, ang)),
+    applyImpulse: (id, imp, at) => run((l) => l.props.applyImpulse(id, imp, at)),
+    addForce: (id, f, at) => live?.props.addForce(id, f, at),
+    freeze: (id) => run((l) => l.props.setMode(id, 'frozen')),
+    unfreeze: (id) => run((l) => l.props.setMode(id, 'dynamic')),
+    setMode: (id, mode) => run((l) => l.props.setMode(id, mode)),
+    moveKinematic: (id, pos, quat) => live?.props.moveKinematic(id, pos, quat),
+    wake: (id) => live?.props.wake(id),
+    onImpact: (fn) => {
+      listeners.impact.add(fn)
+      return () => listeners.impact.delete(fn)
+    },
+    onSpawn: (fn) => {
+      listeners.spawn.add(fn)
+      return () => listeners.spawn.delete(fn)
+    },
+    onRemove: (fn) => {
+      listeners.remove.add(fn)
+      return () => listeners.remove.delete(fn)
+    },
+    onBeforeSlice: (fn) => {
+      beforeFns.add(fn)
+      return () => beforeFns.delete(fn)
+    },
+    onAfterSlice: (fn) => {
+      afterFns.add(fn)
+      return () => afterFns.delete(fn)
+    },
+    raycast: (origin, dir, maxDist, o = {}) => {
+      const l = live
+      if (!l) return null
+      const { R, world } = l.pw
+      tmpDir.set(dir.x, dir.y, dir.z).normalize()
+      const want = (o.props ?? true ? 2 : 0) | (o.world ?? true ? 1 : 0)
+      if (!want) return null
+      const hit = world.castRayAndGetNormal(
+        new R.Ray({ x: origin.x, y: origin.y, z: origin.z }, { x: tmpDir.x, y: tmpDir.y, z: tmpDir.z }),
+        maxDist, true, undefined, ((0xffff << 16) | want) >>> 0,
+      )
+      if (!hit) return null
+      const c = hit.collider as RCollider
+      return {
+        distance: hit.timeOfImpact,
+        point: new THREE.Vector3(origin.x, origin.y, origin.z).addScaledVector(tmpDir, hit.timeOfImpact),
+        normal: new THREE.Vector3(hit.normal.x, hit.normal.y, hit.normal.z),
+        prop: l.props.ofCollider(c) ?? null,
+        solid: l.ground.solidOf(c) ?? null,
+        ground: l.ground.isGround(c),
+      }
+    },
+    queryBall: (center, r, fn) => {
+      const l = live
+      if (!l) return
+      const seen = new Set<PropId>()
+      l.pw.world.intersectionsWithShape(center, { x: 0, y: 0, z: 0, w: 1 }, new l.pw.R.Ball(r), (c) => {
+        const p = l.props.ofCollider(c)
+        if (p && !seen.has(p.id)) {
+          seen.add(p.id)
+          fn(p)
+        }
+        return true
+      }, undefined, GROUPS.queryProps)
+    },
+    groundY: terrainY,
+    restY: (kind, x, z) => {
+      const k = KINDS[kind]
+      if (!k) return terrainY(x, z)
+      const e = shapeExtents(k.shape)
+      // the lowest point of an upright shape under its origin, sampled at the
+      // footprint's corners so a crate on a slope does not start buried
+      let g = -Infinity
+      for (const [ox, oz] of [[0, 0], [e.x, e.z], [-e.x, e.z], [e.x, -e.z], [-e.x, -e.z]]) {
+        g = Math.max(g, terrainY(x + ox, z + oz))
+      }
+      return g + e.y + 0.02
+    },
+    focus: focusAt,
+    get gravity() {
+      return gravity
+    },
+    set gravity(g: number) {
+      gravity = g
+      if (live) live.pw.gravity = g
+    },
+    get timescale() {
+      return timescale
+    },
+    set timescale(k: number) {
+      timescale = Math.max(0, Math.min(4, k))
+      if (live) live.pw.timescale = timescale
+    },
+    get rapier() {
+      return live?.pw.R ?? null
+    },
+    get physics() {
+      return live?.pw ?? null
+    },
+    get stats() {
+      const l = live
+      return {
+        props: l?.props.count ?? 0,
+        awake: l?.props.awake ?? 0,
+        chunks: l?.ground.stats.chunks ?? 0,
+        solids: l?.ground.stats.solids ?? 0,
+        vehicles: l?.ground.stats.vehicles ?? 0,
+        time: l?.pw.time ?? 0,
+      }
+    },
+    dispose: () => {
+      disposed = true
+      if (opts.collision.dynamic && live?.walker && opts.collision.dynamic === live.walker.provider) {
+        opts.collision.dynamic = undefined
+      }
+      root.removeFromParent()
+      warm.geometry.dispose()
+      if (live) {
+        live.props.clear()
+        live.ground.dispose()
+        live.pw.dispose()
+        live = null
+      }
+    },
+  }
+  return sb
+}
+
+export type { Rapier }

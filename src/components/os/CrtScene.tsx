@@ -31,6 +31,7 @@ import { footstep, landThump } from '../../game/core/sfx'
 // types are needed up front, and those cost nothing at runtime
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
+import type { Sandbox } from '../../game/sandbox/sandbox'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { classifyGpu, setGfxTier, type GfxTier } from '../../game/world/quality'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
@@ -668,7 +669,13 @@ export default function CrtScene({
         // call sites below read `fleet` through this `let`, so the swap in
         // attachWorld() reaches every one of them without touching any.
         let fleet: VehicleFleet = emptyFleet()
-        disposeFleet = () => fleet.dispose()
+        // the sandbox (src/game/sandbox/): Rapier and the props, loaded with the
+        // world and never before it. Null until then; every call site guards
+        let sandbox: Sandbox | null = null
+        disposeFleet = () => {
+          fleet.dispose()
+          sandbox?.dispose()
+        }
         // F9: outline whatever the live level is testing the walk against.
         // Collision in here is a Box3 list with nothing drawn behind it, so a
         // solid that disagrees with the geometry it stands for is invisible by
@@ -1796,8 +1803,9 @@ export default function CrtScene({
 
         // the two levels and the noclip cut between them; the scene's share
         // of a swap is the blackout card and the shadow-map hygiene
+        const homeLevels = makeHomeLevels(house, outside, backrooms, obstacles)
         const levels = createLevelSystem({
-          levels: makeHomeLevels(house, outside, backrooms, obstacles),
+          levels: homeLevels,
           home: 'overworld',
           onCover: (on) => {
             blackout.style.transition = on ? 'opacity 130ms' : 'opacity 650ms'
@@ -2099,6 +2107,15 @@ export default function CrtScene({
           }
           vHeld = vNow
           xHeld = input.keys.has('KeyX')
+          if (sandbox) {
+            const sbf = sandbox.tick({
+              dt,
+              active: level.id === 'overworld' && !pausedNow,
+              walker: null,
+              focus: v.root.position,
+            })
+            if (sbf.moving && level.id === 'overworld') followSunShadow(v.root.position, now)
+          }
           level.update(dt, camera.position)
           // the machine is now the moving caster, and `step.moved` — which
           // gates the whole hand-baked shadow regime — comes from a walk
@@ -2323,6 +2340,28 @@ export default function CrtScene({
             chHeld = chNow !== 0
           } else {
             chHeld = false
+          }
+          // the props: one fixed-step physics frame, the walker's shoves and
+          // weight in, a ride carried out (it moves camera x/z, so it runs
+          // before anything below reads the head)
+          if (sandbox) {
+            const onFoot = level.id === 'overworld' && !sitting
+            const sbf = sandbox.tick({
+              dt,
+              active: level.id === 'overworld' && !pausedNow,
+              walker: onFoot
+                ? {
+                    eye: camera.position,
+                    feetY: walk.feetY,
+                    vx: step.vx,
+                    vz: step.vz,
+                    grounded: step.grounded,
+                    step: EYE * 0.12,
+                  }
+                : null,
+              focus: camera.position,
+            })
+            if (sbf.moving && level.id === 'overworld') followSunShadow(camera.position, now)
           }
           // the sim reports footfalls and touchdowns; the level says what is
           // underfoot (the backrooms are carpet wall to wall), and crouched
@@ -2646,11 +2685,28 @@ export default function CrtScene({
         let worldReady: Promise<void> | null = null
         const ensureWorld = () => {
           worldReady ??= (async () => {
-            const [, registry] = await Promise.all([
+            const [, registry, sandboxMod] = await Promise.all([
               outside.attachWorld(),
               import('../../game/vehicles/registry'),
+              import('../../game/sandbox/sandbox'),
             ])
             if (disposed || !scene) return
+            // synchronous and cheap: Rapier itself downloads behind it and
+            // nothing waits for it. Its material is in the scene now, so the
+            // covered compile in warmForRoam links it with everything else
+            const overworld = homeLevels.find((l) => l.id === 'overworld')!
+            sandbox = sandboxMod.createSandbox({
+              parent: scene,
+              collision: overworld.collision,
+              waterY: () => outside.waterY,
+              waveAt: outside.waveAt,
+              chunkSolids: outside.chunkSolids,
+            })
+            // dev only: the harnesses (and a console) reach the sandbox and
+            // the lens it is being watched through from here
+            if (import.meta.env.DEV) {
+              Object.assign(window, { __sandbox: sandbox, __sandboxCamera: camera })
+            }
             fleet = registry.buildFleet({
               scene,
               obstacles,

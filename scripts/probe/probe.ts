@@ -190,7 +190,7 @@ const SUN_HIGH = new THREE.Color('#fff2dc')
 const FOG_NIGHT = new THREE.Color('#0d1220')
 const FOG_DAY = new THREE.Color('#a9c0d4')
 
-const lightFor = (scene: THREE.Scene, tod: Tod, at: THREE.Vector3) => {
+export const lightFor = (scene: THREE.Scene, tod: Tod, at: THREE.Vector3) => {
   // elevation of the sun over the horizon, 0 at dawn/dusk, 1 at noon
   const sunEl = Math.sin((tod - 0.25) * Math.PI * 2)
   const day = Math.max(0, Math.min(1, sunEl * 3))

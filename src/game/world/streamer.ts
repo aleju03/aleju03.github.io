@@ -154,6 +154,9 @@ export interface WorldHandles {
   splash: (x: number, z: number) => void
   /** how many chunks are still queued (the HUD may want to know) */
   readonly pending: number
+  /** the collision boxes of a loaded chunk, live set or not (the sandbox's
+      props can roll out of the nine chunks the walker collides with) */
+  solidsIn: (cx: number, cz: number) => readonly Solid[] | null
 }
 
 interface Opts {
@@ -784,6 +787,7 @@ export function buildWorld(opts: Opts): WorldHandles {
     get pending() {
       return queue.length
     },
+    solidsIn: (cx, cz) => chunks.get(key(cx, cz))?.boxes ?? null,
     setNight: (night) => {
       glassMat.opacity = night
     },

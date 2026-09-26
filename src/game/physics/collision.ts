@@ -231,9 +231,28 @@ const hullTopAt = (h: Hull, x: number, z: number) => {
   return h.y + prof.top
 }
 
+/** solids that are not boxes and do not hold still: the sandbox's rigid
+    bodies (src/game/sandbox/). A set may carry one, and then the three
+    questions below ask it too, after the boxes, so every caller of
+    supportY/resolveXZ/blockedAt (the walk, the body's feet, the chase boom)
+    meets the props without knowing they exist. The provider owns the exact
+    shapes; this module only knows the three questions. */
+export interface DynamicSolids {
+  /** the highest standable surface under (x, z) at or below `reach` (the
+      provider may allow a small mantle above it), or -Infinity */
+  topAt: (x: number, z: number, reach: number) => number
+  /** push a body's point out of anything overlapping its y-span above the
+      step band, the same deal resolveXZ gives a box */
+  pushOut: (p: THREE.Vector3, footY: number, headY: number, stepUp: number) => void
+  /** would a body standing here be inside one */
+  blocks: (x: number, z: number, footY: number, headY: number, stepUp: number) => boolean
+}
+
 export interface CollisionSet {
   boxes: Solid[]
   bounds: WorldBounds
+  /** the moving solids, when a sandbox is attached to this set */
+  dynamic?: DynamicSolids
 }
 
 export const makeCollisionSet = (bounds: WorldBounds, boxes: Solid[] = []): CollisionSet => ({
@@ -291,6 +310,10 @@ export const supportY = (
     if (t > reach || t <= top) continue
     top = t
   }
+  if (set.dynamic) {
+    const t = set.dynamic.topAt(x, z, reach)
+    if (t > top) top = t
+  }
   return top
 }
 
@@ -318,7 +341,7 @@ export const blockedAt = (
     if (b.hull && hullTopAt(b.hull, x, z) <= walkable) continue
     return true
   }
-  return false
+  return set.dynamic ? set.dynamic.blocks(x, z, footY, headY, stepUp) : false
 }
 
 /** clamp to the level bounds, then push out of every box the body's own
@@ -357,6 +380,9 @@ export const resolveXZ = (
     else if (m === exitN) p.z = b.min.z
     else p.z = b.max.z
   }
+  // the moving solids last: a prop pushed against a wall is resolved after
+  // the wall, so the player ends up against the prop rather than inside it
+  set.dynamic?.pushOut(p, footY, headY, stepUp)
 }
 
 /** where a world point sits inside a hull, and the shortest way out of it.

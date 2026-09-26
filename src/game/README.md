@@ -73,6 +73,7 @@ net/                 the shared walk, see "Multiplayer" below
   spawn.ts           scatterSpawn(): the sunflower offset that keeps two
                      simultaneous arrivals out of each other's ribcage
 vehicles/            three driveable machines, see "The fleet" below
+sandbox/             rigid-body props on Rapier, see "The sandbox" below
 props/
   paperPlane.ts      the landed dart souvenir
 ```
@@ -485,6 +486,147 @@ scattered, and no screenshot was ever going to say otherwise.
   so emit the triangles twice, wound both ways, *after* computing normals.
   See `BLADE` in `props.ts`. Doubling the index costs no vertices; computing
   normals on the doubled set cancels them to zero and the leaf renders black.
+
+## The sandbox
+
+Props with real rigid-body physics, Garry's Mod style: spawn them, stack
+them, knock them over, roll them down a hill, throw them in the sea. The core
+is Rapier (`@dimforge/rapier3d-compat`), and everything the other sandbox
+systems (the physgun, the console, destruction, the network) do goes through
+one facade, `createSandbox()`.
+
+```
+sandbox/
+  physics.ts    loadRapier() (lazy, shared promise, works in Node) and the
+                world: fixed 1/60 s slices behind an accumulator with the
+                render interpolating between the last two, 8 solver substeps,
+                live `timescale` and `gravity`, collision groups
+  ground.ts     what props hit that is not a prop: one heightfield per chunk
+                off the terrain lattice (turned a quarter so Rapier's cell
+                diagonal matches the mesh's), a fixed cuboid per world Solid
+                tracked by identity, and a kinematic convex hull per vehicle.
+                Streamed around the walker and around every unparked prop
+  kinds.ts      the kind table: shape, mass, friction, bounce, density, mesh.
+                Six placeholders (crate, barrel, ball, plank, cone, block)
+  props.ts      the registry and the per-slice work: forces re-laid,
+                buoyancy at eight samples, impacts from the change in
+                velocity, poses kept for interpolation, parking and rescue
+  walker.ts     the walker among the props: the CollisionSet's `dynamic`
+                provider (stand, push out, blocks), the capped shove, weight,
+                riding, and the kinematic capsule that props bounce off
+  sandbox.ts    createSandbox(): the facade, and the only thing CrtScene calls
+  scenarios.ts  scripted physics (a site, a setup, a camera, a clock), shared
+                by the film harness and `measure physics`
+```
+
+### The contract
+
+```ts
+const sb = createSandbox({ parent, collision, waterY, waveAt, chunkSolids })
+await sb.whenReady                      // optional: spawns before it are queued
+sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
+
+const id = sb.spawn('crate', { x, y, z }, { yaw, quaternion, velocity, angular,
+                                            frozen, id, mesh, shape, mass, data })
+sb.remove(id); sb.clear(); sb.get(id); sb.forEach(fn); sb.count
+sb.getTransform(id, pos, quat?); sb.setTransform(id, pos, quat?)
+sb.getVelocity(id, lin, ang?); sb.setVelocity(id, lin?, ang?)
+sb.applyImpulse(id, impulse, at?); sb.addForce(id, force, at?)   // addForce: from onBeforeSlice
+sb.freeze(id); sb.unfreeze(id); sb.setMode(id, 'dynamic' | 'frozen' | 'kinematic')
+sb.moveKinematic(id, pos, quat?); sb.wake(id)
+sb.onImpact(e => ...)  // { id, prop, with: 'prop'|'ground'|'solid'|'vehicle'|'player',
+                       //   other, solid, impulse, speed, x, y, z }
+sb.onSpawn(p => ...); sb.onRemove(p => ...)
+sb.onBeforeSlice(h => ...); sb.onAfterSlice(h => ...)   // per fixed slice
+sb.raycast(origin, dir, maxDist, { props?, world? })    // { distance, point, normal, prop, solid, ground }
+sb.queryBall(center, r, p => ...)
+sb.groundY(x, z); sb.restY(kind, x, z); sb.focus
+sb.gravity = -34; sb.timescale = 1
+sb.rapier; sb.physics                                   // the raw world, for joints
+registerKind({ id, label, shape, mass, friction, restitution, density, mesh? })
+```
+
+A `Prop` carries `id`, `kind`, `body` (the Rapier body), `colliders`, `mesh`,
+`extents`, `mass`, `mode`, `parked` and a free `data` bag. Every call that
+takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
+`window.__sandbox` and the lens on `window.__sandboxCamera`.
+
+### Rules that hold it together
+
+- **Rapier never touches the room boot.** It is a 1.7 MB gzip chunk (the 0.21
+  WASM is 3 MB before base64), so it is reached by a dynamic import that
+  CrtScene's `ensureWorld` starts and nothing awaits. The facade is
+  synchronous and exists at once; its one material is compiled under the boot
+  cover through a `warm` mesh parked far below the world.
+- **Mesh and collision agree, again.** The heightfields are built from
+  `latticeHeight`, the same cache the terrain mesh and `terrainY` read.
+  Rapier splits a heightfield cell from (x0, z1) to (x1, z0) and the mesh
+  splits it from (x0, z0) to (x1, z1); a quarter turn about y maps one onto
+  the other, which is why each chunk's heightfield is laid out rotated.
+  `measure physics ground` raycasts it against `terrainY` (worst: 1e-4).
+- **The walk stays the walk.** The walker is not a rigid body. The sandbox
+  answers `supportY`/`resolveXZ`/`blockedAt` for its props through the
+  CollisionSet's `dynamic` hook, so the controller, the body's feet and the
+  chase boom meet props without changing. A push is two things, the walker
+  stopping and the prop being shoved with an impulse capped at `PUSH_FORCE`,
+  and that cap against friction is what makes mass matter: a crate slides at
+  a walk, a 900 kg block does not move.
+- **A ride carries translation and heading, never tilt.** Carrying the stand
+  point through the full rotation was a motor: the walker's weight tips the
+  prop a hair, the tilt carries the foot outward, the lever grows, and a
+  two-crate stack walked itself out from under the player (19 units).
+- **Water drag is per volume, not per prop.** Buoyancy is eight samples at
+  the octant centres carrying `mass * g / density` between them. With one
+  damping for everything, a 1.2 kg beach ball buoyed at twelve times its
+  weight was fired twenty units out of the sea; drag now scales with the
+  water a prop displaces per kilogram.
+- **Nothing falls forever.** Props farther than `PARK_RANGE` (200) from the
+  focus are disabled where they stand and wake when someone comes back; a
+  prop found well under the drawn ground is lifted back onto it three times
+  and then removed.
+- **Kinematic things teleport rather than sweep.** The walker's capsule and
+  the vehicle hulls move to their targets across the frame's slices, but a
+  jump past a stride (a spawn, a recall, a level cut) is a `setTranslation`:
+  an infinitely heavy capsule swept across the room bulldozes everything
+  between the two spots.
+- **Queries see what was stepped.** Rapier's broad phase updates in `step`, so
+  a collider added this frame is invisible to a raycast until the next slice.
+
+### Looking at it
+
+```
+npm run film -- sandbox:stack          a 3x5 crate tower shoved over by a plank
+npm run film -- sandbox:*              every scenario, one contact sheet each
+npm run film -- sandbox:roll --video   ...plus an MP4 (--gif for a GIF)
+npm run film -- --list
+
+npm run measure -- physics             all of: ground cost stack tunnel walker scenarios
+npm run measure -- physics walker      one section
+```
+
+`film` writes `shots/film/<id>.png`: `--frames` stills at even sim-time steps
+through the game's own chunk materials and the real sandbox, labelled with
+their time, plus the scenario's report line. It takes `PROBE_PORT`/`PROBE_CDP`
+like `shoot`, keeps a vite dependency cache per port, and kills only what it
+spawned.
+
+### How to add things
+
+- **A prop kind**: one entry in `kinds.ts`'s `KINDS` (or `registerKind()` from
+  your own module): a `ShapeSpec` (box, ball, cylinder, cone, hull, or a
+  compound of them), mass in kg, friction, restitution, density relative to
+  water, and a `mesh()` drawn around the body's origin. Nothing else names a
+  kind. A one-off shape (a debris piece) is `spawn(kind, at, { shape, mesh,
+  mass })` instead.
+- **A scenario**: `defineScenario({ id, title, site, camera, duration, setup,
+  events?, report? })` in any module, and one line in `scripts/probe/film.ts`'s
+  `SCENARIO_MODULES` if that module is not `scenarios.ts`. Sites are pure
+  field searches (`siteFlat`, `siteHill`, `siteStreet`, `siteSea` are
+  exported), so the same scenario always lands in the same place.
+- **A tool that holds props** (the physgun): drive them from
+  `onBeforeSlice`, with `setVelocity` toward a target or `addForce`, or switch
+  one to `kinematic` and `moveKinematic` it every slice. Per-frame writes land
+  on the first slice only.
 
 ## Multiplayer
 

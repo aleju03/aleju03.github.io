@@ -104,6 +104,10 @@ export interface OutsideHandles {
   prime: (x: number, z: number, ms?: number) => void
   /** whether the procedural planet is loaded yet */
   hasWorld: () => boolean
+  /** the collision boxes of a loaded chunk, whether or not the walker is
+      near it; null for a chunk not built (or no world yet). The sandbox's
+      props read the world's solids through this */
+  chunkSolids: (cx: number, cz: number) => readonly Solid[] | null
   /** fetch the world modules without building them; free to call early */
   preloadWorld: () => void
   /**
@@ -357,6 +361,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     },
     prime: (x, z, ms) => w?.world.prime(x, z, ms),
     hasWorld: () => w !== null,
+    chunkSolids: (cx, cz) => (w ? w.world.solidsIn(cx, cz) : null),
     preloadWorld: () => void loadMods(),
     attachWorld,
   }
