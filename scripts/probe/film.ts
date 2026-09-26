@@ -1,10 +1,10 @@
 import * as THREE from 'three'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
-import { makeChunkMats, waveHeightAt } from '../../src/game/world/streamer'
+import { makeChunkMats, splashAt, waveHeightAt } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
 import { SEA_Y, terrainY } from '../../src/game/world/terrain'
 import { buildDebris } from '../../src/game/world/debris'
-import { tickWind } from '../../src/game/world/wind'
+import { tickWind, windUniforms } from '../../src/game/world/wind'
 import { makeCollisionSet, type Solid } from '../../src/game/physics/collision'
 import { attachDestruction, createSandbox, type Sandbox } from '../../src/game/sandbox/sandbox'
 import {
@@ -48,6 +48,7 @@ setPropSounds(false)
 
 /** modules that register scenarios when imported; one line per new file */
 const SCENARIO_MODULES: Array<() => Promise<unknown>> = [
+  () => import('../../src/game/sandbox/tools/scenarios'),
   () => import('../../src/game/sandbox/propScenarios'),
   () => import('../../src/game/sandbox/destructionScenarios'),
 ]
@@ -77,6 +78,8 @@ export interface FilmSpec {
   dist?: number
   height?: number
   fov?: number
+  /** false: no time labels or title on the stills, for judging blind */
+  labels?: boolean
   /** draw every prop as its own mesh instead of in instanced batches, to
       measure what the batching saves */
   nobatch?: boolean
@@ -90,11 +93,19 @@ export interface FilmResult {
   report: string
   /** milliseconds of sandbox tick per simulated frame, median */
   msPerFrame: number
+  /** programs linked after the scene's warm-up: a tool whose first use
+      links a shader shows up here, and it should be zero */
+  links: number
+  /** their names */
+  linked: string
   frames: number
   /** the shot actually used, so a reframe can start from it */
   from: number[]
   to: number[]
   fov: number
+  /** the sandbox's state hash at the last still: two runs of the same spec
+      must print the same one (and the same as `measure physics determinism`) */
+  hash: string
   /** what the last still cost to draw: draw calls, triangles, and the
       milliseconds of one look.render with a finish after it (median of 5) */
   calls: number
@@ -103,6 +114,12 @@ export interface FilmResult {
 }
 
 let renderer: THREE.WebGLRenderer | null = null
+/** programs linked since the last build's warm-up */
+let linkCount = 0
+/** ...and what they were, by three's SHADER_NAME, so a stray link can be found */
+let linked: string[] = []
+/** the look's internal lines, for anything sized in pixels */
+let lookLines = 540
 /** the game's own post pass, so a film is judged through the real look */
 let look: PixelLook | null = null
 let lookRaw = false
@@ -117,6 +134,10 @@ interface Stage {
   duration: number
   /** the pinned sky, which the look is dressed from every frame */
   sky: SkyState
+  /** the scenario's render side, if it has one */
+  pres: ReturnType<NonNullable<Scenario['present']>> | null
+  /** last drawn time, for the render side's dt */
+  drawnAt: number
   /** people standing about, for the blasts to knock over */
   bodies: Body[]
 }
@@ -152,6 +173,10 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   const s = scenarioById(spec.id)
   if (!s) throw new Error(`no scenario "${spec.id}"; have ${SCENARIOS.map((o) => o.id).join(', ')}`)
   teardown()
+  // the sea's clock starts with the scenario, so the swell every floater
+  // meets is the same on every run (it is a page global, and used to carry
+  // over from whatever was filmed before in the same page)
+  windUniforms.uTime.value = 0
   setBatching(!spec.nobatch)
   const scene = new THREE.Scene()
   const mats = makeChunkMats(() => {}, () => {})
@@ -185,6 +210,7 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
     collision: makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, []),
     waterY: () => SEA_Y,
     waveAt: waveHeightAt,
+    splash: splashAt,
     chunkSolids: (cx, cz) => byKey.get(`${cx},${cz}`)?.boxes ?? null,
     walker: false,
   })
@@ -251,13 +277,24 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
       }
     }
   })
-  stage = { s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration, sky, bodies }
+  const pres = s.present ? s.present(c, scene, cam) : null
+  stage = {
+    s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration, sky, bodies, pres, drawnAt: 0,
+  }
   // link every program before the first still: an uncompiled material's
   // first draw can land a frame late, which films as props that are not
   // there yet (the game pays the same cost under its boot cover)
   if (renderer) await renderer.compileAsync(scene, cam)
   // the first frame: the ground and solids under the site are built here
   sb.tick({ dt: 0, active: true, focus: { x: c.x, y: c.y, z: c.z } })
+  // ...and a render side's staged warm-up is drawn once and put away, the
+  // way CrtScene's boot cover does it; links are counted from here on
+  if (pres && renderer) {
+    draw(renderer, stage)
+    pres.warmed?.()
+  }
+  linkCount = 0
+  linked = []
   return stage
 }
 
@@ -328,6 +365,19 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
   renderer?.dispose()
   lookRaw = raw
   renderer = new THREE.WebGLRenderer({ canvas, antialias: raw })
+  lookLines = lines || h
+  // count every link, so a first use that compiles something is visible
+  const gl = renderer.getContext()
+  const link = gl.linkProgram.bind(gl)
+  gl.linkProgram = (p: WebGLProgram) => {
+    linkCount++
+    link(p)
+    // three's SHADER_NAME, or else the uniforms the program declares
+    const src = (gl.getAttachedShaders(p) ?? []).map((sh) => gl.getShaderSource(sh) ?? '').join('\n')
+    const name = /#define SHADER_NAME ([^\s]+)/.exec(src)?.[1] ??
+      [...src.matchAll(/uniform \S+ (u[A-Z]\w*)/g)].map((m) => m[1]).slice(0, 6).join(' ')
+    linked.push(name)
+  }
   renderer.setPixelRatio(1)
   renderer.setSize(w, h, false)
   if (raw) {
@@ -339,7 +389,7 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
     look.knobs.lines = lines
   }
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.shadowMap.type = THREE.PCFShadowMap
   renderer.setScissorTest(true)
   return renderer
 }
@@ -352,6 +402,40 @@ const draw = (r: THREE.WebGLRenderer, st: Stage) => {
     look.render(st.scene, st.cam)
   }
   else r.render(st.scene, st.cam)
+}
+
+/** the lens at time t */
+const aimLens = (st: Stage, t: number) => {
+  if (!st.s.lens) return
+  const shot = st.s.lens(st.c, t)
+  st.cam.position.set(...shot.from)
+  st.cam.lookAt(shot.to[0], shot.to[1], shot.to[2])
+  if (shot.fov && shot.fov !== st.cam.fov) {
+    st.cam.fov = shot.fov
+    st.cam.updateProjectionMatrix()
+  }
+  st.cam.updateMatrixWorld()
+}
+
+/** the moving camera and the render side, for a frame drawn at time t. A
+    sheet's stills are seconds apart, and the render side is springs (a
+    viewmodel's sway, a body's balance, a beam's whip) that a one-second
+    step would throw anywhere, so it is walked there in 60 Hz steps with the
+    lens moving under it, and only the last one is drawn */
+const prep = (st: Stage, t: number) => {
+  const from = st.drawnAt
+  st.drawnAt = t
+  if (st.pres) {
+    const h = 1 / 60
+    let at = from
+    while (t - at > h * 1.5) {
+      at += h
+      aimLens(st, at)
+      st.pres.frame(at, h, lookLines)
+    }
+    aimLens(st, t)
+    st.pres.frame(t, Math.max(0, t - at), lookLines)
+  } else aimLens(st, t)
 }
 
 const advance = (st: Stage, to: number) => {
@@ -404,9 +488,12 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     const row = Math.floor(i / cols)
     r.setViewport(col * tw, (rows - row - 1) * th, tw, th)
     r.setScissor(col * tw, (rows - row - 1) * th, tw, th)
+    prep(st, t)
     draw(r, st)
-    label(col * tw + 8, row * th + th - 30, `t = ${t.toFixed(2)} s`)
-    if (i === 0) label(col * tw + 8, row * th + 8, `${st.s.id}: ${st.s.title}`, true)
+    if (spec.labels !== false) {
+      label(col * tw + 8, row * th + th - 30, `t = ${t.toFixed(2)} s`)
+      if (i === 0) label(col * tw + 8, row * th + 8, `${st.s.id}: ${st.s.title}`, true)
+    }
   }
   // what the last still cost, drawn again five times with a finish after each
   const gl = r.getContext()
@@ -438,20 +525,25 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     report: st.s.report ? st.s.report(st.c) : '',
     msPerFrame: median(st.ticks),
     frames: spec.frames,
+    links: linkCount,
+    linked: linked.join(', '),
     from: st.cam.userData.shot.from.map((n: number) => Math.round(n * 10) / 10),
     to: st.cam.userData.shot.to.map((n: number) => Math.round(n * 10) / 10),
     fov: st.cam.userData.shot.fov,
+    hash: st.sb.stateHash(),
   }
 }
 
 let vFrame = 0
 let vFps = 30
+let videoLabels = true
 
 /** set up a scenario for frame-by-frame capture at `fps` */
 export const videoStart = async (spec: FilmSpec, w: number, h: number, fps: number) => {
   makeRenderer(w, h, !!spec.raw, Math.round(h / 2))
   const st = await build(spec, w, h)
   labels.innerHTML = ''
+  videoLabels = spec.labels !== false
   vFrame = 0
   vFps = fps
   return { frames: Math.round(st.duration * fps) + 1, id: st.s.id }
@@ -466,15 +558,19 @@ export const videoFrame = () => {
   const size = renderer.getSize(new THREE.Vector2())
   renderer.setViewport(0, 0, size.x, size.y)
   renderer.setScissor(0, 0, size.x, size.y)
+  prep(st, t)
   draw(renderer, st)
   labels.innerHTML = ''
-  label(8, size.y - 30, `${st.s.id}  t = ${t.toFixed(2)} s`)
+  if (videoLabels) label(8, size.y - 30, `${st.s.id}  t = ${t.toFixed(2)} s`)
   vFrame++
   return true
 }
 
 export const videoReport = () =>
   stage ? (stage.s.report ? stage.s.report(stage.c) : '') : ''
+
+/** programs linked since the warm-up of the current film */
+export const videoLinks = () => linkCount
 
 /* ------------------------------------------------------ the catalogue -- */
 
@@ -598,33 +694,51 @@ export const sounds = async () => {
   for (const s of ['wood', 'glass', 'melon'] as const) await put(`${s} break`, () => S.breakSound(s, 1, 2, 0, 0))
   await put('boom at 4 units', () => S.boom(1, 4, 0, 0))
   await put('boom at 30 units', () => S.boom(1, 30, 0, 0))
-  await put('ignite', () => S.igniteSound(2, 0, 0))
-  // the reference: core/sfx.ts's footstep, through the same offline render.
-  // sfx.ts keeps the first context it is handed, so one reference per load
+  await put('ignite, and a second of sputter', () => S.igniteSound(2, 0, 0, 1))
+  // the references: core/sfx.ts's own one-shots, the mix the prop sounds
+  // have to sit in. sfx.ts keeps the first context it is handed for good, so
+  // they all render through ONE offline context, a window each: the render
+  // is suspended at each window's start, the sound is fired, and it resumes.
+  // sfx.ts also calls resume() on a suspended context, which an offline one
+  // refuses (it throws until rendering starts, and a resume of ours is the
+  // only one that may run mid-render), so its resume is a no-op here
   const sfx = await import('../../src/game/core/sfx')
-  const ref = async (what: string, fn: () => void) => {
-    const off = new OfflineAudioContext(2, 44100 * 1, 44100)
-    const W = window as unknown as { AudioContext: unknown }
-    const prev = W.AudioContext
-    W.AudioContext = function () { return off } as unknown
-    try {
+  const refs: Array<[string, () => void]> = [
+    ['footstep (grass, walk)', () => sfx.footstep('grass', 1, false)],
+    ['footstep (asphalt, run)', () => sfx.footstep('asphalt', 1, true)],
+    ['land thump (hard)', () => sfx.landThump('asphalt', 1)],
+    ['spawn pop (35 kg)', () => sfx.spawnPop(35)],
+    ['prop snap (hard)', () => sfx.propSnap(1)],
+  ]
+  const WIN = 1
+  const off = new OfflineAudioContext(2, Math.round(44100 * WIN * refs.length), 44100)
+  const resume = off.resume.bind(off)
+  ;(off as unknown as { resume: () => Promise<void> }).resume = () => Promise.resolve()
+  const W = window as unknown as { AudioContext: unknown }
+  const prev = W.AudioContext
+  W.AudioContext = function () { return off } as unknown
+  refs.forEach(([, fn], i) => {
+    void off.suspend(i * WIN).then(() => {
       fn()
-    } finally {
-      W.AudioContext = prev
-    }
-    const buf = await off.startRendering()
+      void resume()
+    })
+  })
+  const buf = await off.startRendering()
+  W.AudioContext = prev
+  refs.forEach(([what], i) => {
+    const i0 = Math.round(i * WIN * 44100)
+    const i1 = Math.round((i + 1) * WIN * 44100)
     let peak = 0
     let sum = 0
     for (let c = 0; c < buf.numberOfChannels; c++) {
       const d = buf.getChannelData(c)
-      for (let i = 0; i < d.length; i++) {
-        peak = Math.max(peak, Math.abs(d[i]))
-        sum += d[i] * d[i]
+      for (let k = i0; k < i1; k++) {
+        peak = Math.max(peak, Math.abs(d[k]))
+        sum += d[k] * d[k]
       }
     }
-    out.push({ what, peak: Math.round(peak * 1000) / 1000, rms: Math.round(Math.sqrt(sum / (buf.length * 2)) * 10000) / 10000 })
-  }
-  await ref('footstep (grass, walk)', () => sfx.footstep('grass', 1, false))
+    out.push({ what: `ref: ${what}`, peak: Math.round(peak * 1000) / 1000, rms: Math.round(Math.sqrt(sum / ((i1 - i0) * 2)) * 10000) / 10000 })
+  })
   return out
 }
 

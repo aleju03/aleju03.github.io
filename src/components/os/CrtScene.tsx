@@ -27,12 +27,14 @@ import { createRoamInput } from '../../game/core/input'
 import { blockedAt, makeCollisionSet, supportY } from '../../game/physics/collision'
 import { createCollisionDebug } from '../../game/physics/collisionDebug'
 import { createDisposer } from '../../game/core/disposer'
-import { footstep, landThump } from '../../game/core/sfx'
+import { footstep, landThump, spawnPop } from '../../game/core/sfx'
 // the registry itself is loaded on demand with the rest of the world; only its
 // types are needed up front, and those cost nothing at runtime
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { Sandbox } from '../../game/sandbox/sandbox'
+import type { Toolbelt } from '../../game/sandbox/tools/toolbelt'
+import type { ToolInput } from '../../game/sandbox/tools/types'
 import { createEdges, held, keyHint } from '../../game/sandbox/bindings'
 import {
   createConsole, msg as bilingual, say as sayIn, type Console, type Msg, type SandboxHost,
@@ -41,6 +43,7 @@ import { historyOf, labelIn, LOCAL, type History } from '../../game/sandbox/hist
 import { createWorldRules } from '../../game/sandbox/rules'
 import { GRAVITY } from '../../game/sandbox/physics'
 import SandboxConsole, { type FeedLine } from './SandboxConsole'
+import Crosshair, { type CrosshairAim } from './Crosshair'
 import SpawnMenu, { type CatalogueSource, type OrderLine } from './SpawnMenu'
 import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
@@ -186,6 +189,13 @@ interface VoiceHud {
 /** the receipt keeps this many lines; anything older has been torn off */
 const FEED_KEEP = 80
 
+/** a hint line that wraps only between its hints, never inside one */
+const tapeLine = (line: string) =>
+  line.split(' · ').flatMap((h, i) => [
+    i > 0 ? ' · ' : '',
+    <span key={i} className="whitespace-nowrap">{h}</span>,
+  ])
+
 const EASE = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 const MODELS = [
   '/os/models/computer.glb',
@@ -321,6 +331,8 @@ export default function CrtScene({
   /** sitting on something: what the HUD says you may get off, and whether
       this particular cushion can see the television */
   const [seated, setSeated] = useState<{ label: string; atTv: boolean } | null>(null)
+  /** what the crosshair is on (Crosshair.tsx) */
+  const [aim, setAim] = useState<CrosshairAim>('none')
   /** the channel the set is showing, while you are sitting in front of it */
   const [tvChannel, setTvChannel] = useState<string | null>(null)
   const [locked, setLocked] = useState(false)
@@ -560,9 +572,14 @@ export default function CrtScene({
         webgl.setPixelRatio(PR_BASE)
         webgl.setSize(W, H)
         webgl.shadowMap.enabled = true
-        // PCFSoft is less prone to the blotchy VSM halos that show up around
-        // thin desk legs and chair casters on the dark floor.
-        webgl.shadowMap.type = THREE.PCFSoftShadowMap
+        // PCF is less prone to the blotchy VSM halos that show up around thin
+        // desk legs and chair casters on the dark floor. Not PCFSoft: three
+        // deprecated it and swaps in PCF on the first shadow pass, and every
+        // program linked before that pass was keyed on the soft type (which
+        // it compiles as BASIC), so the whole covered warm-up linked a second
+        // time the first time anything was drawn after it. Found as the
+        // physgun's first grab linking its rim shells mid-walk
+        webgl.shadowMap.type = THREE.PCFShadowMap
         // the scene is static except the player body, so every light's map is
         // baked once (light.shadow.autoUpdate = false) and re-rendered only
         // for the light near the player on frames where a caster moved
@@ -731,10 +748,24 @@ export default function CrtScene({
         // the sandbox (src/game/sandbox/): Rapier and the props, loaded with the
         // world and never before it. Null until then; every call site guards
         let sandbox: Sandbox | null = null
+        // the tool belt (src/game/sandbox/tools/): hands and the physgun, built
+        // with the sandbox. 1 and 2 pick the slot; the belt starts on hands,
+        // so a walk that never presses 2 is the walk it always was
+        let tools: Toolbelt | null = null
+        /** mouse movement the belt has taken from the view (E turning a prop) */
+        const toolLook = { x: 0, y: 0 }
+        const toolAim = { eye: new THREE.Vector3(), dir: new THREE.Vector3(), yaw: 0 }
+        const toolIn: ToolInput = {
+          aim: toolAim, dt: 0, fire: false, alt: false, rotate: false, snap: false,
+          reload: false, wheel: 0, lookX: 0, lookY: 0,
+        }
+        const toolHand = new THREE.Vector3()
+        let toolsLive = false
         /** its undo stack, once it exists (sandbox/history.ts) */
         let history: History | null = null
         disposeFleet = () => {
           fleet.dispose()
+          tools?.dispose()
           sandbox?.dispose()
         }
         // F9: outline whatever the live level is testing the walk against.
@@ -1022,6 +1053,8 @@ export default function CrtScene({
         body.visible = false
         scene.add(body)
         const chase = createChaseCam()
+        /** the right hand, where the body carries the physgun in third person */
+        const handR = rig.limbs.findIndex((l) => l.name === 'handR')
         /*
           Getting hit. The fleet moves (somebody else's car on foot, your own
           at the wheel) and the watch turns where each machine was last frame
@@ -1245,6 +1278,12 @@ export default function CrtScene({
           })
         }
         let hereNow = 0
+        let aimNow: CrosshairAim = 'none'
+        /** props still scaling in from a spawn, and how long that takes */
+        const pops: { mesh: THREE.Object3D; t: number }[] = []
+        const POP_S = 0.24
+        /** how far the crosshair notices a prop: the console's own reach */
+        const AIM_REACH = 120
 
         // prompt bookkeeping mirrored into React state only on change
         let nearNow = false
@@ -1528,6 +1567,7 @@ export default function CrtScene({
         // out of the world there is no round trip to wait on
         applyLookRef.current = (next) => {
           rig.setLook(next)
+          tools?.setHandColor(next.shell)
           net?.look(packLook(next))
         }
         let feedKey = 0
@@ -1880,13 +1920,22 @@ export default function CrtScene({
           // at the wheel the mouse belongs to the drive camera. Left wired to
           // walk.turn it would silently spin the suspended walker's heading
           // and stand you down facing somewhere you never looked
-          onTurn: (dx, dy, sign) =>
-            fleet.riding
-              ? fleet.turn(dx, dy, sign, prefsRef.current.sens)
-              : walk.turn(dx, dy, sign, prefsRef.current.sens),
+          onTurn: (dx, dy, sign) => {
+            // E held on a prop in the beam: the mouse turns the prop, and
+            // the view holds still while it does
+            if (tools?.capturesLook && !fleet.riding) {
+              toolLook.x += dx
+              toolLook.y += dy
+              return
+            }
+            if (fleet.riding) fleet.turn(dx, dy, sign, prefsRef.current.sens)
+            else walk.turn(dx, dy, sign, prefsRef.current.sens)
+          },
           // E: get out of whatever you are in, else the machine's prompt, else
           // a door's, else climb into whatever is parked in front of you
           onUse: () => {
+            // while the beam holds something E is its rotate modifier
+            if (tools?.capturesUse && !fleet.riding) return true
             if (fleet.riding) {
               leaveVehicle()
               return true
@@ -1969,6 +2018,7 @@ export default function CrtScene({
           walk.noclip = on
           setFlying(on)
         }
+        const aimDir = new THREE.Vector3()
         const canAct = () => !fleet.riding && !levels.frozen && !seating.current && !rig.down
         /** Garry's Mod lets you noclip or teleport out of a heap on the
             floor, so the console and the noclip key do too: the body stands
@@ -1994,7 +2044,15 @@ export default function CrtScene({
           online: () => net !== null,
           // the head and gaze as of the last frame: commands run from DOM
           // events, when the chase boom may be holding the camera
-          aim: () => ({ origin: headPos, dir: headDir }),
+          // (on foot the gaze is read off the walk's own yaw and pitch, which
+          // are this instant's, rather than off a camera one frame behind a
+          // mouse flick: a spawn lands under the crosshair you see now)
+          aim: () => {
+            if (fleet.riding || seating.current || rig.down) return { origin: headPos, dir: headDir }
+            const cp = Math.cos(walk.pitch)
+            aimDir.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp)
+            return { origin: headPos, dir: aimDir }
+          },
           here: () => ({ x: headPos.x, y: walk.feetY, z: headPos.z, yaw: walk.yaw }),
           teleport: (x, z, y, yaw) => {
             if (fleet.riding) leaveVehicle()
@@ -2054,6 +2112,26 @@ export default function CrtScene({
             return true
           },
           clear: () => setFeed([]),
+          // a spawn arrives: every piece scales in with a little overshoot, a
+          // ring of dust goes up where it sits down, and one pop plays for the
+          // lot (ten crates are one order, not ten)
+          spawned: (ids) => {
+            if (!sandbox || !ids.length) return
+            let mass = 0
+            for (const id of ids) {
+              const p = sandbox.get(id)
+              if (!p) continue
+              mass = Math.max(mass, p.mass)
+              if (p.mesh) {
+                p.mesh.scale.setScalar(0.05)
+                pops.push({ mesh: p.mesh, t: 0 })
+              }
+              const at = p.body.translation()
+              fleet.puff(at.x, at.y - p.extents.y, at.z, Math.max(p.extents.x, p.extents.z))
+            }
+            if (pops.length > 60) pops.splice(0, pops.length - 60)
+            spawnPop(mass)
+          },
         }
         const sbConsole = createConsole(host)
         consoleRef.current = sbConsole
@@ -2083,7 +2161,7 @@ export default function CrtScene({
           if (!history || !sandbox) return
           const e = history.undo()
           pushFeed(e
-            ? { tone: 'ok', text: bilingual(`undone: ${labelIn(e.label, 'en')}`, `deshecho: ${labelIn(e.label, 'es')}`) }
+            ? { tone: 'ok', text: bilingual(`undone: ${labelIn(e.label, 'en')}`, `deshice: ${labelIn(e.label, 'es')}`) }
             : { tone: 'err', text: bilingual('nothing left to undo', 'no queda nada que deshacer') })
         }
 
@@ -2650,6 +2728,10 @@ export default function CrtScene({
             threading a `driving` flag through two hundred lines of walk code.
           */
           if (fleet.riding) {
+            if (toolsLive) {
+              tools?.holster()
+              toolsLive = false
+            }
             driveTick(now, dt)
             return
           }
@@ -2710,6 +2792,31 @@ export default function CrtScene({
           } else {
             chHeld = false
           }
+          // the tool belt decides what the beam pulls toward before the props
+          // step, so this frame's slices already pull. Only on foot, out in
+          // the world, standing: a seat, a heap on the floor and the pause
+          // sheet all holster it
+          toolsLive = !!tools && level.id === 'overworld' && !sitting && !rig.down && fps
+          if (tools && !pausedNow) {
+            const k = input.keys
+            if (edges.pressed('slot1')) tools.select(0)
+            else if (edges.pressed('slot2')) tools.select(1)
+            else if (edges.pressed('slot3')) tools.select(2)
+            toolAim.eye.copy(camera.position)
+            camera.getWorldDirection(toolAim.dir)
+            toolAim.yaw = walk.yaw
+            toolIn.dt = dt
+            toolIn.fire = held(k, 'grab')
+            toolIn.alt = held(k, 'freeze')
+            toolIn.rotate = held(k, 'rotate')
+            toolIn.snap = held(k, 'snap')
+            toolIn.reload = held(k, 'unfreeze')
+            toolIn.wheel = input.takeWheel()
+            toolIn.lookX = toolLook.x
+            toolIn.lookY = toolLook.y
+            toolLook.x = toolLook.y = 0
+            tools.update(toolIn, toolsLive)
+          }
           // the props: one fixed-step physics frame, the walker's shoves and
           // weight in, a ride carried out (it moves camera x/z, so it runs
           // before anything below reads the head)
@@ -2733,6 +2840,19 @@ export default function CrtScene({
               focus: camera.position,
             })
             if (sbf.moving && level.id === 'overworld') followSunShadow(camera.position, now)
+            // the spawn pop: scale in over POP_S with an ease-out-back, so it
+            // lands a hair big and settles, which is what reads as arriving
+            for (let i = pops.length - 1; i >= 0; i--) {
+              const pp = pops[i]
+              pp.t += dt / POP_S
+              const u = Math.min(1, pp.t)
+              const c = 2.2
+              pp.mesh.scale.setScalar(1 + (c + 1) * Math.pow(u - 1, 3) + c * Math.pow(u - 1, 2))
+              if (u >= 1) {
+                pp.mesh.scale.setScalar(1)
+                pops.splice(i, 1)
+              }
+            }
           }
           // the sim reports footfalls and touchdowns; the level says what is
           // underfoot (the backrooms are carpet wall to wall), and crouched
@@ -2835,6 +2955,8 @@ export default function CrtScene({
           // same factor as poseBody's trailing offset: a crushed boom means
           // the lens is back on the head, so the flair fades out with it
           rigPose.show = Math.min(1, chase.dist / 1.2)
+          // the physgun out: the right arm comes up and carries it
+          rigPose.aim = toolsLive && tools?.tool === 'physgun' ? 1 : 0
           // the ragdoll and the boom both work in a few units around the
           // body, so one terrain sample under it is the floor for both —
           // they never need the whole heightfield, only the local plane
@@ -2919,6 +3041,21 @@ export default function CrtScene({
           // still the head here — chase.apply() only borrows the camera below
           headPos.copy(camera.position)
           headDir.copy(gazeVec)
+          // what the crosshair is on: one props-only ray a frame, mirrored
+          // into React only when the answer changes
+          {
+            const hit = sandbox && level.id === 'overworld' && !rig.down
+              ? sandbox.raycast(headPos, headDir, AIM_REACH, { world: false })
+              : null
+            // the physgun holding something outranks whatever the ray finds
+            const a: CrosshairAim = tools?.physgun.holding
+              ? 'held'
+              : hit?.prop ? (hit.prop.mode === 'frozen' ? 'frozen' : 'prop') : 'none'
+            if (a !== aimNow) {
+              aimNow = a
+              setAim(a)
+            }
+          }
           // no prompts while the body is a heap on the floor
           const isNear = !rig.down && dist < 3.4 && gazeVec.dot(toScreen.normalize()) > 0.35
           if (isNear !== nearNow) {
@@ -2982,8 +3119,10 @@ export default function CrtScene({
           if (level.id === 'overworld') outside.knockPeople(impacts)
           // ...and its prompt is the lowest-priority one: the machine and a
           // door both win, because both are things you are standing right at
+          // (and not to a flyer: a car offered to somebody passing overhead
+          // at thirty units a second is noise)
           const atVehicle =
-            isNear || verb || propVerb || seating.current || rig.down || levels.frozen
+            isNear || verb || propVerb || seating.current || rig.down || levels.frozen || walk.noclip
               ? null
               : fs.prompt
           // "drive" when the wheel is free, "ride" when it is not: the prompt
@@ -3016,6 +3155,17 @@ export default function CrtScene({
           chaseEnv.pitch = walk.pitch
           chaseEnv.focus = rig.ragdolling ? rig.focus(focusPt) : null
           chase.apply(camera, dt, chaseEnv)
+          // the gun and the beam go where the lens ended up: in the hand of
+          // the body when the boom is out, in front of the lens when it is not
+          if (tools) {
+            const third = chase.dist > 1.2
+            if (third && handR >= 0) rig.limbPos(handR, toolHand)
+            tools.present({
+              camera, dt, gait: step.gait, grounded: step.grounded,
+              firstPerson: !third, hand: third ? toolHand : null,
+              active: toolsLive && !pausedNow, lines: look.knobs.lines,
+            })
+          }
           debugTick(level, camera.position.x, walk.feetY, camera.position.z)
           render()
           raf = requestAnimationFrame(walkTick)
@@ -3080,10 +3230,11 @@ export default function CrtScene({
         let worldReady: Promise<void> | null = null
         const ensureWorld = () => {
           worldReady ??= (async () => {
-            const [, registry, sandboxMod] = await Promise.all([
+            const [, registry, sandboxMod, toolsMod] = await Promise.all([
               outside.attachWorld(),
               import('../../game/vehicles/registry'),
               import('../../game/sandbox/sandbox'),
+              import('../../game/sandbox/tools/toolbelt'),
             ])
             if (disposed || !scene) return
             // synchronous and cheap: Rapier itself downloads behind it and
@@ -3095,8 +3246,19 @@ export default function CrtScene({
               collision: overworld.collision,
               waterY: () => outside.waterY,
               waveAt: outside.waveAt,
+              splash: outside.splash,
               chunkSolids: outside.chunkSolids,
             })
+            // the belt's gun, beam and halo materials are in the scene from
+            // here; warmForRoam stages them in front of its camera so the
+            // covered compile and first draw pay for them, and the first grab
+            // of a walk links nothing
+            tools = toolsMod.createToolbelt({
+              sb: sandbox,
+              parent: scene,
+              rigs: () => outside.people(),
+            })
+            tools.setHandColor(lookRef.current.shell)
             sandbox.gravity = -GRAVITY * rules.gravity
             sandbox.timescale = rules.timescale
             history = historyOf(sandbox)
@@ -3119,6 +3281,7 @@ export default function CrtScene({
                 categories: list.spawnCategories,
                 kind: (id) => kinds.KINDS[id],
                 note: list.kindNote,
+                thumbs: list.spawnThumbs,
               })
             })
             // a blast knocks down whoever it reaches: the walker (not from a
@@ -3127,7 +3290,7 @@ export default function CrtScene({
             // sandbox's (explosion.ts), so the film harness agrees with this
             sandbox.onExplosion((e) => {
               if (levels.current.id !== 'overworld') return
-              if (!seating.current && !levels.frozen && !fleet.driving) {
+              if (!seating.current && !levels.frozen && !fleet.driving && !godMode && !walk.noclip) {
                 feetPt.set(camera.position.x, walk.feetY, camera.position.z)
                 if (sandboxMod.blastImpact(e, feetPt, EYE * 1.15, rig.mass, impact)) {
                   rig.hit(impact.impulse, impact.point)
@@ -3149,6 +3312,8 @@ export default function CrtScene({
                 // the walk's yaw and pitch, which a headless drive cannot
                 // steer any other way (it is never granted the pointer lock)
                 __sandboxWalk: walk,
+                __sandboxRig: rig,
+                __tools: tools,
               })
             }
             fleet = registry.buildFleet({
@@ -3236,6 +3401,9 @@ export default function CrtScene({
           // cycle at the warm camera. That also anchors the hand-managed sun
           // map here, letting the first real doorway frame reuse it.
           applyLight(warmCam.position)
+          // the tool belt's gun, beam, glows and rim shells, in front of the
+          // warm camera for the compile and the one-pixel draw below
+          tools?.stage(warmCam)
           try {
             // The initial compile ran before the streamed chunks existed.
             // Compile their live outdoor lighting variant now; the promise
@@ -3261,6 +3429,7 @@ export default function CrtScene({
               fleet.setLightWarmup(false)
             }
           } finally {
+            tools?.unstage()
             if (webgl) {
               webgl.setScissorTest(false)
               webgl.setViewport(0, 0, warmSize.x, warmSize.y)
@@ -3874,9 +4043,23 @@ export default function CrtScene({
           esc to skip
         </p>
       )}
-      {roam && walking && !paused && (
-        <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
-          {!locked && !typing && !menuOpen
+      {/* the key hints, on a strip of masking tape stuck to the bottom of
+          the screen: dark ink on cream reads over grass, asphalt and night
+          alike, which the bare grey line it replaced did not. The console and
+          the catalogue carry their own hints, so the tape comes off while
+          either is up (and never contradicts their "esc closes") */}
+      {roam && walking && !paused && typing === null && !menuOpen && (
+        <p
+          className="pointer-events-none absolute right-4 bottom-3 z-10 max-w-[min(640px,calc(100vw-420px))] px-3 py-[3px] text-right font-mono text-[11px] leading-snug"
+          style={{
+            color: '#3f3325',
+            background: 'linear-gradient(90deg, rgba(246,236,208,0.93), rgba(238,226,194,0.95))',
+            boxShadow: '0 1px 3px rgba(40,30,18,0.35)',
+            transform: 'rotate(-0.5deg)',
+            clipPath: 'polygon(0 12%, 1.2% 0, 98.8% 6%, 100% 0, 99.2% 88%, 100% 100%, 1% 94%, 0 100%)',
+          }}
+        >
+          {!locked
             ? t.sandbox.hud.grab
             : driving
               ? // the controls change with the medium, so the line does too:
@@ -3886,9 +4069,9 @@ export default function CrtScene({
                 driving.seat !== 0
                 ? `along for the ride · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
                 : `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
-              : keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
+              : tapeLine(keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
                   mp.status === 'live' ? ` · ${t.sandbox.hud.voice}` : ''
-                } · ${t.sandbox.hud.pauses}`, language)}
+                } · ${t.sandbox.hud.pauses}`, language))}
         </p>
       )}
       {/* the instrument panel. Deliberately the same quiet mono the rest of
@@ -3969,12 +4152,10 @@ export default function CrtScene({
           onClose={() => closeMenuRef.current?.()}
         />
       )}
-      {roam && walking && locked && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute top-1/2 left-1/2 z-10 size-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-stone-400/70"
-        />
-      )}
+      {/* the crosshair, whenever there is a walk to aim: also with the
+          mouse freed for the catalogue, because that is exactly when you
+          need to know where the thing you click is going to land */}
+      {roam && walking && !paused && !driving && !seated && <Crosshair aim={aim} />}
       {/* the nudge that exists so nobody walks a whole session as guest-08c9
           without ever learning there was a choice. Not a button: at this
           moment the mouse is usually captured and there is no cursor to click

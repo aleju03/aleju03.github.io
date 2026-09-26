@@ -553,8 +553,11 @@ sandbox/
   thumbnails.ts renderThumbnails(): spawn-menu icons, in a context of its own
   propScenarios.ts  catalogue, chain, smash, crowd (and the turntable's lot)
   props.ts      the registry and the per-slice work: forces re-laid,
-                buoyancy at eight samples, impacts from the change in
-                velocity, poses kept for interpolation, parking and rescue
+                buoyancy on the drawn swell, the moving sea, splashes,
+                impacts from the change in velocity, rolling resistance,
+                poses kept for interpolation, parking and rescue
+  wake.ts       the waterline cue: foam collars and shed rings around
+                floaters, splash rings and spray, two instanced draws
   walker.ts     the walker among the props: the CollisionSet's `dynamic`
                 provider (stand, push out, blocks), the capped shove, weight,
                 riding, and the kinematic capsule that props bounce off
@@ -570,7 +573,23 @@ sandbox/
   rules.ts      the shared knobs (gravity, timescale, cleanup of everyone's)
                 and the seam the network routes them through
   places.ts     what `tp town:downtown` and `tp landmark:lighthouse` find
-  spawnlist.ts  what the spawn menu lists and under which heading
+  spawnlist.ts  the spawn menu's reading of catalogue.ts (the one list of
+                what can be spawned) and thumbnails.ts, plus each plate's
+                small print
+  tools/        the tool belt and the physgun:
+    types.ts      ToolInput (one frame of intent, filled by the keyboard or a
+                  script) and HoldRecord (a hold as plain numbers, for the wire)
+    physgun.ts    the hold: an implicit damped spring on the exact grab point
+                  through Rapier impulses, orientation kept against the
+                  heading, wheel, E-rotate with a 45-degree snap, throw,
+                  freeze, thaw, rigs by the nearest limb. Headless
+    beam.ts       the curved beam, the glows, the rim on the held prop and
+                  the freeze flash; draws from numbers (frameFromRecord)
+    viewmodel.ts  the gun, first person (depth-squeezed, never in a wall)
+                  and in the body's hand
+    sfx.ts        the hum pitched by strain, the grab and freeze one-shots
+    toolbelt.ts   slots 1/2/3, and the one object CrtScene talks to
+    scenarios.ts  the films: swing, rotate, heavy, throw, ragdoll, each -3p
   destruction.ts  buildings coming down: damage from blasts, impacts, cars
                 and the console; storeys failing under their load; rubble
                 that breaks up level by level as it lands; the budget
@@ -580,7 +599,7 @@ sandbox/
 ### The contract
 
 ```ts
-const sb = createSandbox({ parent, collision, waterY, waveAt, chunkSolids })
+const sb = createSandbox({ parent, collision, waterY, waveAt, splash, chunkSolids })
 await sb.whenReady                      // optional: spawns before it are queued
 sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
 
@@ -594,14 +613,17 @@ sb.freeze(id); sb.unfreeze(id); sb.setMode(id, 'dynamic' | 'frozen' | 'kinematic
 sb.moveKinematic(id, pos, quat?); sb.wake(id)
 sb.onImpact(e => ...)  // { id, prop, with: 'prop'|'ground'|'solid'|'vehicle'|'player',
                        //   other, solid, impulse, speed, x, y, z }
+sb.onSplash(e => ...)  // { id, prop, x, y, z, speed, impulse }: went into the sea hard
 sb.onSpawn(p => ...); sb.onRemove(p => ...)
 sb.onBeforeSlice(h => ...); sb.onAfterSlice(h => ...)   // per fixed slice
 sb.raycast(origin, dir, maxDist, { props?, world? })    // { distance, point, normal, prop, solid, ground }
 sb.queryBall(center, r, p => ...)
 sb.groundY(x, z); sb.restY(kind, x, z); sb.focus
 sb.gravity = -34; sb.timescale = 1
+sb.stateHash()                                          // '9f3c01ab@6.0000': every pose and velocity, to the bit
+sb.random()                                             // the simulation's seeded chance, 0..1
 sb.rapier; sb.physics                                   // the raw world, for joints
-registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, mesh?,
+registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, rolling?, mesh?,
                surface?, breaks?: { speed }, explodes?: { power, radius, speed } })
 
 sb.explode(at, power = 1, radius = 16)  // impulse, damage (chains), fx, boom
@@ -621,7 +643,8 @@ await renderThumbnails(ids?, size = 96)  // [{ id, canvas }], pixel-art icons
 ```
 
 A `Prop` carries `id`, `kind`, `body` (the Rapier body), `colliders`, `mesh`,
-`extents`, `mass`, `mode`, `parked` and a free `data` bag. Every call that
+`extents`, `mass`, `mode`, `parked`, `wet` (the share of it under the sea)
+and a free `data` bag. Every call that
 takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
 `window.__sandbox` and the lens on `window.__sandboxCamera`.
 
@@ -664,6 +687,25 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   plank's tiny long-axis inertia. Drag is Rapier's own damping (integrated
   implicitly, stable at any strength), scaled by the water displaced per
   kilogram, so a beach ball is held hard and a concrete block barely.
+- **The sea moves, so floaters never sleep.** A body asleep lays no
+  buoyancy, and round two's floaters went to sleep on the swell and sat on
+  it like decals while it slid under them. Anything lighter than water is
+  woken every slice it is wet. And damping alone drags a floater to a dead
+  stop, so it drags toward the *water's* velocity instead: a force of
+  `damping * mass * u` makes `u` the speed it settles on, where `u` is a slow
+  current downwind, windage on what stands out of the water and an eddy per
+  prop, plus a wandering yaw and a gentle rock, each torque scaled by the
+  body's own inertia about that axis (one number for all three spun a plank
+  about its length at 18 rad/s). None of it depends on the prop's velocity,
+  so it drives without pumping. `measure physics float` prints heave, drift,
+  turn, rock and churn from six seconds on, and flags a dead or churning
+  floater.
+- **Rapier has no rolling resistance.** A drum on a 2% camber rolls forever,
+  and one standing on its end spins like a top: round two's pile still had a
+  barrel turning in place at twenty seconds. A kind's `rolling` coefficient
+  takes `rolling * g` a second off the speed and spin together, only while
+  it is touching something and dry. `measure physics rest` reports when the
+  pile's last prop sleeps (about 6.5 s).
 - **A uniform cube floats on an edge.** At density 0.5 a homogeneous cube's
   metacentre is below its centre of mass, and it floats like a diamond; that
   is physics, not a bug. A crate floats level because its load is on its
@@ -683,6 +725,23 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   jump past a stride (a spawn, a recall, a level cut) is a `setTranslation`:
   an infinitely heavy capsule swept across the room bulldozes everything
   between the two spots.
+- **Deterministic, and checkable.** The same spawns, per-slice pokes and
+  sea give the same world to the bit, however the frames that carried the
+  slices were spaced, and Node and Chrome agree (the header of `physics.ts`
+  says why and where the edge is). `sb.stateHash()` fingerprints it;
+  `measure physics determinism` runs every scenario twice and once more on
+  uneven frames, and `npm run film` prints the same hash under each sheet
+  (as long as its `--rings` cover everywhere the props go: the film only
+  builds the solids of the chunks it draws, and `sandbox:chain` throws gibs
+  far enough to need `--rings 4`). That is why the ground streams at the
+  head of every slice rather than every frame: which colliders exist, and
+  the order they were made in, is simulation state.
+  The swell is the one input the sandbox reads rather than owns: the
+  harnesses pin the water's clock to the slice clock, and a replay or a
+  shared world must too. Anything wandering (a floater's drift) reads
+  `physics.time` and the prop id, and anything left to chance in the
+  simulation (a gib's kick, a fuse) draws `sb.random()`, the facade's seeded
+  generator, never `Math.random` or the wall clock. Sparks and sounds may.
 - **Queries see what was stepped.** Rapier's broad phase updates in `step`, so
   a collider added this frame is invisible to a raycast until the next slice.
 - **One material, one atlas, one draw per shape.** Every prop, gib and bit of
@@ -698,10 +757,22 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   which puts their links in the first frame under the boot cover.
   `npm run film -- props:links` counts `linkProgram` through a spawn of every
   kind, a break of every breakable and a blast: it must print 0 and 0.
-- **Air is not solid.** Fire and smoke must not write alpha under one (that is
-  a hole) and must not write depth (the look outlines depth edges, and an
-  outlined puff is a boulder). They dissolve through a Bayer dither on
+- **Air is not solid, and fire is.** Smoke must not write alpha under one
+  (that is a hole) and must not write depth (the look outlines depth edges,
+  and an outlined puff is a boulder). It dissolves through a Bayer dither on
   `gl_FragCoord` instead, which in the look's target is whole art pixels.
+  Fire tried the same and read as a screen door: orange balls you could see
+  the street through, their hot heart and edge lost to the pattern. Flame is
+  opaque and depth-writing, shaded in three bands off how squarely it faces
+  the lens (`fx.ts`'s `bandedFire`), and shrinks away instead of thinning.
+- **A blast throws, and it is late.** `explode` sets a velocity change (out,
+  50-70 degrees up, tumbling), not an impulse, falling with the square root
+  of the mass; blasts a beat apart redirect more than they add. Explosives
+  beside a blast blow a third of a second later (mid-air), further out they
+  catch and sputter and go 0.5-1.6 s later wherever they land; breakables
+  are worn, never broken, by a blast (glass and melons excepted), so crates
+  fly whole and the landing decides. `measure physics blast` prints every
+  bang's time and height.
 - **A blast is a fake light.** A PointLight per explosion would relink every
   lit program; `fx.lightLook` writes the flash into the pixel look's
   `lights.flash` instead, and CrtScene calls it after dressing the look.
@@ -709,6 +780,29 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   collected and dealt in `life.step`; removing a body while Rapier is handing
   out contact pairs is how you get a panic. A blast is hotter than a knock:
   it sets an explosive off at half the blow and lights it at a fifth.
+- **The physgun's hold pays the weight outside its budget.** Every slice the
+  grab point is pulled toward the target on the view ray by a spring solved
+  implicitly (stable at any stiffness, dead still when held still), fed half
+  the target's own velocity (all of it overshoots by 13%), delivered as an
+  impulse capped at an acceleration budget that falls with mass, with the
+  prop's weight paid on top. So the beam always holds a thing up, and what
+  mass costs you is how fast it can be *moved*: a ball snaps onto a flick, a
+  900 kg block trails a swing by five units and sails past where you
+  stopped. `tune()` is the whole feel; `measure physics physgun` prints
+  settle time, overshoot, jitter held still and throw speed per kind.
+- **A throw leaves along the swing's tangent.** Letting go hands the prop
+  most of the gap between the beam's speed and its own, so it flies the way
+  it was being swung, not where you are looking. The throw film lets go a
+  quarter turn early for exactly that reason.
+- **The first grab links nothing.** Every program the belt draws (the gun's
+  two, the ribbon, the glow blobs, the two rim shells) is staged in front of
+  `warmForRoam`'s camera for the covered compile and one-pixel draw, and the
+  per-prop shells are clones of the staged materials, so they share their
+  programs. The films print `programs linked after warm-up`, and it is 0.
+  Chasing that 0 found a boot-wide bug: `PCFSoftShadowMap` is deprecated and
+  three swaps in PCF on the first shadow pass, so every program linked before
+  that pass had been keyed on the soft type and linked a second time on first
+  use. CrtScene uses `PCFShadowMap` now.
 
 ### Looking at it
 
@@ -720,10 +814,11 @@ npm run film -- sandbox:float --start 5 --duration 7 --frames 11    0.2 s apart
 npm run film -- sandbox:pile --yaw 1.2 --dist 30 --height 12       orbit the target
 npm run film -- sandbox:pile --from x,y,z --to x,y,z --fov 40      or place the lens
 npm run film -- sandbox:stack --raw    the bare frame, without the pixel look
+npm run film -- sandbox:stack --labels off    no time stamps or title, to judge blind
 npm run film -- --list
 
 npm run film -- sandbox:catalogue      every prop on a town street
-npm run film -- sandbox:chain --start 0.3 --duration 2.6    barrels going up in a row
+npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 4    barrels going up in a row
 npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
 npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
 npm run film -- props:turntable        every model four ways round
@@ -731,8 +826,10 @@ npm run film -- props:thumbs           the spawn menu's icons
 npm run film -- props:sounds           every prop sound's peak, next to a footstep
 npm run film -- props:links            shader links on first spawn/break/blast
 
+npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
+
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
-                                       float catalogue breaks blast scenarios
+                                       rest determinism float catalogue breaks blast physgun scenarios
 npm run measure -- physics walker      one section
 ```
 
@@ -796,9 +893,16 @@ sets from the welcome's player id.
 
 The React side is `components/os/SandboxConsole.tsx` (a thermal receipt
 printer: t, enter or / opens it, /command runs, plain text chats online and
-works offline) and `components/os/SpawnMenu.tsx` (a mail-order catalogue held
-up with q; its find line pins it open). Both free the pointer, and CrtScene's
-`onLock` knows an unlock they asked for is not esc.
+works offline), `components/os/SpawnMenu.tsx` (a mail-order catalogue held
+up with q; its find line pins it open) and `components/os/Crosshair.tsx`
+(a pixel crosshair tinted by what it is on; the physgun reads the same
+`CrosshairAim`). Both overlays free the pointer, CrtScene's `onLock` knows
+an unlock they asked for is not esc, and an esc close waits for the key to
+come up before taking the pointer back, or Chrome spends the release on
+unlocking again. A spawn lands at the crosshair's hit, never within the
+walker's reach (`BODY_CLEAR`), and `host.spawned(ids)` pops it in: a scale
+overshoot, a ring of dust from the fleet's particle pool (`fleet.puff`, so
+no new material) and `sfx.spawnPop`.
 
 One rule that bit: **never touch a body from inside a Rapier query
 callback.** The query holds the world borrowed, the error thrown across the
@@ -1081,6 +1185,13 @@ every one of them has a failure you can see in a harness shot.
 - **Draw visible frames with `look.render`, never `renderer.render`.** A
   warm-up or a shadow bake may call the renderer directly (the programs are
   identical); a frame someone sees may not.
+- **A light writes the glow code.** Alpha 254/255 (`GLOW_ALPHA`) is solid,
+  not a hole, and the grade pass leaves that pixel out of the baked grade,
+  whose chroma cap and hue pull otherwise grey an energy beam down to the
+  sky's own pastel (the physgun's beam was a pale ribbon until it did this).
+  It still takes ACES and the posterize. Only for things that *are* light and
+  opaque where they draw (the beam's ribbon, the gun's glowing core): a
+  soft glow writing it would lift the scene behind it out of the grade too.
 - **A hole is a registered mesh, not an alpha.** The CSS3D glass (the AlejOS
   screen, the house TV) writes a near-zero alpha into the chunky target, and
   the grade pass fills those pixels from their solid neighbours; the hole is

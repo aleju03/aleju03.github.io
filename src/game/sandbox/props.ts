@@ -30,17 +30,21 @@ import { GROUPS, type PhysicsWorld, type RBody, type RCollider } from './physics
     nothing.
   - **water.** Buoyancy is sampled at the points of a 3x3x3 grid that fall
     inside the prop's actual shape, each carrying its share of
-    `mass * g / density` scaled by how far under the drawn surface (SEA_Y
-    plus the swell the water shader draws, as a plane under the prop) it is,
-    so a crate at density 0.5 rides half under and a beach ball barely wets.
-    Drag is Rapier's own (implicit, so stable at any strength) linear and
-    angular damping, scaled by the water displaced per kilogram and by how
-    much is under. What made the first version's sea churn (crates swinging
-    forty degrees frame to frame, drums flipping end on) was not the model
-    but a torque that was never cleared: see the force re-lay above. Now a
-    dropped crate plunges, bobs, rolls once or twice and rides level, a block
-    sinks slowly, and a ball shoved under pops up rather than being fired
-    into the sky. The buoyancy goes to Rapier as one force and one torque.
+    `mass * g / density` scaled by how far under the drawn surface it is:
+    SEA_Y plus the swell the water shader draws, taken as a plane through the
+    prop's footprint, so a floater heaves with the crests, tilts with their
+    faces and is shoved down the slope of each one. A crate at density 0.5
+    rides half under and a beach ball barely wets. Drag is Rapier's own
+    (implicit, so stable at any strength) linear and angular damping, scaled
+    by the water displaced per kilogram and by how much is under, and the
+    water it drags toward is *moving*: a slow current, wind on whatever
+    stands out, an eddy per prop, a wandering turn and a gentle rock, all
+    read off the simulation's clock. A floater never sleeps, because the sea
+    keeps moving under it (round two's parked on the swell like decals). What
+    made the first version's sea churn (crates swinging forty degrees frame
+    to frame, drums flipping end on) was not the model but a torque that was
+    never cleared: see the force re-lay above. The buoyancy goes to Rapier as
+    one force and one torque. A prop that goes in hard reports a splash.
   - **impacts.** A body whose velocity changed by more than gravity can
     explain, in one slice, hit something. That is reported once, with the
     impulse (`mass * dv`), the speed of the change, where, and what it hit,
@@ -109,8 +113,25 @@ export interface Prop {
   mode: PropMode
   /** disabled because nobody is near it; see the header */
   parked: boolean
+  /** how much of it is under the drawn sea, 0..1 (the waterline cue and any
+      sound that wants to know it plopped rather than thudded read this) */
+  readonly wet: number
   /** free for other systems: an owner, a health bar, an undo stamp */
   data: Record<string, unknown>
+}
+
+/** a prop hit the water hard enough to throw it up. Allocated per event */
+export interface SplashEvent {
+  id: PropId
+  prop: Prop
+  /** where it went in, on the drawn surface */
+  x: number
+  y: number
+  z: number
+  /** how fast it was going down, u/s */
+  speed: number
+  /** mass times that speed, kg*u/s */
+  impulse: number
 }
 
 export type ImpactWith = 'prop' | 'ground' | 'solid' | 'vehicle' | 'player' | 'unknown'
@@ -145,9 +166,20 @@ interface Rec extends Prop {
   vz: number
   awake: boolean
   lastImpact: number
+  /** the change of velocity that impact reported */
+  lastDv: number
   lost: number
-  /** submerged share last slice, so damping is only rewritten on change */
+  /** submerged share last slice */
   wet: number
+  /** the share the water damping was last written for (rewritten on change) */
+  dampedAt: number
+  /** in the water last slice, for the splash on the way in */
+  inWater: boolean
+  lastSplash: number
+  /** a fixed phase per prop, so a raft of floaters does not move as one */
+  phase: number
+  /** half the footprint's diagonal, clamped: the span the swell is sampled over */
+  span: number
   baseLin: number
   baseAng: number
   radius: number
@@ -160,11 +192,17 @@ export const PARK_RANGE = 200
 const UNPARK_RANGE = 184
 /** a change of velocity under this in one slice is not an impact, u/s */
 const IMPACT_DV = 3
-/** one prop reports at most one impact per this many seconds */
+/** one prop reports at most one impact per this many seconds, unless a
+    later one is much harder: a crate thrown at a wall through the splinters
+    of the last one grazes a board and then meets the brick inside the gap,
+    and swallowing the second blow left it whole against a wall at 40 u/s */
 const IMPACT_GAP = 0.09
 /** how far under the ground (in radii) counts as lost */
 const LOST_DEPTH = 1.5
 const MAX_RESCUES = 3
+
+const hashBuf = new Float64Array(14)
+const hashBytes = new Uint8Array(hashBuf.buffer)
 
 const volumeOf = (s: Exclude<ShapeSpec, { type: 'compound' }>) => {
   switch (s.type) {
@@ -259,6 +297,20 @@ const samplesFor = (s: ShapeSpec): Samples => {
 const WATER_DRAG = 5
 /** rotation's share of it: more, for the slow nod rather than a wobble */
 const WATER_SPIN_DRAG = 1.4
+/** the sea's current, u/s, and the heading it veers about: downwind, the
+    way the grass leans (wind.ts's uWind, 0.82 / 0.57) */
+const CURRENT = 0.3
+const CURRENT_HEADING = Math.atan2(0.57, 0.82)
+/** what a wholly dry floater would add in wind, u/s (a ball rides high) */
+const WINDAGE = 0.55
+/** each floater's own wander on top, u/s */
+const EDDY = 0.14
+/** the yaw rate a floater wanders about, rad/s */
+const TURN = 0.16
+/** the rocking drive about the horizontals, rad/s it would reach unrighted */
+const ROCK = 0.2
+/** a prop entering the water faster than this, downward, splashes */
+const SPLASH_SPEED = 5
 
 export interface PropsOpts {
   pw: PhysicsWorld
@@ -292,6 +344,8 @@ export interface Props {
   moveKinematic: (id: PropId, pos: Vec3Like, quat?: QuatLike) => void
   wake: (id: PropId) => void
   onImpact: (fn: (e: ImpactEvent) => void) => () => void
+  /** a prop went into the water hard */
+  onSplash: (fn: (e: SplashEvent) => void) => () => void
   onSpawn: (fn: (p: Prop) => void) => () => void
   onRemove: (fn: (p: Prop) => void) => () => void
   /** once a frame, before the slices: parking, ground, rescue */
@@ -301,6 +355,8 @@ export interface Props {
   /** draw everything between its last two poses */
   draw: (alpha: number) => void
   readonly awake: number
+  /** a fingerprint of every prop's pose and velocity, to the bit */
+  stateHash: () => string
   /** set by the facade so impacts can say "player" */
   isPlayer: (c: RCollider) => boolean
 }
@@ -312,6 +368,7 @@ export const createProps = (o: PropsOpts): Props => {
   const byCollider = new Map<number, Rec>()
   const forced = new Set<Rec>()
   const impactFns = new Set<(e: ImpactEvent) => void>()
+  const splashFns = new Set<(e: SplashEvent) => void>()
   const spawnFns = new Set<(p: Prop) => void>()
   const removeFns = new Set<(p: Prop) => void>()
   let nextId = 1
@@ -434,8 +491,14 @@ export const createProps = (o: PropsOpts): Props => {
       vz: opts.velocity?.z ?? 0,
       awake: true,
       lastImpact: -1,
+      lastDv: 0,
       lost: 0,
       wet: 0,
+      dampedAt: 0,
+      inWater: false,
+      lastSplash: -1,
+      phase: ((Math.imul(id, 2654435761) >>> 0) / 4294967296) * Math.PI * 2,
+      span: Math.min(4, Math.max(1, Math.hypot(extents.x, extents.z))),
       baseLin,
       baseAng,
       radius: extents.length(),
@@ -494,30 +557,44 @@ export const createProps = (o: PropsOpts): Props => {
     out.z = c[2] + z + qw * tz + (qx * ty - qy * tx)
   }
 
+  let inertiaBuf: ReturnType<RBody['effectiveAngularInertia']> | undefined
+
   const buoy = (r: Rec) => {
     const c = r.cur
     const wy = o.waterY()
     let share = 0
+    let fy = 0
+    let fx = 0
+    let fz = 0
+    let tx = 0
+    let tz = 0
+    let surf0 = wy
     if (c[1] - r.radius < wy + 0.6 && terrainY(c[0], c[2]) < wy) {
       const g = -pw.gravity
       const S = samplesOf(r)
       const n = S.w.length
-      // the water surface as a plane through three samples of the swell: a
-      // prop is small against a wavelength, and a plane still tilts a raft
-      const w0 = o.waveAt ? o.waveAt(c[0], c[2]) : 0
-      const gx = o.waveAt ? o.waveAt(c[0] + 1, c[2]) - w0 : 0
-      const gz = o.waveAt ? o.waveAt(c[0], c[2] + 1) - w0 : 0
+      /*
+        The drawn swell under the prop as a plane: its height at the centre
+        and its slope by central differences over the prop's own footprint
+        (`span`), so a plank lying across a crest feels the chord it spans
+        rather than the tangent at its middle. Every sample is then under or
+        over *that* surface, so a floater heaves with the crests and tilts
+        with their faces: the sea it answers to is the one on screen.
+      */
+      const wave = o.waveAt
+      const sp = r.span
+      const w0 = wave ? wave(c[0], c[2]) : 0
+      const gx = wave ? (wave(c[0] + sp, c[2]) - wave(c[0] - sp, c[2])) / (2 * sp) : 0
+      const gz = wave ? (wave(c[0], c[2] + sp) - wave(c[0], c[2] - sp)) / (2 * sp) : 0
+      surf0 = wy + w0
       // the water this body would displace fully under, in kilograms
       const displaced = r.mass / Math.max(0.05, r.kind.density)
       // levers are taken from the centre of mass, which is where Rapier
       // applies the summed force and about which it applies the torque
       const com = r.body.worldCom()
-      let fy = 0
-      let tx = 0
-      let tz = 0
       for (let i = 0; i < n; i++) {
         toWorld(c, S.p[i * 3], S.p[i * 3 + 1], S.p[i * 3 + 2], tmpP)
-        const surface = wy + w0 + gx * (tmpP.x - c[0]) + gz * (tmpP.z - c[2])
+        const surface = surf0 + gx * (tmpP.x - c[0]) + gz * (tmpP.z - c[2])
         const f = Math.min(1, Math.max(0, (surface - tmpP.y) / S.t + 0.5))
         if (f <= 0) continue
         const wf = S.w[i] * f
@@ -529,20 +606,27 @@ export const createProps = (o: PropsOpts): Props => {
         tx += -rz * sy
         tz += rx * sy
       }
-      if (share > 0) {
-        // one force and one torque for the whole body rather than a call per
-        // sample: the sum is the same and the WASM boundary is not free
-        tmpF.x = 0
-        tmpF.y = fy
-        tmpF.z = 0
-        tmpT.x = tx
-        tmpT.y = 0
-        tmpT.z = tz
-        r.body.addForce(tmpF, true)
-        r.body.addTorque(tmpT, true)
-        forced.add(r)
+      // pressure pushes along the surface's normal, not straight up: on the
+      // face of a swell a floater is shoved down the slope, which is the
+      // surge that carries it to and fro as each crest passes under it
+      fx = -gx * fy
+      fz = -gz * fy
+    }
+    const floats = r.kind.density < 1
+    // the splash on the way in, once, and only for something that arrived
+    // with some speed (a floater bobbing out and back in is not an entry)
+    if (share > 0 && !r.inWater && pw.time - r.lastSplash > 0.4) {
+      const vy = r.body.linvel().y
+      if (vy < -SPLASH_SPEED && splashFns.size) {
+        r.lastSplash = pw.time
+        const e: SplashEvent = {
+          id: r.id, prop: r, x: c[0], y: surf0, z: c[2], speed: -vy, impulse: -vy * r.mass,
+        }
+        for (const fn of splashFns) fn(e)
       }
     }
+    r.inWater = share > 0
+    r.wet = share
     /*
       Drag, as Rapier's own damping rather than as a force. Damping is
       integrated implicitly (v / (1 + h c)), which is stable at any strength;
@@ -552,11 +636,67 @@ export const createProps = (o: PropsOpts): Props => {
       of prop times how much of it is under, so a beach ball is held hard and
       a concrete block barely. Rewritten only when the share moves.
     */
-    if (Math.abs(share - r.wet) > 0.03 || (share === 0 && r.wet !== 0)) {
-      r.wet = share
-      const perKg = share > 0 ? (share * WATER_DRAG) / Math.max(0.05, r.kind.density) : 0
+    const perKg = share > 0 ? (share * WATER_DRAG) / Math.max(0.05, r.kind.density) : 0
+    if (Math.abs(share - r.dampedAt) > 0.03 || (share === 0 && r.dampedAt !== 0)) {
+      r.dampedAt = share
       r.body.setLinearDamping(r.baseLin + perKg)
       r.body.setAngularDamping(r.baseAng + perKg * WATER_SPIN_DRAG)
+    }
+    let ty = 0
+    if (share > 0 && floats) {
+      /*
+        The sea is not still water, and damping alone drags every floater to
+        a dead stop on it (round two's props sat parked on painted glass
+        while the swell slid under them). So the water *moves*, and the
+        damping drags toward the water's velocity rather than toward zero:
+        a force of `damping * mass * u` makes `u` the speed the damping
+        settles on. It is independent of the prop's own velocity, so it can
+        drive but never pump, and the drag stays implicit.
+
+        u is a slow current that veers over a minute, a wind on whatever
+        stands out of the water (a beach ball riding high skates, a
+        waterlogged plank barely goes), and an eddy of the prop's own, so two
+        crates side by side drift apart rather than as a raft. The same trick
+        turns them: a yaw rate that wanders, and a gentle rock about the
+        horizontals the buoyancy's own righting holds to a few degrees. All
+        of it reads the simulation's clock and the prop's id, never the wall
+        clock or a random number, so a replay floats the same way.
+      */
+      const t = pw.time
+      const ph = r.phase
+      const ca = CURRENT_HEADING + 0.6 * Math.sin(t * 0.027 + 1.3)
+      const dry = Math.max(0, 1 - share)
+      const drift = CURRENT + WINDAGE * dry
+      const ux = Math.cos(ca) * drift + EDDY * Math.sin(t * 0.37 + ph)
+      const uz = Math.sin(ca) * drift + EDDY * Math.cos(t * 0.29 + ph * 1.7)
+      const pull = perKg * r.mass
+      fx += pull * ux
+      fz += pull * uz
+      // the drive torques are inertia times the angular damping times the
+      // rate they settle on, about world y and the two horizontals
+      inertiaBuf = r.body.effectiveAngularInertia(inertiaBuf)
+      // each axis by its own inertia: a plank's about its length is a
+      // seventieth of its yaw, and one number for all three spun it like a
+      // drill bit
+      const I = inertiaBuf
+      const spinPull = perKg * WATER_SPIN_DRAG
+      const turn = TURN * (Math.sin(t * 0.21 + ph) + 0.6 * Math.sin(ph * 3.1))
+      ty = spinPull * I.m22 * turn
+      tx += ROCK * spinPull * I.m11 * Math.sin(t * 1.3 + ph * 2.3)
+      tz += ROCK * spinPull * I.m33 * Math.cos(t * 1.1 + ph * 1.9)
+    }
+    if (share > 0) {
+      // one force and one torque for the whole body rather than a call per
+      // sample: the sum is the same and the WASM boundary is not free
+      tmpF.x = fx
+      tmpF.y = fy
+      tmpF.z = fz
+      tmpT.x = tx
+      tmpT.y = ty
+      tmpT.z = tz
+      r.body.addForce(tmpF, true)
+      r.body.addTorque(tmpT, true)
+      forced.add(r)
     }
   }
 
@@ -650,6 +790,13 @@ export const createProps = (o: PropsOpts): Props => {
         continue
       }
       r.awake = !r.body.isSleeping()
+      // a floater never sleeps: the sea keeps moving under it, and a body
+      // asleep lays no buoyancy, so it would sit on the swell like a decal.
+      // Something sunk (denser than water) may rest on the bottom
+      if (!r.awake && r.wet > 0 && r.kind.density < 1) {
+        r.body.wakeUp()
+        r.awake = true
+      }
       r.prev.set(r.cur)
       if (!r.awake) continue
       awakeCount++
@@ -659,6 +806,21 @@ export const createProps = (o: PropsOpts): Props => {
       r.vz = v.z
       buoy(r)
     }
+  }
+
+  /** is any of its colliders in contact with anything right now */
+  const touching = (r: Rec) => {
+    let hit = false
+    for (const col of r.colliders) {
+      world.contactPairsWith(col, (c2) => {
+        if (hit) return
+        world.contactPair(col, c2, (m) => {
+          if (m.numContacts() > 0) hit = true
+        })
+      })
+      if (hit) return true
+    }
+    return false
   }
 
   const afterSlice = (h: number) => {
@@ -677,9 +839,33 @@ export const createProps = (o: PropsOpts): Props => {
       const dvy = v.y - r.vy - pw.gravity * h
       const dvz = v.z - r.vz
       const dv = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
-      if (dv > IMPACT_DV && t - r.lastImpact > IMPACT_GAP && impactFns.size) {
+      if (dv > IMPACT_DV && (t - r.lastImpact > IMPACT_GAP || dv > r.lastDv * 2) && impactFns.size) {
         r.lastImpact = t
+        r.lastDv = dv
         emitImpact(r, dv)
+      }
+      // rolling resistance: a speed loss of crr * g a second, never more than
+      // the speed there is, taken off the horizontal motion and the spin in
+      // the same proportion so a rolling drum stays rolling rather than
+      // skidding, and a drum left spinning on its end like a top winds down
+      // too. Rapier has no rolling friction at all, which is why a pile's
+      // last barrel was still turning in place at twenty seconds. Only on
+      // something (a slow vertical, then a real contact: a thrown drum loses
+      // nothing in the air), and not afloat
+      const crr = r.kind.rolling
+      if (crr && r.wet === 0 && Math.abs(v.y) < 1.2 && touching(r)) {
+        const sp = Math.hypot(v.x, v.z)
+        const w = r.body.angvel()
+        const spin = Math.hypot(w.x, w.y, w.z) * r.radius * 0.5
+        const lose = crr * -pw.gravity * h
+        const fast = Math.max(sp, spin)
+        if (fast > 1e-4) {
+          const k = Math.max(0, fast - lose) / fast
+          r.body.setLinvel({ x: v.x * k, y: v.y, z: v.z * k }, false)
+          r.body.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, false)
+          r.vx = v.x * k
+          r.vz = v.z * k
+        }
       }
       // lost under the ground: lift it back, or give up on it
       const gy = terrainY(r.cur[0], r.cur[2])
@@ -813,6 +999,10 @@ export const createProps = (o: PropsOpts): Props => {
       impactFns.add(fn)
       return () => impactFns.delete(fn)
     },
+    onSplash: (fn) => {
+      splashFns.add(fn)
+      return () => splashFns.delete(fn)
+    },
     onSpawn: (fn) => {
       spawnFns.add(fn)
       return () => spawnFns.delete(fn)
@@ -827,6 +1017,34 @@ export const createProps = (o: PropsOpts): Props => {
     draw,
     get awake() {
       return awakeCount
+    },
+    stateHash: () => {
+      // FNV-1a over the raw bytes of id, position, rotation and both
+      // velocities, in id order (a Map iterates in insertion order, and ids
+      // are handed out in spawn order, so two runs agree on the order too)
+      let h = 2166136261
+      for (const r of recs.values()) {
+        const t = r.body.translation()
+        const q = r.body.rotation()
+        const v = r.body.linvel()
+        const w = r.body.angvel()
+        hashBuf[0] = r.id
+        hashBuf[1] = t.x
+        hashBuf[2] = t.y
+        hashBuf[3] = t.z
+        hashBuf[4] = q.x
+        hashBuf[5] = q.y
+        hashBuf[6] = q.z
+        hashBuf[7] = q.w
+        hashBuf[8] = v.x
+        hashBuf[9] = v.y
+        hashBuf[10] = v.z
+        hashBuf[11] = w.x
+        hashBuf[12] = w.y
+        hashBuf[13] = w.z
+        for (let i = 0; i < hashBytes.length; i++) h = Math.imul(h ^ hashBytes[i], 16777619) >>> 0
+      }
+      return h.toString(16).padStart(8, '0')
     },
     isPlayer: () => false,
   }

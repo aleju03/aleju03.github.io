@@ -166,6 +166,8 @@ const CROWN = 0.4
 const FLY_SPEED = 26
 const FLY_FAST = 3.2
 const FLY_SLOW = 0.22
+/** the most downward speed a flight hands the fall that follows it, u/s */
+const LAND_CARRY = 10
 
 export function createWalkController(
   rig: THREE.PerspectiveCamera,
@@ -303,7 +305,10 @@ export function createWalkController(
         // that keeps its drift until it lands
         vel.set(0, 0, 0)
         drift.set(fly.x, 0, fly.z)
-        vy = fly.y
+        // the planar drift is kept whole, the dive is not: letting go a hop
+        // over a street while sinking must land you on your feet, and a real
+        // drop still earns its flop from the gravity it falls through
+        vy = Math.max(fly.y, -LAND_CARRY)
         grounded = false
         fly.set(0, 0, 0)
         bank = 0

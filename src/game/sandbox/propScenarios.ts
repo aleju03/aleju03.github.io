@@ -276,11 +276,14 @@ defineScenario({
 
 /* ------------------------------------------------------------- chain -- */
 
+/** what the chain heard: each bang's moment and height over the street */
+const bangs = new WeakMap<ScenarioCtx, { t: number; list: Array<{ t: number; up: number }> }>()
+
 defineScenario({
   id: 'sandbox:chain',
   title: 'red barrels chain-detonating through stacks of crates',
   site: siteAvenue,
-  duration: 3.4,
+  duration: 4.4,
   frames: 12,
   tod: 0.4,
   camera: (c) => {
@@ -295,6 +298,12 @@ defineScenario({
   ],
   setup: (c) => {
     seed = 17
+    const log = { t: 0, list: [] as Array<{ t: number; up: number }> }
+    bangs.set(c, log)
+    c.sb.onAfterSlice((h) => {
+      log.t += h
+    })
+    c.sb.onExplosion((e) => log.list.push({ t: log.t, up: e.y - terrainY(e.x, e.z) }))
     const put = (kind: string, a: number, b: number, lift = 0, yaw = 0) => {
       const p = at(c, a, b)
       const y = c.sb.restY(kind, p.x, p.z) + lift
@@ -342,7 +351,9 @@ defineScenario({
       }
     }
     const s = c.sb.stats
+    const heard = (bangs.get(c)?.list ?? []).map((b) => `${b.t.toFixed(2)}s@${b.up.toFixed(0)}u`).join(' ')
     return `${6 - barrels}/6 barrels went off, ${15 - crates}/15 crates broke, ${left} of ${c.ids.length} props left, ` +
+      `bangs ${heard}; ` +
       `${s.gibs} gibs and ${s.particles} particles live at the end`
   },
 })
@@ -424,9 +435,13 @@ defineScenario({
     c.memo.thrown++
   }]),
   report: (c) => {
-    let whole = 0
-    for (const id of c.ids) if (c.sb.get(id)) whole++
-    return `${c.memo.thrown - whole}/${c.memo.thrown} broke on the wall (${c.memo.wall.toFixed(1)} units off), ${c.sb.stats.gibs} gibs lying about`
+    const whole: string[] = []
+    for (const id of c.ids) {
+      const p = c.sb.get(id)
+      if (p) whole.push(p.kind.id)
+    }
+    return `${c.memo.thrown - whole.length}/${c.memo.thrown} broke on the wall (${c.memo.wall.toFixed(1)} units off)` +
+      `${whole.length ? ' (whole: ' + whole.join(', ') + ')' : ''}, ${c.sb.stats.gibs} gibs lying about`
   },
 })
 

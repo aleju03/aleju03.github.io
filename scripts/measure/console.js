@@ -173,7 +173,7 @@ settle(0.1)
 
 /* ----------------------------------------------------------- complete -- */
 {
-  const names = (l) => complete(l, host).suggestions.map((s) => s.label)
+  const names = (l) => complete(l, host).suggestions.map((s) => say(s.label, 'en'))
   check(names('/sp').some((n) => n.startsWith('spawn')), 'a command name completes', names('/sp').join(', '))
   check(names('/spawn ').includes('crate'), 'a kind completes', names('/spawn ').join(', '))
   check(names('/tp landmark:w').includes('landmark:windmill'), 'a place completes', names('/tp landmark:w').join(', '))
@@ -208,6 +208,17 @@ settle(0.1)
   history.record({ owner: B, label: 'crate', props: c2 })
   const n = history.cleanup(A)
   check(n === 1 && sb.get(c2) && !sb.get(c1), "cleanup takes one owner's props only")
+  // a breakable that breaks: its gibs join its entry, and one undo takes both
+  const cr = sb.spawn('crate', at(16))
+  history.record({ owner: A, label: 'crate', props: cr })
+  settle(0.1)
+  const broke = sb.shatter(cr)
+  const entry = history.entries(A)[0]
+  const gibs = entry ? entry.props.size : 0
+  history.undo(A)
+  let left = 0
+  sb.forEach(() => left++)
+  check(broke && gibs > 0 && left === 1, 'gibs join the entry of what broke, and go with its undo', `${gibs} gibs, ${left - 1} left over`)
   sb.spawn('cone', at(8)) // recorded by nobody: a scenario's
   history.cleanup('all')
   check(sb.count === 0, "cleanup all takes everyone's, and unrecorded props too")

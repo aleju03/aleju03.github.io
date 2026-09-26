@@ -40,7 +40,7 @@ const flag = (name, fallback) => {
 const has = (name) => argv.includes(`--${name}`)
 const VALUED = new Set([
   'frames', 'tile', 'cols', 'fps', 'size', 'tod', 'duration', 'rings', 'out',
-  'start', 'from', 'to', 'yaw', 'dist', 'height', 'fov', 'angles', 'icon',
+  'start', 'from', 'to', 'yaw', 'dist', 'height', 'fov', 'angles', 'icon', 'labels',
 ])
 const targets = argv.filter((a, i) => !a.startsWith('--') && !(argv[i - 1]?.startsWith('--') && VALUED.has(argv[i - 1].slice(2))))
 
@@ -74,6 +74,7 @@ camera (every run prints the shot it used, so start from that)
   --height <n>     height over the target
   --fov <deg>      lens
   --rings <n>      chunk rings built around the site (default 2)
+  --labels off     no time stamps or title on the stills (judge blind)
   --nobatch        draw every prop as its own mesh (to measure the batching)
   --angles <n>     props:turntable bearings per model  (default 4)
   --icon <px>      props:thumbs icon size             (default 96)
@@ -165,6 +166,7 @@ for (const id of ids) {
     cols,
     rings: Number(flag('rings', 2)),
     raw: argv.includes('--raw'),
+    labels: flag('labels', 'on') !== 'off',
     nobatch: argv.includes('--nobatch'),
     ...(flag('tod', null) !== null ? { tod: Number(flag('tod')) } : {}),
     ...(flag('duration', null) !== null ? { duration: Number(flag('duration')) } : {}),
@@ -191,8 +193,10 @@ for (const id of ids) {
   const sheetPath = join(outDir, `${name}.png`)
   writeFileSync(sheetPath, png)
   console.log(`${id.padEnd(16)} at ${res.x},${res.z}  ${res.report}`)
-  console.log(`${''.padEnd(16)} ${res.msPerFrame.toFixed(2)} ms/frame of sandbox tick (median)  ` +
+  console.log(`${''.padEnd(16)} ${res.msPerFrame.toFixed(2)} ms/frame of sandbox tick (median), ` +
+    `${res.links} programs linked after warm-up${res.links ? ` (${res.linked})` : ''}  ` +
     `${sheetPath}  (${Date.now() - t0} ms)`)
+  console.log(`${''.padEnd(16)} state hash ${res.hash}`)
   console.log(`${''.padEnd(16)} last still: ${res.calls} draw calls, ${res.triangles} triangles, ` +
     `${res.drawMs.toFixed(2)} ms to draw through the look (median of 5, finished)`)
   console.log(`${''.padEnd(16)} shot: --from ${res.from.join(',')} --to ${res.to.join(',')} --fov ${res.fov}`)
@@ -226,7 +230,8 @@ for (const id of ids) {
       else failed = true
     }
     rmSync(dir, { recursive: true, force: true })
-    console.log(`${''.padEnd(16)} ${v.frames} frames at ${fps} fps -> ${outs.join(', ')}`)
+    const vl = await probe.evaluate('window.__film.videoLinks()')
+    console.log(`${''.padEnd(16)} ${v.frames} frames at ${fps} fps, ${vl} programs linked after warm-up -> ${outs.join(', ')}`)
   }
 }
 

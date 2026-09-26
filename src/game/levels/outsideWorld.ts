@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
 import type { ImpactWatch } from '../player/impacts'
+import type { GrabHandle } from '../world/pedestrians'
 import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { YARD } from './houseWorld'
@@ -85,6 +86,9 @@ export interface OutsideHandles {
       and under the troughs; this is the swell the water shader draws, so a
       boat rides the sea that is actually on screen */
   waveAt: (x: number, z: number) => number
+  /** drop the water shader's splash rings at a point (nothing before the
+      world attaches) */
+  splash: (x: number, z: number) => void
   /** true while the property owns the ground under this point: the house
       answers for its own lawn, porch and paths */
   onProperty: (x: number, z: number) => boolean
@@ -115,6 +119,9 @@ export interface OutsideHandles {
   /** let the movers an impact watch is tracking knock the town's
       pedestrians over. A no-op until the world is attached */
   knockPeople: (watch: ImpactWatch) => void
+  /** the town's pedestrians as bodies a grab beam can take by a limb
+      (the physgun); empty until the world is attached */
+  people: () => Iterable<{ key: string; rig: GrabHandle }>
   /** the nearest light fixtures out here, as xyz triples into `out`; 0 until
       the world is attached. For the look's lamp pools (render/atmosphere.ts) */
   nearLamps: (x: number, z: number, out: Float32Array, max: number) => number
@@ -367,6 +374,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     },
     surfaceAt: (x, z) => (w ? w.mods.terrain.surfaceAt(x, z) : 'grass'),
     waveAt: (x, z) => (w ? w.mods.streamer.waveHeightAt(x, z) : 0),
+    splash: (x, z) => w?.world.splash(x, z),
     onProperty,
     sun: sky.sun,
     doorPrompt: (p, gaze) => (w ? w.shopDoors.doorPrompt(p, gaze) : null),
@@ -379,6 +387,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     chunkSolids: (cx, cz) => (w ? w.world.solidsIn(cx, cz) : null),
     ruins: () => w?.debris.ruins ?? null,
     knockPeople: (watch) => w?.pedestrians.knock(watch),
+    people: () => (w ? w.pedestrians.grabbable() : []),
     nearLamps: (x, z, out, max) => (w ? w.world.nearLamps(x, z, out, max) : 0),
     biomeAt: (x, z) => {
       if (!w) return null

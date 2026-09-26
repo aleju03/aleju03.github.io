@@ -3,6 +3,8 @@ import type { VehicleId } from '../../game/vehicles/types'
 import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
+import { keyHint } from '../../game/sandbox/bindings'
+import { useI18n } from '../../i18n'
 import {
   DETAILS, FPS_CAPS, PIXEL_SIZES, SCALE_MAX, SCALE_MIN, VOL_MAX, VOL_MIN,
   detailTier, fpsCapLabel, type RoamPrefs,
@@ -344,6 +346,7 @@ export default function PauseScreen({
   onLeave,
   onResume,
 }: PauseScreenProps) {
+  const { t, language } = useI18n()
   const [page, setPage] = useState<Page>('character')
   const pages: Array<{ id: Page; label: string }> = [
     { id: 'character', label: 'character' },
@@ -745,8 +748,7 @@ export default function PauseScreen({
         {/* the footnote at the bottom of the page, in the walk HUD's own voice */}
         <p className="mt-auto">
           <Note>
-            wasd move · space jump · shift run · ctrl crouch · x flop
-            {multiplayer && ' · t chat · m mic'} · ↑↓ menu
+            {keyHint(`${t.sandbox.hud.pauseNote}${multiplayer ? ` · ${t.sandbox.hud.voice}` : ''} · ↑↓ menu`, language)}
           </Note>
         </p>
       </div>

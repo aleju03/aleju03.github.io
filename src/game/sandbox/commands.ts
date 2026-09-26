@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { labelIn, type History } from './history'
 import type { PropKind } from './kinds'
 import type { WorldRules } from './rules'
-import type { Prop, PropId, Sandbox } from './sandbox'
+import type { PropId, Sandbox } from './sandbox'
 
 /*
   The console's commands: a registry, a parser, a completer, and the commands
@@ -124,6 +124,9 @@ export interface SandboxHost {
   give?: (tool: string) => boolean
   /** the console's own knob for what it is printed on */
   clear?: () => void
+  /** props a command (or the catalogue) just brought in: the scene pops
+      them in with a puff of dust and a sound. Headless, nobody listens */
+  spawned?: (ids: PropId[]) => void
 }
 
 /* ---------------------------------------------------------- the registry -- */
@@ -146,6 +149,9 @@ export type ArgType =
 
 export interface ArgSpec {
   name: string
+  /** what the usage line calls it in Spanish; the typed words stay the
+      same (a command is typed the same in both languages) */
+  nameEs?: string
   type: ArgType
   optional?: boolean
   /** for 'choice' (and extra completions for 'word'/'place') */
@@ -195,24 +201,30 @@ export const commandList = (): Command[] =>
 export const findCommand = (name: string): Command | undefined =>
   REGISTRY.get(name) ?? REGISTRY.get(ALIASES.get(name) ?? '')
 
-/** `spawn <kind> [n]` */
-export const usage = (c: Command) =>
-  [c.name, ...(c.args ?? []).map((a) => (a.optional ? `[${a.name}]` : `<${a.name}>`))].join(' ')
+/** `spawn <prop> [n]`, or `spawn <objeto> [n]` */
+export const argName = (a: ArgSpec, lang: Lang = 'en') => (lang === 'es' ? (a.nameEs ?? a.name) : a.name)
+export const usage = (c: Command, lang: Lang = 'en') =>
+  [c.name, ...(c.args ?? []).map((a) => (a.optional ? `[${argName(a, lang)}]` : `<${argName(a, lang)}>`))].join(' ')
+const usageMsg = (c: Command): Msg => ({ en: usage(c, 'en'), es: usage(c, 'es') })
 
 /* ------------------------------------------------------------ the kinds -- */
 
-// The kind table lives in the sandbox's lazily loaded chunk (it builds
-// geometry at import), so the console reaches it the same way: loaded on
-// first need, cached for the completer, which has to answer synchronously
-type KindsModule = typeof import('./kinds')
+// The kind table and the catalogue live in the sandbox's lazily loaded chunk
+// (they build geometry at import), so the console reaches them the same way:
+// loaded on first need, cached for the completer, which has to answer
+// synchronously. The catalogue is what can be typed; the kind table also
+// holds gibs and one-offs nobody should be offered
+type KindsModule = typeof import('./kinds') & { catalogue: typeof import('./catalogue') }
 let kindsMod: KindsModule | null = null
 let kindsLoading: Promise<KindsModule> | null = null
 const loadKinds = () => {
-  kindsLoading ??= import('./kinds').then((m) => (kindsMod = m))
+  kindsLoading ??= Promise.all([import('./kinds'), import('./catalogue')]).then(
+    ([k, catalogue]) => (kindsMod = { ...k, catalogue }),
+  )
   return kindsLoading
 }
-/** kind ids, for completion; empty until the kind table has loaded */
-const kindIds = () => (kindsMod ? Object.keys(kindsMod.KINDS) : [])
+/** spawnable ids, for completion; empty until the catalogue has loaded */
+const kindIds = () => (kindsMod ? kindsMod.catalogue.CATALOGUE.map((e) => e.id) : [])
 
 /* ------------------------------------------------------------ parsing -- */
 
@@ -261,7 +273,7 @@ export interface Suggestion {
   /** the whole line after accepting it */
   line: string
   /** what the list shows */
-  label: string
+  label: Msg
   /** the grey note beside it */
   detail?: Msg
 }
@@ -303,7 +315,7 @@ export const complete = (raw: string, host: SandboxHost): Completion => {
       argIndex: -1,
       suggestions: names.slice(0, 8).map((c) => ({
         line: `${slash}${c.name}${c.args?.length ? ' ' : ''}`,
-        label: usage(c),
+        label: usageMsg(c),
         detail: c.help,
       })),
     }
@@ -402,10 +414,10 @@ export const createConsole = (host: SandboxHost): Console => {
       const need = specs.filter((a) => !a.optional).length
       const textTail = specs[specs.length - 1]?.type === 'text'
       if (ctx.args.length < need) {
-        ctx.fail(msg(`usage: ${usage(cmd)}`, `uso: ${usage(cmd)}`))
+        ctx.fail(msg(`usage: ${usage(cmd, 'en')}`, `uso: ${usage(cmd, 'es')}`))
       }
       if (!textTail && ctx.args.length > specs.length) {
-        ctx.fail(msg(`too many words. usage: ${usage(cmd)}`, `sobran palabras. uso: ${usage(cmd)}`))
+        ctx.fail(msg(`too many words. usage: ${usage(cmd, 'en')}`, `sobran palabras. uso: ${usage(cmd, 'es')}`))
       }
       if (textTail && ctx.args.length > specs.length) {
         const k = specs.length - 1
@@ -453,6 +465,10 @@ export const createConsole = (host: SandboxHost): Console => {
 
 const MAX_BATCH = 50
 const LOTS = 500
+/** how far the crosshair reaches for a surface to spawn on */
+const SPAWN_REACH = 200
+/** the walker's half-width and a little air: nothing is born closer */
+const BODY_CLEAR = 1.4
 
 const eyeRay = (host: SandboxHost) => {
   const a = host.aim?.()
@@ -495,12 +511,10 @@ const pluralEs = (n: number, label: string) => {
   return [p, ...rest].join(' ')
 }
 
-/** a kind's name in the language asked for, via the spawnlist fallback */
-const kindLabel = (k: PropKind, lang: Lang) =>
-  lang === 'es' ? ((k as PropKind & { labelEs?: string }).labelEs ?? ES_KIND[k.id] ?? k.label) : k.label
-const ES_KIND: Record<string, string> = {
-  crate: 'caja de madera', barrel: 'barril de aceite', plank: 'tablón',
-  block: 'bloque de concreto', cone: 'cono', ball: 'bola',
+/** a kind's name in the language asked for, off the catalogue's own names */
+const kindLabel = (k: PropKind, lang: Lang) => {
+  const e = kindsMod?.catalogue.catalogueEntry(k.id)
+  return e ? e.name[lang].toLowerCase() : k.label
 }
 
 /**
@@ -514,10 +528,11 @@ const placeBatch = (
   host: SandboxHost, sb: Sandbox, k: PropKind, n: number, ext: THREE.Vector3,
 ): { at: Vec3[]; yaw: number } => {
   const a = eyeRay(host)
-  const yaw = host.here?.().yaw ?? 0
+  const here = host.here?.()
+  const yaw = here?.yaw ?? 0
   const origin = a?.origin ?? sb.focus
   const dir = a?.dir ?? { x: 0, y: 0, z: -1 }
-  const hit = sb.raycast(origin, dir, 60)
+  const hit = sb.raycast(origin, dir, SPAWN_REACH)
   const r = Math.max(ext.x, ext.z)
   let bx: number
   let bz: number
@@ -532,6 +547,23 @@ const placeBatch = (
     bx = origin.x + dir.x * 14
     bz = origin.z + dir.z * 14
     by = origin.y + dir.y * 14
+  }
+  // never inside the player: a crosshair on your own feet puts the thing
+  // an arm's length ahead instead, where it can still be seen
+  if (here) {
+    // (for a pile, the whole pile: its corner is half a diagonal out)
+    const across = Math.min(4, Math.ceil(Math.sqrt(n))) - 1
+    const clear = r + BODY_CLEAR + across * (r + 0.04) * Math.SQRT2
+    const dx = bx - here.x
+    const dz = bz - here.z
+    const d = Math.hypot(dx, dz)
+    if (d < clear) {
+      const fx = d > 1e-3 ? dx / d : -Math.sin(yaw)
+      const fz = d > 1e-3 ? dz / d : -Math.cos(yaw)
+      bx = here.x + fx * clear
+      bz = here.z + fz * clear
+      by = Math.max(by, here.y + ext.y + 0.04)
+    }
   }
   by = Math.max(by, sb.restY(k.id, bx, bz))
   const side = Math.min(4, Math.ceil(Math.sqrt(n)))
@@ -591,6 +623,7 @@ const spawnBatch = async (ctx: CommandCtx, kindId: string, n: number, how: 'aim'
       }))
     }
   }
+  ctx.host.spawned?.(ids)
   const h = ctx.host.history()
   h?.record({
     label: count === 1
@@ -654,19 +687,21 @@ const PLACES = [
 registerCommand({
   name: 'help',
   aliases: ['?', 'commands'],
-  args: [{ name: 'command', type: 'word', optional: true, choices: () => commandList().map((c) => c.name) }],
+  args: [{ name: 'command', nameEs: 'comando', type: 'word', optional: true, choices: () => commandList().map((c) => c.name) }],
   help: msg('what every command does', 'qué hace cada comando'),
   run: (ctx) => {
     const name = ctx.args[0]?.toLowerCase()
     if (name) {
       const c = findCommand(name)
       if (!c) ctx.fail(msg(`no command "${name}"`, `no existe "${name}"`))
-      ctx.print({ tone: 'help', text: `/${usage(c!)}` })
+      ctx.print({ tone: 'help', text: msg(`/${usage(c!, 'en')}`, `/${usage(c!, 'es')}`) })
       ctx.print({ tone: 'out', text: c!.help })
       if (c!.aliases?.length) ctx.out(msg(`also: ${c!.aliases.join(', ')}`, `también: ${c!.aliases.join(', ')}`))
       return
     }
-    for (const c of commandList()) ctx.print({ tone: 'help', text: `/${usage(c)}`, right: c.help })
+    for (const c of commandList()) {
+      ctx.print({ tone: 'help', text: msg(`/${usage(c, 'en')}`, `/${usage(c, 'es')}`), right: c.help })
+    }
     ctx.out(msg(
       'tab completes, up and down go back through what you typed',
       'tab completa, arriba y abajo repiten lo que escribiste',
@@ -687,7 +722,7 @@ registerCommand({
   name: 'spawn',
   aliases: ['s', 'give_prop'],
   args: [
-    { name: 'prop', type: 'kind' },
+    { name: 'prop', nameEs: 'objeto', type: 'kind' },
     { name: 'n', type: 'int', optional: true },
   ],
   help: msg(
@@ -702,7 +737,7 @@ registerCommand({
 registerCommand({
   name: 'rain',
   args: [
-    { name: 'prop', type: 'kind' },
+    { name: 'prop', nameEs: 'objeto', type: 'kind' },
     { name: 'n', type: 'int', optional: true },
   ],
   help: msg('drop props on your own head', 'deja caer objetos sobre tu cabeza'),
@@ -719,13 +754,13 @@ registerCommand({
     ctx.needSandbox()
     const e = ctx.host.history()?.undo()
     if (!e) ctx.fail(msg('nothing left to undo', 'no queda nada que deshacer'))
-    ctx.ok(msg(`undone: ${labelIn(e!.label, 'en')}`, `deshecho: ${labelIn(e!.label, 'es')}`))
+    ctx.ok(msg(`undone: ${labelIn(e!.label, 'en')}`, `deshice: ${labelIn(e!.label, 'es')}`))
   },
 })
 
 registerCommand({
   name: 'cleanup',
-  args: [{ name: 'whose', type: 'choice', optional: true, choices: ['mine', 'all'] }],
+  args: [{ name: 'whose', nameEs: 'de quién', type: 'choice', optional: true, choices: ['mine', 'all'] }],
   help: msg(
     'remove every prop you made, or everyone\'s with "all"',
     'quita todo lo que sacaste, o lo de todos con "all"',
@@ -811,53 +846,24 @@ registerCommand({
 })
 
 /*
-  The plain explosion: an impulse away from the point on every prop in the
-  radius, falling off with distance, and a fling for the player if they are
-  standing in it. No flash and no sound; the props piece owns those and
-  replaces this command wholesale with `registerCommand` when it lands.
+  The props piece's explosion (explosion.ts, through `sb.explode`): impulses on
+  everything in the radius, damage that breaks the breakable and sets off the
+  explosive, the flash and the sound, and the `onExplosion` hook the scene
+  answers by knocking down the walker and the pedestrians caught in it.
 */
 registerCommand({
   name: 'explode',
   aliases: ['boom'],
-  args: [{ name: 'power', type: 'number', optional: true }],
+  args: [{ name: 'power', nameEs: 'fuerza', type: 'number', optional: true }],
   help: msg('blow up whatever you are looking at', 'hace explotar lo que estás mirando'),
   run: (ctx) => {
     const sb = ctx.needSandbox()
     const hit = aimedHit(ctx.host, sb, 150)
     if (!hit) ctx.fail(msg('look at something first', 'apunta a algo primero'))
     const power = Math.max(0.1, Math.min(10, ctx.args[0] ? Number(ctx.args[0]) : 1))
-    const radius = 9 * Math.sqrt(power)
     const c = hit!.point.clone().addScaledVector(hit!.normal, 0.5)
-    let n = 0
-    const pos = new THREE.Vector3()
-    const caught: Prop[] = []
-    sb.queryBall(c, radius, (p) => {
-      caught.push(p)
-    })
-    for (const p of caught) {
-      if (p.mode === 'frozen') continue
-      sb.getTransform(p.id, pos)
-      const d = pos.distanceTo(c)
-      const fall = 1 - d / radius
-      if (fall <= 0) continue
-      const dir = pos.sub(c).normalize()
-      dir.y += 0.5 // explosions throw things up, not just out
-      dir.normalize()
-      const speed = 34 * power * fall
-      sb.wake(p.id)
-      sb.applyImpulse(p.id, dir.multiplyScalar(speed * p.mass))
-      n++
-    }
-    const me = ctx.host.here?.()
-    if (me && !ctx.host.god?.()) {
-      const d = Math.hypot(me.x - c.x, me.y + 2 - c.y, me.z - c.z)
-      if (d < radius) {
-        const k = (1 - d / radius) * 30 * power
-        const dx = (me.x - c.x) / (d || 1)
-        const dz = (me.z - c.z) / (d || 1)
-        ctx.host.fling?.(dx * k, 8 + k * 0.6, dz * k)
-      }
-    }
+    const e = sb.explode(c, power, 16 * Math.sqrt(power))
+    const n = e.pushed
     ctx.ok(msg(`boom (${n} ${plural(n, 'prop')} thrown)`, `bum (${n} ${pluralEs(n, 'objeto')} volando)`))
   },
 })
@@ -867,7 +873,7 @@ registerCommand({
   aliases: ['teleport', 'goto'],
   args: [
     {
-      name: 'where', type: 'place',
+      name: 'where', nameEs: 'dónde', type: 'place',
       choices: (host) => [...PLACES, ...(host.players?.().map((p) => p.name) ?? [])],
     },
     { name: 'z', type: 'number', optional: true },
@@ -985,7 +991,7 @@ registerCommand({
 registerCommand({
   name: 'launch',
   aliases: ['yeet'],
-  args: [{ name: 'power', type: 'number', optional: true }],
+  args: [{ name: 'power', nameEs: 'fuerza', type: 'number', optional: true }],
   help: msg('throw yourself the way you are looking', 'lánzate hacia donde estás mirando'),
   run: (ctx) => {
     const a = ctx.host.aim?.()
@@ -1043,7 +1049,7 @@ registerCommand({
 
 registerCommand({
   name: 'time',
-  args: [{ name: 'when', type: 'word', optional: true, choices: [...Object.keys(TIMES), 'run'] }],
+  args: [{ name: 'when', nameEs: 'cuándo', type: 'word', optional: true, choices: [...Object.keys(TIMES), 'run'] }],
   help: msg(
     'pin the time of day (noon, dusk, night, 18:30, 0.75); alone, lets it run',
     'fija la hora (noon, dusk, night, 18:30, 0.75); sin nada, la suelta',
@@ -1066,7 +1072,7 @@ registerCommand({
 registerCommand({
   name: 'fog',
   aliases: ['weather'],
-  args: [{ name: 'thickness', type: 'word', optional: true, choices: Object.keys(FOG_WORDS) }],
+  args: [{ name: 'thickness', nameEs: 'grosor', type: 'word', optional: true, choices: Object.keys(FOG_WORDS) }],
   help: msg('how thick the fog is: 1 normal up to 6, or thick, soup', 'qué tan espesa es la neblina: 1 normal hasta 6, o thick, soup'),
   run: (ctx) => {
     if (!ctx.host.fog) ctx.fail(msg('no weather here', 'aquí no hay clima'))
@@ -1081,7 +1087,7 @@ registerCommand({
 
 registerCommand({
   name: 'give',
-  args: [{ name: 'tool', type: 'word', choices: (host) => host.tools?.() ?? [] }],
+  args: [{ name: 'tool', nameEs: 'herramienta', type: 'word', choices: (host) => host.tools?.() ?? [] }],
   help: msg('put a tool in your hands', 'ponte una herramienta en las manos'),
   run: (ctx) => {
     if (!ctx.host.give) ctx.fail(msg('no tools yet', 'todavía no hay herramientas'))
@@ -1110,7 +1116,7 @@ registerCommand({
 
 registerCommand({
   name: 'say',
-  args: [{ name: 'text', type: 'text' }],
+  args: [{ name: 'text', nameEs: 'texto', type: 'text' }],
   help: msg('say something to everyone out here', 'dile algo a todos los que están aquí'),
   run: (ctx) => {
     if (!ctx.host.chat?.(ctx.args[0])) ctx.fail(msg('nobody out here to hear it', 'no hay nadie que lo escuche'))

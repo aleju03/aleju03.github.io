@@ -73,6 +73,18 @@ export interface Scenario {
   events?: Array<[number, (c: ScenarioCtx) => void]>
   /** one line of numbers about how it went */
   report?: (c: ScenarioCtx) => string
+  /** a moving camera: where the lens is at simulated time t. Overrides
+      `camera` frame by frame (a first-person physgun film) */
+  lens?: (c: ScenarioCtx, t: number) => Shot
+  /** the render side of a scenario: things drawn in the scene that are not
+      props (a viewmodel, a beam, a body). Called once by the film with the
+      scene and camera; `frame` runs before every drawn frame, and `warmed`
+      once the film has compiled and first-drawn the scene, so staged
+      warm-up objects can be put away. Never called headless */
+  present?: (c: ScenarioCtx, scene: import('three').Scene, cam: import('three').PerspectiveCamera) => {
+    frame: (t: number, dt: number, lines: number) => void
+    warmed?: () => void
+  }
   /** people standing about (world x/z and a heading), for scenarios about
       what happens to them: the film stands a `buildPlayerBody()` rig on each
       and lets the sandbox's blasts knock it flat. Headless runs ignore it */
@@ -267,6 +279,9 @@ const lying = (dx: number, dz: number) => {
   return { x: (kx / l) * s, y: 0, z: (kz / l) * s, w: s }
 }
 
+/** how far the stack's ram is tilted end to end, radians */
+const RAM_SLANT = 0.3
+
 const settle = (c: ScenarioCtx) => {
   // report helper: how many of the ids are asleep
   let asleep = 0
@@ -279,7 +294,7 @@ const settle = (c: ScenarioCtx) => {
 
 defineScenario({
   id: 'sandbox:stack',
-  title: 'a 3x5 tower of crates, a plank punted through its second row',
+  title: 'a 3x5 tower of crates, a slanted plank rammed through its base',
   site: siteFlat,
   duration: 6,
   frames: 12,
@@ -299,39 +314,51 @@ defineScenario({
     const h = 2.4
     const yaw = Math.atan2(c.dx, c.dz)
     // stacked by hand, not by a grid: a few centimetres and a few degrees of
-    // slop per crate, which is what lets a falling tower twist and come apart
-    // the way a real one does instead of pivoting over as one perfect slab
+    // slop per crate, and no two packed the same (a crate's weight varies by
+    // a third either way), which is what lets a falling tower twist and come
+    // apart the way a real one does instead of pivoting over as one perfect
+    // slab. Identical crates in a perfect grid get identical impulses, so
+    // whole rows fell as one piece
     let seed = 11
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) - 0.5
     for (let row = 0; row < 5; row++)
       for (let col = -1; col <= 1; col++) {
-        const px = c.x + c.dx * col * (h + 0.04) + rnd() * 0.12
-        const pz = c.z + c.dz * col * (h + 0.04) + rnd() * 0.12
+        const px = c.x + c.dx * col * (h + 0.05) + rnd() * 0.16
+        const pz = c.z + c.dz * col * (h + 0.05) + rnd() * 0.16
         const y = c.sb.restY('crate', c.x, c.z) + row * (h + 0.01)
-        c.ids.push(c.sb.spawn('crate', { x: px, y, z: pz }, { yaw: yaw + rnd() * 0.12 }))
+        c.ids.push(c.sb.spawn('crate', { x: px, y, z: pz }, {
+          yaw: yaw + rnd() * 0.16, mass: 35 * (1 + rnd() * 0.7),
+        }))
       }
     // the ram: a plank held level, a little askew so it meets one end of the
-    // tower first, punted through the second row at the speed a physgun
+    // tower first, swung through the *bottom* row at the speed a physgun
     // throw leaves the hand, then let go. Leaning on the tower slowly only
     // ever pivoted it over whole, as one slab (which is what a real stack of
-    // boxes does when pushed slowly, and not what anyone films); knocking a
-    // row out from under it is what makes the rows above come down in pieces
+    // boxes does when pushed slowly, and not what anyone films), and round
+    // two's punt through the second row at 16 u/s left the bottom row
+    // standing and dropped the top three as one block. Knocking the base out
+    // hard is what makes everything above come down in pieces
     const nx = c.dz
     const nz = -c.dx
-    const ry = c.sb.restY('crate', c.x, c.z) + 1.0 * h
-    const ramYaw = yaw + 0.25
+    // and slanted: one end low through the bottom row, the other through
+    // the second, so the three columns are each hit at a different height
+    // and moment and nothing above gets an even shove to fall as one
+    const ry = c.sb.restY('crate', c.x, c.z) + 0.45 * h
+    const ramYaw = yaw + 0.3
     const back = 7
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(nx, 0, nz), RAM_SLANT)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ramYaw))
     const ram = c.sb.spawn('plank', { x: c.x - nx * back, y: ry, z: c.z - nz * back }, {
-      quaternion: { x: 0, y: Math.sin(ramYaw / 2), z: 0, w: Math.cos(ramYaw / 2) },
+      quaternion: { x: q.x, y: q.y, z: q.z, w: q.w },
     })
     c.sb.setMode(ram, 'kinematic')
     let t = 0
     const off = c.sb.onBeforeSlice((dt) => {
       t += dt
       if (!c.sb.get(ram)) return off()
-      const d = back - Math.max(0, Math.min(t - 1.0, 0.75)) * 16
-      c.sb.moveKinematic(ram, { x: c.x - nx * d, y: ry, z: c.z - nz * d })
-      if (t > 1.75) {
+      const d = back - Math.max(0, Math.min(t - 1.0, 0.5)) * 30
+      c.sb.moveKinematic(ram, { x: c.x - nx * d, y: ry, z: c.z - nz * d }, q)
+      if (t > 1.5) {
         c.sb.setMode(ram, 'dynamic')
         off()
       }
@@ -421,7 +448,7 @@ defineScenario({
   id: 'sandbox:pile',
   title: 'forty mixed props dropped on a street',
   site: siteStreet,
-  duration: 6,
+  duration: 8,
   frames: 12,
   camera: (c) => ({
     // down the street itself: anything off its axis is inside a building
@@ -430,22 +457,38 @@ defineScenario({
     fov: 50,
   }),
   setup: (c) => {
-    // a loose column, staggered so they land over a second and a half rather
-    // than as one block, with a little spin each so nothing lands flat
-    let s = 7
-    const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
-    for (let i = 0; i < 40; i++) {
-      const kind = MIX[i % MIX.length]
-      const px = c.x + (rnd() - 0.5) * 7
-      const pz = c.z + (rnd() - 0.5) * 7
-      const y = c.y + 5 + i * 1.1
-      const a = rnd() * Math.PI
-      c.ids.push(c.sb.spawn(kind, { x: px, y, z: pz }, {
-        quaternion: { x: Math.sin(a / 2) * 0.6, y: Math.sin(a / 2) * 0.8, z: 0, w: Math.cos(a / 2) },
-        angular: { x: rnd() * 2 - 1, y: rnd() * 2 - 1, z: rnd() * 2 - 1 },
-      }))
-    }
+    c.memo.seed = 7
+    // broken is not lost: a crate a 900 kg block lands on is crushed, which
+    // is the right answer, and the report says which it was
+    c.memo.broke = 0
+    c.sb.onBreak((e) => {
+      if (c.ids.includes(e.id)) c.memo.broke++
+    })
   },
+  // a loose column poured in over three and a half seconds rather than
+  // stacked in the air, with a little spin each so nothing lands flat. It
+  // used to be stacked: forty props one above the next, the top one 49 units
+  // up, and once crates and planks could break the top half of the column
+  // arrived at 40-57 u/s and a pile of forty lost six to splinters. Poured
+  // from eight units over whatever is already there, each lands at about
+  // the speed of a crate knocked off a stack
+  events: Array.from({ length: 40 }, (_, i): [number, (c: ScenarioCtx) => void] => [0.02 + i * 0.09, (c) => {
+    let s = c.memo.seed
+    const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
+    const kind = MIX[i % MIX.length]
+    const px = c.x + (rnd() - 0.5) * 7
+    const pz = c.z + (rnd() - 0.5) * 7
+    const a = rnd() * Math.PI
+    const q = { x: Math.sin(a / 2) * 0.6, y: Math.sin(a / 2) * 0.8, z: 0, w: Math.cos(a / 2) }
+    const w = { x: rnd() * 2 - 1, y: rnd() * 2 - 1, z: rnd() * 2 - 1 }
+    c.memo.seed = s
+    let top = c.y
+    c.sb.queryBall({ x: px, y: c.y + 6, z: pz }, 6, (p) => {
+      const t = p.body.translation()
+      top = Math.max(top, t.y + p.extents.y)
+    })
+    c.ids.push(c.sb.spawn(kind, { x: px, y: top + 8, z: pz }, { quaternion: q, angular: w }))
+  }]),
   report: (c) => {
     let up = 0
     let far = 0
@@ -456,7 +499,9 @@ defineScenario({
       if (t.y > c.y + 12) up++
       if (Math.hypot(t.x - c.x, t.z - c.z) > 20) far++
     }
-    return `${settle(c)}/40 asleep, ${up} still high, ${far} scattered past 20 units, ${40 - c.ids.filter((id) => c.sb.get(id)).length} lost`
+    const gone = 40 - c.ids.filter((id) => c.sb.get(id)).length
+    return `${settle(c)}/40 asleep, ${up} still high, ${far} scattered past 20 units, ` +
+      `${c.memo.broke} crushed to splinters, ${gone - c.memo.broke} lost`
   },
 })
 

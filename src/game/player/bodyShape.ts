@@ -122,8 +122,12 @@ const BODY_ZS = 0.86
     standstill at every point, and the flat band it left at each one read as
     a quilted jacket, rings stacked up the body */
 const PROF: Array<[number, number]> = [
-  [0, 0.52], [0.14, 0.58], [0.32, 0.62], [0.5, 0.67], [0.6, 0.66], [0.7, 0.5], [0.8, 0.42], [1, 0.4],
+  [0, 0.57], [0.14, 0.64], [0.32, 0.65], [0.5, 0.67], [0.6, 0.65], [0.7, 0.5], [0.8, 0.42], [1, 0.4],
 ]
+/** dough under gravity: the front of the belly sags forward a little, low
+    down, so the body is not a lathe-perfect capsule */
+const sagAt = (y: number, th: number) =>
+  0.07 * Math.exp(-(((y - (HIP_Y + 0.25)) / 0.32) ** 2)) * Math.max(0, Math.sin(th)) ** 2
 const beanR = (t: number) => {
   let i = 1
   while (i < PROF.length - 1 && PROF[i][0] < t) i++
@@ -501,15 +505,16 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
         const th = u * Math.PI * 2
         const t = t0 + (t1 - t0) * v
         const r = beanR(t)
-        out.set(Math.cos(th) * r, BODY_Y0 + (BODY_Y1 - BODY_Y0) * t, Math.sin(th) * r * BODY_ZS)
+        const y = BODY_Y0 + (BODY_Y1 - BODY_Y0) * t
+        out.set(Math.cos(th) * r, y, Math.sin(th) * (r * BODY_ZS + sagAt(y, th)))
       },
       24, rings, role, bean, new THREE.Vector3(0, (BODY_Y0 + BODY_Y1) / 2, 0),
     )
-  // one gummy, one colour, bottom to crown. Everything from a little over the
-  // shoulders up is head-flagged: the lens rides there, and an unflagged
-  // collar ring right under it was cut by the near plane into a sliver
-  // hanging at the top of the frame
-  const tNeck = tOf(shoulderY + 0.1)
+  // one gummy, one colour, bottom to crown. Everything from a little under
+  // the shoulders up is head-flagged, and so are the arms: the lens rides
+  // there, and looking down it saw the near plane cut the shoulders into a
+  // rim across the bottom of the frame with faceted forearms in front of it
+  const tNeck = tOf(shoulderY - 0.25)
   const tHead = tOf(headY + 0.02)
   slice(0, tNeck, ROLE.SUIT, 22) // the body
   slice(tNeck, tHead, ROLE.SUIT + H, 4) // the neck, which the lens must not see
@@ -519,20 +524,36 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
   // --- arms: long tube arms, shoulder to wrist, soft across the elbow, and a
   // round fist. Long enough that a hanging fist reaches past the hips: a
   // jelly brawler's arms are for grabbing, and a short arm cannot
-  for (const [ua, fa, hb] of [
-    [B.UARM_L, B.FARM_L, B.HAND_L],
-    [B.UARM_R, B.FARM_R, B.HAND_R],
+  // The arm grows out of the body rather than being stuck on it: the tube
+  // starts inside the shoulder, fat, and its root is weighted partly to the
+  // torso, so a raised arm pulls the shoulder's dough up with it instead of
+  // pivoting a cylinder against a capsule
+  for (const [ua, fa, hb, side] of [
+    [B.UARM_L, B.FARM_L, B.HAND_L, 1],
+    [B.UARM_R, B.FARM_R, B.HAND_R, -1],
   ] as const) {
     const sh = rest(ua)
     const el = rest(fa)
     const wr = rest(hb)
+    const elbow = blend(fa, ua, el.y, 0.09)
+    const root = sh.clone().add(new THREE.Vector3(-side * 0.14, 0.0, 0))
+    const armW: Weigh = (p) => {
+      const out = side * p.x
+      const inner = side * sh.x
+      // only the root, not the inner half of the whole hanging arm: that
+      // pinned a strip of every upper arm to the torso and pulled it into a
+      // web when the arm came up
+      if (out >= inner || p.y < sh.y - 0.1) return elbow(p)
+      const k = THREE.MathUtils.smoothstep(out, inner - 0.14, inner)
+      return [ua, B.TORSO, 0.55 + 0.45 * k]
+    }
     tube(
-      s, [sh, el, wr.clone().add(new THREE.Vector3(0, 0.02, 0))], 0.19, 0.155, ROLE.SUIT,
-      blend(fa, ua, el.y, 0.09), 10,
+      s, [root, sh, el, wr.clone().add(new THREE.Vector3(0, 0.02, 0))], 0.23, 0.155, ROLE.SUIT + H,
+      armW, 10,
     )
     ellipsoid(
       s, wr.clone().add(new THREE.Vector3(0, -0.1, 0.01)), new THREE.Vector3(0.21, 0.2, 0.21),
-      ROLE.SUIT, rigid(hb), [12, 9],
+      ROLE.SUIT + H, rigid(hb), [12, 9],
     )
   }
 
@@ -544,10 +565,18 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     const hip = rest(th)
     const knee = rest(sn)
     const ank = rest(ft)
+    // fat at the top and sunk into the body, the top weighted partly to the
+    // pelvis: a leg that is a stub of the same dough, not a peg in a hole
+    const knee2 = blend(sn, th, knee.y, 0.1)
+    const legW: Weigh = (p) => {
+      if (p.y <= hip.y) return knee2(p)
+      const k = THREE.MathUtils.smoothstep(p.y, hip.y, hip.y + 0.22)
+      return [B.PELVIS, th, 0.3 + 0.6 * k]
+    }
     tube(
       s,
-      [hip.clone().add(new THREE.Vector3(0, 0.12, 0)), knee, ank.clone().add(new THREE.Vector3(0, 0.1, 0))],
-      0.23, 0.2, ROLE.SUIT, blend(sn, th, knee.y, 0.1), 10,
+      [hip.clone().add(new THREE.Vector3(0, 0.24, 0)), hip, knee, ank.clone().add(new THREE.Vector3(0, 0.1, 0))],
+      0.27, 0.2, ROLE.SUIT, legW, 10,
     )
     ellipsoid(
       s, new THREE.Vector3(ank.x, 0.12, 0.07), new THREE.Vector3(0.22, 0.16, 0.27),
@@ -573,27 +602,21 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
   const head = rigid(B.HEAD)
   const tails = rigid(B.POM)
 
-  // --- the face: two big goofy eyes, white with a pupil each, set a little
-  // apart and a little off true (the pupils look slightly down and away from
-  // each other), on their own blink bone. No mouth: the goof is in the eyes
-  // and the pose
+  // --- the face: two small dark dots, a little too far apart, on their own
+  // blink bone, and nothing else. Big white googly eyes were what made the
+  // earlier ones a mascot; a jelly brawler's character is in its pose
   const eyeY = headY + EYE_OFF
   const eyes = rigid(B.EYES)
   const eyeFrames: Array<{ c: THREE.Vector3; m: THREE.Matrix4; side: THREE.Vector3; up: THREE.Vector3; n: THREE.Vector3 }> = []
   for (const sign of [1, -1]) {
     const n = new THREE.Vector3()
-    const th = Math.PI / 2 - sign * 0.5
-    const c = onHead(eyeY, th, -0.012, new THREE.Vector3(), n)
+    const th = Math.PI / 2 - sign * 0.42
+    const c = onHead(eyeY, th, -0.01, new THREE.Vector3(), n)
     const sideV = new THREE.Vector3(0, 1, 0).cross(n).normalize()
     const up = new THREE.Vector3().crossVectors(n, sideV).normalize()
     const m = new THREE.Matrix4().makeBasis(sideV, up, n)
     eyeFrames.push({ c, m, side: sideV, up, n })
-    ellipsoid(s, c, new THREE.Vector3(0.095, 0.115, 0.04), ROLE.GLINT + H, eyes, [12, 10], m)
-    const pupil = c.clone()
-      .addScaledVector(sideV, sign * 0.022)
-      .addScaledVector(up, -0.028)
-      .addScaledVector(n, 0.03)
-    ellipsoid(s, pupil, new THREE.Vector3(0.05, 0.062, 0.025), ROLE.GLOW + H, eyes, [10, 8], m)
+    ellipsoid(s, c, new THREE.Vector3(0.048, 0.058, 0.028), ROLE.GLOW + H, eyes, [10, 8], m)
   }
 
   /** a ring round the head at a height, standing `lift` off it */
@@ -680,8 +703,8 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
           const a = (k / 16) * Math.PI * 2
           rim.push(
             f.c.clone()
-              .addScaledVector(f.side, Math.cos(a) * 0.13)
-              .addScaledVector(f.up, Math.sin(a) * 0.15)
+              .addScaledVector(f.side, Math.cos(a) * 0.1)
+              .addScaledVector(f.up, Math.sin(a) * 0.11)
               .addScaledVector(f.n, 0.004),
           )
         }

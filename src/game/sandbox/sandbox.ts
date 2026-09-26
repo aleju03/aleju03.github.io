@@ -5,13 +5,14 @@ import { terrainY } from '../world/terrain'
 import { createGround, type Ground } from './ground'
 import { KINDS, propMaterial, registerKind, shapeExtents, type PropKind } from './kinds'
 import {
-  createPhysicsWorld, GROUPS, loadRapier, type PhysicsWorld, type Rapier, type RCollider,
+  createPhysicsWorld, GROUPS, loadRapier, STEP, type PhysicsWorld, type Rapier, type RCollider,
 } from './physics'
 import {
   createProps, type ImpactEvent, type Prop, type PropId, type PropMode, type Props,
-  type QuatLike, type SpawnOpts, type Vec3Like,
+  type QuatLike, type SpawnOpts, type SplashEvent, type Vec3Like,
 } from './props'
 import { createWalker, type Walker, type WalkerState } from './walker'
+import { createWake } from './wake'
 import './catalogue'
 import { createBatcher, warmBatch, type Batcher } from './batch'
 import { createFx, type Fx } from './fx'
@@ -66,7 +67,8 @@ import { setEar, setEarFallback } from './impactSounds'
 */
 
 export type {
-  BreakEvent, ExplosionEvent, ImpactEvent, Prop, PropId, PropKind, PropMode, QuatLike, SpawnOpts, Vec3Like, WalkerState,
+  BreakEvent, ExplosionEvent, ImpactEvent, Prop, PropId, PropKind, PropMode, QuatLike, SpawnOpts, SplashEvent,
+  Vec3Like, WalkerState,
 }
 export { KINDS, registerKind }
 
@@ -80,6 +82,9 @@ export interface SandboxOpts {
   waterY?: () => number
   /** the drawn swell on top of it */
   waveAt?: (x: number, z: number) => number
+  /** drop the world's own ripple rings on the sea (the water shader's); the
+      sandbox calls it when a prop goes in hard */
+  splash?: (x: number, z: number) => void
   /** the solids of any loaded chunk, for props outside the walker's nine */
   chunkSolids?: (cx: number, cz: number) => readonly Solid[] | null | undefined
   /** hand the walker seam to `collision` (default true) */
@@ -152,6 +157,8 @@ export interface Sandbox {
 
   /* events and hooks; each returns its unsubscribe */
   onImpact: (fn: (e: ImpactEvent) => void) => () => void
+  /** a prop went into the water hard (the splash is already drawn) */
+  onSplash: (fn: (e: SplashEvent) => void) => () => void
   onSpawn: (fn: (p: Prop) => void) => () => void
   onRemove: (fn: (p: Prop) => void) => () => void
   /** runs ahead of every fixed slice, with the slice length */
@@ -162,6 +169,10 @@ export interface Sandbox {
   /** the first prop, solid or ground along a ray (props and world only;
       never the walker or a vehicle) */
   raycast: (origin: Vec3Like, dir: Vec3Like, maxDist: number, opts?: { props?: boolean; world?: boolean }) => RayHit | null
+  /** the prop a Rapier collider belongs to (for a tool casting its own ray) */
+  propOf: (c: unknown) => Prop | null
+  /** the prop the walker is standing on, if any (a physgun must not lift it) */
+  readonly standing: Prop | null
   /** every prop overlapping a ball */
   queryBall: (center: Vec3Like, r: number, fn: (p: Prop) => void) => void
   /** the drawn ground height */
@@ -200,6 +211,17 @@ export interface Sandbox {
   timescale: number
 
   /** the raw world, for systems that need more than the verbs (joints) */
+  /** a fingerprint of the whole simulation (every prop's pose and velocity,
+      to the bit, and the simulated clock): equal inputs give equal hashes,
+      which is what a replay or a desync check compares. '' before Rapier */
+  stateHash: () => string
+  /** the simulation's own random numbers, 0..1: seeded per sandbox and
+      drawn only by the simulation (a gib's kick, a fuse's length, where a
+      blast lands on a crate), so a replay draws the same ones. Anything
+      that is only drawn or heard (sparks, a clatter's pitch) keeps
+      Math.random and stays out of the hash */
+  random: () => number
+
   readonly rapier: Rapier | null
   readonly physics: PhysicsWorld | null
   readonly stats: {
@@ -246,7 +268,22 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
   const batcher: Batcher | null = opts.parent ? createBatcher(root) : null
   const effects: Fx = createFx({ parent: opts.parent ? root : null, groundY: terrainY })
 
+  // the waterline cue: foam collars and splashes, drawn only with a parent
+  const wake = createWake(opts.parent ? root : null)
+  const waterY = opts.waterY ?? (() => -1e6)
+  const surfaceAt = (x: number, z: number) => waterY() + (opts.waveAt ? opts.waveAt(x, z) : 0)
+
   let live: Live | null = null
+  let lastWorldSplash = -1
+  // mulberry32: small, fast, and the same sequence in Node and a browser
+  let seed = 0x5eed1
+  const random = () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = seed
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
   let disposed = false
   let gravity = -34
   let timescale = 1
@@ -258,6 +295,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
   // landed is as good as one made after; the props module gets one forwarder
   const listeners = {
     impact: new Set<(e: ImpactEvent) => void>(),
+    splash: new Set<(e: SplashEvent) => void>(),
     spawn: new Set<(p: Prop) => void>(),
     remove: new Set<(p: Prop) => void>(),
   }
@@ -272,7 +310,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       pw,
       ground,
       root: opts.parent ? root : null,
-      waterY: opts.waterY ?? (() => -1e6),
+      waterY,
       waveAt: opts.waveAt,
     })
     const walker = opts.walker === false ? null : createWalker(pw, props)
@@ -283,6 +321,17 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     live = { pw, ground, props, walker }
     props.onImpact((e) => {
       for (const fn of listeners.impact) fn(e)
+    })
+    props.onSplash((e) => {
+      wake.splash(e.x, e.y, e.z, e.speed, Math.max(e.prop.extents.x, e.prop.extents.z), pw.time)
+      // the world's ripple rings are a ring buffer of eight shared with the
+      // player's own wading, and ten props landing at once drew one white
+      // whorl over the whole bay: one every quarter second is plenty
+      if (opts.splash && pw.time - lastWorldSplash > 0.25) {
+        lastWorldSplash = pw.time
+        opts.splash(e.x, e.z)
+      }
+      for (const fn of listeners.splash) fn(e)
     })
     props.onSpawn((p) => {
       for (const fn of listeners.spawn) fn(p)
@@ -308,17 +357,29 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     const fx = w ? w.eye.x : (t.focus?.x ?? 0)
     const fz = w ? w.eye.z : (t.focus?.z ?? 0)
     focusAt.set(fx, w ? w.eye.y : (t.focus?.y ?? 0), fz)
-    // the ground under the focus, so a spawn at arm's length has a floor
+    // the ground under the focus (so a spawn at arm's length has a floor) and
+    // under every prop, parking and streaming: at the head of every slice,
+    // not of every frame, because which colliders exist and the order they
+    // were made in is simulation state, and streamed per frame it made the
+    // same breakage come out differently at 144 Hz than at 60. Once more up
+    // front for a frame that takes no slice (a paused world still wants the
+    // floor under a spawn); with nothing moved in between, the slice's own
+    // pass then finds nothing new to make
     const cx = chunkX(fx)
     const cz = chunkZ(fz)
-    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) l.ground.need(cx + dx, cz + dz)
-    l.props.frame(fx, fz)
-    l.ground.sync()
+    const stream = (tick = true) => {
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) l.ground.need(cx + dx, cz + dz)
+      l.props.frame(fx, fz)
+      l.ground.stream(tick)
+    }
+    stream(false)
+    l.ground.vehicles()
     l.walker?.frame(t.active ? w : null, t.dt)
     if (t.active) {
       frameOut.steps = l.pw.advance(
         t.dt,
         (h, k, n) => {
+          stream()
           l.props.beforeSlice(h)
           l.walker?.beforeSlice(k, n)
           l.ground.slice(k, n)
@@ -332,6 +393,8 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
         },
       )
       l.props.draw(l.pw.alpha)
+      // the render stands between the last two slices, and so does the foam
+      wake.draw(l.pw.time - STEP * (1 - l.pw.alpha), l.props.forEach, surfaceAt)
       l.walker?.carry(w)
     }
     batcher?.sync()
@@ -395,6 +458,10 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       listeners.impact.add(fn)
       return () => listeners.impact.delete(fn)
     },
+    onSplash: (fn) => {
+      listeners.splash.add(fn)
+      return () => listeners.splash.delete(fn)
+    },
     onSpawn: (fn) => {
       listeners.spawn.add(fn)
       return () => listeners.spawn.delete(fn)
@@ -432,6 +499,10 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
         solid: l.ground.solidOf(c) ?? null,
         ground: l.ground.isGround(c),
       }
+    },
+    propOf: (c) => (live ? live.props.ofCollider(c as RCollider) ?? null : null),
+    get standing() {
+      return live?.walker?.standing ?? null
     },
     queryBall: (center, r, fn) => {
       const l = live
@@ -481,6 +552,8 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       timescale = Math.max(0, Math.min(4, k))
       if (live) live.pw.timescale = timescale
     },
+    random,
+    stateHash: () => (live ? `${live.props.stateHash()}@${live.pw.time.toFixed(4)}` : ''),
     explode: (at, power = 1, radius = 16) => explosions.explode(at, power, radius, null),
     onExplosion: (fn) => explosions.onExplosion(fn),
     onBreak: (fn) => life.onBreak(fn),
@@ -518,6 +591,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       }
       root.removeFromParent()
       warm.geometry.dispose()
+      wake.dispose()
       warmI.geometry.dispose()
       warmI.dispose()
       batcher?.dispose()

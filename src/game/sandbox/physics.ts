@@ -37,6 +37,27 @@ import type RAPIER_NS from '@dimforge/rapier3d-compat'
   capped (`MAX_STEPS`), so a long hitch or a big timescale turns into slow
   motion rather than a spiral of death.
 
+  Determinism. The simulation is a pure function of what happens at each
+  slice, never of how slices fall into frames: the slice length is fixed,
+  nothing in the simulation (this file, props, ground, walker, breakables,
+  explosions) reads the wall clock or Math.random: what needs chance draws
+  the facade's seeded `random()` (a console command that scatters a spawn
+  does use Math.random, and that spawn is then an input like any other;
+  sparks and sounds do too, and never touch a body; the few things
+  that wander, like a floater's drift, read `time` and the prop's id), and
+  props, ground and listeners are all kept in insertion-ordered maps and
+  sets. So the same spawns, the same per-slice pokes and the same sea give
+  the same world to the bit, however uneven the frames that carried them, and
+  the same WebAssembly in Node and in Chrome agrees too: `measure physics
+  determinism` and `npm run film` print the same `stateHash()` for a
+  scenario. The one input the sandbox does not own is the swell (`waveAt`
+  reads the water shader's clock, which the game advances per rendered
+  frame); the harnesses pin it to the slice clock, and a replay or a shared
+  world has to do the same. Rapier's own guarantee is per build and
+  platform (this is not its cross-platform `enhanced-determinism` build),
+  which is why the hash is a check to compare, not a promise to rely on
+  across machines.
+
   Units are the world's: a unit is about 0.42 m (the eye is 3.84 up), mass is
   in kilograms, and gravity defaults to 34 u/s², the walker's own. That is
   ~1.45 g, and it is deliberate: Garry's Mod runs its props at sv_gravity 600,

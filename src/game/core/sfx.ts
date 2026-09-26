@@ -240,6 +240,21 @@ export const propSnap = (hard: number) => {
   thump(a, now + 0.04, 92, 0.02 + 0.05 * w, 0.2)
 }
 
+/**
+ * A prop arriving out of the catalogue: a quick airy "fwip" (the thing
+ * appearing) and a soft wooden knock under it, pitched down for heavy things
+ * so a concrete block lands lower than a ball. Levels sit with the landing
+ * thump's, so a spawn is a click in the mix rather than an event.
+ */
+export const spawnPop = (mass: number) => {
+  const a = audio()
+  if (!a) return
+  const now = a.currentTime
+  const heavy = Math.min(1, Math.log10(1 + Math.max(0, mass)) / 3)
+  burst(a, now, 'highpass', 3200 - 1400 * heavy, 0.8, 0.026, 0.045)
+  thump(a, now + 0.015, 190 - 110 * heavy, 0.05 + 0.03 * heavy, 0.11)
+}
+
 /** the hinge working: the recorded swing, or the stick-slip judder below
     (gliding up opening and down shut) while that clip is still loading */
 export const doorCreak = (opening: boolean) => {

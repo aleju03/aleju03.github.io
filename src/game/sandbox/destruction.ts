@@ -5,7 +5,6 @@ import {
   cornerPoints, fragsToGeometry, hullPoints, massOf, shatterFrags, unsupported, type Frag, type Piece,
 } from '../world/fracture'
 import { gfx } from '../world/quality'
-import { seeded } from '../core/rand'
 import { msg, registerCommand, type CommandCtx } from './commands'
 import { falloff } from './explosion'
 import { historyOf, type HistoryEntry } from './history'
@@ -293,9 +292,11 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   const had = attached.get(sb)
   if (had) return had
 
-  // everything that is chosen is chosen off one seeded stream, so a
-  // scenario comes out the same twice and a record replays the same way
-  const rnd = seeded(0x5eed)
+  // everything the simulation chooses is drawn from the sandbox's own seeded
+  // stream, so a scenario comes out the same twice, a replay draws the same
+  // numbers and the state hash stays honest. The shards' cuts are seeded
+  // from the event and the piece (fracture.ts's shatterFrags)
+  const rnd = sb.random
   const wrecks = new Map<string, Wreck>()
   const lumps = new Map<PropId, Lump>()
   const jobs: Job[] = []

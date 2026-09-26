@@ -13,8 +13,8 @@ import { propMaterial } from './art'
   the proxies by geometry and writes their matrices into one InstancedMesh
   per geometry, so the cost of a street full of props is the kinds in view,
   plus the same again for the shadow pass, whatever the count. Gibs are
-  proxies too (each piece shape is a geometry), so a broken crate's twelve
-  panels are twelve instances of six batches rather than twelve draws.
+  proxies too (each piece shape is a geometry), so a broken crate's thirty-
+  two boards and battens are instances of eight batches, not 32 draws.
 
   Colour is per instance: a proxy's `tint` (a THREE.Color, null for none)
   multiplies the atlas, which is how a physgun can flash what it froze
