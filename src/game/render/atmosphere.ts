@@ -82,10 +82,12 @@ export const airForSky = (
   // the woods thicken the air mostly once the light goes: at noon a forest
   // should still read as green all the way into the trees
   const woods = 1 + (biome - 1) * (1 - 0.6 * s.day)
-  const dist = (300 * s.day + 70 * (1 - s.day)) * (1 - 0.35 * s.twilight) * woods
+  // the twilight no longer thickens it: from a height, a dusk that did
+  // turned everything past thirty metres into one mauve plane
+  const dist = (300 * s.day + 90 * (1 - s.day)) * woods
   air.start = 8
   air.dist = dist
-  air.max = (0.36 * s.day + 0.72 * (1 - s.day) + 0.12 * s.twilight) * out
+  air.max = (0.36 + 0.36 * dark - 0.08 * s.twilight) * out
   air.planes = 0
   // warm hazy air by day: the sky module's fog is a cool pale blue, which
   // reads as overcast once the grade has had it; nudged toward cream it
@@ -103,8 +105,10 @@ export const airForSky = (
   // the air glows warm toward a low sun, and hardly at all toward a high one
   const glow = (0.12 + 0.55 * s.twilight) * s.day * out
   air.sunGlow.copy(sunColor).multiplyScalar(glow)
-  air.skyHorizon = (0.8 - 0.35 * warm) * out
-  air.skyReach = 0.28 + 0.12 * s.twilight
+  // by day the sky keeps its own blue down to near the skyline; the pull
+  // into the air is for dusk and night, when the two should be one
+  air.skyHorizon = (0.8 - 0.55 * warm) * out
+  air.skyReach = 0.14 + 0.1 * (1 - warm) + 0.12 * s.twilight
   air.skyAll = (0.04 + 0.22 * dark) * out
 }
 

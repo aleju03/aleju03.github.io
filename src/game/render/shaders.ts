@@ -279,7 +279,6 @@ export const GRADE_FRAG = /* glsl */ `
         float lap = ((1.0 / zl + 1.0 / zr) + (1.0 / zu + 1.0 / zd) - 4.0 * ic) / ic;
         convex = smoothstep(uEdgeK.w, uEdgeK.w * 2.5, -lap);
       }
-      col *= 1.0 - sil * uEdge.x * fogK;
       col *= 1.0 - fold * (1.0 - convex) * uEdge.y * fogK;
       col *= 1.0 + convex * uEdge.z * fogK;
 
@@ -294,6 +293,17 @@ export const GRADE_FRAG = /* glsl */ `
       float toward = max(dot(dirW, uSunDir), 0.0);
       vec3 airCol = uAirCol + uSunGlow * pow(toward, 6.0);
       col = mix(col, airCol, air);
+
+      // the silhouette's ink goes on *after* the air, so a roofline a block
+      // away keeps its line instead of having it hazed off with the wall.
+      // Against the sky it is inked harder and fades less with the fog:
+      // that edge is the shape, and it is the one Lethal's ink carries
+      float farZ = uClip.y * 0.98;
+      bool skyBehind = max(max(zl, zr), max(zu, zd)) > farZ;
+      float silK = skyBehind
+        ? min(0.85, uEdge.x * 1.25) * max(fogK, 0.55)
+        : uEdge.x * fogK;
+      col *= 1.0 - sil * silK;
     } else {
       // ---- the sky, tied to the air --------------------------------------
       float toward = max(dot(dirW, uSunDir), 0.0);
@@ -315,6 +325,9 @@ export const GRADE_FRAG = /* glsl */ `
         vec3 off = toL - dirW * t;
         glow += exp(-dot(off, off) / (uHalo.y * uHalo.y));
       }
+      // jittered like the pools, or a halo in the sky (which bands with no
+      // dithered seam at all) posterizes into a stack of hard rings
+      glow *= 1.0 + (bayer(p + ivec2(1, 2)) - 0.5) * 0.9;
       col += uPoolCol * glow * uHalo.x;
     }
 
