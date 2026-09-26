@@ -39,7 +39,7 @@ player/
                      a Gang Beasts-style jelly brawler. Kinetic stance (waddle, lean,
                      turn bank, squash-and-stretch landing spring), world-
                      planted stepping feet solved with two-bone IK, sprung
-                     arms, jiggling head/headband/belly/fists, idle
+                     arms, jiggling head/hat tails/belly/fists, idle
                      fidgets, the ragdoll, and a muscle-driven get-up. Also
                      the sandbox hooks: hit(), grab(), limbs, limbPos()
   bodyShape.ts       the drawing: one skinned mesh, shared by every body,

@@ -10,8 +10,9 @@ import {
 import { makeBodyMaterial } from './bodyMaterial'
 
 /*
-  The player's body: a Gang Beasts-style jelly brawler, a gummy bean with a
-  headband, stub legs and round fists (drawn
+  The player's body: a Gang Beasts-style jelly brawler, a gummy bean with
+  heavy shoulders, a small head in one of seven hats, stub legs and long arms
+  that hang forward to round fists (drawn
   in bodyShape.ts, painted in bodyMaterial.ts), and everything that makes it
   move. The same rig is worn by the local player, every remote player
   (`net/avatars.ts`), the town's pedestrians (`world/pedestrians.ts`), the
@@ -55,7 +56,7 @@ import { makeBodyMaterial } from './bodyMaterial'
   jelly spring over the waddle; the head and chest's look-tracking are
   springs in both axes. On top of those sit four point masses simulated in
   world space and hung back on bones: the head bobbles on its neck, the
-  headband's tails swing off their knot, the belly wobbles, and each fist hangs
+  headgear's tails swing off their knot, the belly wobbles, and each fist hangs
   off its wrist like a sock with a hand in it. They are what make the body
   read as soft: start, stop, turn or land and every one of them answers late.
   The trunk squashes on a landing and stretches on the rise.
@@ -73,7 +74,8 @@ import { makeBodyMaterial } from './bodyMaterial'
 
   **The ragdoll.** flop() hands every joint to the verlet sim in ragdoll.ts
   and update() drapes the bones back over the particles each frame; the
-  secondary springs keep running, so a tumbling body's headband tails and fists
+  secondary springs keep running and the trunk's volume wobbles on every
+  impact, so a tumbling body's tails and fists
   flail after it. Three things keep it from landing as one lump, which it
   did: the limbs are flung outward from the trunk the instant it goes limp
   (`fling`), fists and feet windmill through the first second of a flight
@@ -169,7 +171,7 @@ export interface PlayerRig {
       transform; this method owns only the articulated body shape. `fit`
       scales the folded body about its eye: 1 on the sofa, CABIN_FIT in the
       fleet's cabins (see there) */
-  sit: (fit?: number) => void
+  sit: (fit?: number, passenger?: boolean) => void
   /**
    * Draw the head, or don't. The camera *is* the head in first person, so a
    * visible one fills the lens with the inside of your own skull; `update`
@@ -229,6 +231,11 @@ export interface PlayerRig {
   grab: (i: number, target: THREE.Vector3 | null, k?: number) => void
   /** what `hit` divides an impulse by */
   readonly mass: number
+  /** one frame of sitting: the slumped body breathes, the head lolls and
+      turns, and the head, belly and fists jiggle with whatever the seat is
+      doing (they are simulated in world space, so a car's braking throws them
+      forward). Call it instead of `update` while seated */
+  seatedTick: (dt: number) => void
   /** play one of the idle fidgets now, on purpose: a wave, a stretch, a
       bounce on the toes, a look at your own hands. Ignored while down */
   emote: (kind: Emote) => void
@@ -247,9 +254,9 @@ export type Emote = 'stretch' | 'bounce' | 'wave' | 'look'
   with nothing under it, and everyone saw everyone else as a head shorter
   than themselves.)
 */
-export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.22
+export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.25
 /** the top of the head and its band: what anything floating over a head clears */
-export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 2.9
+export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 2.67
 /** the group's scale for a given standing eye height */
 export const bodyScale = (eye: number) => eye / DESIGN_EYE
 
@@ -328,7 +335,7 @@ const LIMB_NAMES: BodyLimb['name'][] = [
 ]
 /** design-unit radii per particle, and relative masses: a heavy head and
     trunk, light fists, so a tumble leads with the head and the hands flap */
-const RADII = [0.46, 0.44, 0.46, 0.17, 0.17, 0.14, 0.14, 0.19, 0.19, 0.21, 0.21, 0.2, 0.2, 0.68, 0.4]
+const RADII = [0.46, 0.56, 0.42, 0.18, 0.18, 0.15, 0.15, 0.2, 0.2, 0.21, 0.21, 0.2, 0.2, 0.66, 0.44]
 const MASSES = [3, 2.6, 2.4, 0.9, 0.9, 0.6, 0.6, 0.45, 0.45, 0.9, 0.9, 0.8, 0.8, 1.2, 0.6]
 /** the whole body, for turning an impulse into a velocity */
 const MASS = 70
@@ -432,7 +439,7 @@ export function buildPlayerBody(
     parent.add(o)
     return o
   }
-  const skullC = anchor(head, 0, 0.42, 0)
+  const skullC = anchor(head, 0, 0.34, 0)
   const mittL = anchor(handL, 0, -0.1, 0)
   const mittR = anchor(handR, 0, -0.1, 0)
   const soleL = anchor(shinL, 0, -SHIN, 0)
@@ -443,7 +450,10 @@ export function buildPlayerBody(
 
   // --- the mesh -------------------------------------------------------------
   const paint = makeBodyMaterial(look)
-  const mesh = new THREE.SkinnedMesh(bodyGeometry(), paint.material)
+  // the geometry is the one for this body's headgear; a repaint that changes
+  // hat swaps it (see setLook)
+  let hatNow = look.hat ?? 0
+  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow), paint.material)
   mesh.castShadow = true
   mesh.frustumCulled = false // hugs the camera; culling would blink limbs out
   // for callers that do cull it (remote bodies): a fixed sphere round the
@@ -588,6 +598,12 @@ export function buildPlayerBody(
   let springP = 0 // landing spring on the pelvis, design units (<= 0)
   let springV = 0
   let wobP = 0 // the jelly wobble on the trunk's volume
+  let downMotion = 0 // the heap's speed last frame, for the wobble's kicks
+  // sitting: whether sit() owns the pose, and its personality
+  let seated = false
+  let seatT = 0
+  let seatTilt = 0
+  let seatLook = 0
   let wobV = 0
   let idleT = 0
   let stillT = 0 // seconds without meaningful motion, for the fidgets
@@ -705,7 +721,7 @@ export function buildPlayerBody(
   const EL_HI = 0.12
 
   /*
-    The five point masses (head, headband tails, belly, two fists). Each is a
+    The five point masses (head, headgear tails, belly, two fists). Each is a
     particle simulated in world space that chases where its bone would put it,
     then hangs the bone back on wherever it actually got to. That is the whole
     trick to secondary motion: the bone's rest is driven by the pose, the
@@ -851,7 +867,8 @@ export function buildPlayerBody(
     // the head bobbles on its neck: rest is the neck socket, the particle is
     // the head's inertia, and the offset tilts the head as well as moving it
     // so a stop reads as a nod and a swerve as a wobble
-    head.position.copy(REST[B.HEAD])
+    if (seated) head.position.set(0, SIT_NECK, 0)
+    else head.position.copy(REST[B.HEAD])
     head.updateMatrixWorld()
     head.getWorldPosition(vRest)
     stepJiggle(jHead, vRest, 70, 4, 0, 0.3 * s, dt)
@@ -897,7 +914,7 @@ export function buildPlayerBody(
       if (ang > maxAng) qSeg.slerp(qAir.identity(), 1 - maxAng / ang).normalize()
       bone.quaternion.copy(qSeg)
     }
-    // the headband's two tails hang back and down off the knot
+    // the headgear's two tails hang back and down off the knot
     swing(jPom, pom, TAILS, 0.26, 70, 3.5, 9, 1.4)
     swing(jMitL, handL, DOWN, 0.12, 170, 8, 3, 1.1)
     swing(jMitR, handR, DOWN, 0.12, 170, 8, 3, 1.1)
@@ -1406,14 +1423,16 @@ export function buildPlayerBody(
     // held well out from the body, standing or not: a round belly and a
     // loose shoulder, never glued to the hips; a fall flings them wide
     const spread =
-      0.5 + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
+      0.28 + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
     const airX =
       airK * (1.5 + fallK * 0.6) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
-    const swayLX = (Math.sin(idleT * 1.7) * 0.07 + Math.sin(idleT * 0.83 + 1.3) * 0.05) * idleK - 0.12
-    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.07 + Math.sin(idleT * 0.94 + 2.1) * 0.05) * idleK - 0.12
+    // at rest the long arms hang forward like a sleepwalker's, which is where
+    // a brawler's goof comes from (and where a grab starts)
+    const swayLX = (Math.sin(idleT * 1.7) * 0.07 + Math.sin(idleT * 0.83 + 1.3) * 0.05) * idleK - 0.5
+    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.07 + Math.sin(idleT * 0.94 + 2.1) * 0.05) * idleK - 0.5
     const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.06 * idleK
     const swayRZ = Math.sin(idleT * 1.31 + 2.6) * 0.06 * idleK
     // inertial forces on the springs
@@ -1502,6 +1521,21 @@ export function buildPlayerBody(
     farmR.rotation.set(elR, 0, 0)
   }
 
+  /** the seated trunk and head for this moment: a slump forward over the
+      lap, a lean to one side, a slow breath and a lolling look around */
+  const seatedPose = (dt: number) => {
+    void dt
+    const b = Math.sin(seatT * 1.6) * 0.02
+    torso.position.set(0, SIT_WAIST, 0)
+    torso.rotation.set(-SIT_SLOUCH + 0.2 + b, Math.sin(seatT * 0.27) * 0.06, seatTilt * 0.6 + Math.sin(seatT * 0.41) * 0.04)
+    head.position.set(0, SIT_NECK, 0)
+    head.rotation.set(
+      SIT_SLOUCH - 0.1 + Math.sin(seatT * 0.6) * 0.05,
+      seatLook + Math.sin(seatT * 0.23) * 0.3,
+      seatTilt + Math.sin(seatT * 0.5 + 1) * 0.06,
+    )
+  }
+
   /** remember the posed bones, so the get-up can blend toward them */
   const captureBlendSource = () => {
     POSED.forEach((b, i) => capQ[i].copy(b.quaternion))
@@ -1547,6 +1581,8 @@ export function buildPlayerBody(
     rag.start(jointW, velTmp.set(vx, vy, vz), 0x51ab0 + flops++)
     rag.drive(null)
     fling()
+    wobV -= 2.5 // the blow itself sets the gummy wobbling
+    downMotion = 0
     mode = 'down'
     downTime = 0
     riseFold = 0
@@ -1752,7 +1788,7 @@ export function buildPlayerBody(
       slideZ = z
       slideSet = true
     },
-    sit: (fit = 1) => {
+    sit: (fit = 1, passenger = false) => {
       /*
         Seats differ in position, but the body shape is shared: hips on the
         cushion, knees up and elbows folded forward, hands together near the
@@ -1798,13 +1834,36 @@ export function buildPlayerBody(
       ankleL.rotation.set(-0.5, 0, 0)
       ankleR.rotation.set(-0.5, 0, 0)
 
-      // elbows in against the belly, mittens forward on the controls
-      uarmL.rotation.set(-0.7, 0, 0.12)
-      uarmR.rotation.set(-0.7, 0, -0.12)
-      farmL.rotation.set(-1.1, 0, -0.25)
-      farmR.rotation.set(-1.1, 0, 0.25)
+      if (passenger) {
+        // the passenger has nothing to hold: fists dumped in the lap, one arm
+        // flopped out over the door side
+        uarmL.rotation.set(-0.35, 0, 0.7)
+        uarmR.rotation.set(-0.55, 0, -0.1)
+        farmL.rotation.set(-0.5, 0, 0)
+        farmR.rotation.set(-1.25, 0, 0.35)
+      } else {
+        // elbows in against the belly, fists forward on the controls
+        uarmL.rotation.set(-0.7, 0, 0.12)
+        uarmR.rotation.set(-0.7, 0, -0.12)
+        farmL.rotation.set(-1.1, 0, -0.25)
+        farmR.rotation.set(-1.1, 0, 0.25)
+      }
       handL.quaternion.identity()
       handR.quaternion.identity()
+      // a slumped sitter with a lean and a gaze of its own, so two people in
+      // one car do not sit as one silhouette
+      seated = true
+      seatT = rnd() * 10
+      seatTilt = (passenger ? 0.16 : -0.08) + (rnd() - 0.5) * 0.1
+      seatLook = passenger ? 0.45 + rnd() * 0.2 : (rnd() - 0.5) * 0.2
+      for (const j of JIGGLES) j.fresh = true
+      seatedPose(0)
+    },
+    seatedTick: (dt) => {
+      if (!seated) return
+      seatT += dt
+      seatedPose(dt)
+      secondary(dt, 1)
     },
     flop: (vx, vy, vz) => {
       if (mode === 'up') {
@@ -1872,6 +1931,7 @@ export function buildPlayerBody(
     },
     reset: () => {
       mode = 'up'
+      seated = false
       downTime = 0
       riseT = 0
       riseFold = 0
@@ -1911,7 +1971,14 @@ export function buildPlayerBody(
       turnActive = false
       slideSet = false
     },
-    setLook: paint.setLook,
+    setLook: (next) => {
+      paint.setLook(next)
+      const hat = next.hat ?? 0
+      if (hat !== hatNow) {
+        hatNow = hat
+        mesh.geometry = bodyGeometry(hat)
+      }
+    },
     showHead,
     emote: (kind) => {
       if (mode !== 'up') return
@@ -1946,6 +2013,7 @@ export function buildPlayerBody(
       downTime = 0
     },
     update: (pose, env) => {
+      seated = false
       lastVel.set(pose.vx, pose.vy, pose.vz)
       showHead(pose.show > 0.12)
       if (mode === 'down') {
@@ -1954,6 +2022,20 @@ export function buildPlayerBody(
         sprawl()
         rag.step(pose.dt, env)
         fitFromParticles()
+        // the gummy keeps wobbling while it tumbles: every hit the heap takes
+        // (its average speed falling away in a frame) kicks the trunk's
+        // volume spring, and the trunk squashes and bulges on it
+        const m = rag.motion()
+        wobV -= Math.max(0, downMotion - m) * 0.16
+        downMotion = m
+        wobV += (-200 * wobP - 3 * wobV) * pose.dt
+        wobP = THREE.MathUtils.clamp(wobP + wobV * pose.dt, -0.28, 0.28)
+        {
+          const sq = 1 + wobP
+          const bu = Math.pow(sq, -0.8)
+          torso.scale.set(bu, sq, bu)
+          armInv.set(1 / bu, 1 / sq, 1 / bu)
+        }
         secondary(pose.dt, pose.show)
         return
       }

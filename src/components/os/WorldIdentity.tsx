@@ -252,6 +252,50 @@ function BodyPreview({ look, active }: { look: PlayerLook; active: boolean }) {
 /** one knob: a name on the left, its eight pots of paint flowing right. The
     label column is fixed so the four rows read as a chart rather than as four
     unrelated lines */
+/** which headgear: written out as words on the sheet, the one in use circled
+    with the same marker as the paint dabs */
+function Hats({
+  label,
+  names,
+  value,
+  onPick,
+}: {
+  label: string
+  names: readonly string[]
+  value: number
+  onPick: (hat: number) => void
+}) {
+  return (
+    <div className="flex items-start gap-4">
+      <p className="font-display w-16 shrink-0 text-[17px] uppercase" style={{ color: INK_SOFT }}>
+        {label}
+      </p>
+      <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+        {names.map((name, i) => (
+          <span key={name} className="relative">
+            <button
+              type="button"
+              aria-pressed={i === value}
+              onClick={() => onPick(i)}
+              className="font-display cursor-pointer text-[16px] uppercase"
+              style={{ color: i === value ? INK : INK_SOFT }}
+            >
+              {name}
+            </button>
+            <span
+              aria-hidden
+              className={`pointer-events-none absolute -inset-x-[7px] -inset-y-[3px] transition-opacity ${
+                i === value ? 'opacity-100' : 'opacity-0'
+              }`}
+              style={CIRCLED}
+            />
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function Swatches({
   label,
   options,
@@ -469,6 +513,12 @@ export default function WorldIdentity({
               surprise me
             </button>
           </div>
+          <Hats
+            label={t.look.hat}
+            names={t.look.hats}
+            value={look.hat}
+            onPick={(hat) => onLook({ ...look, hat })}
+          />
           <Swatches
             label={t.look.suit}
             options={SHELL_SWATCHES}
