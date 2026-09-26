@@ -242,7 +242,7 @@ const report = (sb: Sandbox, c: ScenarioCtx) => {
     total = b.open.alive.length
     for (let i = 0; i < total; i++) alive += b.open.alive[i]
   }
-  return `[w ${c.memo.w.toFixed(0)} h ${c.memo.h.toFixed(0)} open ${c.memo.open.toFixed(2)}] ${total - alive}/${total} pieces down, ${s.lumps} rubble (${s.awake} moving, ${s.frozen} welded, ${s.lost} lost), ` +
+  return `[w ${c.memo.w.toFixed(0)} h ${c.memo.h.toFixed(0)} open ${c.memo.open.toFixed(2)}] ${total - alive}/${total} pieces down, ${s.lumps} rubble (${s.awake} moving, ${s.frozen} pinned, ${s.lost} lost), ` +
     `worst opening slice ${s.openMs.toFixed(1)} ms, clusters leaned to ${s.lean.toFixed(0)} deg`
 }
 

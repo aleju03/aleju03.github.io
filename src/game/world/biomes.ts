@@ -180,7 +180,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'tuft', per: 56, scale: [0.7, 1.3] },
     ]),
 
-  rock: B('rock', ['#6b665f', '#7a746b'],
+  rock: B('rock', ['#5d5246', '#6b5f50'],
     { bark: '#544e46', leaf: '#5f6b52', accent: STONE }, 'stone', [], [
       { kind: 'boulder', per: 13, scale: [0.7, 1.9] },
       { kind: 'rock', per: 22, scale: [0.5, 1.5] },

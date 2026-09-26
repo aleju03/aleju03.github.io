@@ -3460,6 +3460,11 @@ export default function CrtScene({
                 __sandboxWalk: walk,
                 __sandboxRig: rig,
                 __tools: tools,
+                // the view from the air: what the fog, the far field and the
+                // look's air are doing right now (levels/altitude.ts)
+                __outside: outside,
+                __look: look,
+                __scene: scene,
               })
             }
             fleet = registry.buildFleet({

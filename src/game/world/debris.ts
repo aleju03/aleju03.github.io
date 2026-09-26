@@ -442,6 +442,12 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
       }
       const mesh = hang(frac.detail, dm)
       const glass = hang(frac.glass, gm)
+      // what the building occupied as a solid before it was opened: its
+      // pieces' boxes are kept inside it. A sill, a cornice or an awning
+      // sticks out past the body's box, and rubble already resting in that
+      // gap would find a solid appear around it and be fired out of it
+      const was = new THREE.Box3()
+      for (const b of s.rec.boxes) was.union(b)
       for (const b of s.rec.boxes) {
         b.breaks = undefined
         b.makeEmpty()
@@ -455,10 +461,15 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
         if (pc.kind === 'floor' || pc.kind === 'wall' || pc.kind === 'roof' ||
           (pc.vol > 1.5 && h > 0.8)) {
           solid = new THREE.Box3(pc.min.clone(), pc.max.clone()) as Solid
+          if (!was.isEmpty()) solid.intersect(was)
           // what a player may stand on: a floor, a flat roof, a low lump of
           // trim; never a wall's top or the ridge of a pitched roof
           solid.noStand = pc.kind === 'wall' || (pc.kind === 'roof' && h > 1.4) ||
             (pc.kind === 'misc' && h > 1.6)
+          if (solid.isEmpty() || solid.max.x - solid.min.x < 0.05 || solid.max.z - solid.min.z < 0.05) {
+            solids.push(null)
+            return
+          }
           owners.set(solid, { s, piece: i })
           breaksFor(s, i, solid)
           s.set.boxes?.push(solid)
