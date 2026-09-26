@@ -3,7 +3,7 @@ import { seeded } from '../core/rand'
 import { createTumbler, type TumbleEnv, type Tumbler } from '../physics/tumble'
 import type { Solid } from '../physics/collision'
 import { PREBORN } from './fade'
-import { fractureStructure, type Fractured, type StructureRec } from './fracture'
+import { fractureSteps, type Fractured, type StructureRec } from './fracture'
 
 /*
   What happens when a car drives through a tree.
@@ -277,6 +277,9 @@ export interface Ruins {
   owner: (solid: Solid) => { s: Standing; piece: number } | null
   /** take a building apart; idempotent, null if there is nothing to take */
   open: (s: Standing) => Opened | null
+  /** ...a slice at a time: resume it once a frame, and it yields whenever it
+      has spent `budgetMs`, returning what `open` would have */
+  opening: (s: Standing, budgetMs: number) => Generator<void, Opened | null, void>
   /** pieces leave the building: their spans collapse, their solids empty, and
       the ruin remembers them */
   lift: (o: Opened, pieces: readonly number[]) => void
@@ -404,10 +407,20 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
     owner: (solid) => owners.get(solid) ?? null,
     open: (s) => {
       if (s.open) return s.open
+      const it = ruins.opening(s, Infinity)
+      for (;;) {
+        const r = it.next()
+        if (r.done) return r.value
+      }
+    },
+    opening: function* (s, budgetMs) {
+      if (s.open) return s.open
       const dm = s.set.meshes.detail
       if (!dm) return null
       const gm = s.set.meshes.glass ?? null
-      const frac = fractureStructure(s.rec, dm.geometry, gm?.geometry ?? null)
+      const frac = yield* fractureSteps(s.rec, dm.geometry, gm?.geometry ?? null, budgetMs)
+      // a chunk rebuilt or opened some other way while this was in hand
+      if (s.open) return s.open
       if (!frac || !frac.detail) return null
       if (s.rec.det) collapse(dm.geometry, s.rec.det)
       if (s.rec.gl && gm) collapse(gm.geometry, s.rec.gl)

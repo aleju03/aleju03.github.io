@@ -243,7 +243,7 @@ const report = (sb: Sandbox, c: ScenarioCtx) => {
     for (let i = 0; i < total; i++) alive += b.open.alive[i]
   }
   return `[w ${c.memo.w.toFixed(0)} h ${c.memo.h.toFixed(0)} open ${c.memo.open.toFixed(2)}] ${total - alive}/${total} pieces down, ${s.lumps} rubble (${s.awake} moving, ${s.frozen} welded, ${s.lost} lost), ` +
-    `open ${s.openMs.toFixed(1)} ms, clusters leaned to ${s.lean.toFixed(0)} deg`
+    `worst opening slice ${s.openMs.toFixed(1)} ms, clusters leaned to ${s.lean.toFixed(0)} deg`
 }
 
 /* ------------------------------------------------------------ the house -- */
@@ -360,7 +360,7 @@ defineScenario({
   site: once('tower', () => siteBuilding(['tower', 'slab'], [0, -340], (_w, h) => h * 1.3 + 10, {
     minH: 30, maxH: 90, fall: true, minOpen: 0.85,
   })),
-  duration: 12,
+  duration: 8,
   frames: 12,
   camera: (c) => {
     const h = c.memo.h
