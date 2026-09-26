@@ -10,6 +10,7 @@ import {
   SCENARIOS, advanceScenario, scenarioById, stageScenario, type Scenario, type ScenarioCtx,
 } from '../../src/game/sandbox/scenarios'
 import { lightFor } from './probe'
+import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
 
 /*
   Physics, filmed. The browser half of `npm run film` (scripts/film.mjs).
@@ -50,6 +51,8 @@ export interface FilmSpec {
   tod?: number
   /** chunk rings built around the site */
   rings: number
+  /** skip the pixel look and draw the renderer's own ACES frame */
+  raw?: boolean
 }
 
 export interface FilmResult {
@@ -64,6 +67,9 @@ export interface FilmResult {
 }
 
 let renderer: THREE.WebGLRenderer | null = null
+/** the game's own post pass, so a film is judged through the real look */
+let look: PixelLook | null = null
+let lookRaw = false
 interface Stage {
   s: Scenario
   c: ScenarioCtx
@@ -130,7 +136,8 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   })
   await sb.whenReady
   const c = stageScenario(s, sb)
-  lightFor(scene, tod, new THREE.Vector3(c.x, c.y, c.z))
+  const sky = lightFor(scene, tod, new THREE.Vector3(c.x, c.y, c.z))
+  look?.setMood(sky.night * (1 - sky.twilight))
   const shot = s.camera(c)
   const cam = new THREE.PerspectiveCamera(shot.fov ?? 50, w / h, 0.2, 900)
   cam.position.set(...shot.from)
@@ -145,20 +152,34 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   return stage
 }
 
-const makeRenderer = (w: number, h: number) => {
+const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
   const canvas = document.getElementById('c') as HTMLCanvasElement
   canvas.width = w
   canvas.height = h
+  look?.dispose()
+  look = null
   renderer?.dispose()
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+  lookRaw = raw
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: raw })
   renderer.setPixelRatio(1)
   renderer.setSize(w, h, false)
-  renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 1.1
+  if (raw) {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.1
+  } else {
+    look = createPixelLook(renderer)
+    // an exact 2x of whatever one frame is drawn at, as the shoot does
+    look.knobs.lines = lines
+  }
   renderer.shadowMap.enabled = true
   renderer.shadowMap.type = THREE.PCFSoftShadowMap
   renderer.setScissorTest(true)
   return renderer
+}
+
+const draw = (r: THREE.WebGLRenderer, st: Stage) => {
+  if (look && !lookRaw) look.render(st.scene, st.cam)
+  else r.render(st.scene, st.cam)
 }
 
 const advance = (st: Stage, to: number) => {
@@ -190,7 +211,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
   const [tw, th] = spec.tile
   const cols = Math.min(spec.cols, spec.frames)
   const rows = Math.ceil(spec.frames / cols)
-  const r = makeRenderer(tw * cols, th * rows)
+  const r = makeRenderer(tw * cols, th * rows, !!spec.raw, Math.round(th / 2))
   const st = await build(spec, tw, th)
   labels.innerHTML = ''
   for (let i = 0; i < spec.frames; i++) {
@@ -200,7 +221,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     const row = Math.floor(i / cols)
     r.setViewport(col * tw, (rows - row - 1) * th, tw, th)
     r.setScissor(col * tw, (rows - row - 1) * th, tw, th)
-    r.render(st.scene, st.cam)
+    draw(r, st)
     label(col * tw + 8, row * th + th - 30, `t = ${t.toFixed(2)} s`)
     if (i === 0) label(col * tw + 8, row * th + 8, `${st.s.id}: ${st.s.title}`, true)
   }
@@ -220,7 +241,7 @@ let vFps = 30
 
 /** set up a scenario for frame-by-frame capture at `fps` */
 export const videoStart = async (spec: FilmSpec, w: number, h: number, fps: number) => {
-  makeRenderer(w, h)
+  makeRenderer(w, h, !!spec.raw, Math.round(h / 2))
   const st = await build(spec, w, h)
   labels.innerHTML = ''
   vFrame = 0
@@ -237,7 +258,7 @@ export const videoFrame = () => {
   const size = renderer.getSize(new THREE.Vector2())
   renderer.setViewport(0, 0, size.x, size.y)
   renderer.setScissor(0, 0, size.x, size.y)
-  renderer.render(st.scene, st.cam)
+  draw(renderer, st)
   labels.innerHTML = ''
   label(8, size.y - 30, `${st.s.id}  t = ${t.toFixed(2)} s`)
   vFrame++

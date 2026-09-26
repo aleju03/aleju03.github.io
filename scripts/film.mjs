@@ -101,6 +101,7 @@ for (const id of ids) {
     tile: [tw, th],
     cols,
     rings: Number(flag('rings', 2)),
+    raw: argv.includes('--raw'),
     ...(flag('tod', null) !== null ? { tod: Number(flag('tod')) } : {}),
     ...(flag('duration', null) !== null ? { duration: Number(flag('duration')) } : {}),
   }
