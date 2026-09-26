@@ -179,6 +179,9 @@ export interface WorldHandles {
   primeFar: (x: number, z: number, alt: number, ms: number) => void
   /** what the far field is drawing, for the harness */
   farStats: () => { tiles: number; verts: number; tris: number; pending: number }
+  /** a chunk's solids changed shape or number since it was built (a
+      building taken apart into pieces): re-shelve the collision set */
+  resolid: () => void
   /** the nearest `max` light fixtures to (x, z) in the loaded chunks, as
       world xyz triples into `out`; returns how many. For the look's lamp
       pools. Walks a 5x5 of chunks, so ask when the walker has moved rather
@@ -857,6 +860,9 @@ export function buildWorld(opts: Opts): WorldHandles {
       }
     },
     farStats: () => ({ ...far.stats(), pending: far.pending }),
+    resolid: () => {
+      if (Number.isFinite(curX)) refreshSolids(curX, curZ)
+    },
     nearLamps,
     setNight: (night) => {
       glassMat.opacity = night

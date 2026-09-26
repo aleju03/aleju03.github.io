@@ -3,6 +3,7 @@ import { seeded } from '../core/rand'
 import { createTumbler, type TumbleEnv, type Tumbler } from '../physics/tumble'
 import type { Solid } from '../physics/collision'
 import { PREBORN } from './fade'
+import { fractureStructure, type Fractured, type StructureRec } from './fracture'
 
 /*
   What happens when a car drives through a tree.
@@ -85,6 +86,12 @@ export interface SmashSet {
   key: string
   meshes: Partial<Record<SmashLayer, THREE.Mesh>>
   props: Smashable[]
+  /** every building and landmark stamped into the chunk (world/fracture.ts
+      records them), the chunk's own solids and the geometries it disposes,
+      which a building taken apart adds its pieces' solids and rebuilt soup to */
+  structures?: StructureRec[]
+  boxes?: Solid[]
+  geos?: THREE.BufferGeometry[]
 }
 
 export interface DebrisHandles {
@@ -95,6 +102,8 @@ export interface DebrisHandles {
   update: (dt: number) => void
   /** drop the lot (teardown) */
   clear: () => void
+  /** the buildings: what is standing, taking one apart, and what is gone */
+  ruins: Ruins
 }
 
 interface Opts {
@@ -177,11 +186,11 @@ const cut = (
  * scatterer uses and stands a couple of units over the crown. The rod has to
  * match what is drawn on it or a felled trunk floats.
  */
-const measure = (geos: THREE.BufferGeometry[], rFoot: number) => {
+const measure = (geos: THREE.BufferGeometry[], footY: number, rFoot: number) => {
   let h = 0
   for (const g of geos) {
     const p = g.getAttribute('position')
-    for (let i = 0; i < p.count; i++) h = Math.max(h, p.getY(i))
+    for (let i = 0; i < p.count; i++) h = Math.max(h, p.getY(i) - footY)
   }
   return Math.max(h, rFoot * 2)
 }
@@ -205,6 +214,326 @@ const collapse = (src: THREE.BufferGeometry, span: Span) => {
   }
   pos.addUpdateRange(v0 * 3, vn * 3)
   pos.needsUpdate = true
+}
+
+/* ------------------------------------------------------------ the ruins -- */
+
+/*
+  Buildings, by the same policy as the trees, one level up.
+
+  A building is a run of stamps in its chunk's soup, recorded by chunk.ts as a
+  StructureRec (world/fracture.ts). The first time anything damages one it is
+  *opened*: fracture.ts rebuilds its stamps as pieces (wall panels per storey
+  and side, floors, roof bays, trim) into a soup of its own in which every
+  piece is one contiguous span, the building's span in the chunk soup is
+  collapsed, and the rebuilt soup is hung in the chunk group in its place,
+  drawn with the chunk's own material. Outside, not a pixel changes. The
+  building's one or two whole-body boxes are emptied and every piece that
+  carries anything gets its own box, so what the walker, a car and the props
+  collide with is the building as it stands now.
+
+  From then on a piece leaving is exactly a tree leaving: `lift` collapses its
+  span in the rebuilt soup and empties its box, and the sandbox's destruction
+  (sandbox/destruction.ts) throws a copy of it as a rigid body. What was lifted
+  is remembered here by the building's position-stable id and the piece's key
+  (cell and facing, the same on every tier), so a chunk rebuilt after a ring
+  exit or a tier change re-opens the building and lifts the same pieces
+  before anything can see it: the ruin is still a ruin, only the rubble is
+  gone. `ruined` is that record, as plain data, and is the thing a shared
+  world would have to agree on.
+*/
+
+/** a building or landmark as the ruins know it */
+export interface Standing {
+  rec: StructureRec
+  set: SmashSet
+  /** its bounds, from its solids (or its geometry, for one with none) */
+  box: THREE.Box3
+  /** taken apart, once anything touched it */
+  open: Opened | null
+}
+
+/** a standing structure that has been rebuilt as pieces */
+export interface Opened {
+  s: Standing
+  frac: Fractured
+  /** the rebuilt soups, in the chunk group where the building was */
+  mesh: THREE.Mesh | null
+  glass: THREE.Mesh | null
+  /** 1 while a piece is still part of the building */
+  alive: Uint8Array
+  /** each piece's solid, or null for trim too small to carry one */
+  solids: Array<Solid | null>
+  /** piece index by key */
+  byKey: Map<number, number>
+}
+
+export interface Ruins {
+  /** every armed structure whose bounds come within `r` of a point */
+  near: (x: number, y: number, z: number, r: number, out?: Standing[]) => Standing[]
+  /** by id, if its chunk is armed */
+  get: (id: string) => Standing | null
+  /** the structure (and piece, once it is open) a solid belongs to */
+  owner: (solid: Solid) => { s: Standing; piece: number } | null
+  /** take a building apart; idempotent, null if there is nothing to take */
+  open: (s: Standing) => Opened | null
+  /** pieces leave the building: their spans collapse, their solids empty, and
+      the ruin remembers them */
+  lift: (o: Opened, pieces: readonly number[]) => void
+  /** ...and come back (undo) */
+  restore: (o: Opened, pieces: readonly number[]) => void
+  /** building id -> piece keys lifted this session: what a ruin *is* */
+  readonly ruined: ReadonlyMap<string, ReadonlySet<number>>
+  /** a vehicle drove into a building hard enough to count: set by
+      destruction, and while it is unset buildings are simply solid */
+  onHit: ((s: Standing, piece: number, x: number, y: number, z: number,
+    dx: number, dz: number, speed: number) => void) | null
+  /** solids were added or emptied: the world re-shelves its collision set */
+  onSolids: (() => void) | null
+  /** the closing speed that breaks through a structure of this grade, or
+      undefined for one no car can (a framed tower) */
+  limitFor: (grade: number) => number | undefined
+}
+
+/** closing speed that punches through, by StructureRec.grade */
+const PUNCH = [13, 21] as const
+
+const standBox = (rec: StructureRec, set: SmashSet) => {
+  const b = new THREE.Box3()
+  for (const s of rec.boxes) if (!s.isEmpty()) b.union(s)
+  if (!b.isEmpty() || !rec.det) return b
+  // nothing registered (a ring of stones is solids of its own, a pad is
+  // none): read its span once
+  const g = set.meshes.detail?.geometry
+  if (!g) return b
+  const p = g.getAttribute('position')
+  const v = new THREE.Vector3()
+  for (let i = rec.det[0]; i < rec.det[0] + rec.det[1]; i++) b.expandByPoint(v.fromBufferAttribute(p, i))
+  return b
+}
+
+const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
+  const standing = new Map<string, Standing>()
+  const ruined = new Map<string, Set<number>>()
+  const owners = new WeakMap<Solid, { s: Standing; piece: number }>()
+
+  const breaksFor = (s: Standing, piece: number, solid: Solid) => {
+    const limit = ruins.limitFor(s.rec.grade)
+    if (limit === undefined || !ruins.onHit) {
+      solid.breaks = undefined
+      return
+    }
+    solid.breaks = {
+      limit,
+      hit: (x, y, z, dx, dz, speed) => ruins.onHit?.(s, piece, x, y, z, dx, dz, speed),
+    }
+  }
+
+  const liveOf = (s: Standing) => {
+    // a chunk dropped from the ring leaves its structures behind here until
+    // the id is armed again; a detached group is how to tell
+    const m = s.set.meshes.detail
+    return !!m && !!m.parent
+  }
+
+  const writeSpan = (geo: THREE.BufferGeometry, at: number, frags: Fractured['pieces'][number]['frags'], glass: boolean) => {
+    const pos = geo.getAttribute('position') as THREE.BufferAttribute
+    const a = pos.array as Float32Array
+    let o = at * 3
+    for (const f of frags) {
+      if (f.glass !== glass) continue
+      a.set(f.p, o)
+      o += f.p.length
+    }
+    pos.addUpdateRange(at * 3, o - at * 3)
+    pos.needsUpdate = true
+  }
+
+  /**
+   * A wall's box is its whole slab, mitred corner and all, so two walls
+   * meeting at a corner both claim the corner square. That is harmless while
+   * both stand and a bomb once one of them leaves: the piece is born inside
+   * its neighbour's box and the solver fires it out at sixty units a second.
+   * So a piece leaving takes its share of every neighbour's box with it:
+   * each box it overlaps gives up the overlap along its thinnest axis.
+   */
+  const carve = (o: Opened, pc: Opened['frac']['pieces'][number]) => {
+    for (const list of [pc.side, pc.under, pc.over]) {
+      for (const j of list) {
+        const b = o.solids[j]
+        if (!b || !o.alive[j] || b.isEmpty()) continue
+        const ox = Math.min(b.max.x, pc.max.x) - Math.max(b.min.x, pc.min.x)
+        const oy = Math.min(b.max.y, pc.max.y) - Math.max(b.min.y, pc.min.y)
+        const oz = Math.min(b.max.z, pc.max.z) - Math.max(b.min.z, pc.min.z)
+        if (ox <= 0.02 || oy <= 0.02 || oz <= 0.02) continue
+        // give up the overlap on the axis where it is thinnest, from the
+        // side the leaving piece is on
+        if (ox <= oy && ox <= oz) {
+          if (pc.min.x > b.min.x) b.max.x = Math.max(b.min.x + 0.05, pc.min.x)
+          else b.min.x = Math.min(b.max.x - 0.05, pc.max.x)
+        } else if (oz <= oy) {
+          if (pc.min.z > b.min.z) b.max.z = Math.max(b.min.z + 0.05, pc.min.z)
+          else b.min.z = Math.min(b.max.z - 0.05, pc.max.z)
+        } else {
+          if (pc.min.y > b.min.y) b.max.y = Math.max(b.min.y + 0.05, pc.min.y)
+          else b.min.y = Math.min(b.max.y - 0.05, pc.max.y)
+        }
+      }
+    }
+  }
+
+  const ruins: Ruins & { arm: (set: SmashSet) => void } = {
+    near: (x, y, z, r, out = []) => {
+      out.length = 0
+      for (const s of standing.values()) {
+        const b = s.box
+        if (b.isEmpty()) continue
+        const dx = Math.max(b.min.x - x, 0, x - b.max.x)
+        const dy = Math.max(b.min.y - y, 0, y - b.max.y)
+        const dz = Math.max(b.min.z - z, 0, z - b.max.z)
+        if (dx * dx + dy * dy + dz * dz > r * r) continue
+        if (!liveOf(s)) continue
+        out.push(s)
+      }
+      return out
+    },
+    get: (id) => {
+      const s = standing.get(id)
+      return s && liveOf(s) ? s : null
+    },
+    owner: (solid) => owners.get(solid) ?? null,
+    open: (s) => {
+      if (s.open) return s.open
+      const dm = s.set.meshes.detail
+      if (!dm) return null
+      const gm = s.set.meshes.glass ?? null
+      const frac = fractureStructure(s.rec, dm.geometry, gm?.geometry ?? null)
+      if (!frac || !frac.detail) return null
+      if (s.rec.det) collapse(dm.geometry, s.rec.det)
+      if (s.rec.gl && gm) collapse(gm.geometry, s.rec.gl)
+      const hang = (geo: THREE.BufferGeometry | null, like: THREE.Mesh | null) => {
+        if (!geo || !like) return null
+        const m = new THREE.Mesh(geo, like.material)
+        m.castShadow = like.castShadow
+        m.receiveShadow = like.receiveShadow
+        m.renderOrder = like.renderOrder
+        if (like.customDepthMaterial) m.customDepthMaterial = like.customDepthMaterial
+        m.matrixAutoUpdate = false
+        like.parent?.add(m)
+        m.updateMatrixWorld(true)
+        s.set.geos?.push(geo)
+        return m
+      }
+      const mesh = hang(frac.detail, dm)
+      const glass = hang(frac.glass, gm)
+      for (const b of s.rec.boxes) {
+        b.breaks = undefined
+        b.makeEmpty()
+      }
+      const solids: Array<Solid | null> = []
+      const byKey = new Map<number, number>()
+      frac.pieces.forEach((pc, i) => {
+        byKey.set(pc.key, i)
+        const h = pc.max.y - pc.min.y
+        let solid: Solid | null = null
+        if (pc.kind === 'floor' || pc.kind === 'wall' || pc.kind === 'roof' ||
+          (pc.vol > 1.5 && h > 0.8)) {
+          solid = new THREE.Box3(pc.min.clone(), pc.max.clone()) as Solid
+          // what a player may stand on: a floor, a flat roof, a low lump of
+          // trim; never a wall's top or the ridge of a pitched roof
+          solid.noStand = pc.kind === 'wall' || (pc.kind === 'roof' && h > 1.4) ||
+            (pc.kind === 'misc' && h > 1.6)
+          owners.set(solid, { s, piece: i })
+          breaksFor(s, i, solid)
+          s.set.boxes?.push(solid)
+        }
+        solids.push(solid)
+      })
+      s.open = {
+        s, frac, mesh, glass, solids, byKey,
+        alive: new Uint8Array(frac.pieces.length).fill(1),
+      }
+      ruins.onSolids?.()
+      return s.open
+    },
+    lift: (o, list) => {
+      let rec = ruined.get(o.s.rec.id)
+      if (!rec) ruined.set(o.s.rec.id, (rec = new Set()))
+      for (const i of list) {
+        if (!o.alive[i]) continue
+        o.alive[i] = 0
+        const pc = o.frac.pieces[i]
+        rec.add(pc.key)
+        if (pc.d && o.mesh) collapse(o.mesh.geometry, [pc.d[0], pc.d[1], 0, 0])
+        if (pc.g && o.glass) collapse(o.glass.geometry, [pc.g[0], pc.g[1], 0, 0])
+        o.solids[i]?.makeEmpty()
+        carve(o, pc)
+      }
+      ruins.onSolids?.()
+    },
+    restore: (o, list) => {
+      const rec = ruined.get(o.s.rec.id)
+      for (const i of list) {
+        if (o.alive[i]) continue
+        o.alive[i] = 1
+        const pc = o.frac.pieces[i]
+        rec?.delete(pc.key)
+        if (pc.d && o.mesh) writeSpan(o.mesh.geometry, pc.d[0], pc.frags, false)
+        if (pc.g && o.glass) writeSpan(o.glass.geometry, pc.g[0], pc.frags, true)
+        const s = o.solids[i]
+        if (s) {
+          s.min.copy(pc.min)
+          s.max.copy(pc.max)
+        }
+      }
+      if (rec && !rec.size) ruined.delete(o.s.rec.id)
+      ruins.onSolids?.()
+    },
+    ruined,
+    onHit: null,
+    onSolids: null,
+    limitFor: (grade) => PUNCH[grade as 0 | 1],
+    arm: (set) => {
+      for (const rec of set.structures ?? []) {
+        const s: Standing = { rec, set, box: standBox(rec, set), open: null }
+        standing.set(rec.id, s)
+        for (const b of rec.boxes) {
+          owners.set(b, { s, piece: -1 })
+          breaksFor(s, -1, b)
+        }
+        const gone = ruined.get(rec.id)
+        if (!gone?.size) continue
+        // taken apart before this chunk was last built: open it again and
+        // lift what was lifted, before the chunk is ever drawn
+        const o = ruins.open(s)
+        if (!o) continue
+        const list: number[] = []
+        for (const k of gone) {
+          const i = o.byKey.get(k)
+          if (i !== undefined) list.push(i)
+        }
+        ruins.lift(o, list)
+      }
+    },
+  }
+  return ruins
+}
+
+/** re-arm every standing structure's solids against the current onHit */
+export const rearmRuins = (r: Ruins) => {
+  const seen = new Set<Standing>()
+  for (const s of r.near(0, 0, 0, Infinity)) seen.add(s)
+  for (const s of seen) {
+    const lim = r.limitFor(s.rec.grade)
+    const set = (b: Solid, piece: number) => {
+      b.breaks = lim === undefined || !r.onHit ? undefined : {
+        limit: lim,
+        hit: (x, y, z, dx, dz, speed) => r.onHit?.(s, piece, x, y, z, dx, dz, speed),
+      }
+    }
+    if (s.open) s.open.solids.forEach((b, i) => b && set(b, i))
+    else for (const b of s.rec.boxes) set(b, -1)
+  }
 }
 
 export function buildDebris(opts: Opts): DebrisHandles {
@@ -270,9 +599,12 @@ export function buildDebris(opts: Opts): DebrisHandles {
       const span = s.spans[layer]
       const mesh = set.meshes[layer]
       if (!span || !mesh) continue
-      const geo = cut(mesh.geometry, span, s.x, footY, s.z)
+      // kept in rest-world coordinates and moved by the mesh instead, so the
+      // surface pass (which reads object space) keeps the bark where it was
+      const geo = cut(mesh.geometry, span, 0, 0, 0)
       geos.push(geo)
       const m = new THREE.Mesh(geo, mesh.material)
+      m.position.set(-s.x, -footY, -s.z)
       m.castShadow = mesh.castShadow
       m.receiveShadow = mesh.receiveShadow
       if (mesh.customDepthMaterial) m.customDepthMaterial = mesh.customDepthMaterial
@@ -295,7 +627,7 @@ export function buildDebris(opts: Opts): DebrisHandles {
       instantly — the prop pivoted over its own stump and went nowhere. It
       has to leave the ground to travel.
     */
-    const h = measure(geos, s.r)
+    const h = measure(geos, footY, s.r)
     // ...and how much of it the hit is worth. Length stands in for mass here,
     // scaled off a lamp post: a four-unit cactus leaves like a football, a
     // fourteen-unit broadleaf topples and slides. Without the term the same
@@ -325,8 +657,12 @@ export function buildDebris(opts: Opts): DebrisHandles {
     onSnap?.(Math.min(1, speed / 26))
   }
 
+  const ruins = createRuins()
+
   const handles: DebrisHandles = {
+    ruins,
     arm: (set) => {
+      ruins.arm(set)
       for (const s of set.props) {
         if (gone.has(s.id)) {
           // it was flattened before this chunk was last rebuilt: put it back

@@ -114,6 +114,9 @@ export interface OutsideHandles {
       near it; null for a chunk not built (or no world yet). The sandbox's
       props read the world's solids through this */
   chunkSolids: (cx: number, cz: number) => readonly Solid[] | null
+  /** the buildings out here as destruction sees them (world/debris.ts's
+      ruins), or null until the world is attached */
+  ruins: () => import('../world/debris').Ruins | null
   /** let the movers an impact watch is tracking knock the town's
       pedestrians over. A no-op until the world is attached */
   knockPeople: (watch: ImpactWatch) => void
@@ -258,6 +261,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
         onSnap: propSnap,
         trackDisposable,
       })
+      debris.ruins.onSolids = () => world.resolid()
       const world = streamer.buildWorld({
         scene: root,
         obstacles,
@@ -401,6 +405,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     prime: (x, z, ms) => w?.world.prime(x, z, ms),
     hasWorld: () => w !== null,
     chunkSolids: (cx, cz) => (w ? w.world.solidsIn(cx, cz) : null),
+    ruins: () => w?.debris.ruins ?? null,
     knockPeople: (watch) => w?.pedestrians.knock(watch),
     people: () => (w ? w.pedestrians.grabbable() : []),
     nearLamps: (x, z, out, max) => (w ? w.world.nearLamps(x, z, out, max) : 0),

@@ -293,10 +293,15 @@ export default function SandboxConsole({
     }
   }, [open, lines.length, newest])
 
-  // the newest line always in view while it is open
+  // the newest line always in view while it is open, and when older lines
+  // have scrolled up past the top, they fade into the paper rather than
+  // being sliced in half by the edge of the strip
+  const [overflow, setOverflow] = useState(false)
   useLayoutEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    setOverflow(el.scrollHeight > el.clientHeight + 1)
   }, [lines, open])
 
   const isOpen = open !== null
@@ -394,7 +399,11 @@ export default function SandboxConsole({
             <div
               ref={scrollRef}
               className="receipt-lines overflow-y-auto"
-              style={{ maxHeight: isOpen ? 'min(46vh, 380px)' : 'none', scrollbarWidth: 'none' }}
+              style={{
+                maxHeight: isOpen ? 'min(46vh, 380px)' : 'none',
+                scrollbarWidth: 'none',
+                maskImage: isOpen && overflow ? 'linear-gradient(to bottom, transparent, #000 34px)' : undefined,
+              }}
             >
               {/* keyed by the newest line, so every print feeds the paper up */}
               <div key={lines.length ? lines[lines.length - 1].key : 0} style={{ animation: 'receipt-feed 150ms steps(3)' }}>

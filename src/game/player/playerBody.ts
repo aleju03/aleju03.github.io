@@ -62,9 +62,11 @@ import { makeBodyMaterial } from './bodyMaterial'
   The trunk squashes on a landing and stretches on the rise.
 
   **The stance.** A brawler never stands neutral: the body is always pitched
-  forward on soft knees, and standing about it brings its long arms up into
-  a clumsy, mismatched boxing guard and weaves, twisting and leaning, so no
-  two idle frames are symmetrical. A walking arm swings big and out to the
+  forward on soft knees, and standing about it reaches its long arms low and
+  forward like a sleepwalker and weaves, twisting and leaning, so no two idle
+  frames are symmetrical. Every body also stands its own way: a lean, a tip,
+  a cocked head and a higher arm drawn from a hash of the player's look
+  (`persona`), so a group of them never matches. A walking arm swings big and out to the
   side but is capped below the face; only a reach, a stretch, a wave, a jump
   or a get-up takes an arm higher.
 
@@ -77,7 +79,7 @@ import { makeBodyMaterial } from './bodyMaterial'
   The showy parts of that (lean, gaze-follow, glances, fidgets) scale with
   `pose.show`, so a chase camera or another player sees the full
   performance while the first-person lens keeps a level, out-of-frame head,
-  and the head itself is discarded from the colour pass (`showHead`).
+  and the whole body is discarded from the colour pass (`showHead`).
 
   **The ragdoll.** flop() hands every joint to the verlet sim in ragdoll.ts
   and update() drapes the bones back over the particles each frame; the
@@ -264,7 +266,7 @@ export type Emote = 'stretch' | 'bounce' | 'wave' | 'look'
   with nothing under it, and everyone saw everyone else as a head shorter
   than themselves.)
 */
-export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.25
+export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.19
 /** the top of the head and its band: what anything floating over a head clears */
 export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 2.67
 /** the group's scale for a given standing eye height */
@@ -457,6 +459,32 @@ export function buildPlayerBody(
   const bellyC = anchor(torso, 0, 0.0, 0.05)
   // the back of the bean: what a body lying face up rests on
   const backC = anchor(torso, 0, 0.35, -0.2)
+
+  /*
+    Every body stands its own way. A handful of offsets (how far it leans,
+    which way it tips, how its head cocks, how high each arm reaches) are
+    drawn from a hash of the player's own look, so a group never matches and
+    everybody's client agrees on how a given player stands, with no extra
+    field on the wire.
+  */
+  const persona = { lean: 0, roll: 0, tilt: 0, armL: 0, armR: 0 }
+  const personaFor = (l: PlayerLook) => {
+    let h = 2166136261
+    for (const ch of `${l.shell}${l.trim}${l.accent}${l.glow}${l.hat ?? 0}`) {
+      h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0
+    }
+    const r = seeded(h)
+    persona.lean = r() * 0.16
+    persona.roll = (r() - 0.5) * 0.24
+    persona.tilt = (r() - 0.5) * 0.4
+    // one arm always reaches further than the other
+    const lo = r() * 0.25
+    const hi = 0.3 + r() * 0.35
+    const leftHigh = r() < 0.5
+    persona.armL = leftHigh ? hi : lo
+    persona.armR = leftHigh ? lo : hi
+  }
+  personaFor(look)
 
   // --- the mesh -------------------------------------------------------------
   const paint = makeBodyMaterial(look)
@@ -1164,7 +1192,7 @@ export function buildPlayerBody(
     // action, not flair, and the lens is off the head for the whole of it
     const lean =
       (THREE.MathUtils.clamp(fwdS * 0.03 + accF * 0.035, -0.4, 0.55) + pose.crouchK * 0.28 +
-        runK * gait * 0.5 + 0.2 + 0.12 * idleK) * show +
+        runK * gait * 0.5 + 0.2 + (0.12 + persona.lean) * idleK) * show +
       riseFold * 0.55 - stretchK * 0.12
     // centripetal lean: bank into a turn only as fast as the feet are
     // actually carrying the body
@@ -1194,7 +1222,7 @@ export function buildPlayerBody(
       // one side, so no two frames of an idle are symmetrical
       chestLook - strafeYaw * 0.55 + stepS * 0.14 * gait +
         Math.sin(idleT * 0.9 + 0.4) * 0.14 * idleK * show,
-      bank * 0.55 + jellyRoll + (0.05 + Math.sin(idleT * 0.61) * 0.05) * idleK * show,
+      bank * 0.55 + jellyRoll + (persona.roll + Math.sin(idleT * 0.61) * 0.05) * idleK * show,
     )
     // squash on a landing, stretch on the way up, breathe standing still
     // the jelly wobble: the trunk's volume on its own spring, kicked by every
@@ -1224,7 +1252,7 @@ export function buildPlayerBody(
       pitchLook + 0.06 * gait - airK * 0.12 + breathe * 0.02 - riseFold * 0.35 - stretchK * 0.3 -
         lean * 0.5,
       headLook - strafeYaw * 0.4 - stepS * 0.06 * gait,
-      -bank * 0.3 - jellyRoll * 0.5,
+      -bank * 0.3 - jellyRoll * 0.5 + persona.tilt * idleK * show,
     )
     // counter the trunk's squash so the face stays round
     // the head keeps half of the squash: a landing flattens the whole body,
@@ -1442,7 +1470,7 @@ export function buildPlayerBody(
     // the guard: standing about, the long arms come up to a clumsy boxing
     // guard, fists at chest height, never quite matched
     const guardK = idleK * (1 - airK) * (1 - riseFold)
-    const elbowBase = 0.35 + 0.5 * runK * gait + 1.2 * guardK
+    const elbowBase = 0.35 + 0.5 * runK * gait + 0.25 * guardK
     // held well out from the body, standing or not: a round belly and a
     // loose shoulder, never glued to the hips; a fall flings them wide
     const spread =
@@ -1451,11 +1479,15 @@ export function buildPlayerBody(
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
     const airX =
-      airK * (1.5 + fallK * 0.6) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
+      airK * (0.75 + fallK * 0.45) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
     // at rest the long arms hang forward like a sleepwalker's, which is where
     // a brawler's goof comes from (and where a grab starts)
-    const swayLX = (Math.sin(idleT * 1.7) * 0.12 + Math.sin(idleT * 0.83 + 1.3) * 0.08) * idleK - 0.5 - 0.75 * guardK
-    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.12 + Math.sin(idleT * 0.94 + 2.1) * 0.08) * idleK - 0.5 - 0.55 * guardK
+    // and standing about they reach, low and forward and never level, each
+    // body at its own lopsided angles (see `persona`)
+    const swayLX = (Math.sin(idleT * 1.7) * 0.12 + Math.sin(idleT * 0.83 + 1.3) * 0.08) * idleK - 0.5 -
+      (0.3 + persona.armL) * guardK
+    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.12 + Math.sin(idleT * 0.94 + 2.1) * 0.08) * idleK - 0.5 -
+      (0.3 + persona.armR) * guardK
     const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.06 * idleK
     const swayRZ = Math.sin(idleT * 1.31 + 2.6) * 0.06 * idleK
     // inertial forces on the springs
@@ -1465,10 +1497,10 @@ export function buildPlayerBody(
     const rock = -stepS * moveK * 0.9
     if (takeoff) {
       // arms thrown up and out with the jump
-      sprS[1] -= 16
-      sprS[7] -= 16
-      sprS[3] += 6
-      sprS[9] += 6
+      sprS[1] -= 7
+      sprS[7] -= 4
+      sprS[3] += 7
+      sprS[9] += 5
     }
     // every footfall bounces the arms out a little, like a loose sleeve
     if (pose.grounded && Math.floor(stepT) !== prevStep && gait > 0.25) {
@@ -2005,6 +2037,7 @@ export function buildPlayerBody(
       slideSet = false
     },
     setLook: (next) => {
+      personaFor(next)
       paint.setLook(next)
       const hat = next.hat ?? 0
       if (hat !== hatNow) {

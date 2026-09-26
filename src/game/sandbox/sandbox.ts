@@ -23,6 +23,9 @@ import { createExplosions, type ExplosionEvent, type Explosions } from './explos
 export { blastImpact, blastWatch } from './explosion'
 export { CATALOGUE, CATEGORIES, catalogueEntry, inCategory, type CatalogueEntry, type Category } from './catalogue'
 export { renderThumbnails } from './thumbnails'
+// destruction registers its rubble kinds and its console commands on import,
+// and the scene attaches it to the world's ruins once both exist
+export { attachDestruction, destructionOf, type Destruction, type DamageRecord } from './destruction'
 import { setEar, setEarFallback } from './impactSounds'
 
 /*
@@ -174,6 +177,9 @@ export interface Sandbox {
   queryBall: (center: Vec3Like, r: number, fn: (p: Prop) => void) => void
   /** the drawn ground height */
   groundY: (x: number, z: number) => number
+  /** the world's solids changed in number (destruction added a building's
+      pieces): mirror them on the next frame */
+  solidsChanged: () => void
   /** the height at which a kind, upright, rests on the ground here */
   restY: (kind: string, x: number, z: number) => number
 
@@ -518,6 +524,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       for (const p of found) fn(p)
     },
     groundY: terrainY,
+    solidsChanged: () => live?.ground.markDirty(),
     restY: (kind, x, z) => {
       const k = KINDS[kind]
       if (!k) return terrainY(x, z)

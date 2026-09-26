@@ -532,8 +532,19 @@ const placeBatch = (
   const yaw = here?.yaw ?? 0
   const origin = a?.origin ?? sb.focus
   const dir = a?.dir ?? { x: 0, y: 0, z: -1 }
-  const hit = sb.raycast(origin, dir, SPAWN_REACH)
   const r = Math.max(ext.x, ext.z)
+  // Stack on what the crosshair is on only when it makes sense: one thing,
+  // not round, onto a top it fits on. Otherwise the ray looks past props to
+  // the ground under them, because a pile balanced on a crate, or a melon
+  // set on a drum, comes off the moment it lands, and the one direction a
+  // thing falling off a stack in front of you is sure to go is towards you
+  let hit = sb.raycast(origin, dir, SPAWN_REACH)
+  let stacking = false
+  if (hit?.prop) {
+    const top = hit.prop.extents
+    stacking = n === 1 && !isRound(k) && hit.normal.y > 0.6 && r <= Math.min(top.x, top.z) * 1.2
+    if (!stacking) hit = sb.raycast(origin, dir, SPAWN_REACH, { props: false })
+  }
   let bx: number
   let bz: number
   let by: number
@@ -585,8 +596,51 @@ const placeBatch = (
     const z = bz + rz * u * gap + fz * v * gap
     at.push({ x, y: Math.max(by, sb.restY(k.id, x, z)) + layer * (2 * ext.y + 0.03), z })
   }
+  // on the ground, what is already standing there is not something to be
+  // born inside (Rapier would part the two at speed): the whole batch steps
+  // aside, right then left, further each time, until it is clear. Sideways
+  // and not away, because away from the viewer is behind what is already
+  // there, and the point of spawning at the crosshair is seeing it land
+  if (!stacking) {
+    const home = at.map((p) => ({ ...p }))
+    const blockedAt = (pts: Vec3[]) => {
+      let hitAny = false
+      for (const p of pts) {
+        sb.queryBall({ x: p.x, y: p.y, z: p.z }, r * 0.9, () => {
+          hitAny = true
+        })
+        if (hitAny) return true
+      }
+      return false
+    }
+    if (blockedAt(at)) {
+      for (let k = 1; k <= 12; k++) {
+        const step = Math.ceil(k / 2) * (k % 2 ? 1 : -1) * gap
+        for (let i = 0; i < at.length; i++) {
+          const p = at[i]
+          const h = home[i]
+          p.x = h.x + rx * step
+          p.z = h.z + rz * step
+          // re-seat on whatever surface is under the new spot (a roof, a
+          // street), keeping each piece's height above its own base
+          const lift = h.y - (by - ext.y - 0.04)
+          const under = sb.raycast({ x: p.x, y: h.y + 12, z: p.z }, DOWN, 40, { props: false })
+          p.y = (under ? under.point.y : sb.groundY(p.x, p.z)) + lift
+        }
+        if (!blockedAt(at)) break
+      }
+    }
+  }
   return { at, yaw }
 }
+
+const DOWN = { x: 0, y: -1, z: 0 }
+
+/** a thing that rolls: a ball, or anything the catalogue gives rolling
+    resistance to (a melon). Never stacked, and set down with a nudge away
+    from the viewer so that if it rolls at all it rolls off, not back */
+const isRound = (k: PropKind) =>
+  k.shape.type === 'ball' || (k as PropKind & { rolling?: number }).rolling !== undefined
 
 const spawnBatch = async (ctx: CommandCtx, kindId: string, n: number, how: 'aim' | 'rain') => {
   const sb = ctx.needSandbox()
@@ -604,9 +658,15 @@ const spawnBatch = async (ctx: CommandCtx, kindId: string, n: number, how: 'aim'
   const ids: PropId[] = []
   if (how === 'aim') {
     const { at, yaw } = placeBatch(ctx.host, sb, k, count, ext)
+    // round things get a walking pace's nudge away from the viewer: a
+    // ball set down on the least slope rolls, and it should roll off
+    const away = isRound(k) ? { x: -Math.sin(yaw) * 0.8, y: 0, z: -Math.cos(yaw) * 0.8 } : undefined
     for (const p of at) {
       // a whisker of yaw so a pile looks stacked by hand, not by a machine
-      ids.push(sb.spawn(k.id, p, { yaw: yaw + (count > 1 ? (Math.random() - 0.5) * 0.08 : 0) }))
+      ids.push(sb.spawn(k.id, p, {
+        yaw: yaw + (count > 1 ? (Math.random() - 0.5) * 0.08 : 0),
+        velocity: away,
+      }))
     }
   } else {
     const here = ctx.host.here?.() ?? { x: sb.focus.x, y: sb.focus.y, z: sb.focus.z, yaw: 0 }

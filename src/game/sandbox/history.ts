@@ -75,6 +75,9 @@ export interface History {
   cleanup: (owner?: number | 'all') => number
   /** give `children` the same entry (and owner) as `parent`: gibs, debris */
   adopt: (parent: PropId, children: Iterable<PropId>) => void
+  /** add props to an entry recorded earlier (a demolition's rubble arrives
+      over seconds, after the entry that undoes it was made) */
+  attach: (entry: HistoryEntry, ids: Iterable<PropId>) => void
   /** the owner of a prop, or null for one nobody recorded (a scenario's,
       a world prop) */
   ownerOf: (id: PropId) => number | null
@@ -229,6 +232,14 @@ export const createHistory = (sb: Sandbox): History => {
         stack.splice(i, 0, e)
       }
       for (const id of children) {
+        e.props.add(id)
+        byProp.set(id, e)
+      }
+      changed()
+    },
+    attach: (e, ids) => {
+      if (!stack.includes(e)) return
+      for (const id of ids) {
         e.props.add(id)
         byProp.set(id, e)
       }

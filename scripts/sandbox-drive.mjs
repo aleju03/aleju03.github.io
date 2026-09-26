@@ -6,7 +6,10 @@
     npm run drive -- menu             the catalogue held up with q, a plate ringed
     npm run drive -- noclip           a noclip flight: a first-person strip and a
                                       third-person strip of the float pose
-    npm run drive                     all three
+    npm run drive -- links            shader links counted in the real game across
+                                      a first spawn, a break, a fuse and a chain
+                                      of bangs (must be 0)
+    npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
                          physics harness's flat site, so nothing rolls away)
@@ -26,7 +29,7 @@
   pointer lock that mouse-look needs.
 
   Writes shots/sandbox/: console, console-tab, console-closed (the receipt
-  over what it spawned, at the crosshair), menu, menu-category, menu-find,
+  over what it spawned, at the crosshair), menu, menu-page2, menu-category, menu-find,
   menu-after (the catalogue, then the orders standing in front of you), and
   noclip-first / noclip-third (labelled eight-frame strips). Ports come from PROBE_PORT / PROBE_CDP like the other
   harnesses, and it kills only what it spawned (scripts/probe/cdp.mjs).
@@ -247,21 +250,32 @@ try {
     await look(null, -0.26)
     await down('KeyQ')
     // the icons are drawn the first time the book opens
-    await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 20`), 60, 250, 'the catalogue icons')
-    console.log(`  ${await evaluate(`document.querySelectorAll('[data-kind]').length`)} plates`)
-    // order three things (each lands on the last, at the crosshair), then
-    // leave the pencil on a fourth
-    // aiming a little left, centre and right for each, the way you would
+    await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 4`), 60, 250, 'the catalogue icons')
+    // order three things from their own sections, aiming a little left,
+    // centre and right for each, the way you would
     const yaw0 = Number(flag('yaw', 0.6))
-    for (const [id, dy] of [['crate', 0.2], ['barrel_explosive', 0], ['melon', -0.2]]) {
+    for (const [id, cat, dy] of [['crate', 'wood', 0.2], ['barrel_explosive', 'explosive', 0], ['melon', 'food', -0.2]]) {
+      await clickOn(`[data-category="${cat}"]`)
+      await sleep(250)
       await look(yaw0 + dy, -0.26)
       await clickOn(`[data-kind="${id}"]`)
       await sleep(260)
     }
     await look(yaw0, -0.26)
-    await hover('[data-kind="couch"]')
+    // then the front of the book: all of it, page one, with a cone just
+    // ordered (its stamp still wet) and the pencil on the ball
+    await clickOn('[data-category="*"]')
     await sleep(300)
+    await look(yaw0 + 0.4, -0.26)
+    await clickOn('[data-kind="cone"]')
+    await hover('[data-kind="ball"]')
+    await sleep(220)
     await shot('menu')
+    console.log(`  ${await evaluate(`document.querySelectorAll('[data-kind]').length`)} plates on a page`)
+    // lift the corner: the next page of all of it
+    await clickOn('[data-turn="next"]')
+    await sleep(300)
+    await shot('menu-page2')
     // one category page
     await clickOn('[data-category="furniture"]')
     await sleep(350)
@@ -355,6 +369,67 @@ try {
     await film('noclip-first', false)
     await film('noclip-third', true)
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+  }
+
+  if (WHAT.includes('links')) {
+    // the no-mid-walk-link rule, proved in the real game rather than the
+    // film's probe page: count linkProgram on the scene's own context across
+    // a first spawn of barrels and crates, a chain of bangs (flash, jets,
+    // fireball, smoke, scorch), breaks, splinters and a fuse
+    console.log('links')
+    await goTo(flag('at', '5654 -844').replace(',', ' '))
+    await sleep(1500)
+    await stand()
+    await look(0.6, -0.1)
+    await evaluate(`(() => {
+      window.__links = []
+      for (const c of document.querySelectorAll('canvas')) {
+        if (!c.width || c.__linkWrapped) continue
+        const gl = c.getContext('webgl2')
+        if (!gl) continue
+        c.__linkWrapped = true
+        window.__wrapped = (window.__wrapped || 0) + 1
+        const real = gl.linkProgram.bind(gl)
+        gl.linkProgram = (p) => {
+          const src = (gl.getAttachedShaders(p) ?? []).map((sh) => gl.getShaderSource(sh) ?? '').join('\\n')
+          const name = /#define SHADER_NAME ([^\\s]+)/.exec(src)?.[1] ??
+            [...src.matchAll(/uniform \\S+ (u[A-Z]\\w*)/g)].map((m) => m[1]).slice(0, 4).join(' ')
+          window.__links.push((window.__phase || '?') + ': ' + (name || 'raw'))
+          real(p)
+        }
+      }
+      return true
+    })()`)
+    const phase = async (name, js, wait) => {
+      await evaluate(`window.__phase = ${JSON.stringify(name)}; ${js}; true`)
+      await sleep(wait)
+      const n = await evaluate(`window.__links.filter((l) => l.startsWith(${JSON.stringify(name + ':')})).length`)
+      console.log(`  ${name.padEnd(34)} ${n} programs linked`)
+      return n
+    }
+    await evaluate(`window.__booms = 0; window.__breaks = 0;
+      window.__sandbox.onExplosion(() => window.__booms++); window.__sandbox.onBreak(() => window.__breaks++); true`)
+    let total = 0
+    total += await phase('idle, standing', '', 2000)
+    const ahead = `const sb = window.__sandbox, c = window.__sandboxCamera.position, y = window.__sandboxWalk.yaw;
+      const fx = -Math.sin(y), fz = -Math.cos(y);
+      const put = (k, d, s) => { const x = c.x + fx * d - fz * s, z = c.z + fz * d + fx * s; return sb.spawn(k, { x, y: sb.restY(k, x, z) + 0.3, z }) };`
+    total += await phase('first spawn (barrels, crates, glass)', `${ahead}
+      window.__ids = [put('barrel_explosive', 16, -3), put('barrel_explosive', 21, 1), put('barrel_explosive', 26, -2),
+        put('crate', 18, 3), put('crate', 22, -4), put('crate_small', 24, 4), put('melon', 17, 5), put('bottle', 19, -5),
+        put('gascan', 28, 2)]`, 1500)
+    total += await phase('a crate broken (boards, dust)', `window.__sandbox.shatter(window.__ids[3])`, 1500)
+    total += await phase('a fuse lit (sputter, burn fx)', `window.__sandbox.ignite(window.__ids[8])`, 1200)
+    total += await phase('the chain (flash, jets, fire, smoke)', `window.__sandbox.damage(window.__ids[0], 1000)`, 600)
+    await shot('links-chain')
+    total += await phase('the chain, later bangs', '', 4400)
+    total += await phase('after the dust settles', '', 3000)
+    const names = await evaluate('window.__links')
+    for (const n of names) console.log(`    linked ${n}`)
+    const seen = await evaluate('[window.__wrapped, window.__booms, window.__breaks]')
+    console.log(`  ${total} programs linked from the first spawn to the last bang ` +
+      `(${seen[0]} WebGL context(s) watched, ${seen[1]} explosions, ${seen[2]} breaks)`)
+    await run('cleanup')
   }
 
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))

@@ -309,7 +309,16 @@ world/
                   soup, so a felled tree is a *span* of it: copied out into
                   its own little mesh, collapsed where it stood, and thrown
                   on a physics/tumble.ts rod. Session state keyed by a
-                  position-stable id, so a rebuilt chunk arrives cleared
+                  position-stable id, so a rebuilt chunk arrives cleared.
+                  Its `ruins` are the same policy for buildings: a building
+                  opened into pieces, each a span of its rebuilt soup with
+                  its own solid, and `ruined` (building id -> piece keys)
+                  re-applied when a chunk is armed
+  fracture.ts     how a building comes apart: its recorded stamps read back
+                  out of the soup, hollowed, floored, cut into cells and
+                  grouped into pieces (wall per storey and side, floor, roof
+                  bay), plus the support graph and Voronoi shattering.
+                  Pure, so `measure fracture` runs it on every building
   streamer.ts     the ring, the build budget, the collision shelf
   farfield.ts     everything past the ring, for a camera in the air: nested
                   square rings of coarse terrain tiles (8, 16, 32, 64-unit
@@ -620,6 +629,10 @@ sandbox/
     sfx.ts        the hum pitched by strain, the grab and freeze one-shots
     toolbelt.ts   slots 1/2/3, and the one object CrtScene talks to
     scenarios.ts  the films: swing, rotate, heavy, throw, ragdoll, each -3p
+  destruction.ts  buildings coming down: damage from blasts, impacts, cars
+                and the console; storeys failing under their load; rubble
+                that breaks up level by level as it lands; the budget
+  destructionScenarios.ts  demolish-house, tower, wall, ruin
 ```
 
 ### The contract
@@ -783,10 +796,28 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   which puts their links in the first frame under the boot cover.
   `npm run film -- props:links` counts `linkProgram` through a spawn of every
   kind, a break of every breakable and a blast: it must print 0 and 0.
-- **Air is not solid.** Fire and smoke must not write alpha under one (that is
-  a hole) and must not write depth (the look outlines depth edges, and an
-  outlined puff is a boulder). They dissolve through a Bayer dither on
-  `gl_FragCoord` instead, which in the look's target is whole art pixels.
+- **Fire and smoke are solid.** Nothing may write alpha under the look (that
+  is a hole), and both used to dissolve through a Bayer dither on
+  `gl_FragCoord` instead: fire read as a screen door (orange balls you could
+  see the street through) and smoke as a sparse dot pattern laid over the
+  scene. Both are now opaque and depth-writing, shaded in three bands off
+  how squarely each fragment faces the lens (`fx.ts`'s `banded`), and go by
+  shrinking. Ground dust is a flat lens rather than a ball, or it reads as a
+  stone.
+- **A bang is a light before it is a ball.** For three frames the look's
+  `lights.flash` is hard and wide (1.5x the blast radius), lighting the
+  street, the fronts and the props around it and washing the air, then it
+  falls to the fireball's orange glow; under it, a burst of white-hot balls,
+  flame tongues thrown radially (`jets`) and a fireball about fourteen units
+  across for a barrel.
+- **A blast throws, and it is late.** `explode` sets a velocity change (out,
+  50-70 degrees up, tumbling), not an impulse, falling with the square root
+  of the mass; blasts a beat apart redirect more than they add. Explosives
+  beside a blast blow a third of a second later (mid-air), further out they
+  catch and sputter and go 0.5-1.6 s later wherever they land; breakables
+  are worn, never broken, by a blast (glass and melons excepted), so crates
+  fly whole and the landing decides. `measure physics blast` prints every
+  bang's time and height.
 - **A blast is a fake light.** A PointLight per explosion would relink every
   lit program; `fx.lightLook` writes the flash into the pixel look's
   `lights.flash` instead, and CrtScene calls it after dressing the look.
@@ -832,13 +863,15 @@ npm run film -- sandbox:stack --labels off    no time stamps or title, to judge 
 npm run film -- --list
 
 npm run film -- sandbox:catalogue      every prop on a town street
-npm run film -- sandbox:chain --start 0.3 --duration 2.6    barrels going up in a row
+npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 4    barrels going up in a row
 npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
 npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
 npm run film -- props:turntable        every model four ways round
 npm run film -- props:thumbs           the spawn menu's icons
 npm run film -- props:sounds           every prop sound's peak, next to a footstep
 npm run film -- props:links            shader links on first spawn/break/blast
+npm run drive -- links                 the same count in the real /world: first
+                                       spawn, a break, a fuse and a chain (0)
 
 npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
 
@@ -909,12 +942,18 @@ The React side is `components/os/SandboxConsole.tsx` (a thermal receipt
 printer: t, enter or / opens it, /command runs, plain text chats online and
 works offline), `components/os/SpawnMenu.tsx` (a mail-order catalogue held
 up with q; its find line pins it open) and `components/os/Crosshair.tsx`
-(a pixel crosshair tinted by what it is on; the physgun reads the same
-`CrosshairAim`). Both overlays free the pointer, CrtScene's `onLock` knows
+(a 15-cell pixel crosshair with a one-cell ink ring, tinted by what it is
+on; the physgun reads the same `CrosshairAim`; in third person the scene
+projects the gaze's hit through the boom and hides the mark while your own
+body covers it). The catalogue is paginated like a printed one, three rows
+of four to a page as the window allows, and the curled corner turns it. Both overlays free the pointer, CrtScene's `onLock` knows
 an unlock they asked for is not esc, and an esc close waits for the key to
 come up before taking the pointer back, or Chrome spends the release on
 unlocking again. A spawn lands at the crosshair's hit, never within the
-walker's reach (`BODY_CLEAR`), and `host.spawned(ids)` pops it in: a scale
+walker's reach (`BODY_CLEAR`), is stacked on a prop only when it is one
+thing, not round, onto a top it fits, otherwise goes to the ground and steps
+sideways (never away, which is behind the pile) until it is clear of what
+is already there; round things get a nudge away from the viewer; and `host.spawned(ids)` pops it in: a scale
 overshoot, a ring of dust from the fleet's particle pool (`fleet.puff`, so
 no new material) and `sfx.spawnPop`.
 
@@ -932,6 +971,71 @@ npm run drive                  the real /world in headless Chrome: the
                                (shots/sandbox/*.png; --lang es, --fly-at)
 window.__sandbox.run('spawn crate 10')   dev: resolves with the printed lines
 ```
+
+### Destruction
+
+Every building and landmark a chunk stamps is recorded as it is stamped
+(`chunk.ts`'s `recordStructure`: its spans in the detail and glass soups,
+where each stamp inside them starts, and the boxes it registered). Nothing
+else happens until something damages it. Then it is *opened*, once:
+`world/fracture.ts` reads its stamps back out of the merged soup, hollows the
+volumetric ones into shells (outside untouched, so nothing visibly changes),
+lays a floor at every storey line, cuts the lot on a grid taken from the lot
+(so the pieces and their keys are the same on every tier) and groups what is
+in each cell and facing into a piece; `world/debris.ts`'s ruins hang that
+rebuilt soup where the building was, collapse its old span, and give every
+piece that carries anything its own box. From then on a piece leaving is a
+tree leaving: its span collapses, its box empties, and the ruin remembers its
+key so a rebuilt chunk arrives already ruined.
+
+`sandbox/destruction.ts` is the physics and the show. A storey whose bearing
+walls (walls with something resting on them) carry less than `FAIL` of what
+they did lets everything above it go as one rigid cluster, resting on the
+walls that are left, and those give one after another from the damage
+outward over `HOLD` seconds: a charge at one corner fells the building toward
+it, charges all round drop it. Crushed walls mostly turn to dust and gravel.
+A falling lump breaks when it lands, one level at a time (cluster, storeys,
+sides, panels, Voronoi shards with capped break faces), and big rubble
+hitting what is still standing damages it. Lumps are ordinary props (kinds
+`rubble` and `rubble_wood`, the chunk's own material), undoable per event,
+grabbable, and budgeted by the tier's `gfx.rubble`.
+
+Rules that bite:
+
+- **The surface pattern is read in object space.** Rubble keeps its
+  rest-world coordinates in its geometry and is moved by its matrix, so
+  brick stays on the brick it was painted on. A chunk is built at the
+  origin, so standing things are unchanged; anything new drawn with the
+  chunk material must do the same or its pattern swims.
+- **A piece is born inside its neighbour's box unless the box is carved.**
+  Mitred walls both claim the corner square, and a piece spawned inside a
+  static box is fired out at sixty units a second. `lift` trims every
+  neighbour's box off the leaving piece.
+- **What a ram breaks is born ahead of it and faster than it**, or it
+  bounces off its own rubble (`hurt`'s `carried`).
+- **Only big rubble damages buildings, and a knock must count.** Before
+  both gates one tower brought down seventeen buildings and every slab settling
+  against a wall chipped it.
+- **Never touch a body from inside a Rapier query.** `ground.ts`'s wake after
+  a box shrinks did, and destruction shrinks boxes by the hundred.
+
+```
+npm run film -- sandbox:demolish-house   barrels along one side; it folds over
+npm run film -- sandbox:tower            charges along one side; it is felled
+npm run film -- sandbox:wall             a barrier thrown through a shopfront
+npm run film -- sandbox:ruin --frames 1 --start 11 --tile 1280x800   the ruin at eye height
+npm run film -- props:collapse-links     shader links during both (must be 0)
+npm run measure -- physics destruction   pieces, rubble, frame cost (DESTRUCTION_EXTRA=12 to watch it settle)
+npm run measure -- fracture              every building and landmark taken apart
+/collapse [near|far|left|right|down]     the console: fell what you look at
+/damage [power]                          a hole in the wall you look at
+```
+
+A destruction *is* plain data, for the shared world that does not carry it
+yet: `destruction.log` (building id, how, point, power, radius, direction,
+seed, time per event) and `ruins.ruined` (building id to lifted piece keys).
+The pieces an event lifts follow from the record; the rubble's flight does not
+and would travel like any other prop.
 
 ## Multiplayer
 
