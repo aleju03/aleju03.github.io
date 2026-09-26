@@ -9,7 +9,8 @@ import { createSandbox, type Sandbox } from '../../src/game/sandbox/sandbox'
 import {
   SCENARIOS, advanceScenario, scenarioById, stageScenario, type Scenario, type ScenarioCtx,
 } from '../../src/game/sandbox/scenarios'
-import { lightFor } from './probe'
+import { dressLook, lightFor } from './probe'
+import type { SkyState } from '../../src/game/levels/sky'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
 
 /*
@@ -79,6 +80,8 @@ interface Stage {
   chunks: Chunk[]
   ticks: number[]
   duration: number
+  /** the pinned sky, which the look is dressed from every frame */
+  sky: SkyState
 }
 let stage: Stage | null = null
 
@@ -137,12 +140,11 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   await sb.whenReady
   const c = stageScenario(s, sb)
   const sky = lightFor(scene, tod, new THREE.Vector3(c.x, c.y, c.z))
-  look?.setMood(sky.night * (1 - sky.twilight))
   const shot = s.camera(c)
   const cam = new THREE.PerspectiveCamera(shot.fov ?? 50, w / h, 0.2, 900)
   cam.position.set(...shot.from)
   cam.lookAt(new THREE.Vector3(...shot.to))
-  stage = { s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration }
+  stage = { s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration, sky }
   // link every program before the first still: an uncompiled material's
   // first draw can land a frame late, which films as props that are not
   // there yet (the game pays the same cost under its boot cover)
@@ -178,7 +180,11 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
 }
 
 const draw = (r: THREE.WebGLRenderer, st: Stage) => {
-  if (look && !lookRaw) look.render(st.scene, st.cam)
+  if (look && !lookRaw) {
+    // dressed per frame: the camera may have moved and the look may be new
+    dressLook(look, st.scene, st.sky, st.cam, null)
+    look.render(st.scene, st.cam)
+  }
   else r.render(st.scene, st.cam)
 }
 
