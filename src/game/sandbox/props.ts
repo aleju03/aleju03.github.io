@@ -166,6 +166,8 @@ interface Rec extends Prop {
   vz: number
   awake: boolean
   lastImpact: number
+  /** the change of velocity that impact reported */
+  lastDv: number
   lost: number
   /** submerged share last slice */
   wet: number
@@ -190,7 +192,10 @@ export const PARK_RANGE = 200
 const UNPARK_RANGE = 184
 /** a change of velocity under this in one slice is not an impact, u/s */
 const IMPACT_DV = 3
-/** one prop reports at most one impact per this many seconds */
+/** one prop reports at most one impact per this many seconds, unless a
+    later one is much harder: a crate thrown at a wall through the splinters
+    of the last one grazes a board and then meets the brick inside the gap,
+    and swallowing the second blow left it whole against a wall at 40 u/s */
 const IMPACT_GAP = 0.09
 /** how far under the ground (in radii) counts as lost */
 const LOST_DEPTH = 1.5
@@ -486,6 +491,7 @@ export const createProps = (o: PropsOpts): Props => {
       vz: opts.velocity?.z ?? 0,
       awake: true,
       lastImpact: -1,
+      lastDv: 0,
       lost: 0,
       wet: 0,
       dampedAt: 0,
@@ -833,8 +839,9 @@ export const createProps = (o: PropsOpts): Props => {
       const dvy = v.y - r.vy - pw.gravity * h
       const dvz = v.z - r.vz
       const dv = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
-      if (dv > IMPACT_DV && t - r.lastImpact > IMPACT_GAP && impactFns.size) {
+      if (dv > IMPACT_DV && (t - r.lastImpact > IMPACT_GAP || dv > r.lastDv * 2) && impactFns.size) {
         r.lastImpact = t
+        r.lastDv = dv
         emitImpact(r, dv)
       }
       // rolling resistance: a speed loss of crr * g a second, never more than

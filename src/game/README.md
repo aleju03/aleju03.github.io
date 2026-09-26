@@ -730,10 +730,22 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   which puts their links in the first frame under the boot cover.
   `npm run film -- props:links` counts `linkProgram` through a spawn of every
   kind, a break of every breakable and a blast: it must print 0 and 0.
-- **Air is not solid.** Fire and smoke must not write alpha under one (that is
-  a hole) and must not write depth (the look outlines depth edges, and an
-  outlined puff is a boulder). They dissolve through a Bayer dither on
+- **Air is not solid, and fire is.** Smoke must not write alpha under one
+  (that is a hole) and must not write depth (the look outlines depth edges,
+  and an outlined puff is a boulder). It dissolves through a Bayer dither on
   `gl_FragCoord` instead, which in the look's target is whole art pixels.
+  Fire tried the same and read as a screen door: orange balls you could see
+  the street through, their hot heart and edge lost to the pattern. Flame is
+  opaque and depth-writing, shaded in three bands off how squarely it faces
+  the lens (`fx.ts`'s `bandedFire`), and shrinks away instead of thinning.
+- **A blast throws, and it is late.** `explode` sets a velocity change (out,
+  50-70 degrees up, tumbling), not an impulse, falling with the square root
+  of the mass; blasts a beat apart redirect more than they add. Explosives
+  beside a blast blow a third of a second later (mid-air), further out they
+  catch and sputter and go 0.5-1.6 s later wherever they land; breakables
+  are worn, never broken, by a blast (glass and melons excepted), so crates
+  fly whole and the landing decides. `measure physics blast` prints every
+  bang's time and height.
 - **A blast is a fake light.** A PointLight per explosion would relink every
   lit program; `fx.lightLook` writes the flash into the pixel look's
   `lights.flash` instead, and CrtScene calls it after dressing the look.
@@ -756,7 +768,7 @@ npm run film -- sandbox:stack --labels off    no time stamps or title, to judge 
 npm run film -- --list
 
 npm run film -- sandbox:catalogue      every prop on a town street
-npm run film -- sandbox:chain --start 0.3 --duration 2.6    barrels going up in a row
+npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 4    barrels going up in a row
 npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
 npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
 npm run film -- props:turntable        every model four ways round

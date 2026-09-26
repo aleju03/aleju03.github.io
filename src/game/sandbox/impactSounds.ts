@@ -321,7 +321,9 @@ export const breakSound = (surface: Surface, strength: number, x: number, y: num
   if (!a || !bus) return
   const s = Math.min(1, Math.max(0.3, strength))
   if (!admit(a, 'break:' + surface, 0.2)) return
-  const pl = place(a, x, y, z, 0.26 * (0.6 + 0.4 * s), 26)
+  // (measured against the mix: at 0.26 a crate coming apart peaked at 0.19,
+  // over twice the world's own tree snap; it sits at about one and a half)
+  const pl = place(a, x, y, z, 0.2 * (0.6 + 0.4 * s), 26)
   if (!pl) return
   pl.head.connect(bus)
   const o: Out = { a, node: pl.out, at: a.currentTime + pl.d / 800 }
@@ -379,7 +381,7 @@ export const boom = (power: number, x: number, y: number, z: number) => {
 }
 
 /** a fuse catching: a whoosh of gas lighting */
-export const igniteSound = (x: number, y: number, z: number) => {
+export const igniteSound = (x: number, y: number, z: number, seconds = 0) => {
   const a = context()
   if (!a || !bus) return
   const pl = place(a, x, y, z, 0.16, 20)
@@ -388,6 +390,14 @@ export const igniteSound = (x: number, y: number, z: number) => {
   const o: Out = { a, node: pl.out, at: a.currentTime + pl.d / 800 }
   burst(o, 'bandpass', 500, 0.6, 0.8, 0.5, 0, 2200)
   burst(o, 'lowpass', 300, 0.7, 0.5, 0.35)
+  // and it sputters for as long as the fuse burns: crackles, closer
+  // together toward the end, so a lit barrel is heard counting down
+  const T = Math.min(1.8, seconds)
+  let t = 0.3
+  while (t < T) {
+    burst(o, 'bandpass', 1400 + Math.random() * 2200, 1.1, 0.3 + 0.3 * (t / T), 0.03, t)
+    t += 0.05 + Math.random() * 0.14 * (1 - 0.6 * (t / T))
+  }
 }
 
 /* ---------------------------------------------------------- measuring -- */

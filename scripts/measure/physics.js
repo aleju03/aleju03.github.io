@@ -326,11 +326,11 @@ if (want('blast')) {
   for (let i = 0; i < 60; i++) sb.tick({ dt: 1 / 60, active: true, focus })
   const booms = []
   let t = 0
-  sb.onExplosion((e) => booms.push({ t, x: e.x, pushed: e.pushed }))
+  sb.onExplosion((e) => booms.push({ t, x: e.x, y: e.y - terrainY(e.x, e.z), z: e.z, pushed: e.pushed }))
   let nearTop = 0
   sb.damage(barrels[0], 1000)
   const ms = []
-  for (let i = 0; i < 240; i++) {
+  for (let i = 0; i < 300; i++) {
     t = (i + 1) / 60
     ms.push(sb.tick({ dt: 1 / 60, active: true, focus }).ms)
     const p = sb.get(near)
@@ -339,7 +339,7 @@ if (want('blast')) {
   const farP = sb.get(far)
   ms.sort((a, b) => a - b)
   console.log(`blast    ${booms.length}/6 barrels went off in ${f(booms.length ? booms[booms.length - 1].t : 0, 2)} s ` +
-    `(${booms.map((b) => f(b.t, 2)).join(' ')}); the crate beside the first ${sb.get(near) ? 'survived' : 'broke'}, ` +
+    `(${booms.map((b) => f(b.t, 2) + ' s at ' + f(b.y, 1) + ' up').join(', ')}); the crate beside the first ${sb.get(near) ? 'survived' : 'broke'}, ` +
     `peak ${f(nearTop, 1)} units up; the one 30 units away ${farP && farP.body.isSleeping() ? 'slept through it' : 'moved'}; ` +
     `${sb.stats.gibs} gibs; worst tick ${f(ms[ms.length - 1], 2)} ms, median ${f(ms[ms.length >> 1], 2)}`)
   sb.dispose()

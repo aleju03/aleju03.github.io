@@ -431,7 +431,7 @@ defineScenario({
   id: 'sandbox:pile',
   title: 'forty mixed props dropped on a street',
   site: siteStreet,
-  duration: 6,
+  duration: 8,
   frames: 12,
   camera: (c) => ({
     // down the street itself: anything off its axis is inside a building
@@ -440,22 +440,38 @@ defineScenario({
     fov: 50,
   }),
   setup: (c) => {
-    // a loose column, staggered so they land over a second and a half rather
-    // than as one block, with a little spin each so nothing lands flat
-    let s = 7
-    const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
-    for (let i = 0; i < 40; i++) {
-      const kind = MIX[i % MIX.length]
-      const px = c.x + (rnd() - 0.5) * 7
-      const pz = c.z + (rnd() - 0.5) * 7
-      const y = c.y + 5 + i * 1.1
-      const a = rnd() * Math.PI
-      c.ids.push(c.sb.spawn(kind, { x: px, y, z: pz }, {
-        quaternion: { x: Math.sin(a / 2) * 0.6, y: Math.sin(a / 2) * 0.8, z: 0, w: Math.cos(a / 2) },
-        angular: { x: rnd() * 2 - 1, y: rnd() * 2 - 1, z: rnd() * 2 - 1 },
-      }))
-    }
+    c.memo.seed = 7
+    // broken is not lost: a crate a 900 kg block lands on is crushed, which
+    // is the right answer, and the report says which it was
+    c.memo.broke = 0
+    c.sb.onBreak((e) => {
+      if (c.ids.includes(e.id)) c.memo.broke++
+    })
   },
+  // a loose column poured in over three and a half seconds rather than
+  // stacked in the air, with a little spin each so nothing lands flat. It
+  // used to be stacked: forty props one above the next, the top one 49 units
+  // up, and once crates and planks could break the top half of the column
+  // arrived at 40-57 u/s and a pile of forty lost six to splinters. Poured
+  // from eight units over whatever is already there, each lands at about
+  // the speed of a crate knocked off a stack
+  events: Array.from({ length: 40 }, (_, i): [number, (c: ScenarioCtx) => void] => [0.02 + i * 0.09, (c) => {
+    let s = c.memo.seed
+    const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
+    const kind = MIX[i % MIX.length]
+    const px = c.x + (rnd() - 0.5) * 7
+    const pz = c.z + (rnd() - 0.5) * 7
+    const a = rnd() * Math.PI
+    const q = { x: Math.sin(a / 2) * 0.6, y: Math.sin(a / 2) * 0.8, z: 0, w: Math.cos(a / 2) }
+    const w = { x: rnd() * 2 - 1, y: rnd() * 2 - 1, z: rnd() * 2 - 1 }
+    c.memo.seed = s
+    let top = c.y
+    c.sb.queryBall({ x: px, y: c.y + 6, z: pz }, 6, (p) => {
+      const t = p.body.translation()
+      top = Math.max(top, t.y + p.extents.y)
+    })
+    c.ids.push(c.sb.spawn(kind, { x: px, y: top + 8, z: pz }, { quaternion: q, angular: w }))
+  }]),
   report: (c) => {
     let up = 0
     let far = 0
@@ -466,7 +482,9 @@ defineScenario({
       if (t.y > c.y + 12) up++
       if (Math.hypot(t.x - c.x, t.z - c.z) > 20) far++
     }
-    return `${settle(c)}/40 asleep, ${up} still high, ${far} scattered past 20 units, ${40 - c.ids.filter((id) => c.sb.get(id)).length} lost`
+    const gone = 40 - c.ids.filter((id) => c.sb.get(id)).length
+    return `${settle(c)}/40 asleep, ${up} still high, ${far} scattered past 20 units, ` +
+      `${c.memo.broke} crushed to splinters, ${gone - c.memo.broke} lost`
   },
 })
 

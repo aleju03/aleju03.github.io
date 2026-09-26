@@ -546,33 +546,51 @@ export const sounds = async () => {
   for (const s of ['wood', 'glass', 'melon'] as const) await put(`${s} break`, () => S.breakSound(s, 1, 2, 0, 0))
   await put('boom at 4 units', () => S.boom(1, 4, 0, 0))
   await put('boom at 30 units', () => S.boom(1, 30, 0, 0))
-  await put('ignite', () => S.igniteSound(2, 0, 0))
-  // the reference: core/sfx.ts's footstep, through the same offline render.
-  // sfx.ts keeps the first context it is handed, so one reference per load
+  await put('ignite, and a second of sputter', () => S.igniteSound(2, 0, 0, 1))
+  // the references: core/sfx.ts's own one-shots, the mix the prop sounds
+  // have to sit in. sfx.ts keeps the first context it is handed for good, so
+  // they all render through ONE offline context, a window each: the render
+  // is suspended at each window's start, the sound is fired, and it resumes.
+  // sfx.ts also calls resume() on a suspended context, which an offline one
+  // refuses (it throws until rendering starts, and a resume of ours is the
+  // only one that may run mid-render), so its resume is a no-op here
   const sfx = await import('../../src/game/core/sfx')
-  const ref = async (what: string, fn: () => void) => {
-    const off = new OfflineAudioContext(2, 44100 * 1, 44100)
-    const W = window as unknown as { AudioContext: unknown }
-    const prev = W.AudioContext
-    W.AudioContext = function () { return off } as unknown
-    try {
+  const refs: Array<[string, () => void]> = [
+    ['footstep (grass, walk)', () => sfx.footstep('grass', 1, false)],
+    ['footstep (asphalt, run)', () => sfx.footstep('asphalt', 1, true)],
+    ['land thump (hard)', () => sfx.landThump('asphalt', 1)],
+    ['spawn pop (35 kg)', () => sfx.spawnPop(35)],
+    ['prop snap (hard)', () => sfx.propSnap(1)],
+  ]
+  const WIN = 1
+  const off = new OfflineAudioContext(2, Math.round(44100 * WIN * refs.length), 44100)
+  const resume = off.resume.bind(off)
+  ;(off as unknown as { resume: () => Promise<void> }).resume = () => Promise.resolve()
+  const W = window as unknown as { AudioContext: unknown }
+  const prev = W.AudioContext
+  W.AudioContext = function () { return off } as unknown
+  refs.forEach(([, fn], i) => {
+    void off.suspend(i * WIN).then(() => {
       fn()
-    } finally {
-      W.AudioContext = prev
-    }
-    const buf = await off.startRendering()
+      void resume()
+    })
+  })
+  const buf = await off.startRendering()
+  W.AudioContext = prev
+  refs.forEach(([what], i) => {
+    const i0 = Math.round(i * WIN * 44100)
+    const i1 = Math.round((i + 1) * WIN * 44100)
     let peak = 0
     let sum = 0
     for (let c = 0; c < buf.numberOfChannels; c++) {
       const d = buf.getChannelData(c)
-      for (let i = 0; i < d.length; i++) {
-        peak = Math.max(peak, Math.abs(d[i]))
-        sum += d[i] * d[i]
+      for (let k = i0; k < i1; k++) {
+        peak = Math.max(peak, Math.abs(d[k]))
+        sum += d[k] * d[k]
       }
     }
-    out.push({ what, peak: Math.round(peak * 1000) / 1000, rms: Math.round(Math.sqrt(sum / (buf.length * 2)) * 10000) / 10000 })
-  }
-  await ref('footstep (grass, walk)', () => sfx.footstep('grass', 1, false))
+    out.push({ what: `ref: ${what}`, peak: Math.round(peak * 1000) / 1000, rms: Math.round(Math.sqrt(sum / ((i1 - i0) * 2)) * 10000) / 10000 })
+  })
   return out
 }
 

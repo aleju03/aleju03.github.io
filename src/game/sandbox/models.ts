@@ -607,11 +607,11 @@ export const DIMS = {
   crate: 1.2,
   crateSmall: 0.72,
   pallet: { hx: 1.43, hy: 0.17, hz: 1.19 },
-  plank: { hx: 0.34, hy: 0.09, hz: 2.9 },
+  plank: { hx: 0.42, hy: 0.13, hz: 2.9 },
   drum: { r: 0.72, hh: 1.05 },
   trash: { r: 0.56, hh: 0.95 },
   saw: { r: 0.78, hh: 0.035 },
-  pipe: { r: 0.2, hl: 3 },
+  pipe: { r: 0.26, hl: 3 },
   hydrant: { r: 0.3, base: 0.42, h: 2.1 },
   cone: { r: 0.55, hh: 0.8, foot: 0.6, footH: 0.12 },
   ball: 0.62,
@@ -627,12 +627,12 @@ export const DIMS = {
   tv: { hx: 0.95, hy: 0.8, hz: 0.8 },
   melon: { rx: 0.55, ry: 0.5, rz: 0.72 },
   bottle: { r: 0.17, hh: 0.5 },
-  can: { r: 0.14, hh: 0.22 },
+  can: { r: 0.19, hh: 0.29 },
   block: { hx: 1.45, hy: 0.7, hz: 0.7 },
   barrier: { hl: 3, h: 1.9 },
   cinder: { hx: 0.465, hy: 0.225, hz: 0.225 },
   sawhorse: { hx: 1.8, hy: 1.0, hz: 0.55 },
-  girder: { hl: 4, hh: 0.4, hw: 0.25 },
+  girder: { hl: 4, hh: 0.42, hw: 0.32 },
   stop: { post: 2.1, plate: 0.72 },
   tyre: { r: 0.78, hh: 0.26 },
   engine: { hx: 1.0, hy: 0.8, hz: 0.7 },
@@ -720,12 +720,23 @@ const sawblade = () => {
   return m.mesh()
 }
 
+/* a yellow gas main rather than a rusty one: rust brown on asphalt was the
+   same band as the road, and at street distance the pipe was gone. Yellow
+   with dark flanges and two bands of tape reads from any side at any range */
 const pipe = () => {
   const { r, hl } = DIMS.pipe
   const m = model()
   const rot: V3 = [0, 0, Math.PI / 2]
-  m.cyl([0, 0, 0], r, 2 * hl - 0.2, { side: { cell: 'rust', world: true }, top: { cell: 'pipe_end' }, bottom: { cell: 'pipe_end' } }, { seg: 10, rot })
-  for (const x of [-1, 1]) m.cyl([x * (hl - 0.07), 0, 0], r + 0.1, 0.14, { side: flat(PAL.steelDark, 'rust'), top: { cell: 'pipe_end' }, bottom: { cell: 'pipe_end' } }, { seg: 10, rot })
+  m.cyl([0, 0, 0], r, 2 * hl - 0.2, { side: flat('#e8b030', 'gloss'), top: { cell: 'pipe_end' }, bottom: { cell: 'pipe_end' } }, { seg: 10, rot })
+  for (const x of [-1, 1]) {
+    m.cyl([x * (hl - 0.07), 0, 0], r + 0.1, 0.14, { side: flat(PAL.steelDark, 'steel'), top: { cell: 'pipe_end' }, bottom: { cell: 'pipe_end' } }, { seg: 10, rot })
+    // bolts round each flange
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2
+      m.box([x * (hl - 0.2), Math.cos(a) * (r + 0.05), Math.sin(a) * (r + 0.05)], [0.1, 0.07, 0.07], flat(PAL.black))
+    }
+    m.cyl([x * hl * 0.45, 0, 0], r + 0.012, 0.24, flat(PAL.black), { seg: 10, rot })
+  }
   return m.mesh()
 }
 
@@ -985,8 +996,13 @@ const tv = () => {
   const m = model()
   const shell = flat(PAL.beige, 'gloss')
   const dark = flat('#3a3a3c')
+  // a wood-veneer cabinet round the front and a charcoal plastic tube
+  // housing behind it, as sets were: the beige housing that was here read
+  // as a blank stone from three sides of four
+  const veneer = { cell: 'wood', tint: '#8a5a38' }
+  const backShell = flat('#4a4644')
   // the front bezel box and the tapered tube housing behind it
-  m.box([0, 0, hz - 0.22], [2 * hx, 2 * hy, 0.44], { pz: dark, all: shell })
+  m.box([0, 0, hz - 0.22], [2 * hx, 2 * hy, 0.44], { pz: dark, px: veneer, nx: veneer, py: veneer, all: shell })
   const back = new THREE.BoxGeometry(1, 1, 1)
   const p = back.getAttribute('position')
   // tapered to the sides and over the top, flat underneath: it sits on
@@ -995,8 +1011,14 @@ const tv = () => {
     if (p.getZ(i) < 0) p.setXYZ(i, p.getX(i) * 0.62, p.getY(i) > 0 ? p.getY(i) * 0.36 - 0.14 : p.getY(i), p.getZ(i))
   }
   back.computeVertexNormals()
-  m.geo(back, [0, 0.02, -0.22], [2 * hx - 0.1, 2 * hy - 0.12, 1.16], shell)
+  m.geo(back, [0, 0.02, -0.22], [2 * hx - 0.1, 2 * hy - 0.12, 1.16], backShell)
   back.dispose()
+  // vent slots in the back and the aerial socket, the label plate
+  for (let i = 0; i < 5; i++) m.box([-0.2 + i * 0.1, -0.3, -0.81], [0.05, 0.5, 0.02], flat(PAL.black))
+  m.box([0.34, -0.18, -0.81], [0.22, 0.16, 0.02], flat(PAL.cream))
+  m.cyl([0.34, -0.5, -0.82], 0.05, 0.06, flat('#c9ccd0', 'steel'), { seg: 6, rot: [Math.PI / 2, 0, 0] })
+  // and a row of slots along each side of the cabinet
+  for (const x of [-1, 1]) for (let i = 0; i < 4; i++) m.box([x * (hx + 0.005), -0.45 + i * 0.12, hz - 0.22], [0.02, 0.05, 0.3], flat(PAL.black))
   // the screen, set into the bezel, and the control strip beside it
   m.box([-0.2, 0.04, hz + 0.005], [1.34, 1.1, 0.04], { pz: { cell: 'tv_screen' }, all: dark })
   m.box([0.72, 0.04, hz + 0.005], [0.36, 1.2, 0.03], flat('#5a5854'))
@@ -1099,11 +1121,15 @@ const sawhorse = () => {
 const girder = () => {
   const { hl, hh, hw } = DIMS.girder
   const m = model()
-  const steel = { cell: 'rust', world: true, tint: '#c09080' }
-  for (const s of [-1, 1]) m.box([0, s * (hh - 0.04), 0], [2 * hl, 0.08, 2 * hw], steel)
-  m.box([0, 0, 0], [2 * hl, 2 * hh - 0.16, 0.07], steel)
-  // stiffeners every metre and a bit
-  for (let x = -hl + 0.5; x < hl; x += 1.5) for (const s of [-1, 1]) m.box([x, 0, s * 0.12], [0.05, 2 * hh - 0.16, 0.18], steel)
+  // red-oxide primer: what structural steel looks like on a site, and
+  // several bands off the asphalt, where rusty brown was the road's own
+  const steel = flat('#d8683a')
+  const edge = flat('#a8482a')
+  for (const s of [-1, 1]) m.box([0, s * (hh - 0.06), 0], [2 * hl, 0.12, 2 * hw], { py: steel, ny: steel, all: edge })
+  m.box([0, 0, 0], [2 * hl, 2 * hh - 0.24, 0.1], edge)
+  // stiffeners every metre and a bit, and bolt holes in the flange ends
+  for (let x = -hl + 0.5; x < hl; x += 1.5) for (const s of [-1, 1]) m.box([x, 0, s * 0.16], [0.06, 2 * hh - 0.24, 0.24], steel)
+  for (const x of [-1, 1]) for (const z of [-1, 1]) m.box([x * (hl - 0.3), hh + 0.002, z * hw * 0.55], [0.1, 0.01, 0.1], flat(PAL.black))
   return m.mesh()
 }
 
@@ -1220,6 +1246,23 @@ const fridge = () => {
   m.box([-0.4, hy - 0.4, hz + 0.01], [0.3, 0.1, 0.02], flat('#b8322a'))
   m.box([-0.3, 0.4, hz + 0.01], [0.16, 0.2, 0.02], flat(PAL.yellow))
   m.box([0.1, 0.1, hz + 0.01], [0.14, 0.14, 0.02], flat('#3e6fb0'))
+  // from the side: the doors' edges stand off the cabinet on a dark gasket
+  // line, the hinges are on show, and a chrome trim strip runs down each
+  // flank at handle height, so a side view is still a fridge
+  for (const x of [-1, 1]) {
+    m.box([x * (hx + 0.005), 0.06, hz - 0.13], [0.02, 2 * hy - 0.24, 0.035], seam)
+    for (const y of [hy - 0.1, hy - 1.39, -hy + 0.62]) m.box([x > 0 ? hx - 0.02 : -hx + 0.02, y, hz - 0.02], [0.06, 0.14, 0.18], flat('#c9ccd0', 'gloss'))
+    for (const y of [-0.2, hy - 1.39]) m.box([x * (hx + 0.01), y, -0.06], [0.02, 0.1, 2 * hz - 0.3], flat(PAL.steel, 'gloss'))
+    // a louvred vent low on each flank
+    for (let i = 0; i < 4; i++) m.box([x * (hx + 0.01), -hy + 0.35 + i * 0.12, -0.3], [0.02, 0.05, 0.7], seam)
+  }
+  // the back: the black condenser grid and the compressor under it
+  const coil = flat('#2e2d2c')
+  for (let y = -hy + 1.0; y < hy - 0.3; y += 0.24) m.box([0, y, -hz - 0.04], [2 * hx - 0.36, 0.05, 0.05], coil)
+  for (const x of [-1, 0, 1]) m.box([x * (hx - 0.3), 0.3, -hz - 0.07], [0.06, 2 * hy - 1.4, 0.05], coil)
+  m.box([0.2, -hy + 0.45, -hz + 0.12], [0.9, 0.6, 0.3], coil)
+  m.box([-0.5, -hy + 0.45, -hz - 0.01], [0.3, 0.4, 0.04], flat('#e8e2cc'))
+  m.box([-0.5, -hy + 0.5, -hz - 0.03], [0.22, 0.08, 0.02], flat(PAL.black))
   return m.mesh()
 }
 
@@ -1235,6 +1278,23 @@ const vending = () => {
   for (const s of [-1, 1]) m.box([s * (hx - 0.05), 0, hz - 0.02], [0.1, 2 * hy, 0.1], frame)
   m.box([0.55, 0, hz - 0.02], [0.08, 2 * hy - 0.3, 0.08], frame)
   m.box([0, -hy - 0.04, 0], [2 * hx - 0.2, 0.08, 2 * hz - 0.3], flat(PAL.black))
+  // the flanks are advertising, as they always are: a red band with the
+  // white wave across it, and a can standing on it, so the machine reads
+  // from the side as well as it does from the front
+  for (const x of [-1, 1]) {
+    const sx = x * (hx + 0.01)
+    m.box([sx, 0.5, 0], [0.02, 1.6, 2 * hz - 0.3], flat(PAL.red, 'gloss'))
+    m.box([sx + x * 0.005, 0.95, 0], [0.02, 0.16, 2 * hz - 0.3], flat(PAL.white))
+    m.box([sx + x * 0.005, 0.05, 0], [0.02, 0.16, 2 * hz - 0.3], flat(PAL.white))
+    m.box([sx + x * 0.01, 0.5, 0.15], [0.02, 0.9, 0.62], { px: { cell: 'can' }, nx: { cell: 'can' }, all: flat(PAL.red) })
+    m.box([sx, hy - 0.5, 0], [0.02, 0.36, 2 * hz - 0.3], flat(PAL.white))
+    m.box([sx + x * 0.005, hy - 0.5, 0], [0.02, 0.12, 2 * hz - 0.6], flat(PAL.red))
+  }
+  // the back: louvres, a service plate and the cord
+  for (let i = 0; i < 6; i++) m.box([0, -hy + 0.5 + i * 0.16, -hz - 0.01], [1.4, 0.07, 0.02], flat(PAL.black))
+  m.box([0, 0.9, -hz - 0.01], [1.2, 0.9, 0.02], flat('#c9ccd0', 'steel'))
+  for (const x of [-1, 1]) for (const y of [-1, 1]) m.box([x * 0.52, 0.9 + y * 0.37, -hz - 0.03], [0.06, 0.06, 0.02], flat(PAL.black))
+  m.box([0.8, -hy + 0.35, -hz - 0.04], [0.08, 0.7, 0.08], flat(PAL.black))
   return m.mesh()
 }
 
@@ -1299,8 +1359,12 @@ const pallet = () => {
 const plank = () => {
   const { hx, hy, hz } = DIMS.plank
   const m = model()
-  m.box([0, 0, 0], [2 * hx, 2 * hy, 2 * hz], { ny: wood('#c9a070'), py: wood('#d4aa78'), pz: flat('#8a6a48'), nz: flat('#8a6a48'), side: wood('#c49a68') })
-  for (const z of [-1, 1]) m.box([0, hy + 0.005, z * (hz - 0.35)], [0.08, 0.02, 0.08], flat(PAL.nail))
+  // fresh-sawn and pale, a band or two over any street or lawn it lies on,
+  // with its end grain darker so the ends read as the ends
+  m.box([0, 0, 0], [2 * hx, 2 * hy, 2 * hz], { ny: wood('#e8c088'), py: wood('#f2cc94'), pz: flat('#9a7048'), nz: flat('#9a7048'), side: wood('#d8ae78') })
+  for (const z of [-1, 1]) for (const x of [-1, 1]) m.box([x * hx * 0.5, hy + 0.005, z * (hz - 0.35)], [0.08, 0.02, 0.08], flat(PAL.nail))
+  // a stencilled grade mark near one end
+  m.box([0, hy + 0.004, hz - 0.9], [0.4, 0.01, 0.3], flat('#3a5aa0'))
   return m.mesh()
 }
 
@@ -1371,35 +1435,80 @@ const cloneOf = (f: () => THREE.Mesh) => {
   return () => m().clone()
 }
 
-/** a crate comes apart into its panels, each split in two along the planks */
+/*
+  A crate comes apart into its boards, not its panels. The first version
+  split each side in two, and twelve door-sized halves is not what a crate
+  does: it goes to planks and splinters. So every side is three boards laid
+  the way its planks run, the middle one snapped short of its length, and
+  the frame goes too: four corner posts and four rails. Thirty-two pieces,
+  but only eight shapes, because a board is the same geometry on either
+  side of the crate (painted on both faces, it is symmetric under the
+  reflection) and one board's paint is one plank of the cell, whichever
+  board it was. Eight shapes is eight instanced batches however many crates
+  break at once.
+*/
 const crateGibs = (h: number): GibSpec[] => {
   const out: GibSpec[] = []
   const t = Math.max(0.1, h * 0.12)
   const s = 2 * h
-  const half = (face: 'x' | 'y' | 'z', sign: number, k: number) => {
-    const cellName = face === 'y' ? 'crate_top' : face === 'x' ? 'crate_side' : 'crate_mark'
-    const sub: [number, number, number, number] = [0, k === 0 ? 0 : 0.5, 1, k === 0 ? 0.5 : 1]
-    // a shade under the whole crate: the inside of a panel is unweathered
-    // but it lies in its own shadow, and a pale plank is a white card at a
-    // distance
-    const paint = { cell: cellName, sub, tint: '#cbb89c' }
-    const edge = { cell: 'gib_edge' }
-    const mesh = cloneOf(() => {
-      const m = model()
-      if (face === 'y') m.box([0, 0, 0], [s, t, s / 2], { py: { ...paint, turn: false }, ny: paint, all: edge })
-      else if (face === 'x') m.box([0, 0, 0], [t, s / 2, s], { px: paint, nx: paint, all: edge })
-      else m.box([0, 0, 0], [s, s / 2, t], { pz: paint, nz: paint, all: edge })
-      // a stub of the frame batten still nailed to it
-      if (face !== 'y') m.box(face === 'x' ? [0, 0, (s / 2 - t)] : [s / 2 - t, 0, 0], face === 'x' ? [t * 1.4, s / 2, t * 1.4] : [t * 1.4, s / 2, t * 1.4], wood('#a88a70'))
-      return m.mesh()
-    })
-    const o = sign * (h - t / 2)
-    const off = (k === 0 ? -1 : 1) * (s / 4)
-    const at: V3 = face === 'x' ? [o, off, 0] : face === 'y' ? [0, o, off] : [0, off, o]
-    const halfExt: V3 = face === 'x' ? [t / 2, s / 4, h] : face === 'y' ? [h, t / 2, s / 4] : [h, s / 4, t / 2]
-    out.push({ at, half: halfExt, share: 1 / 12, mesh })
+  const w = s / 3
+  // where the middle board snaps, along its length
+  const SNAP = 0.42
+  const edge = { cell: 'gib_edge' }
+  const shapes = new Map<string, () => THREE.Object3D>()
+  const board = (face: 'x' | 'y' | 'z', u0: number, u1: number) => {
+    const key = `${face}${u0}${u1}`
+    let mesh = shapes.get(key)
+    if (!mesh) {
+      const cellName = face === 'y' ? 'crate_top' : face === 'x' ? 'crate_side' : 'crate_mark'
+      // one plank of the cell (the second of four), cut to the board's length
+      const sub: [number, number, number, number] = face === 'y' ? [u0, 1 / 3, u1, 2 / 3] : [u0, 0.25, u1, 0.5]
+      // a shade under the whole crate: the inside of a board is unweathered
+      // but it lies in its own shadow, and a pale plank is a white card at a
+      // distance
+      const paint = { cell: cellName, sub, tint: '#cbb89c' }
+      const len = s * (u1 - u0)
+      mesh = cloneOf(() => {
+        const m = model()
+        if (face === 'y') m.box([0, 0, 0], [len, t, w], { py: { ...paint, turn: false }, ny: paint, all: edge })
+        else if (face === 'x') m.box([0, 0, 0], [t, w, len], { px: paint, nx: paint, all: edge })
+        else m.box([0, 0, 0], [len, w, t], { pz: paint, nz: paint, all: edge })
+        return m.mesh()
+      })
+      shapes.set(key, mesh)
+    }
+    return mesh
   }
-  for (const f of ['x', 'y', 'z'] as const) for (const sgn of [-1, 1]) for (const k of [0, 1]) half(f, sgn, k)
+  const put = (face: 'x' | 'y' | 'z', sign: number, row: number, u0: number, u1: number) => {
+    const o = sign * (h - t / 2)
+    const across = -h + w * (row + 0.5)
+    const along = -h + s * (u0 + u1) / 2
+    const len = s * (u1 - u0)
+    // x sides: boards along z, stacked in y. z sides: along x, stacked in y.
+    // top and bottom: along x, side by side in z
+    const at: V3 = face === 'x' ? [o, across, along] : face === 'y' ? [along, o, across] : [along, across, o]
+    const half: V3 = face === 'x' ? [t / 2, w / 2, len / 2] : face === 'y' ? [len / 2, t / 2, w / 2] : [len / 2, w / 2, t / 2]
+    out.push({ at, half, share: (1 / 30) * (u1 - u0) * 1.2, mesh: board(face, u0, u1) })
+  }
+  for (const f of ['x', 'y', 'z'] as const) {
+    for (const sgn of [-1, 1]) {
+      for (let row = 0; row < 3; row++) {
+        if (row === 1) {
+          put(f, sgn, row, 0, SNAP)
+          put(f, sgn, row, SNAP, 1)
+        } else put(f, sgn, row, 0, 1)
+      }
+    }
+  }
+  // the frame: corner posts and the top rails, in the batten's darker wood
+  const frame = wood('#a88a70')
+  const tb = Math.max(0.14, h * 0.18)
+  const post = cloneOf(() => model().box([0, 0, 0], [tb, s * 0.96, tb], frame).mesh())
+  const rail = cloneOf(() => model().box([0, 0, 0], [s - 2 * tb, tb, tb], frame).mesh())
+  const o = h - tb / 2
+  for (const x of [-1, 1]) for (const z of [-1, 1]) out.push({ at: [x * o, 0, z * o], half: [tb / 2, s * 0.48, tb / 2], share: 0.02, mesh: post })
+  for (const z of [-1, 1]) out.push({ at: [0, o, z * o], half: [(s - 2 * tb) / 2, tb / 2, tb / 2], share: 0.015, mesh: rail })
+  for (const x of [-1, 1]) out.push({ at: [x * o, -o, 0], rot: [0, Math.PI / 2, 0], half: [(s - 2 * tb) / 2, tb / 2, tb / 2], share: 0.015, mesh: rail })
   return out
 }
 
