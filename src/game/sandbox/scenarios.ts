@@ -73,6 +73,9 @@ export interface Scenario {
   events?: Array<[number, (c: ScenarioCtx) => void]>
   /** one line of numbers about how it went */
   report?: (c: ScenarioCtx) => string
+  /** the state the film prints as its hash, for a scenario whose state is
+      not props (bodies walking into bodies); the sandbox's own otherwise */
+  hash?: (c: ScenarioCtx) => string
   /** a moving camera: where the lens is at simulated time t. Overrides
       `camera` frame by frame (a first-person physgun film) */
   lens?: (c: ScenarioCtx, t: number) => Shot

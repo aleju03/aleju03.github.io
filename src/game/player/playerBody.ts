@@ -4,17 +4,19 @@ import { supportY } from '../physics/collision'
 import { seeded } from '../core/rand'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
-  B, BODY_Y0, BONE_COUNT, FACE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
-  NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, boneRestWorld,
+  B, BODY_Y0, BONE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HELPERS, HIP_X, HIP_Y,
+  NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, bindMatrixWorld,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
 
 /*
-  The player's body: a Gang Beasts-style jelly brawler, a gummy bean with
-  heavy shoulders, a small head in one of seven hats, stub legs and long arms
-  that hang forward to round fists (drawn
-  in bodyShape.ts, painted in bodyMaterial.ts), and everything that makes it
-  move. The same rig is worn by the local player, every remote player
+  The player's body: a bean in the Fall Guys mould, one seamless soft
+  surface whose top is the head, stubby arms ending in mittens and stubby
+  legs growing out of it, in one of eight headgear (drawn in bodyShape.ts,
+  painted in bodyMaterial.ts), and everything that makes it move. The Gang
+  Beasts brawler before it was turned down for looking like parts taped
+  together, too bulky, and for leaning so far into a run it looked like it
+  was falling; the motion it had is kept, restrained. The same rig is worn by the local player, every remote player
   (`net/avatars.ts`), the town's pedestrians (`world/pedestrians.ts`), the
   seated pose in the vehicles and on the sofa, and the pause-sheet preview.
 
@@ -33,8 +35,9 @@ import { makeBodyMaterial } from './bodyMaterial'
   A run is its own gait rather than a faster walk: long bounding strides
   with a real flight between them (the planted leg toes off before the
   swinging one lands, and the hips peak in the air rather than at the
-  footfall), the trunk pitched well forward, elbows bent and pumping, heels
-  kicking up behind. The arm swing in both gaits runs a little behind the
+  footfall), the trunk nearly upright (about nine degrees at a full run,
+  where the brawler leaned fifty-five), the arms flung out and flailing,
+  heels kicking up behind. The arm swing in both gaits runs a little behind the
   legs and out sideways as well as fore and aft, with the forearm later
   still, and every footfall bounces the arms out.
 
@@ -52,19 +55,19 @@ import { makeBodyMaterial } from './bodyMaterial'
   itself goes straight onto the joint with the spring on top of it, because a
   run steps three times a second and these springs ring at about once: fed
   through them, the swing arrived at a seventh of its size and a sprinting
-  body ran with its fists at its hips; the chest rides a
+  body ran with its mittens at its hips; the chest rides a
   jelly spring over the waddle; the head and chest's look-tracking are
   springs in both axes. On top of those sit four point masses simulated in
-  world space and hung back on bones: the head bobbles on its neck, the
-  headgear's tails swing off their knot, the belly wobbles, and each fist hangs
-  off its wrist like a sock with a hand in it. They are what make the body
+  world space and hung back on bones: the top of the bean bobbles, the
+  headgear's tails swing off their knot, the belly wobbles, and each mitten
+  hangs off its wrist. Their damping is relative to the point they hang
+  from, so a steady run carries them along instead of leaving them behind. They are what make the body
   read as soft: start, stop, turn or land and every one of them answers late.
   The trunk squashes on a landing and stretches on the rise.
 
-  **The stance.** A brawler never stands neutral: the body is always pitched
-  forward on soft knees, and standing about it reaches its long arms low and
-  forward like a sleepwalker and weaves, twisting and leaning, so no two idle
-  frames are symmetrical. Every body also stands its own way: a lean, a tip,
+  **The idle.** A bean never stands neutral: it rocks on soft knees with its
+  arms held a little out from the flanks, and weaves, twisting and leaning,
+  so no two idle frames are symmetrical. Every body also stands its own way: a lean, a tip,
   a cocked head and a higher arm drawn from a hash of the player's look
   (`persona`), so a group of them never matches. A walking arm swings big and out to the
   side but is capped below the face; only a reach, a stretch, a wave, a jump
@@ -84,18 +87,21 @@ import { makeBodyMaterial } from './bodyMaterial'
   **The ragdoll.** flop() hands every joint to the verlet sim in ragdoll.ts
   and update() drapes the bones back over the particles each frame; the
   secondary springs keep running and the trunk's volume wobbles on every
-  impact, so a tumbling body's tails and fists
+  impact, so a tumbling body's tails and mittens
   flail after it. Three things keep it from landing as one lump, which it
   did: the limbs are flung outward from the trunk the instant it goes limp
-  (`fling`), fists and feet windmill through the first second of a flight
+  (`fling`), mittens and feet windmill through the first second of a flight
   (`flail`) while being pulled out wide and down as if to catch the ground,
   and once on the ground a weak pull in the ground plane spreads
   them into a spread-eagle and levels the shoulders so the heap rolls onto
   its back or front (`sprawl`; a heap that lands face down is rolled over
   onto its back about its own spine, because a body face down under a big
   hat is only a hat), with generous one-sided separations keeping
-  arms a belly's width off the body throughout. The get-up is physical too, which is the part the robot
-  before it faked: beginRecover() keeps the sim running and drives every
+  arms a belly's width off the body throughout. The bones are draped over
+  the particles with joint limits (`limitTo`: the head only so far off the
+  trunk, a thigh far forward but hardly back), so the one surface never
+  folds itself double however the heap lands. The get-up is physical too,
+  which is the part the robot before it faked: beginRecover() keeps the sim running and drives every
   particle toward the standing pose with muscle springs that tighten over a
   second, legs first, so the heap hauls itself up under gravity and wobbles,
   and only the last few frames blend the bones home. It ends with a shake of
@@ -244,7 +250,7 @@ export interface PlayerRig {
   /** what `hit` divides an impulse by */
   readonly mass: number
   /** one frame of sitting: the slumped body breathes, the head lolls and
-      turns, and the head, belly and fists jiggle with whatever the seat is
+      turns, and the head, belly and mittens jiggle with whatever the seat is
       doing (they are simulated in world space, so a car's braking throws them
       forward). Call it instead of `update` while seated */
   seatedTick: (dt: number) => void
@@ -346,7 +352,9 @@ const LIMB_NAMES: BodyLimb['name'][] = [
   'handL', 'handR', 'kneeL', 'kneeR', 'footL', 'footR',
 ]
 /** design-unit radii per particle, and relative masses: a heavy head and
-    trunk, light fists, so a tumble leads with the head and the hands flap */
+    trunk, light mittens, so a tumble leads with the head and the hands flap */
+/** the expressions a look can hash to (bodyMaterial's uFace), pills weighted */
+const FACES = [0, 0, 0, 1, 2, 0, 3, 4]
 const RADII = [0.46, 0.56, 0.42, 0.18, 0.18, 0.15, 0.15, 0.2, 0.2, 0.21, 0.21, 0.2, 0.2, 0.66, 0.44]
 const MASSES = [3, 2.6, 2.4, 0.9, 0.9, 0.6, 0.6, 0.45, 0.45, 0.9, 0.9, 0.8, 0.8, 1.2, 0.6]
 /** the whole body, for turning an impulse into a velocity */
@@ -369,16 +377,20 @@ const ramp = (a: number, b: number, t: number) => SMOOTH(THREE.MathUtils.clamp((
 
 /** rigs are seeded apart so a crowd does not blink and fidget in unison */
 let rigSerial = 0
+/** start the serial over: a harness that stages the same scene twice in one
+    page (a film's stills, then its video) must build the same bodies */
+export const resetRigSerial = () => {
+  rigSerial = 0
+}
 
-/** the inverse bind matrices: the bind pose is the rest pose with every
-    rotation identity, so each is just the bone's rest position negated.
-    Shared, since every body is the same drawing */
+/** the inverse bind matrices. The bind pose is the rest pose except for the
+    upper arms, which the surface was drawn holding out (see bodyShape's
+    ARM_BIND), so a rig whose rotations are all identity hangs its arms
+    straight down and nothing that poses it has to know. Shared, since every
+    body is the same drawing */
 let BIND: THREE.Matrix4[] | null = null
 const bindInverses = () =>
-  (BIND ??= Array.from({ length: BONE_COUNT }, (_, i) => {
-    const p = boneRestWorld(i, new THREE.Vector3())
-    return new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z)
-  }))
+  (BIND ??= Array.from({ length: BONE_COUNT }, (_, i) => bindMatrixWorld(i, new THREE.Matrix4()).invert()))
 
 export function buildPlayerBody(
   eye: number,
@@ -413,7 +425,6 @@ export function buildPlayerBody(
   const thighR = bones[B.THIGH_R]
   const shinR = bones[B.SHIN_R]
   const ankleR = bones[B.FOOT_R]
-  const eyes = bones[B.EYES]
   const pom = bones[B.POM]
   const pack = bones[B.PACK]
   const REST = BONE_REST.map(({ at }) => new THREE.Vector3(at[0], at[1], at[2]))
@@ -474,7 +485,7 @@ export function buildPlayerBody(
       h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0
     }
     const r = seeded(h)
-    persona.lean = r() * 0.16
+    persona.lean = r() * 0.06
     persona.roll = (r() - 0.5) * 0.24
     persona.tilt = (r() - 0.5) * 0.4
     // one arm always reaches further than the other
@@ -484,7 +495,9 @@ export function buildPlayerBody(
     persona.armL = leftHigh ? hi : lo
     persona.armR = leftHigh ? lo : hi
     // the face is hashed from the look too, so it costs no field on the wire
-    persona.face = h % FACE_COUNT
+    // mostly the plain pill eyes a bean is recognised by, now and then one
+    // of the other four
+    persona.face = FACES[h % FACES.length]
     persona.girth = buildGirth(l.build ?? 0)
   }
   personaFor(look)
@@ -495,9 +508,8 @@ export function buildPlayerBody(
   // hat swaps it (see setLook)
   let hatNow = look.hat ?? 0
   let buildNow = look.build ?? 0
-  let costumeNow = look.costume ?? 0
-  let faceNow = persona.face
-  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow, costumeNow, faceNow), paint.material)
+  paint.setFace(persona.face)
+  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow), paint.material)
   mesh.castShadow = true
   mesh.frustumCulled = false // hugs the camera; culling would blink limbs out
   // for callers that do cull it (remote bodies): a fixed sphere round the
@@ -580,7 +592,7 @@ export function buildPlayerBody(
       [
         // generous on purpose: these are what splay a heap. A limp body
         // whose arms may rest against its belly lands as one lump with its
-        // arms tucked; one whose fists keep a belly's width off it lands
+        // arms tucked; one whose mittens keep a belly's width off it lands
         // spread-eagled, which is the whole comedy of a ragdoll
         { a: P_KNEEL, b: P_KNEER, min: 0.58, stiff: 0.45 },
         { a: P_FOOTL, b: P_FOOTR, min: 0.7, stiff: 0.35 },
@@ -594,7 +606,7 @@ export function buildPlayerBody(
         { a: P_HANDR, b: P_PELV, min: 0.75, stiff: 0.35 },
         { a: P_HANDL, b: P_HEAD, min: 0.72, stiff: 0.35 },
         { a: P_HANDR, b: P_HEAD, min: 0.72, stiff: 0.35 },
-        // and never tucked under the chest or behind the back: a fist
+        // and never tucked under the chest or behind the back: a mitten
         // folded under a body lying on its front is a limb nobody can see
         { a: P_HANDL, b: P_CHEST, min: 0.95, stiff: 0.35 },
         { a: P_HANDR, b: P_CHEST, min: 0.95, stiff: 0.35 },
@@ -745,6 +757,15 @@ export function buildPlayerBody(
   // 12: chest look-yaw, 14: head look-yaw, 16: head look-pitch
   // 18: chest look-pitch, 20: chest jelly roll, 22: chest jelly pitch
   const sprS = new Float64Array(24)
+  /** the springs at rest: zero everywhere but the arms' spread, which
+      starts where a standing body holds them. From zero, every new body
+      spent its first frames with both arms hanging straight into its own
+      flanks */
+  const restSprings = () => {
+    sprS.fill(0)
+    sprS[2] = sprS[8] = 0.6 + (persona.girth - 1) * 0.9
+  }
+  restSprings()
   const spring = (
     i: number, target: number, K: number, C: number, force: number, dt: number,
     lo = -2.8, hi = 2.8,
@@ -766,7 +787,7 @@ export function buildPlayerBody(
   const EL_HI = 0.12
 
   /*
-    The five point masses (head, headgear tails, belly, two fists). Each is a
+    The five point masses (head, headgear tails, belly, two mittens). Each is a
     particle simulated in world space that chases where its bone would put it,
     then hangs the bone back on wherever it actually got to. That is the whole
     trick to secondary motion: the bone's rest is driven by the pose, the
@@ -776,9 +797,11 @@ export function buildPlayerBody(
   interface Jiggle {
     p: THREE.Vector3
     v: THREE.Vector3
+    /** where the rest point was last frame, for its velocity */
+    r: THREE.Vector3
     fresh: boolean
   }
-  const jig = (): Jiggle => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), fresh: true })
+  const jig = (): Jiggle => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), r: new THREE.Vector3(), fresh: true })
   const jHead = jig()
   const jPom = jig()
   const jPack = jig()
@@ -786,22 +809,31 @@ export function buildPlayerBody(
   const jMitR = jig()
   const JIGGLES = [jHead, jPom, jPack, jMitL, jMitR]
   let jiggleEnergy = 0
+  const restV = new THREE.Vector3()
   /** step a particle toward `rest` (world), with gravity `g` (world units/s^2
-      down) and a cap on how far it may stray, and report the offset */
+      down) and a cap on how far it may stray, and report the offset.
+      The damping acts on the particle's speed *relative to its rest point*:
+      damped against the world instead, a body moving at a steady speed
+      dragged every particle a constant distance behind it (v C / K), and a
+      bean running at full tilt carried its head a third of a unit behind
+      its own neck, which read as leaning back */
   const stepJiggle = (
     j: Jiggle, rest: THREE.Vector3, K: number, C: number, g: number, reach: number, dt: number,
   ) => {
     if (j.fresh || j.p.distanceToSquared(rest) > (4 * S) * (4 * S)) {
       j.p.copy(rest)
+      j.r.copy(rest)
       j.v.set(0, 0, 0)
       j.fresh = false
     }
+    restV.subVectors(rest, j.r).multiplyScalar(1 / Math.max(dt, 1e-4))
+    j.r.copy(rest)
     // two half steps: a stiff spring at 30 fps must not explode
     const h = Math.min(dt, 1 / 20) / 2
     for (let k = 0; k < 2; k++) {
       vTmp.subVectors(rest, j.p).multiplyScalar(K)
       vTmp.y -= g
-      vTmp.addScaledVector(j.v, -C)
+      vTmp.addScaledVector(j.v, -C).addScaledVector(restV, C)
       j.v.addScaledVector(vTmp, h)
       j.p.addScaledVector(j.v, h)
     }
@@ -810,10 +842,10 @@ export function buildPlayerBody(
     if (d > reach) {
       j.p.copy(rest).addScaledVector(vTmp, reach / d)
       // the part of the velocity pushing past the stop is spent
-      const along = j.v.dot(vTmp) / d
+      const along = (j.v.dot(vTmp) - restV.dot(vTmp)) / d
       if (along > 0) j.v.addScaledVector(vTmp, -along / d)
     }
-    jiggleEnergy += j.v.lengthSq()
+    jiggleEnergy += vTmp.subVectors(j.v, restV).lengthSq()
   }
 
   const basisQuat = (q: THREE.Quaternion, x: THREE.Vector3, y: THREE.Vector3, z: THREE.Vector3) => {
@@ -828,6 +860,25 @@ export function buildPlayerBody(
     zA.normalize()
     xA.crossVectors(yA, zA).normalize()
     basisQuat(q, xA, yA, zA)
+  }
+
+  /** turn a unit direction toward an axis until it is at most `maxAng` off
+      it: a joint limit applied to the bones the ragdoll is draped with (the
+      particles themselves stay free, so the heap still lands as it lands) */
+  const limitTo = (dir: THREE.Vector3, axis: THREE.Vector3, maxAng: number) => {
+    const c = THREE.MathUtils.clamp(dir.dot(axis), -1, 1)
+    const a = Math.acos(c)
+    if (a <= maxAng || a < 1e-4) return
+    const sa = Math.sin(a)
+    if (sa < 1e-4) {
+      // straight back along the axis: any perpendicular will do
+      dir.set(axis.y, axis.z, axis.x).cross(axis).normalize().multiplyScalar(Math.sin(maxAng)).addScaledVector(axis, Math.cos(maxAng))
+      return
+    }
+    const t = maxAng / a
+    const ka = Math.sin((1 - t) * a) / sa
+    const kd = Math.sin(t * a) / sa
+    dir.multiplyScalar(kd).addScaledVector(axis, ka).normalize()
   }
 
   /** drape the rigid skeleton over the particle cloud (group-local space) */
@@ -846,6 +897,10 @@ export function buildPlayerBody(
     za.normalize()
     xa.crossVectors(up, za).normalize()
     basisQuat(qPelv, xa, up, za)
+    // the cone a thigh may point in: tipped forward of straight down, so a
+    // leg swings far out in front and only a little behind (vKnee is free
+    // scratch here; the IK is not running)
+    vKnee.copy(up).negate().addScaledVector(za, 0.75).normalize()
     pelvis.position.copy(lp[P_PELV])
     pelvis.quaternion.copy(qPelv)
     pelvis.scale.set(1, 1, 1)
@@ -855,8 +910,11 @@ export function buildPlayerBody(
     armInv.set(1, 1, 1)
     qInv.copy(qPelv).invert()
 
-    // head grows +Y toward its particle
+    // head grows +Y toward its particle, but only so far off the trunk's
+    // own axis: the head is the top of the bean, and a bean folded double
+    // at the neck creased its own face
     dirTmp.copy(lp[P_HEAD]).sub(lp[P_CHEST]).normalize()
+    limitTo(dirTmp, up, 0.5)
     zA.crossVectors(xa, dirTmp)
     if (zA.lengthSq() < 1e-8) zA.set(0, 0, 1)
     zA.normalize()
@@ -873,8 +931,11 @@ export function buildPlayerBody(
       to: THREE.Vector3,
       parentQ: THREE.Quaternion,
       out: THREE.Quaternion,
+      axis?: THREE.Vector3,
+      maxAng = Math.PI,
     ) => {
       dirTmp.copy(to).sub(from).normalize()
+      if (axis) limitTo(dirTmp, axis, maxAng)
       refX.set(1, 0, 0).applyQuaternion(parentQ)
       limbQuat(qSeg, dirTmp, refX)
       out.copy(qSeg)
@@ -888,14 +949,33 @@ export function buildPlayerBody(
     handR.quaternion.identity()
     // legs from the pelvis frame's hip sockets
     vTmp.set(HIP_X, 0, 0).applyQuaternion(qPelv).add(lp[P_PELV])
-    fitLimb(thighL, vTmp, lp[P_KNEEL], qPelv, qUpper)
+    // a stub of a leg swings a long way forward but not up past the belly,
+    // and not far back at all: past either the skin at the hip folds (see
+    // limitTo)
+    fitLimb(thighL, vTmp, lp[P_KNEEL], qPelv, qUpper, vKnee, 1.2)
     fitLimb(shinL, lp[P_KNEEL], lp[P_FOOTL], qUpper, qLower)
     vTmp.set(-HIP_X, 0, 0).applyQuaternion(qPelv).add(lp[P_PELV])
-    fitLimb(thighR, vTmp, lp[P_KNEER], qPelv, qUpper)
+    fitLimb(thighR, vTmp, lp[P_KNEER], qPelv, qUpper, vKnee, 1.2)
     fitLimb(shinR, lp[P_KNEER], lp[P_FOOTR], qUpper, qLower)
     // a crumpled body's toes hang relaxed, not frozen in the last stride
     ankleL.rotation.set(0.35, 0, 0)
     ankleR.rotation.set(0.35, 0, 0)
+  }
+
+  /*
+    The helper bones. A raised arm is a bend of two radians at one joint,
+    and linear blend skinning answers a bend that sharp by folding the skin
+    round it over itself: the fillet where an arm grows out of a single
+    surface came out as a scribble of inside-out triangles in the armpit.
+    So each shoulder and each hip has a second bone on the same pivot that
+    turns with about half of its limb, and the flesh round the joint is weighted to
+    it (bodyShape's beanChain), which spreads one sharp bend into two soft
+    ones. Nothing poses them: they only ever follow, whatever posed the limb.
+  */
+  const followHelpers = () => {
+    for (const [hb, limb, share] of HELPERS) {
+      bones[hb].quaternion.identity().slerp(bones[limb].quaternion, share)
+    }
   }
 
   /*
@@ -905,6 +985,7 @@ export function buildPlayerBody(
     frame late, which nobody can see).
   */
   const secondary = (dt: number, show: number) => {
+    followHelpers()
     jiggleEnergy = 0
     group.updateMatrixWorld(true)
     const s = S
@@ -916,13 +997,17 @@ export function buildPlayerBody(
     else head.position.copy(REST[B.HEAD])
     head.updateMatrixWorld()
     head.getWorldPosition(vRest)
-    stepJiggle(jHead, vRest, 70, 4, 0, 0.3 * s, dt)
+    // the head is the top of the bean, not a ball on a neck: a stiffer,
+    // better damped spring than the old brawler's, tuned well off a run's stride
+    // (which rang the old one at resonance and slopped the head a third of a
+    // unit side to side), and a gentler tilt for the same offset
+    stepJiggle(jHead, vRest, 120, 9, 0, 0.16 * s, dt)
     vTmp2.subVectors(jHead.p, vRest)
     torso.getWorldQuaternion(qW)
     vTmp2.applyQuaternion(qW.invert()).multiplyScalar(1 / s)
     head.position.add(vTmp2)
-    head.rotation.x += vTmp2.z * 3.2
-    head.rotation.z -= vTmp2.x * 3.2
+    head.rotation.x += vTmp2.z * 1.8
+    head.rotation.z -= vTmp2.x * 1.8
 
     // the belly is jelly: its own point mass, soft and slow to settle, so a
     // footfall, a stop or a landing sets the front of the bean wobbling
@@ -964,7 +1049,7 @@ export function buildPlayerBody(
     swing(jMitL, handL, DOWN, 0.12, 170, 8, 3, 1.1)
     swing(jMitR, handR, DOWN, 0.12, 170, 8, 3, 1.1)
 
-    // blinking: a quick squash of the eyes bone, now and then twice
+    // blinking: the painted eyes squash shut, now and then twice
     blinkIn -= dt
     if (blinkIn <= 0 && blinkT < 0) {
       blinkT = 0
@@ -984,7 +1069,7 @@ export function buildPlayerBody(
         } else blinkT = -1
       }
     }
-    eyes.scale.set(1, lid, 1)
+    paint.setLid(lid)
     void show
   }
 
@@ -1175,7 +1260,7 @@ export function buildPlayerBody(
 
     // crouch, landing spring and the get-up fold all lower the hips; the leg
     // IK below folds the knees exactly enough that the feet stay planted
-    // soft knees always, softer standing about: a brawler never locks them
+    // soft knees always, softer standing about: a bean never locks them
     const drop = pose.crouchK * 0.42 + riseFold * 0.42 - springP * 0.7 + 0.06 + 0.04 * idleK
     const hipH = THREE.MathUtils.clamp(HIP_Y - drop, Math.abs(THIGH - SHIN) + 0.08, HIP_Y)
 
@@ -1186,7 +1271,7 @@ export function buildPlayerBody(
     // one foot to the other now and then, which is most of what reads as
     // alive in a body doing nothing
     const shift = Math.sin(idleT * 0.55 + 1.1) * Math.sin(idleT * 0.21) * 0.05 * idleK * (1 - riseFold)
-    const waddleX = -stepS * (0.085 - 0.03 * runK) * moveK + shift
+    const waddleX = -stepS * (0.075 - 0.045 * runK) * moveK + shift
     const dip = -Math.abs(stepS) * 0.07 * gait * (1 - runK)
     // a run's hips are lowest just after a foot lands and highest in the
     // flight before the next one does (see the toe-off in the feet below)
@@ -1195,12 +1280,18 @@ export function buildPlayerBody(
     pelvis.position.set(
       waddleX, hipH + dip + pop + bounceY + breathe * 0.006 + Math.sin(idleT * 1.7) * 0.05 * flyK, 0,
     )
-    const waddleRoll = stepS * (0.17 - 0.06 * runK) * moveK + shift * 1.2
+    // a walk waddles; a run is upright and bouncy, the roll mostly gone
+    const waddleRoll = stepS * (0.15 - 0.11 * runK) * moveK + shift * 1.2
     // the get-up hunch is not gated by pose.show: it is the shape of the
     // action, not flair, and the lens is off the head for the whole of it
+    // A bean runs nearly upright: the lean is a hint of the speed and a
+    // lurch on a start or a stop, not a sprinter's pitch. The brawler before
+    // it leaned 55 degrees at a full run and read as falling over its own
+    // feet; `npm run measure -- body` prints the pitch, and a run should stay
+    // around ten degrees
     const lean =
-      (THREE.MathUtils.clamp(fwdS * 0.03 + accF * 0.035, -0.4, 0.55) + pose.crouchK * 0.28 +
-        runK * gait * 0.5 + 0.2 + (0.12 + persona.lean) * idleK) * show +
+      (THREE.MathUtils.clamp(fwdS * 0.009 + accF * 0.012, -0.12, 0.14) + pose.crouchK * 0.2 +
+        runK * gait * 0.05 + 0.02 + persona.lean * idleK) * show +
       riseFold * 0.55 - stretchK * 0.12
     // centripetal lean: bank into a turn only as fast as the feet are
     // actually carrying the body
@@ -1227,7 +1318,7 @@ export function buildPlayerBody(
         // falling it pitches over, rather than stretching into a tube
         // a lunge, not a hop: in the air the body pitches into its travel
         // (and forward even from a standing jump), limbs trailing behind
-        airK * (0.3 + THREE.MathUtils.clamp(fwdS * 0.05, -0.2, 0.35) +
+        airK * (0.12 + THREE.MathUtils.clamp(fwdS * 0.025, -0.12, 0.2) +
           THREE.MathUtils.clamp(-pose.vy * 0.012, -0.15, 0.15)) * (1 - flyK),
       // standing in the guard the trunk weaves: a slow twist and a lean to
       // one side, so no two frames of an idle are symmetrical
@@ -1396,7 +1487,8 @@ export function buildPlayerBody(
       const L = THREE.MathUtils.clamp(dirTmp.length(), 0.25, THIGH + SHIN - 0.01)
       dirTmp.normalize()
       // knee pole: forward with a nudge outward, kept off the leg axis
-      vPole.set(side * 0.2, 0, 1)
+      // a deep crouch opens the knees out, or two stub legs fold into each other
+      vPole.set(side * (0.2 + 0.7 * pose.crouchK), 0, 1)
       vPole.addScaledVector(dirTmp, -vPole.dot(dirTmp))
       if (vPole.lengthSq() < 1e-6) vPole.set(0, 0, 1)
       vPole.normalize()
@@ -1473,13 +1565,15 @@ export function buildPlayerBody(
     const swingF = swingAmt * mCos
     const swingS = swingAmt * mSin * 0.7
     // a swagger: the swing goes out as much as forward, below the face
-    const swingOut = Math.abs(swingAmt) * 0.5
+    // and a run flails: the arms thrown out wide as well as pumped, the way
+    // a bean runs with nothing to do with its hands
+    const swingOut = Math.abs(swingAmt) * (0.5 + 0.35 * runK)
     // the forearm follows the upper arm later still, so it is bent coming
     // forward and trails open going back
     const lagEl = swingAt(0.32) * mCos
     // a loose bend at rest: an arm hanging dead straight reads as a mannequin
     // the guard: standing about, the long arms come up to a clumsy boxing
-    // guard, fists at chest height, never quite matched
+    // guard, mittens at chest height, never quite matched
     const guardK = idleK * (1 - airK) * (1 - riseFold)
     const elbowBase = 0.3 + 0.5 * runK * gait + 0.1 * guardK
     // held well out from the body, standing or not: a round belly and a
@@ -1487,7 +1581,7 @@ export function buildPlayerBody(
     // held clear of the body at rest, with a gap of air down each side: a
     // wider build holds them wider
     const spread =
-      0.34 + (persona.girth - 1) * 0.9 - 0.08 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
+      0.62 + (persona.girth - 1) * 0.9 - 0.04 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.35 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
@@ -1496,7 +1590,7 @@ export function buildPlayerBody(
     const airX =
       airK * (-0.45 + fallK * 1.15) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
     // at rest the long arms hang forward like a sleepwalker's, which is where
-    // a brawler's goof comes from (and where a grab starts)
+    // the goof comes from (and where a grab starts)
     // and standing about they reach, low and forward and never level, each
     // body at its own lopsided angles (see `persona`)
     // standing about they hang heavy and swing a little from the shoulders,
@@ -1900,7 +1994,7 @@ export function buildPlayerBody(
       head.position.set(0, SIT_NECK, 0)
       head.rotation.set(SIT_SLOUCH, 0, 0)
       head.scale.set(1 / SIT_SPREAD, 1 / SIT_SQUASH, 1 / SIT_SPREAD)
-      eyes.scale.set(1, 1, 1)
+      paint.setLid(1)
       // the pom-pom lies back along the beanie rather than standing up
       // through a roof
       pom.quaternion.identity()
@@ -1920,14 +2014,14 @@ export function buildPlayerBody(
       ankleR.rotation.set(-0.5, 0, 0)
 
       if (passenger) {
-        // the passenger has nothing to hold: fists dumped in the lap, one arm
+        // the passenger has nothing to hold: mittens dumped in the lap, one arm
         // flopped out over the door side
         uarmL.rotation.set(-0.35, 0, 0.7)
         uarmR.rotation.set(-0.55, 0, -0.1)
         farmL.rotation.set(-0.5, 0, 0)
         farmR.rotation.set(-1.25, 0, 0.35)
       } else {
-        // elbows in against the belly, fists forward on the controls
+        // elbows in against the belly, mittens forward on the controls
         uarmL.rotation.set(-0.7, 0, 0.12)
         uarmR.rotation.set(-0.7, 0, -0.12)
         farmL.rotation.set(-1.1, 0, -0.25)
@@ -1943,6 +2037,7 @@ export function buildPlayerBody(
       seatLook = passenger ? 0.45 + rnd() * 0.2 : (rnd() - 0.5) * 0.2
       for (const j of JIGGLES) j.fresh = true
       seatedPose(0)
+      followHelpers()
     },
     seatedTick: (dt) => {
       if (!seated) return
@@ -2035,7 +2130,7 @@ export function buildPlayerBody(
       stillT = 0
       fidget = null
       shakeT = -1
-      sprS.fill(0)
+      restSprings()
       rag.drive(null)
       for (let i = 0; i < P_COUNT; i++) rag.pin(i, null)
       grabs = 0
@@ -2044,7 +2139,7 @@ export function buildPlayerBody(
       torso.scale.set(1, 1, 1)
       armInv.set(1, 1, 1)
       head.scale.set(1, 1, 1)
-      eyes.scale.set(1, 1, 1)
+      paint.setLid(1)
       head.position.copy(REST[B.HEAD])
       torso.position.copy(REST[B.TORSO])
       pack.position.copy(REST[B.PACK])
@@ -2058,16 +2153,16 @@ export function buildPlayerBody(
     },
     setLook: (next) => {
       personaFor(next)
+      // the outfit, the face and the colours are uniforms; only the
+      // headgear and the build are geometry
       paint.setLook(next)
+      paint.setFace(persona.face)
       const hat = next.hat ?? 0
       const b = next.build ?? 0
-      const c = next.costume ?? 0
-      if (hat !== hatNow || b !== buildNow || c !== costumeNow || persona.face !== faceNow) {
+      if (hat !== hatNow || b !== buildNow) {
         hatNow = hat
         buildNow = b
-        costumeNow = c
-        faceNow = persona.face
-        mesh.geometry = bodyGeometry(hat, b, c, faceNow)
+        mesh.geometry = bodyGeometry(hat, b)
       }
     },
     showHead,

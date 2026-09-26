@@ -492,6 +492,108 @@ const seats = (spec: BodySpec, snap: Snap) => {
   })
 }
 
+/** every headgear, one each, close, on a spread of builds, outfits and
+    colours: the wardrobe in one sheet */
+const WARDROBE: PlayerLook[] = [0, 1, 2, 3, 4, 5, 6, 7].map((hat) => ({
+  shell: ['#2f6fcf', '#d2452f', '#3f9a38', '#e0a21a', '#8a4fc8', '#d9508f', '#1f9a8a', '#e8e2d2'][hat],
+  trim: ['#f2eee0', '#f2eee0', '#e0a218', '#2f6fcc', '#1c1c20', '#3f9a38', '#d2452c', '#8a4fc8'][hat],
+  accent: ['#c84028', '#1c1c20', '#f0e8e0', '#e86810', '#e8b818', '#2860c8', '#c84028', '#e86810'][hat],
+  glow: ['#1c1a20', '#1c1a20', '#2b3a50', '#1c1a20', '#4a2e20', '#1c1a20', '#f4f1e0', '#1c1a20'][hat],
+  hat,
+  costume: [0, 2, 1, 0, 3, 0, 1, 2][hat],
+  build: [0, 1, 2, 3, 4, 0, 1, 2][hat],
+}))
+const wardrobe = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  for (const look of WARDROBE) {
+    const a = actor(st, look, st.x, st.z, 0)
+    for (let f = 0; f < 200; f++) tick(a, st.env)
+    snap(`hat ${look.hat} build ${look.build} outfit ${look.costume}`,
+      camAt(tw, th, new THREE.Vector3(st.x, st.gy + 2.9, st.z), Math.PI - 0.55, 10, 1.4, 34))
+    st.scene.remove(a.rig.group)
+  }
+}
+
+/*
+  Where the skin folds: a posed body with every triangle that faces against
+  its own skinned vertex normals painted red over it (the same test
+  `npm run measure -- body folds` counts). A number says how many; this says
+  whether they are out on the flank where anyone would see them or buried
+  inside a crease where nobody can.
+*/
+const foldOverlay = (rig: PlayerRig): THREE.Mesh => {
+  let mesh: THREE.SkinnedMesh | null = null
+  rig.group.traverse((o) => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) mesh = o as THREE.SkinnedMesh })
+  const m = mesh!
+  rig.group.updateMatrixWorld(true)
+  m.skeleton.update()
+  const g = m.geometry
+  const P = g.getAttribute('position')
+  const N = g.getAttribute('normal')
+  const SI = g.getAttribute('skinIndex')
+  const SW = g.getAttribute('skinWeight')
+  const I = g.getIndex()!
+  const live: THREE.Vector3[] = []
+  const liveN: THREE.Vector3[] = []
+  const bm = m.skeleton.boneMatrices!
+  const rot = m.skeleton.bones.map((_, b) => {
+    const e = bm.subarray(b * 16, b * 16 + 16)
+    return new THREE.Matrix3().set(e[0], e[4], e[8], e[1], e[5], e[9], e[2], e[6], e[10])
+  })
+  for (let i = 0; i < P.count; i++) {
+    live.push(m.applyBoneTransform(i, new THREE.Vector3().fromBufferAttribute(P, i)).applyMatrix4(m.matrixWorld))
+    const n = new THREE.Vector3()
+    for (let k = 0; k < 4; k++) {
+      const w = SW.getComponent(i, k)
+      if (w) n.addScaledVector(new THREE.Vector3().fromBufferAttribute(N, i).applyMatrix3(rot[SI.getComponent(i, k)]), w)
+    }
+    liveN.push(n)
+  }
+  const out: number[] = []
+  const u = new THREE.Vector3()
+  const w = new THREE.Vector3()
+  for (let t = 0; t < I.count; t += 3) {
+    const [a, b, c] = [I.getX(t), I.getX(t + 1), I.getX(t + 2)]
+    u.subVectors(live[b], live[a])
+    w.subVectors(live[c], live[a])
+    const n = u.clone().cross(w)
+    const s = liveN[a].clone().add(liveN[b]).add(liveN[c])
+    if (n.lengthSq() < 1e-14 || n.normalize().dot(s.normalize()) > -0.3) continue
+    for (const q of [a, b, c]) out.push(live[q].x, live[q].y, live[q].z)
+  }
+  const og = new THREE.BufferGeometry()
+  og.setAttribute('position', new THREE.Float32BufferAttribute(out, 3))
+  const om = new THREE.Mesh(og, new THREE.MeshBasicMaterial({ color: 0xff1030, side: THREE.DoubleSide, depthTest: false }))
+  om.renderOrder = 10
+  return om
+}
+const FOLD_SHOTS: Array<[string, number]> = [
+  ['idle', 310], ['walk', 12], ['run', 8], ['crouch', 40], ['stretch', 54], ['ragdoll', 34], ['splay', 52], ['recover', 10 + 110],
+]
+const folds = (spec: BodySpec, snap: Snap, who = 0) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  for (const [name, at] of FOLD_SHOTS) {
+    const a = actor(st, LOOKS[who] ?? LOOKS[0], st.x - 8, st.z, -Math.PI / 2)
+    for (let f = 0; f <= at; f++) {
+      if (name === 'crouch') tick(a, st.env, { crouch: 1 })
+      else if (name === 'stretch') {
+        if (f === 10) a.rig.emote('stretch')
+        tick(a, st.env)
+      } else ACTIONS[name].run(a, st, f)
+    }
+    const ov = foldOverlay(a.rig)
+    st.scene.add(ov)
+    const c = new THREE.Vector3()
+    if (a.rig.down) a.rig.focus(c)
+    else c.set(a.x, a.y + 2.2, a.z)
+    snap(`${name} @${at}: ${ov.geometry.getAttribute('position').count / 3} folded`, camAt(tw, th, c, Math.PI - 0.6, 8, 1.2, 36))
+    st.scene.remove(ov)
+    st.scene.remove(a.rig.group)
+  }
+}
+
 /* -------------------------------------------------------------- shooting -- */
 
 let renderer: THREE.WebGLRenderer | null = null
@@ -512,6 +614,8 @@ export const shootBody = (spec: BodySpec) => {
     if (a.startsWith('strip')) return n + 8
     if (a === 'fp') return n + 4
     if (a === 'seat') return n + 9
+    if (a.startsWith('folds')) return n + FOLD_SHOTS.length
+    if (a === 'wardrobe') return n + WARDROBE.length
     return n
   }, 0)
   const motionOnly = spec.targets.every((t) => t.arg === 'motion' || t.arg?.startsWith('strip'))
@@ -591,6 +695,8 @@ export const shootBody = (spec: BodySpec) => {
     else if (a.startsWith('strip:')) run((sp, s) => strip(sp, a.slice(6), s))
     else if (a === 'fp') run(firstPerson)
     else if (a === 'seat') run(seats)
+    else if (a === 'wardrobe') run(wardrobe)
+    else if (a.startsWith('folds')) run((sp, sn) => folds(sp, sn, Number(a.split(':')[1] ?? 0)))
     else throw new Error(`unknown body target "${a}"`)
   }
   return { labels, width: canvas.width, height: canvas.height, cols: perRow }

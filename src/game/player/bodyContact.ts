@@ -66,6 +66,9 @@ export interface Peer {
   height: number
 }
 
+/** the most posed points a body offers: the rig's thirteen limbs, and room */
+export const MAX_POINTS = 16
+
 export type BumpKind = 'none' | 'lean' | 'charge' | 'tackle' | 'stomp'
 
 /** what one contact came to, filled by `touch` */
@@ -87,10 +90,11 @@ export interface Bump {
   px: number
   py: number
   pz: number
-  /** the walker's recoil, units/s */
+  /** the walker's recoil, units/s, and how long its legs are not its own */
   rx: number
   ry: number
   rz: number
+  stun: number
 }
 
 export interface Bumpable {
@@ -105,6 +109,11 @@ export interface Bumpable {
   /** body i was bumped. Called once per contact per frame for a lean, and
       once for a knock (the body is down after it and stops being a peer) */
   hit: (i: number, bump: Bump) => void
+  /** body i's posed limbs, as world-space (x, y, z, radius) quadruples into
+      `out`; returns how many. Asked only of a body the broad phase says is
+      near, so it may be as dear as walking a skeleton. Optional: without it
+      a body is its cylinder */
+  points?: (i: number, out: Float32Array) => number
   /** anybody lying down near the walker gets trampled: optional, and only
       the owner of a body can do it */
   trample?: (x: number, z: number, feetY: number, vx: number, vz: number, radius: number) => number
@@ -121,6 +130,11 @@ export interface Bumper {
   grounded: boolean
   radius: number
   height: number
+  /** the walker's own posed limbs, (x, y, z, radius) quadruples measured
+      from (eye.x, feetY, eye.z), and how many. A sprint leans the head and
+      the arms well out past the trunk, and it is those that arrive first */
+  pts?: Float32Array
+  npts?: number
 }
 
 export interface ContactReport {
@@ -132,6 +146,9 @@ export interface ContactReport {
   /** the smallest planar gap between the walker's cylinder and any peer it
       overlaps vertically, after the pass (negative is interpenetration) */
   gap: number
+  /** the deepest any posed limb (either body's) still sits inside the other
+      body's cylinder after the pass, side by side; 0 when nothing does */
+  sunk: number
 }
 
 /* ------------------------------------------------------------- tuning -- */
@@ -155,16 +172,29 @@ const STOMP_VY = 1
 const STOMP_OVER = 0.3
 /** the bounce off a head, units/s up: a little under a hop, so a stomp
     reads as a trampoline and not as a second jump */
-const STOMP_BOUNCE = 9
+const STOMP_BOUNCE = 10
+/** ...and carried off the side of them, so the walker lands beside the heap
+    and not lying across it */
+const STOMP_OFF = 3.5
+/** the stomp drives the head down this fast: a squash, not a push */
+const STOMP_DOWN = -11
 /** the walker's rebound off a knock: this share of the approach back along
-    the normal, and a stumbling hop */
-const RECOIL = 0.45
-const RECOIL_HOP = 2.4
-/** a knock throws the body along the walker's travel a little faster than
-    it was coming, and up: the same scoop impacts.ts gives a bumper */
-const THROW = 1.1
-const THROW_UP = 2
-const THROW_UP_K = 0.25
+    the normal, a stumbling hop, and the legs lost for a moment (so a held
+    sprint does not simply carry on into the heap) */
+const RECOIL = 0.62
+const RECOIL_HOP = 3
+const STUN = 0.2
+const STUN_K = 0.03
+/** a knock throws the body along the walker's travel faster than it was
+    coming, and up. It lands high on them (the chest and head take most of
+    it through `rig.hit`), so the trunk snaps away on the first frame and
+    the feet trail it: a pop, not a slow topple */
+const THROW = 1.4
+const THROW_UP = 3
+const THROW_UP_K = 0.3
+const THROW_AT = 0.72
+/** how far out of its cylinder a posed limb can reach, for the broad phase */
+const LIMB_REACH = 2.6
 
 /* -------------------------------------------------------- measurement -- */
 
@@ -226,7 +256,12 @@ const measure = (mesh: THREE.Mesh, group: THREE.Object3D) => {
   const band1 = lo + (top - lo) * 0.7
   const rs = new Float32Array(P.count)
   let n = 0
+  // a body that says which of its skin is trunk (the bean's `aPart`) is
+  // measured on that alone: its arms are drawn held out in the bind pose,
+  // and counted they widened the cylinder by a third
+  const trunk = g.getAttribute('aPart')
   for (let i = 0; i < P.count; i++) {
+    if (trunk && trunk.getX(i) < 0.5) continue
     v.fromBufferAttribute(P, i).applyMatrix4(m)
     if (v.y < band0 || v.y > band1) continue
     rs[n++] = Math.hypot(v.x, v.z)
@@ -253,13 +288,42 @@ export const bodyExtent = (group: THREE.Object3D, out: BodyExtent): BodyExtent =
   return out
 }
 
+
 /* ------------------------------------------------------------ contact -- */
+
+/** how deep a set of posed points sits inside an upright cylinder: the
+    worst radial overlap of any point whose sphere reaches the cylinder's
+    span. Points are (x, y, z, r); `ox`/`oy`/`oz` offset them (the walker's
+    are stored relative to its own eye and soles) */
+const sunkIn = (
+  pts: Float32Array, n: number, ox: number, oy: number, oz: number,
+  cx: number, cz: number, feet: number, radius: number, height: number,
+) => {
+  let worst = -Infinity
+  for (let k = 0; k < n; k++) {
+    const r = pts[k * 4 + 3]
+    const y = oy + pts[k * 4 + 1]
+    if (y + r < feet || y - r > feet + height) continue
+    const pen = radius + r - Math.hypot(ox + pts[k * 4] - cx, oz + pts[k * 4 + 2] - cz)
+    if (pen > worst) worst = pen
+  }
+  return worst
+}
 
 /**
  * One walker against one body: do they touch, and how. Fills `out` and
  * returns its kind; 'none' leaves the rest of `out` stale.
+ *
+ * Touching is decided three ways and the deepest wins: the two trunk
+ * cylinders, the walker's posed limbs against the other's cylinder, and
+ * the other's posed limbs against the walker's. The limbs are what a
+ * sprint leads with (the lean carries the head and both arms a body's width
+ * ahead of the soles), so a knock fires on the frame they arrive, before
+ * any of it is drawn inside somebody else.
  */
-export const touch = (me: Bumper, o: Peer, out: Bump): BumpKind => {
+export const touch = (
+  me: Bumper, o: Peer, out: Bump, theirs?: Float32Array | null, nTheirs = 0,
+): BumpKind => {
   out.kind = 'none'
   // the two vertical spans have to overlap: a hop clean over a head, or a
   // body on the roof above, is not a contact
@@ -267,9 +331,17 @@ export const touch = (me: Bumper, o: Peer, out: Bump): BumpKind => {
   const reach = me.radius + o.radius
   let dx = me.eye.x - o.x
   let dz = me.eye.z - o.z
-  const d2 = dx * dx + dz * dz
-  if (d2 >= reach * reach) return 'none'
-  let d = Math.sqrt(d2)
+  let d = Math.sqrt(dx * dx + dz * dz)
+  let depth = reach - d
+  if (me.pts && me.npts) {
+    const k = sunkIn(me.pts, me.npts, me.eye.x, me.feetY, me.eye.z, o.x, o.z, o.feetY, o.radius, o.height)
+    if (k > depth) depth = k
+  }
+  if (theirs && nTheirs) {
+    const k = sunkIn(theirs, nTheirs, 0, 0, 0, me.eye.x, me.eye.z, me.feetY, me.radius, me.height)
+    if (k > depth) depth = k
+  }
+  if (depth <= 0) return 'none'
   if (d < 1e-4) {
     // dead centre (a spawn, a teleport onto somebody): out the way the
     // walker came from, or any way at all
@@ -282,38 +354,47 @@ export const touch = (me: Bumper, o: Peer, out: Bump): BumpKind => {
   const nz = dz / d
   out.nx = nx
   out.nz = nz
-  out.depth = reach - Math.min(d, reach)
+  out.depth = depth
   out.approach = -(me.vx * nx + me.vz * nz)
   const speed = Math.hypot(me.vx, me.vz)
+  out.stun = 0
 
-  // coming down on them: soles over the lower part of the body, falling
+  // coming down on them: soles over the lower part of the body, past the top
+  // of the arc. The head takes it straight down, and the walker is thrown
+  // up and off over them
   const falling = !me.grounded && me.vy < STOMP_VY
   if (falling && me.feetY > o.feetY + o.height * STOMP_OVER) {
     out.kind = 'stomp'
-    out.vx = me.vx * 0.5
-    out.vy = me.vy * 0.4
-    out.vz = me.vz * 0.5
+    out.vx = me.vx * 0.3
+    out.vy = STOMP_DOWN
+    out.vz = me.vz * 0.3
     out.px = o.x
-    out.py = o.feetY + o.height * 0.85
+    out.py = o.feetY + o.height * 0.9
     out.pz = o.z
-    out.rx = nx * 1.5
+    // carried on the way the walker was going, so a stomp on the run goes
+    // over them rather than bouncing back into them
+    const s = speed > 0.5 ? 1 / speed : 0
+    out.rx = (s ? me.vx * s : nx) * STOMP_OFF
     out.ry = STOMP_BOUNCE
-    out.rz = nz * 1.5
+    out.rz = (s ? me.vz * s : nz) * STOMP_OFF
     return 'stomp'
   }
-  // the point of contact: on their surface toward us, at chest height
+  // the point of contact: on their surface toward us, high on the chest
   out.px = o.x + nx * o.radius
-  out.py = o.feetY + o.height * 0.55
+  out.py = o.feetY + o.height * THROW_AT
   out.pz = o.z + nz * o.radius
   const knock = me.grounded ? out.approach > CHARGE : out.approach > TACKLE
   if (knock) {
     out.kind = me.grounded ? 'charge' : 'tackle'
-    out.vx = me.vx * THROW
+    // along the walker's travel, plus a shove straight off the contact so a
+    // glancing blow still sends them away from the walker
+    out.vx = me.vx * THROW - nx * out.approach * 0.25
     out.vy = THROW_UP + speed * THROW_UP_K + Math.max(0, me.vy) * 0.5
-    out.vz = me.vz * THROW
+    out.vz = me.vz * THROW - nz * out.approach * 0.25
     out.rx = nx * out.approach * RECOIL
     out.ry = me.grounded ? RECOIL_HOP : 0
     out.rz = nz * out.approach * RECOIL
+    out.stun = STUN + out.approach * STUN_K
     return out.kind
   }
   out.kind = 'lean'
@@ -331,8 +412,9 @@ export const touch = (me: Bumper, o: Peer, out: Bump): BumpKind => {
 
 export interface ContactStep {
   me: Bumper
-  /** the walker's shove, for a rebound or a bounce (`WalkController.push`) */
-  push: (vx: number, vy: number, vz: number) => void
+  /** the walker's shove, for a rebound or a bounce, and how long its legs
+      are not its own (`WalkController.push`) */
+  push: (vx: number, vy: number, vz: number, stun?: number) => void
   /** walls win over bodies: after a separation the walker is resolved
       against the level again, with the walk's own step allowance */
   collision: CollisionSet
@@ -360,9 +442,10 @@ export function createBodyContact(): BodyContact {
   const peer: Peer = { x: 0, z: 0, feetY: 0, vx: 0, vz: 0, radius: 0, height: 0 }
   const bump: Bump = {
     kind: 'none', nx: 0, nz: 0, depth: 0, approach: 0,
-    vx: 0, vy: 0, vz: 0, px: 0, py: 0, pz: 0, rx: 0, ry: 0, rz: 0,
+    vx: 0, vy: 0, vz: 0, px: 0, py: 0, pz: 0, rx: 0, ry: 0, rz: 0, stun: 0,
   }
-  const report: ContactReport = { leans: 0, knocks: 0, stomps: 0, trampled: 0, gap: Infinity }
+  const report: ContactReport = { leans: 0, knocks: 0, stomps: 0, trampled: 0, gap: Infinity, sunk: 0 }
+  const pts = new Float32Array(MAX_POINTS * 4)
   /** when each body may next be knocked, per set; grown, never shrunk */
   const cool = new Map<Bumpable, Float64Array>()
   const coolOf = (set: Bumpable) => {
@@ -375,6 +458,8 @@ export function createBodyContact(): BodyContact {
     }
     return c
   }
+  /** body i's posed points, if the set has any, into the scratch */
+  const pointsOf = (set: Bumpable, i: number) => (set.points ? Math.min(MAX_POINTS, set.points(i, pts)) : 0)
 
   return {
     step: (o) => {
@@ -384,23 +469,28 @@ export function createBodyContact(): BodyContact {
       report.stomps = 0
       report.trampled = 0
       report.gap = Infinity
+      report.sunk = 0
       let bounced = false
       for (let it = 0; it < ITER; it++) {
         let touched = false
-        for (const set of sets) {
+        for (let si = 0; si < sets.length; si++) {
+          const set = sets[si]
           if (!set) continue
           const c = coolOf(set)
           for (let i = 0; i < set.size; i++) {
             if (!set.peer(i, peer)) continue
-            // broad phase: a box round both, before any square root
-            const reach = me.radius + peer.radius
+            // broad phase: a box round both, limbs and all, before any
+            // square root
+            const reach = me.radius + peer.radius + LIMB_REACH
             if (Math.abs(me.eye.x - peer.x) >= reach || Math.abs(me.eye.z - peer.z) >= reach) continue
-            let kind = touch(me, peer, bump)
+            const n = pointsOf(set, i)
+            let kind = touch(me, peer, bump, pts, n)
             if (kind === 'none') continue
             // a body still cooling from the last knock is leaned on instead
             if (kind !== 'lean' && c[i] > o.now) {
               kind = bump.kind = 'lean'
               bump.vx = bump.vy = bump.vz = 0
+              bump.stun = 0
             }
             touched = true
             // what happens to them happens once a frame, on the first pass
@@ -410,7 +500,7 @@ export function createBodyContact(): BodyContact {
                 report.stomps++
                 set.hit(i, bump)
                 if (!bounced) {
-                  o.push(bump.rx, bump.ry, bump.rz)
+                  o.push(bump.rx, bump.ry, bump.rz, 0)
                   bounced = true
                 }
                 // the bounce carries the walker off them; no shove apart
@@ -420,7 +510,7 @@ export function createBodyContact(): BodyContact {
               else report.knocks++
               set.hit(i, bump)
               if (kind !== 'lean' && !bounced) {
-                o.push(bump.rx, bump.ry, bump.rz)
+                o.push(bump.rx, bump.ry, bump.rz, bump.stun)
                 bounced = true
               }
             } else if (kind === 'stomp') continue
@@ -437,14 +527,25 @@ export function createBodyContact(): BodyContact {
         resolveXZ(me.eye, o.collision, me.feetY, me.feetY + me.height, o.stepUp)
       }
       // the measurement: after everything, how close is the walker to
-      // anybody it shares a height with
-      for (const set of sets) {
+      // anybody it stands beside, trunk to trunk and limb to trunk
+      for (let si = 0; si < sets.length; si++) {
+        const set = sets[si]
         if (!set) continue
         for (let i = 0; i < set.size; i++) {
           if (!set.peer(i, peer)) continue
-          if (me.feetY >= peer.feetY + peer.height || me.feetY + me.height <= peer.feetY) continue
+          if (me.feetY >= peer.feetY + peer.height * STOMP_OVER || me.feetY + me.height <= peer.feetY) continue
           const gap = Math.hypot(me.eye.x - peer.x, me.eye.z - peer.z) - me.radius - peer.radius
           if (gap < report.gap) report.gap = gap
+          if (gap > LIMB_REACH) continue
+          if (me.pts && me.npts) {
+            const k = sunkIn(me.pts, me.npts, me.eye.x, me.feetY, me.eye.z, peer.x, peer.z, peer.feetY, peer.radius, peer.height)
+            if (k > report.sunk) report.sunk = k
+          }
+          const n = pointsOf(set, i)
+          if (n) {
+            const k = sunkIn(pts, n, 0, 0, 0, me.eye.x, me.eye.z, me.feetY, me.radius, me.height)
+            if (k > report.sunk) report.sunk = k
+          }
         }
         if (set.trample) {
           const s = Math.hypot(me.vx, me.vz)
@@ -454,4 +555,24 @@ export function createBodyContact(): BodyContact {
       return report
     },
   }
+}
+
+const tmp = new THREE.Vector3()
+
+/** a rig's posed limbs as (x, y, z, radius) quadruples, measured from
+    (x, feetY, z): world space when those are zero, the walker's own frame
+    when they are its eye and soles. Call after the rig is posed */
+export const posedPoints = (
+  rig: { limbs: readonly { radius: number }[]; limbPos: (i: number, out: THREE.Vector3) => THREE.Vector3 },
+  x: number, feetY: number, z: number, out: Float32Array,
+) => {
+  const n = Math.min(MAX_POINTS, rig.limbs.length)
+  for (let i = 0; i < n; i++) {
+    rig.limbPos(i, tmp)
+    out[i * 4] = tmp.x - x
+    out[i * 4 + 1] = tmp.y - feetY
+    out[i * 4 + 2] = tmp.z - z
+    out[i * 4 + 3] = rig.limbs[i].radius
+  }
+  return n
 }

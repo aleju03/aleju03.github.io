@@ -46,6 +46,7 @@ if (want('street')) {
   const c = stageScenario(s, sb)
   advanceScenario(s, c, s.duration)
   console.log(`street   at ${Math.round(c.x)},${Math.round(c.z)}: ${s.report(c)}`)
+  console.log(`         state hash ${s.hash(c)} (the film prints the same one)`)
   sb.dispose()
 }
 
@@ -286,6 +287,17 @@ if (want('net')) {
       world.tick([[2, vCam.position.x, 0, vCam.position.z, 0, 0, 0, flags]], nowMs)
     }
     world.sample(nowMs, 1 / 60)
+    // their body on this screen, drawn where the playback has them (what
+    // net/avatars.ts does every frame), so its posed limbs are where seen
+    const seen = world.players.get(2)
+    if (seen && !seen.down) {
+      theirRig.group.position.set(seen.x, seen.y, seen.z)
+      vPose.vx = seen.vx
+      vPose.vz = seen.vz
+      theirRig.update(vPose, vEnv)
+      theirRig.group.rotation.y = theirRig.facing + Math.PI
+      theirRig.group.updateMatrixWorld(true)
+    }
     bumps.refresh()
     // the local player: sprint at them for two seconds, then stand, then
     // walk into them and keep leaning

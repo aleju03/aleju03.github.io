@@ -61,6 +61,11 @@ targets
   body:strip:<action>  one filmstrip: walk|run|jump|land|ragdoll|recover|idle
   body:fp              the first-person lens looking down at your own body
   body:seat            seated in the car, boat and helicopter seat nodes
+  body:closeup         one body close: front, three-quarter, side and back
+  body:wardrobe        every headgear once, close, over the builds and outfits
+  body:folds[:<n>]     eight poses with every folded triangle of the skin
+                       painted red over it (pair with --raw); n picks one of
+                       the lineup's six looks (4 wears the hood)
 
 options
   --out <path>         default shots/<first-target>.png

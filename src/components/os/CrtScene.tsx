@@ -19,7 +19,8 @@ import type { RagdollEnv } from '../../game/player/ragdoll'
 import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
 import { createImpactWatch, type Impact } from '../../game/player/impacts'
 import {
-  bodyExtent, createBodyContact, type BodyExtent, type Bumpable, type Bumper, type ContactStep,
+  MAX_POINTS, bodyExtent, createBodyContact, posedPoints, type BodyExtent, type Bumpable, type Bumper,
+  type ContactStep,
 } from '../../game/player/bodyContact'
 import { createRemoteBumps, createShoveTaker } from '../../game/net/shove'
 import { createWalkController } from '../../game/player/walkController'
@@ -1599,6 +1600,9 @@ export default function CrtScene({
         const myExtent: BodyExtent = { radius: 1, height: EYE }
         const bumper: Bumper = {
           eye: camera.position, feetY: 0, vx: 0, vz: 0, vy: 0, grounded: true, radius: 1, height: EYE,
+          // the body's own limbs, posed last frame: a sprint's lean carries
+          // the head and arms out past the trunk and they arrive first
+          pts: new Float32Array(MAX_POINTS * 4), npts: 0,
         }
         // one record, refilled each frame (the walk frame allocates nothing)
         const contactIn: ContactStep = {
@@ -3066,6 +3070,9 @@ export default function CrtScene({
           rigEnv.ceilingY = level.ceilingY
           rigEnv.collision = level.collision
           if (!sitting) rig.update(rigPose, rigEnv)
+          bumper.npts = !sitting && !rig.ragdolling && bumper.pts
+            ? posedPoints(rig, camera.position.x, walk.feetY, camera.position.z, bumper.pts)
+            : 0
           // --- everyone else ------------------------------------------------
           // Say where we are, play the others back a couple of ticks in the
           // past, and put their voices where their bodies ended up. All of it

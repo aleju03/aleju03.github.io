@@ -9,7 +9,9 @@ import {
 import { blockedAt, makeCollisionSet, type Solid } from '../physics/collision'
 import type { RagdollEnv } from '../player/ragdoll'
 import type { Impact, ImpactWatch } from '../player/impacts'
-import { bodyExtent, type BodyExtent, type Bumpable, type Bump } from '../player/bodyContact'
+import {
+  bodyExtent, posedPoints, MAX_POINTS, type BodyExtent, type Bumpable, type Bump,
+} from '../player/bodyContact'
 import { gfx } from './quality'
 import { SEA_Y, terrainY } from './terrain'
 import { ROAD_HALF, WALK_W, placeAt, roadAt } from './settlements'
@@ -83,6 +85,8 @@ export interface PedestrianHandles {
   /** put people exactly here, standing for `pause` seconds (a harness's
       way to stage a street; the game never calls it). The rest are parked */
   stage: (spots: readonly { x: number; z: number; yaw: number; pause?: number }[]) => void
+  /** body i's rig group, for a harness measuring its drawn mesh */
+  groupOf: (i: number) => THREE.Object3D | null
   /** the chest of body i if it is lying down, into `out`; false otherwise */
   lying: (i: number, out: THREE.Vector3) => boolean
   /** how many are knocked down right now, and how many times in all */
@@ -133,10 +137,12 @@ const BODY_H = 4.2
 /** how fast a stagger bleeds away, per second */
 const STAGGER_GRIP = 4.5
 /** a trample: the share of the walker's velocity a body lying underfoot is
-    kicked with, the lift, and how often one body can be kicked */
-const TRAMPLE_K = 0.55
-const TRAMPLE_UP = 1.6
-const TRAMPLE_EVERY = 0.35
+    kicked with, the lift, and how often one body can be kicked. Mostly a
+    jolt up: a walker wading through a heap used to push it along the road
+    like a sledge, a kick every third of a second */
+const TRAMPLE_K = 0.2
+const TRAMPLE_UP = 2.4
+const TRAMPLE_EVERY = 0.9
 
 /** the middle of the sidewalk slab: kerb plus half the walkway */
 const WALK_MID = ROAD_HALF + WALK_W * 0.5
@@ -182,6 +188,11 @@ interface Person {
   ext: BodyExtent
   /** seconds until a body lying down may be trampled again */
   kicked: number
+  /** its posed limbs in world space, and the crowd tick they were read on
+      (read on demand, once a tick, only for a body the walker is near) */
+  pts: Float32Array
+  npts: number
+  ptsAt: number
 }
 
 const swatch = <T,>(list: readonly T[], r: number) => list[Math.floor(r * list.length) % list.length]
@@ -375,6 +386,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       rig, group: rig.group, x: 0, z: 0, yaw: 0,
       gait: 0, settle: 0, pause: 0, live: false, down: null, downFor: 0,
       y: 0, vx: 0, vz: 0, sx: 0, sz: 0, ext: { radius: 1, height: BODY_H }, kicked: 0,
+      pts: new Float32Array(MAX_POINTS * 4), npts: 0, ptsAt: -1,
     })
   }
 
@@ -383,7 +395,10 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       `findSpot` is 26 tries at four field lookups each */
   let retryIn = 0
 
+  /** the crowd's tick count, which is what a body's cached points are stamped with */
+  let tick = 0
   const update = (camPos: THREE.Vector3, dt: number) => {
+    tick++
     if (!crowd.length) return
     retryIn -= dt
     const mayRetry = retryIn <= 0
@@ -584,6 +599,24 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     },
     // shoved half the overlap, if there is room behind them: the same wall
     // test their own walk steers by, so a body is never pushed into a shop
+    points: (i, out) => {
+      const p = crowd[i]
+      // read off the skeleton once a tick, relative to where the body
+      // stands, so a shove since (which moves the body, not the bones)
+      // carries them along
+      const g = p.group.position
+      if (p.ptsAt !== tick) {
+        p.npts = posedPoints(p.rig, g.x, g.y, g.z, p.pts)
+        p.ptsAt = tick
+      }
+      for (let k = 0; k < p.npts * 4; k += 4) {
+        out[k] = p.pts[k] + g.x
+        out[k + 1] = p.pts[k + 1] + g.y
+        out[k + 2] = p.pts[k + 2] + g.z
+        out[k + 3] = p.pts[k + 3]
+      }
+      return p.npts
+    },
     nudge: (i, dx, dz) => {
       const p = crowd[i]
       const x = p.x + dx
@@ -678,6 +711,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
 
   return {
     update, knock, grabbable, bumpable, stage,
+    groupOf: (i) => crowd[i]?.group ?? null,
     lying: (i, out) => {
       const p = crowd[i]
       if (!p || !p.live || !p.down) return false
