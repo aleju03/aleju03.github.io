@@ -454,31 +454,29 @@ const aimLens = (st: Stage, t: number) => {
   st.cam.updateMatrixWorld()
 }
 
-/** the moving camera and the render side, for a frame drawn at time t. A
-    sheet's stills are seconds apart, and the render side is springs (a
-    viewmodel's sway, a body's balance, a beam's whip) that a one-second
-    step would throw anywhere, so it is walked there in 60 Hz steps with the
-    lens moving under it, and only the last one is drawn */
+/** the moving camera and the render side, for a frame drawn at time t. The
+    render side is springs and clocks (a viewmodel's sway, a beam's whip, a
+    freeze's flash) that must run in step with the simulation, so `advance`
+    walks it frame by frame with the physics (a flash lands on the frame of
+    its freeze, not a second of catch-up later); here it only aims the lens
+    and presents the frame about to be drawn */
 const prep = (st: Stage, t: number) => {
-  const from = st.drawnAt
-  st.drawnAt = t
+  aimLens(st, t)
   if (st.pres) {
-    const h = 1 / 60
-    let at = from
-    while (t - at > h * 1.5) {
-      at += h
-      aimLens(st, at)
-      st.pres.frame(at, h, lookLines)
-    }
-    aimLens(st, t)
-    st.pres.frame(t, Math.max(0, t - at), lookLines)
-  } else aimLens(st, t)
+    st.pres.frame(t, Math.max(0, t - st.drawnAt), lookLines)
+    st.drawnAt = t
+  }
 }
 
 const advance = (st: Stage, to: number) => {
-  advanceScenario(st.s, st.c, to, (_t, dt, ms) => {
+  advanceScenario(st.s, st.c, to, (t, dt, ms) => {
     tickWind(dt)
     st.ticks.push(ms)
+    if (st.pres) {
+      aimLens(st, t)
+      st.pres.frame(t, Math.max(0, t - st.drawnAt), lookLines)
+      st.drawnAt = t
+    }
     pose.dt = dt
     for (const b of st.bodies) {
       if (!b.rig.ragdolling) b.rig.group.rotation.y = b.rig.facing + Math.PI
