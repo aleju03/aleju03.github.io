@@ -309,7 +309,16 @@ world/
                   soup, so a felled tree is a *span* of it: copied out into
                   its own little mesh, collapsed where it stood, and thrown
                   on a physics/tumble.ts rod. Session state keyed by a
-                  position-stable id, so a rebuilt chunk arrives cleared
+                  position-stable id, so a rebuilt chunk arrives cleared.
+                  Its `ruins` are the same policy for buildings: a building
+                  opened into pieces, each a span of its rebuilt soup with
+                  its own solid, and `ruined` (building id -> piece keys)
+                  re-applied when a chunk is armed
+  fracture.ts     how a building comes apart: its recorded stamps read back
+                  out of the soup, hollowed, floored, cut into cells and
+                  grouped into pieces (wall per storey and side, floor, roof
+                  bay), plus the support graph and Voronoi shattering.
+                  Pure, so `measure fracture` runs it on every building
   streamer.ts     the ring, the build budget, the collision shelf
   grass.ts        the grass, as two scrolling lattices: a dense near field
                   whose blades actually touch (which is the whole difference
@@ -562,6 +571,10 @@ sandbox/
                 and the seam the network routes them through
   places.ts     what `tp town:downtown` and `tp landmark:lighthouse` find
   spawnlist.ts  what the spawn menu lists and under which heading
+  destruction.ts  buildings coming down: damage from blasts, impacts, cars
+                and the console; storeys failing under their load; rubble
+                that breaks up level by level as it lands; the budget
+  destructionScenarios.ts  demolish-house, tower, wall, ruin
 ```
 
 ### The contract
@@ -801,6 +814,71 @@ npm run drive                  the real /world in headless Chrome: the
                                (shots/sandbox/*.png; --lang es, --fly-at)
 window.__sandbox.run('spawn crate 10')   dev: resolves with the printed lines
 ```
+
+### Destruction
+
+Every building and landmark a chunk stamps is recorded as it is stamped
+(`chunk.ts`'s `recordStructure`: its spans in the detail and glass soups,
+where each stamp inside them starts, and the boxes it registered). Nothing
+else happens until something damages it. Then it is *opened*, once:
+`world/fracture.ts` reads its stamps back out of the merged soup, hollows the
+volumetric ones into shells (outside untouched, so nothing visibly changes),
+lays a floor at every storey line, cuts the lot on a grid taken from the lot
+(so the pieces and their keys are the same on every tier) and groups what is
+in each cell and facing into a piece; `world/debris.ts`'s ruins hang that
+rebuilt soup where the building was, collapse its old span, and give every
+piece that carries anything its own box. From then on a piece leaving is a
+tree leaving: its span collapses, its box empties, and the ruin remembers its
+key so a rebuilt chunk arrives already ruined.
+
+`sandbox/destruction.ts` is the physics and the show. A storey whose bearing
+walls (walls with something resting on them) carry less than `FAIL` of what
+they did lets everything above it go as one rigid cluster, resting on the
+walls that are left, and those give one after another from the damage
+outward over `HOLD` seconds: a charge at one corner fells the building toward
+it, charges all round drop it. Crushed walls mostly turn to dust and gravel.
+A falling lump breaks when it lands, one level at a time (cluster, storeys,
+sides, panels, Voronoi shards with capped break faces), and big rubble
+hitting what is still standing damages it. Lumps are ordinary props (kinds
+`rubble` and `rubble_wood`, the chunk's own material), undoable per event,
+grabbable, and budgeted by the tier's `gfx.rubble`.
+
+Rules that bite:
+
+- **The surface pattern is read in object space.** Rubble keeps its
+  rest-world coordinates in its geometry and is moved by its matrix, so
+  brick stays on the brick it was painted on. A chunk is built at the
+  origin, so standing things are unchanged; anything new drawn with the
+  chunk material must do the same or its pattern swims.
+- **A piece is born inside its neighbour's box unless the box is carved.**
+  Mitred walls both claim the corner square, and a piece spawned inside a
+  static box is fired out at sixty units a second. `lift` trims every
+  neighbour's box off the leaving piece.
+- **What a ram breaks is born ahead of it and faster than it**, or it
+  bounces off its own rubble (`hurt`'s `carried`).
+- **Only big rubble damages buildings, and a knock must count.** Before
+  both gates one tower brought down seventeen buildings and every slab settling
+  against a wall chipped it.
+- **Never touch a body from inside a Rapier query.** `ground.ts`'s wake after
+  a box shrinks did, and destruction shrinks boxes by the hundred.
+
+```
+npm run film -- sandbox:demolish-house   barrels along one side; it folds over
+npm run film -- sandbox:tower            charges along one side; it is felled
+npm run film -- sandbox:wall             a barrier thrown through a shopfront
+npm run film -- sandbox:ruin --frames 1 --start 11 --tile 1280x800   the ruin at eye height
+npm run film -- props:collapse-links     shader links during both (must be 0)
+npm run measure -- physics destruction   pieces, rubble, frame cost (DESTRUCTION_EXTRA=12 to watch it settle)
+npm run measure -- fracture              every building and landmark taken apart
+/collapse [near|far|left|right|down]     the console: fell what you look at
+/damage [power]                          a hole in the wall you look at
+```
+
+A destruction *is* plain data, for the shared world that does not carry it
+yet: `destruction.log` (building id, how, point, power, radius, direction,
+seed, time per event) and `ruins.ruined` (building id to lifted piece keys).
+The pieces an event lifts follow from the record; the rubble's flight does not
+and would travel like any other prop.
 
 ## Multiplayer
 

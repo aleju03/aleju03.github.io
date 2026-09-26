@@ -23,6 +23,37 @@ for (const [cx0, cz0] of [[-1, -6], [0, -2], [1, -5], [-2, -3]]) {
 for (const [k, v] of Object.entries(tally)) console.log(k.padEnd(10), v.n, 'pieces/b', (v.pieces / v.n).toFixed(0), 'verts', (v.verts / v.n).toFixed(0), 'orig', (v.orig / v.n).toFixed(0), 'ms', (v.ms / v.n).toFixed(1))
 console.log(n, 'structures', (ms / n).toFixed(1), 'ms avg; worst', worst.toFixed(1), worstId)
 
+// the landmarks too: one of each kind the sweep meets, fractured and knocked
+// off their ground pieces, so a lighthouse or a windmill that cannot be taken
+// apart shows up here rather than in a player's hands
+{
+  const seen = {}
+  let found = 0
+  for (let r = 0; r < 60 && found < 9; r++) {
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue
+      const lm = landmarkIn(dx * 3, dz * 3)
+      if (!lm || seen[lm.kind]) continue
+      const c = buildChunk(dx * 3, dz * 3, 'full', MATS)
+      for (const st of c.structures) {
+        if (!st.id.endsWith(':L')) continue
+        const t0 = performance.now()
+        const fr = fractureStructure(st, c.smash.meshes.detail?.geometry ?? null, c.smash.meshes.glass?.geometry ?? null)
+        const ms = performance.now() - t0
+        seen[lm.kind] = true
+        found++
+        if (!fr) { console.log('landmark', lm.kind.padEnd(12), 'did not fracture'); continue }
+        const alive = new Uint8Array(fr.pieces.length).fill(1)
+        fr.pieces.forEach((p, i) => { if (p.grounded) alive[i] = 0 })
+        const falls = unsupported(fr.pieces, (i) => alive[i] === 1).length
+        console.log('landmark', lm.kind.padEnd(12), String(fr.pieces.length).padStart(4), 'pieces', ms.toFixed(1).padStart(6), 'ms,',
+          `${falls} fall when the ground pieces go`)
+      }
+      for (const g of c.geos) g.dispose()
+    }
+  }
+}
+
 globalThis.__fracDbg = []
 {
   const c = buildChunk(1, -6, 'full', MATS)

@@ -1091,6 +1091,11 @@ export const fractureStructure = (
   const glass = gCount ? buildGeometry(pieces, true, gCount) : null
   if (DBG) DBG.push(performance.now())
   linkSupports(pieces)
+  // whatever the graph cannot explain standing at rest (a rooftop plant
+  // room bedded into a parapet the box test misses, a sign on a bracket) is
+  // taken to be fixed where it is: the first knock on a building must not
+  // drop pieces that nothing touched
+  for (const i of unsupported(pieces, () => true)) pieces[i].grounded = true
   if (DBG) DBG.push(performance.now())
   return {
     rec, pieces, detail, glass,
