@@ -383,7 +383,7 @@ export const createProps = (o: PropsOpts): Props => {
   const forced = new Set<Rec>()
   const phasing = new Set<Rec>()
   /** a removal being kept quiet (see remove) */
-  let quiet: { at: number; sleepers: Rec[]; falling: Set<Rec> } | null = null
+  let quiet: { at: number; sleepers: Rec[]; falling: Set<Rec>; moved: Set<Rec> } | null = null
   const above: Rec[] = []
   const impactFns = new Set<(e: ImpactEvent) => void>()
   const splashFns = new Set<(e: SplashEvent) => void>()
@@ -595,7 +595,7 @@ export const createProps = (o: PropsOpts): Props => {
     */
     if (r.body.isEnabled()) {
       if (!quiet) {
-        quiet = { at: pw.time, sleepers: [], falling: new Set() }
+        quiet = { at: pw.time, sleepers: [], falling: new Set(), moved: new Set() }
         for (const q of recs.values()) {
           if (q.mode === 'dynamic' && !q.parked && q.body.isSleeping()) quiet.sleepers.push(q)
         }
@@ -968,7 +968,7 @@ export const createProps = (o: PropsOpts): Props => {
     // with whatever was only touching, not standing on, what went
     if (quiet && t > quiet.at + 1e-9) {
       for (const q of quiet.sleepers) {
-        if (!recs.has(q.id) || quiet.falling.has(q) || q.body.isSleeping()) continue
+        if (!recs.has(q.id) || quiet.falling.has(q) || quiet.moved.has(q) || q.body.isSleeping()) continue
         // with its velocity cleared: `sleep` keeps it, and the one slice of
         // gravity each wake left behind added up over a few clear-ups until
         // a whole heap woke already falling at two units a second
@@ -1055,6 +1055,16 @@ export const createProps = (o: PropsOpts): Props => {
     const r = recs.get(id)
     if (r) fn(r)
   }
+  /** someone woke or moved this prop on purpose since a quiet removal: it
+      is not one the removal woke, and must not be put back to sleep. (A
+      barrel is removed as it goes off and its blast then throws everything
+      round it, in the same call; without this every prop the blast threw
+      was stopped dead one slice later) */
+  const meant = (id: PropId, fn: (r: Rec) => void) =>
+    with_(id, (r) => {
+      quiet?.moved.add(r)
+      fn(r)
+    })
 
   const api: Props = {
     spawn,
@@ -1097,7 +1107,7 @@ export const createProps = (o: PropsOpts): Props => {
       return true
     },
     setVelocity: (id, lin, ang) =>
-      with_(id, (r) => {
+      meant(id, (r) => {
         if (lin) {
           r.body.setLinvel(lin, true)
           // a velocity someone set is not an impact
@@ -1108,7 +1118,7 @@ export const createProps = (o: PropsOpts): Props => {
         if (ang) r.body.setAngvel(ang, true)
       }),
     applyImpulse: (id, imp, at) =>
-      with_(id, (r) => {
+      meant(id, (r) => {
         if (at) r.body.applyImpulseAtPoint(imp, at, true)
         else r.body.applyImpulse(imp, true)
         r.vx += imp.x / r.mass
@@ -1116,7 +1126,7 @@ export const createProps = (o: PropsOpts): Props => {
         r.vz += imp.z / r.mass
       }),
     addForce: (id, f, at) =>
-      with_(id, (r) => {
+      meant(id, (r) => {
         if (at) r.body.addForceAtPoint(f, at, true)
         else r.body.addForce(f, true)
         forced.add(r)
@@ -1147,7 +1157,7 @@ export const createProps = (o: PropsOpts): Props => {
         r.body.setNextKinematicTranslation(pos)
         if (quat) r.body.setNextKinematicRotation(quat)
       }),
-    wake: (id) => with_(id, (r) => r.body.wakeUp()),
+    wake: (id) => meant(id, (r) => r.body.wakeUp()),
     inContact: (id) => {
       const r = recs.get(id)
       if (!r) return false
