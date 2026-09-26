@@ -112,7 +112,7 @@ export const LOOK_DEFAULTS: LookKnobs = {
   lines: 400,
   exposure: 1.1,
   levels: 13,
-  chroma: 0.02,
+  chroma: 0.012,
   dither: 0.2,
   grain: 0.012,
   outline: 0.62,
@@ -258,8 +258,8 @@ export const createPixelLook = (
       dir: new THREE.Vector3(0, 0, -1),
       color: new THREE.Color(0, 0, 0),
       range: 26,
-      outer: Math.cos(0.62),
-      inner: Math.cos(0.18),
+      outer: Math.cos(0.72),
+      inner: Math.cos(0.08),
     },
   }
 

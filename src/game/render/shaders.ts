@@ -239,11 +239,16 @@ export const GRADE_FRAG = /* glsl */ `
       if (uHeadK.w > 0.5) {
         vec3 d = wp - uHeadPos;
         float r = length(d);
+        // squared, so the beam fades out over its whole width instead of
+        // ending on a rim: a torch, not a projected disc
         float cone = smoothstep(uHeadK.y, uHeadK.z, dot(d / max(r, 1e-3), uHeadDir));
+        cone *= cone;
         float fall = 1.0 / (1.0 + (r / uHeadK.x) * (r / uHeadK.x) * 4.0);
         lit += uHeadCol * cone * fall;
       }
-      col += albedo * lit;
+      // an ordered jitter on the light itself, so the posterize cuts its
+      // falloff into dithered steps instead of concentric rings
+      col += albedo * lit * (1.0 + (bayer(p + ivec2(3, 2)) - 0.5) * 0.7);
 
       // ---- outlines, from depth alone -----------------------------------
       float fogK = uFog.z > 0.5 ? 1.0 - smoothstep(uFog.x, uFog.y, zc) : 1.0;
@@ -326,17 +331,24 @@ export const GRADE_FRAG = /* glsl */ `
     // it lives on the band edges (where a real posterized image flickers)
     // rather than as noise over flat colour
     vec3 lab = oklab(toLinear(disp));
-    lab.x += (hash(vec2(p) + fract(uFrame * 0.618) * 97.0) - 0.5) * uPost.w;
-    if (uPost.x > 0.5) {
+    if (sky) {
+      // The sky bands clean: more steps, no dithered seam, no grain and its
+      // own chroma untouched. A cloud is a soft gradient over a large area,
+      // and the ground's treatment turned every one into a blotch with a
+      // dithered halo round it
+      if (uPost.x > 0.5) lab.x = band(lab.x, uPost.x * 1.6, 0.5, 0.0);
+    } else if (uPost.x > 0.5) {
+      lab.x += (hash(vec2(p) + fract(uFrame * 0.618) * 97.0) - 0.5) * uPost.w;
       lab.x = band(lab.x, uPost.x, bayer(p), uPost.z);
       // chroma in polar form: the hue stays where it is and only its
       // strength steps. A square a/b grid put every near-grey (a wall, a
       // road, a cloud) right on a bin edge at half a step off neutral, and
-      // dithered it into a checker; here the first bin is widened so a grey
-      // is simply grey
+      // dithered it into a checker. The grid is fine enough that a muted
+      // colour keeps its hue: only what is under half a step goes grey (an
+      // earlier dead zone here rounded a whole grey-ish downtown to 0)
       float t2 = bayer(p.yx + ivec2(2, 1));
       float C = length(lab.yz);
-      float Cq = band(max(0.0, C - uPost.y * 0.35), 1.0 / uPost.y, t2, uPost.z);
+      float Cq = band(C, 1.0 / uPost.y, t2, uPost.z);
       lab.yz *= C > 1e-5 ? Cq / C : 0.0;
     }
     disp = toSrgb(clamp(fromOklab(lab), 0.0, 1.0));

@@ -12,14 +12,17 @@ import { MAX_POOLS } from './shaders'
   it takes plain numbers rather than sky.ts's state so it can be reasoned
   about, and tuned, on its own.
 
-  The brief is Lethal Company's craft without its dread. By day the air is a
-  warm haze that layers the view into planes (the street in full colour, the
-  next block flattened toward the sky, the hills beyond as silhouettes) while
-  a town down the road is still a place you can see and head for. It
-  thickens where the ground is wooded or wet and at the ends of the day, and
-  thins over open country and down a street. At night the haze is the dark, and what stands
-  out of it is lit: lamp pools under the streetlights, windows, and the
-  pool of your own headlamp.
+  The brief is Lethal Company's craft without its dread. By day the air is
+  thin and a little warm: things keep their colour and contrast a long way
+  out, and a town down the road is a place you can see and head for. It is
+  at dusk that it layers the view into planes (the street in full colour,
+  the next block flattened toward the sky, the hills beyond as silhouettes).
+  It thickens where the ground is wooded or wet and at the ends of the day,
+  and thins over open country and down a street. At night the haze is a
+  moonlit blue, dark but brighter than the ground, so roofs, hills and
+  crowns read as silhouettes against it, and what stands out of it is lit:
+  lamp pools under the streetlights, windows, and, once it is properly
+  dark, the soft pool of your own headlamp.
 
   Distances are world units (the walker's eye is 3.84 up; a unit is about
   half a metre).
@@ -73,23 +76,36 @@ export const airForSky = (
 ) => {
   const out = 1 - s.indoor
   // the haze distance: open at noon, closing in through twilight to night
-  const dist = (170 * s.day + 62 * (1 - s.day)) * (1 - 0.2 * s.twilight) * biome
-  air.start = 6
+  // noon is thin on purpose: a friendly day has contrast half a kilometre
+  // out, and the layering it wants comes from the dusk and the woods
+  const dark = s.night * (1 - s.twilight)
+  // the woods thicken the air mostly once the light goes: at noon a forest
+  // should still read as green all the way into the trees
+  const woods = 1 + (biome - 1) * (1 - 0.6 * s.day)
+  const dist = (300 * s.day + 70 * (1 - s.day)) * (1 - 0.35 * s.twilight) * woods
+  air.start = 8
   air.dist = dist
-  air.max = (0.62 + 0.14 * s.night * (1 - s.twilight) + 0.06 * s.twilight) * out
+  air.max = (0.36 * s.day + 0.72 * (1 - s.day) + 0.12 * s.twilight) * out
   air.planes = 0
   // warm hazy air by day: the sky module's fog is a cool pale blue, which
   // reads as overcast once the grade has had it; nudged toward cream it
   // reads as a summer afternoon's haze instead
+  // At night the sky module's fog is nearly black, and a haze of it turned
+  // open country into a void. Brightened toward a moonlit blue it becomes a
+  // glow on the horizon that trees, hills and roofs stand out against
   const warm = s.day * (1 - s.twilight)
-  air.tint.setRGB(1 + 0.16 * warm, 1 + 0.04 * warm, 1 - 0.22 * warm)
+  const moon = dark * out
+  air.tint.setRGB(
+    (1 + 0.07 * warm) * (1 + 3.4 * moon),
+    (1 + 0.02 * warm) * (1 + 4.0 * moon),
+    (1 - 0.08 * warm) * (1 + 4.8 * moon))
   air.sunDir.copy(sunDir)
   // the air glows warm toward a low sun, and hardly at all toward a high one
   const glow = (0.12 + 0.55 * s.twilight) * s.day * out
   air.sunGlow.copy(sunColor).multiplyScalar(glow)
-  air.skyHorizon = 0.8 * out
+  air.skyHorizon = (0.8 - 0.35 * warm) * out
   air.skyReach = 0.28 + 0.12 * s.twilight
-  air.skyAll = 0.04 * out
+  air.skyAll = (0.04 + 0.22 * dark) * out
 }
 
 /**
@@ -114,7 +130,10 @@ export const lightsForSky = (
   lights.poolColor.setRGB(LAMP[0] * k, LAMP[1] * k, LAMP[2] * k)
   // a lambert surface under a hemisphere light returns albedo * irradiance / pi
   lights.ambient.copy(ambient).multiplyScalar(1 / Math.PI)
-  const h = HEAD_GAIN * Math.min(1, Math.max(0, (s.night - 0.3) / 0.4))
+  // the headlamp waits for real dark: through the dusk it would be a torch
+  // shone into daylight, so it fades in over the last of the twilight
+  const dark = Math.min(1, Math.max(0, (s.night * (1 - s.twilight) - 0.55) / 0.35))
+  const h = HEAD_GAIN * dark * dark * (3 - 2 * dark)
   lights.head.color.setRGB(HEAD[0] * h, HEAD[1] * h, HEAD[2] * h)
   lights.head.on = h > 0.01
 }

@@ -794,7 +794,9 @@ the scene's own fog, with the sky pulled into it at the horizon and a warm
 glow toward the sun), exposure and ACES, the baked grade (`render/grade.ts`:
 two 32-cube LUTs, day and night, crossfaded by `setMood`), grain, and a
 posterize in OKLab whose Bayer dither lives only in a narrow seam between
-bands; then the vignette. A third pass upscales nearest-neighbour to the
+bands (the sky bands clean, with more steps and no seam, grain or chroma
+step, so a cloud is a set of flat shapes rather than a stain); then the
+vignette. A third pass upscales nearest-neighbour to the
 canvas, integer where the screen allows (1080p is exactly 3x, 1440p 4x), and
 a fourth redraws the glass holes at full resolution.
 
@@ -814,7 +816,9 @@ and the governor's ceiling). `npm run shoot` draws every tile through the
 look; `--raw` skips it for a before and after, `--look
 '{"outline":0.8,"day":{"sat":0.9}}'` tunes it without an edit, `--lines`
 sets the tile's internal height (default: an exact 2x), and `--bench n`
-measures a frame against `--raw`. `--tile 1920x1080 --lines 360 --cols 1` is
+measures a frame against `--raw`. The harness swings a camera whose lens
+would land inside a building, or whose view of the target runs through one,
+to the nearest clear bearing, so the default yaw no longer photographs walls. `--tile 1920x1080 --lines 360 --cols 1` is
 1:1 with a 1080p screen.
 
 ### Rules for anything drawn through it
@@ -822,12 +826,14 @@ measures a frame against `--raw`. `--tile 1920x1080 --lines 360 --cols 1` is
 These are what later art has to respect to look right in this pipeline, and
 every one of them has a failure you can see in a harness shot.
 
-- **Judge it through the look, never `--raw`.** The day grade compresses
-  chroma (a soft cap at OKLab 0.115), lifts black to 0.055 and pulls white to
-  0.95, and gathers every hue part of the way toward six anchors: brick 34°,
-  ochre 74°, olive 118°, teal 168°, slate 240° and plum 314° (OKLab hue).
-  A colour that looks right raw can land a family away, and the air will
-  take a share of anything more than a few dozen units off.
+- **Judge it through the look, never `--raw`.** By day the grade keeps
+  colour (a soft cap at OKLab 0.3, a gentle 15% pull toward six anchors:
+  brick 34°, ochre 74°, olive 118°, teal 168°, slate 240° and plum 314°), and
+  measured at noon a frame keeps 75-90% of its raw saturation; the murk is
+  the night table's and the air's, at dusk and after dark. A colour that
+  looks right raw can still land a band away, and the air takes a share of
+  anything a long way off. To check a change, shoot the same targets with
+  and without `--raw` and compare the mean HSL saturation per tile.
 - **Pick colours from the anchor families, and do not oversaturate to
   compensate.** Past the chroma cap extra saturation buys nothing but a hue
   that lands on the knee. If a whole biome needs a different mood, that is a

@@ -64,26 +64,28 @@ export interface Grade {
 }
 
 /**
-  Daylight: murky but warm, and still friendly. Chroma is capped low and the
-  greens gather toward olive, so a meadow reads as a painted field rather
-  than as a lawn under studio light, while the warm split tone keeps it an
-  afternoon rather than an overcast morgue. The anchors are the families the
-  world is actually built from (brick and roof tile, sand and straw, olive
-  and leaf, sea and shade, sky and slate, dusk), so the pull tidies rather
-  than recolours.
+  Daylight: friendly, and in full colour. Every object keeps its own hue at
+  close to its own saturation (the Content Warning farmhouse keeps its red
+  barn red under heavy stylisation, and that is the bar); the style comes
+  from the bands, the dither and the lines, not from draining the palette.
+  What the grade does by day is tidy: a gentle pull of the hues toward the
+  families the world is built from (brick and roof tile, sand and straw,
+  olive and leaf, sea and shade, sky and slate, dusk), a soft cap well above
+  anything a painted surface reaches, and a faint cool in the shadows. The
+  murk belongs to dusk and night, which is what the second table is for.
 */
 export const GRADE_DAY: Grade = {
-  floor: 0.055,
-  ceiling: 0.95,
-  contrast: 0.4,
-  gamma: 1.04,
-  sat: 0.82,
-  shadowSat: 0.72,
-  chromaCap: 0.115,
-  shadowTint: [60, 0.012],
-  highlightTint: [80, 0.01],
+  floor: 0.045,
+  ceiling: 0.96,
+  contrast: 0.32,
+  gamma: 1.02,
+  sat: 1.06,
+  shadowSat: 0.86,
+  chromaCap: 0.3,
+  shadowTint: [245, 0.012],
+  highlightTint: [80, 0.006],
   anchors: [34, 74, 118, 168, 240, 314],
-  pull: 0.35,
+  pull: 0.15,
 }
 
 /**
@@ -95,14 +97,14 @@ export const GRADE_DAY: Grade = {
   are the islands the eye goes to.
 */
 export const GRADE_NIGHT: Grade = {
-  floor: 0.05,
+  floor: 0.06,
   ceiling: 0.95,
   contrast: 0.26,
-  gamma: 1.06,
+  gamma: 1.0,
   sat: 0.66,
-  shadowSat: 0.45,
+  shadowSat: 0.5,
   chromaCap: 0.12,
-  shadowTint: [255, 0.03],
+  shadowTint: [255, 0.035],
   highlightTint: [68, 0.03],
   anchors: [34, 74, 118, 168, 240, 314],
   pull: 0.4,
