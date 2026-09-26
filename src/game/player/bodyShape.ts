@@ -70,24 +70,24 @@ export const SHIN = 0.34
 /** the hip joints' height over the soles: inside the bean, which the stubby
     legs come out of */
 export const HIP_Y = THIGH + SHIN // 0.70
-export const HIP_X = 0.24
+export const HIP_X = 0.26
 /** the foot bone's height over its sole */
 export const ANKLE_H = 0.1
 /** pelvis bone up to the torso bone. The bean is weighted across it */
 export const WAIST_OFF = 0.3
 /** the shoulder joints sit just inside the flank, so an arm grows out of it */
-export const SHOULDER_X = 0.5
+export const SHOULDER_X = 0.58
 export const SHOULDER_OFF = 0.62
 /** torso bone up to the head bone: where the bean stops being body and
     starts being head, which is only ever a matter of weights */
 export const NECK_OFF = 0.95
 /** stubby arms: a hanging mitten reaches the bottom of the bean */
-export const UARM = 0.38
-export const FARM = 0.34
+export const UARM = 0.4
+export const FARM = 0.35
 /** head bone up to the eyes */
 export const EYE_OFF = 0.24
-/** head bone up to the top of the bean */
-export const CROWN_OFF = 0.72
+/** head bone up to the top of the default bean */
+export const CROWN_OFF = 0.59
 /** the A-pose the arms are drawn in, radians out from hanging. See the header */
 export const ARM_BIND = 0.85
 
@@ -136,36 +136,47 @@ export const HELPERS: ReadonlyArray<readonly [number, number, number]> = [
 ]
 
 /*
-  The builds: every body is one of five beans, the same drawing with a
-  different bottom radius, top radius and dome height. The eye line never
-  moves, because it is what every camera agrees with (see playerBody's
-  DESIGN_EYE), so "tall" is a dome that rises further over the eyes and
-  "stubby" one that barely clears them.
+  The builds: every body is one of five eggs. The bean is two halves of a
+  superellipse of revolution joined at the belly (`c`), where it is widest:
+  a short, round bottom half (`b1` down to the seat) and a tall top half
+  (`b2` up to the crown) whose exponent above two gives the dome its blunt,
+  full shoulder instead of an ellipsoid's point. The eye line never moves,
+  because it is what every camera agrees with (see playerBody's DESIGN_EYE),
+  so "tall" is a dome that rises further over the eyes and "stubby" one that
+  barely clears them.
+
+  The earlier bean was a round cone, the hull of two spheres: straight
+  flanks, 2.3 times as tall as wide, and next to the reference it read as a
+  tall pickle rather than an egg. This one is about 2.2 times as tall as
+  wide counting the legs, 1.9 without, widest low, the way the reference is.
 */
 interface Build {
-  /** bottom and top sphere radii of the bean */
-  rb: number
-  rt: number
-  /** their centres' heights */
-  yb: number
-  yt: number
+  /** the belly's radius (the widest) and its height */
+  a: number
+  c: number
+  /** the half-heights below and above the belly */
+  b1: number
+  b2: number
+  /** the superellipse exponents of the two halves */
+  n1: number
+  n2: number
   /** front-to-back depth over width */
   zs: number
 }
 const BUILD_DEFS: Build[] = [
-  { rb: 0.53, rt: 0.45, yb: 0.95, yt: 2.22, zs: 0.86 }, // the bean
-  { rb: 0.62, rt: 0.5, yb: 1.02, yt: 2.17, zs: 0.9 }, // chubby
-  { rb: 0.45, rt: 0.41, yb: 0.9, yt: 2.3, zs: 0.84 }, // slim
-  { rb: 0.5, rt: 0.43, yb: 0.93, yt: 2.52, zs: 0.86 }, // tall
-  { rb: 0.58, rt: 0.5, yb: 0.98, yt: 2.07, zs: 0.9 }, // stubby
+  { a: 0.64, c: 1.0, b1: 0.65, b2: 1.78, n1: 2.2, n2: 2.3, zs: 0.9 }, // the bean
+  { a: 0.74, c: 1.02, b1: 0.68, b2: 1.72, n1: 2.2, n2: 2.4, zs: 0.92 }, // chubby
+  { a: 0.55, c: 1.0, b1: 0.63, b2: 1.84, n1: 2.2, n2: 2.2, zs: 0.88 }, // slim
+  { a: 0.6, c: 1.02, b1: 0.66, b2: 2.08, n1: 2.2, n2: 2.3, zs: 0.9 }, // tall
+  { a: 0.7, c: 0.98, b1: 0.62, b2: 1.62, n1: 2.3, n2: 2.5, zs: 0.92 }, // stubby
 ]
 export const BUILD_COUNT = BUILD_DEFS.length
 const clampBuild = (b: number) => Math.max(0, Math.min(BUILD_COUNT - 1, Math.floor(b)))
 /** how much wider than the default bean each build is: the rig holds the
     arms that much further out, so a hanging arm never sinks into the flank */
-export const buildGirth = (b: number) => BUILD_DEFS[clampBuild(b)].rb / BUILD_DEFS[0].rb
+export const buildGirth = (b: number) => BUILD_DEFS[clampBuild(b)].a / BUILD_DEFS[0].a
 /** the bottom of the default bean over the soles */
-export const BODY_Y0 = BUILD_DEFS[0].yb - BUILD_DEFS[0].rb
+export const BODY_Y0 = BUILD_DEFS[0].c - BUILD_DEFS[0].b1
 /** the eyes, and the middle of the face panel the shader paints */
 export const EYE_Y = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.19
 
@@ -260,8 +271,11 @@ interface Frame {
   index: number
   bd: Build
   bean: Field
-  /** the bean's horizontal radius (x) at a height, and its depth there */
+  /** the bean's horizontal radius (x) at a height */
   rx: (y: number) => number
+  /** the top of the bean */
+  crown: number
+  face: FaceWindow
   /** the arms and legs as separate fields, for the weights */
   arm: [Field, Field]
   leg: [Field, Field]
@@ -286,35 +300,95 @@ const smooth = (e0: number, e1: number, x: number) => {
 }
 
 const FRAMES: Array<Frame | null> = new Array(BUILD_COUNT).fill(null)
+/** the face window of a build: its half-width, half-height and centre
+    height, design units. The field sinks the bean behind it and the
+    material paints the panel and the eyes inside it, from the same numbers */
+export interface FaceWindow {
+  w: number
+  h: number
+  y: number
+}
+/** how far the face sits into the bean, and the soft lip round it */
+const FACE_SINK = 0.04
+const FACE_LIP = 0.02
+
+/**
+ * The egg: the two superellipse halves meeting at the belly. The value is
+ * the implicit function over its own gradient's length, which is a true
+ * distance on the surface and a close one near it: all the polygonizer and
+ * the blends ever ask.
+ */
+const eggField = (bd: Build): Field => {
+  const izs = 1 / bd.zs
+  return (x, y, z) => {
+    const zz = z * izs
+    const rho = Math.sqrt(x * x + zz * zz)
+    const up = y >= bd.c
+    const b = up ? bd.b2 : bd.b1
+    const n = up ? bd.n2 : bd.n1
+    const u = rho / bd.a
+    const v = Math.abs(y - bd.c) / b
+    const un1 = u > 0 ? Math.pow(u, n - 1) : 0
+    const vn1 = v > 0 ? Math.pow(v, n - 1) : 0
+    const S = un1 * u + vn1 * v
+    if (S < 1e-12) return -Math.min(bd.a, b)
+    const r = Math.pow(S, 1 / n)
+    // |grad| of S^(1/n): S^(1/n - 1) * |(u^(n-1)/a, v^(n-1)/b)|
+    const g = (r / S) * Math.sqrt((un1 / bd.a) ** 2 + (vn1 / b) ** 2)
+    return (r - 1) / Math.max(g, 1e-6)
+  }
+}
+
 const frameFor = (b: number): Frame => {
   const cached = FRAMES[b]
   if (cached) return cached
   const bd = BUILD_DEFS[b]
-  const cone = roundCone(0, bd.yb, 0, 0, bd.yt, 0, bd.rb, bd.rt)
-  const izs = 1 / bd.zs
-  const bean: Field = (x, y, z) => cone(x, y, z * izs)
-  // the horizontal radius at a height, by bisection on the field itself, so
+  const egg = eggField(bd)
+  const crown = bd.c + bd.b2
+  // the horizontal radius at a height, by bisection on the egg itself, so
   // headgear can sit on whatever the build drew; tabulated, because the
   // weights ask it once per vertex
   const radiusAt = (y: number) => {
-    let a = 0
-    let c = 1.5
-    if (bean(0, y, 0) > 0) return 0
+    let lo = 0
+    let hi = 1.5
+    if (egg(0, y, 0) > 0) return 0
     for (let k = 0; k < 30; k++) {
-      const m = (a + c) / 2
-      if (bean(m, y, 0) < 0) a = m
-      else c = m
+      const mid = (lo + hi) / 2
+      if (egg(mid, y, 0) < 0) lo = mid
+      else hi = mid
     }
-    return a
+    return lo
   }
   const TAB = 128
-  const top = bd.yt + bd.rt
   const tab = new Float32Array(TAB + 1)
-  for (let i = 0; i <= TAB; i++) tab[i] = radiusAt((i / TAB) * top)
+  for (let i = 0; i <= TAB; i++) tab[i] = radiusAt((i / TAB) * crown)
   const rx = (y: number) => {
-    const u = Math.max(0, Math.min(TAB, (y / top) * TAB))
+    const u = Math.max(0, Math.min(TAB, (y / crown) * TAB))
     const i = Math.min(TAB - 1, Math.floor(u))
     return tab[i] + (tab[i + 1] - tab[i]) * (u - i)
+  }
+
+  /*
+    The face window: an oval about two thirds of the head's width, set into
+    the front of the bean. Inside it the skin is pushed in by FACE_SINK,
+    easing up to the rim, and a soft lip stands proud just outside it, so
+    the face is a window the bean looks out of rather than a decal on it.
+    It is a displacement of the egg's own distance, which keeps the face
+    curved with the head, and it only touches the front half.
+  */
+  const hr = rx(EYE_Y)
+  const face: FaceWindow = { w: 0.66 * hr, h: 0.3, y: EYE_Y - 0.02 }
+  const iw = 1 / face.w
+  const ih = 1 / face.h
+  const bean: Field = (x, y, z) => {
+    const d = egg(x, y, z)
+    if (z < 0.02 || Math.abs(y - face.y) > face.h * 1.4) return d
+    const e = Math.sqrt((x * iw) ** 2 + ((y - face.y) * ih) ** 2)
+    if (e > 1.35) return d
+    const front = smooth(0.02, 0.22, z)
+    const sink = FACE_SINK * (1 - smooth(0.8, 1.0, e))
+    const lip = FACE_LIP * Math.exp(-(((e - 1.07) / 0.09) ** 2))
+    return d + front * (sink - lip)
   }
 
   const m = new THREE.Matrix4()
@@ -333,35 +407,49 @@ const frameFor = (b: number): Frame => {
     // body, and there is no second cone to blend at the elbow, because a
     // smooth minimum swells wherever two parts meet and an arm of two
     // blended cones read as a string of sausages
-    const G = S.clone().add(new THREE.Vector3(-side * 0.11, 0, 0))
-    const arm = roundCone(G.x, G.y, G.z, W.x, W.y, W.z, 0.13, 0.098)
+    const G = new THREE.Vector3(side * (rx(S.y) - 0.13), S.y, S.z)
+    const arm = roundCone(G.x, G.y, G.z, W.x, W.y, W.z, 0.145, 0.1)
     // the mitten: a soft paddle a little wider than the wrist, flattened
-    // palm to back (the palm faces the body), part of the same surface
-    const C = W.clone().addScaledVector(d, 0.09)
+    // palm to back (the palm faces the body), with a thumb on its front edge
+    // and three short fat fingers at its end, all of it the same surface
+    const C = W.clone().addScaledVector(d, 0.07)
     // in the arm's plane, perpendicular to it, toward the body
     const n = new THREE.Vector3(-side * Math.cos(ARM_BIND), -Math.sin(ARM_BIND), 0)
     const wz = new THREE.Vector3(0, 0, 1)
-    const mitt = ellipsoid(C.x, C.y, C.z, 0.08, 0.14, 0.115, [n.x, n.y, n.z, d.x, d.y, d.z, wz.x, wz.y, wz.z])
-    // and a small thumb nub on the front edge, grown out of the mitten
-    const T0 = W.clone().addScaledVector(d, 0.04).addScaledVector(wz, 0.06)
-    const T1 = W.clone().addScaledVector(d, 0.1).addScaledVector(wz, 0.12).addScaledVector(n, 0.02)
-    const thumb = roundCone(T0.x, T0.y, T0.z, T1.x, T1.y, T1.z, 0.042, 0.036)
-    arms.push((x, y, z) => smin(smin(arm(x, y, z), mitt(x, y, z), 0.05), thumb(x, y, z), 0.035))
+    const mitt = ellipsoid(C.x, C.y, C.z, 0.075, 0.12, 0.125, [n.x, n.y, n.z, d.x, d.y, d.z, wz.x, wz.y, wz.z])
+    const T0 = C.clone().addScaledVector(d, -0.02).addScaledVector(wz, 0.08)
+    const T1 = C.clone().addScaledVector(d, 0.05).addScaledVector(wz, 0.16).addScaledVector(n, 0.025)
+    const thumb = roundCone(T0.x, T0.y, T0.z, T1.x, T1.y, T1.z, 0.048, 0.042)
+    const fingers = [-1, 0, 1].map((f) => {
+      const F0 = C.clone().addScaledVector(d, 0.07).addScaledVector(wz, f * 0.058 - 0.015)
+      const F1 = F0.clone().addScaledVector(d, 0.085 - Math.abs(f) * 0.015).addScaledVector(wz, f * 0.02)
+      return roundCone(F0.x, F0.y, F0.z, F1.x, F1.y, F1.z, 0.047, 0.043)
+    })
+    const [f0, f1, f2] = fingers
+    arms.push((x, y, z) => {
+      const hand = smin(
+        smin(mitt(x, y, z), thumb(x, y, z), 0.035),
+        Math.min(f0(x, y, z), f1(x, y, z), f2(x, y, z)), 0.03,
+      )
+      return smin(arm(x, y, z), hand, 0.05)
+    })
     armRoot.push(S.clone())
-    armTip.push(W.clone().addScaledVector(d, 0.25))
+    armTip.push(W.clone().addScaledVector(d, 0.3))
   })
 
   const legs: Field[] = []
+  // drawn a hair wider than the hip bones: two stumps closer than a couple
+  // of grid cells are one stump with a web between them, and a web folds the
+  // moment one leg swings forward and the other back
+  const LX = HIP_X + 0.03
   for (const side of [1, -1]) {
-    // drawn a hair wider than the hip bones and a little slimmer than the
-    // arms are long: two stumps closer than a couple of grid cells are one
-    // stump with a web between them, and a web folds the moment one leg
-    // swings forward and the other back
-    const x = side * (HIP_X + 0.03)
-    const stump = roundCone(x, HIP_Y + 0.06, 0, x, ANKLE_H + 0.06, 0.0, 0.165, 0.14)
-    // a rounded stub of a foot pushed a little forward, the sole flattened
-    const foot = ellipsoid(x, 0.1, 0.07, 0.14, 0.12, 0.21)
-    legs.push((px, py, pz) => smax(smin(stump(px, py, pz), foot(px, py, pz), 0.1), -py, 0.03))
+    const x = side * LX
+    const stump = roundCone(x, HIP_Y + 0.06, 0, x, ANKLE_H + 0.06, 0.0, 0.165, 0.145)
+    // a rounded stub of a foot pushed a little forward, the sole flattened,
+    // blended wide into the stump: a tight blend left a ring at the ankle
+    // and the feet read as slippers
+    const foot = ellipsoid(x, 0.095, 0.07, 0.15, 0.115, 0.21)
+    legs.push((px, py, pz) => smax(smin(stump(px, py, pz), foot(px, py, pz), 0.16), -py, 0.03))
   }
 
   const [aL, aR] = arms
@@ -370,30 +458,33 @@ const frameFor = (b: number): Frame => {
   const [TL, TR] = armTip
   // a part further than this past its own bone cannot reach the blend, so
   // it is not evaluated at all: most of the grid is nowhere near an arm
-  const ARM_R = 0.16 + 0.23
+  const ARM_R = 0.2 + 0.23
   const LEG_R = 0.3 + 0.2
   // a generous fillet where an arm leaves the flank, tightening along it so
   // the arm is free of the body well before the elbow
   const armK = (k: 0 | 1, x: number, y: number, z: number) => {
     const S = k === 0 ? SL : SR
     const ds = Math.sqrt((x - S.x) ** 2 + (y - S.y) ** 2 + (z - S.z) ** 2)
-    return 0.025 + 0.2 * (1 - smooth(0.1, 0.36, ds))
+    return 0.025 + 0.16 * (1 - smooth(0.08, 0.34, ds))
   }
   // and the same where the legs leave the bottom of the bean
-  const legK = (y: number) => 0.03 + 0.15 * smooth(0.28, 0.5, y)
+  const legK = (y: number) => 0.03 + 0.15 * smooth(0.2, 0.44, y)
   const body: Field = (x, y, z) => {
     let d = bean(x, y, z)
     if (segDist(x, y, z, SL.x, SL.y, SL.z, TL.x, TL.y, TL.z) - ARM_R < d) d = smin(d, aL(x, y, z), armK(0, x, y, z))
     if (segDist(x, y, z, SR.x, SR.y, SR.z, TR.x, TR.y, TR.z) - ARM_R < d) d = smin(d, aR(x, y, z), armK(1, x, y, z))
     const kl = legK(y)
-    if (segDist(x, y, z, HIP_X + 0.03, HIP_Y + 0.06, 0, HIP_X + 0.03, 0.1, 0.07) - LEG_R < d) d = smin(d, lL(x, y, z), kl)
-    if (segDist(x, y, z, -HIP_X - 0.03, HIP_Y + 0.06, 0, -HIP_X - 0.03, 0.1, 0.07) - LEG_R < d) d = smin(d, lR(x, y, z), kl)
+    if (segDist(x, y, z, LX, HIP_Y + 0.06, 0, LX, 0.1, 0.07) - LEG_R < d) d = smin(d, lL(x, y, z), kl)
+    if (segDist(x, y, z, -LX, HIP_Y + 0.06, 0, -LX, 0.1, 0.07) - LEG_R < d) d = smin(d, lR(x, y, z), kl)
     return d
   }
-  const f: Frame = { index: b, bd, bean, rx, arm: [aL, aR], leg: [lL, lR], body, sh, dir, armK, legK }
+  const f: Frame = { index: b, bd, bean, rx, crown, face, arm: [aL, aR], leg: [lL, lR], body, sh, dir, armK, legK }
   FRAMES[b] = f
   return f
 }
+
+/** the face window a build's bean is drawn with (see FaceWindow) */
+export const faceWindow = (buildIndex: number): FaceWindow => frameFor(clampBuild(buildIndex)).face
 
 /* ------------------------------------------------------------ weights --- */
 
@@ -406,7 +497,7 @@ const beanChain = (fr: Frame, x: number, y: number, z: number, acc: Float32Array
   let pel = 1 - kPT
   let tor = kPT * (1 - kTH)
   const hed = kTH
-  const r = Math.max(0.2, fr.rx(Math.min(Math.max(y, fr.bd.yb), fr.bd.yt)) * fr.bd.zs)
+  const r = Math.max(0.2, fr.rx(Math.min(Math.max(y, fr.bd.c), fr.crown - 0.2)) * fr.bd.zs)
   const front = smooth(0.15, 0.85, z / r)
   const band = Math.max(0, 1 - Math.abs(y - 1.0) / 0.5)
   const belly = 0.55 * front * band * band
@@ -643,8 +734,8 @@ const bodySurface = (b: number): Piece => {
   const fr = frameFor(b)
   const { bd } = fr
   const reachX = SHOULDER_X + (UARM + FARM + 0.3) * Math.sin(ARM_BIND) + 0.1
-  const depth = Math.max(bd.rb, bd.rt) * bd.zs + 0.05
-  const m = surfaceNets(fr.body, [-reachX, 0, -depth - 0.12], [reachX, bd.yt + bd.rt + 0.03, Math.max(depth, 0.34)], BODY_STEP)
+  const depth = bd.a * bd.zs + 0.05
+  const m = surfaceNets(fr.body, [-reachX, 0, -depth - 0.12], [reachX, fr.crown + 0.04, Math.max(depth, 0.34)], BODY_STEP)
   const V = m.pos.length / 3
   const si = new Uint16Array(V * 4)
   const sw = new Float32Array(V * 4)
@@ -816,61 +907,72 @@ const knotAndTails = (fr: Frame, at: THREE.Vector3, role: number, long: number):
 }
 
 const hatPieces = (fr: Frame, kind: number): Piece[] => {
-  const { bd } = fr
-  const crown = bd.yt + bd.rt
+  const { bd, crown } = fr
   const zs = bd.zs
-  const R = bd.rt
   const A = ROLE.ACCENT
   const T = ROLE.TRIM
-  const box = (pad: number, yLo: number, yHi: number): [[number, number, number], [number, number, number]] => [
-    [-R - pad, yLo, -R * zs - pad],
-    [R + pad, yHi, R * zs + pad],
-  ]
+  /** a box round the head from yLo up, padded: the widest the head gets in
+      that range is at its bottom */
+  const box = (pad: number, yLo: number, yHi: number): [[number, number, number], [number, number, number]] => {
+    const r = fr.rx(Math.max(yLo, bd.c))
+    return [
+      [-r - pad, yLo, -r * zs - pad],
+      [r + pad, yHi, r * zs + pad],
+    ]
+  }
+  // every shell below is the bean's own field pushed out a little: it hugs
+  // whatever dome the build drew, where the old ellipsoid caps sat on a
+  // sphere the egg no longer has. The face window reaches EYE + 0.28, so
+  // anything worn on the head starts above it
+  const above = EYE_Y + 0.31
   switch (kind) {
     case BAND: {
-      // the knotted cloth sweatband, worn tipped low over one brow, tied at
-      // the back with its tails hanging long. The one the owner kept
-      const y0 = EYE_Y + 0.2
-      const f = bandField(fr, y0, 0.07, 0.05, 0.015, 0.06, 0.075)
-      const back = new THREE.Vector3(0, y0 - 0.05 * fr.rx(y0) * zs, -fr.rx(y0) * zs - 0.03)
+      // the knotted cloth headband, tipped a little over one brow and tied
+      // at the back with its tails hanging long. The one the owner kept. A
+      // flat band lying on the head, not a hoop standing off it: a round
+      // tube a finger proud of the skin read, in a tumble, as a ring
+      // floating round the face
+      const y0 = above + 0.01
+      const f = bandField(fr, y0, 0.05, 0.03, -0.012, 0.045, 0.085)
+      const back = new THREE.Vector3(0, y0 - 0.03 * fr.rx(y0) * zs, -fr.rx(y0) * zs - 0.015)
       const [lo, hi] = box(0.12, y0 - 0.2, y0 + 0.2)
       return [gearPiece(fr, f, lo, hi, A), ...knotAndTails(fr, back, A, 0.42)]
     }
     case CAP: {
-      // a baseball cap: a soft crown, a stiff peak out front in the detail
-      // colour and a button on top
-      const yc = EYE_Y + 0.14
-      const dome = ellipsoid(0, bd.yt, 0, R + 0.035, R + 0.05, (R + 0.035) * zs)
-      const shell: Field = (x, y, z) => smax(dome(x, y, z), yc - y, 0.02)
+      // a baseball cap: a soft crown hugging the dome, a stiff peak out
+      // front in the detail colour and a button on top
+      const yc = above
+      const shell: Field = (x, y, z) => smax(fr.bean(x, y, z) - 0.04, yc - y, 0.02)
       const fz = fr.rx(yc) * zs
       const tilt = 0.22
-      const brim = ellipsoid(0, yc + 0.015, fz + 0.12, 0.25, 0.036, 0.2,
+      const brim = ellipsoid(0, yc + 0.015, fz + 0.13, 0.27, 0.036, 0.21,
         [1, 0, 0, 0, Math.cos(tilt), -Math.sin(tilt), 0, Math.sin(tilt), Math.cos(tilt)])
-      const button = ellipsoid(0, crown + 0.04, 0, 0.055, 0.035, 0.055)
+      const button = ellipsoid(0, crown + 0.045, 0, 0.055, 0.035, 0.055)
       const [lo, hi] = box(0.1, yc - 0.05, crown + 0.12)
       return [
         gearPiece(fr, (x, y, z) => Math.min(shell(x, y, z), button(x, y, z)), lo, hi, A),
-        gearPiece(fr, brim, [-0.3, yc - 0.12, fz - 0.12], [0.3, yc + 0.14, fz + 0.38], T, undefined, 0.02),
+        gearPiece(fr, brim, [-0.32, yc - 0.12, fz - 0.12], [0.32, yc + 0.14, fz + 0.4], T, undefined, 0.02),
       ]
     }
     case BUCKET: {
       // a bucket hat: a soft crown and a floppy brim tipped down all round,
-      // a band where they meet
-      const yc = EYE_Y + 0.22
+      // a band where they meet, sat high enough that the face still looks
+      // out from under it
+      const yc = above + 0.03
       const r0 = fr.rx(yc) + 0.05
       const izs = 1 / zs
-      const body = roundCone(0, yc, 0, 0, crown - 0.08, 0, r0, r0 * 0.72)
+      const body = roundCone(0, yc, 0, 0, crown - 0.05, 0, r0, r0 * 0.78)
       const top: Field = (x, y, z) => smax(body(x, y, z * izs), yc - y, 0.02)
-      const Rb = r0 + 0.18
+      const Rb = r0 + 0.17
       const brim: Field = (x, y, z) => {
         const rho = len(x, z * izs)
-        const yy = y - yc + 0.08 * Math.max(0, (rho - r0) / (Rb - r0)) ** 2
+        const yy = y - yc + 0.07 * Math.max(0, (rho - r0) / (Rb - r0)) ** 2
         const dx = rho - Rb
         const dy = Math.abs(yy) - 0.02
         return (Math.min(Math.max(dx, dy), 0) + len(Math.max(dx, 0), Math.max(dy, 0)) - 0.025) * zs
       }
-      const band = bandField(fr, yc + 0.06, 0, 0, 0.06, 0.035, 0.045)
-      const [lo, hi] = box(0.36, yc - 0.2, crown + 0.08)
+      const band = bandField(fr, yc + 0.06, 0, 0, 0.055, 0.035, 0.045)
+      const [lo, hi] = box(0.36, yc - 0.2, crown + 0.1)
       return [
         // the crown on the ordinary grid and only the thin brim on the fine
         // one: the two overlap where they meet, which nobody can see
@@ -912,10 +1014,9 @@ const hatPieces = (fr: Frame, kind: number): Piece[] => {
     case HARDHAT: {
       // a hard hat a size too big: a stiff shell with a rim all round, a
       // peak out front and a ridge over the top
-      const yc = EYE_Y + 0.15
-      const dome = ellipsoid(0, bd.yt, 0, R + 0.08, R + 0.11, (R + 0.08) * zs)
-      const shell: Field = (x, y, z) => smax(dome(x, y, z), yc - y, 0.015)
-      const r0 = fr.rx(yc) + 0.1
+      const yc = above - 0.02
+      const shell: Field = (x, y, z) => smax(fr.bean(x, y, z) - 0.08, yc - y, 0.015)
+      const r0 = fr.rx(yc) + 0.08
       const izs = 1 / zs
       const rim: Field = (x, y, z) => {
         const rho = len(x, z * izs)
@@ -924,11 +1025,9 @@ const hatPieces = (fr: Frame, kind: number): Piece[] => {
         const dy = Math.abs(y - yc - 0.01) - 0.012
         return Math.min(Math.max(dx, dy), 0) + len(Math.max(dx, 0), Math.max(dy, 0)) - 0.015
       }
-      const ridgeR = R + 0.1
-      const ridge: Field = (x, y, z) => {
-        const q = len(y - bd.yt, z * izs) - ridgeR
-        return smax(len(q, x) - 0.05, yc + 0.03 - y, 0.01)
-      }
+      // a strip of a slightly bigger shell, front to back over the top
+      const ridge: Field = (x, y, z) =>
+        smax(smax(fr.bean(x, y, z) - 0.125, Math.abs(x) - 0.045, 0.015), yc + 0.03 - y, 0.01)
       const [lo, hi] = box(0.3, yc - 0.1, crown + 0.2)
       return [
         gearPiece(fr, (x, y, z) => smin(shell(x, y, z), rim(x, y, z), 0.03), lo, hi, A),
@@ -938,11 +1037,12 @@ const hatPieces = (fr: Frame, kind: number): Piece[] => {
     case BANDANA: {
       // cloth tied tight over the top, down lower at the back, knotted
       // there with two tails in the detail colour
-      const yc = EYE_Y + 0.15
-      const dome = ellipsoid(0, bd.yt, 0, R + 0.022, R + 0.03, (R + 0.022) * zs)
-      const shell: Field = (x, y, z) => smax(dome(x, y, z), yc - 0.14 * smooth(0.1, -0.9, z / (R * zs)) - y, 0.02)
-      const back = new THREE.Vector3(0, yc - 0.05, -fr.rx(yc - 0.05) * zs - 0.02)
-      const [lo, hi] = box(0.1, yc - 0.25, crown + 0.08)
+      const yc = above
+      const r = fr.rx(yc)
+      const shell: Field = (x, y, z) =>
+        smax(fr.bean(x, y, z) - 0.025, yc - 0.16 * smooth(0.1, -0.9, z / (r * zs)) - y, 0.02)
+      const back = new THREE.Vector3(0, yc - 0.08, -fr.rx(yc - 0.08) * zs - 0.02)
+      const [lo, hi] = box(0.1, yc - 0.3, crown + 0.08)
       return [gearPiece(fr, shell, lo, hi, A), ...knotAndTails(fr, back, T, 0.36)]
     }
     case HOOD: {
@@ -952,17 +1052,18 @@ const hatPieces = (fr: Frame, kind: number): Piece[] => {
       // bulges up under a lower one and moves about inside it
       const yBot = HIP_Y + WAIST_OFF + SHOULDER_OFF + 0.28
       const fz = fr.rx(EYE_Y) * zs
-      const hole = ellipsoid(0, EYE_Y - 0.02, fz + 0.1, 0.34, 0.31, 0.42)
+      const { w, h, y: fy } = fr.face
+      const hole = ellipsoid(0, fy, fz + 0.1, w + 0.08, h + 0.07, 0.42)
       const shell: Field = (x, y, z) =>
         smax(smax(fr.bean(x, y, z) - 0.055, yBot - y, 0.03), -hole(x, y, z), 0.035)
       const cords: Field[] = [1, -1].map((s) => {
         const z0 = fr.rx(yBot + 0.08) * zs * 0.82
-        return roundCone(s * 0.19, yBot + 0.08, z0 + 0.06, s * 0.21, yBot - 0.26, z0 + 0.12, 0.035, 0.035)
+        return roundCone(s * 0.2, yBot + 0.08, z0 + 0.06, s * 0.22, yBot - 0.26, z0 + 0.12, 0.035, 0.035)
       })
       const [lo, hi] = box(0.18, yBot - 0.08, crown + 0.1)
       return [
         gearPiece(fr, shell, [lo[0] - 0.1, lo[1], lo[2] - 0.1], [hi[0] + 0.1, hi[1], hi[2] + 0.1], A),
-        gearPiece(fr, (x, y, z) => Math.min(cords[0](x, y, z), cords[1](x, y, z)), [-0.35, yBot - 0.4, 0], [0.35, yBot + 0.2, 0.7], T),
+        gearPiece(fr, (x, y, z) => Math.min(cords[0](x, y, z), cords[1](x, y, z)), [-0.4, yBot - 0.4, 0], [0.4, yBot + 0.2, 0.8], T),
       ]
     }
     default:
