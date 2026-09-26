@@ -643,7 +643,7 @@ await sb.whenReady                      // optional: spawns before it are queued
 sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
 
 const id = sb.spawn('crate', { x, y, z }, { yaw, quaternion, velocity, angular,
-                                            frozen, id, mesh, shape, mass, data, phase })
+                                            frozen, id, mesh, shape, mass, data, phase, scale })
 sb.remove(id); sb.clear(); sb.get(id); sb.forEach(fn); sb.count
 sb.getTransform(id, pos, quat?); sb.setTransform(id, pos, quat?)
 sb.getVelocity(id, lin, ang?); sb.setVelocity(id, lin?, ang?)
@@ -787,7 +787,11 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   slices were spaced, and Node and Chrome agree (the header of `physics.ts`
   says why and where the edge is). `sb.stateHash()` fingerprints it;
   `measure physics determinism` runs every scenario twice and once more on
-  uneven frames, and `npm run film` prints the same hash under each sheet
+  uneven frames, staged as the film stages it (the same two rings of chunks,
+  the ruins armed and destruction attached, so the demolitions really come
+  down headless; a scenario that ends with no props is reported as having
+  nothing to compare rather than as a pass on the empty hash), and
+  `npm run film` prints the same hash under each sheet
   (as long as its `--rings` cover everywhere the props go: the film only
   builds the solids of the chunks it draws, and `sandbox:chain` throws gibs
   far enough to need `--rings 4`). That is why the ground streams at the
