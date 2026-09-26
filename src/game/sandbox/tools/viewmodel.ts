@@ -36,17 +36,28 @@ import * as THREE from 'three'
   while something heavy fights the beam. Nothing allocates per frame.
 */
 
-const SLATE = '#56627a'
-const SLATE_DARK = '#2c323f'
-const CREAM = '#d8cdb2'
+const SLATE = '#5a6478'
+const SLATE_DARK = '#2a2f3a'
+const STEEL = '#9aa3b0'
 const OCHRE = '#c08a2e'
 const RUBBER = '#1e2128'
 
-const CORE_IDLE = new THREE.Color(0.25, 0.9, 1.9)
-const CORE_HOT = new THREE.Color(1.3, 2.6, 4.2)
+// the glow, linear and HDR: the look's ACES takes the hot one to a pale
+// cyan and leaves the idle one a clear blue
+const CORE_IDLE = new THREE.Color(0.02, 0.4, 1.6)
+const CORE_HOT = new THREE.Color(0.08, 0.95, 2.7)
 
-/** where the gun sits in the camera's frame, first person */
-const FP_OFFSET = new THREE.Vector3(0.34, -0.37, -0.6)
+/** where the gun sits in the camera's frame, first person, and its size
+    there: the bottom-right corner, a quarter of the frame, the claw about
+    two thirds of the way across */
+const FP_OFFSET = new THREE.Vector3(0.29, -0.2, -0.5)
+const FP_SCALE = 0.55
+/** the gun in the body's hand, world units per model unit: a body is ~4.5
+    tall and its forearm short, so the gun is drawn big enough to read */
+const TP_SCALE = 1.35
+/** the first-person gun's own turn in the frame (pitch, yaw, roll): yawed
+    in so its flank shows and the claw points at the crosshair */
+const FP_TURN = new THREE.Euler(0.0, 0.45, -0.35, 'YXZ')
 
 const VM_KEY = 'physgun-vm-depth'
 
@@ -71,7 +82,7 @@ const vmMaterial = <M extends THREE.Material>(m: M, fp: boolean): M => {
 interface Mats {
   slate: THREE.MeshStandardMaterial
   dark: THREE.MeshStandardMaterial
-  cream: THREE.MeshStandardMaterial
+  steel: THREE.MeshStandardMaterial
   ochre: THREE.MeshStandardMaterial
   rubber: THREE.MeshStandardMaterial
   hand: THREE.MeshStandardMaterial
@@ -85,7 +96,7 @@ const makeMats = (fp: boolean): Mats => {
   return {
     slate: std(SLATE),
     dark: std(SLATE_DARK, 0.7, 0.3),
-    cream: std(CREAM, 0.75, 0.05),
+    steel: std(STEEL, 0.5, 0.45),
     ochre: std(OCHRE, 0.45, 0.55),
     rubber: std(RUBBER, 0.9, 0),
     hand: std('#e0a64a', 0.8, 0),
@@ -141,56 +152,59 @@ const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
     parent.add(mesh)
     return mesh
   }
-  // the receiver: a slab with a cream cover and a dark belly
-  add(g.box(0.2, 0.17, 0.58), mats.slate, 0, 0.1, -0.1)
-  add(g.box(0.15, 0.06, 0.36), mats.cream, 0, 0.21, -0.06)
+  // the receiver: a slab with a steel cover and a dark belly
+  add(g.box(0.2, 0.17, 0.32), mats.slate, 0, 0.1, 0.05)
+  add(g.box(0.15, 0.06, 0.26), mats.steel, 0, 0.2, 0.07)
   add(g.box(0.17, 0.05, 0.5), mats.dark, 0, 0.0, -0.1)
   // rear cap and its knob
   add(g.drum(0.1, 0.09, 8), mats.dark, 0, 0.1, 0.22)
   add(g.drum(0.045, 0.06, 6), mats.ochre, 0, 0.1, 0.28)
-  // the core drum: glowing inside, three dark bands round it, and an inner
-  // ring that spins with the load
-  add(g.drum(0.128, 0.3, 8), mats.core, 0, 0.1, -0.2)
-  for (const z of [-0.07, -0.2, -0.33]) add(g.drum(0.158, 0.045, 8), mats.dark, 0, 0.1, z)
+  // the core drum, the gun's signature: a fat glowing cylinder behind four
+  // dark bands, so the light shows through the gaps between them, and an
+  // inner ring of fins that spins with the load
+  add(g.drum(0.15, 0.32, 8), mats.core, 0, 0.13, -0.24)
+  for (const z of [-0.09, -0.19, -0.29, -0.39]) add(g.drum(0.185, 0.04, 8), mats.dark, 0, 0.13, z)
   const spinner = new THREE.Group()
-  spinner.position.set(0, 0.1, -0.2)
+  spinner.position.set(0, 0.13, -0.24)
   root.add(spinner)
   for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI * 2
-    const fin = add(g.box(0.03, 0.05, 0.08), mats.ochre, Math.cos(a) * 0.15, Math.sin(a) * 0.15, -0.065, spinner)
-    fin.rotation.z = a
-    const fin2 = add(g.box(0.03, 0.05, 0.08), mats.ochre, Math.cos(a) * 0.15, Math.sin(a) * 0.15, 0.065, spinner)
-    fin2.rotation.z = a
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4
+    for (const z of [-0.1, 0, 0.1]) {
+      const fin = add(g.box(0.035, 0.05, 0.05), mats.ochre, Math.cos(a) * 0.175, Math.sin(a) * 0.175, z, spinner)
+      fin.rotation.z = a
+    }
   }
-  // side coils: the blue tubes along the flanks
+  // side coils: the blue tubes along the flanks, clamped at each end
   for (const s of [-1, 1]) {
-    add(g.drum(0.022, 0.4, 6), mats.core, s * 0.12, 0.03, -0.2)
-    add(g.box(0.035, 0.04, 0.05), mats.dark, s * 0.12, 0.03, -0.02)
-    add(g.box(0.035, 0.04, 0.05), mats.dark, s * 0.12, 0.03, -0.38)
+    add(g.drum(0.026, 0.42, 6), mats.core, s * 0.125, 0.0, -0.2)
+    add(g.box(0.045, 0.05, 0.05), mats.dark, s * 0.125, 0.0, -0.01)
+    add(g.box(0.045, 0.05, 0.05), mats.dark, s * 0.125, 0.0, -0.4)
   }
-  // the carry handle over the top, ochre, on two posts
-  add(g.box(0.035, 0.035, 0.32), mats.ochre, 0, 0.31, -0.12)
-  add(g.box(0.03, 0.08, 0.03), mats.dark, 0, 0.26, 0.02)
-  add(g.box(0.03, 0.08, 0.03), mats.dark, 0, 0.26, -0.26)
+  // a low spine over the top, and a steel fin on it
+  add(g.box(0.05, 0.05, 0.36), mats.dark, 0, 0.33, -0.24)
+  add(g.box(0.025, 0.07, 0.18), mats.steel, 0, 0.38, -0.2)
   // barrel, emitter collar and the lens the beam comes out of
-  add(g.drum(0.078, 0.26, 8, 0.092), mats.slate, 0, 0.1, -0.48)
-  add(g.drum(0.108, 0.05, 8), mats.dark, 0, 0.1, -0.6)
-  add(g.drum(0.06, 0.03, 8), mats.lens, 0, 0.1, -0.63)
+  add(g.drum(0.085, 0.2, 8, 0.1), mats.slate, 0, 0.12, -0.5)
+  add(g.drum(0.12, 0.05, 8), mats.dark, 0, 0.12, -0.6)
+  add(g.drum(0.07, 0.03, 8), mats.lens, 0, 0.12, -0.63)
   const muzzle = new THREE.Object3D()
-  muzzle.position.set(0, 0.1, -0.7)
+  muzzle.position.set(0, 0.12, -0.74)
   root.add(muzzle)
   // the claw: three prongs hinged at the collar
   const prongs: THREE.Group[] = []
   for (let i = 0; i < 3; i++) {
     const a = Math.PI / 2 + (i / 3) * Math.PI * 2
     const hinge = new THREE.Group()
-    hinge.position.set(Math.cos(a) * 0.1, 0.1 + Math.sin(a) * 0.1, -0.58)
+    hinge.position.set(Math.cos(a) * 0.11, 0.12 + Math.sin(a) * 0.11, -0.6)
     hinge.rotation.z = a - Math.PI / 2
     root.add(hinge)
     // local +y points out from the axis; the prong runs forward then hooks in
     add(g.box(0.045, 0.04, 0.2), mats.ochre, 0, 0, -0.1, hinge)
     const tip = add(g.box(0.04, 0.035, 0.1), mats.ochre, 0, -0.025, -0.23, hinge)
     tip.rotation.x = -0.55
+    // a glowing pad on the inside of each hook: the claw lights with the core
+    const pad = add(g.box(0.026, 0.02, 0.05), mats.core, 0, -0.05, -0.25, hinge)
+    pad.rotation.x = -0.55
     add(g.box(0.05, 0.05, 0.05), mats.dark, 0, 0, 0, hinge)
     prongs.push(hinge)
   }
@@ -266,7 +280,8 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     g.visible = false
     root.add(g)
   }
-  tp.scale.setScalar(0.85)
+  tp.scale.setScalar(TP_SCALE)
+  fp.scale.setScalar(FP_SCALE)
 
   // springs: position offset (camera space), rotation offset (pitch, yaw,
   // roll), the prong opening, the draw
@@ -363,8 +378,8 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       // camera frame, then the offset, then the springs
       fp.position.copy(FP_OFFSET).add(off).applyMatrix4(cam.matrixWorld)
       fp.quaternion.copy(cam.quaternion)
-      // aimed a hair inward, so the beam's line meets the crosshair
-      eul.set(0.02 + rot.x, 0.07 + rot.y, rot.z, 'YXZ')
+      // aimed inward, so the beam's line meets the crosshair
+      eul.set(FP_TURN.x + rot.x, FP_TURN.y + rot.y, FP_TURN.z + rot.z, 'YXZ')
       fp.quaternion.multiply(q.setFromEuler(eul))
     }
     if (tp.visible && f.hand) {

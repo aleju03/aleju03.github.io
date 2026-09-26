@@ -1,88 +1,120 @@
 import * as THREE from 'three'
-import { canvasTexture } from '../../core/textures'
+import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js'
 
 /*
   What the physgun's beam looks like: the curved blue energy from the muzzle
-  to the grab point, a glow where it bites, a flare at the gun, a halo on the
-  thing it holds, and the blue flash of a freeze.
+  to the grab point, a glow where it bites, a flare at the gun, a cyan rim on
+  the thing it holds, and the blue flash of a freeze.
 
-  It draws from numbers, never from the physgun: a muzzle, an aim, a far end,
-  a target and a strain. So the same object draws the local player's beam
-  from the live physgun and a remote player's from a `HoldRecord` off the
-  wire, which is the multiplayer half of this piece (S6 only has to supply
-  the numbers).
+  It draws from numbers, never from the physgun: a muzzle, a far end, the
+  point the beam is pulling toward, and a strain. So the same object draws
+  the local player's beam from the live physgun and a remote player's from a
+  `HoldRecord` off the wire (`fromRecord` below fills the frame from one),
+  which is the multiplayer half of this piece: S6 only has to supply the
+  numbers.
 
-  **The curve.** A quadratic Bezier whose control point sits on the aim line
-  at three quarters of the way to the grab point's projection onto it. While
-  the held thing is exactly where the beam wants it, the grab point is on the
-  aim line and the beam is straight; when it lags a swing, the beam leaves the
-  gun along the aim and bends round onto the prop, which is the whole GMod
-  picture. The control point is itself sprung, so even a snappy prop whips
-  the beam for a moment on a fast turn. Strain adds a lateral wobble, loudest
-  mid-span, so a heavy thing on the beam looks like it is costing something.
+  **The curve** is GMod's: a quadratic Bezier from the muzzle, through a
+  control point at the beam's *target* (the spot on your view ray where the
+  held thing is being pulled), to the grab point. While the thing is where
+  the beam wants it the target and the grab point coincide and the beam is a
+  straight line; while it lags a swing, the beam shoots out along your aim
+  and bends back round onto the prop, and the harder you swing a heavy thing
+  the deeper the bow. The control point is itself sprung, so even a snappy
+  prop whips the beam for a moment on a fast turn. There is no lateral
+  wobble: a zigzag reads as a scribble through the pixel look, not as energy.
 
-  **The ribbon.** One strip of 33 sections, rewritten in place each frame
-  (positions and tangents; nothing allocates), expanded sideways in the
-  vertex shader toward the camera. The half-width is a world size or a pixel
-  size, whichever is larger, which is the rule that keeps it alive through
-  the pixel look: at 520 lines a physically thin beam is under a pixel twenty
-  units out and simply vanishes, so it never goes under `MIN_PX`. The
-  fragment is a hot core over a wider soft glow, with two octaves of value
-  noise and a travelling packet scrolled from gun to target, all in HDR
-  (the look owns ACES; a core at 3 lands near white, a glow at 1 stays blue).
+  **Colour through the look.** The look owns ACES, a chroma cap and a hue
+  pull, so an additive HDR blue saturates to white long before it reads as
+  cyan (the first cut of this beam was a thin white squiggle). Everything
+  here is therefore *over*-blended: each fragment writes a colour and a
+  coverage, replacing part of what is behind it with a saturated azure
+  rather than adding light to it, and only the hot core is bright enough to
+  go pale. That is what keeps it cyan over a white sky and a bright field.
+  The alpha channel is left exactly as the scene wrote it (colour
+  SRC_ALPHA / ONE_MINUS_SRC_ALPHA, alpha ZERO / ONE), so a beam swept across
+  the AlejOS screen's glass hole does not paint the hole shut.
 
-  **Blending that keeps alpha.** Everything here adds colour and never
-  touches the target's alpha (colour ONE+ONE, alpha ZERO+ONE), so a beam
-  swept across the AlejOS screen's glass hole does not paint the hole shut.
+  **Width in pixels.** The ribbon (33 sections rewritten in place, expanded
+  toward the camera in the vertex shader) is a world width or a pixel width,
+  whichever is larger, because at a few hundred lines a physically thin beam
+  is under a pixel twenty units out and vanishes. The same rule sizes the
+  glow blobs and the prop's rim, so all three stay chunky, readable pixel
+  art at any distance rather than sub-pixel lines the look dithers away.
 
-  **Programs.** Three: the ribbon, the glow sprites (one SpriteMaterial
-  program shared by all of them) and the halo shell. All are built at
-  construction and put in front of the camera by `stage()` for the boot
-  cover's compile and first draw, so the first grab links nothing (see the
-  boot-cost section of the root CLAUDE.md). A second beam (a remote holder)
-  is a second `createBeam`, which is the same three programs again.
+  **The rim** is an inverted hull: each mesh of the held prop gets a
+  back-face copy pushed outward (per axis, off its own bounding box, so a
+  box grows into a box and a barrel into a barrel with no gaps at the flat
+  shading's split corners), which only shows where it sticks out past the
+  silhouette. That is GMod's cyan outline, and unlike a fresnel fill it never
+  washes the prop's own colours out. A freeze adds a front-face flash that
+  fills the prop blue and fades in a third of a second while the rim swells.
+
+  **Programs.** Four: the ribbon, the glow blob (every sprite shares it), the
+  rim and the flash fill. The per-mesh shells are clones of the last two, so
+  they share their programs. All are built at construction and put in front
+  of the camera by `stage()` for the boot cover's compile and first draw, so
+  the first grab links nothing (the film prints the count, and it is 0).
 */
 
 const SEGS = 32
 const PTS = SEGS + 1
-/** narrowest a beam may draw, in half-pixels of the look's internal target */
-const MIN_PX = 2.6
+/** narrowest the glow may draw, in pixels of the look's internal target
+    (half-width) */
+const MIN_PX = 3.2
+/** narrowest a rim may be, in pixels */
+const RIM_PX = 1.35
 
-const CORE = new THREE.Color(1.5, 2.7, 3.4)
-const GLOW = new THREE.Color(0.1, 0.62, 1.7)
-/** the freeze flash: whiter, and a shade toward the deep blue GMod uses */
-const FLASH = new THREE.Color(1.4, 2.2, 4.2)
+/** the beam's colours, linear, before the look's exposure and ACES */
+const BAND = new THREE.Color(0.015, 0.4, 1.25)
+const CORE = new THREE.Color(0.45, 1.5, 2.3)
+const HALO = new THREE.Color(0.02, 0.42, 2.0)
+/** the freeze: a deeper, whiter blue */
+const FLASH = new THREE.Color(0.5, 1.3, 3.6)
 
-const VERT = /* glsl */ `
+/* ------------------------------------------------------------ shaders -- */
+
+const RIBBON_VERT = /* glsl */ `
 attribute vec3 aTan;
 attribute float aSide;
 attribute float aT;
 uniform float uW0;
 uniform float uW1;
 uniform float uPx;
+uniform float uMinPx;
+uniform float uWide;
 varying float vS;
 varying float vT;
+varying float vPx;
 void main() {
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  vec3 tv = normalize((modelViewMatrix * vec4(aTan, 0.0)).xyz);
-  vec3 side = normalize(cross(tv, normalize(-mv.xyz)));
-  float hw = max(mix(uW0, uW1, aT), uPx * max(0.05, -mv.z));
+  vec3 tv = (modelViewMatrix * vec4(aTan, 0.0)).xyz;
+  vec3 side = cross(tv, normalize(-mv.xyz));
+  float sl = length(side);
+  side = sl > 1e-6 ? side / sl : vec3(1.0, 0.0, 0.0);
+  float px = uPx * max(0.05, -mv.z);
+  float hw = max(mix(uW0, uW1, aT), px * uMinPx) * uWide;
   mv.xyz += side * aSide * hw;
   gl_Position = projectionMatrix * mv;
   vS = aSide;
   vT = aT;
+  // how many pixels wide the half-ribbon is here, so the core can be kept
+  // at least a pixel across however thin the whole thing gets
+  vPx = hw / max(px * uWide, 1e-6);
 }
 `
 
-const FRAG = /* glsl */ `
+const RIBBON_FRAG = /* glsl */ `
 uniform float uTime;
 uniform float uLen;
 uniform float uAmount;
 uniform float uStrain;
+uniform float uMiss;
+uniform vec3 uBand;
 uniform vec3 uCore;
-uniform vec3 uGlow;
+uniform float uWide;
 varying float vS;
 varying float vT;
+varying float vPx;
 float hash(float n) { return fract(sin(n) * 43758.5453); }
 float vnoise(float x) {
   float i = floor(x);
@@ -91,29 +123,95 @@ float vnoise(float x) {
   return mix(hash(i), hash(i + 1.0), f);
 }
 void main() {
-  float s = abs(vS);
+  float s = abs(vS) * uWide;
   float along = vT * uLen;
-  // energy running from the gun to the target
-  float n = vnoise(along * 1.6 - uTime * 21.0) * 0.6 + vnoise(along * 4.1 - uTime * 43.0 + 7.3) * 0.4;
-  float packet = pow(max(0.0, sin(along * 0.9 - uTime * 11.0)), 10.0);
-  float core = exp(-s * s * 14.0);
-  float glow = exp(-s * s * 3.0) * (1.0 - s * 0.6);
-  // hotter at the muzzle, a little hotter again where it bites
-  float ends = 1.0 + 0.7 * exp(-vT * 9.0) + 0.4 * exp(-(1.0 - vT) * 14.0);
-  float e = (0.55 + 0.65 * n + 0.9 * packet) * ends * (1.0 + uStrain * 0.5);
-  vec3 col = uCore * core * e + uGlow * glow * (0.45 + 0.6 * n + 0.4 * packet);
-  gl_FragColor = vec4(col * uAmount, 1.0);
+  // energy travelling from the gun to the target: a slow swell, a fast
+  // shimmer, and bright packets that ride the core out to the grab point
+  float n = vnoise(along * 0.9 - uTime * 14.0) * 0.55 + vnoise(along * 3.3 - uTime * 37.0 + 7.3) * 0.45;
+  float packet = pow(max(0.0, sin(along * 1.3 - uTime * 26.0)), 6.0);
+  // the band breathes with the noise; the core never goes under a pixel
+  float edge = 0.8 + 0.2 * n;
+  // the core: a third of the width, but never under a pixel and a half
+  float coreW = clamp(0.9 / max(vPx, 0.5), 0.22, 0.6);
+  float core = step(s, coreW * (0.85 + 0.3 * packet));
+  float band = step(s, edge);
+  // hotter at the muzzle, and again where it bites
+  float ends = 1.0 + 0.5 * exp(-vT * 7.0) + 0.3 * exp(-(1.0 - vT) * 10.0);
+  float hot = (0.75 + 0.3 * n + 0.7 * packet) * ends * (1.0 + uStrain * 0.35);
+  // three stepped tones, pixel-art style: a hot core, a bright azure band,
+  // and a deeper blue at the rim (the look's silhouette line darkens that
+  // one pixel further, which is what outlines the beam)
+  float rim = step(edge * 0.72, s);
+  vec3 band3 = mix(uBand * (0.85 + 0.35 * n + 0.4 * packet), uBand * 0.55, rim);
+  vec3 col = mix(band3, uCore * hot, core);
+  if (uWide > 1.0) {
+    // the glow: a second, wider copy of the ribbon drawn around the first,
+    // which lights what is behind it rather than covering it
+    if (s < edge) discard;
+    float g = pow(max(0.0, 1.0 - s / uWide), 1.5) * (0.55 + 0.3 * n + 0.3 * packet) * uAmount * (1.0 - uMiss * 0.6);
+    if (g < 0.02) discard;
+    gl_FragColor = vec4(uBand * 1.4 * g, g * 0.4);
+    return;
+  }
+  // a miss is a thinner, flickering stub: the core alone
+  float a = mix(band, core, uMiss) * uAmount;
+  if (a < 0.5) discard;
+  gl_FragColor = vec4(col, 1.0);
 }
 `
 
-const HALO_VERT = /* glsl */ `
+const BLOB_VERT = /* glsl */ `
+uniform float uSize;
+uniform float uPx;
+varying vec2 vUv;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+  float size = max(uSize, uPx * max(0.05, -mv.z));
+  mv.xy += position.xy * size;
+  gl_Position = projectionMatrix * mv;
+  vUv = position.xy * 2.0;
+}
+`
+
+const BLOB_FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform vec3 uHot;
+uniform float uAmount;
+uniform float uRing;
+varying vec2 vUv;
+void main() {
+  float r = length(vUv);
+  if (r > 1.0) discard;
+  // a white-hot disc inside a cyan glow, stepped rather than smooth so it
+  // reads as a pixel-art flare, plus an optional ring (the freeze pop)
+  float glow = pow(1.0 - r, 1.6);
+  float hot = 1.0 - smoothstep(0.22, 0.34, r);
+  float ring = uRing > 0.0 ? (1.0 - smoothstep(0.0, 0.1, abs(r - uRing))) * (1.0 - uRing) : 0.0;
+  vec3 col = mix(uColor, uHot, max(hot, ring));
+  float a = min(1.0, max(max(glow * 0.9, hot), ring) * uAmount);
+  if (a < 0.01) discard;
+  // lights more than it covers, so blue over a brown crate is a brighter
+  // crate with a blue bloom on it, not a purple one
+  gl_FragColor = vec4(col * a, a * mix(0.5, 1.0, hot));
+}
+`
+
+// the shells: pushed out per axis off the mesh's own box, so a flat-shaded
+// box grows into a bigger box rather than six plates with gaps between
+const SHELL_VERT = /* glsl */ `
+uniform vec3 uCenter;
+uniform vec3 uHalf;
 uniform float uGrow;
+uniform float uPx;
 varying float vRim;
 void main() {
-  // pushed out radially as well as along the normal, so a flat-shaded box
-  // (split normals at every corner) grows into one closed shell, not six
-  // separate plates with gaps at the edges
-  vec3 p = position + normalize(position + vec3(1e-4)) * uGrow + normal * uGrow * 0.5;
+  vec3 d = clamp((position - uCenter) / max(uHalf, vec3(1e-3)), -1.0, 1.0);
+  vec4 c = modelViewMatrix * vec4(uCenter, 1.0);
+  // the grow is at least a few pixels at the prop's own distance, in world
+  // units of the mesh (its scale is divided back out)
+  float s = length((modelMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
+  float grow = max(uGrow, uPx * max(0.05, -c.z)) / max(s, 1e-4);
+  vec3 p = position + d * grow;
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vec3 n = normalize(normalMatrix * normal);
   vRim = 1.0 - abs(dot(n, normalize(-mv.xyz)));
@@ -121,23 +219,28 @@ void main() {
 }
 `
 
-const HALO_FRAG = /* glsl */ `
+const SHELL_FRAG = /* glsl */ `
 uniform vec3 uColor;
 uniform float uAmount;
 uniform float uFill;
+uniform float uCover;
 varying float vRim;
 void main() {
-  float f = pow(vRim, 1.6) + uFill;
-  gl_FragColor = vec4(uColor * f * uAmount, 1.0);
+  float a = min(1.0, (uFill + (1.0 - uFill) * vRim * vRim) * uAmount);
+  if (a < 0.01) discard;
+  gl_FragColor = vec4(uColor * a, a * uCover);
 }
 `
 
-/** colour adds, alpha is left exactly as the scene wrote it */
-const additive = <M extends THREE.Material>(m: M): M => {
+/** premultiplied: a fragment adds its colour and takes away `alpha` of what
+    is behind, so a glow can light the scene (alpha under its coverage) or
+    cover it (alpha 1). The target's own alpha is left exactly as the scene
+    wrote it, so the look's glass holes survive a beam across them */
+const over = <M extends THREE.Material>(m: M): M => {
   m.blending = THREE.CustomBlending
   m.blendEquation = THREE.AddEquation
   m.blendSrc = THREE.OneFactor
-  m.blendDst = THREE.OneFactor
+  m.blendDst = THREE.OneMinusSrcAlphaFactor
   m.blendEquationAlpha = THREE.AddEquation
   m.blendSrcAlpha = THREE.ZeroFactor
   m.blendDstAlpha = THREE.OneFactor
@@ -146,30 +249,55 @@ const additive = <M extends THREE.Material>(m: M): M => {
   return m
 }
 
-export const haloMaterial = () =>
-  additive(new THREE.ShaderMaterial({
-    vertexShader: HALO_VERT,
-    fragmentShader: HALO_FRAG,
+const blobMaterial = (color: THREE.Color, hot: THREE.Color) =>
+  over(new THREE.ShaderMaterial({
+    vertexShader: BLOB_VERT,
+    fragmentShader: BLOB_FRAG,
     uniforms: {
-      uColor: { value: GLOW.clone().multiplyScalar(0.9) },
+      uColor: { value: color.clone() },
+      uHot: { value: hot.clone() },
       uAmount: { value: 0 },
-      uFill: { value: 0.05 },
-      uGrow: { value: 0.07 },
+      uSize: { value: 0.5 },
+      uPx: { value: 0.01 },
+      uRing: { value: 0 },
     },
   }))
 
+const shellMaterial = (side: THREE.Side) =>
+  over(new THREE.ShaderMaterial({
+    vertexShader: SHELL_VERT,
+    fragmentShader: SHELL_FRAG,
+    side,
+    uniforms: {
+      uColor: { value: HALO.clone() },
+      uAmount: { value: 0 },
+      uFill: { value: 1 },
+      uCover: { value: 1 },
+      uGrow: { value: 0.03 },
+      uPx: { value: 0.01 },
+      uCenter: { value: new THREE.Vector3() },
+      uHalf: { value: new THREE.Vector3(1, 1, 1) },
+    },
+  }))
+
+/** world size of one internal pixel at unit depth */
+export const pixelAtUnit = (fovDeg: number, lines: number) =>
+  (2 * Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2)) / Math.max(60, lines)
+
 export interface BeamFrame {
-  /** where the beam leaves the gun, and the gun's forward */
+  /** where the beam leaves the gun */
   muzzle: THREE.Vector3
-  forward: THREE.Vector3
   /** the far end: the grab point (hold) or the surface hit (miss) */
   end: THREE.Vector3
+  /** where the beam is pulling the grab point to (hold); the bow bends
+      through it. Ignored on a miss */
+  target: THREE.Vector3
   /** 'hold', 'miss' or 'off' */
   mode: 'hold' | 'miss' | 'off'
   strain: number
   dt: number
   /** the look's internal lines and the camera's vertical fov (degrees), for
-      the beam's minimum pixel width */
+      the minimum pixel widths */
   lines: number
   fov: number
   camera: THREE.Camera
@@ -179,17 +307,24 @@ export interface Beam {
   readonly root: THREE.Group
   /** draw this frame's beam */
   update: (f: BeamFrame) => void
-  /** light a prop up as held (0..1 each frame), by its mesh */
+  /** outline a prop as held (eased on and off), by its mesh */
   holdHalo: (mesh: THREE.Object3D | null) => void
-  /** the freeze pop, on whatever mesh (or at a point, for a limb) */
-  flash: (mesh: THREE.Object3D | null, at: THREE.Vector3) => void
-  /** a grab or release crackle at the far end: a brief brightening */
+  /** the freeze pop, on whatever mesh (or only at a point, for a limb) */
+  flash: (mesh: THREE.Object3D | null, at: THREE.Vector3, k?: number) => void
+  /** a grab or release crackle at both ends: a brief brightening */
   kick: (k: number) => void
   /** put every part in front of a camera for a covered compile and draw */
   stage: (camera: THREE.Camera) => void
   /** ...and back to normal */
   unstage: () => void
   dispose: () => void
+}
+
+interface Shell {
+  rim: THREE.Mesh[]
+  fill: THREE.Mesh[]
+  rimMats: THREE.ShaderMaterial[]
+  fillMats: THREE.ShaderMaterial[]
 }
 
 export function createBeam(parent: THREE.Object3D): Beam {
@@ -221,79 +356,124 @@ export function createBeam(parent: THREE.Object3D): Beam {
   geo.setAttribute('aSide', new THREE.BufferAttribute(side, 1))
   geo.setAttribute('aT', new THREE.BufferAttribute(at, 1))
   geo.setIndex(index)
-  const mat = additive(new THREE.ShaderMaterial({
-    vertexShader: VERT,
-    fragmentShader: FRAG,
+  const mat = over(new THREE.ShaderMaterial({
+    vertexShader: RIBBON_VERT,
+    fragmentShader: RIBBON_FRAG,
     uniforms: {
-      uW0: { value: 0.07 },
-      uW1: { value: 0.05 },
+      uW0: { value: 0.1 },
+      uW1: { value: 0.07 },
       uPx: { value: 0.002 },
+      uMinPx: { value: MIN_PX },
+      uWide: { value: 1 },
       uTime: { value: 0 },
       uLen: { value: 1 },
       uAmount: { value: 1 },
       uStrain: { value: 0 },
+      uMiss: { value: 0 },
+      uBand: { value: BAND.clone() },
       uCore: { value: CORE.clone() },
-      uGlow: { value: GLOW.clone() },
     },
   }))
+  // the ribbon is opaque where it draws and writes depth: the look hazes
+  // every pixel by the depth under it, so a beam that left the depth to the
+  // sky behind it was washed to the sky's own grey-white
+  mat.depthWrite = true
+  mat.transparent = false
   const ribbon = new THREE.Mesh(geo, mat)
   ribbon.frustumCulled = false
   ribbon.renderOrder = 5
   ribbon.visible = false
   root.add(ribbon)
   const u = mat.uniforms
+  // the glow round it: the same geometry and program, wider, transparent
+  const glowMat = mat.clone()
+  glowMat.depthWrite = false
+  glowMat.transparent = true
+  const gu = glowMat.uniforms
+  gu.uWide.value = 2.4
+  const glow = new THREE.Mesh(geo, glowMat)
+  glow.frustumCulled = false
+  glow.renderOrder = 5
+  glow.visible = false
+  root.add(glow)
 
-  /* ------------------------------------------------------ the sprites -- */
-  // premultiplied: it fades to black, not to transparent white, because the
-  // blend adds colour and ignores alpha (a white-to-clear gradient would add
-  // a white square)
-  const glowTex = canvasTexture([64, 64], (ctx, w, h) => {
-    const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2)
-    g.addColorStop(0, '#fff')
-    g.addColorStop(0.18, '#bbb')
-    g.addColorStop(0.45, '#3a3a3a')
-    g.addColorStop(1, '#000')
-    ctx.fillStyle = g
-    ctx.fillRect(0, 0, w, h)
-  })
-  const spriteMat = (c: THREE.Color) =>
-    additive(new THREE.SpriteMaterial({ map: glowTex, color: c.clone(), depthTest: true }))
-  const endMat = spriteMat(new THREE.Color(0.9, 2.0, 3.2))
-  const muzzleMat = spriteMat(new THREE.Color(1.1, 2.2, 3.4))
-  const popMat = spriteMat(FLASH)
-  const endGlow = new THREE.Sprite(endMat)
-  const muzzleGlow = new THREE.Sprite(muzzleMat)
-  const pop = new THREE.Sprite(popMat)
-  for (const s of [endGlow, muzzleGlow, pop]) {
-    s.frustumCulled = false
-    s.visible = false
-    s.renderOrder = 6
-    root.add(s)
+  /* -------------------------------------------------------- the blobs -- */
+  // one quad, billboarded in the vertex shader; every blob shares its program
+  const quad = new THREE.PlaneGeometry(1, 1)
+  const blob = (c: THREE.Color, hot: THREE.Color, order = 6) => {
+    const m = new THREE.Mesh(quad, blobMaterial(c, hot))
+    m.frustumCulled = false
+    m.visible = false
+    m.renderOrder = order
+    root.add(m)
+    return m
   }
+  const WHITE = new THREE.Color(1.6, 2.6, 3.2)
+  const endGlow = blob(HALO, WHITE)
+  const muzzleGlow = blob(HALO, WHITE, 7)
+  const pop = blob(FLASH, WHITE, 7)
+  const endU = (endGlow.material as THREE.ShaderMaterial).uniforms
+  const muzU = (muzzleGlow.material as THREE.ShaderMaterial).uniforms
+  const popU = (pop.material as THREE.ShaderMaterial).uniforms
 
-  /* --------------------------------------------------------- the halo -- */
-  const holdMat = haloMaterial()
-  const flashMat = haloMaterial()
-  flashMat.uniforms.uColor.value.copy(FLASH)
-  flashMat.uniforms.uGrow.value = 0.1
-  /** one shell per prop mesh, built on its first grab and kept */
-  const shells = new WeakMap<THREE.Object3D, { hold: THREE.Mesh[]; flash: THREE.Mesh[] }>()
-  const shellsOf = (m: THREE.Object3D) => {
+  /* -------------------------------------------------------- the shells -- */
+  const rimBase = shellMaterial(THREE.BackSide)
+  const fillBase = shellMaterial(THREE.FrontSide)
+  fillBase.uniforms.uColor.value.copy(FLASH)
+  const box = new THREE.Box3()
+  /** one pair of shells per prop mesh, built on its first grab and kept.
+      Clones of the base materials: their own uniforms, the same programs */
+  const shells = new WeakMap<THREE.Object3D, Shell>()
+  /** a mesh's convex hull, per geometry: the shells wrap the hull, because
+      an inverted hull round a concave mesh (a crate's proud slats) draws a
+      line along every slat as well as round the outside */
+  const hulls = new WeakMap<THREE.BufferGeometry, THREE.BufferGeometry>()
+  const hullOf = (g: THREE.BufferGeometry) => {
+    let h = hulls.get(g)
+    if (h) return h
+    const a = g.getAttribute('position')
+    const pts: THREE.Vector3[] = []
+    for (let i = 0; i < a.count; i++) pts.push(new THREE.Vector3(a.getX(i), a.getY(i), a.getZ(i)))
+    try {
+      h = pts.length >= 4 ? new ConvexGeometry(pts) : g
+    } catch {
+      h = g
+    }
+    hulls.set(g, h)
+    return h
+  }
+  const shellOf = (m: THREE.Object3D): Shell => {
     let s = shells.get(m)
     if (s) return s
-    s = { hold: [], flash: [] }
+    const rimMat = rimBase.clone()
+    const fillMat = fillBase.clone()
+    s = { rim: [], fill: [], rimMats: [], fillMats: [] }
     const meshes: THREE.Mesh[] = []
     m.traverse((o) => {
       const mm = o as THREE.Mesh
       if (mm.isMesh && !mm.userData.halo) meshes.push(mm)
     })
     for (const mm of meshes) {
-      for (const [list, mt] of [[s.hold, holdMat], [s.flash, flashMat]] as const) {
-        const h = new THREE.Mesh(mm.geometry, mt)
+      const g = hullOf(mm.geometry)
+      if (!g.boundingBox) g.computeBoundingBox()
+      box.copy(g.boundingBox!)
+      // each mesh its own box: the clone's uniforms are per shell, so a
+      // compound prop's parts are cloned per part
+      const rm = meshes.length > 1 ? rimMat.clone() : rimMat
+      const fm = meshes.length > 1 ? fillMat.clone() : fillMat
+      for (const mt of [rm, fm]) {
+        box.getCenter(mt.uniforms.uCenter.value)
+        box.getSize(mt.uniforms.uHalf.value).multiplyScalar(0.5)
+      }
+      s.rimMats.push(rm)
+      s.fillMats.push(fm)
+      for (const [list, mt] of [[s.rim, rm], [s.fill, fm]] as const) {
+        const h = new THREE.Mesh(g, mt)
         h.userData.halo = true
         h.visible = false
         h.castShadow = false
         h.receiveShadow = false
+        h.frustumCulled = false
         h.renderOrder = 4
         mm.add(h)
         list.push(h)
@@ -302,16 +482,16 @@ export function createBeam(parent: THREE.Object3D): Beam {
     shells.set(m, s)
     return s
   }
-  let haloOn: THREE.Object3D | null = null
-  let haloK = 0
-  let flashOn: THREE.Object3D | null = null
-  let flashT = 1
-  /** the warm-up's own shell: a unit box the halo programs compile on */
-  const warmShell = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3), holdMat)
-  const warmFlash = new THREE.Mesh(warmShell.geometry, flashMat)
-  warmShell.visible = warmFlash.visible = false
-  warmShell.frustumCulled = warmFlash.frustumCulled = false
-  root.add(warmShell, warmFlash)
+  const shellMats = (s: Shell, which: 'rim' | 'fill') => (which === 'rim' ? s.rimMats : s.fillMats)
+  /** the warm-up's own shells: a box the shell programs compile on */
+  const warmGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3)
+  const warmRim = new THREE.Mesh(warmGeo, rimBase)
+  const warmFill = new THREE.Mesh(warmGeo, fillBase)
+  for (const w of [warmRim, warmFill]) {
+    w.visible = false
+    w.frustumCulled = false
+    root.add(w)
+  }
 
   /* ------------------------------------------------------ the curve -- */
   const ctrl = new THREE.Vector3()
@@ -319,53 +499,62 @@ export function createBeam(parent: THREE.Object3D): Beam {
   const ctrlGoal = new THREE.Vector3()
   let ctrlFresh = true
   const p = new THREE.Vector3()
-  const d = new THREE.Vector3()
-  const perpA = new THREE.Vector3()
-  const perpB = new THREE.Vector3()
   const tmp = new THREE.Vector3()
+  const mid = new THREE.Vector3()
   let time = 0
   let amount = 0
   let kickK = 0
   let lastMode: BeamFrame['mode'] = 'off'
-  let flicker = 1
+  let px = 0.004
+
+  let haloOn: THREE.Object3D | null = null
+  let haloOff: THREE.Object3D | null = null
+  let haloK = 0
+  let haloOffK = 0
+  let flashOn: THREE.Object3D | null = null
+  let flashT = 1
+  let flashK = 1
+
+  const setShell = (m: THREE.Object3D | null, which: 'rim' | 'fill', on: boolean) => {
+    if (!m) return
+    const s = shellOf(m)
+    for (const h of which === 'rim' ? s.rim : s.fill) h.visible = on
+  }
 
   const update = (f: BeamFrame) => {
     const dt = Math.max(0, Math.min(0.1, f.dt))
     time += dt
-    kickK = Math.max(0, kickK - dt * 6)
-    // fade in fast, out faster; a miss flickers like a beam finding nothing
-    const want = f.mode === 'off' ? 0 : f.mode === 'miss' ? 0.55 : 1
-    amount += (want - amount) * (1 - Math.exp(-dt * (want > amount ? 40 : 28)))
+    kickK = Math.max(0, kickK - dt * 5)
+    px = pixelAtUnit(f.fov, f.lines)
+    // fade in fast, out a touch slower; a miss is a fainter stub
+    const want = f.mode === 'off' ? 0 : f.mode === 'miss' ? 0.8 : 1
+    amount += (want - amount) * (1 - Math.exp(-dt * (want > amount ? 45 : 22)))
     if (f.mode !== 'off') lastMode = f.mode
     const live = amount > 0.02
     ribbon.visible = live
+    glow.visible = live
     endGlow.visible = live
     muzzleGlow.visible = live
     if (live) {
+      const miss = lastMode === 'miss'
       const L = Math.max(0.01, f.muzzle.distanceTo(f.end))
-      // the control point: on the aim line, three quarters of the way to the
-      // grab point's projection onto it, then sprung so a fast turn whips it
-      d.subVectors(f.end, f.muzzle)
-      const along = Math.max(0.2, d.dot(f.forward))
-      ctrlGoal.copy(f.forward).multiplyScalar(along * (lastMode === 'miss' ? 0.5 : 0.75)).add(f.muzzle)
-      if (ctrlFresh || lastMode === 'miss') {
+      // the control point: the target itself, a quarter of the way back to
+      // the chord, then sprung so a fast turn whips the beam
+      mid.addVectors(f.muzzle, f.end).multiplyScalar(0.5)
+      if (miss) ctrlGoal.copy(mid)
+      else ctrlGoal.copy(f.target).lerp(mid, 0.2)
+      if (ctrlFresh || miss) {
         ctrl.copy(ctrlGoal)
         ctrlVel.set(0, 0, 0)
         ctrlFresh = false
       } else {
-        // critically damped at 26 rad/s, semi-implicit
-        const w = 26
+        // a little under critical at 24 rad/s, implicit
+        const w = 24
+        const z = 0.7
         tmp.subVectors(ctrlGoal, ctrl).multiplyScalar(w * w * dt)
-        ctrlVel.addScaledVector(tmp, 1).multiplyScalar(1 / (1 + 2 * w * dt))
+        ctrlVel.add(tmp).multiplyScalar(1 / (1 + 2 * z * w * dt + w * w * dt * dt))
         ctrl.addScaledVector(ctrlVel, dt)
       }
-      // two perpendiculars to the chord for the wobble
-      d.normalize()
-      perpA.set(0, 1, 0).cross(d)
-      if (perpA.lengthSq() < 1e-4) perpA.set(1, 0, 0).cross(d)
-      perpA.normalize()
-      perpB.crossVectors(d, perpA)
-      const wob = (0.02 + 0.32 * f.strain) * Math.min(1, L / 8)
       for (let i = 0; i < PTS; i++) {
         const t = i / SEGS
         const a = 1 - t
@@ -376,12 +565,6 @@ export function createBeam(parent: THREE.Object3D): Beam {
         const tx = 2 * a * (ctrl.x - f.muzzle.x) + 2 * t * (f.end.x - ctrl.x)
         const ty = 2 * a * (ctrl.y - f.muzzle.y) + 2 * t * (f.end.y - ctrl.y)
         const tz = 2 * a * (ctrl.z - f.muzzle.z) + 2 * t * (f.end.z - ctrl.z)
-        // wobble: two travelling sines per axis, pinned at both ends
-        const env = Math.sin(Math.PI * t)
-        const ph = t * L * 0.55
-        const wa = (Math.sin(ph * 2.1 - time * 23) + 0.6 * Math.sin(ph * 5.3 + time * 37)) * wob * env
-        const wb = (Math.sin(ph * 1.7 + time * 19 + 1.3) + 0.6 * Math.sin(ph * 4.4 - time * 31)) * wob * env
-        p.addScaledVector(perpA, wa).addScaledVector(perpB, wb)
         for (let k = 0; k < 2; k++) {
           const j = (i * 2 + k) * 3
           pos[j] = p.x
@@ -394,48 +577,96 @@ export function createBeam(parent: THREE.Object3D): Beam {
       }
       posAttr.needsUpdate = true
       tanAttr.needsUpdate = true
-      if (lastMode === 'miss') flicker = 0.55 + Math.random() * 0.6
-      else flicker = 1
-      const k = amount * flicker * (1 + kickK * 1.6)
+      // a miss flickers like a beam finding nothing to take
+      const flicker = miss ? 0.6 + 0.4 * Math.abs(Math.sin(time * 61) * Math.sin(time * 23)) : 1
+      const k = Math.min(1, amount * flicker)
+      const pulse = 1 + kickK * 0.8
       u.uAmount.value = k
       u.uTime.value = time
       u.uLen.value = L
       u.uStrain.value = f.strain
-      u.uPx.value = (MIN_PX * 2 * Math.tan(THREE.MathUtils.degToRad(f.fov) / 2)) / Math.max(60, f.lines)
-      u.uW0.value = 0.045
-      u.uW1.value = lastMode === 'miss' ? 0.03 : 0.05
+      u.uMiss.value = miss ? 1 : 0
+      u.uPx.value = px
+      u.uMinPx.value = (miss ? MIN_PX * 0.6 : MIN_PX) * (1 + kickK * 0.5)
+      u.uW0.value = 0.075 * pulse
+      u.uW1.value = (miss ? 0.035 : 0.055) * pulse
+      u.uCore.value.copy(CORE).multiplyScalar(1 + kickK * 0.6)
+      // the glow copies every number but its width
+      for (const key of ['uAmount', 'uTime', 'uLen', 'uStrain', 'uMiss', 'uPx', 'uMinPx', 'uW0', 'uW1'] as const) {
+        gu[key].value = u[key].value
+      }
       // the bite: a glow at the far end, nudged toward the camera so the
       // surface it sits on does not cut it in half
       tmp.copy(f.camera.position).sub(f.end)
-      const toCam = Math.min(0.5, tmp.length() * 0.5)
+      const toCam = Math.min(0.6, tmp.length() * 0.3)
       endGlow.position.copy(f.end).addScaledVector(tmp.normalize(), toCam)
-      const endDist = f.camera.position.distanceTo(endGlow.position)
-      const endSize = (lastMode === 'miss' ? 0.7 : 1.5) + endDist * 0.02 + f.strain * 0.6 + kickK * 1.6
-      endGlow.scale.setScalar(endSize * (0.9 + 0.1 * Math.sin(time * 40)))
-      endMat.opacity = 1
-      endMat.color.setRGB(0.9, 2.0, 3.2).multiplyScalar(k)
+      endU.uSize.value = ((miss ? 0.55 : 1.0) + f.strain * 0.5 + kickK * 1.2) * (0.92 + 0.08 * Math.sin(time * 40))
+      endU.uPx.value = px * (miss ? 9 : 14)
+      endU.uAmount.value = k * (miss ? 0.8 : 0.95)
+      // the muzzle flare, on the claw
       muzzleGlow.position.copy(f.muzzle)
-      muzzleGlow.scale.setScalar((0.2 + kickK * 0.25) * (0.85 + 0.15 * Math.sin(time * 53)))
-      muzzleMat.color.setRGB(1.1, 2.2, 3.4).multiplyScalar(Math.min(1.4, k))
+      muzU.uSize.value = (0.26 + kickK * 0.3 + f.strain * 0.06) * (0.9 + 0.1 * Math.sin(time * 53))
+      muzU.uPx.value = px * 12
+      muzU.uAmount.value = Math.min(1, k * 1.1)
     } else {
       ctrlFresh = true
     }
 
-    /* the held prop's halo, eased on and off */
-    const hk = haloOn ? 1 : 0
-    haloK += (hk - haloK) * (1 - Math.exp(-dt * 18))
-    holdMat.uniforms.uAmount.value = haloK * (0.8 + 0.2 * Math.sin(time * 16)) * (1 + f.strain * 0.6)
+    /* the held prop's rim, eased on and off, pulsing with the strain */
+    haloK += ((haloOn ? 1 : 0) - haloK) * (1 - Math.exp(-dt * 20))
+    if (haloOn) {
+      const s = shellOf(haloOn)
+      const amt = Math.min(1, haloK * (0.8 + 0.12 * Math.sin(time * 14) + kickK * 0.4 + f.strain * 0.15))
+      for (const m of shellMats(s, 'rim')) {
+        m.uniforms.uAmount.value = amt
+        m.uniforms.uFill.value = 1
+        m.uniforms.uPx.value = RIM_PX * px * (1 + kickK * 0.8)
+        m.uniforms.uGrow.value = 0.02
+        m.uniforms.uColor.value.copy(HALO)
+      }
+    }
+    // the one just let go fades its rim out rather than blinking off
+    if (haloOff) {
+      haloOffK = Math.max(0, haloOffK - dt * 6)
+      if (haloOffK <= 0 || haloOff === flashOn) {
+        setShell(haloOff, 'rim', false)
+        if (haloOff !== flashOn) setShell(haloOff, 'fill', false)
+        haloOff = null
+      } else {
+        for (const m of shellMats(shellOf(haloOff), 'rim')) m.uniforms.uAmount.value = haloOffK * 0.8
+      }
+    }
 
-    /* the freeze flash: a hard pop, gone in a third of a second */
+    /* the freeze flash: the prop fills blue, its rim swells, a ring pops */
     if (flashOn || pop.visible) {
       flashT += dt
-      const k = Math.max(0, 1 - flashT / 0.35)
-      flashMat.uniforms.uAmount.value = k * k * 3
-      flashMat.uniforms.uFill.value = 0.35 * k
-      popMat.color.copy(FLASH).multiplyScalar(k * 1.6)
-      pop.scale.setScalar(1.2 + (1 - k) * 3.5)
+      const k = Math.max(0, 1 - flashT / 0.4)
+      const e = k * k
+      if (flashOn) {
+        const s = shellOf(flashOn)
+        for (const m of shellMats(s, 'fill')) {
+          m.uniforms.uAmount.value = e * 0.8 * flashK
+          m.uniforms.uFill.value = 0.55
+          m.uniforms.uCover.value = 0.5
+          m.uniforms.uPx.value = 0
+          m.uniforms.uGrow.value = 0.01
+          m.uniforms.uColor.value.copy(FLASH)
+        }
+        for (const m of shellMats(s, 'rim')) {
+          m.uniforms.uAmount.value = Math.max(flashOn === haloOn ? haloK : 0, e * flashK)
+          m.uniforms.uPx.value = RIM_PX * px * (1 + (1 - k) * 2.5)
+          m.uniforms.uColor.value.copy(FLASH)
+        }
+      }
+      popU.uAmount.value = Math.min(1, e * 1.3 * flashK)
+      popU.uRing.value = 0.25 + (1 - k) * 0.7
+      popU.uSize.value = 1.4 + (1 - k) * 3
+      popU.uPx.value = px * 30
       if (k <= 0) {
-        if (flashOn) for (const h of shellsOf(flashOn).flash) h.visible = false
+        if (flashOn && flashOn !== haloOn) {
+          setShell(flashOn, 'fill', false)
+          setShell(flashOn, 'rim', false)
+        } else if (flashOn) setShell(flashOn, 'fill', false)
         flashOn = null
         pop.visible = false
       }
@@ -444,15 +675,32 @@ export function createBeam(parent: THREE.Object3D): Beam {
 
   const holdHalo = (mesh: THREE.Object3D | null) => {
     if (mesh === haloOn) return
-    if (haloOn) for (const h of shellsOf(haloOn).hold) h.visible = false
+    if (haloOn) {
+      if (haloOff && haloOff !== flashOn) setShell(haloOff, 'rim', false)
+      haloOff = haloOn
+      haloOffK = haloK
+      setShell(haloOn, 'fill', false)
+    }
     haloOn = mesh
-    if (mesh) for (const h of shellsOf(mesh).hold) h.visible = true
+    haloK = 0
+    if (mesh) {
+      if (mesh === haloOff) haloOff = null
+      setShell(mesh, 'rim', true)
+    }
   }
 
-  const flash = (mesh: THREE.Object3D | null, point: THREE.Vector3) => {
-    if (flashOn) for (const h of shellsOf(flashOn).flash) h.visible = false
+  const flash = (mesh: THREE.Object3D | null, point: THREE.Vector3, k = 1) => {
+    if (flashOn && flashOn !== mesh && flashOn !== haloOn) {
+      setShell(flashOn, 'fill', false)
+      setShell(flashOn, 'rim', false)
+    }
     flashOn = mesh
-    if (mesh) for (const h of shellsOf(mesh).flash) h.visible = true
+    flashK = k
+    if (mesh) {
+      if (mesh === haloOff) haloOff = null
+      setShell(mesh, 'fill', true)
+      setShell(mesh, 'rim', true)
+    }
     flashT = 0
     pop.position.copy(point)
     pop.visible = true
@@ -481,21 +729,24 @@ export function createBeam(parent: THREE.Object3D): Beam {
     }
     posAttr.needsUpdate = true
     tanAttr.needsUpdate = true
+    // drawn, but at a coverage that the fragment discards: the program and
+    // the buffers are paid for, the frame shows nothing
     u.uAmount.value = 0.001
     ribbon.visible = true
+    glow.visible = true
     put(endGlow, 2, 0)
     put(muzzleGlow, 2, 0.1)
     put(pop, 2, -0.1)
-    put(warmShell, 3, 0.4)
-    put(warmFlash, 3, -0.4)
-    endMat.color.setScalar(0.001)
-    muzzleMat.color.setScalar(0.001)
-    popMat.color.setScalar(0.001)
+    put(warmRim, 3, 0.4)
+    put(warmFill, 3, -0.4)
+    for (const m of [endU, muzU, popU]) m.uAmount.value = 0.001
+    rimBase.uniforms.uAmount.value = 0.001
+    fillBase.uniforms.uAmount.value = 0.001
   }
   const unstage = () => {
     if (!staged) return
     staged = false
-    for (const o of [ribbon, endGlow, muzzleGlow, pop, warmShell, warmFlash]) o.visible = false
+    for (const o of [ribbon, glow, endGlow, muzzleGlow, pop, warmRim, warmFill]) o.visible = false
     amount = 0
     ctrlFresh = true
   }
@@ -513,14 +764,35 @@ export function createBeam(parent: THREE.Object3D): Beam {
     dispose: () => {
       root.removeFromParent()
       geo.dispose()
+      quad.dispose()
+      warmGeo.dispose()
       mat.dispose()
-      glowTex.dispose()
-      endMat.dispose()
-      muzzleMat.dispose()
-      popMat.dispose()
-      holdMat.dispose()
-      flashMat.dispose()
-      warmShell.geometry.dispose()
+      glowMat.dispose()
+      for (const b of [endGlow, muzzleGlow, pop]) (b.material as THREE.Material).dispose()
+      rimBase.dispose()
+      fillBase.dispose()
     },
   }
+}
+
+/**
+ * A beam frame from somebody else's `HoldRecord`: the far end and the target
+ * come off the wire, the muzzle from wherever their body's gun is drawn. The
+ * physgun's own frame is filled the same way from its live view, so a remote
+ * beam and the local one are drawn by the same code from the same numbers.
+ */
+export const frameFromRecord = (
+  rec: {
+    kind: 'prop' | 'rig' | 'none'
+    end: readonly [number, number, number]
+    target: readonly [number, number, number]
+    strain: number
+  },
+  out: BeamFrame,
+) => {
+  out.mode = rec.kind === 'none' ? 'off' : 'hold'
+  out.end.set(rec.end[0], rec.end[1], rec.end[2])
+  out.target.set(rec.target[0], rec.target[1], rec.target[2])
+  out.strain = rec.strain
+  return out
 }

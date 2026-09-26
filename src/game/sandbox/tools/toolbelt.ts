@@ -102,6 +102,9 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   const muzzle = new THREE.Vector3()
   const forward = new THREE.Vector3()
   const flashAt = new THREE.Vector3()
+  /** the holder's view direction as of the last update: the body's gun
+      points along it in third person, not along the chase camera */
+  const aimDir = new THREE.Vector3(0, 0, -1)
 
   const offEvents = physgun.on((e) => {
     switch (e.type) {
@@ -151,6 +154,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   }
 
   const update = (input: ToolInput, active: boolean) => {
+    aimDir.copy(input.aim.dir)
     if (!active) {
       if (physgun.holding) physgun.release(false)
       lastActive = false
@@ -174,7 +178,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       vm.update({
         camera: f.camera, dt: f.dt, gait: f.gait, grounded: f.grounded,
         holding: physgun.holding, strain: physgun.view.strain,
-        firstPerson: f.firstPerson, hand: f.hand, shown,
+        firstPerson: f.firstPerson, hand: f.hand, aim: aimDir, shown,
       })
     }
     if (beam) {
@@ -183,11 +187,11 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
         f.camera.getWorldDirection(forward)
         muzzle.copy(f.camera.position).addScaledVector(forward, 0.8)
       }
+      beam.holdHalo(shown ? physgun.prop?.mesh ?? null : null)
       beam.update({
-        muzzle, forward, end: physgun.view.end, mode: shown ? physgun.view.mode : 'off',
+        muzzle, end: physgun.view.end, target: physgun.view.target, mode: shown ? physgun.view.mode : 'off',
         strain: physgun.view.strain, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
       })
-      beam.holdHalo(shown ? physgun.prop?.mesh ?? null : null)
     }
     sfx?.hum(shown && physgun.holding, physgun.view.strain)
   }

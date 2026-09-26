@@ -246,21 +246,38 @@ const draw = (r: THREE.WebGLRenderer, st: Stage) => {
   else r.render(st.scene, st.cam)
 }
 
-/** the moving camera and the render side, for a frame drawn at time t */
-const prep = (st: Stage, t: number) => {
-  const dt = Math.max(0, t - st.drawnAt)
-  st.drawnAt = t
-  if (st.s.lens) {
-    const shot = st.s.lens(st.c, t)
-    st.cam.position.set(...shot.from)
-    st.cam.lookAt(shot.to[0], shot.to[1], shot.to[2])
-    if (shot.fov && shot.fov !== st.cam.fov) {
-      st.cam.fov = shot.fov
-      st.cam.updateProjectionMatrix()
-    }
-    st.cam.updateMatrixWorld()
+/** the lens at time t */
+const aimLens = (st: Stage, t: number) => {
+  if (!st.s.lens) return
+  const shot = st.s.lens(st.c, t)
+  st.cam.position.set(...shot.from)
+  st.cam.lookAt(shot.to[0], shot.to[1], shot.to[2])
+  if (shot.fov && shot.fov !== st.cam.fov) {
+    st.cam.fov = shot.fov
+    st.cam.updateProjectionMatrix()
   }
-  st.pres?.frame(t, dt, lookLines)
+  st.cam.updateMatrixWorld()
+}
+
+/** the moving camera and the render side, for a frame drawn at time t. A
+    sheet's stills are seconds apart, and the render side is springs (a
+    viewmodel's sway, a body's balance, a beam's whip) that a one-second
+    step would throw anywhere, so it is walked there in 60 Hz steps with the
+    lens moving under it, and only the last one is drawn */
+const prep = (st: Stage, t: number) => {
+  const from = st.drawnAt
+  st.drawnAt = t
+  if (st.pres) {
+    const h = 1 / 60
+    let at = from
+    while (t - at > h * 1.5) {
+      at += h
+      aimLens(st, at)
+      st.pres.frame(at, h, lookLines)
+    }
+    aimLens(st, t)
+    st.pres.frame(t, Math.max(0, t - at), lookLines)
+  } else aimLens(st, t)
 }
 
 const advance = (st: Stage, to: number) => {
