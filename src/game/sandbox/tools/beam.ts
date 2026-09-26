@@ -14,15 +14,16 @@ import { GLOW_ALPHA } from '../../render/pixelLook'
   which is the multiplayer half of this piece: S6 only has to supply the
   numbers.
 
-  **The curve** is GMod's: a quadratic Bezier from the muzzle, through a
-  control point at the beam's *target* (the spot on your view ray where the
-  held thing is being pulled), to the grab point. While the thing is where
-  the beam wants it the target and the grab point coincide and the beam is a
-  straight line; while it lags a swing, the beam shoots out along your aim
-  and bends back round onto the prop, and the harder you swing a heavy thing
-  the deeper the bow. The control point is itself sprung, so even a snappy
-  prop whips the beam for a moment on a fast turn. There is no lateral
-  wobble: a zigzag reads as a scribble through the pixel look, not as energy.
+  **The curve** is GMod's: a cubic Bezier that leaves the muzzle along the
+  barrel (the first control point is out along the gun's own forward), is
+  pulled through the beam's *target* (the spot on your view ray where the
+  held thing is being pulled, second control point) and lands on the grab
+  point. The gun is aimed at that target (viewmodel.ts), so while the thing
+  is where the beam wants it the beam is a straight line out of the barrel;
+  while it lags a swing, the beam still leaves along the barrel toward where
+  you are aiming and bends round onto the prop, and the harder you swing a
+  heavy thing the deeper the bend. There is no lateral wobble: a zigzag
+  reads as a scribble through the pixel look, not as energy.
 
   **Colour through the look.** The look owns ACES, a chroma cap and a hue
   pull, so an additive HDR blue saturates to white long before it reads as
@@ -38,20 +39,25 @@ import { GLOW_ALPHA } from '../../render/pixelLook'
   (alpha ZERO / ONE), so a glow swept across the AlejOS screen's glass hole
   does not paint the hole shut.
 
-  **Width in pixels.** The ribbon (33 sections rewritten in place, expanded
-  toward the camera in the vertex shader) is a world width or a pixel width,
-  whichever is larger, because at a few hundred lines a physically thin beam
-  is under a pixel twenty units out and vanishes. The same rule sizes the
-  glow blobs and the prop's rim, so all three stay chunky, readable pixel
-  art at any distance rather than sub-pixel lines the look dithers away.
+  **Width in pixels, and only pixels.** GMod's beam is a thin bright core of
+  the same width all the way out, so this one is sized in pixels of the
+  look's internal target and nothing else: a one-pixel white-hot core, a
+  pixel of cyan either side, and a tight transparent glow a few pixels out
+  (the same ribbon drawn again, wider). The ribbon (33 sections rewritten in
+  place) is expanded toward the camera in the vertex shader by that pixel
+  width at its own depth. A world-sized width made the first cut a fat spike
+  at the muzzle, three metres from the lens, and a smear round the gun.
 
   **The rim** is an inverted hull: each mesh of the held prop gets a
   back-face copy pushed outward (per axis, off its own bounding box, so a
   box grows into a box and a barrel into a barrel with no gaps at the flat
   shading's split corners), which only shows where it sticks out past the
   silhouette. That is GMod's cyan outline, and unlike a fresnel fill it never
-  washes the prop's own colours out. A freeze adds a front-face flash that
-  fills the prop blue and fades in a third of a second while the rim swells.
+  washes the prop's own colours out. A freeze is the same outline pulsing:
+  it swells to three pixels, goes white-hot and rings twice back down over
+  half a second, with only a faint glaze of light over the prop itself, so
+  the thing you froze never stops looking like itself (the first cut
+  filled it pale blue, and for three frames it read as the prop vanishing).
 
   **Programs.** Five: the ribbon, its glow (the same shader, blended
   differently), the glow blob (every sprite shares it), the rim and the flash
@@ -65,16 +71,16 @@ const SEGS = 32
 const PTS = SEGS + 1
 /** narrowest the glow may draw, in pixels of the look's internal target
     (half-width) */
-const MIN_PX = 3.2
+const MIN_PX = 1.3
 /** narrowest a rim may be, in pixels */
-const RIM_PX = 1.35
+const RIM_PX = 1.2
 
 /** the beam's colours, linear, before the look's exposure and ACES */
-const BAND = new THREE.Color(0.01, 0.42, 0.95)
-const CORE = new THREE.Color(0.5, 1.6, 2.0)
-const HALO = new THREE.Color(0.02, 0.42, 2.0)
+const BAND = new THREE.Color(0.015, 0.55, 1.3)
+const CORE = new THREE.Color(0.9, 2.2, 2.6)
+const HALO = new THREE.Color(0.05, 0.85, 1.6)
 /** the freeze: a deeper, whiter blue */
-const FLASH = new THREE.Color(0.5, 1.3, 3.6)
+const FLASH = new THREE.Color(0.6, 1.8, 2.6)
 
 /* ------------------------------------------------------------ shaders -- */
 
@@ -131,39 +137,28 @@ float vnoise(float x) {
 void main() {
   float s = abs(vS) * uWide;
   float along = vT * uLen;
-  // energy travelling from the gun to the target: a slow swell, a fast
-  // shimmer, and bright packets that ride the core out to the grab point
+  // energy travelling from the gun to the target: bright packets ride the
+  // core out to the grab point, a slow shimmer under them
   float n = vnoise(along * 0.9 - uTime * 14.0) * 0.55 + vnoise(along * 3.3 - uTime * 37.0 + 7.3) * 0.45;
   float packet = pow(max(0.0, sin(along * 1.3 - uTime * 26.0)), 6.0);
-  // the band breathes with the noise; the core never goes under a pixel
-  float edge = 0.8 + 0.2 * n;
-  // the core: a third of the width, but never under a pixel and a half
-  float coreW = clamp(0.9 / max(vPx, 0.5), 0.22, 0.6);
-  float core = step(s, coreW * (0.85 + 0.3 * packet));
-  float band = step(s, edge);
-  // hotter at the muzzle, and again where it bites
-  float ends = 1.0 + 0.5 * exp(-vT * 7.0) + 0.3 * exp(-(1.0 - vT) * 10.0);
-  float hot = (0.75 + 0.3 * n + 0.7 * packet) * ends * (1.0 + uStrain * 0.35);
-  // three stepped tones, pixel-art style: a hot core, a bright azure band,
-  // and a deeper blue at the rim (the look's silhouette line darkens that
-  // one pixel further, which is what outlines the beam)
-  float rim = step(edge * 0.72, s);
-  vec3 band3 = mix(uBand * (0.85 + 0.35 * n + 0.4 * packet), uBand * 0.55, rim);
-  vec3 col = mix(band3, uCore * hot, core);
   if (uWide > 1.0) {
-    // the glow: a second, wider copy of the ribbon drawn around the first,
-    // which lights what is behind it rather than covering it, with sparks
-    // crackling in it: single hot pixels that live for a few frames each
-    if (s < edge) discard;
-    float g = pow(max(0.0, 1.0 - s / uWide), 1.5) * (0.55 + 0.3 * n + 0.3 * packet) * uAmount * (1.0 - uMiss * 0.6);
-    float cell = floor(along * 2.2 + vS * 3.0);
-    float spark = step(0.9, hash(cell * 17.3 + floor(uTime * 18.0) * 3.1)) * step(s, uWide * 0.7) * uAmount;
-    if (g < 0.02 && spark < 0.5) discard;
-    gl_FragColor = spark > 0.5 ? vec4(uCore * 0.8, 1.0) : vec4(uBand * 1.5 * g, g * 0.45);
+    // the glow: a second, wider copy of the ribbon drawn round the first,
+    // tight and faint, lighting what is behind it rather than covering it,
+    // with sparks crackling in it (single hot pixels that live a few frames)
+    if (s < 1.0) discard;
+    float g = pow(max(0.0, 1.0 - s / uWide), 2.2) * (0.5 + 0.25 * n + 0.35 * packet) * uAmount * (1.0 - uMiss * 0.5);
+    float cell = floor(along * 2.6 + vS * 2.0);
+    float spark = step(0.93, hash(cell * 17.3 + floor(uTime * 20.0) * 3.1)) * step(s, uWide * 0.6) * uAmount;
+    if (g < 0.03 && spark < 0.5) discard;
+    gl_FragColor = spark > 0.5 ? vec4(uCore * 0.9, 1.0) : vec4(uBand * 1.3 * g, g * 0.35);
     return;
   }
-  // a miss is a thinner, flickering stub: the core alone
-  float a = mix(band, core, uMiss) * uAmount;
+  // the ribbon: a white-hot core a pixel wide with a pixel of cyan either
+  // side. A miss is the core alone, flickering
+  float core = step(s, 0.42 + 0.2 * packet);
+  float hot = (0.85 + 0.25 * n + 0.6 * packet) * (1.0 + uStrain * 0.3);
+  vec3 col = mix(uBand * (0.9 + 0.3 * n + 0.5 * packet), uCore * hot, core);
+  float a = mix(1.0, core, uMiss) * uAmount;
   if (a < 0.5) discard;
   // the look's glow code in alpha: solid, and left out of the baked grade
   gl_FragColor = vec4(col, uGlowA);
@@ -188,10 +183,23 @@ uniform vec3 uColor;
 uniform vec3 uHot;
 uniform float uAmount;
 uniform float uRing;
+uniform float uStar;
+uniform float uSpin;
 varying vec2 vUv;
 void main() {
   float r = length(vUv);
   if (r > 1.0) discard;
+  if (uStar > 0.0) {
+    // a sparkle: four hard rays and a hot centre, turning, no soft cloud
+    float c = cos(uSpin), sn = sin(uSpin);
+    vec2 q = abs(vec2(c * vUv.x - sn * vUv.y, sn * vUv.x + c * vUv.y));
+    float ray = max(step(q.y, 0.11) * step(q.x, 1.0 - r * 0.2), step(q.x, 0.11) * step(q.y, 0.75));
+    float centre = step(r, 0.2);
+    float a = max(ray * (1.0 - r), centre) * uAmount * uStar;
+    if (a < 0.2) discard;
+    gl_FragColor = vec4(mix(uColor, uHot, max(centre, 1.0 - r)) * a, a);
+    return;
+  }
   // a white-hot disc inside a cyan glow, stepped rather than smooth so it
   // reads as a pixel-art flare, plus an optional ring (the freeze pop)
   float glow = pow(1.0 - r, 1.6);
@@ -234,9 +242,21 @@ uniform vec3 uColor;
 uniform float uAmount;
 uniform float uFill;
 uniform float uCover;
+uniform float uSolid;
+uniform float uGlowA;
 varying float vRim;
+const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 void main() {
   float a = min(1.0, (uFill + (1.0 - uFill) * vRim * vRim) * uAmount);
+  if (uSolid > 0.5) {
+    // the outline: a solid pixel line in the look's glow code (so the grade
+    // leaves its cyan alone), faded by an ordered dither rather than by
+    // blending, which keeps every pixel of it crisp
+    ivec2 p = ivec2(gl_FragCoord.xy) & 3;
+    if (a < (BAYER[p.y * 4 + p.x] + 0.5) / 16.0) discard;
+    gl_FragColor = vec4(uColor, uGlowA);
+    return;
+  }
   if (a < 0.01) discard;
   gl_FragColor = vec4(uColor * a, a * uCover);
 }
@@ -270,6 +290,8 @@ const blobMaterial = (color: THREE.Color, hot: THREE.Color) =>
       uSize: { value: 0.5 },
       uPx: { value: 0.01 },
       uRing: { value: 0 },
+      uStar: { value: 0 },
+      uSpin: { value: 0 },
     },
   }))
 
@@ -283,6 +305,8 @@ const shellMaterial = (side: THREE.Side) =>
       uAmount: { value: 0 },
       uFill: { value: 1 },
       uCover: { value: 1 },
+      uSolid: { value: 0 },
+      uGlowA: { value: GLOW_ALPHA },
       uGrow: { value: 0.03 },
       uPx: { value: 0.01 },
       uCenter: { value: new THREE.Vector3() },
@@ -297,6 +321,8 @@ export const pixelAtUnit = (fovDeg: number, lines: number) =>
 export interface BeamFrame {
   /** where the beam leaves the gun */
   muzzle: THREE.Vector3
+  /** the barrel's forward, unit: the beam leaves along it */
+  forward: THREE.Vector3
   /** the far end: the grab point (hold) or the surface hit (miss) */
   end: THREE.Vector3
   /** where the beam is pulling the grab point to (hold); the bow bends
@@ -433,6 +459,10 @@ export function createBeam(parent: THREE.Object3D): Beam {
 
   /* -------------------------------------------------------- the shells -- */
   const rimBase = shellMaterial(THREE.BackSide)
+  // the rim is solid and writes the glow code into alpha (see SHELL_FRAG)
+  rimBase.uniforms.uSolid.value = 1
+  rimBase.blendSrcAlpha = THREE.OneFactor
+  rimBase.blendDstAlpha = THREE.ZeroFactor
   const fillBase = shellMaterial(THREE.FrontSide)
   fillBase.uniforms.uColor.value.copy(FLASH)
   const box = new THREE.Box3()
@@ -514,12 +544,12 @@ export function createBeam(parent: THREE.Object3D): Beam {
 
   /* ------------------------------------------------------ the curve -- */
   const ctrl = new THREE.Vector3()
+  const c1 = new THREE.Vector3()
   const ctrlVel = new THREE.Vector3()
   const ctrlGoal = new THREE.Vector3()
   let ctrlFresh = true
   const p = new THREE.Vector3()
   const tmp = new THREE.Vector3()
-  const mid = new THREE.Vector3()
   let time = 0
   let amount = 0
   let kickK = 0
@@ -558,33 +588,44 @@ export function createBeam(parent: THREE.Object3D): Beam {
     if (live) {
       const miss = lastMode === 'miss'
       const L = Math.max(0.01, f.muzzle.distanceTo(f.end))
-      // the control point: the target itself, a quarter of the way back to
-      // the chord, then sprung so a fast turn whips the beam
-      mid.addVectors(f.muzzle, f.end).multiplyScalar(0.5)
-      if (miss) ctrlGoal.copy(mid)
-      else ctrlGoal.copy(f.target).lerp(mid, 0.2)
+      // the four points: out of the barrel along its forward, through the
+      // target (the end itself on a miss, where there is no target), onto
+      // the grab point. The second is sprung a little, so a fast turn whips
+      // the bend before it settles
+      c1.copy(f.forward).multiplyScalar(L * 0.4).add(f.muzzle)
+      ctrlGoal.copy(miss ? f.end : f.target)
       if (ctrlFresh || miss) {
         ctrl.copy(ctrlGoal)
         ctrlVel.set(0, 0, 0)
         ctrlFresh = false
       } else {
-        // a little under critical at 24 rad/s, implicit
-        const w = 24
-        const z = 0.7
+        const w = 30
+        const z = 0.75
         tmp.subVectors(ctrlGoal, ctrl).multiplyScalar(w * w * dt)
         ctrlVel.add(tmp).multiplyScalar(1 / (1 + 2 * z * w * dt + w * w * dt * dt))
         ctrl.addScaledVector(ctrlVel, dt)
       }
+      const P0 = f.muzzle
+      const P3 = f.end
       for (let i = 0; i < PTS; i++) {
         const t = i / SEGS
         const a = 1 - t
-        // quadratic Bezier and its derivative
-        p.copy(f.muzzle).multiplyScalar(a * a)
-          .addScaledVector(ctrl, 2 * a * t)
-          .addScaledVector(f.end, t * t)
-        const tx = 2 * a * (ctrl.x - f.muzzle.x) + 2 * t * (f.end.x - ctrl.x)
-        const ty = 2 * a * (ctrl.y - f.muzzle.y) + 2 * t * (f.end.y - ctrl.y)
-        const tz = 2 * a * (ctrl.z - f.muzzle.z) + 2 * t * (f.end.z - ctrl.z)
+        // cubic Bezier and its derivative
+        const b0 = a * a * a
+        const b1 = 3 * a * a * t
+        const b2 = 3 * a * t * t
+        const b3 = t * t * t
+        p.set(
+          b0 * P0.x + b1 * c1.x + b2 * ctrl.x + b3 * P3.x,
+          b0 * P0.y + b1 * c1.y + b2 * ctrl.y + b3 * P3.y,
+          b0 * P0.z + b1 * c1.z + b2 * ctrl.z + b3 * P3.z,
+        )
+        const d0 = 3 * a * a
+        const d1 = 6 * a * t
+        const d2 = 3 * t * t
+        const tx = d0 * (c1.x - P0.x) + d1 * (ctrl.x - c1.x) + d2 * (P3.x - ctrl.x)
+        const ty = d0 * (c1.y - P0.y) + d1 * (ctrl.y - c1.y) + d2 * (P3.y - ctrl.y)
+        const tz = d0 * (c1.z - P0.z) + d1 * (ctrl.z - c1.z) + d2 * (P3.z - ctrl.z)
         for (let k = 0; k < 2; k++) {
           const j = (i * 2 + k) * 3
           pos[j] = p.x
@@ -600,34 +641,38 @@ export function createBeam(parent: THREE.Object3D): Beam {
       // a miss flickers like a beam finding nothing to take
       const flicker = miss ? 0.6 + 0.4 * Math.abs(Math.sin(time * 61) * Math.sin(time * 23)) : 1
       const k = Math.min(1, amount * flicker)
-      const pulse = 1 + kickK * 0.8
       u.uAmount.value = k
       u.uTime.value = time
       u.uLen.value = L
       u.uStrain.value = f.strain
       u.uMiss.value = miss ? 1 : 0
       u.uPx.value = px
-      u.uMinPx.value = (miss ? MIN_PX * 0.6 : MIN_PX) * (1 + kickK * 0.5)
-      u.uW0.value = 0.045 * pulse
-      u.uW1.value = (miss ? 0.035 : 0.055) * pulse
-      u.uCore.value.copy(CORE).multiplyScalar(1 + kickK * 0.6)
+      // a grab or a release thickens it for a beat, by a pixel at most
+      u.uMinPx.value = (miss ? 1.1 : MIN_PX) * (1 + kickK * 0.5)
+      u.uW0.value = 0
+      u.uW1.value = 0
+      u.uCore.value.copy(CORE).multiplyScalar(1 + kickK * 0.4)
       // the glow copies every number but its width
       for (const key of ['uAmount', 'uTime', 'uLen', 'uStrain', 'uMiss', 'uPx', 'uMinPx', 'uW0', 'uW1'] as const) {
         gu[key].value = u[key].value
       }
-      // the bite: a glow at the far end, nudged toward the camera so the
-      // surface it sits on does not cut it in half
+      // the bite: a sparkle where the beam meets the thing, nudged toward
+      // the camera so the surface it sits on does not cut it in half
       tmp.copy(f.camera.position).sub(f.end)
-      const toCam = Math.min(0.6, tmp.length() * 0.3)
+      const toCam = Math.min(0.5, tmp.length() * 0.25)
       endGlow.position.copy(f.end).addScaledVector(tmp.normalize(), toCam)
-      endU.uSize.value = ((miss ? 0.55 : 1.0) + f.strain * 0.5 + kickK * 1.2) * (0.92 + 0.08 * Math.sin(time * 40))
-      endU.uPx.value = px * (miss ? 9 : 14)
-      endU.uAmount.value = k * (miss ? 0.8 : 0.95)
-      // the muzzle flare, on the claw
+      endU.uStar.value = 1
+      endU.uSpin.value = time * 3
+      endU.uSize.value = 0
+      endU.uPx.value = px * (miss ? 8 : 14) * (1 + kickK * 0.8 + 0.12 * Math.sin(time * 37))
+      endU.uAmount.value = k
+      // the muzzle: a small hard star on the claw, not a cloud
       muzzleGlow.position.copy(f.muzzle)
-      muzU.uSize.value = (0.26 + kickK * 0.3 + f.strain * 0.06) * (0.9 + 0.1 * Math.sin(time * 53))
-      muzU.uPx.value = px * 12
-      muzU.uAmount.value = Math.min(1, k * 1.1)
+      muzU.uStar.value = 1
+      muzU.uSpin.value = -time * 4
+      muzU.uSize.value = 0
+      muzU.uPx.value = px * 7 * (1 + kickK * 0.6 + 0.1 * Math.sin(time * 53))
+      muzU.uAmount.value = k
     } else {
       ctrlFresh = true
     }
@@ -636,11 +681,13 @@ export function createBeam(parent: THREE.Object3D): Beam {
     haloK += ((haloOn ? 1 : 0) - haloK) * (1 - Math.exp(-dt * 20))
     if (haloOn) {
       const s = shellOf(haloOn)
-      const amt = Math.min(1, haloK * (0.8 + 0.12 * Math.sin(time * 14) + kickK * 0.4 + f.strain * 0.15))
+      // solid once it is on (the dither only fades it in and out); the
+      // strain and a grab's kick show as thickness, not as flicker
+      const amt = Math.min(1, haloK * 1.1)
       for (const m of shellMats(s, 'rim')) {
         m.uniforms.uAmount.value = amt
         m.uniforms.uFill.value = 1
-        m.uniforms.uPx.value = RIM_PX * px * (1 + kickK * 0.8)
+        m.uniforms.uPx.value = RIM_PX * px * (1 + kickK * 1.2 + f.strain * 0.6)
         m.uniforms.uGrow.value = 0.02
         m.uniforms.uColor.value.copy(HALO)
       }
@@ -657,31 +704,28 @@ export function createBeam(parent: THREE.Object3D): Beam {
       }
     }
 
-    /* the freeze flash: the prop fills blue, its rim swells, a ring pops */
+    /* the freeze: the outline goes white-hot, swells and rings twice back
+       down; the prop keeps its own colours under a faint glaze of light */
     if (flashOn || pop.visible) {
       flashT += dt
-      const k = Math.max(0, 1 - flashT / 0.4)
+      const k = Math.max(0, 1 - flashT / 0.5)
       const e = k * k
+      // two rings of the outline: 1, then a smaller echo
+      const ring = Math.max(0, Math.cos(flashT * 26)) * e
       if (flashOn) {
         const s = shellOf(flashOn)
-        for (const m of shellMats(s, 'fill')) {
-          m.uniforms.uAmount.value = e * 0.8 * flashK
-          m.uniforms.uFill.value = 0.55
-          m.uniforms.uCover.value = 0.5
-          m.uniforms.uPx.value = 0
-          m.uniforms.uGrow.value = 0.01
-          m.uniforms.uColor.value.copy(FLASH)
-        }
+        // no fill: the prop keeps its own colours under the outline
+        for (const m of shellMats(s, 'fill')) m.uniforms.uAmount.value = 0
         for (const m of shellMats(s, 'rim')) {
-          m.uniforms.uAmount.value = Math.max(flashOn === haloOn ? haloK : 0, e * flashK)
-          m.uniforms.uPx.value = RIM_PX * px * (1 + (1 - k) * 2.5)
-          m.uniforms.uColor.value.copy(FLASH)
+          m.uniforms.uAmount.value = Math.max(flashOn === haloOn ? haloK : 0, Math.min(1, 0.35 + ring) * Math.min(1, e * 3) * flashK)
+          m.uniforms.uPx.value = RIM_PX * px * (1 + ring * 1.8)
+          m.uniforms.uColor.value.copy(FLASH).lerp(WHITE, ring * 0.6)
         }
       }
-      popU.uAmount.value = Math.min(1, e * 1.3 * flashK)
-      popU.uRing.value = 0.25 + (1 - k) * 0.7
-      popU.uSize.value = 1.4 + (1 - k) * 3
-      popU.uPx.value = px * 30
+      popU.uAmount.value = Math.min(1, e * 1.2 * flashK)
+      popU.uRing.value = 0.3 + (1 - k) * 0.65
+      popU.uSize.value = 0
+      popU.uPx.value = px * (18 + (1 - k) * 22)
       // in front of the surface it is on, or the prop's own face cuts it
       tmp.copy(f.camera.position).sub(popAt)
       pop.position.copy(popAt).addScaledVector(tmp.normalize(), Math.min(1.6, f.camera.position.distanceTo(popAt) * 0.3))
@@ -725,7 +769,6 @@ export function createBeam(parent: THREE.Object3D): Beam {
     flashK = k
     if (mesh) {
       if (mesh === haloOff) haloOff = null
-      setShell(mesh, 'fill', true)
       setShell(mesh, 'rim', true)
     }
     flashT = 0

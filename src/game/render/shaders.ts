@@ -199,7 +199,8 @@ export const GRADE_FRAG = /* glsl */ `
     vec3 col = src.rgb;
     float a = src.a;
     // A light source: alpha written as 254/255 (see GLOW_ALPHA in
-    // pixelLook.ts) is solid, not a hole, and skips the baked grade, whose
+    // pixelLook.ts) is solid, not a hole, takes no outline ink and no fake
+    // lamp light, and skips the baked grade, whose
     // chroma cap and hue pull would otherwise turn an energy beam into the
     // same murky pastel as the sky behind it. It still takes ACES and the
     // posterize, so it bands and dithers like everything else
@@ -264,7 +265,7 @@ export const GRADE_FRAG = /* glsl */ `
       }
       // an ordered jitter on the light itself, so the posterize cuts its
       // falloff into dithered steps instead of concentric rings
-      col += albedo * lit * (1.0 + (bayer(p + ivec2(3, 2)) - 0.5) * 0.7);
+      col += albedo * lit * (1.0 + (bayer(p + ivec2(3, 2)) - 0.5) * 0.7) * (1.0 - emits);
 
       // ---- outlines, from depth alone -----------------------------------
       float fogK = uFog.z > 0.5 ? 1.0 - smoothstep(uFog.x, uFog.y, zc) : 1.0;
@@ -319,7 +320,8 @@ export const GRADE_FRAG = /* glsl */ `
       float silK = skyBehind
         ? min(0.85, uEdge.x * 1.25) * max(fogK, 0.55)
         : uEdge.x * fogK;
-      col *= 1.0 - sil * silK;
+      // a light has no ink: the physgun's beam is a glow, not an object
+      col *= 1.0 - sil * silK * (1.0 - emits);
     } else {
       // ---- the sky, tied to the air --------------------------------------
       float toward = max(dot(dirW, uSunDir), 0.0);

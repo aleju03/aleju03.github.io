@@ -51,8 +51,8 @@ const CORE_HOT = new THREE.Color(0.08, 0.95, 2.7)
 /** where the gun sits in the camera's frame, first person, and its size
     there: the bottom-right corner, a quarter of the frame, the claw about
     two thirds of the way across */
-const FP_OFFSET = new THREE.Vector3(0.3, -0.22, -0.52)
-const FP_SCALE = 0.44
+const FP_OFFSET = new THREE.Vector3(0.3, -0.26, -0.56)
+const FP_SCALE = 0.34
 /** the lens those two were laid out through. A different fov scales the
     gun's size and its sideways offset (never its depth) by the ratio of the
     half-angle tangents, so it fills the same corner of the frame at any
@@ -60,10 +60,10 @@ const FP_SCALE = 0.44
 const FP_REF_TAN = Math.tan(THREE.MathUtils.degToRad(74) / 2)
 /** the gun in the body's hand, world units per model unit: a body is ~4.5
     tall and its forearm short, so the gun is drawn big enough to read */
-const TP_SCALE = 1.35
+const TP_SCALE = 2.0
 /** the first-person gun's own turn in the frame (pitch, yaw, roll): yawed
     in so its flank shows and the claw points at the crosshair */
-const FP_TURN = new THREE.Euler(0.0, 0.45, -0.35, 'YXZ')
+const FP_TURN = new THREE.Euler(0.03, 0.3, -0.3, 'YXZ')
 
 const VM_KEY = 'physgun-vm-depth'
 
@@ -118,7 +118,8 @@ const makeMats = (fp: boolean): Mats => {
     steel: std(STEEL, 0.5, 0.45),
     ochre: std(OCHRE, 0.45, 0.55),
     rubber: std(RUBBER, 0.9, 0),
-    hand: std('#e0a64a', 0.8, 0),
+    // the jelly: smooth-shaded, a little glossy, in the body's own colour
+    hand: vmMaterial(new THREE.MeshStandardMaterial({ color: '#4d8fe0', roughness: 0.38, metalness: 0 }), fp),
     core: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
     lens: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
   }
@@ -129,6 +130,8 @@ interface Geos {
   list: THREE.BufferGeometry[]
   box: (w: number, h: number, d: number) => THREE.BufferGeometry
   drum: (r: number, len: number, seg?: number, r2?: number) => THREE.BufferGeometry
+  /** a unit ball, scaled into a lump by its mesh */
+  blob: (detail: number) => THREE.BufferGeometry
 }
 const makeGeos = (): Geos => {
   const list: THREE.BufferGeometry[] = []
@@ -148,6 +151,7 @@ const makeGeos = (): Geos => {
     // a cylinder lying along z
     drum: (r, len, seg = 8, r2 = r) =>
       keep(`d${r},${len},${seg},${r2}`, () => new THREE.CylinderGeometry(r2, r, len, seg).rotateX(Math.PI / 2)),
+    blob: (detail) => keep(`s${detail}`, () => new THREE.IcosahedronGeometry(1, detail)),
   }
 }
 
@@ -232,17 +236,24 @@ const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
   grip.rotation.x = -0.28
   add(g.box(0.025, 0.06, 0.03), mats.dark, 0, -0.03, -0.05)
   add(g.box(0.03, 0.02, 0.14), mats.dark, 0, -0.07, -0.04)
-  // the hand: a mitten round the grip, the body's own colour, and a sleeve
+  // the hand: a jelly fist round the grip in the body's own colour. The
+  // body is hidden in first person, so the fist *is* the player there: a
+  // soft round lump closed over the grip, a thumb over the top, and a stub
+  // of wrist leaving the frame. No arm, no sleeve
   const hand = new THREE.Group()
   root.add(hand)
   if (withHand) {
-    const mitt = add(g.box(0.13, 0.15, 0.15), mats.hand, 0.005, -0.1, 0.07, hand)
-    mitt.rotation.x = -0.28
-    const thumb = add(g.box(0.05, 0.05, 0.1), mats.hand, -0.06, -0.02, 0.02, hand)
+    const fist = add(g.blob(1), mats.hand, 0.01, -0.09, 0.07, hand)
+    fist.scale.set(0.12, 0.13, 0.13)
+    fist.rotation.x = -0.28
+    const knuckles = add(g.blob(1), mats.hand, -0.02, -0.03, -0.01, hand)
+    knuckles.scale.set(0.1, 0.075, 0.085)
+    const thumb = add(g.blob(1), mats.hand, -0.07, 0.0, 0.05, hand)
+    thumb.scale.set(0.05, 0.045, 0.08)
     thumb.rotation.x = -0.3
-    // a short, fat, soft forearm: this body's arms are stubby
-    const sleeve = add(g.drum(0.12, 0.36, 8, 0.1), mats.hand, 0.02, -0.2, 0.3, hand)
-    sleeve.rotation.x = 0.55
+    const wrist = add(g.blob(1), mats.hand, 0.03, -0.2, 0.2, hand)
+    wrist.scale.set(0.1, 0.11, 0.16)
+    wrist.rotation.x = 0.6
   }
   return { root, mats, prongs, spinner, muzzle, hand }
 }
@@ -261,6 +272,9 @@ export interface ViewFrame {
   /** third person: where the body's right hand is (world), and the aim */
   hand?: THREE.Vector3 | null
   aim?: THREE.Vector3 | null
+  /** the point the gun points at (the held thing's target, or far down the
+      view): the barrel is aimed at it, so the beam leaves along the barrel */
+  aimAt?: THREE.Vector3 | null
   /** drawn at all (the physgun is out, nobody is driving) */
   shown: boolean
 }
@@ -324,6 +338,10 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   const q = new THREE.Quaternion()
   const tmp = new THREE.Vector3()
   const m4 = new THREE.Matrix4()
+  const aimQ = new THREE.Quaternion()
+  const camUp = new THREE.Vector3()
+  const tmp2 = new THREE.Vector3()
+  let aimed = false
   const up = new THREE.Vector3(0, 1, 0)
   let usingFp = true
 
@@ -402,17 +420,29 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       fp.position.x *= k
       fp.position.y *= k
       fp.position.applyMatrix4(cam.matrixWorld)
-      fp.quaternion.copy(cam.quaternion)
-      // aimed inward, so the beam's line meets the crosshair
-      eul.set(FP_TURN.x + rot.x, FP_TURN.y + rot.y, FP_TURN.z + rot.z, 'YXZ')
+      // the barrel points at what the beam is aimed at; then the roll and
+      // the springs' sway on top
+      if (f.aimAt) {
+        camUp.set(0, 1, 0).applyQuaternion(cam.quaternion)
+        m4.lookAt(fp.position, f.aimAt, camUp)
+        aimQ.setFromRotationMatrix(m4)
+        fp.quaternion.slerp(aimQ, aimed ? 1 - Math.exp(-dt * 30) : 1)
+        aimed = true
+      } else {
+        fp.quaternion.copy(cam.quaternion)
+        fp.quaternion.multiply(q.setFromEuler(eul.set(0, FP_TURN.y, 0, 'YXZ')))
+        aimed = false
+      }
+      eul.set(FP_TURN.x + rot.x, rot.y, FP_TURN.z + rot.z, 'YXZ')
       fp.quaternion.multiply(q.setFromEuler(eul))
     }
     if (tp.visible && f.hand) {
       tp.position.copy(f.hand)
-      const aim = f.aim ?? tmp.set(0, 0, -1).applyQuaternion(cam.quaternion)
       // a matrix's lookAt points its +z from the target back at the eye, so
-      // looking from the origin at the aim leaves -z, the gun's forward, on it
-      m4.lookAt(tmp.set(0, 0, 0), aim, up)
+      // looking from the hand at the aim point leaves -z, the gun's forward,
+      // on it
+      if (f.aimAt) m4.lookAt(f.hand, f.aimAt, up)
+      else m4.lookAt(tmp.set(0, 0, 0), f.aim ?? tmp2.set(0, 0, -1).applyQuaternion(cam.quaternion), up)
       tp.quaternion.setFromRotationMatrix(m4)
     }
   }

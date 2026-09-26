@@ -79,6 +79,9 @@ export interface Scenario {
   present?: (c: ScenarioCtx, scene: import('three').Scene, cam: import('three').PerspectiveCamera) => {
     frame: (t: number, dt: number, lines: number) => void
     warmed?: () => void
+    /** a first-person film's crosshair state (Crosshair.tsx's vocabulary);
+        the film draws the crosshair over each frame when this is given */
+    aim?: () => 'none' | 'prop' | 'held' | 'frozen'
   }
   /** people standing about (world x/z and a heading), for scenarios about
       what happens to them: the film stands a `buildPlayerBody()` rig on each

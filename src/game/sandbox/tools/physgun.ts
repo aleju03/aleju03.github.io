@@ -32,12 +32,16 @@ import {
   fast it can be *moved*. The stiffness, the damping ratio and the budget all
   fall with mass (`tune`), which is where the feel lives:
 
-  - a ball or a cone is critically damped at ~16 rad/s: it snaps onto the
-    beam and follows a flick closely, so letting go mid-flick throws it hard;
-  - a crate is a beat behind a fast turn, with no overshoot;
-  - a 900 kg block is underdamped at ~5 rad/s on a small budget: it lags a
-    swing, sails past where you stopped, and comes back, which is the swing
-    of something heavy on the end of a rope that the reference strip shows.
+  - a ball or a cone is critically damped at ~18 rad/s on a big budget: it
+    snaps onto the beam and a flick throws it at 60 u/s;
+  - a crate or a barrel is underdamped (z ~0.6) at ~8 rad/s: it trails a
+    fast swing, overshoots where the swing stopped by a tenth and settles,
+    swings on its grab point (the orientation spring is soft too), and a
+    flick throws it at about half a ball's speed;
+  - a 900 kg block drags at ~5 rad/s on a budget of a few tens of u/s^2: it
+    trails a swing by a dozen units and a flick barely moves it. A small
+    integral term winds out the few centimetres a soft spring sags under
+    that much weight.
 
   Because P is the grab point and not the centre, and the orientation is
   held separately, a plank grabbed by one end hangs off the beam by that
@@ -105,25 +109,47 @@ export interface Tune {
   z: number
   /** acceleration budget above the prop's own weight, u/s^2 */
   a: number
-  /** the orientation spring, rad/s (critically damped) */
+  /** the orientation spring, rad/s */
   wr: number
+  /** its damping ratio */
+  zr: number
+  /** integral gain on a small resting error, as a share of w (heavy only) */
+  i: number
 }
 
 /**
- * The feel, as a function of mass. Light things are stiff and critical, heavy
- * things are soft, a little underdamped and short of budget. `measure physics
- * physgun` prints settle time and overshoot for every kind off this table.
+ * The feel, as a function of mass, on a log scale from a 2 kg ball (t = 0)
+ * to a tonne (t = 1). Three bands, because that is how a physgun reads:
+ *
+ * - light (a ball, a cone, a bottle): stiff and critically damped, a big
+ *   acceleration budget. It snaps onto the beam and a flick throws it hard.
+ * - mid (a plank, a barrel, a crate): softer and underdamped (z ~0.6). It
+ *   trails a fast swing by a couple of units, overshoots where the swing
+ *   stops by a tenth and settles; and its orientation spring is softer too,
+ *   so a crate held by a corner swings about the grab point like a
+ *   pendulum. The budget is a few hundred u/s^2, so a flick throws it at
+ *   about half a ball's speed.
+ * - heavy (a block, a girder): slow, dragging, short of budget. It lags a
+ *   swing by several units and a flick barely moves it.
+ *
+ * `measure physics physgun` prints settle time, overshoot and throw speed for
+ * every kind off this table.
  */
-export const tune = (mass: number, out: Tune = { w: 0, z: 0, a: 0, wr: 0 }): Tune => {
-  const s = Math.sqrt(Math.max(0.1, mass) / 200)
-  // soft enough that a crate trails a quick swing by a unit or so, which is
-  // what bows the beam; a ball still snaps onto a flick
-  out.w = 17 / (1 + 0.75 * s)
-  out.wr = 14 / (1 + s)
-  // critical up to a crate, easing to 0.55 at a concrete block
-  const heavy = Math.min(1, Math.max(0, Math.log10(Math.max(1, mass) / 30) / Math.log10(30)))
-  out.z = 1 - 0.45 * heavy
-  out.a = 2600 / (1 + mass / 140)
+export const tune = (mass: number, out: Tune = { w: 0, z: 0, a: 0, wr: 0, zr: 0, i: 0 }): Tune => {
+  const m = Math.max(0.1, mass)
+  const t = Math.min(1, Math.max(0, Math.log10(m / 2) / Math.log10(500)))
+  out.w = 18 / (1 + 2.5 * t)
+  const mid = t <= 0.05 ? 0 : t >= 0.4 ? 1 : ((t - 0.05) / 0.35) ** 2 * (3 - (2 * (t - 0.05)) / 0.35)
+  // the heaviest drag rather than ring: a tonne that bounces on the beam
+  // reads as a balloon
+  const heavy = t <= 0.6 ? 0 : Math.min(1, (t - 0.6) / 0.4)
+  out.z = 1 - 0.42 * mid + 0.22 * heavy
+  out.wr = out.w * 0.85
+  out.zr = 1 - 0.45 * mid + 0.2 * heavy
+  out.a = 30 + 2400 / (1 + m / 2)
+  // a soft spring under a heavy weight rests a few centimetres low; only
+  // there does the resting error need winding out
+  out.i = 0.35 * heavy
   return out
 }
 
@@ -220,7 +246,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
   // limbs pinned by a freeze: posed ragdolls, thawed by reload or a regrab
   const pins: Array<{ key: string; rig: GrabRig; limb: number; at: THREE.Vector3 }> = []
 
-  const tn: Tune = { w: 0, z: 0, a: 0, wr: 0 }
+  const tn: Tune = { w: 0, z: 0, a: 0, wr: 0, zr: 0, i: 0 }
   const qa = new THREE.Quaternion()
   const qb = new THREE.Quaternion()
   const qy = new THREE.Quaternion()
@@ -231,6 +257,11 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
   const xAxis = new THREE.Vector3(1, 0, 0)
   const eul = new THREE.Euler(0, 0, 0, 'YXZ')
   const imp = { x: 0, y: 0, z: 0 }
+  /** the integral of a small error: the steady sag a soft spring leaves
+      under a heavy prop is wound out over a second or so; it only winds
+      while the error is under half a unit, so a swing's lag never charges
+      it, and light props (tune's `i` is 0) never use it */
+  const integ = new THREE.Vector3()
   const ang = { x: 0, y: 0, z: 0 }
 
   const emit = (type: PhysgunEventType, x: number, y: number, z: number, speed = 0, id = hold.prop) => {
@@ -324,6 +355,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     hold.anchor[1] = anchor.y
     hold.anchor[2] = anchor.z
     fresh = true
+    integ.set(0, 0, 0)
     emit('grab', point.x, point.y, point.z)
     return true
   }
@@ -595,9 +627,12 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     // the most that cannot overshoot, and it leaves a moving prop trailing
     // the beam by v/w, which is the curve in the beam during a swing
     const cf = c * FEED
-    let dvx = (lv.x + w2h * ex + cf * targetVel.x) / den - lv.x
-    let dvy = (lv.y + w2h * ey + cf * targetVel.y) / den - lv.y
-    let dvz = (lv.z + w2h * ez + cf * targetVel.z) / den - lv.z
+    if (err < 0.5) integ.set(integ.x + ex * h, integ.y + ey * h, integ.z + ez * h)
+    else integ.multiplyScalar(0.9)
+    const ki = w2h * tn.w * tn.i
+    let dvx = (lv.x + w2h * ex + cf * targetVel.x) / den - lv.x + ki * integ.x
+    let dvy = (lv.y + w2h * ey + cf * targetVel.y) / den - lv.y + ki * integ.y
+    let dvz = (lv.z + w2h * ez + cf * targetVel.z) / den - lv.z + ki * integ.z
     const dv = Math.hypot(dvx, dvy, dvz)
     const cap = tn.a * h
     const saturated = dv > cap
@@ -624,7 +659,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     else vc.set(qb.x * 2, qb.y * 2, qb.z * 2)
     const av = body.angvel()
     const wr = tn.wr
-    const cr = 2 * wr * h
+    const cr = 2 * tn.zr * wr * h
     const denr = 1 + cr + wr * wr * h * h
     const ffy = yawRate
     ang.x = (av.x + wr * wr * h * vc.x) / denr

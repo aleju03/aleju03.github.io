@@ -768,15 +768,19 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   out contact pairs is how you get a panic. A blast is hotter than a knock:
   it sets an explosive off at half the blow and lights it at a fifth.
 - **The physgun's hold pays the weight outside its budget.** Every slice the
-  grab point is pulled toward the target on the view ray by a spring solved
+  grab point is pulled toward the target on the view ray (at the distance it
+  was grabbed at, until the wheel says otherwise) by a spring solved
   implicitly (stable at any stiffness, dead still when held still), fed half
-  the target's own velocity (all of it overshoots by 13%), delivered as an
-  impulse capped at an acceleration budget that falls with mass, with the
-  prop's weight paid on top. So the beam always holds a thing up, and what
-  mass costs you is how fast it can be *moved*: a ball snaps onto a flick, a
-  900 kg block trails a swing by five units and sails past where you
-  stopped. `tune()` is the whole feel; `measure physics physgun` prints
-  settle time, overshoot, jitter held still and throw speed per kind.
+  the target's own velocity, delivered as an impulse capped at an
+  acceleration budget that falls with mass, with the prop's weight paid on
+  top. So the beam always holds a thing up, and what mass costs you is how
+  fast it can be *moved*. `tune()` is the whole feel, in three bands: a ball
+  is stiff and critical (settles in 267 ms, flicks at 61 u/s); a crate is
+  underdamped (8% overshoot, a second to settle, a softer orientation spring
+  so it swings on its grab point, flicks at 35 u/s); a 900 kg block drags
+  (trails a swing by 14 units, flicks at 8 u/s), with a small integral term
+  that winds out the sag a soft spring leaves under that much weight.
+  `measure physics physgun` prints all of it per kind.
 - **A throw leaves along the swing's tangent.** Letting go hands the prop
   most of the gap between the beam's speed and its own, so it flies the way
   it was being swung, not where you are looking. The throw film lets go a

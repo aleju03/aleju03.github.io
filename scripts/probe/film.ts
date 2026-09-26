@@ -399,6 +399,33 @@ const label = (x: number, y: number, text: string, big = false) => {
   labels.appendChild(d)
 }
 
+/*
+  The crosshair over a first-person film, drawn the way the game draws it
+  (components/os/Crosshair.tsx: a 13-cell bitmap, four ticks with a dark
+  rim and a centre dot, stepping out a cell and changing colour when the aim
+  is on something). Mirrored here because the harness has no React; keep
+  the two in step.
+*/
+const CROSS_TINT = { none: '#f3ead6', prop: '#c0705c', held: '#8fd0ff', frozen: '#7fb2ff' } as const
+const crosshair = (cx: number, cy: number, aim: keyof typeof CROSS_TINT, scale: number) => {
+  const out = aim === 'none' ? 0 : 1
+  const ticks = [[6, 1 - out, 1, 3], [6, 9 + out, 1, 3], [1 - out, 6, 3, 1], [9 + out, 6, 3, 1]]
+  const fill = CROSS_TINT[aim]
+  const size = 13 * scale
+  const rim = 'rgba(28,22,16,0.75)'
+  const cells = [
+    ...ticks.map(([x, y, w, h]) => `<rect x="${x - 0.5}" y="${y - 0.5}" width="${w + 1}" height="${h + 1}" fill="${rim}"/>`),
+    `<rect x="5.5" y="5.5" width="2" height="2" fill="${rim}"/>`,
+    ...ticks.map(([x, y, w, h]) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}"/>`),
+    `<rect x="6" y="6" width="1" height="1" fill="${fill}"/>`,
+  ].join('')
+  const d = document.createElement('div')
+  d.style.cssText = `position:absolute;left:${cx - size / 2}px;top:${cy - size / 2}px;width:${size}px;height:${size}px`
+  d.innerHTML = `<svg width="${size}" height="${size}" viewBox="-1 -1 15 15" shape-rendering="crispEdges">${cells}</svg>`
+  labels.appendChild(d)
+}
+const crossScale = (h: number) => Math.max(1, Math.round(h / 180))
+
 const median = (a: number[]) => {
   if (!a.length) return 0
   const s = [...a].sort((x, y) => x - y)
@@ -423,6 +450,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     r.setScissor(col * tw, (rows - row - 1) * th, tw, th)
     prep(st, t)
     draw(r, st)
+    if (st.pres?.aim) crosshair(col * tw + tw / 2, row * th + th / 2, st.pres.aim(), crossScale(th))
     if (spec.labels !== false) {
       label(col * tw + 8, row * th + th - 30, `t = ${t.toFixed(2)} s`)
       if (i === 0) label(col * tw + 8, row * th + 8, `${st.s.id}: ${st.s.title}`, true)
@@ -494,6 +522,7 @@ export const videoFrame = () => {
   prep(st, t)
   draw(renderer, st)
   labels.innerHTML = ''
+  if (st.pres?.aim) crosshair(size.x / 2, size.y / 2, st.pres.aim(), crossScale(size.y))
   if (videoLabels) label(8, size.y - 30, `${st.s.id}  t = ${t.toFixed(2)} s`)
   vFrame++
   return true
