@@ -102,6 +102,10 @@ options
                        the real streamer (ring, far field, altitude fog and
                        air). Several heights make a row per target:
                        --alt 10,40,120,300 town:downtown biome:forest biome:beach
+  --climb <s>          with --alt: fly it. The real streamer ticked at 60 Hz
+                       under its frame budget, s seconds standing at the
+                       target, then a noclip climb (30 u/s up, 20 forward),
+                       a frame at each --alt. --climb 0 takes off at once
   --far <n>            far-field rings for --alt tiles (default: the tier's,
                        3 headless); --far 0 is the world without one, for
                        a before and after
@@ -175,6 +179,7 @@ const spec = {
   lines: Number(flag('lines', 0)),
   look: JSON.parse(flag('look', '{}')),
   pixel: Number(flag('pixel', 1)),
+  climb: flag('climb', null) === null ? undefined : Number(flag('climb')),
   farLevels: flag('far', null) === null ? undefined : Number(flag('far')),
   alts: flag('alt', null) ? String(flag('alt')).split(',').map(Number) : undefined,
 }
@@ -329,7 +334,7 @@ for (const r of rows) {
     `  y ${String(r.y).padStart(7)}  ${r.biome.padEnd(8)}` +
     `${r.district ? ' ' + r.district : ''}  ${r.verts} verts` +
     (r.draws === undefined ? '' : `  ${r.draws} meshes`) +
-    (r.far ? `  far ${r.far.tiles} tiles ${r.far.tris} tris, reach ${r.far.reach}, fog ${r.far.fog}, lens ${r.far.camFar} ${r.far.dbg}` : '') +
+    (r.far ? `  far ${r.far.tiles} tiles ${r.far.tris} tris, reach ${r.far.reach}, fog ${r.far.fog}, lens ${r.far.camFar}${r.far.worstMs !== undefined ? ', worst update ' + r.far.worstMs + ' ms' : ''}` : '') +
     (r.animals === undefined ? '' : `  ${r.animals} animals, ${r.people} people`),
   )
 }

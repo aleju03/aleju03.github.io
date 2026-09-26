@@ -747,6 +747,9 @@ export function buildWorld(opts: Opts): WorldHandles {
       const budget = BUDGET_MS + (BUDGET_MAX - BUDGET_MS) * Math.min(1, speed / BUDGET_SPEED)
       drain(budget)
     }
+    // again, now the ring has had its say: a ring that just shrank dropped
+    // chunks this frame, and the far field must be under them this frame
+    far.update(x, z, alt, chunkSolid)
     far.work(far.visible ? FAR_MS_AIR : queue.length ? 0 : FAR_MS_GROUND)
   }
 
