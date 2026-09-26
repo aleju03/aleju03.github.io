@@ -235,11 +235,11 @@ const getUp = (a: Actor) => {
     drawn from look.ts's own palettes */
 const LOOKS: PlayerLook[] = [
   DEFAULT_LOOK,
-  { shell: '#4f86c6', trim: '#2b3a55', accent: '#e6b43c', glow: '#f4f1dc' },
-  { shell: '#e8c24a', trim: '#3a3f47', accent: '#c9493f', glow: '#ffd98a' },
-  { shell: '#6aa35a', trim: '#6b4a33', accent: '#e07aa0', glow: '#9af0a0' },
-  { shell: '#e9e2d0', trim: '#5a2e3a', accent: '#3d6fb5', glow: '#7fe8e8' },
-  { shell: '#8a6cc0', trim: '#2a2522', accent: '#eeeae0', glow: '#ff9ec0' },
+  { shell: '#e8b83a', trim: '#2b3a55', accent: '#c9493f', glow: '#1c1a22' },
+  { shell: '#5fa35a', trim: '#6b4a33', accent: '#eeeae0', glow: '#1c1a22' },
+  { shell: '#e27aa6', trim: '#5a2e3a', accent: '#1c1c22', glow: '#2b3a55' },
+  { shell: '#9a6cc8', trim: '#d9d6cf', accent: '#e6b43c', glow: '#1c1a22' },
+  { shell: '#d9503f', trim: '#5d6670', accent: '#3d6fb5', glow: '#f4f1e6' },
 ]
 
 /* -------------------------------------------------------------- the tiles -- */
@@ -263,7 +263,7 @@ const lineup = (spec: BodySpec, snap: Snap) => {
   const [tw, th] = spec.tile
   const st = stage(spec.tod)
   const yaw = 0 // facing -Z; the camera stands on -Z looking back at them
-  const people = LOOKS.map((look, i) => actor(st, look, st.x + (i - 2.5) * 3.1, st.z, yaw))
+  const people = LOOKS.map((look, i) => actor(st, look, st.x + (i - 2.5) * 3.8, st.z, yaw))
   // a few seconds of standing about, so every spring has settled into its
   // idle and the glances and blinks are wherever they happen to be
   for (let f = 0; f < 150; f++) for (const p of people) tick(p, st.env)
@@ -311,7 +311,7 @@ const lineup = (spec: BodySpec, snap: Snap) => {
 }
 
 /** one body, close: front, three-quarter, side and back, where a face,
-    a pom-pom and the colour blocks can actually be judged */
+    the headband and the colour blocks can actually be judged */
 const closeup = (spec: BodySpec, snap: Snap) => {
   const [tw, th] = spec.tile
   const st = stage(spec.tod)

@@ -189,7 +189,17 @@ const held = r.limbPos(hand, new THREE.Vector3()).distanceTo(target)
 const heldSettled = r.settled
 r.grab(hand, null)
 let t = 0
-while (!r.settled && t < 600) { step(1); t++ }
+const trace = []
+const prevP = r.limbs.map((l) => r.limbPos(l.index, new THREE.Vector3()).clone())
+while (!r.settled && t < 600) {
+  step(1); t++
+  if (t % 60 === 0) {
+    let worst = 0, who = ''
+    r.limbs.forEach((l, i) => { const q = r.limbPos(l.index, new THREE.Vector3()); const v = q.distanceTo(prevP[i]) * 60; if (v > worst) { worst = v; who = l.name }; prevP[i].copy(q) })
+    trace.push(who + ':' + worst.toFixed(1))
+  } else r.limbs.forEach((l, i) => r.limbPos(l.index, prevP[i]))
+}
+if (t >= 600) console.log('never settled; fastest limb per second: ' + trace.join(' '))
 const settleS = t / 60
 r.getupSpot(p)
 r.group.position.set(p.x, 0, p.z)

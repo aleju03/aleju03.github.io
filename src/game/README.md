@@ -36,10 +36,10 @@ player/
                      gravity/jump/crouch, step-up and ledge falls over an
                      absolute feetY, footstep bob, sprint fov)
   playerBody.ts      buildPlayerBody() is the character: a soft little person
-                     in a work suit and beanie. Kinetic stance (waddle, lean,
+                     a Gang Beasts-style jelly brawler. Kinetic stance (waddle, lean,
                      turn bank, squash-and-stretch landing spring), world-
                      planted stepping feet solved with two-bone IK, sprung
-                     arms, jiggling head/pom-pom/backpack/mittens, idle
+                     arms, jiggling head/headband/belly/fists, idle
                      fidgets, the ragdoll, and a muscle-driven get-up. Also
                      the sandbox hooks: hit(), grab(), limbs, limbPos()
   bodyShape.ts       the drawing: one skinned mesh, shared by every body,

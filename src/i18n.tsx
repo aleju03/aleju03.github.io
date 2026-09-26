@@ -150,10 +150,10 @@ const dictionaries = {
     // the four colour knobs on the pause sheet's character page
     // (components/os/WorldIdentity.tsx), in the order look.ts packs them
     look: {
-      suit: 'suit',
-      trim: 'boots',
-      accent: 'hat',
-      glow: 'lamp',
+      suit: 'jelly',
+      trim: 'shorts',
+      accent: 'band',
+      glow: 'eyes',
     },
   },
   es: {
@@ -292,10 +292,10 @@ const dictionaries = {
       otherVersion: 'Ver la otra versión',
     },
     look: {
-      suit: 'traje',
-      trim: 'botas',
-      accent: 'gorro',
-      glow: 'lámpara',
+      suit: 'gelatina',
+      trim: 'shorts',
+      accent: 'cinta',
+      glow: 'ojos',
     },
   },
 }

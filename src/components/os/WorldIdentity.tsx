@@ -134,7 +134,7 @@ function BodyPreview({ look, active }: { look: PlayerLook; active: boolean }) {
     const pivot = new THREE.Group()
     scene.add(pivot)
     const rig = buildPlayerBody(PREVIEW_EYE, 34, look)
-    // The body is modelled facing +Z (face, headlamp and boot toes all
+    // The body is modelled facing +Z (the dot eyes and the feet all
     // point that way), so with the camera on +Z it needs no turn at all. The
     // scene's `facing + Math.PI` is not the same thing and must not be copied
     // here: that π converts a compass yaw, where 0 means -Z, and applying it

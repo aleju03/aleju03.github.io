@@ -10,7 +10,8 @@ import {
 import { makeBodyMaterial } from './bodyMaterial'
 
 /*
-  The player's body: a soft little person in a work suit and a beanie (drawn
+  The player's body: a Gang Beasts-style jelly brawler, a gummy bean with a
+  headband, stub legs and round fists (drawn
   in bodyShape.ts, painted in bodyMaterial.ts), and everything that makes it
   move. The same rig is worn by the local player, every remote player
   (`net/avatars.ts`), the town's pedestrians (`world/pedestrians.ts`), the
@@ -54,7 +55,7 @@ import { makeBodyMaterial } from './bodyMaterial'
   jelly spring over the waddle; the head and chest's look-tracking are
   springs in both axes. On top of those sit four point masses simulated in
   world space and hung back on bones: the head bobbles on its neck, the
-  pom-pom swings on the beanie, the backpack bounces, and each mitten hangs
+  headband's tails swing off their knot, the belly wobbles, and each fist hangs
   off its wrist like a sock with a hand in it. They are what make the body
   read as soft: start, stop, turn or land and every one of them answers late.
   The trunk squashes on a landing and stretches on the rise.
@@ -72,10 +73,10 @@ import { makeBodyMaterial } from './bodyMaterial'
 
   **The ragdoll.** flop() hands every joint to the verlet sim in ragdoll.ts
   and update() drapes the bones back over the particles each frame; the
-  secondary springs keep running, so a tumbling body's pom-pom and mittens
+  secondary springs keep running, so a tumbling body's headband tails and fists
   flail after it. Three things keep it from landing as one lump, which it
   did: the limbs are flung outward from the trunk the instant it goes limp
-  (`fling`), mittens and boots windmill through the first second of a flight
+  (`fling`), fists and feet windmill through the first second of a flight
   (`flail`) while being pulled out wide and down as if to catch the ground,
   and once on the ground a weak pull in the ground plane spreads
   them into a spread-eagle and levels the shoulders so the heap rolls onto
@@ -91,7 +92,7 @@ import { makeBodyMaterial } from './bodyMaterial'
   body over or picks one up by a limb.
 
   It is also the vehicle driver: sit() folds these same bones into a seated
-  pose (slouched, squashed into the seat, pom-pom flattened under the roof),
+  pose (slouched and squashed into the seat),
   then CrtScene reparents the group onto the machine's authored seat.
   Everything is smoothed and allocation-free per frame; the whole body is
   one skinned draw call.
@@ -242,9 +243,9 @@ export type Emote = 'stretch' | 'bounce' | 'wave' | 'look'
   with nothing under it, and everyone saw everyone else as a head shorter
   than themselves.)
 */
-export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.48
-/** the top of the pom-pom: what anything floating over a head clears */
-export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 3.13
+export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.35
+/** the top of the head and its band: what anything floating over a head clears */
+export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 2.9
 /** the group's scale for a given standing eye height */
 export const bodyScale = (eye: number) => eye / DESIGN_EYE
 
@@ -263,7 +264,7 @@ export const bodyScale = (eye: number) => eye / DESIGN_EYE
 const SIT_SQUASH = 0.7
 const SIT_SPREAD = 1.0
 const SIT_WAIST = 0.08
-const SIT_NECK = 0.6
+const SIT_NECK = NECK_OFF * 0.82
 const SIT_SLOUCH = 0.16
 /** the seated eye over the pelvis bone, and over the lowest point of the
     seated body (the seat of the pants), design units at the group's scale */
@@ -299,7 +300,7 @@ export const DESIGN_SEAT_BOTTOM = DESIGN_SEAT_EYE + (HIP_Y - BODY_Y0) * SIT_SQUA
 export const CABIN_FIT = 0.86
 
 // ragdoll particle indices. The first thirteen are the limbs a caller can
-// name; the belly and the backpack are collision only, so a body lying on
+// name; the belly and the back are collision only, so a body lying on
 // its back rests on its pack and a body on its front on its belly
 const P_PELV = 0
 const P_CHEST = 1
@@ -322,8 +323,8 @@ const LIMB_NAMES: BodyLimb['name'][] = [
   'handL', 'handR', 'kneeL', 'kneeR', 'footL', 'footR',
 ]
 /** design-unit radii per particle, and relative masses: a heavy head and
-    trunk, light mittens, so a tumble leads with the head and the hands flap */
-const RADII = [0.3, 0.34, 0.5, 0.17, 0.17, 0.13, 0.13, 0.16, 0.16, 0.18, 0.18, 0.17, 0.17, 0.46, 0.2]
+    trunk, light fists, so a tumble leads with the head and the hands flap */
+const RADII = [0.38, 0.46, 0.5, 0.17, 0.17, 0.14, 0.14, 0.19, 0.19, 0.2, 0.2, 0.19, 0.19, 0.58, 0.36]
 const MASSES = [3, 2.6, 2.4, 0.9, 0.9, 0.6, 0.6, 0.45, 0.45, 0.9, 0.9, 0.8, 0.8, 1.2, 0.6]
 /** the whole body, for turning an impulse into a velocity */
 const MASS = 70
@@ -402,13 +403,14 @@ export function buildPlayerBody(
     parent.add(o)
     return o
   }
-  const skullC = anchor(head, 0, 0.44, 0.02)
-  const mittL = anchor(handL, 0, -0.11, 0)
-  const mittR = anchor(handR, 0, -0.11, 0)
+  const skullC = anchor(head, 0, 0.5, 0)
+  const mittL = anchor(handL, 0, -0.1, 0)
+  const mittR = anchor(handR, 0, -0.1, 0)
   const soleL = anchor(shinL, 0, -SHIN, 0)
   const soleR = anchor(shinR, 0, -SHIN, 0)
-  const bellyC = anchor(torso, 0, 0.12, 0.05)
-  const packC = anchor(pack, 0, 0, 0)
+  const bellyC = anchor(torso, 0, 0.2, 0.05)
+  // the back of the bean: what a body lying face up rests on
+  const backC = anchor(torso, 0, 0.35, -0.2)
 
   // --- the mesh -------------------------------------------------------------
   const paint = makeBodyMaterial(look)
@@ -447,7 +449,7 @@ export function buildPlayerBody(
   anchors[P_FOOTL] = soleL
   anchors[P_FOOTR] = soleR
   anchors[P_BELLY] = bellyC
-  anchors[P_PACK] = packC
+  anchors[P_PACK] = backC
   const radii = RADII.map((r) => r * S)
   const rag = createRagdoll(radii, [
     // bone edges
@@ -495,7 +497,7 @@ export function buildPlayerBody(
       [
         // generous on purpose: these are what splay a heap. A limp body
         // whose arms may rest against its belly lands as one lump with its
-        // arms tucked; one whose mittens keep a belly's width off it lands
+        // arms tucked; one whose fists keep a belly's width off it lands
         // spread-eagled, which is the whole comedy of a ragdoll
         { a: P_KNEEL, b: P_KNEER, min: 0.58, stiff: 0.45 },
         { a: P_FOOTL, b: P_FOOTR, min: 0.7, stiff: 0.35 },
@@ -509,7 +511,7 @@ export function buildPlayerBody(
         { a: P_HANDR, b: P_PELV, min: 0.75, stiff: 0.35 },
         { a: P_HANDL, b: P_HEAD, min: 0.72, stiff: 0.35 },
         { a: P_HANDR, b: P_HEAD, min: 0.72, stiff: 0.35 },
-        // and never tucked under the chest or behind the pack: a mitten
+        // and never tucked under the chest or behind the back: a fist
         // folded under a body lying on its front is a limb nobody can see
         { a: P_HANDL, b: P_CHEST, min: 0.95, stiff: 0.35 },
         { a: P_HANDR, b: P_CHEST, min: 0.95, stiff: 0.35 },
@@ -555,6 +557,8 @@ export function buildPlayerBody(
   let fallK = 0 // within air: 0 rising .. 1 falling
   let springP = 0 // landing spring on the pelvis, design units (<= 0)
   let springV = 0
+  let wobP = 0 // the jelly wobble on the trunk's volume
+  let wobV = 0
   let idleT = 0
   let stillT = 0 // seconds without meaningful motion, for the fidgets
 
@@ -633,7 +637,7 @@ export function buildPlayerBody(
   const vRest = new THREE.Vector3()
   const vVel = new THREE.Vector3()
   const velTmp = new THREE.Vector3()
-  const UP = new THREE.Vector3(0, 1, 0)
+  const TAILS = new THREE.Vector3(0, -0.55, -0.83).normalize()
   const DOWN = new THREE.Vector3(0, -1, 0)
 
   /** the bones a pose is made of, in the order the get-up blends them */
@@ -671,7 +675,7 @@ export function buildPlayerBody(
   const EL_HI = 0.12
 
   /*
-    The four point masses (head, pom-pom, backpack, two mittens). Each is a
+    The five point masses (head, headband tails, belly, two fists). Each is a
     particle simulated in world space that chases where its bone would put it,
     then hangs the bone back on wherever it actually got to. That is the whole
     trick to secondary motion: the bone's rest is driven by the pose, the
@@ -827,11 +831,12 @@ export function buildPlayerBody(
     head.rotation.x += vTmp2.z * 3.2
     head.rotation.z -= vTmp2.x * 3.2
 
-    // the backpack bounces on its straps
+    // the belly is jelly: its own point mass, soft and slow to settle, so a
+    // footfall, a stop or a landing sets the front of the bean wobbling
     pack.position.copy(REST[B.PACK])
     pack.updateMatrixWorld()
     pack.getWorldPosition(vRest)
-    stepJiggle(jPack, vRest, 320, 14, 0, 0.07 * s, dt)
+    stepJiggle(jPack, vRest, 150, 5, 0, 0.14 * s, dt)
     vTmp2.subVectors(jPack.p, vRest)
     torso.getWorldQuaternion(qW)
     vTmp2.applyQuaternion(qW.invert()).multiplyScalar(1 / s)
@@ -861,7 +866,8 @@ export function buildPlayerBody(
       if (ang > maxAng) qSeg.slerp(qAir.identity(), 1 - maxAng / ang).normalize()
       bone.quaternion.copy(qSeg)
     }
-    swing(jPom, pom, UP, 0.12, 150, 5.5, 5, 1.3)
+    // the headband's two tails hang back and down off the knot
+    swing(jPom, pom, TAILS, 0.26, 70, 3.5, 9, 1.4)
     swing(jMitL, handL, DOWN, 0.12, 170, 8, 3, 1.1)
     swing(jMitR, handR, DOWN, 0.12, 170, 8, 3, 1.1)
 
@@ -1057,7 +1063,8 @@ export function buildPlayerBody(
     // part says which foot is airborne, the fraction is its swing phase
     // a run is a different gait, not a faster walk: bounding strides with a
     // flight between them, so fewer, longer steps rather than a scurry
-    strideNow += (0.95 + 0.9 * runK - strideNow) * ease(4)
+    // stub legs take short quick steps: a jelly waddles rather than strides
+    strideNow += (0.72 + 0.6 * runK - strideNow) * ease(4)
     const prevStep = Math.floor(stepT)
     if (pose.grounded) {
       stepT += (speed * dt) / (strideNow * S)
@@ -1070,7 +1077,7 @@ export function buildPlayerBody(
 
     // crouch, landing spring and the get-up fold all lower the hips; the leg
     // IK below folds the knees exactly enough that the feet stay planted
-    const drop = pose.crouchK * 0.62 + riseFold * 0.62 - springP
+    const drop = pose.crouchK * 0.42 + riseFold * 0.42 - springP * 0.7
     const hipH = THREE.MathUtils.clamp(HIP_Y - drop, Math.abs(THIGH - SHIN) + 0.08, HIP_Y)
 
     // pelvis: root motion. A waddle: the hips ride over the stance foot and
@@ -1116,15 +1123,19 @@ export function buildPlayerBody(
       bank * 0.55 + jellyRoll,
     )
     // squash on a landing, stretch on the way up, breathe standing still
+    // the jelly wobble: the trunk's volume on its own spring, kicked by every
+    // footfall, takeoff and landing, ringing a few times before it settles
+    wobV += (-240 * wobP - 4.5 * wobV) * dt
+    wobP = THREE.MathUtils.clamp(wobP + wobV * dt, -0.25, 0.25)
     const squash = THREE.MathUtils.clamp(
       1 + springP * 2.6 + airK * (1 - fallK) * 0.14 + breathe * 0.014 + stretchK * 0.07 +
-        Math.abs(stepS) * 0.03 * gait,
-      0.55, 1.2,
+        Math.abs(stepS) * 0.03 * gait + wobP,
+      0.64, 1.25,
     )
     const bulge = Math.pow(squash, -0.8)
     // and the trunk sinks into the hips as it squashes, so the belly (which
     // is weighted to the pelvis) compresses too, not just the chest
-    torso.position.y -= (1 - Math.min(1, squash)) * 0.4
+    torso.position.y -= (1 - Math.min(1, squash)) * 0.25
     torso.scale.set(bulge, squash, bulge)
 
     // head: keeps the gaze on the camera line, in both axes, for outside
@@ -1148,7 +1159,7 @@ export function buildPlayerBody(
     // that reach is entirely lateral, aiming the near foot straight through
     // the far leg. Clamping in the body frame bounds it both ways
     const SOLE_MIN_X = HIP_X * 0.55
-    const SOLE_MAX_X = HIP_X + 0.4
+    const SOLE_MAX_X = HIP_X + 0.3
     const sideClamp = (foot: THREE.Vector3, side: 1 | -1, rate: number) => {
       vTmp.copy(foot).sub(group.position).applyQuaternion(qGroupInv).multiplyScalar(1 / S)
       const own = vTmp.x * side // distance onto this leg's own side, signed
@@ -1371,6 +1382,14 @@ export function buildPlayerBody(
     if (pose.grounded && Math.floor(stepT) !== prevStep && gait > 0.25) {
       sprS[3] += 2.2 * gait
       sprS[9] += 2.2 * gait
+      // and jiggles the jelly
+      wobV -= (0.9 + 0.6 * runK) * gait
+      jPack.v.y -= 2.2 * S * gait
+    }
+    if (takeoff) wobV += 1.2
+    if (pose.landing > 0) {
+      wobV -= Math.min(pose.landing, 20) * 0.12
+      jPack.v.y -= Math.min(pose.landing, 20) * 0.35 * S
     }
     if (pose.landing > 0) {
       const jolt = Math.min(pose.landing, 18) * 0.14
@@ -1560,7 +1579,7 @@ export function buildPlayerBody(
   const sprawlK = new Float32Array(P_COUNT)
   const SPRAWL: Array<[number, number, number, number]> = [
     // particle, from (chest 1 / pelvis 0), sideways, along the spine
-    [P_HANDL, 1, 1.6, 0.45], [P_HANDR, 1, -1.6, 0.45],
+    [P_HANDL, 1, 1.25, 0.1], [P_HANDR, 1, -1.25, 0.1],
     [P_ELL, 1, 0.95, 0.2], [P_ELR, 1, -0.95, 0.2],
     [P_FOOTL, 0, 0.75, -1.2], [P_FOOTR, 0, -0.75, -1.2],
     [P_KNEEL, 0, 0.5, -0.65], [P_KNEER, 0, -0.5, -0.65],
@@ -1570,7 +1589,10 @@ export function buildPlayerBody(
     spine.y = 0
     const len = spine.length()
     sprawlK.fill(0)
-    if (len < 0.2 * S || downTime < 0.45 || grabs > 0) {
+    // it only shapes how a heap *lands*: after two seconds the body is left
+    // alone to come to rest, or the pull would argue with the bones forever
+    // and the heap would never count as settled
+    if (len < 0.2 * S || downTime < 0.45 || downTime > 2.2 || grabs > 0) {
       rag.drive(null)
       return
     }
@@ -1595,7 +1617,7 @@ export function buildPlayerBody(
     // belly are lifted, and the levelling below is held off while it turns,
     // since level shoulders are exactly what stops a body rolling
     const faceDown = rag.pts[P_BELLY].y < rag.pts[P_PACK].y - 0.05 * S
-    if (faceDown && downTime < 3.5) {
+    if (faceDown && downTime < 2.2) {
       // a real roll: an angular acceleration about the spine, applied to
       // every particle alike (v += alpha dt, axis x r), signed so the belly
       // turns up. A kick on one shoulder only argued with the rest of a heap
@@ -1708,7 +1730,7 @@ export function buildPlayerBody(
       eyes.scale.set(1, 1, 1)
       // the pom-pom lies back along the beanie rather than standing up
       // through a roof
-      pom.rotation.set(-1.5, 0, 0)
+      pom.quaternion.identity()
       pack.position.copy(REST[B.PACK])
       pack.rotation.set(0, 0, 0)
 

@@ -3,14 +3,12 @@
   what "customising your character" is allowed to mean.
 
   The body in `playerBody.ts` is one skinned mesh whose every vertex names
-  the paint it wears (`bodyShape.ts`), and only four of those paints are
-  anybody's business: the work suit (body, sleeves, legs), the trim (gloves,
-  boots, belt, straps, the backpack's lid and the lamp's housing), the accent
-  (the beanie, its pom-pom and the backpack), and the glow of the headlamp.
-  The face is not on the list: skin, ink eyes, blush and the glint in the eye
-  are fixed, because a face that can be painted green reads as a bug rather
-  than as a choice, and because the face is what makes every one of these
-  the same friendly person in a different outfit.
+  the paint it wears (`bodyShape.ts`), and four of those paints are the
+  player's: the jelly itself (the bean, the arms, the fists), the shorts (the
+  lower third of the bean and the stubby legs), the headband, and the two
+  dots that are the face. That is the whole of the costume on purpose: a jelly
+  brawler is its colours, and two of them in the same body colour are still
+  told apart by their shorts and their band.
 
   The four field names are older than this body (they were a robot's shell,
   trim, accent joints and eye glow) and they stay, because they are the wire
@@ -33,49 +31,49 @@
 */
 
 export interface PlayerLook {
-  /** the work suit: the body, the sleeves and the legs. The biggest block of
+  /** the jelly: the bean, the arms and the fists. The biggest block of
       colour on the body, and the one a player is recognised by */
   shell: string
-  /** gloves, boots, belt, backpack straps and lid, the lamp's housing */
+  /** the shorts: the lower third of the bean and the legs */
   trim: string
-  /** the beanie, its pom-pom and the backpack */
+  /** the headband and its tails */
   accent: string
-  /** the headlamp, and the glint it puts in a dark street */
+  /** the eyes. Dark by default; a pale pair reads as a different mood */
   glow: string
 }
 
-/** a safety-orange work suit, a teal beanie, charcoal boots and gloves and a
-    warm lamp: the Lethal-ish employee the character was drawn as */
+/** a gummy blue with dark shorts and a white band: a brawler, not a mascot.
+    Not red: a warm jelly under the grade reads as bare skin */
 export const DEFAULT_LOOK: PlayerLook = {
-  shell: '#e2893f',
-  trim: '#3a3f47',
-  accent: '#3f8f86',
-  glow: '#ffd98a',
+  shell: '#4f86c6',
+  trim: '#2a2522',
+  accent: '#eeeae0',
+  glow: '#1c1a22',
 }
 
-/** suits are painted saturated and mid-light on purpose: the game is moving
-    to a low-resolution, posterized picture, and a colour block has to
-    survive being eight pixels wide and quantized. Pastels there turn to
+/** jellies are painted saturated and mid-light on purpose: the game is
+    rendered at a low resolution through a posterize, and a colour block has
+    to survive being eight pixels wide and quantized. Pastels there turn to
     grey and darks turn to the outline. Every entry was checked against the
-    world's ACES grade at noon and at dusk (`npm run shoot -- body:lineup`) */
+    look at noon and at dusk (`npm run shoot -- body:lineup`) */
 export const SHELL_SWATCHES = [
-  '#e2893f', '#e8c24a', '#cf5a4a', '#4f86c6',
-  '#6aa35a', '#8a6cc0', '#e9e2d0', '#9aa3ad',
+  '#d9503f', '#e8b83a', '#4f86c6', '#5fa35a',
+  '#9a6cc8', '#e27aa6', '#3fa79a', '#e8e2d2',
 ] as const
 
 export const TRIM_SWATCHES = [
-  '#3a3f47', '#2a2522', '#2b3a55', '#6b4a33',
-  '#4c5536', '#5a2e3a', '#5d6670', '#d9d6cf',
+  '#2b3a55', '#2a2522', '#6b4a33', '#4c5536',
+  '#5a2e3a', '#5d6670', '#e2893f', '#d9d6cf',
 ] as const
 
 export const ACCENT_SWATCHES = [
-  '#3f8f86', '#c9493f', '#e6b43c', '#3d6fb5',
-  '#e07aa0', '#5f9b4c', '#7d5bb0', '#eeeae0',
+  '#eeeae0', '#c9493f', '#e6b43c', '#3d6fb5',
+  '#1c1c22', '#5f9b4c', '#e07aa0', '#7d5bb0',
 ] as const
 
 export const GLOW_SWATCHES = [
-  '#ffd98a', '#f4f1dc', '#7fe8e8', '#9af0a0',
-  '#ff9ec0', '#ffae5c', '#9cc8ff', '#ff7a66',
+  '#1c1a22', '#2b3a55', '#4a2e22', '#1f4a3a',
+  '#5a1e2e', '#3a2a5a', '#f4f1e6', '#6a6f76',
 ] as const
 
 /** the field order the pack format freezes; changing it changes the wire */

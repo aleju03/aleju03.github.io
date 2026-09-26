@@ -38,7 +38,7 @@ export interface BodyMaterial {
   setLook: (look: PlayerLook) => void
   /** true hides the head from the colour pass (not from shadows) */
   hideHead: (hidden: boolean) => void
-  /** a multiplier on the lamp and pocket glow, e.g. brighter at night */
+  /** a multiplier on anything painted in the glint role, e.g. brighter at night */
   setGlow: (k: number) => void
 }
 
@@ -52,7 +52,9 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
     uHideHead: { value: 0 },
     uFaceLift: { value: 1 },
   }
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.78, metalness: 0 })
+  // a gummy sheen: smooth enough to carry a highlight blob through the
+  // posterize, which is most of what makes a bean read as jelly
+  const material = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0 })
   material.name = 'playerBody'
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uPal = uniforms.uPal
@@ -94,18 +96,18 @@ diffuseColor.rgb = uPal[role];`,
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
-float lit = (role == 4 ? 1.0 : 0.0) + (role == 7 ? 0.35 : 0.0);
+float lit = role == 7 ? 0.35 : 0.0;
 totalEmissiveRadiance += uPal[role] * lit * uGlowK;
 // a soft rim on the whole body, and a floor of light under the face: at dusk
 // the scene's light falls away and a face with nothing of its own goes to a
 // black disc under the hat, which is the one part of this body that has to
 // read. uFaceLift scales both; it is a uniform, so tuning it relinks nothing
 float rim = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.5);
-float face = (role == 0 || role == 6 || role == 8) ? 1.0 : 0.0; // skin, blush, hair
+// the face is the top of the bean: everything head-flagged but the eyes
+float face = (vHead > 0.5 && role != 4) ? 1.0 : 0.0;
 totalEmissiveRadiance += uPal[role] * uFaceLift * (face * (0.07 + 0.22 * rim) + 0.1 * rim);
-// the face's ink and the eyes' glints are glossier than cloth: a sharper
-// highlight is what makes an eye read as wet rather than painted on
-roughnessFactor = (role == 5 || role == 7) ? 0.32 : roughnessFactor;`,
+// the eyes are glossier than the gummy: a sharper highlight reads as wet
+roughnessFactor = (role == 4 || role == 5) ? 0.3 : roughnessFactor;`,
       )
   }
   material.customProgramCacheKey = () => 'playerBody-v2'
