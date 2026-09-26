@@ -432,6 +432,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
         pose.vz = player.vz
         pose.vy = player.vy
         pose.landing = player.landing
+        pose.fly = player.flying ? 1 : 0
         env.groundY = worldEnv.groundAt(player.x, player.z)
         a.rig.update(pose, env)
 

@@ -70,6 +70,10 @@ export interface PlayerPose {
       from a chase camera or another player but, with the lens riding the
       head, shoves your own crown into the look-down frame */
   show: number
+  /** 0..1 in noclip: airborne without falling. The legs hang half-reached,
+      the arms drift and the whole body bobs a little, the relaxed float of
+      somebody with nowhere to land rather than the tuck of a jump */
+  fly?: number
 }
 
 export interface PlayerRig {
@@ -507,6 +511,7 @@ export function buildPlayerBody(
   let strafeYaw = 0
   let airK = 0
   let fallK = 0 // within air: 0 rising .. 1 falling
+  let flyK = 0 // noclip's float, eased
   let springP = 0 // landing spring on the pelvis, design units (<= 0)
   let springV = 0
   let idleT = 0
@@ -757,7 +762,10 @@ export function buildPlayerBody(
     springP = Math.max(-0.42, springP + springV * dt)
 
     airK += ((pose.grounded ? 0 : 1) - airK) * ease(pose.grounded ? 14 : 9)
-    fallK += ((pose.vy < 0 ? 1 : 0) - fallK) * ease(7)
+    flyK += ((pose.fly ?? 0) - flyK) * ease(4)
+    // a flyer is neither rising nor falling: the legs settle halfway between
+    // the jump's tuck and the fall's reach, which reads as hanging loose
+    fallK += ((pose.fly ? 0.55 : pose.vy < 0 ? 1 : 0) - fallK) * ease(7)
 
     // hips angle toward where the feet are actually going; chest holds the
     // camera line, so strafing reads as stepping sideways, not gliding
@@ -790,7 +798,7 @@ export function buildPlayerBody(
     // pelvis: root motion — gait dip, crouch, spring; lean and bank on top
     // (the lean is outside-viewer flair: pose.show zeroes it under the lens)
     const dip = -Math.abs(stepS) * (0.045 + 0.03 * runK) * gait
-    pelvis.position.set(0, hipH + dip, 0)
+    pelvis.position.set(0, hipH + dip + Math.sin(idleT * 1.7) * 0.05 * flyK, 0)
     // the get-up hunch is not gated by pose.show: it is the shape of the
     // action, not flair, and the lens is off the head for the whole of it
     const lean =

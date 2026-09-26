@@ -516,6 +516,18 @@ async function main() {
   assert.equal(seen[1], 12.35, 'positions are rounded to centimetres');
   assert.equal(seen[7], 3, 'pose flags survive the trip');
 
+  // the noclip bit (64) is a pose flag like the others, so a flyer's body
+  // floats on everyone else's screen instead of hanging mid-jump
+  w2.send({ type: 'world-move', x: 12.3456, y: 30, z: -8, yaw: 1.5708, pitch: 0, gait: 0, f: 64 });
+  // (a tick already in flight when the move was sent may still carry the old
+  // pose, so give it a few snapshots rather than exactly the next one)
+  let flyBits = -1;
+  for (let i = 0; i < 5 && flyBits !== 64; i++) {
+    const flying = await w1.nextOf('world-tick', 'snapshot after a flying move');
+    flyBits = flying.players.find((p) => p[0] === welcome2.you)?.[7] ?? -1;
+  }
+  assert.equal(flyBits, 64, 'the fly bit survives the trip');
+
   // stepping through a level seam takes you out of everyone else's snapshot
   w2.send({ type: 'world-level', level: 'backrooms' });
   const scoped = await w1.nextOf('world-tick', 'snapshot after the seam');
