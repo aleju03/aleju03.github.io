@@ -36,7 +36,7 @@ const TICKS = (out: number) => [
   [9 + out, 6, 3, 1],
 ]
 
-export default function Crosshair({ aim = 'none', scale = 2 }: { aim?: CrosshairAim; scale?: number }) {
+export default function Crosshair({ aim = 'none', scale = 3 }: { aim?: CrosshairAim; scale?: number }) {
   const on = aim !== 'none'
   const ticks = TICKS(on ? 1 : 0)
   const fill = TINT[aim]

@@ -561,7 +561,9 @@ sandbox/
   rules.ts      the shared knobs (gravity, timescale, cleanup of everyone's)
                 and the seam the network routes them through
   places.ts     what `tp town:downtown` and `tp landmark:lighthouse` find
-  spawnlist.ts  what the spawn menu lists and under which heading
+  spawnlist.ts  the spawn menu's reading of catalogue.ts (the one list of
+                what can be spawned) and thumbnails.ts, plus each plate's
+                small print
 ```
 
 ### The contract
@@ -783,9 +785,16 @@ sets from the welcome's player id.
 
 The React side is `components/os/SandboxConsole.tsx` (a thermal receipt
 printer: t, enter or / opens it, /command runs, plain text chats online and
-works offline) and `components/os/SpawnMenu.tsx` (a mail-order catalogue held
-up with q; its find line pins it open). Both free the pointer, and CrtScene's
-`onLock` knows an unlock they asked for is not esc.
+works offline), `components/os/SpawnMenu.tsx` (a mail-order catalogue held
+up with q; its find line pins it open) and `components/os/Crosshair.tsx`
+(a pixel crosshair tinted by what it is on; the physgun reads the same
+`CrosshairAim`). Both overlays free the pointer, CrtScene's `onLock` knows
+an unlock they asked for is not esc, and an esc close waits for the key to
+come up before taking the pointer back, or Chrome spends the release on
+unlocking again. A spawn lands at the crosshair's hit, never within the
+walker's reach (`BODY_CLEAR`), and `host.spawned(ids)` pops it in: a scale
+overshoot, a ring of dust from the fleet's particle pool (`fleet.puff`, so
+no new material) and `sfx.spawnPop`.
 
 One rule that bit: **never touch a body from inside a Rapier query
 callback.** The query holds the world borrowed, the error thrown across the

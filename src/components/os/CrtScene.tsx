@@ -187,6 +187,13 @@ interface VoiceHud {
 /** the receipt keeps this many lines; anything older has been torn off */
 const FEED_KEEP = 80
 
+/** a hint line that wraps only between its hints, never inside one */
+const tapeLine = (line: string) =>
+  line.split(' · ').flatMap((h, i) => [
+    i > 0 ? ' · ' : '',
+    <span key={i} className="whitespace-nowrap">{h}</span>,
+  ])
+
 const EASE = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 const MODELS = [
   '/os/models/computer.glb',
@@ -1978,6 +1985,7 @@ export default function CrtScene({
           walk.noclip = on
           setFlying(on)
         }
+        const aimDir = new THREE.Vector3()
         const canAct = () => !fleet.riding && !levels.frozen && !seating.current && !rig.down
         /** Garry's Mod lets you noclip or teleport out of a heap on the
             floor, so the console and the noclip key do too: the body stands
@@ -2003,7 +2011,15 @@ export default function CrtScene({
           online: () => net !== null,
           // the head and gaze as of the last frame: commands run from DOM
           // events, when the chase boom may be holding the camera
-          aim: () => ({ origin: headPos, dir: headDir }),
+          // (on foot the gaze is read off the walk's own yaw and pitch, which
+          // are this instant's, rather than off a camera one frame behind a
+          // mouse flick: a spawn lands under the crosshair you see now)
+          aim: () => {
+            if (fleet.riding || seating.current || rig.down) return { origin: headPos, dir: headDir }
+            const cp = Math.cos(walk.pitch)
+            aimDir.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp)
+            return { origin: headPos, dir: aimDir }
+          },
           here: () => ({ x: headPos.x, y: walk.feetY, z: headPos.z, yaw: walk.yaw }),
           teleport: (x, z, y, yaw) => {
             if (fleet.riding) leaveVehicle()
@@ -3171,6 +3187,7 @@ export default function CrtScene({
                 categories: list.spawnCategories,
                 kind: (id) => kinds.KINDS[id],
                 note: list.kindNote,
+                thumbs: list.spawnThumbs,
               })
             })
             // a blast knocks down whoever it reaches: the walker (not from a
@@ -3179,7 +3196,7 @@ export default function CrtScene({
             // sandbox's (explosion.ts), so the film harness agrees with this
             sandbox.onExplosion((e) => {
               if (levels.current.id !== 'overworld') return
-              if (!seating.current && !levels.frozen && !fleet.driving) {
+              if (!seating.current && !levels.frozen && !fleet.driving && !godMode && !walk.noclip) {
                 feetPt.set(camera.position.x, walk.feetY, camera.position.z)
                 if (sandboxMod.blastImpact(e, feetPt, EYE * 1.15, rig.mass, impact)) {
                   rig.hit(impact.impulse, impact.point)
@@ -3201,6 +3218,7 @@ export default function CrtScene({
                 // the walk's yaw and pitch, which a headless drive cannot
                 // steer any other way (it is never granted the pointer lock)
                 __sandboxWalk: walk,
+                __sandboxRig: rig,
               })
             }
             fleet = registry.buildFleet({
@@ -3952,9 +3970,9 @@ export default function CrtScene({
                 driving.seat !== 0
                 ? `along for the ride · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
                 : `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
-              : keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
+              : tapeLine(keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
                   mp.status === 'live' ? ` · ${t.sandbox.hud.voice}` : ''
-                } · ${t.sandbox.hud.pauses}`, language)}
+                } · ${t.sandbox.hud.pauses}`, language))}
         </p>
       )}
       {/* the instrument panel. Deliberately the same quiet mono the rest of

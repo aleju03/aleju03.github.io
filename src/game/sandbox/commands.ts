@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { labelIn, type History } from './history'
 import type { PropKind } from './kinds'
 import type { WorldRules } from './rules'
-import type { Prop, PropId, Sandbox } from './sandbox'
+import type { PropId, Sandbox } from './sandbox'
 
 /*
   The console's commands: a registry, a parser, a completer, and the commands
@@ -209,18 +209,22 @@ const usageMsg = (c: Command): Msg => ({ en: usage(c, 'en'), es: usage(c, 'es') 
 
 /* ------------------------------------------------------------ the kinds -- */
 
-// The kind table lives in the sandbox's lazily loaded chunk (it builds
-// geometry at import), so the console reaches it the same way: loaded on
-// first need, cached for the completer, which has to answer synchronously
-type KindsModule = typeof import('./kinds')
+// The kind table and the catalogue live in the sandbox's lazily loaded chunk
+// (they build geometry at import), so the console reaches them the same way:
+// loaded on first need, cached for the completer, which has to answer
+// synchronously. The catalogue is what can be typed; the kind table also
+// holds gibs and one-offs nobody should be offered
+type KindsModule = typeof import('./kinds') & { catalogue: typeof import('./catalogue') }
 let kindsMod: KindsModule | null = null
 let kindsLoading: Promise<KindsModule> | null = null
 const loadKinds = () => {
-  kindsLoading ??= import('./kinds').then((m) => (kindsMod = m))
+  kindsLoading ??= Promise.all([import('./kinds'), import('./catalogue')]).then(
+    ([k, catalogue]) => (kindsMod = { ...k, catalogue }),
+  )
   return kindsLoading
 }
-/** kind ids, for completion; empty until the kind table has loaded */
-const kindIds = () => (kindsMod ? Object.keys(kindsMod.KINDS) : [])
+/** spawnable ids, for completion; empty until the catalogue has loaded */
+const kindIds = () => (kindsMod ? kindsMod.catalogue.CATALOGUE.map((e) => e.id) : [])
 
 /* ------------------------------------------------------------ parsing -- */
 
@@ -507,12 +511,10 @@ const pluralEs = (n: number, label: string) => {
   return [p, ...rest].join(' ')
 }
 
-/** a kind's name in the language asked for, via the spawnlist fallback */
-const kindLabel = (k: PropKind, lang: Lang) =>
-  lang === 'es' ? ((k as PropKind & { labelEs?: string }).labelEs ?? ES_KIND[k.id] ?? k.label) : k.label
-const ES_KIND: Record<string, string> = {
-  crate: 'caja de madera', barrel: 'barril de aceite', plank: 'tablón',
-  block: 'bloque de concreto', cone: 'cono', ball: 'pelota',
+/** a kind's name in the language asked for, off the catalogue's own names */
+const kindLabel = (k: PropKind, lang: Lang) => {
+  const e = kindsMod?.catalogue.catalogueEntry(k.id)
+  return e ? e.name[lang].toLowerCase() : k.label
 }
 
 /**
@@ -844,10 +846,10 @@ registerCommand({
 })
 
 /*
-  The plain explosion: an impulse away from the point on every prop in the
-  radius, falling off with distance, and a fling for the player if they are
-  standing in it. No flash and no sound; the props piece owns those and
-  replaces this command wholesale with `registerCommand` when it lands.
+  The props piece's explosion (explosion.ts, through `sb.explode`): impulses on
+  everything in the radius, damage that breaks the breakable and sets off the
+  explosive, the flash and the sound, and the `onExplosion` hook the scene
+  answers by knocking down the walker and the pedestrians caught in it.
 */
 registerCommand({
   name: 'explode',
@@ -859,38 +861,9 @@ registerCommand({
     const hit = aimedHit(ctx.host, sb, 150)
     if (!hit) ctx.fail(msg('look at something first', 'apunta a algo primero'))
     const power = Math.max(0.1, Math.min(10, ctx.args[0] ? Number(ctx.args[0]) : 1))
-    const radius = 9 * Math.sqrt(power)
     const c = hit!.point.clone().addScaledVector(hit!.normal, 0.5)
-    let n = 0
-    const pos = new THREE.Vector3()
-    const caught: Prop[] = []
-    sb.queryBall(c, radius, (p) => {
-      caught.push(p)
-    })
-    for (const p of caught) {
-      if (p.mode === 'frozen') continue
-      sb.getTransform(p.id, pos)
-      const d = pos.distanceTo(c)
-      const fall = 1 - d / radius
-      if (fall <= 0) continue
-      const dir = pos.sub(c).normalize()
-      dir.y += 0.5 // explosions throw things up, not just out
-      dir.normalize()
-      const speed = 34 * power * fall
-      sb.wake(p.id)
-      sb.applyImpulse(p.id, dir.multiplyScalar(speed * p.mass))
-      n++
-    }
-    const me = ctx.host.here?.()
-    if (me && !ctx.host.god?.()) {
-      const d = Math.hypot(me.x - c.x, me.y + 2 - c.y, me.z - c.z)
-      if (d < radius) {
-        const k = (1 - d / radius) * 30 * power
-        const dx = (me.x - c.x) / (d || 1)
-        const dz = (me.z - c.z) / (d || 1)
-        ctx.host.fling?.(dx * k, 8 + k * 0.6, dz * k)
-      }
-    }
+    const e = sb.explode(c, power, 16 * Math.sqrt(power))
+    const n = e.pushed
     ctx.ok(msg(`boom (${n} ${plural(n, 'prop')} thrown)`, `bum (${n} ${pluralEs(n, 'objeto')} volando)`))
   },
 })

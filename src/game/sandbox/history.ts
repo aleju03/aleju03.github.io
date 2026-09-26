@@ -18,11 +18,12 @@ import type { PropId, Sandbox } from './sandbox'
   own history and nothing is a module-level singleton.
 
   It stays honest about props that leave by other means. A crate that breaks
-  into gibs (S2), a prop that falls out of the world and is rescued away, or
-  one cleaned up by somebody else is dropped from every entry through the
+  into gibs, a prop that falls out of the world and is rescued away, or one
+  cleaned up by somebody else is dropped from every entry through the
   sandbox's `onRemove`, and an entry with nothing left to undo is dropped
   too, so Z never spends a press on something already gone. `adopt` is how
-  the gibs stay yours: a breakable prop hands its pieces to its own entry, and
+  the gibs stay yours: every `onBreak` hands the pieces to the entry of the
+  thing that broke (put back on the stack if the break had emptied it), and
   one Z then clears the whole mess.
 
   Owners are numbers: the network's player id, or `LOCAL` (0) offline. The
@@ -122,12 +123,18 @@ export const createHistory = (sb: Sandbox): History => {
     for (const id of e.props) byProp.delete(id)
   }
 
+  /** where a prop removed by other means lived, for a moment: a crate that
+      breaks is removed before its gibs are announced, and the gibs must
+      still find the entry to join (see `adopt`) */
+  const gone = new Map<PropId, HistoryEntry>()
   const off = sb.onRemove((p) => {
     if (removing) return
     const e = byProp.get(p.id)
     if (!e) return
     byProp.delete(p.id)
     e.props.delete(p.id)
+    gone.set(p.id, e)
+    if (gone.size > 64) gone.delete(gone.keys().next().value!)
     // an entry that was only props, all gone, has nothing left to undo
     if (e.props.size === 0 && !e.undo) drop(e)
     changed()
@@ -143,6 +150,10 @@ export const createHistory = (sb: Sandbox): History => {
     }
     return n
   }
+
+  // the props piece's breakables: gibs join the entry of what broke, so one
+  // Z takes back the crate and the splinters it left
+  const offBreak = sb.onBreak((b) => h.adopt(b.id, b.gibs))
 
   const h: History = {
     me: LOCAL,
@@ -208,8 +219,15 @@ export const createHistory = (sb: Sandbox): History => {
       return n
     },
     adopt: (parent, children) => {
-      const e = byProp.get(parent)
+      const e = byProp.get(parent) ?? gone.get(parent)
       if (!e) return
+      gone.delete(parent)
+      // an entry emptied by the break is put back where it was in the stack
+      if (!stack.includes(e)) {
+        let i = stack.length
+        while (i > 0 && stack[i - 1].seq > e.seq) i--
+        stack.splice(i, 0, e)
+      }
       for (const id of children) {
         e.props.add(id)
         byProp.set(id, e)
@@ -235,6 +253,7 @@ export const createHistory = (sb: Sandbox): History => {
     },
     dispose: () => {
       off()
+      offBreak()
       stack.length = 0
       byProp.clear()
       listeners.clear()

@@ -8,8 +8,10 @@
                                       third-person strip of the float pose
     npm run drive                     all three
 
-  --at x,z | place       where the console and menu shots stand (280,480)
-  --fly-at place         where the noclip films start (town:suburb)
+  --at x,z | place       where the console and menu shots stand (5654,-844, the
+                         physics harness's flat site, so nothing rolls away)
+  --fly-at x,z | place   where the noclip films start (-32,-331: a street in
+                         the home city's downtown, for rooftops to cross)
   --lang es              the Spanish copy; --out <dir> (shots/sandbox)
   --debug                print pointer-lock changes and key presses, which is
                          how an esc that paused the game got caught
@@ -39,8 +41,14 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--out', '--at', '--fly-at', '--yaw', '--frames', '--lang'])
+const VALUED = new Set(['--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
+if (has('help') || argv.includes('-h')) {
+  // the header above is the help; print it rather than booting anything
+  const src = (await import('node:fs')).readFileSync(new URL(import.meta.url), 'utf8')
+  console.log(src.slice(src.indexOf('/*') + 2, src.indexOf('*/')).replace(/^\n/, ''))
+  process.exit(0)
+}
 const WHAT = wanted.length ? wanted : ['console', 'menu', 'noclip']
 const OUT = resolve(flag('out', 'shots/sandbox'))
 const W = 1280
@@ -136,25 +144,82 @@ try {
   // let the first rings stream in and the stand-up settle
   await sleep(4000)
   const run = (line) => evaluate(`window.__sandbox.run(${JSON.stringify(line)})`)
-  const look = (yaw, pitch) =>
-    evaluate(`(() => { const w = window.__sandboxWalk; ${yaw === null ? '' : `w.yaw = ${yaw};`} w.pitch = ${pitch} })()`)
+  // never photograph a heap: a ragdoll left over from a drop is stood up
+  // by noclipping out of it (tp and noclip both stand the body up)
+  const stand = async () => {
+    if (await evaluate('!!window.__sandboxRig?.down')) {
+      await run('noclip')
+      await run('noclip')
+      await sleep(600)
+    }
+  }
+  // (and a few frames for the lens to follow before anything is aimed)
+  const look = async (yaw, pitch) => {
+    await evaluate(`(() => { const w = window.__sandboxWalk; ${yaw === null ? '' : `w.yaw = ${yaw};`} w.pitch = ${pitch} })()`)
+    await sleep(400)
+  }
 
   // first person, somewhere open: the harness's own countryside, or --at
   await evaluate('window.__sandbox.console.host.thirdPerson(false)')
-  const AT = flag('at', '280 480').replace(',', ' ')
-  console.log(`  ${(await run(`tp ${AT}`)).join(' / ')}`)
-  await sleep(3500)
+  const AT = flag('at', '5654 -844').replace(',', ' ')
+  // a teleport races the tail of /world's stand-up and can be undone by it,
+  // so go until the lens is actually there
+  const goTo = async (where) => {
+    for (let i = 0; i < 8; i++) {
+      const before = await evaluate('window.__sandboxCamera.position.toArray()')
+      const out = await run(`tp ${where}`)
+      await sleep(2500)
+      const after = await evaluate('window.__sandboxCamera.position.toArray()')
+      if (Math.hypot(after[0] - before[0], after[2] - before[2]) > 20 || /\b0 u\b/.test(out.join())) {
+        console.log(`  ${out.join(' / ')}`)
+        return
+      }
+    }
+    console.log(`  could not get to ${where}`)
+  }
+  await goTo(AT)
+  await sleep(1000)
   await run('time 10:30')
+  await stand()
   await look(Number(flag('yaw', 0.6)), 0)
+
+  // a click at the centre of whatever matches `sel`
+  const where = (sel) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)})
+    if (!el) return null
+    el.scrollIntoView({ block: 'nearest' })
+    const r = el.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2] })()`)
+  const clickOn = async (sel, move = true) => {
+    const at = await where(sel)
+    if (!at) return false
+    if (move) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at[0], y: at[1] })
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at[0], y: at[1], button: 'left', clickCount: 1 })
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at[0], y: at[1], button: 'left', clickCount: 1 })
+    return true
+  }
+  const hover = async (sel) => {
+    const at = await where(sel)
+    if (at) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at[0], y: at[1] })
+  }
 
   if (WHAT.includes('console')) {
     console.log('console')
-    await look(null, -0.22)
-    for (const l of ['spawn crate 6', 'spawn barrel 3', 'gravity moon', 'spawn ball 4', 'undo', 'gravity 1', 'spawn crate lots', 'spawnn cone']) {
+    // first person, looking a little down at open ground ahead: everything
+    // the receipt confirms lands in frame, at the crosshair
+    await look(null, -0.26)
+    if (has('debug')) {
+      console.log('    aim ' + await evaluate(`(() => { const h = window.__sandbox.console.host; const a = h.aim(); const hit = window.__sandbox.raycast(a.origin, a.dir, 200);
+        const cam = window.__sandboxCamera; const w = window.__sandboxWalk; return JSON.stringify({ down: window.__sandboxRig.down, rag: window.__sandboxRig.ragdolling, paused: /PAUSED/.test(document.body.innerText), rot: [cam.rotation.x, cam.rotation.y, cam.rotation.z].map((v) => v.toFixed(2)), order: cam.rotation.order, parent: cam.parent && cam.parent.type, wp: w.pitch, wy: w.yaw, o: [a.origin.x, a.origin.y, a.origin.z].map(Math.round), d: [a.dir.x, a.dir.y, a.dir.z].map((v) => v.toFixed(2)), hit: hit && [hit.distance.toFixed(1), hit.ground, !!hit.solid, !!hit.prop] }) })()`))
+    }
+    for (const l of ['spawn crate 6', 'spawn barrel 3', 'gravity moon', 'spawn ball 4', 'undo', 'gravity 1', 'spawn crate lots', 'spawnn cone', 'spawn melon 3']) {
       console.log(`  > ${l}: ${(await run(l)).join(' / ')}`)
+      if (has('debug')) {
+        console.log('    ' + await evaluate(`(() => { const c = window.__sandboxCamera.position; const o = [];
+          window.__sandbox.forEach((q) => { const t = q.body.translation(); o.push(q.kind.id + '@' + Math.round(Math.hypot(t.x - c.x, t.z - c.z))) });
+          return 'cam ' + c.toArray().map(Math.round) + ' pitch ' + window.__sandboxWalk.pitch.toFixed(2) + ' ' + o.join(' ') })()`))
+      }
       await sleep(250)
     }
-    await sleep(1800)
+    await sleep(2200)
     // then really type: enter opens the printer, and a half-typed command
     // shows the completion list pencilled over the line
     await tap('Enter')
@@ -166,54 +231,62 @@ try {
     await sleep(250)
     await shot('console-tab')
     await tap('Escape')
-    await sleep(400)
-    // closed, the strip holds its last lines for a few seconds
+    await sleep(500)
+    // closed, the strip holds its last lines for a few seconds, and the
+    // key hints come back on their tape
     await shot('console-closed')
     await run('cleanup')
+    await sleep(300)
   }
 
   if (WHAT.includes('menu')) {
     console.log('menu')
-    await look(null, -0.3)
+    await stand()
+    await look(null, -0.26)
     await down('KeyQ')
-    await sleep(600)
-    // hover the second plate, click it (it stamps SENT and the prop lands),
-    // then hover the third so the pencil ring shows
-    const plates = await evaluate(`[...document.querySelectorAll('button')]
-      .filter((b) => b.querySelector('img'))
-      .map((b) => { const r = b.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2] })`)
-    console.log(`  ${plates?.length ?? 0} plates`)
-    if (plates?.length > 2) {
-      const [cx, cy] = plates[1]
-      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy })
-      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 })
-      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 })
-      await sleep(180)
-      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: plates[2][0], y: plates[2][1] })
+    // the icons are drawn the first time the book opens
+    await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 20`), 60, 250, 'the catalogue icons')
+    console.log(`  ${await evaluate(`document.querySelectorAll('[data-kind]').length`)} plates`)
+    // order three things (each lands on the last, at the crosshair), then
+    // leave the pencil on a fourth
+    // aiming a little left, centre and right for each, the way you would
+    const yaw0 = Number(flag('yaw', 0.6))
+    for (const [id, dy] of [['crate', 0.2], ['barrel_explosive', 0], ['melon', -0.2]]) {
+      await look(yaw0 + dy, -0.26)
+      await clickOn(`[data-kind="${id}"]`)
+      await sleep(260)
     }
-    await sleep(250)
+    await look(yaw0, -0.26)
+    await hover('[data-kind="couch"]')
+    await sleep(300)
     await shot('menu')
+    // one category page
+    await clickOn('[data-category="furniture"]')
+    await sleep(350)
+    await hover('[data-kind="tv"]')
+    await sleep(250)
+    await shot('menu-category')
     // the find line pins the book open: click it, let go of q, type
-    const find = await evaluate(`(() => { const r = document.querySelector('input[placeholder]:not([type])')
-      ?.getBoundingClientRect(); return r && r.top > 0 ? [r.x + 20, r.y + r.height / 2] : null })()`)
-    if (find) {
-      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: find[0], y: find[1], button: 'left', clickCount: 1 })
-      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: find[0], y: find[1], button: 'left', clickCount: 1 })
+    if (await clickOn('input[placeholder]:not([type])')) {
       await sleep(150)
       await up('KeyQ')
       await sleep(300)
-      await type(lang === 'es' ? 'barr' : 'dru')
+      await type(lang === 'es' ? 'barr' : 'bar')
       await sleep(300)
       await shot('menu-find')
+      await look(yaw0 - 0.4, -0.26)
       await tap('Enter')
       await sleep(200)
       await tap('Escape')
     } else {
       await up('KeyQ')
     }
-    await sleep(900)
+    // and what was ordered, standing where the crosshair was
+    await look(yaw0 - 0.1, -0.2)
+    await sleep(1400)
     await shot('menu-after')
     await run('cleanup')
+    await sleep(300)
   }
 
   if (WHAT.includes('noclip')) {
@@ -222,9 +295,10 @@ try {
     const film = async (name, third) => {
       await evaluate(`window.__sandbox.console.host.thirdPerson(${third})`)
       // over rooftops, the way noclip is mostly used
-      console.log(`  ${(await run(`tp ${flag('fly-at', 'town:suburb')}`)).join(' / ')}`)
-      await sleep(4000)
-      await look(null, 0)
+      await goTo(flag('fly-at', '-32 -331').replace(',', ' '))
+      await sleep(1500)
+      // down the street rather than into the tower beside it
+      await look(Number(flag('fly-yaw', Math.PI / 2)), 0)
       await tap('KeyV')
       await sleep(300)
       const dir = mkdtempSync(join(tmpdir(), 'noclip-'))
@@ -235,10 +309,10 @@ try {
         { at: 1, keys: ['KeyW', 'Space'], pitch: 0.25, label: 'w + space: climb' },
         { at: 2, keys: ['KeyW'], pitch: 0, label: 'w: cruise' },
         { at: 3, keys: ['KeyW', 'ShiftLeft'], pitch: -0.05, label: 'shift: fast' },
-        { at: 4, keys: ['KeyW', 'ShiftLeft'], pitch: -0.35, label: 'shift: dive' },
-        { at: 5, keys: ['KeyW'], pitch: -0.2, label: 'w: coast down' },
+        { at: 4, keys: ['KeyW', 'ShiftLeft'], pitch: -0.18, label: 'shift: dive' },
+        { at: 5, keys: ['KeyW'], pitch: -0.08, label: 'w: coast down' },
         { at: 6, keys: [], pitch: -0.1, label: 'let go: drift to a stop' },
-        { at: 7, keys: [], pitch: -0.3, label: 'v mid-air: drop (and flop)' },
+        { at: 7, keys: [], pitch: -0.1, label: 'c down to the street, v: land' },
       ].slice(0, frames)
       let held = []
       for (let i = 0; i < plan.length; i++) {
@@ -247,7 +321,14 @@ try {
         for (const k of p.keys) if (!held.includes(k)) await down(k)
         held = p.keys
         await look(null, p.pitch)
-        if (i === plan.length - 1) await tap('KeyV')
+        if (i === plan.length - 1) {
+          // sink until the feet are a hop over whatever is below, then land
+          await down('KeyC')
+          await waitFor(() => evaluate(`(() => { const w = window.__sandboxWalk, c = window.__sandboxCamera.position;
+            return w.feetY - window.__sandbox.groundY(c.x, c.z) < 1.2 })()`), 120, 50, 'the ground').catch(() => {})
+          await up('KeyC')
+          await tap('KeyV')
+        }
         await sleep(i === plan.length - 1 ? 1600 : 1100)
         const f = join(dir, `${String(i).padStart(2, '0')}.png`)
         writeFileSync(f, await probe.screenshot(W, H))

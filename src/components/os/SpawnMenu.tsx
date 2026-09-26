@@ -1,9 +1,8 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../../i18n'
 import type { PropKind } from '../../game/sandbox/kinds'
 import type { SpawnCategory, SpawnEntry } from '../../game/sandbox/spawnlist'
 import { MARK, stockTexture } from './paper'
-import { sketchKind } from './propSketch'
 import { keyHint } from '../../game/sandbox/bindings'
 import { labelIn, type Label } from '../../game/sandbox/history'
 
@@ -15,22 +14,30 @@ import { labelIn, type Label } from '../../game/sandbox/history'
   page number, the way the front of a real catalogue reads) and your order
   slip, a pink carbon copy of what you have spawned, newest first; the right
   page is the category you are on, laid out as product plates. Each plate is
-  the prop drawn as a printed illustration (`propSketch.ts`: flat colour, an
-  ink line, a halftone screen in the shade), its catalogue number, its name,
-  and the small print a catalogue would give it, which here is the physics'
-  own numbers: how heavy it is and whether it floats. Hovering a plate rings
-  it in pencil, which is what you do to a catalogue when you want something;
-  clicking it stamps SENT across it and the thing lands where you were
-  looking. Let go of Q and the catalogue goes away.
+  the prop's own model drawn as a pixel-art icon (the props piece's
+  `sandbox/thumbnails.ts`), its catalogue number, its name, and the small
+  print a catalogue would give it, which here is the physics' own numbers:
+  how heavy it is and whether it floats, breaks or blows up. Hovering a plate
+  rings it in pencil, which is what you do to a catalogue when you want
+  something; clicking it rubber-stamps SENT in the plate's corner and the
+  thing lands where you were looking. Let go of Q and the catalogue goes
+  away.
+
+  It is a thing and not a panel: a paper catalogue with a red card cover
+  showing round its edges, the page stacks thickening towards the fore-edges,
+  two staples in the fold, the bottom corner of the right page curling up,
+  and the whole book tipped back a few degrees and a degree off square, the
+  way one is held open in front of you.
 
   It is Garry's Mod's Q menu in everything that matters: a grid of every prop
   by category, one click to spawn at the crosshair, the undo list beside it.
   What it is not is a grey panel of tabs and scroll bars, because nothing in
   this world is made of those.
 
-  The data comes from `sandbox/spawnlist.ts` through a small source object the
-  scene hands over once the world (and with it the kind table) has loaded;
-  until then the catalogue says it is on its way. Every string is in both
+  The data comes from `sandbox/catalogue.ts` (the one list of what can be
+  spawned), read through `sandbox/spawnlist.ts` into a small source object
+  the scene hands over once the world has loaded; until then the catalogue
+  says it is on its way. Every string is in both
   languages, and the paper and inks are literal hex like the pause sheet's.
 */
 
@@ -40,12 +47,17 @@ const INK_SOFT = '#81745f'
 /** the catalogue's own spot colour: mastheads, numbers, the stamp */
 const RED = '#c2412c'
 const SLIP = '#f1d3c9'
+/** the page stack's edges, alternating so the lines read as sheets */
+const EDGE_A = '#e4dbc6'
+const EDGE_B = '#c9bda3'
 
 export interface CatalogueSource {
   entries: () => SpawnEntry[]
   categories: (entries: SpawnEntry[]) => SpawnCategory[]
   kind: (id: string) => PropKind | undefined
   note: (k: PropKind, lang: 'en' | 'es') => string
+  /** every plate's picture, drawn once (thumbnails.ts), by id */
+  thumbs: () => Promise<Map<string, string>>
 }
 
 export interface OrderLine {
@@ -71,9 +83,9 @@ const ALL = '*'
 /** a pencil ring, drawn rather than bordered: two passes that do not meet */
 function Ring() {
   return (
-    <svg aria-hidden viewBox="0 0 200 200" preserveAspectRatio="none" className="pointer-events-none absolute -inset-2 h-[calc(100%+16px)] w-[calc(100%+16px)]">
+    <svg aria-hidden viewBox="0 0 200 200" preserveAspectRatio="none" className="pointer-events-none absolute -top-1 -left-1.5 h-[calc(100%+8px)] w-[calc(100%+12px)]">
       <path
-        d="M104 9c52 2 86 34 87 86 1 50-37 94-92 95-55 1-90-38-90-89C9 52 49 12 110 13c16 1 30 5 42 11"
+        d="M46 7C96 1 150 3 178 10c16 8 17 52 16 92-1 44-2 76-14 86-34 9-110 9-160 3C6 184 4 140 5 98 6 56 6 22 22 12c18-8 52-9 88-8"
         fill="none"
         stroke={MARK}
         strokeWidth="3.2"
@@ -94,6 +106,17 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
   const [ringed, setRinged] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [finding, setFinding] = useState(false)
+  const [pics, setPics] = useState<Map<string, string> | null>(null)
+  // the icons are drawn the first time the book is opened, in a context of
+  // their own (thumbnails.ts), and kept for the session
+  useEffect(() => {
+    if (!open || !source || pics) return
+    let live = true
+    void source.thumbs().then((m) => live && setPics(m))
+    return () => {
+      live = false
+    }
+  }, [open, source, pics])
   const findRef = useRef<HTMLInputElement>(null)
   const pageStock = useMemo(
     () => stockTexture({ base: PAGE, seed: 0xca7a1, grain: 0.7, flecks: 50, fleck: '90,80,60' }),
@@ -124,47 +147,65 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
   const pageOf = (id: string) => (id === ALL ? 2 : 3 + cats.findIndex((c) => c.id === id))
 
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/15" onPointerDown={(e) => e.stopPropagation()}>
+    <div
+      className="absolute inset-0 z-40 flex items-center justify-center bg-black/15"
+      style={{ perspective: 1500 }}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
       <style>{`
-        @keyframes cat-up { from { transform: translateY(46px) rotate(1.6deg); opacity: 0 } to { transform: rotate(-0.6deg); opacity: 1 } }
+        @keyframes cat-up { from { transform: translateY(60px) rotateX(24deg) rotate(1.4deg); opacity: 0 } to { transform: rotateX(8deg) rotate(-1.2deg); opacity: 1 } }
         @keyframes cat-page { from { transform: translateX(10px); opacity: 0 } to { transform: none; opacity: 1 } }
-        @keyframes cat-stamp { 0% { transform: translateX(-50%) scale(1.7) rotate(-14deg); opacity: 0 } 18% { transform: translateX(-50%) scale(1) rotate(-14deg); opacity: 0.95 } 75% { opacity: 0.95 } 100% { transform: translateX(-50%) scale(1) rotate(-14deg); opacity: 0 } }
+        @keyframes cat-stamp { 0% { transform: scale(1.8) rotate(12deg); opacity: 0 } 16% { transform: scale(1) rotate(12deg); opacity: 0.9 } 80% { opacity: 0.9 } 100% { transform: scale(1) rotate(12deg); opacity: 0 } }
       `}</style>
       <div
         className="pointer-events-auto relative flex select-none"
         style={{
-          width: 'min(940px, 92vw)',
-          height: 'min(580px, 82vh)',
-          transform: 'rotate(-0.6deg)',
-          animation: 'cat-up 170ms cubic-bezier(.2,.9,.3,1.2)',
-          filter: 'drop-shadow(0 18px 30px rgba(0,0,0,0.45))',
+          width: 'min(960px, 92vw)',
+          height: 'min(600px, 84vh)',
+          transform: 'rotateX(8deg) rotate(-1.2deg)',
+          transformOrigin: '50% 100%',
+          animation: 'cat-up 190ms cubic-bezier(.2,.9,.3,1.15)',
+          filter: 'drop-shadow(0 22px 26px rgba(0,0,0,0.5))',
           color: INK,
         }}
         onContextMenu={(e) => e.preventDefault()}
       >
+        {/* the red card cover, a few millimetres proud of the pages all round */}
+        <div
+          aria-hidden
+          className="absolute -inset-x-[9px] -top-[7px] -bottom-[11px]"
+          style={{
+            background: 'linear-gradient(90deg, #8f2f20, #a8392a 48%, #7a2619 50%, #a8392a 52%, #8f2f20)',
+            borderRadius: '8px',
+            boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.25)',
+          }}
+        />
         {/* ---- the left page: masthead, contents, order slip ---- */}
         <section
-          className="relative flex w-[34%] flex-col rounded-l-[6px] px-7 pt-6 pb-5"
+          className="relative flex w-[34%] flex-col rounded-l-[5px] px-7 pt-6 pb-5"
           style={{
             backgroundColor: PAGE,
-            backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0) 80%, rgba(60,40,20,0.16)), url(${pageStock})`,
+            backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0) 72%, rgba(60,40,20,0.1) 88%, rgba(50,32,16,0.3)), url(${pageStock})`,
+            // the page stack under this one, thickening towards the fore-edge
+            boxShadow: `-1px 1px 0 ${EDGE_A}, -2px 2px 0 ${EDGE_B}, -3px 3px 0 ${EDGE_A}, -4px 4px 0 ${EDGE_B}, -5px 5px 0 ${EDGE_A}`,
           }}
         >
-          <h2 className="font-display text-[44px] leading-[0.9] font-semibold tracking-tight" style={{ color: RED }}>
+          <h2 className="font-display text-[40px] leading-[0.9] font-semibold tracking-tight" style={{ color: RED }}>
             {s.title}
           </h2>
           <div aria-hidden className="mt-2 border-t-[3px] border-b" style={{ borderColor: INK, height: 5 }} />
           <p className="mt-2 font-mono text-[11px] leading-snug" style={{ color: INK_SOFT }}>
             {s.lead}
           </p>
-          <h3 className="font-display mt-5 text-[13px] font-semibold tracking-[0.18em] uppercase">{s.contents}</h3>
-          <ul className="mt-1.5 space-y-0.5">
+          <h3 className="font-display mt-4 text-[13px] font-semibold tracking-[0.18em] uppercase">{s.contents}</h3>
+          <ul className="mt-1">
             {[{ id: ALL, label: s.everything, labelEs: s.everything }, ...cats].map((c) => {
               const on = !q && current === c.id
               return (
                 <li key={c.id}>
                   <button
                     type="button"
+                    data-category={c.id}
                     // a click must not take focus off the find line, whose
                     // blur is what lets the catalogue close
                     onMouseDown={(ev) => ev.preventDefault()}
@@ -172,14 +213,14 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                       setCat(c.id)
                       setQuery('')
                     }}
-                    className="group relative flex w-full items-baseline gap-1.5 py-[3px] text-left"
+                    className="group relative flex w-full items-baseline gap-1.5 py-[2px] text-left"
                   >
                     <span
                       aria-hidden
                       className={`absolute -inset-x-2 inset-y-0 -z-0 transition-opacity ${on ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'}`}
                       style={{ background: `${MARK}55`, borderRadius: '9px 13px 8px 15px', transform: 'rotate(-0.7deg)' }}
                     />
-                    <span className="font-display relative text-[17px] leading-tight font-medium">
+                    <span className="font-display relative text-[16px] leading-tight font-medium">
                       {c.id === ALL ? c.label : catName(c)}
                     </span>
                     <span aria-hidden className="relative mx-1 flex-1 translate-y-[-4px] border-b-2 border-dotted" style={{ borderColor: `${INK}55` }} />
@@ -193,7 +234,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
           </ul>
           {/* the find line: pencilled on the page. Focusing it pins the
               catalogue open, so q can be let go of and the name typed */}
-          <label className="mt-4 flex items-baseline gap-2 font-mono text-[12px]">
+          <label className="mt-3 mb-3 flex items-baseline gap-2 font-mono text-[12px]">
             <span className="font-display text-[13px] font-semibold tracking-[0.18em] uppercase">{s.find}</span>
             <input
               ref={findRef}
@@ -259,17 +300,42 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
           </div>
         </section>
 
-        {/* the gutter: the two pages fold into it */}
-        <div aria-hidden className="w-[3px]" style={{ background: 'linear-gradient(90deg, rgba(40,25,10,0.35), rgba(40,25,10,0.05))' }} />
+        {/* the gutter: the two pages fold into it, stapled twice */}
+        <div aria-hidden className="relative w-[4px]" style={{ background: 'linear-gradient(90deg, rgba(40,25,10,0.45), rgba(40,25,10,0.12))' }}>
+          {['28%', '70%'].map((top) => (
+            <span
+              key={top}
+              className="absolute left-1/2 h-[26px] w-[5px] -translate-x-1/2 rounded-[2px]"
+              style={{
+                top,
+                background: 'linear-gradient(90deg, #8d8f93, #e4e6e8 45%, #9fa2a6)',
+                boxShadow: '0 1px 1px rgba(0,0,0,0.45)',
+              }}
+            />
+          ))}
+        </div>
 
         {/* ---- the right page: the plates ---- */}
         <section
-          className="relative flex flex-1 flex-col rounded-r-[6px] px-7 pt-6 pb-4"
+          className="relative flex flex-1 flex-col rounded-r-[5px] px-7 pt-6 pb-4"
           style={{
             backgroundColor: PAGE,
-            backgroundImage: `linear-gradient(90deg, rgba(60,40,20,0.14), rgba(0,0,0,0) 14%), url(${pageStock})`,
+            backgroundImage: `linear-gradient(90deg, rgba(50,32,16,0.3), rgba(60,40,20,0.1) 5%, rgba(0,0,0,0) 16%), url(${pageStock})`,
+            boxShadow: `1px 1px 0 ${EDGE_A}, 2px 2px 0 ${EDGE_B}, 3px 3px 0 ${EDGE_A}, 4px 4px 0 ${EDGE_B}, 5px 5px 0 ${EDGE_A}`,
           }}
         >
+          {/* the curl: the corner turned up towards you, its pale underside
+              over the next sheet down, which is a shade darker */}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute right-0 bottom-0 size-[34px]"
+            style={{
+              background:
+                'linear-gradient(135deg, rgba(0,0,0,0) 49%, rgba(40,25,10,0.28) 50%, rgba(0,0,0,0) 56%), ' +
+                'linear-gradient(315deg, #ddd2bb 0 49%, rgba(0,0,0,0) 50%), ' +
+                'linear-gradient(135deg, #d6c9ae, #ece3cf 26%, #f7f1e4 49%, rgba(0,0,0,0) 50%)',
+            }}
+          />
           <div className="flex items-baseline gap-3">
             <h3 className="font-display text-[26px] leading-none font-semibold">{title}</h3>
             <span className="font-mono text-[11px]" style={{ color: INK_SOFT }}>
@@ -286,7 +352,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
               key={q ? `?${q}` : current}
               className="-mx-2 mt-3 grid flex-1 content-start gap-x-3 gap-y-2 overflow-y-auto px-2 pb-2"
               style={{
-                gridTemplateColumns: 'repeat(auto-fill, minmax(128px, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(112px, 1fr))',
                 animation: 'cat-page 160ms ease-out',
                 scrollbarWidth: 'none',
               }}
@@ -299,12 +365,13 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
               {shown.map((e) => {
                 const k = source.kind(e.id)
                 const n = entries.indexOf(e) + 1
-                const pic = typeof e.thumb === 'function' ? e.thumb() : e.thumb ?? (k ? sketchKind(k) : '')
-                const name = language === 'es' ? (e.labelEs ?? e.label) : e.label
-                const note = language === 'es' ? (e.noteEs ?? (k ? source.note(k, 'es') : '')) : (e.note ?? (k ? source.note(k, 'en') : ''))
+                const pic = pics?.get(e.id)
+                const name = language === 'es' ? e.labelEs : e.label
+                const note = k ? source.note(k, language) : ''
                 return (
                   <button
                     key={e.id}
+                    data-kind={e.id}
                     type="button"
                     onClick={() => {
                       onSpawn(e.id)
@@ -313,25 +380,33 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                     onMouseDown={(ev) => ev.preventDefault()}
                     onPointerEnter={() => setRinged(e.id)}
                     onPointerLeave={() => setRinged((r) => (r === e.id ? null : r))}
-                    className="group relative flex flex-col items-center px-1 pt-1 pb-2 text-center"
+                    className="group relative flex flex-col items-center px-1 pt-1.5 pb-2 text-center"
                   >
                     {ringed === e.id && <Ring />}
                     {pic ? (
-                      <img src={pic} alt="" draggable={false} className="size-[112px] transition-transform duration-150 group-hover:-translate-y-0.5 group-active:translate-y-0.5" />
+                      <img
+                        src={pic}
+                        alt=""
+                        draggable={false}
+                        className="size-[84px] transition-transform duration-150 group-active:translate-y-0.5"
+                        style={{ imageRendering: 'pixelated', transform: ringed === e.id ? 'translateY(-2px)' : undefined }}
+                      />
                     ) : (
-                      <span className="size-[112px]" />
+                      <span className="size-[84px]" />
                     )}
                     <span className="font-mono text-[10px] tabular-nums" style={{ color: RED }}>
                       {s.no} {String(n).padStart(2, '0')}
                     </span>
-                    <span className="font-display text-[15px] leading-tight font-semibold">{name}</span>
+                    <span className="font-display text-[14px] leading-tight font-semibold">{name}</span>
                     <span className="font-mono text-[10.5px]" style={{ color: INK_SOFT }}>{note}</span>
                     {stamped?.id === e.id && (
                       <span
                         key={stamped.n}
                         aria-hidden
-                        className="font-display pointer-events-none absolute top-9 left-1/2 min-w-[92px] rounded-[4px] border-[3px] px-2 py-0.5 text-center text-[17px] font-bold tracking-[0.12em] whitespace-nowrap uppercase"
-                        style={{ color: RED, borderColor: RED, animation: 'cat-stamp 900ms ease-out forwards', mixBlendMode: 'multiply' }}
+                        // in the plate's top corner, clear of the picture and
+                        // the words, the way a clerk stamps the margin
+                        className="font-display pointer-events-none absolute -top-1 -right-1 rounded-[3px] border-2 px-1 text-[10px] leading-[1.35] font-bold tracking-[0.1em] whitespace-nowrap uppercase"
+                        style={{ color: RED, borderColor: RED, animation: 'cat-stamp 1100ms ease-out forwards', mixBlendMode: 'multiply' }}
                       >
                         {s.sent}
                       </span>
@@ -341,7 +416,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
               })}
             </div>
           )}
-          <div className="mt-1 flex items-baseline justify-between font-mono text-[10px]" style={{ color: INK_SOFT }}>
+          <div className="mt-1 flex items-baseline justify-between pr-9 font-mono text-[10px]" style={{ color: INK_SOFT }}>
             <span>{finding ? s.closeFinding : keyHint(s.close, language)}</span>
             <span>
               {s.page} {pageOf(current)}
