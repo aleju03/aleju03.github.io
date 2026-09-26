@@ -5,12 +5,16 @@ import * as THREE from 'three'
   session and shared by every body in the world.
 
   The character is a jelly brawler in the Gang Beasts mould: one continuous
-  piece of flat-coloured gummy with heavy shoulders and a small head on top
-  of them (the head is only the top of the bean), two stubby nubs of the same
-  gummy for legs, two long tube arms ending in round fists that hang past the
-  hips, a face that is two big goofy eyes and nothing else, and one piece of
-  headgear out of seven: a sweatband, a wrestler's mask, a bucket hat, a party
-  hat, a hard hat, a bandana, or nothing. The character is in the colours,
+  piece of flat-coloured gummy, hunched: the mass carried up and forward
+  over slouched shoulders, a narrower head lobe on top, two stubby nubs of
+  the same gummy for legs, and two long arms that are one thick sausage each
+  (the hand is only its rounded end, not a ball on a stick) hanging to about
+  the knee. The face is two small dots. One piece of headgear out of eight:
+  a knotted cloth sweatband, a wrestler's mask, a bucket hat, a party hat, a
+  hard hat, a bandana, nothing, or a hood that drapes onto the shoulders; and
+  one of three builds (brawler, brute, beanpole) that change the outline
+  itself. Hat and build are both geometry variants of the one body, so it is
+  still one draw call whatever it is. The character is in the colours,
   the hat and the pose, not in the body: every hat's geometry is a variant of
   the one body, so a body is still one draw call whatever it wears.
 
@@ -66,14 +70,16 @@ export const ANKLE_H = 0.1
 export const WAIST_OFF = 0.3
 // heavy shoulders: the widest part of the bean is up where the arms hang
 export const SHOULDER_X = 0.52
-export const SHOULDER_OFF = 0.74
+export const SHOULDER_OFF = 0.66
+/** the shoulders ride the hunch forward (see `hz`), slouched */
+const SHOULDER_Z = 0.12
 /** torso bone up to the head bone: where the bean stops being body and
     starts being head, which is only ever a matter of weights */
 export const NECK_OFF = 0.95
 // tube arms long enough to swing well clear of the bean and to flop out of
 // its outline in a fall
-export const UARM = 0.5
-export const FARM = 0.48
+export const UARM = 0.58
+export const FARM = 0.6
 /** head bone up to the eyes: a face set into the upper bean, below the
     band, not jammed up under it */
 export const EYE_OFF = 0.24
@@ -122,12 +128,31 @@ const BODY_ZS = 0.86
     standstill at every point, and the flat band it left at each one read as
     a quilted jacket, rings stacked up the body */
 const PROF: Array<[number, number]> = [
-  [0, 0.6], [0.16, 0.7], [0.34, 0.7], [0.5, 0.62], [0.62, 0.5], [0.7, 0.42], [0.8, 0.45], [1, 0.43],
+  [0, 0.52], [0.16, 0.58], [0.34, 0.62], [0.5, 0.64], [0.6, 0.6], [0.7, 0.44], [0.8, 0.45], [1, 0.43],
 ]
-/** dough under gravity: the front of the belly sags forward a little, low
-    down, so the body is not a lathe-perfect capsule */
-const sagAt = (y: number, th: number) =>
-  0.07 * Math.exp(-(((y - (HIP_Y + 0.25)) / 0.32) ** 2)) * Math.max(0, Math.sin(th)) ** 2
+/*
+  The build: every body is one of three outlines, the same drawing scaled
+  differently in three bands (hips, shoulders, head), so a crowd is not six
+  copies of one shape wearing different hats. Chosen per player from a hash
+  of the look (see playerBody's persona), so it needs nothing on the wire.
+  Heights never change: the eye line is what the camera agrees with.
+*/
+export const BUILD_COUNT = 3
+const BUILDS = [
+  { hip: 1, mid: 1, head: 1 }, // the brawler
+  { hip: 0.92, mid: 1.15, head: 0.88 }, // the brute: all shoulders, a pea head
+  { hip: 0.96, mid: 0.86, head: 1.1 }, // the beanpole: narrow, a big round head
+]
+let build = BUILDS[0]
+const bandScale = (t: number) => {
+  const toMid = THREE.MathUtils.smoothstep(t, 0.05, 0.5)
+  const toHead = THREE.MathUtils.smoothstep(t, 0.6, 0.75)
+  return (build.hip + (build.mid - build.hip) * toMid) * (1 - toHead) + build.head * toHead
+}
+/** the hunch: the upper body carried forward of the hips, so the mass is up
+    and forward over slouched shoulders instead of a belly pushed out over
+    the feet. A pure function of height, applied to everything drawn */
+const hz = (y: number) => 0.16 * THREE.MathUtils.smoothstep(y, HIP_Y + 0.3, HIP_Y + 1.35)
 const beanR = (t: number) => {
   let i = 1
   while (i < PROF.length - 1 && PROF[i][0] < t) i++
@@ -143,7 +168,7 @@ const beanR = (t: number) => {
   // a round bottom, and a round dome as tall as it is wide on top
   const bot = t < 0.16 ? Math.sqrt(Math.max(0, 1 - ((0.16 - t) / 0.16) ** 2)) : 1
   const top = t > 0.85 ? Math.sqrt(Math.max(0, 1 - ((t - 0.85) / 0.15) ** 2)) : 1
-  return r * bot * top
+  return r * bot * top * bandScale(t)
 }
 const tOf = (y: number) => (y - BODY_Y0) / (BODY_Y1 - BODY_Y0)
 
@@ -153,10 +178,10 @@ export const BONE_REST: Array<{ parent: number; at: [number, number, number] }> 
   { parent: -1, at: [0, HIP_Y, 0] }, // pelvis
   { parent: B.PELVIS, at: [0, WAIST_OFF, 0] }, // torso
   { parent: B.TORSO, at: [0, NECK_OFF, 0] }, // head
-  { parent: B.TORSO, at: [SHOULDER_X, SHOULDER_OFF, 0] }, // upper arm L (+x)
+  { parent: B.TORSO, at: [SHOULDER_X, SHOULDER_OFF, SHOULDER_Z] }, // upper arm L (+x)
   { parent: B.UARM_L, at: [0, -UARM, 0] },
   { parent: B.FARM_L, at: [0, -FARM, 0] },
-  { parent: B.TORSO, at: [-SHOULDER_X, SHOULDER_OFF, 0] }, // upper arm R
+  { parent: B.TORSO, at: [-SHOULDER_X, SHOULDER_OFF, SHOULDER_Z] }, // upper arm R
   { parent: B.UARM_R, at: [0, -UARM, 0] },
   { parent: B.FARM_R, at: [0, -FARM, 0] },
   { parent: B.PELVIS, at: [HIP_X, 0, 0] }, // thigh L
@@ -463,19 +488,22 @@ const tube = (
 /* ------------------------------------------------------------- the body -- */
 
 /** the headgear, in `look.ts`'s HATS order */
-export const HAT_COUNT = 7
+export const HAT_COUNT = 8
 
 /** one geometry per headgear, built on first use and shared by every body
     wearing it. A body changes hat by swapping `mesh.geometry` between these:
     the attributes are the same layout on the same material, so a swap is a
     buffer rebind and never a relink. Never dispose them: they are module
     state */
-const SHARED: Array<THREE.BufferGeometry | null> = new Array(HAT_COUNT).fill(null)
+const SHARED: Array<THREE.BufferGeometry | null> = new Array(HAT_COUNT * BUILD_COUNT).fill(null)
 
-export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
+export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
   const kind = Math.max(0, Math.min(HAT_COUNT - 1, Math.floor(hat)))
-  const cached = SHARED[kind]
+  const b = Math.max(0, Math.min(BUILD_COUNT - 1, Math.floor(buildIndex)))
+  const key = kind * BUILD_COUNT + b
+  const cached = SHARED[key]
   if (cached) return cached
+  build = BUILDS[b]
   const s: Soup = { pos: [], nrm: [], si: [], sw: [], role: [], idx: [] }
   const rest = (i: number) => boneRestWorld(i, new THREE.Vector3())
   const pelvisY = rest(B.PELVIS).y
@@ -506,7 +534,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
         const t = t0 + (t1 - t0) * v
         const r = beanR(t)
         const y = BODY_Y0 + (BODY_Y1 - BODY_Y0) * t
-        out.set(Math.cos(th) * r, y, Math.sin(th) * (r * BODY_ZS + sagAt(y, th)))
+        out.set(Math.cos(th) * r, y, Math.sin(th) * r * BODY_ZS + hz(y))
       },
       24, rings, role, bean, new THREE.Vector3(0, (BODY_Y0 + BODY_Y1) / 2, 0),
     )
@@ -537,7 +565,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     const wr = rest(hb)
     // a soft elbow: the bend is spread over a long band, so a bent arm curves
     const elbow = blend(fa, ua, el.y, 0.17)
-    const root = sh.clone().add(new THREE.Vector3(-side * 0.14, 0.0, 0))
+    const root = sh.clone().add(new THREE.Vector3(-side * 0.16, 0.0, 0))
     const armW: Weigh = (p) => {
       const out = side * p.x
       const inner = side * sh.x
@@ -549,11 +577,13 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
       return [ua, B.TORSO, 0.55 + 0.45 * k]
     }
     tube(
-      s, [root, sh, el, wr.clone().add(new THREE.Vector3(0, 0.02, 0))], 0.25, 0.12, ROLE.SUIT + H,
+      s, [root, sh, el, wr.clone().add(new THREE.Vector3(0, 0.02, 0))], 0.25, 0.19, ROLE.SUIT + H,
       armW, 10,
     )
     ellipsoid(
-      s, wr.clone().add(new THREE.Vector3(0, -0.1, 0.01)), new THREE.Vector3(0.21, 0.2, 0.21),
+      // not a ball on a stick: the hand is only the sausage's rounded end,
+      // no wider than the arm it finishes
+      s, wr.clone().add(new THREE.Vector3(0, -0.12, 0.01)), new THREE.Vector3(0.195, 0.24, 0.2),
       ROLE.SUIT + H, rigid(hb), [12, 9],
     )
   }
@@ -598,7 +628,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     n.normalize()
     n.y = -dr / 0.02 * 0.9
     n.normalize()
-    return out.set(x, y, z).addScaledVector(n, lift)
+    return out.set(x, y, z + hz(y)).addScaledVector(n, lift)
   }
   const head = rigid(B.HEAD)
   const tails = rigid(B.POM)
@@ -627,9 +657,9 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     tube(s, pts, rad, rad, role, head, 8, flat)
   }
   /** a knot at the back of the head and two tails off it on the springy bone */
-  const knotAndTails = (y: number, role: number, long = 0.28) => {
-    const knot = onHead(y, -Math.PI / 2, 0.03, new THREE.Vector3())
-    ellipsoid(s, knot, new THREE.Vector3(0.08, 0.07, 0.06), role, head, [8, 6])
+  const knotAndTails = (y: number, role: number, long = 0.28, at = -Math.PI / 2) => {
+    const knot = onHead(y, at, 0.05, new THREE.Vector3())
+    ellipsoid(s, knot, new THREE.Vector3(0.1, 0.085, 0.08), role, head, [8, 6])
     for (const side of [1, -1]) {
       tube(
         s,
@@ -638,7 +668,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
           knot.clone().add(new THREE.Vector3(side * 0.06, -0.1, -0.1)),
           knot.clone().add(new THREE.Vector3(side * 0.1, -long, -0.16)),
         ],
-        0.045, 0.035, role, tails, 6, 0.45,
+        0.055, 0.04, role, tails, 6, 0.45,
       )
     }
   }
@@ -653,10 +683,10 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
         out.set(
           Math.cos(u * Math.PI * 2) * r,
           BODY_Y0 + (BODY_Y1 - BODY_Y0) * t + (k - 1) * 0.3 * v,
-          Math.sin(u * Math.PI * 2) * r * BODY_ZS,
+          Math.sin(u * Math.PI * 2) * r * BODY_ZS + hz(BODY_Y0 + (BODY_Y1 - BODY_Y0) * t),
         )
       },
-      22, rings, role, head, new THREE.Vector3(0, headY + 0.3, 0),
+      22, rings, role, head, new THREE.Vector3(0, headY + 0.3, hz(headY)),
     )
   }
   /** a surface of revolution about the head's axis: radius and height at t */
@@ -667,6 +697,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
         const [r, y] = prof(v)
         out.set(Math.cos(u * Math.PI * 2) * r, y, Math.sin(u * Math.PI * 2) * r)
         if (tilt) out.applyMatrix4(tilt)
+        out.z += hz(headY + 0.3)
       },
       seg[0], seg[1], role, head, new THREE.Vector3(0, prof(0.5)[1], 0),
     )
@@ -679,9 +710,17 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
       // the sweatband: low on the brow, right over the eyes, tails at the
       // back, with a proper dome of head showing above it (set higher, it
       // read from above as the lip of an open tin)
-      const y = eyeY + 0.22
-      ringAt(y, 0.01, 0.05, A, 1.25)
-      knotAndTails(y, A)
+      // cloth, not a halo: a thick knotted band, tied off-centre at the back
+      // with the tails hanging long, worn tipped low over one brow
+      const y = eyeY + 0.2
+      const pts: THREE.Vector3[] = []
+      for (let k = 0; k <= 32; k++) {
+        const th = (k / 32) * Math.PI * 2
+        const yy = y + 0.05 * Math.sin(th) * 0.8 + 0.035 * Math.cos(th)
+        pts.push(onHead(yy, th, 0.03 + 0.008 * Math.sin(th * 7), new THREE.Vector3()))
+      }
+      tube(s, pts, 0.068, 0.068, A, head, 8, 1.1)
+      knotAndTails(y + 0.01, A, 0.42, -Math.PI / 2 + 0.55)
       break
     }
     case 1: {
@@ -694,7 +733,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
         const y = headY + 0.2 + (crownY - headY - 0.2) * Math.sin(a)
         // straight up the middle of the face, over the crown and down the back
         const r = beanR(THREE.MathUtils.clamp(tOf(y), 0, 1)) * BODY_ZS + 0.02
-        const p = new THREE.Vector3(0, y + (y > crownY - 0.05 ? 0.02 : 0), (a > Math.PI / 2 ? -r : r))
+        const p = new THREE.Vector3(0, y + (y > crownY - 0.05 ? 0.02 : 0), (a > Math.PI / 2 ? -r : r) + hz(y))
         stripe.push(p)
       }
       tube(s, stripe, 0.05, 0.05, T, head, 8, 1)
@@ -753,7 +792,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
       for (let k = 0; k <= 12; k++) {
         const a = (k / 12) * Math.PI
         const y = y0 + 0.05 + (crownY + 0.1 - y0) * Math.sin(a)
-        ridge.push(new THREE.Vector3(0, y, Math.cos(a) * (beanR(tOf(Math.min(y, crownY))) * 1.12 * BODY_ZS)))
+        ridge.push(new THREE.Vector3(0, y, Math.cos(a) * (beanR(tOf(Math.min(y, crownY))) * 1.12 * BODY_ZS) + hz(y)))
       }
       tube(s, ridge, 0.05, 0.05, T, head, 6, 1.4)
       break
@@ -773,6 +812,33 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
       }
       break
     }
+    case 7: {
+      // the hood: up over the head and draped down the back onto the
+      // shoulders, a rolled rim round the face. It changes the outline, which
+      // a hat on top of the same bean cannot
+      const y0 = eyeY + 0.13
+      cap(y0, 1.1, A, 8)
+      const yBot = shoulderY - 0.02
+      const drape = blend(B.TORSO, B.HEAD, headY + 0.02, 0.2)
+      patch(
+        s,
+        (u, v, out) => {
+          const th = Math.PI - 0.35 + u * (Math.PI + 0.7) // round the back, ear to ear
+          const y = y0 + (yBot - y0) * v
+          const r = beanR(THREE.MathUtils.clamp(tOf(y), 0, 1)) * 1.06 + 0.04 + 0.02 * v
+          out.set(Math.cos(th) * r, y, Math.sin(th) * r * BODY_ZS + hz(y))
+        },
+        16, 6, A, drape, new THREE.Vector3(0, (y0 + yBot) / 2, 0),
+      )
+      const rim: THREE.Vector3[] = []
+      for (let k = 0; k <= 16; k++) {
+        const th = Math.PI / 2 + (k / 16 - 0.5) * 2.9
+        const lift = Math.abs(k / 16 - 0.5) * 0.3
+        rim.push(onHead(y0 + lift, th, 0.07, new THREE.Vector3()))
+      }
+      tube(s, rim, 0.07, 0.07, T, head, 8, 1)
+      break
+    }
     default:
       break // bare-headed
   }
@@ -787,6 +853,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
   g.computeBoundingBox()
   g.computeBoundingSphere()
   g.userData.shared = true
-  SHARED[kind] = g
+  SHARED[key] = g
+  build = BUILDS[0]
   return g
 }

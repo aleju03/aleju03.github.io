@@ -207,7 +207,7 @@ const dictionaries = {
       glow: 'eyes',
       hat: 'wear',
       // in look.ts's HATS order
-      hats: ['sweatband', 'mask', 'bucket hat', 'party hat', 'hard hat', 'bandana', 'nothing'],
+      hats: ['sweatband', 'mask', 'bucket hat', 'party hat', 'hard hat', 'bandana', 'nothing', 'hood'],
     },
   },
   es: {
@@ -399,7 +399,7 @@ const dictionaries = {
       accent: 'gorro',
       glow: 'ojos',
       hat: 'lleva',
-      hats: ['muñequera', 'máscara', 'pescador', 'de fiesta', 'casco', 'pañuelo', 'nada'],
+      hats: ['muñequera', 'máscara', 'pescador', 'de fiesta', 'casco', 'pañuelo', 'nada', 'capucha'],
     },
   },
 }

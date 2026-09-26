@@ -238,7 +238,7 @@ const LOOKS: PlayerLook[] = [
   { shell: '#e0a21a', trim: '#1c1c22', accent: '#2860c8', glow: '#1c1a22', hat: 2 },
   { shell: '#3f9a38', trim: '#d2452f', accent: '#f0e8e0', glow: '#1c1a22', hat: 3 },
   { shell: '#d9508f', trim: '#1c1c22', accent: '#e8b818', glow: '#2b3a55', hat: 4 },
-  { shell: '#8a4fc8', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a22', hat: 5 },
+  { shell: '#8a4fc8', trim: '#f2eee0', accent: '#e86810', glow: '#1c1a22', hat: 7 },
   { shell: '#d2452f', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a22', hat: 1 },
 ]
 
@@ -288,8 +288,8 @@ const lineup = (spec: BodySpec, snap: Snap) => {
   for (let f = 0; f < 240; f++) {
     for (const r of row) {
       const t = f / 60
-      if (r.run === 'wave' && f === 180) r.a.rig.emote('wave')
-      if (r.run === 'stretch' && f === 150) r.a.rig.emote('stretch')
+      if (r.run === 'wave' && f === 180) r.a.rig.emote('look')
+      if (r.run === 'stretch' && f === 150) r.a.rig.emote('bounce')
       if (r.run === 'crouch') tick(r.a, st.env, { crouch: Math.min(1, t * 3) })
       else if (r.run === 'jump') tick(r.a, st.env, { jump: f === 222, speed: 0 })
       else if (r.run === 'sprint') {
@@ -398,8 +398,8 @@ const ACTIONS: Record<string, {
   idle: {
     frames: [0.6, 1.2, 1.9, 2.6, 3.3, 4.2, 5.1, 6.0],
     run: (a, st, f) => {
-      if (f === 60) a.rig.emote('stretch')
-      if (f === 240) a.rig.emote('wave')
+      if (f === 60) a.rig.emote('bounce')
+      if (f === 240) a.rig.emote('look')
       tick(a, st.env)
     },
   },
