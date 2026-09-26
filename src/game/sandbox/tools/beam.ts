@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js'
+import { GLOW_ALPHA } from '../../render/pixelLook'
 
 /*
   What the physgun's beam looks like: the curved blue energy from the muzzle
@@ -25,14 +26,17 @@ import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js'
 
   **Colour through the look.** The look owns ACES, a chroma cap and a hue
   pull, so an additive HDR blue saturates to white long before it reads as
-  cyan (the first cut of this beam was a thin white squiggle). Everything
-  here is therefore *over*-blended: each fragment writes a colour and a
-  coverage, replacing part of what is behind it with a saturated azure
-  rather than adding light to it, and only the hot core is bright enough to
-  go pale. That is what keeps it cyan over a white sky and a bright field.
-  The alpha channel is left exactly as the scene wrote it (colour
-  SRC_ALPHA / ONE_MINUS_SRC_ALPHA, alpha ZERO / ONE), so a beam swept across
-  the AlejOS screen's glass hole does not paint the hole shut.
+  cyan (the first cut of this beam was a thin white squiggle), and even a
+  well-chosen cyan was greyed by the grade to the sky's own pastel. So the
+  ribbon itself is opaque where it draws: three stepped tones (a hot core, a
+  cyan band, a deeper rim the look's silhouette line darkens once more),
+  depth written so the air pass hazes it by its own distance and not by the
+  sky's, and the look's glow code (`GLOW_ALPHA`) written into alpha so the
+  grade pass leaves its colour out of the baked grade. Around it, a second
+  wider copy, the blobs and the rim are premultiplied glows that light what
+  is behind them and keep the target's alpha exactly as the scene wrote it
+  (alpha ZERO / ONE), so a glow swept across the AlejOS screen's glass hole
+  does not paint the hole shut.
 
   **Width in pixels.** The ribbon (33 sections rewritten in place, expanded
   toward the camera in the vertex shader) is a world width or a pixel width,
@@ -49,9 +53,10 @@ import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js'
   washes the prop's own colours out. A freeze adds a front-face flash that
   fills the prop blue and fades in a third of a second while the rim swells.
 
-  **Programs.** Four: the ribbon, the glow blob (every sprite shares it), the
-  rim and the flash fill. The per-mesh shells are clones of the last two, so
-  they share their programs. All are built at construction and put in front
+  **Programs.** Five: the ribbon, its glow (the same shader, blended
+  differently), the glow blob (every sprite shares it), the rim and the flash
+  fill. The per-mesh shells are clones of the last two, so they share their
+  programs. All are built at construction and put in front
   of the camera by `stage()` for the boot cover's compile and first draw, so
   the first grab links nothing (the film prints the count, and it is 0).
 */
@@ -65,8 +70,8 @@ const MIN_PX = 3.2
 const RIM_PX = 1.35
 
 /** the beam's colours, linear, before the look's exposure and ACES */
-const BAND = new THREE.Color(0.015, 0.4, 1.25)
-const CORE = new THREE.Color(0.45, 1.5, 2.3)
+const BAND = new THREE.Color(0.01, 0.42, 0.95)
+const CORE = new THREE.Color(0.5, 1.6, 2.0)
 const HALO = new THREE.Color(0.02, 0.42, 2.0)
 /** the freeze: a deeper, whiter blue */
 const FLASH = new THREE.Color(0.5, 1.3, 3.6)
@@ -112,6 +117,7 @@ uniform float uMiss;
 uniform vec3 uBand;
 uniform vec3 uCore;
 uniform float uWide;
+uniform float uGlowA;
 varying float vS;
 varying float vT;
 varying float vPx;
@@ -146,17 +152,21 @@ void main() {
   vec3 col = mix(band3, uCore * hot, core);
   if (uWide > 1.0) {
     // the glow: a second, wider copy of the ribbon drawn around the first,
-    // which lights what is behind it rather than covering it
+    // which lights what is behind it rather than covering it, with sparks
+    // crackling in it: single hot pixels that live for a few frames each
     if (s < edge) discard;
     float g = pow(max(0.0, 1.0 - s / uWide), 1.5) * (0.55 + 0.3 * n + 0.3 * packet) * uAmount * (1.0 - uMiss * 0.6);
-    if (g < 0.02) discard;
-    gl_FragColor = vec4(uBand * 1.4 * g, g * 0.4);
+    float cell = floor(along * 2.2 + vS * 3.0);
+    float spark = step(0.9, hash(cell * 17.3 + floor(uTime * 18.0) * 3.1)) * step(s, uWide * 0.7) * uAmount;
+    if (g < 0.02 && spark < 0.5) discard;
+    gl_FragColor = spark > 0.5 ? vec4(uCore * 0.8, 1.0) : vec4(uBand * 1.5 * g, g * 0.45);
     return;
   }
   // a miss is a thinner, flickering stub: the core alone
   float a = mix(band, core, uMiss) * uAmount;
   if (a < 0.5) discard;
-  gl_FragColor = vec4(col, 1.0);
+  // the look's glow code in alpha: solid, and left out of the baked grade
+  gl_FragColor = vec4(col, uGlowA);
 }
 `
 
@@ -367,6 +377,7 @@ export function createBeam(parent: THREE.Object3D): Beam {
       uPx: { value: 0.002 },
       uMinPx: { value: MIN_PX },
       uWide: { value: 1 },
+      uGlowA: { value: GLOW_ALPHA },
       uTime: { value: 0 },
       uLen: { value: 1 },
       uAmount: { value: 1 },
@@ -381,6 +392,10 @@ export function createBeam(parent: THREE.Object3D): Beam {
   // sky behind it was washed to the sky's own grey-white
   mat.depthWrite = true
   mat.transparent = false
+  // and it writes the look's glow code into alpha rather than keeping the
+  // scene's, so the grade pass leaves its cyan alone (pixelLook's GLOW_ALPHA)
+  mat.blendSrcAlpha = THREE.OneFactor
+  mat.blendDstAlpha = THREE.ZeroFactor
   const ribbon = new THREE.Mesh(geo, mat)
   ribbon.frustumCulled = false
   ribbon.renderOrder = 5
@@ -388,9 +403,7 @@ export function createBeam(parent: THREE.Object3D): Beam {
   root.add(ribbon)
   const u = mat.uniforms
   // the glow round it: the same geometry and program, wider, transparent
-  const glowMat = mat.clone()
-  glowMat.depthWrite = false
-  glowMat.transparent = true
+  const glowMat = over(mat.clone())
   const gu = glowMat.uniforms
   gu.uWide.value = 2.4
   const glow = new THREE.Mesh(geo, glowMat)

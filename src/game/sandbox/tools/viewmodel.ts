@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { GLOW_ALPHA } from '../../render/pixelLook'
 
 /*
   The physgun you hold: a chunky procedural gun at the bottom right of the
@@ -84,6 +85,19 @@ const vmMaterial = <M extends THREE.Material>(m: M, fp: boolean): M => {
   return m
 }
 
+/** a light: writes the look's glow code into alpha (solid, and left out of
+    the baked grade, which would grey its blue down to the sky's) */
+const glowing = (m: THREE.MeshBasicMaterial) => {
+  m.opacity = GLOW_ALPHA
+  m.blending = THREE.CustomBlending
+  m.blendEquation = THREE.AddEquation
+  m.blendSrc = THREE.OneFactor
+  m.blendDst = THREE.ZeroFactor
+  m.blendSrcAlpha = THREE.OneFactor
+  m.blendDstAlpha = THREE.ZeroFactor
+  return m
+}
+
 interface Mats {
   slate: THREE.MeshStandardMaterial
   dark: THREE.MeshStandardMaterial
@@ -105,8 +119,8 @@ const makeMats = (fp: boolean): Mats => {
     ochre: std(OCHRE, 0.45, 0.55),
     rubber: std(RUBBER, 0.9, 0),
     hand: std('#e0a64a', 0.8, 0),
-    core: vmMaterial(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() }), fp),
-    lens: vmMaterial(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() }), fp),
+    core: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
+    lens: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
   }
 }
 
