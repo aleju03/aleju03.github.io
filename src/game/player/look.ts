@@ -2,16 +2,17 @@
   What a player looks like, as four colours, and the only file that decides
   what "customising your character" is allowed to mean.
 
-  The body in `playerBody.ts` is one skinned mesh whose every vertex names
-  the paint it wears (`bodyShape.ts`), and four of those paints are the
-  player's: the jelly itself (body, legs, arms, fists), the headgear, the
-  headgear's detail (its stripes, laces, band or trim), and the pupils. Plus
-  one choice that is not a colour: which headgear, out of eight (a sweatband,
-  a wrestler's mask, a bucket hat, a party hat, a hard hat, a bandana,
-  nothing, or a hood). The body's outline also varies, between three builds
-  hashed from the whole look (see playerBody's persona), which is why it
-  needs no field of its own. That is the whole of the costume on purpose: a jelly brawler is
-  its colours and its hat.
+  The body in `playerBody.ts` is one skinned surface, a bean, whose every
+  vertex names the paint it wears (`bodyShape.ts`), and four of those paints
+  are the player's: the body itself, the headgear, the detail (the outfit's
+  pattern and the headgear's trim), and the eyes. Plus three choices that are
+  not colours: which headgear out of eight (a knotted headband, a cap, a
+  bucket hat, a party hat, a hard hat, a printed bandana, nothing, or a hood),
+  which of five builds (bean, chubby, slim, tall, stubby) and which outfit
+  (none, spots, stripes, overalls), the outfits being printed on the one
+  surface by the material rather than modelled. The expression is hashed
+  from the whole look (see playerBody's persona), which is why it needs no
+  field of its own.
 
   **The hat, the outfit and the shape ride in the colours.** The wire carries 24 hex characters and
   the server checks them with one regex, so a fifth field would break every
@@ -22,10 +23,11 @@
   reading a new pack sees a headgear colour off by at most 7/255 in blue,
   which nobody can see; a new client reading an old pack gets a hat derived
   deterministically from whatever the colour's low bits were, so everyone
-  still agrees on what everyone is wearing. The outfit (none, cape, hooped
-  vest, onesie) is the low two bits of the outfit colour (`trim`) and the body
-  shape (brawler, round, skinny, tall, squat) the low three bits of the pupil
-  colour (`glow`), by exactly the same trick.
+  still agrees on what everyone is wearing. The outfit is the low two bits of
+  the detail colour (`trim`) and the build the low three bits of the eye
+  colour (`glow`), by exactly the same trick. The bean kept this format
+  exactly: the indices mean new things (a mask became a cap, a cape spots),
+  but every pack an old client sends still decodes to some bean.
 
   The four field names are older than this body (they were a robot's shell,
   trim, accent joints and eye glow) and they stay, because they are the wire
@@ -48,15 +50,16 @@
 */
 
 export interface PlayerLook {
-  /** the jelly: body, legs, arms and fists. The biggest block of colour on
-      the body, and the one a player is recognised by */
+  /** the bean: body, legs, arms and mittens. The biggest block of colour
+      on the body, and the one a player is recognised by */
   shell: string
-  /** the headgear's detail: a mask's stripe and eye rims, a hat's band, a
-      party hat's rings, a hard hat's ridge */
+  /** the detail: the outfit's spots, stripes or overalls, and the
+      headgear's trim (a cap's peak, a hat's band, a party hat's rings, a
+      hard hat's ridge, a bandana's print) */
   trim: string
   /** the headgear itself */
   accent: string
-  /** the pupils */
+  /** the eyes (the face panel turns dark when they are light) */
   glow: string
   /** which headgear, an index into HATS */
   hat: number
@@ -68,15 +71,16 @@ export interface PlayerLook {
 
 /** the headgear, in wire order (see the header: the index rides in the low
     bits of `accent`). No beanies */
-export const HATS = ['band', 'mask', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood'] as const
+export const HATS = ['band', 'cap', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood'] as const
 export type HatKind = (typeof HATS)[number]
 /** the outfits, in wire order: they ride in the low two bits of `trim` */
-export const COSTUMES = ['none', 'cape', 'stripes', 'onesie'] as const
+export const COSTUMES = ['none', 'spots', 'stripes', 'overalls'] as const
 /** the body shapes, in wire order: they ride in the low three bits of `glow` */
-export const BUILDS = ['brawler', 'round', 'skinny', 'tall', 'squat'] as const
+export const BUILDS = ['bean', 'chubby', 'slim', 'tall', 'stubby'] as const
 
-/** a saturated blue brawler in a red sweatband. (It was green in a red
-    wrestler's mask, which read as the Android logo in a luchador cap) */
+/** a saturated blue bean in a red knotted headband, the one the owner
+    kept. (It was once green in a red wrestler's mask, which read as the
+    Android logo in a luchador cap) */
 export const DEFAULT_LOOK: PlayerLook = {
   shell: '#2f6fcf',
   trim: '#f2eee0',
@@ -87,10 +91,10 @@ export const DEFAULT_LOOK: PlayerLook = {
   build: 0,
 }
 
-/** jellies are painted saturated on purpose: the game is rendered at a low
+/** beans are painted saturated on purpose: the game is rendered at a low
     resolution through a posterize, and a colour block has to survive being
     eight pixels wide and quantized. Pastels there turn to grey, and a pastel
-    jelly reads as a plush toy rather than a brawler. Every entry was checked
+    bean reads as a plush toy rather than a character. Every entry was checked
     against the look at noon and at dusk (`npm run shoot -- body:lineup`) */
 export const SHELL_SWATCHES = [
   '#3f9a38', '#d2452f', '#e0a21a', '#2f6fcf',

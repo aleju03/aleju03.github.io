@@ -31,7 +31,14 @@ import {
   arm and a raised arm stretches the flank with it rather than swinging a
   sausage out of a hole. Inside a part the weights run smoothly along its
   chain (pelvis, torso, head up the bean; upper arm, forearm, hand along an
-  arm), four influences, normalized.
+  arm), four influences, normalized. Two more things keep the one surface
+  from folding over itself when it bends, which is what linear blend
+  skinning does to any sharp joint: the weights are smoothed over the skin
+  itself wherever it is shared between the bean and a limb, and each
+  shoulder and hip has a helper bone on the same pivot that turns with part
+  of its limb (HELPERS), so a raised arm is two soft bends, not one crease.
+  `npm run measure -- body folds` counts what still folds on every
+  filmstrip; `npm run shoot -- body:folds --raw` shows where.
 
   The arms are drawn in an A-pose, not hanging. That is the one thing the
   bind pose has to get right for a single surface: an arm authored against
@@ -530,7 +537,7 @@ const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number, seed: (v
     }
   }
   const inBand = new Uint8Array(V)
-  let band: number[] = []
+  const band: number[] = []
   for (let v = 0; v < V; v++) {
     if (seed(v)) {
       inBand[v] = 1
@@ -584,7 +591,6 @@ const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number, seed: (v
       mask[v] = mix[v]
     }
   }
-  band = []
 }
 
 /** the four heaviest bones in `acc`, normalized */

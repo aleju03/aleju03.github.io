@@ -201,17 +201,17 @@ const dictionaries = {
     // the four colour knobs on the pause sheet's character page
     // (components/os/WorldIdentity.tsx), in the order look.ts packs them
     look: {
-      suit: 'jelly',
+      suit: 'body',
       trim: 'detail',
       accent: 'hat',
       glow: 'eyes',
       hat: 'wear',
       // in look.ts's HATS order
-      hats: ['sweatband', 'mask', 'bucket hat', 'party hat', 'hard hat', 'bandana', 'nothing', 'hood'],
+      hats: ['headband', 'cap', 'bucket hat', 'party hat', 'hard hat', 'bandana', 'nothing', 'hood'],
       shape: 'shape',
-      builds: ['brawler', 'round', 'skinny', 'tall', 'squat'],
+      builds: ['bean', 'chubby', 'slim', 'tall', 'stubby'],
       outfit: 'outfit',
-      costumes: ['none', 'cape', 'stripes', 'onesie'],
+      costumes: ['none', 'spots', 'stripes', 'overalls'],
     },
   },
   es: {
@@ -398,16 +398,16 @@ const dictionaries = {
       },
     },
     look: {
-      suit: 'gelatina',
+      suit: 'cuerpo',
       trim: 'detalle',
       accent: 'gorro',
       glow: 'ojos',
       hat: 'lleva',
-      hats: ['muñequera', 'máscara', 'pescador', 'de fiesta', 'casco', 'pañuelo', 'nada', 'capucha'],
+      hats: ['cinta', 'gorra', 'pescador', 'de fiesta', 'casco', 'pañuelo', 'nada', 'capucha'],
       shape: 'forma',
-      builds: ['peleón', 'redondo', 'flaco', 'alto', 'bajito'],
+      builds: ['frijol', 'gordito', 'flaco', 'alto', 'rechoncho'],
       outfit: 'traje',
-      costumes: ['nada', 'capa', 'rayas', 'pijama'],
+      costumes: ['nada', 'lunares', 'rayas', 'overol'],
     },
   },
 }

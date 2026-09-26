@@ -35,17 +35,24 @@ player/
   walkController.ts  createWalkController(): the FPS movement sim (velocity,
                      gravity/jump/crouch, step-up and ledge falls over an
                      absolute feetY, footstep bob, sprint fov)
-  playerBody.ts      buildPlayerBody() is the character: a soft little person
-                     a Gang Beasts-style jelly brawler. Kinetic stance (waddle, lean,
-                     turn bank, squash-and-stretch landing spring), world-
-                     planted stepping feet solved with two-bone IK, sprung
-                     arms, jiggling head/hat tails/belly/fists, idle
-                     fidgets, the ragdoll, and a muscle-driven get-up. Also
+  playerBody.ts      buildPlayerBody() is the character: a Fall Guys-style
+                     bean. Kinetic stance (waddle, a restrained lean, turn
+                     bank, squash-and-stretch landing spring), world-planted
+                     stepping feet solved with two-bone IK, sprung arms,
+                     jiggling head/hat tails/belly/mittens, idle fidgets,
+                     the ragdoll (draped with joint limits), a muscle-driven
+                     get-up, and helper bones at shoulders and hips. Also
                      the sandbox hooks: hit(), grab(), limbs, limbPos()
-  bodyShape.ts       the drawing: one skinned mesh, shared by every body,
-                     each vertex tagged with the paint it wears
-  bodyMaterial.ts    the one material: palette uniform + first-person head
-                     discard injected into a MeshStandardMaterial
+  bodyShape.ts       the drawing: one closed skinned surface per (headgear,
+                     build), a signed distance field polygonized once and
+                     shared by every body, weights from the field's parts
+                     smoothed over the skin. `npm run measure -- body`
+  isoSurface.ts      surfaceNets(): a field to a watertight mesh (sparse
+                     sampling, Newton-projected vertices, gradient normals),
+                     and the distance primitives the body is written in
+  bodyMaterial.ts    the one material: palette uniform, the face, blink and
+                     outfit painted from the bind position, and the first-
+                     person discard, injected into a MeshStandardMaterial
   ragdoll.ts         createRagdoll(): massed verlet particles + constraints
                      against the ground and collision boxes, with kick/pin/
                      drive (impulses, grabs, muscles) for anything outside

@@ -226,7 +226,12 @@ const measure = (mesh: THREE.Mesh, group: THREE.Object3D) => {
   const band1 = lo + (top - lo) * 0.7
   const rs = new Float32Array(P.count)
   let n = 0
+  // a body that says which of its skin is trunk (the bean's `aPart`) is
+  // measured on that alone: its arms are drawn held out in the bind pose,
+  // and counted they widened the cylinder by a third
+  const trunk = g.getAttribute('aPart')
   for (let i = 0; i < P.count; i++) {
+    if (trunk && trunk.getX(i) < 0.5) continue
     v.fromBufferAttribute(P, i).applyMatrix4(m)
     if (v.y < band0 || v.y > band1) continue
     rs[n++] = Math.hypot(v.x, v.z)

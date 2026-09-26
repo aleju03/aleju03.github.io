@@ -10,11 +10,13 @@ import {
 import { makeBodyMaterial } from './bodyMaterial'
 
 /*
-  The player's body: a Gang Beasts-style jelly brawler, a gummy bean with
-  heavy shoulders, a small head in one of seven hats, stub legs and long arms
-  that hang forward to round fists (drawn
-  in bodyShape.ts, painted in bodyMaterial.ts), and everything that makes it
-  move. The same rig is worn by the local player, every remote player
+  The player's body: a bean in the Fall Guys mould, one seamless soft
+  surface whose top is the head, stubby arms ending in mittens and stubby
+  legs growing out of it, in one of eight headgear (drawn in bodyShape.ts,
+  painted in bodyMaterial.ts), and everything that makes it move. The Gang
+  Beasts brawler before it was turned down for looking like parts taped
+  together, too bulky, and for leaning so far into a run it looked like it
+  was falling; the motion it had is kept, restrained. The same rig is worn by the local player, every remote player
   (`net/avatars.ts`), the town's pedestrians (`world/pedestrians.ts`), the
   seated pose in the vehicles and on the sofa, and the pause-sheet preview.
 
@@ -33,8 +35,9 @@ import { makeBodyMaterial } from './bodyMaterial'
   A run is its own gait rather than a faster walk: long bounding strides
   with a real flight between them (the planted leg toes off before the
   swinging one lands, and the hips peak in the air rather than at the
-  footfall), the trunk pitched well forward, elbows bent and pumping, heels
-  kicking up behind. The arm swing in both gaits runs a little behind the
+  footfall), the trunk nearly upright (about nine degrees at a full run,
+  where the brawler leaned fifty-five), the arms flung out and flailing,
+  heels kicking up behind. The arm swing in both gaits runs a little behind the
   legs and out sideways as well as fore and aft, with the forearm later
   still, and every footfall bounces the arms out.
 
@@ -52,19 +55,19 @@ import { makeBodyMaterial } from './bodyMaterial'
   itself goes straight onto the joint with the spring on top of it, because a
   run steps three times a second and these springs ring at about once: fed
   through them, the swing arrived at a seventh of its size and a sprinting
-  body ran with its fists at its hips; the chest rides a
+  body ran with its mittens at its hips; the chest rides a
   jelly spring over the waddle; the head and chest's look-tracking are
   springs in both axes. On top of those sit four point masses simulated in
-  world space and hung back on bones: the head bobbles on its neck, the
-  headgear's tails swing off their knot, the belly wobbles, and each fist hangs
-  off its wrist like a sock with a hand in it. They are what make the body
+  world space and hung back on bones: the top of the bean bobbles, the
+  headgear's tails swing off their knot, the belly wobbles, and each mitten
+  hangs off its wrist. Their damping is relative to the point they hang
+  from, so a steady run carries them along instead of leaving them behind. They are what make the body
   read as soft: start, stop, turn or land and every one of them answers late.
   The trunk squashes on a landing and stretches on the rise.
 
-  **The stance.** A brawler never stands neutral: the body is always pitched
-  forward on soft knees, and standing about it reaches its long arms low and
-  forward like a sleepwalker and weaves, twisting and leaning, so no two idle
-  frames are symmetrical. Every body also stands its own way: a lean, a tip,
+  **The idle.** A bean never stands neutral: it rocks on soft knees with its
+  arms held a little out from the flanks, and weaves, twisting and leaning,
+  so no two idle frames are symmetrical. Every body also stands its own way: a lean, a tip,
   a cocked head and a higher arm drawn from a hash of the player's look
   (`persona`), so a group of them never matches. A walking arm swings big and out to the
   side but is capped below the face; only a reach, a stretch, a wave, a jump
@@ -84,18 +87,21 @@ import { makeBodyMaterial } from './bodyMaterial'
   **The ragdoll.** flop() hands every joint to the verlet sim in ragdoll.ts
   and update() drapes the bones back over the particles each frame; the
   secondary springs keep running and the trunk's volume wobbles on every
-  impact, so a tumbling body's tails and fists
+  impact, so a tumbling body's tails and mittens
   flail after it. Three things keep it from landing as one lump, which it
   did: the limbs are flung outward from the trunk the instant it goes limp
-  (`fling`), fists and feet windmill through the first second of a flight
+  (`fling`), mittens and feet windmill through the first second of a flight
   (`flail`) while being pulled out wide and down as if to catch the ground,
   and once on the ground a weak pull in the ground plane spreads
   them into a spread-eagle and levels the shoulders so the heap rolls onto
   its back or front (`sprawl`; a heap that lands face down is rolled over
   onto its back about its own spine, because a body face down under a big
   hat is only a hat), with generous one-sided separations keeping
-  arms a belly's width off the body throughout. The get-up is physical too, which is the part the robot
-  before it faked: beginRecover() keeps the sim running and drives every
+  arms a belly's width off the body throughout. The bones are draped over
+  the particles with joint limits (`limitTo`: the head only so far off the
+  trunk, a thigh far forward but hardly back), so the one surface never
+  folds itself double however the heap lands. The get-up is physical too,
+  which is the part the robot before it faked: beginRecover() keeps the sim running and drives every
   particle toward the standing pose with muscle springs that tighten over a
   second, legs first, so the heap hauls itself up under gravity and wobbles,
   and only the last few frames blend the bones home. It ends with a shake of
@@ -244,7 +250,7 @@ export interface PlayerRig {
   /** what `hit` divides an impulse by */
   readonly mass: number
   /** one frame of sitting: the slumped body breathes, the head lolls and
-      turns, and the head, belly and fists jiggle with whatever the seat is
+      turns, and the head, belly and mittens jiggle with whatever the seat is
       doing (they are simulated in world space, so a car's braking throws them
       forward). Call it instead of `update` while seated */
   seatedTick: (dt: number) => void
@@ -346,7 +352,7 @@ const LIMB_NAMES: BodyLimb['name'][] = [
   'handL', 'handR', 'kneeL', 'kneeR', 'footL', 'footR',
 ]
 /** design-unit radii per particle, and relative masses: a heavy head and
-    trunk, light fists, so a tumble leads with the head and the hands flap */
+    trunk, light mittens, so a tumble leads with the head and the hands flap */
 /** the expressions a look can hash to (bodyMaterial's uFace), pills weighted */
 const FACES = [0, 0, 0, 1, 2, 0, 3, 4]
 const RADII = [0.46, 0.56, 0.42, 0.18, 0.18, 0.15, 0.15, 0.2, 0.2, 0.21, 0.21, 0.2, 0.2, 0.66, 0.44]
@@ -581,7 +587,7 @@ export function buildPlayerBody(
       [
         // generous on purpose: these are what splay a heap. A limp body
         // whose arms may rest against its belly lands as one lump with its
-        // arms tucked; one whose fists keep a belly's width off it lands
+        // arms tucked; one whose mittens keep a belly's width off it lands
         // spread-eagled, which is the whole comedy of a ragdoll
         { a: P_KNEEL, b: P_KNEER, min: 0.58, stiff: 0.45 },
         { a: P_FOOTL, b: P_FOOTR, min: 0.7, stiff: 0.35 },
@@ -595,7 +601,7 @@ export function buildPlayerBody(
         { a: P_HANDR, b: P_PELV, min: 0.75, stiff: 0.35 },
         { a: P_HANDL, b: P_HEAD, min: 0.72, stiff: 0.35 },
         { a: P_HANDR, b: P_HEAD, min: 0.72, stiff: 0.35 },
-        // and never tucked under the chest or behind the back: a fist
+        // and never tucked under the chest or behind the back: a mitten
         // folded under a body lying on its front is a limb nobody can see
         { a: P_HANDL, b: P_CHEST, min: 0.95, stiff: 0.35 },
         { a: P_HANDR, b: P_CHEST, min: 0.95, stiff: 0.35 },
@@ -767,7 +773,7 @@ export function buildPlayerBody(
   const EL_HI = 0.12
 
   /*
-    The five point masses (head, headgear tails, belly, two fists). Each is a
+    The five point masses (head, headgear tails, belly, two mittens). Each is a
     particle simulated in world space that chases where its bone would put it,
     then hangs the bone back on wherever it actually got to. That is the whole
     trick to secondary motion: the bone's rest is driven by the pose, the
@@ -978,7 +984,7 @@ export function buildPlayerBody(
     head.updateMatrixWorld()
     head.getWorldPosition(vRest)
     // the head is the top of the bean, not a ball on a neck: a stiffer,
-    // better damped spring than the brawler's, tuned well off a run's stride
+    // better damped spring than the old brawler's, tuned well off a run's stride
     // (which rang the old one at resonance and slopped the head a third of a
     // unit side to side), and a gentler tilt for the same offset
     stepJiggle(jHead, vRest, 120, 9, 0, 0.16 * s, dt)
@@ -1240,7 +1246,7 @@ export function buildPlayerBody(
 
     // crouch, landing spring and the get-up fold all lower the hips; the leg
     // IK below folds the knees exactly enough that the feet stay planted
-    // soft knees always, softer standing about: a brawler never locks them
+    // soft knees always, softer standing about: a bean never locks them
     const drop = pose.crouchK * 0.42 + riseFold * 0.42 - springP * 0.7 + 0.06 + 0.04 * idleK
     const hipH = THREE.MathUtils.clamp(HIP_Y - drop, Math.abs(THIGH - SHIN) + 0.08, HIP_Y)
 
@@ -1553,7 +1559,7 @@ export function buildPlayerBody(
     const lagEl = swingAt(0.32) * mCos
     // a loose bend at rest: an arm hanging dead straight reads as a mannequin
     // the guard: standing about, the long arms come up to a clumsy boxing
-    // guard, fists at chest height, never quite matched
+    // guard, mittens at chest height, never quite matched
     const guardK = idleK * (1 - airK) * (1 - riseFold)
     const elbowBase = 0.3 + 0.5 * runK * gait + 0.1 * guardK
     // held well out from the body, standing or not: a round belly and a
@@ -1570,7 +1576,7 @@ export function buildPlayerBody(
     const airX =
       airK * (-0.45 + fallK * 1.15) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
     // at rest the long arms hang forward like a sleepwalker's, which is where
-    // a brawler's goof comes from (and where a grab starts)
+    // the goof comes from (and where a grab starts)
     // and standing about they reach, low and forward and never level, each
     // body at its own lopsided angles (see `persona`)
     // standing about they hang heavy and swing a little from the shoulders,
@@ -1994,14 +2000,14 @@ export function buildPlayerBody(
       ankleR.rotation.set(-0.5, 0, 0)
 
       if (passenger) {
-        // the passenger has nothing to hold: fists dumped in the lap, one arm
+        // the passenger has nothing to hold: mittens dumped in the lap, one arm
         // flopped out over the door side
         uarmL.rotation.set(-0.35, 0, 0.7)
         uarmR.rotation.set(-0.55, 0, -0.1)
         farmL.rotation.set(-0.5, 0, 0)
         farmR.rotation.set(-1.25, 0, 0.35)
       } else {
-        // elbows in against the belly, fists forward on the controls
+        // elbows in against the belly, mittens forward on the controls
         uarmL.rotation.set(-0.7, 0, 0.12)
         uarmR.rotation.set(-0.7, 0, -0.12)
         farmL.rotation.set(-1.1, 0, -0.25)
