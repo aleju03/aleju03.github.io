@@ -33,6 +33,16 @@ import { footstep, landThump } from '../../game/core/sfx'
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { Sandbox } from '../../game/sandbox/sandbox'
+import { createEdges, held } from '../../game/sandbox/bindings'
+import {
+  createConsole, msg as bilingual, say as sayIn, type Console, type Msg, type SandboxHost,
+} from '../../game/sandbox/commands'
+import { historyOf, LOCAL, type History } from '../../game/sandbox/history'
+import { createWorldRules } from '../../game/sandbox/rules'
+import { GRAVITY } from '../../game/sandbox/physics'
+import SandboxConsole, { type FeedLine } from './SandboxConsole'
+import SpawnMenu, { type CatalogueSource, type OrderLine } from './SpawnMenu'
+import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/quality'
 import { createPixelLook, type PixelLook } from '../../game/render/pixelLook'
@@ -150,12 +160,12 @@ function outsideShell(p: THREE.Vector3): boolean {
   )
 }
 
-/** one line on the chat rail. `mine` is what tints it, not the name, so two
-    visitors sharing a nickname still read their own words correctly */
+/** one line of chat on its way to the receipt. `mine` is what tints it, not
+    the name, so two visitors sharing a nickname still read their own words
+    correctly */
 interface ChatLine {
-  key: number
   name: string
-  text: string
+  text: Msg
   admin: boolean
   mine: boolean
   /** an arrival or a departure rather than something somebody said; the whole
@@ -172,8 +182,8 @@ interface VoiceHud {
   peers: number
   error: string | null
 }
-/** the rail only ever shows the tail; anything older has scrolled off */
-const CHAT_KEEP = 6
+/** the receipt keeps this many lines; anything older has been torn off */
+const FEED_KEEP = 80
 
 const EASE = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 const MODELS = [
@@ -369,8 +379,18 @@ export default function CrtScene({
     status: 'offline',
     here: 0,
   })
-  const [chat, setChat] = useState<ChatLine[]>([])
-  const [typing, setTyping] = useState(false)
+  /** the receipt printer's strip: console output and chat, in the order
+      they printed (SandboxConsole.tsx) */
+  const [feed, setFeed] = useState<FeedLine[]>([])
+  /** the console line: null closed, else what it opened with ('' or '/') */
+  const [typing, setTyping] = useState<string | null>(null)
+  /** the spawn catalogue, held up by q, and what fills it once the world is in */
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [catalogue, setCatalogue] = useState<CatalogueSource | null>(null)
+  const [orders, setOrders] = useState<OrderLine[]>([])
+  /** noclip, mirrored for the key hints */
+  const [flying, setFlying] = useState(false)
+  const { t } = useI18n()
   // named for what it is: a mirror of proximityVoice.ts's state for the HUD,
   // not the voice channel itself (that lives in the scene effect below)
   const [voiceHud, setVoiceHud] = useState<VoiceHud>({
@@ -384,6 +404,11 @@ export default function CrtScene({
   // server owns it, and this is a mirror of whatever it last told us.
   const [look, setLook] = useState(loadLook)
   const [myName, setMyName] = useState('')
+  /** the same, for the scene's closures: the offline console echoes it */
+  const myNameRef = useRef('')
+  useEffect(() => {
+    myNameRef.current = myName
+  }, [myName])
   const [rename, setRename] = useState<{ pending: boolean; error: string | null }>({
     pending: false, error: null,
   })
@@ -393,14 +418,19 @@ export default function CrtScene({
   /** once per mounted scene, not once per reconnect: a dropped wifi must not
       re-open the same suggestion behind somebody who already said no */
   const namePromptSpent = useRef(false)
-  const chatInputRef = useRef<HTMLInputElement>(null)
   const typingRef = useRef(false)
+  // set by the effect: give the mouse back to the walk once an overlay closes
+  const relockRef = useRef<(() => void) | null>(null)
   const closeChat = () => {
     typingRef.current = false
-    setTyping(false)
+    setTyping(null)
+    relockRef.current?.()
   }
-  // set by the effect so the composer can post without reaching into the sim
+  // set by the effect so the console line can run a command or say
+  // something without reaching into the sim
   const sayRef = useRef<((text: string) => void) | null>(null)
+  const consoleRef = useRef<Console | null>(null)
+  const spawnRef = useRef<((kind: string) => void) | null>(null)
   const sessionRef = useRef(session)
   const outroRef = useRef<(() => void) | null>(null)
   const roamRef = useRef<((on: boolean) => void) | null>(null)
@@ -698,6 +728,8 @@ export default function CrtScene({
         // the sandbox (src/game/sandbox/): Rapier and the props, loaded with the
         // world and never before it. Null until then; every call site guards
         let sandbox: Sandbox | null = null
+        /** its undo stack, once it exists (sandbox/history.ts) */
+        let history: History | null = null
         disposeFleet = () => {
           fleet.dispose()
           sandbox?.dispose()
@@ -1184,8 +1216,6 @@ export default function CrtScene({
           return at.seat === SEAT_DRIVER ? v.driverSeat : v.passengerSeat
         }
 
-        let vHeld = false
-        let xHeld = false
         /** a/d on the sofa is the channel dial, and it is an edge, not a hold */
         let chHeld = false
         /**
@@ -1200,23 +1230,14 @@ export default function CrtScene({
          * leaf has settled.
          */
         let propSwing = 0
-        let dbgHeld = false
         /** F9, read the same way v and x are: edge-detected off the key set,
             and asked in both loops because either can be the live one */
         const debugTick = (level: Level, x: number, footY: number, z: number) => {
-          const now = input.keys.has('F9')
-          if (now && !dbgHeld) collisionDebug.toggle()
-          dbgHeld = now
+          if (edges.pressed('collisionDebug')) collisionDebug.toggle()
           collisionDebug.update(level.collision, {
             x, z, footY, headY: footY + EYE,
           })
         }
-        // the multiplayer keys ride the same edge-detect pattern: t opens the
-        // chat line, m arms the microphone, n swaps the talk mode. b is read
-        // as a held state instead, since it is the push-to-talk key
-        let tHeld = false
-        let mHeld = false
-        let nHeld = false
         let hereNow = 0
 
         // prompt bookkeeping mirrored into React state only on change
@@ -1296,6 +1317,7 @@ export default function CrtScene({
             return
           }
           fleet.enter(v, camera, walk.yaw, walk.pitch, seat)
+          setNoclip(false)
           walk.resetMotion()
           rig.reset()
           // a machine's seat node says how far its cabin needs a body folded
@@ -1336,6 +1358,7 @@ export default function CrtScene({
           if (fleet.riding || levels.frozen || rig.down) return false
           const seat = seating.sit(headPos, headDir)
           if (!seat) return false
+          setNoclip(false)
           walk.resetMotion()
           walk.teleport(seat.x, seat.z, seat.cushionY)
           const held = seating.hold(walk.yaw, walk.pitch)
@@ -1501,7 +1524,7 @@ export default function CrtScene({
           rig.setLook(next)
           net?.look(packLook(next))
         }
-        let chatKey = 0
+        let feedKey = 0
         // which spawn offset is ours; the server hands out the lowest free one.
         // -1 is "not told yet", which is not the same as slot 0 (the authored
         // spot): the stand-up can finish before the welcome lands, and treating
@@ -1523,8 +1546,15 @@ export default function CrtScene({
           seatOf: seatFor,
         }
 
-        const pushChat = (line: Omit<ChatLine, 'key'>) =>
-          setChat((prev) => [...prev, { ...line, key: chatKey++ }].slice(-CHAT_KEEP))
+        const pushFeed = (line: Omit<FeedLine, 'key' | 'at'>) =>
+          setFeed((prev) =>
+            [...prev, { ...line, key: feedKey++, at: performance.now() }].slice(-FEED_KEEP))
+        const pushChat = (line: ChatLine) =>
+          pushFeed(
+            line.system
+              ? { tone: 'system', text: line.text }
+              : { tone: 'chat', text: line.text, name: line.name, admin: line.admin, mine: line.mine },
+          )
 
         const syncVoice = () => {
           if (!voice) return
@@ -1559,6 +1589,9 @@ export default function CrtScene({
               switch (msg.type) {
                 case 'world-welcome':
                   remote.welcome(msg.you, msg.tick, msg.players)
+                  // what we spawn from here on is ours by the server's name
+                  // for us, which is what undo and cleanup filter on
+                  if (history) history.me = msg.you
                   fleetNet.setSelf(msg.you)
                   fleetNet.setTick(msg.tick)
                   // where the machines actually are. Placed, not interpolated
@@ -1587,7 +1620,7 @@ export default function CrtScene({
                 case 'world-enter':
                   remote.enter(msg.player)
                   pushChat({
-                    name: '', text: `${msg.player.name} is here`,
+                    name: '', text: bilingual(`${msg.player.name} is here`, `${msg.player.name} llegó`),
                     admin: false, mine: false, system: true,
                   })
                   break
@@ -1596,7 +1629,7 @@ export default function CrtScene({
                   remote.exit(msg.id)
                   if (gone) {
                     pushChat({
-                      name: '', text: `${gone.name} left`,
+                      name: '', text: bilingual(`${gone.name} left`, `${gone.name} se fue`),
                       admin: false, mine: false, system: true,
                     })
                   }
@@ -1659,7 +1692,6 @@ export default function CrtScene({
             onChange: syncVoice,
           })
           syncVoice()
-          sayRef.current = (text) => net?.chat(text)
           setNickRef.current = (name) => net?.setNick(name)
         }
 
@@ -1668,7 +1700,6 @@ export default function CrtScene({
           voice = null
           net?.close()
           net = null
-          sayRef.current = null
           setNickRef.current = null
           spawnSlot = -1
           scattered = false
@@ -1683,8 +1714,8 @@ export default function CrtScene({
           avatars.update(remote, 0, avatarEnv)
           hereNow = 0
           setMp({ status: 'offline', here: 0 })
-          setChat([])
-          setTyping(false)
+          if (history) history.me = LOCAL
+          setTyping(null)
           typingRef.current = false
         }
 
@@ -1712,13 +1743,37 @@ export default function CrtScene({
           poseBody()
         }
 
-        const openChat = () => {
-          if (typingRef.current) return
+        /*
+          The two sandbox overlays, the console line and the spawn catalogue.
+
+          Both free the mouse: the catalogue is clicked, and the console's
+          suggestions can be. Losing the pointer lock is normally how the
+          pause sheet opens (esc is spent on the unlock before anything else
+          sees it), so `onLock` below asks whether one of these is up before
+          reading an unlock as esc, and closing either takes the lock back,
+          which the browser allows without a click because the page released
+          it itself.
+        */
+        const openChat = (seed = '') => {
+          if (typingRef.current || pausedNow) return
+          setMenu(false)
           typingRef.current = true
-          setTyping(true)
+          setTyping(seed)
           input.clearKeys() // nothing stays latched while the line has the keys
-          requestAnimationFrame(() => chatInputRef.current?.focus())
+          input.releaseLock()
         }
+        let menuNow = false
+        const setMenu = (on: boolean) => {
+          if (menuNow === on) return
+          menuNow = on
+          setMenuOpen(on)
+          if (on) input.releaseLock()
+          else relock()
+        }
+        const relock = () => {
+          if (roaming && fps && !pausedNow && !typingRef.current && !menuNow) input.tryLock()
+        }
+        relockRef.current = relock
 
         const setPauseNow = (on: boolean) => {
           if (pausedNow === on) return
@@ -1732,7 +1787,8 @@ export default function CrtScene({
             // esc is spent on the pointer unlock before the composer ever sees
             // it, so the pause is also how a chat line gets abandoned
             typingRef.current = false
-            setTyping(false)
+            setTyping(null)
+            setMenu(false)
             // and while it is up, the menu lists where the machines are — a
             // boat two kilometres away is otherwise something you have to
             // remember rather than something you can look up
@@ -1844,9 +1900,135 @@ export default function CrtScene({
             // losing the lock mid-walk is esc: pause. (sitting down drops the
             // lock too, but stopRoam clears `roaming` before that lands here)
             if (isLocked) setPauseNow(false)
-            else if (roaming && fps) setPauseNow(true)
+            // ...unless it was the console or the catalogue asking for the
+            // mouse, which is not esc and must not pause
+            else if (roaming && fps && !typingRef.current && !menuNow) setPauseNow(true)
           },
         })
+
+        // --- the sandbox's hands: keys, rules, the console ------------------
+        // one edge detector over the key table (sandbox/bindings.ts), updated
+        // once a frame at the top of walkTick and read by both loops
+        const edges = createEdges()
+        // the world's shared knobs (sandbox/rules.ts): offline they apply at
+        // once; the network will route them through the server
+        const rules = createWorldRules()
+        rules.onChange((key, v) => {
+          if (key === 'gravity') {
+            walk.gravityScale = v
+            if (sandbox) sandbox.gravity = -GRAVITY * v
+          } else if (sandbox) {
+            sandbox.timescale = v
+          }
+        })
+        rules.onDeny((_what, reason) => pushFeed({ tone: 'err', text: reason }))
+        /** the console's `time` and `fog`: a pinned clock and a thickness */
+        let todPin: number | null = null
+        let fogK = 1
+        let godMode = false
+        const setNoclip = (on: boolean) => {
+          if (walk.noclip === on) return
+          walk.noclip = on
+          setFlying(on)
+        }
+        const canAct = () => !fleet.riding && !levels.frozen && !seating.current && !rig.down
+        const host: SandboxHost = {
+          sandbox: () => sandbox,
+          history: () => history,
+          rules,
+          online: () => net !== null,
+          // the head and gaze as of the last frame: commands run from DOM
+          // events, when the chase boom may be holding the camera
+          aim: () => ({ origin: headPos, dir: headDir }),
+          here: () => ({ x: headPos.x, y: walk.feetY, z: headPos.z, yaw: walk.yaw }),
+          teleport: (x, z, y, yaw) => {
+            if (fleet.riding) leaveVehicle()
+            if (seating.current) leaveSeat()
+            if (fleet.riding || rig.down) return
+            const level = levels.current
+            const floor = floorOf(level, x, z)
+            // a little above whatever is there and let gravity settle it:
+            // the chunks under a far teleport are not built yet, and their
+            // collision arrives a moment after the feet do
+            const feet = y ?? (walk.noclip ? Math.max(floor + 6, walk.feetY) : spawnY(level, x, z) + 1.2)
+            chase.drop()
+            walk.resetMotion()
+            walk.teleport(x, z, feet)
+            if (yaw !== undefined) walk.yaw = yaw
+            rig.reset()
+            rig.face(walk.yaw)
+            poseBody()
+            headPos.set(x, feet + EYE, z)
+          },
+          home: () => ({ x: SPAWN.x, z: SPAWN.z }),
+          noclip: (on) => {
+            if (on !== undefined && canAct()) setNoclip(on)
+            return walk.noclip
+          },
+          god: (on) => {
+            if (on !== undefined) godMode = on
+            return godMode
+          },
+          thirdPerson: (on) => {
+            const now = on ?? prefsRef.current.third
+            if (on !== undefined) setPrefs((p) => ({ ...p, third: on }))
+            return now
+          },
+          fling: (vx, vy, vz) => {
+            if (!canAct()) return false
+            setNoclip(false)
+            rig.flop(vx, vy, vz)
+            return true
+          },
+          sit: () => takeSeat(),
+          time: (tod) => {
+            todPin = tod
+          },
+          fog: (k) => {
+            fogK = k
+          },
+          players: () =>
+            [...remote.players].map(([id, p]) => ({
+              id, name: remote.roster.get(id)?.name ?? '?', x: p.x, y: p.y, z: p.z,
+            })),
+          chat: (text) => {
+            if (!net) return false
+            net.chat(text)
+            return true
+          },
+          clear: () => setFeed([]),
+        }
+        const sbConsole = createConsole(host)
+        consoleRef.current = sbConsole
+        sbConsole.onPrint((l) => pushFeed(l))
+        // the console line's enter: a slash runs a command, anything else is
+        // said out loud, and with nobody out here it is printed back to you
+        sayRef.current = (text) => {
+          if (!text) return
+          if (text.startsWith('/')) {
+            void sbConsole.run(text)
+          } else if (net) {
+            net.chat(text)
+          } else {
+            pushFeed({ tone: 'chat', text, name: myNameRef.current || 'you', mine: true })
+            pushFeed({
+              tone: 'system',
+              text: bilingual('nobody out here to hear it', 'no hay nadie aquí que lo escuche'),
+            })
+          }
+        }
+        // a click in the catalogue is a spawn at the crosshair, the same one
+        // `spawn <kind>` does, without the echo
+        spawnRef.current = (kind) => {
+          void sbConsole.run(`spawn ${kind}`, { quiet: true })
+        }
+        const undoLast = () => {
+          if (!history || !sandbox) return
+          const e = history.undo()
+          pushFeed(e
+            ? { tone: 'ok', text: bilingual(`undone: ${e.label}`, `deshecho: ${e.label}`) }
+            : { tone: 'err', text: bilingual('nothing left to undo', 'no queda nada que deshacer') })
+        }
 
         // the two levels and the noclip cut between them; the scene's share
         // of a swap is the blackout card and the shadow-map hygiene
@@ -1919,7 +2101,11 @@ export default function CrtScene({
         // and headlamps arriving one frame's worth of midday behind the room
         let lastSky: OutsideState | null = null
         const applyLight = (at: THREE.Vector3 = camera.position) => {
-          const sky = outside.update(at)
+          const sky = outside.update(at, todPin ?? undefined)
+          // the console's fog: thicker is nearer, never further than the
+          // world streams (fogK is at least 1, see commands.ts's `fog`)
+          sky.fogNear /= fogK
+          sky.fogFar /= fogK
           lastSky = sky
           const k = roamK
           hemi.color.copy(sky.hemiSky)
@@ -2150,8 +2336,7 @@ export default function CrtScene({
           // v swaps the boom for the cockpit. It is not the walk's saved
           // third-person preference — a car has two views and neither is the
           // one the pause menu's toggle means
-          const vNow = input.keys.has('KeyV')
-          if (vNow && !vHeld && !pausedNow) {
+          if (edges.pressed('vehicleView') && !pausedNow) {
             fleet.toggleView()
             // A cockpit lens sits at the avatar's face. Hide the body in that
             // view so its head cannot occlude the windscreen; chase view shows
@@ -2159,8 +2344,6 @@ export default function CrtScene({
             body.visible = !fleet.cockpit
             setDriving((d) => (d ? { ...d, cockpit: fleet.cockpit } : d))
           }
-          vHeld = vNow
-          xHeld = input.keys.has('KeyX')
           if (sandbox) {
             const sbf = sandbox.tick({
               dt,
@@ -2275,6 +2458,7 @@ export default function CrtScene({
           const rawMs = now - lastT
           const dt = Math.min(0.05, rawMs / 1000)
           lastT = now
+          edges.update(input.keys)
           // frame-time governor: a smoothed frame cost over ~22ms means the
           // GPU can't keep up at this resolution, so shed a pixel-ratio step.
           // How big a step is how far over budget it is: a retina panel
@@ -2412,7 +2596,9 @@ export default function CrtScene({
           // weight in, a ride carried out (it moves camera x/z, so it runs
           // before anything below reads the head)
           if (sandbox) {
-            const onFoot = level.id === 'overworld' && !sitting
+            // a flyer goes through props like everything else, so nothing
+            // is shoved and nothing is stood on
+            const onFoot = level.id === 'overworld' && !sitting && !walk.noclip
             const sbf = sandbox.tick({
               dt,
               active: level.id === 'overworld' && !pausedNow,
@@ -2450,21 +2636,26 @@ export default function CrtScene({
             else footstep(surface, step.gait * (1 - walk.crouchK * 0.65), step.run)
           }
           // the view is a saved preference the pause menu also owns, so the
-          // boom just follows it and v flips it; x flops — and once the
-          // ragdoll settles, x or any move key stands back up
+          // boom just follows it and the camera key (bindings.ts) flips it;
+          // x flops, and once the ragdoll settles, x or any move key stands
+          // back up. Every key here is read through the key table
           chase.third = prefsRef.current.third
-          const vNow = input.keys.has('KeyV')
-          if (vNow && !vHeld && !levels.frozen) setPrefs((p) => ({ ...p, third: !p.third }))
-          vHeld = vNow
-          const xNow = input.keys.has('KeyX')
+          if (edges.pressed('camera') && !levels.frozen) setPrefs((p) => ({ ...p, third: !p.third }))
+          // noclip: not from a chair, a heap on the floor or mid-cut
+          if (edges.pressed('noclip') && !levels.frozen && !sitting && !rig.down) {
+            setNoclip(!walk.noclip)
+          }
+          const flopNow = edges.pressed('ragdoll')
           const wantsUp =
             rig.ragdolling &&
             rig.settled &&
-            ((xNow && !xHeld) ||
-              ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].some((k) => input.keys.has(k)))
+            (flopNow ||
+              held(input.keys, 'forward') || held(input.keys, 'back') ||
+              held(input.keys, 'left') || held(input.keys, 'right') || held(input.keys, 'jump'))
           // (not from a chair: the ragdoll would land on the floor while the
-          // seat kept the lens on the cushion, watching an empty room)
-          if (xNow && !xHeld && !rig.down && !levels.frozen && !sitting) {
+          // seat kept the lens on the cushion, watching an empty room; and not
+          // in noclip, where there is nothing to fall onto)
+          if (flopNow && !rig.down && !levels.frozen && !sitting && !walk.noclip) {
             // thrown with the walk's momentum plus a hop so it always tumbles
             rig.flop(step.vx, step.vy + 1.6, step.vz)
           } else if (wantsUp) {
@@ -2484,24 +2675,26 @@ export default function CrtScene({
             poseBody()
             rig.beginRecover()
           }
-          xHeld = xNow
-          // t opens the chat line, m arms the microphone, n swaps the talk
-          // mode, and b is held to push to talk. Same edge-detect as v and x
-          const tNow = input.keys.has('KeyT')
-          if (tNow && !tHeld && net && !levels.frozen) openChat()
-          tHeld = tNow
-          const mNow = input.keys.has('KeyM')
-          if (mNow && !mHeld && voice?.available) {
+          // t or enter opens the console line and / opens it on a command;
+          // q held holds the catalogue up and z takes the last spawn back.
+          // The console works alone, so none of these wait for a server
+          if (!levels.frozen) {
+            if (edges.pressed('chat')) openChat('')
+            else if (edges.pressed('command')) openChat('/')
+            if (edges.pressed('spawnMenu') && !sitting) setMenu(true)
+            if (edges.pressed('undo')) undoLast()
+          }
+          if (menuNow && !held(input.keys, 'spawnMenu')) setMenu(false)
+          // m arms the microphone, n swaps the talk mode, and b is held to
+          // push to talk
+          if (edges.pressed('mic') && voice?.available) {
             const arming = !voice.enabled
             void voice.toggle().then(() => {
               if (arming && voice?.enabled) track('world_voice')
             })
           }
-          mHeld = mNow
-          const nNow = input.keys.has('KeyN')
-          if (nNow && !nHeld && voice?.enabled) voice.cycleMode()
-          nHeld = nNow
-          voice?.setPushing(input.keys.has('KeyB'))
+          if (edges.pressed('talkMode') && voice?.enabled) voice.cycleMode()
+          voice?.setPushing(held(input.keys, 'pushToTalk'))
           // the body plants its feet under the camera and faces the walk
           // (or hangs from it, mid-hop), unless the ragdoll owns it, or a
           // seat does: a sitter's body was placed on the cushion when they
@@ -2519,6 +2712,7 @@ export default function CrtScene({
           rigPose.vz = step.vz
           rigPose.vy = step.vy
           rigPose.landing = step.landing
+          rigPose.fly = step.flying ? 1 : 0
           // same factor as poseBody's trailing offset: a crushed boom means
           // the lens is back on the head, so the flair fades out with it
           rigPose.show = Math.min(1, chase.dist / 1.2)
@@ -2556,6 +2750,7 @@ export default function CrtScene({
                 swimming: step.swimming,
                 speaking: Boolean(voice?.speaking),
                 down: rig.down,
+                fly: step.flying,
               }),
             )
             remote.sample(now, dt)
@@ -2783,10 +2978,38 @@ export default function CrtScene({
               waveAt: outside.waveAt,
               chunkSolids: outside.chunkSolids,
             })
+            sandbox.gravity = -GRAVITY * rules.gravity
+            sandbox.timescale = rules.timescale
+            history = historyOf(sandbox)
+            history.me = remote.you ?? LOCAL
+            const h = history
+            h.onChange(() =>
+              setOrders(h.entries(h.me).map((e) => ({ seq: e.seq, label: e.label, kind: e.kind }))))
+            // the catalogue's data, off the same lazily loaded kind table
+            void Promise.all([
+              import('../../game/sandbox/spawnlist'),
+              import('../../game/sandbox/kinds'),
+            ]).then(([list, kinds]) => {
+              if (disposed) return
+              setCatalogue({
+                entries: list.spawnlist,
+                categories: list.spawnCategories,
+                kind: (id) => kinds.KINDS[id],
+                note: list.kindNote,
+              })
+            })
             // dev only: the harnesses (and a console) reach the sandbox and
-            // the lens it is being watched through from here
+            // the lens it is being watched through from here, and can type
+            // into the console: `await __sandbox.run('spawn crate 10')`
+            // resolves with the lines it printed, in English
             if (import.meta.env.DEV) {
-              Object.assign(window, { __sandbox: sandbox, __sandboxCamera: camera })
+              const run = async (line: string) =>
+                (await sbConsole.run(line)).map((l) =>
+                  l.right === undefined ? sayIn(l.text, 'en') : `${sayIn(l.text, 'en')} ... ${sayIn(l.right, 'en')}`)
+              Object.assign(window, {
+                __sandbox: Object.assign(sandbox, { run, console: sbConsole }),
+                __sandboxCamera: camera,
+              })
             }
             fleet = registry.buildFleet({
               scene,
@@ -3509,8 +3732,8 @@ export default function CrtScene({
       )}
       {roam && walking && !paused && (
         <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
-          {!locked
-            ? 'wasd to move · click to grab the mouse · esc to leave'
+          {!locked && !typing && !menuOpen
+            ? t.sandbox.hud.grab
             : driving
               ? // the controls change with the medium, so the line does too:
                 // a helicopter has a collective where a car has a handbrake.
@@ -3519,9 +3742,9 @@ export default function CrtScene({
                 driving.seat !== 0
                 ? `along for the ride · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
                 : `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
-              : `wasd move · space jump · shift run · ctrl crouch · v camera · x flop${
-                  mp.status === 'live' ? ' · t chat · m mic' : ''
-                } · esc pauses`}
+              : `${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
+                  mp.status === 'live' ? ` · ${t.sandbox.hud.voice}` : ''
+                } · ${t.sandbox.hud.pauses}`}
         </p>
       )}
       {/* the instrument panel. Deliberately the same quiet mono the rest of
@@ -3560,81 +3783,45 @@ export default function CrtScene({
           {notice}
         </p>
       )}
-      {/* the shared walk's rail: who is here, what they said, and whether the
-          microphone is live. Only ever mounted while actually in the world */}
-      {roam && walking && mp.status === 'live' && !paused && (
-        <div className="pointer-events-none absolute bottom-4 left-5 z-10 max-w-[min(28rem,52vw)] font-mono">
-          <div className="flex items-center gap-2 text-[11px] text-stone-500">
-            <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden className="size-1.5 rounded-full bg-emerald-400/80" />
-              {mp.here === 0 ? 'nobody else out here' : `${mp.here} nearby`}
-            </span>
-            {voiceHud.enabled && (
-              <span className={voiceHud.speaking ? 'text-emerald-300' : 'text-stone-500'}>
-                · mic {voiceHud.mode === 'ptt' ? '(hold b)' : 'open'}
-                {voiceHud.peers > 0 && ` · ${voiceHud.peers} voice`}
-              </span>
-            )}
-            {voiceHud.available && !voiceHud.enabled && <span>· m for voice</span>}
-            {voiceHud.error && <span className="text-amber-400/80">· {voiceHud.error}</span>}
-          </div>
-          {chat.length > 0 && (
-            <ul className="mt-1.5 space-y-0.5 text-[11px] leading-snug">
-              {chat.map((line) => (
-                <li
-                  key={line.key}
-                  className={line.system ? 'text-stone-600 italic' : 'text-stone-300'}
-                >
-                  {!line.system && (
-                    <span
-                      className={
-                        line.admin
-                          ? 'text-[#c0705c]'
-                          : line.mine
-                            ? 'text-stone-400'
-                            : 'text-sky-300/80'
-                      }
-                    >
-                      {line.name}
-                    </span>
-                  )}
-                  {!line.system && <span className="text-stone-600">: </span>}
-                  {line.text}
-                </li>
-              ))}
-            </ul>
-          )}
-          {typing && (
-            <form
-              className="pointer-events-auto mt-2 flex items-center gap-2 rounded border border-stone-700 bg-stone-950/85 px-2 py-1 backdrop-blur-sm"
-              onSubmit={(e) => {
-                e.preventDefault()
-                const value = chatInputRef.current?.value ?? ''
-                sayRef.current?.(value)
-                closeChat()
-              }}
-            >
-              <span aria-hidden className="text-[11px] text-stone-600">
-                say
-              </span>
-              <input
-                ref={chatInputRef}
-                type="text"
-                maxLength={WORLD_MAX_TEXT_LEN}
-                autoComplete="off"
-                className="w-64 bg-transparent text-[12px] text-stone-200 outline-none placeholder:text-stone-700"
-                placeholder="enter sends · esc cancels"
-                onKeyDown={(e) => {
-                  // the composer owns every key while it is up; without this
-                  // the OS shell's window-level handlers see them too
-                  e.stopPropagation()
-                  if (e.key === 'Escape') closeChat()
-                }}
-                onBlur={closeChat}
-              />
-            </form>
-          )}
-        </div>
+      {/* the receipt printer: the console line, its answers and the shared
+          walk's chat on one strip, plus who is here and what the microphone is
+          doing on the printer's own little display. See SandboxConsole.tsx */}
+      {roam && walking && !paused && (
+        <SandboxConsole
+          open={typing}
+          lines={feed}
+          online={mp.status === 'live'}
+          status={
+            mp.status === 'live' ? (
+              <>
+                {mp.here === 0
+                  ? t.sandbox.console.nobody
+                  : `${mp.here} ${t.sandbox.console.nearby}`}
+                {voiceHud.enabled &&
+                  ` · ${voiceHud.mode === 'ptt' ? t.sandbox.console.micHold : t.sandbox.console.micOpen}${
+                    voiceHud.peers > 0 ? ` · ${voiceHud.peers} ${t.sandbox.console.voice}` : ''
+                  }`}
+                {voiceHud.available && !voiceHud.enabled && ` · ${t.sandbox.console.micOffer}`}
+                {voiceHud.error && ` · ${voiceHud.error}`}
+              </>
+            ) : null
+          }
+          onSubmit={(text) => {
+            sayRef.current?.(text.slice(0, WORLD_MAX_TEXT_LEN))
+            closeChat()
+          }}
+          onClose={closeChat}
+          complete={(line) => consoleRef.current?.complete(line) ?? null}
+        />
+      )}
+      {/* the spawn catalogue, held up by q. See SpawnMenu.tsx */}
+      {roam && walking && !paused && (
+        <SpawnMenu
+          open={menuOpen}
+          source={catalogue}
+          orders={orders}
+          onSpawn={(kind) => spawnRef.current?.(kind)}
+        />
       )}
       {roam && walking && locked && (
         <span

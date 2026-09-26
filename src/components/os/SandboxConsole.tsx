@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useI18n } from '../../i18n'
 import type { Completion, Msg, Tone } from '../../game/sandbox/commands'
 import { MARK, stockTexture } from './paper'
@@ -101,29 +101,33 @@ const STYLE = `
 .receipt-lines::-webkit-scrollbar { display: none }
 `
 
-export default function SandboxConsole({
-  open, lines, online, status, onSubmit, onClose, complete,
-}: SandboxConsoleProps) {
-  const { language, t } = useI18n()
+type Say = (m: Msg | undefined) => string
+
+/**
+ * The line being typed, with its pencilled usage hint and suggestions. Its own
+ * component so that it mounts fresh on every opening: the seed ('' or '/')
+ * is simply its initial state, and closing the console throws it away.
+ */
+function Composer({
+  seed, online, onSubmit, onClose, complete, say,
+}: {
+  seed: string
+  online: boolean
+  onSubmit: (text: string) => void
+  onClose: () => void
+  complete: (line: string) => Completion | null
+  say: Say
+}) {
+  const { t } = useI18n()
   const s = t.sandbox.console
-  const say = (m: Msg | undefined) => (m === undefined ? '' : typeof m === 'string' ? m : m[language])
   const inputRef = useRef<HTMLInputElement>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(seed)
   const [sel, setSel] = useState(0)
   const recallAt = useRef(-1)
-  const [, rerender] = useReducer((n: number) => n + 1, 0)
-  const stock = useMemo(
-    () => stockTexture({ base: ROLL, seed: 0x51f15e, grain: 0.45, flecks: 24, fleck: '120,120,120' }),
-    [],
-  )
 
-  // opening: take the seed, focus, and start the recall from the bottom
-  useLayoutEffect(() => {
-    if (open === null) return
-    setValue(open)
-    setSel(0)
-    recallAt.current = -1
+  // focus a frame late: the key that opened the line is still going down,
+  // and focusing inside its own keydown would type it into the box
+  useEffect(() => {
     const id = requestAnimationFrame(() => {
       const el = inputRef.current
       if (!el) return
@@ -131,33 +135,11 @@ export default function SandboxConsole({
       el.setSelectionRange(el.value.length, el.value.length)
     })
     return () => cancelAnimationFrame(id)
-  }, [open])
+  }, [])
 
-  // the newest line always in view while it is open
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [lines, open, value])
-
-  // closed, come back when the newest line has finished fading so the
-  // paper can go away with it
-  const now = performance.now()
-  const newest = lines.length ? lines[lines.length - 1].at : -Infinity
-  useEffect(() => {
-    if (open !== null) return
-    const left = newest + HOLD_MS + FADE_MS - performance.now()
-    if (left <= 0 || !Number.isFinite(left)) return
-    const id = setTimeout(rerender, left + 50)
-    return () => clearTimeout(id)
-  }, [open, newest])
-
-  const completion = open !== null && value.startsWith('/') ? complete(value) : null
+  const completion = value.startsWith('/') ? complete(value) : null
   const suggestions = completion?.suggestions ?? []
   const pick = Math.min(sel, Math.max(0, suggestions.length - 1))
-
-  const shown = open !== null ? lines.slice(-40) : lines.filter((l) => now - l.at < HOLD_MS + FADE_MS).slice(-8)
-  const paperUp = open !== null || shown.length > 0
-  if (!paperUp && !(online && status)) return null
 
   const accept = (dir: 1 | -1) => {
     if (!suggestions.length) return
@@ -200,21 +182,150 @@ export default function SandboxConsole({
     }
   }
 
-  const fadeFor = (at: number) => {
-    if (open !== null) return undefined
-    const delay = HOLD_MS - (now - at)
-    return { animation: `receipt-fade ${FADE_MS}ms linear ${Math.round(delay)}ms forwards` }
-  }
+  const cmd = completion?.command
+  return (
+    <div className="mt-2">
+      {/* the usage, pencilled over the line once the command is known, with
+          the argument being typed in bold */}
+      {cmd && (
+        <div className="mb-1 text-[10.5px] leading-snug" style={{ color: THERMAL_SOFT }}>
+          <span>/{cmd.name}</span>
+          {(cmd.args ?? []).map((a, i) => (
+            <span
+              key={a.name}
+              className={i === completion.argIndex ? 'font-semibold' : ''}
+              style={i === completion.argIndex ? { color: THERMAL } : undefined}
+            >
+              {' '}
+              {a.optional ? `[${a.name}]` : `<${a.name}>`}
+            </span>
+          ))}
+          <span className="block italic">{say(cmd.help)}</span>
+        </div>
+      )}
+      {suggestions.length > 0 && !(suggestions.length === 1 && suggestions[0].line === value) && (
+        <ul className="mb-1.5 space-y-px text-[11px]">
+          {suggestions.map((sg, i) => (
+            <li key={sg.line}>
+              <button
+                type="button"
+                tabIndex={-1}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  setSel(i)
+                  setValue(sg.line)
+                  inputRef.current?.focus()
+                }}
+                className="relative flex w-full items-baseline gap-2 text-left"
+                style={{ color: i === pick ? THERMAL : THERMAL_SOFT }}
+              >
+                {i === pick && (
+                  <span
+                    aria-hidden
+                    className="absolute -inset-x-1.5 inset-y-0"
+                    style={{
+                      background: `${MARK}55`,
+                      borderRadius: '8px 12px 7px 13px',
+                      transform: 'rotate(-0.6deg)',
+                    }}
+                  />
+                )}
+                <span className="relative shrink-0">{sg.label}</span>
+                {sg.detail && <span className="relative min-w-0 truncate italic opacity-80">{say(sg.detail)}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div aria-hidden className="mb-1 overflow-hidden whitespace-nowrap" style={{ color: `${THERMAL}55` }}>
+        {'= '.repeat(40)}
+      </div>
+      <form className="flex items-baseline gap-1.5" onSubmit={(e) => e.preventDefault()}>
+        <span className="font-semibold">&gt;</span>
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value)
+            setSel(0)
+            recallAt.current = -1
+          }}
+          onKeyDown={onKey}
+          onBlur={onClose}
+          maxLength={200}
+          autoComplete="off"
+          spellCheck={false}
+          className="min-w-0 flex-1 bg-transparent text-[12px] font-semibold outline-none placeholder:font-normal"
+          style={{ color: THERMAL, caretColor: THERMAL_RED }}
+          placeholder={online ? s.placeholder : s.placeholderOffline}
+        />
+      </form>
+      <p className="mt-1.5 text-[9.5px] tracking-wide" style={{ color: THERMAL_SOFT }}>
+        {s.keys}
+      </p>
+    </div>
+  )
+}
+
+export default function SandboxConsole({
+  open, lines, online, status, onSubmit, onClose, complete,
+}: SandboxConsoleProps) {
+  const { language } = useI18n()
+  const say: Say = (m) => (m === undefined ? '' : typeof m === 'string' ? m : m[language])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const stock = useMemo(
+    () => stockTexture({ base: ROLL, seed: 0x51f15e, grain: 0.45, flecks: 24, fleck: '120,120,120' }),
+    [],
+  )
+  // the clock the fades are measured against, ticked only while something
+  // closed is still on the strip. Starts at 0, which reads every line as
+  // fresh for the half second until the first tick
+  const [now, setNow] = useState(0)
+  const newest = lines.length ? lines[lines.length - 1].at : -Infinity
+  useEffect(() => {
+    if (open !== null || !lines.length) return
+    const tick = () => setNow(performance.now())
+    const first = setTimeout(tick, 0)
+    const id = setInterval(tick, 500)
+    return () => {
+      clearTimeout(first)
+      clearInterval(id)
+    }
+  }, [open, lines.length, newest])
+
+  // the newest line always in view while it is open
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [lines, open])
+
+  const isOpen = open !== null
+  const shown = isOpen ? lines.slice(-40) : lines.filter((l) => now - l.at < HOLD_MS + FADE_MS).slice(-8)
+  const paperUp = isOpen || shown.length > 0
+  if (!paperUp && !(online && status)) return null
+
+  const fadeFor = (at: number) =>
+    isOpen
+      ? undefined
+      : { animation: `receipt-fade ${FADE_MS}ms linear ${Math.round(HOLD_MS - (now - at))}ms forwards` }
 
   const line = (l: FeedLine, i: number) => {
     const style = fadeFor(l.at)
     const sep = l.tone === 'echo' && i > 0
     if (l.tone === 'item' || (l.tone === 'help' && l.right !== undefined)) {
+      const help = l.tone === 'help'
       return (
         <div key={l.key} style={style} className="flex items-baseline gap-1">
-          <span className={l.tone === 'help' ? 'shrink-0 font-semibold' : 'min-w-0 truncate'}>{say(l.text)}</span>
-          <span aria-hidden className="mx-0.5 min-w-3 flex-1 translate-y-[-3px] border-b-2 border-dotted" style={{ borderColor: `${THERMAL}66` }} />
-          <span className={l.tone === 'help' ? 'min-w-0 truncate text-right' : 'shrink-0 tabular-nums'} style={l.tone === 'help' ? { color: THERMAL_SOFT } : undefined}>
+          <span className={help ? 'shrink-0 font-semibold' : 'min-w-0 truncate'}>{say(l.text)}</span>
+          <span
+            aria-hidden
+            className="mx-0.5 min-w-3 flex-1 translate-y-[-3px] border-b-2 border-dotted"
+            style={{ borderColor: `${THERMAL}66` }}
+          />
+          <span
+            className={help ? 'min-w-0 truncate text-right text-[10.5px]' : 'shrink-0 tabular-nums'}
+            style={help ? { color: THERMAL_SOFT } : undefined}
+          >
             {say(l.right)}
           </span>
         </div>
@@ -237,7 +348,9 @@ export default function SandboxConsole({
           </p>
         ) : (
           <p
-            className={`break-words ${l.tone === 'echo' || l.tone === 'help' ? 'font-semibold' : ''} ${l.tone === 'system' ? 'italic' : ''}`}
+            className={`break-words ${l.tone === 'echo' || l.tone === 'help' ? 'font-semibold' : ''} ${
+              l.tone === 'system' ? 'italic' : ''
+            }`}
             style={{
               color: l.tone === 'err' ? THERMAL_RED : l.tone === 'system' ? THERMAL_SOFT : THERMAL,
               paddingLeft: l.tone === 'out' || l.tone === 'ok' || l.tone === 'err' ? 10 : 0,
@@ -251,22 +364,8 @@ export default function SandboxConsole({
     )
   }
 
-  // the usage line pencilled over the input once the command is known, with
-  // the argument being typed in bold
-  const hint = completion?.command ? (
-    <div className="mb-1 font-mono text-[10.5px] leading-snug" style={{ color: THERMAL_SOFT }}>
-      <span>/{completion.command.name}</span>
-      {(completion.command.args ?? []).map((a, i) => (
-        <span key={a.name} className={i === completion.argIndex ? 'font-semibold' : ''} style={i === completion.argIndex ? { color: THERMAL } : undefined}>
-          {' '}
-          {a.optional ? `[${a.name}]` : `<${a.name}>`}
-        </span>
-      ))}
-      <span className="block italic">{say(completion.command.help)}</span>
-    </div>
-  ) : null
-
   const newestShown = shown.length ? shown[shown.length - 1].at : now
+  const paperFade = isOpen ? undefined : fadeFor(newestShown)?.animation
   return (
     <div
       className="pointer-events-none absolute bottom-3 left-4 z-30 font-mono"
@@ -278,100 +377,39 @@ export default function SandboxConsole({
           className="relative mx-3 -mb-2"
           style={{
             transformOrigin: 'bottom left',
-            animation: open !== null ? 'receipt-rise 160ms steps(4)' : undefined,
             transform: 'rotate(-0.8deg)',
-            ...(open === null ? { opacity: 1 } : {}),
+            animation: isOpen ? 'receipt-rise 160ms steps(4)' : paperFade,
           }}
         >
           <div
-            className={`relative px-4 pt-4 pb-4 text-[11.5px] leading-[1.35] ${open !== null ? 'pointer-events-auto' : ''}`}
+            className={`relative px-4 pt-4 pb-4 text-[11.5px] leading-[1.35] ${isOpen ? 'pointer-events-auto' : ''}`}
             style={{
               width: WIDTH,
               clipPath: TORN,
               color: THERMAL,
               backgroundColor: ROLL,
               backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0.05), rgba(0,0,0,0) 12%, rgba(0,0,0,0) 88%, rgba(0,0,0,0.06)), url(${stock})`,
-              ...(open === null
-                ? { animation: `receipt-fade ${FADE_MS}ms linear ${Math.round(HOLD_MS - (now - newestShown))}ms forwards` }
-                : {}),
             }}
           >
             <div
               ref={scrollRef}
               className="receipt-lines overflow-y-auto"
-              style={{ maxHeight: open !== null ? 'min(46vh, 380px)' : 'none', scrollbarWidth: 'none' }}
+              style={{ maxHeight: isOpen ? 'min(46vh, 380px)' : 'none', scrollbarWidth: 'none' }}
             >
+              {/* keyed by the newest line, so every print feeds the paper up */}
               <div key={lines.length ? lines[lines.length - 1].key : 0} style={{ animation: 'receipt-feed 150ms steps(3)' }}>
                 {shown.map(line)}
               </div>
             </div>
-            {open !== null && (
-              <div className="mt-2">
-                {hint}
-                {suggestions.length > 0 && !(suggestions.length === 1 && suggestions[0].line === value) && (
-                  <ul className="mb-1.5 space-y-px text-[11px]" style={{ color: THERMAL_SOFT }}>
-                    {suggestions.map((sg, i) => (
-                      <li key={sg.line}>
-                        <button
-                          type="button"
-                          tabIndex={-1}
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => {
-                            setSel(i)
-                            setValue(sg.line)
-                            inputRef.current?.focus()
-                          }}
-                          className="relative flex w-full items-baseline gap-2 text-left"
-                          style={{ color: i === pick ? THERMAL : THERMAL_SOFT }}
-                        >
-                          {i === pick && (
-                            <span
-                              aria-hidden
-                              className="absolute -inset-x-1.5 inset-y-0 -z-10"
-                              style={{
-                                background: `${MARK}55`,
-                                borderRadius: '8px 12px 7px 13px',
-                                transform: 'rotate(-0.6deg)',
-                              }}
-                            />
-                          )}
-                          <span className="shrink-0">{sg.label}</span>
-                          {sg.detail && <span className="min-w-0 truncate italic opacity-80">{say(sg.detail)}</span>}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <div aria-hidden className="mb-1 overflow-hidden whitespace-nowrap" style={{ color: `${THERMAL}55` }}>
-                  {'= '.repeat(40)}
-                </div>
-                <form
-                  className="flex items-baseline gap-1.5"
-                  onSubmit={(e) => e.preventDefault()}
-                >
-                  <span className="font-semibold">&gt;</span>
-                  <input
-                    ref={inputRef}
-                    value={value}
-                    onChange={(e) => {
-                      setValue(e.target.value)
-                      setSel(0)
-                      recallAt.current = -1
-                    }}
-                    onKeyDown={onKey}
-                    onBlur={onClose}
-                    maxLength={200}
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="min-w-0 flex-1 bg-transparent text-[12px] font-semibold outline-none"
-                    style={{ color: THERMAL, caretColor: THERMAL_RED }}
-                    placeholder={online ? s.placeholder : s.placeholderOffline}
-                  />
-                </form>
-                <p className="mt-1.5 text-[9.5px] tracking-wide" style={{ color: THERMAL_SOFT }}>
-                  {s.keys}
-                </p>
-              </div>
+            {isOpen && (
+              <Composer
+                seed={open}
+                online={online}
+                onSubmit={onSubmit}
+                onClose={onClose}
+                complete={complete}
+                say={say}
+              />
             )}
           </div>
         </div>
@@ -383,6 +421,7 @@ export default function SandboxConsole({
           width: WIDTH + 24,
           background: 'linear-gradient(#3a3935, #252421 60%, #1c1b19)',
           boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), inset 0 -2px 0 rgba(0,0,0,0.35)',
+          animation: online && status ? undefined : paperFade,
         }}
       >
         <span
@@ -396,7 +435,7 @@ export default function SandboxConsole({
           style={{
             background: online ? '#6fd37a' : '#d9a441',
             boxShadow: `0 0 6px ${online ? '#6fd37a' : '#d9a441'}`,
-            animation: open !== null ? 'receipt-blink 1.1s steps(1) infinite' : undefined,
+            animation: isOpen ? 'receipt-blink 1.1s steps(1) infinite' : undefined,
           }}
         />
         <span className="mt-2 text-[8.5px] font-semibold tracking-[0.2em] text-stone-500 uppercase">
