@@ -1,6 +1,6 @@
 import type * as THREE from 'three'
 import type { DynamicSolids } from '../physics/collision'
-import { GROUPS, type PhysicsWorld, type RBody, type RCollider } from './physics'
+import { GROUPS, WORLD_FRICTION, type PhysicsWorld, type RBody, type RCollider } from './physics'
 import type { Props, Prop } from './props'
 
 /*
@@ -204,7 +204,7 @@ export const createWalker = (pw: PhysicsWorld, props: Props): Walker => {
   const kinHalf = (kinTop - kinBottom) / 2 - KIN_R
   const body: RBody = world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(0, -1e4, 0))
   const kinCol = world.createCollider(
-    R.ColliderDesc.capsule(kinHalf, KIN_R).setCollisionGroups(GROUPS.player).setFriction(0.4),
+    R.ColliderDesc.capsule(kinHalf, KIN_R).setCollisionGroups(GROUPS.player).setFriction(WORLD_FRICTION * 0.65),
     body,
   )
   body.setEnabled(false)

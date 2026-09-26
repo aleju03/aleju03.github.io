@@ -11,6 +11,7 @@
     tunnel     fast things do not pass through thin things or the ground
     walker     the walk pushes a crate, is stopped by a block, stands on a
                stack and rides a moving plank
+    lean       a crate column on a tipping board: does it slide or tip first
     fall       the crate tower: from the base breaking to the top falling
     rest       the forty-prop pile: when its last prop falls asleep
     determinism  every scenario twice, and on uneven frames: same hash?
@@ -79,6 +80,45 @@ const newSandbox = (withSolids = true, walker = true) => {
   sb.onAfterSlice((h) => tickWind(h))
   return { sb, collision }
 }
+/*
+  A scenario staged exactly as `npm run film` stages it: the two rings of
+  chunks round its site built and nothing else (so a prop that flies past
+  them finds no solids, in both), the world's ruins armed over them and
+  destruction attached (without it the demolitions knock nothing down and
+  there is nothing to hash), no walker. Fresh chunks each time, because a
+  demolition takes the chunk it stands in apart.
+*/
+const stageAsFilmed = async (s) => {
+  const site = s.site()
+  const chunks = new Map()
+  const boxes = []
+  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+    const ch = buildChunk(chunkX(site.x) + dx, chunkZ(site.z) + dz, 'full', MATS)
+    chunks.set(ch.cx + ',' + ch.cz, ch)
+    for (const b of ch.boxes) boxes.push(b)
+  }
+  const collision = makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, [])
+  windUniforms.uTime.value = 0
+  const sb = createSandbox({
+    collision, waterY: () => SEA_Y, waveAt: waveHeightAt, walker: false,
+    chunkSolids: (cx, cz) => chunks.get(cx + ',' + cz)?.boxes ?? null,
+  })
+  sb.onAfterSlice((h) => tickWind(h))
+  await sb.whenReady
+  const debris = buildDebris({ parent: new THREE.Group(), obstacles: boxes, groundAt: terrainY, trackDisposable: () => {} })
+  for (const ch of chunks.values()) debris.arm(ch.smash)
+  debris.ruins.onSolids = () => sb.solidsChanged()
+  attachDestruction(sb, debris.ruins)
+  const c = stageScenario(s, sb)
+  // the film's first frame, which builds the ground under the site
+  sb.tick({ dt: 0, active: true, focus: { x: c.x, y: c.y, z: c.z } })
+  const dispose = () => {
+    sb.dispose()
+    for (const ch of chunks.values()) for (const g of ch.geos) g.dispose()
+  }
+  return { sb, c, dispose }
+}
+
 const flat = SCENARIOS.find((s) => s.id === 'sandbox:stack').site()
 const fy = terrainY(flat.x, flat.z)
 console.log(`flat site ${Math.round(flat.x)},${Math.round(flat.z)}, slope ${slopeAt(flat.x, flat.z).toFixed(4)}`)
@@ -467,86 +507,174 @@ if (want('sites')) {
   }
 }
 
+/* --------------------------------------------------------------- lean -- */
+if (want('lean')) {
+  /*
+    What a stack does when what it stands on tilts, with nothing else going
+    on: a column of crates on a board that tips at 12 degrees a second. The
+    angle at which the column tips over as a whole is geometry (the top of a
+    three-high column passes over the board's edge at about 18 degrees); the
+    angle at which a crate starts to slide on the one below is friction.
+    If sliding comes first, a leaning stack sheds its top crates as it goes,
+    which is what Garry's Mod does; if tipping comes first, it goes over as
+    one welded column, which is what this sandbox did.
+  */
+  for (const high of [2, 3, 4]) {
+    const { sb } = newSandbox(false, false)
+    await sb.whenReady
+    const x = flat.x
+    const z = flat.z
+    const y0 = fy + 3
+    const board = sb.spawn('block', { x, y: y0, z }, { shape: { type: 'box', hx: 5, hy: 0.3, hz: 5 }, mass: 2000 })
+    sb.setMode(board, 'kinematic')
+    const ids = []
+    for (let i = 0; i < high; i++) ids.push(sb.spawn('crate', { x, y: y0 + 0.3 + 1.2 + i * 2.41, z }))
+    const focus = { x, y: fy, z }
+    let t = 0
+    const rate = 12 * Math.PI / 180
+    const q = new THREE.Quaternion()
+    const axis = new THREE.Vector3(0, 0, 1)
+    sb.onBeforeSlice((h) => {
+      t += h
+      q.setFromAxisAngle(axis, -Math.max(0, t - 0.5) * rate)
+      sb.moveKinematic(board, { x, y: y0, z }, q)
+    })
+    // relative pose of each crate in the frame of what it stands on
+    const inFrame = (id, onId) => {
+      const a = sb.get(onId).body
+      const b = sb.get(id).body
+      const ra = a.rotation()
+      const inv = new THREE.Quaternion(ra.x, ra.y, ra.z, ra.w).invert()
+      const pa = a.translation()
+      const pb = b.translation()
+      return new THREE.Vector3(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z).applyQuaternion(inv)
+    }
+    const seat = ids.map((id, i) => inFrame(id, i ? ids[i - 1] : board))
+    const tiltOf = (id, onId) => {
+      const a = sb.get(onId).body.rotation()
+      const b = sb.get(id).body.rotation()
+      const qa = new THREE.Quaternion(a.x, a.y, a.z, a.w)
+      const qb = new THREE.Quaternion(b.x, b.y, b.z, b.w)
+      return qa.angleTo(qb) * 180 / Math.PI
+    }
+    let slideAt = null
+    let slideWho = null
+    let tipAt = null
+    for (let i = 0; i < 60 * 6; i++) {
+      sb.tick({ dt: 1 / 60, active: true, focus })
+      const ang = Math.max(0, t - 0.5) * 12
+      ids.forEach((id, k) => {
+        const on = k ? ids[k - 1] : board
+        const r = inFrame(id, on)
+        const d = Math.hypot(r.x - seat[k].x, r.z - seat[k].z)
+        if (slideAt === null && d > 0.25 && tiltOf(id, on) < 8) {
+          slideAt = ang
+          slideWho = k
+        }
+        if (tipAt === null && tiltOf(id, on) > 8) tipAt = ang
+      })
+      if (slideAt !== null && tipAt !== null) break
+    }
+    const first = slideAt !== null && (tipAt === null || slideAt < tipAt) ? 'slides first' : 'tips first'
+    console.log(`lean     ${high}-high column of crates on a tipping board: a crate slid on what it stood on at ` +
+      `${slideAt === null ? 'never' : f(slideAt, 1) + ' deg (crate ' + (slideWho + 1) + ' from the bottom)'}, one tipped over its edge at ` +
+      `${tipAt === null ? 'never' : f(tipAt, 1) + ' deg'}: ${first} ` + (high > 2 && first === 'tips first' ? '<-- GOES OVER WHOLE' : ''))
+    sb.dispose()
+  }
+}
+
 /* --------------------------------------------------------------- fall -- */
 if (want('fall')) {
-  // sandbox:stack, watched for how it comes down: how soon the seams
-  // between its crates open once the ram strikes (round four's stood as one
-  // welded wall for half a second), how long each column's top crate takes
-  // to start down and how far it first rose, and how many of the fifteen
-  // are still standing in their row at the end
-  const s = SCENARIOS.find((o) => o.id === 'sandbox:stack')
-  const { sb } = newSandbox(true, false)
-  await sb.whenReady
-  const c = stageScenario(s, sb)
-  const ids = c.ids.slice(0, 15)
-  const y0 = ids.map((id) => sb.get(id).body.translation().y)
-  const x0 = ids.map((id) => sb.get(id).body.translation().x)
-  const z0 = ids.map((id) => sb.get(id).body.translation().z)
-  const rise = [0, 0, 0]
-  const fellAt = [null, null, null]
-  // the seams of the twelve crates above the base: every neighbouring pair,
-  // side by side in a row or one on another in a column, and when (after
-  // the ram struck) each first opened by half a unit. A wall that stays
-  // welded opens none of them until it hits the ground
-  const pairs = []
-  for (let i = 3; i < 15; i++) {
-    if (i % 3 !== 2) pairs.push([i, i + 1])
-    if (i + 3 < 15) pairs.push([i, i + 3])
-  }
-  const dist = (a, b) => {
-    const p = sb.get(ids[a])
-    const q = sb.get(ids[b])
-    if (!p || !q) return null
-    const u = p.body.translation()
-    const v = q.body.translation()
-    return Math.hypot(u.x - v.x, u.y - v.y, u.z - v.z)
-  }
-  const d0 = pairs.map(([a, b]) => dist(a, b))
-  const openAt = pairs.map(() => null)
-  // the moment the ram first shoves any crate a quarter unit sideways
-  let hitAt = null
-  advanceScenario(s, c, s.duration, (t) => {
-    if (hitAt === null && ids.some((id, i) => {
-      const p = sb.get(id)
-      if (!p) return true
-      const q = p.body.translation()
-      return Math.hypot(q.x - x0[i], q.z - z0[i]) > 0.25
-    })) hitAt = t
-    if (hitAt !== null) pairs.forEach(([a, b], k) => {
-      if (openAt[k] !== null) return
-      const d = dist(a, b)
-      if (d === null || d > d0[k] + 0.5) openAt[k] = t - hitAt
-    })
-    for (let k = 0; k < 3; k++) {
-      const p = sb.get(ids[12 + k])
-      if (!p) continue
-      const y = p.body.translation().y
-      rise[k] = Math.max(rise[k], y - y0[12 + k])
-      if (hitAt !== null && fellAt[k] === null && y < y0[12 + k] - 0.05) fellAt[k] = t
+  /*
+    A crate tower knocked down, watched for how it comes apart. Two blows
+    to the same stack (crateTower in scenarios.ts): the girder through its
+    middle, and a drum thrown into the foot of one end, so a fix cannot have
+    been tuned to one of them.
+
+    seams     every pair of neighbouring crates above the base row, side by
+              side or one on another, and when (after the first crate was
+              knocked a quarter unit) each opened by half a unit
+    slide     the most any crate slid across the top of the one below it
+              while that one was tilted past ten degrees and still up (two
+              units or more off the grass): a leaning stack shedding its top
+              as it goes, rather than tipping whole and only coming apart on
+              the ground
+    down      how many of the fifteen ended at least a row below where they
+              started, and whether the top crates came down
+  */
+  const pairsOf = () => {
+    const pairs = []
+    for (let i = 3; i < 15; i++) {
+      if (i % 3 !== 2) pairs.push([i, i + 1, false])
+      if (i + 3 < 15) pairs.push([i, i + 3, true])
     }
-  })
-  let standing = 0
-  ids.forEach((id, i) => {
-    const p = sb.get(id)
-    if (p && Math.abs(p.body.translation().y - y0[i]) < 0.3) standing++
-  })
-  const low = ids.slice(12).filter((id, k) => {
-    const p = sb.get(id)
-    return !p || p.body.translation().y < y0[12 + k] - 4.7
-  }).length
-  const opened = openAt.filter((t) => t !== null).sort((x, y) => x - y)
-  const within = (k) => opened.filter((t) => t <= k).length
-  console.log(`fall     seams: ${pairs.length} between the twelve above the base; first opened ` +
-    `${opened.length ? f(opened[0], 2) + ' s' : 'never'} after the ram struck, half of them by ` +
-    `${opened.length >= pairs.length / 2 ? f(opened[Math.floor(pairs.length / 2) - 1], 2) + ' s' : 'never'}; ` +
-    `open by 0.5 / 1.0 / 2.0 s: ${within(0.5)} / ${within(1)} / ${within(2)}` +
-    (within(0.5) >= 4 ? ' (comes apart)' : ' <-- WELDED'))
-  const delays = fellAt.map((t) => (t === null || hitAt === null ? 'never' : `${f(Math.max(0, t - hitAt), 2)} s`))
-  console.log(`fall     stack: struck at ${hitAt === null ? 'never' : f(hitAt, 2) + ' s'}, top crates began to fall ` +
-    `${delays.join(' / ')} after, rose at most ${rise.map((r) => f(r, 2)).join(' / ')} first, ` +
-    `${standing}/15 still standing where they were and ${low}/3 top crates down two rows or more at ${s.duration} s ` +
-    (low === 3 && standing <= 3 ? '(comes down)' : '<-- TIMID'))
-  sb.dispose()
+    return pairs
+  }
+  for (const id of ['sandbox:stack', 'sandbox:topple']) {
+    const s = SCENARIOS.find((o) => o.id === id)
+    const { sb, c, dispose } = await stageAsFilmed(s)
+    const ids = c.ids.slice(0, 15)
+    const pos = (i) => sb.get(ids[i])?.body.translation() ?? null
+    const p0 = ids.map((_, i) => pos(i))
+    const gy = sb.groundY(c.x, c.z)
+    const pairs = pairsOf()
+    const d0 = pairs.map(([a, b]) => Math.hypot(p0[a].x - p0[b].x, p0[a].y - p0[b].y, p0[a].z - p0[b].z))
+    const openAt = pairs.map(() => null)
+    let slide = 0
+    let hitAt = null
+    const q = new THREE.Quaternion()
+    const up = new THREE.Vector3()
+    const rel = new THREE.Vector3()
+    // where each upper crate sat on its lower one, in the lower one's frame
+    const seat = pairs.map(([a, b, vertical]) => {
+      if (!vertical) return null
+      const r = sb.get(ids[a]).body.rotation()
+      q.set(r.x, r.y, r.z, r.w).invert()
+      return rel.set(p0[b].x - p0[a].x, p0[b].y - p0[a].y, p0[b].z - p0[a].z).applyQuaternion(q).clone()
+    })
+    advanceScenario(s, c, s.duration, (t) => {
+      if (hitAt === null && ids.some((_, i) => {
+        const p = pos(i)
+        return !p || Math.hypot(p.x - p0[i].x, p.z - p0[i].z) > 0.25
+      })) hitAt = t
+      if (hitAt === null) return
+      pairs.forEach(([a, b, vertical], k) => {
+        const pa = pos(a)
+        const pb = pos(b)
+        if (openAt[k] === null && (!pa || !pb || Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z) > d0[k] + 0.5)) {
+          openAt[k] = t - hitAt
+        }
+        if (!vertical || !pa || !pb || openAt[k] !== null) return
+        // the lower crate's tilt, and how far the upper one has moved across
+        // its top face from where it sat
+        const r = sb.get(ids[a]).body.rotation()
+        q.set(r.x, r.y, r.z, r.w)
+        up.set(0, 1, 0).applyQuaternion(q)
+        if (up.y > Math.cos(10 * Math.PI / 180) || pa.y < gy + 3.2) return
+        rel.set(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z).applyQuaternion(q.invert())
+        slide = Math.max(slide, Math.hypot(rel.x - seat[k].x, rel.z - seat[k].z))
+      })
+    })
+    let down = 0
+    ids.forEach((_, i) => {
+      const p = pos(i)
+      if (!p || p.y < p0[i].y - 2) down++
+    })
+    const topDown = [12, 13, 14].filter((i) => {
+      const p = pos(i)
+      return !p || p.y < p0[i].y - 4.7
+    }).length
+    const opened = openAt.filter((t) => t !== null).sort((x, y) => x - y)
+    const within = (k) => opened.filter((t) => t <= k).length
+    const half = opened.length >= pairs.length / 2 ? f(opened[Math.floor(pairs.length / 2) - 1], 2) + ' s' : 'never'
+    console.log(`fall     ${pad(id, 15)} struck at ${hitAt === null ? 'never' : f(hitAt, 2) + ' s'}; seams (${pairs.length}) ` +
+      `open by 0.25 / 0.5 / 1 s: ${within(0.25)} / ${within(0.5)} / ${within(1)}, half by ${half}; ` +
+      `a crate slid up to ${f(slide, 2)} across a tilted one still up in the air; ` +
+      `${down}/15 down, ${topDown}/3 top crates two rows down ` +
+      (slide >= 0.5 ? '(sheds as it leans)' : '<-- TIPS AS A SLAB'))
+    dispose()
+  }
+  const s = SCENARIOS.find((o) => o.id === 'sandbox:stack')
   // and the case round three hung on: the base *shattered* under the tower
   // (every bottom crate broken at once, its gibs born where it stood), with
   // gibs passing through props for their first moment and without
@@ -636,45 +764,6 @@ if (want('rest')) {
 }
 
 /* -------------------------------------------------------- determinism -- */
-/*
-  A scenario staged exactly as `npm run film` stages it: the two rings of
-  chunks round its site built and nothing else (so a prop that flies past
-  them finds no solids, in both), the world's ruins armed over them and
-  destruction attached (without it the demolitions knock nothing down and
-  there is nothing to hash), no walker. Fresh chunks each time, because a
-  demolition takes the chunk it stands in apart.
-*/
-const stageAsFilmed = async (s) => {
-  const site = s.site()
-  const chunks = new Map()
-  const boxes = []
-  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
-    const ch = buildChunk(chunkX(site.x) + dx, chunkZ(site.z) + dz, 'full', MATS)
-    chunks.set(ch.cx + ',' + ch.cz, ch)
-    for (const b of ch.boxes) boxes.push(b)
-  }
-  const collision = makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, [])
-  windUniforms.uTime.value = 0
-  const sb = createSandbox({
-    collision, waterY: () => SEA_Y, waveAt: waveHeightAt, walker: false,
-    chunkSolids: (cx, cz) => chunks.get(cx + ',' + cz)?.boxes ?? null,
-  })
-  sb.onAfterSlice((h) => tickWind(h))
-  await sb.whenReady
-  const debris = buildDebris({ parent: new THREE.Group(), obstacles: boxes, groundAt: terrainY, trackDisposable: () => {} })
-  for (const ch of chunks.values()) debris.arm(ch.smash)
-  debris.ruins.onSolids = () => sb.solidsChanged()
-  attachDestruction(sb, debris.ruins)
-  const c = stageScenario(s, sb)
-  // the film's first frame, which builds the ground under the site
-  sb.tick({ dt: 0, active: true, focus: { x: c.x, y: c.y, z: c.z } })
-  const dispose = () => {
-    sb.dispose()
-    for (const ch of chunks.values()) for (const g of ch.geos) g.dispose()
-  }
-  return { sb, c, dispose }
-}
-
 if (want('determinism')) {
   // every scenario, staged twice in this process on fresh sandboxes, must
   // end with the same state to the bit (sb.stateHash: every prop's pose and
