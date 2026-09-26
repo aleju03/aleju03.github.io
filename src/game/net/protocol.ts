@@ -202,7 +202,20 @@ export interface WorldLook {
   look?: string
 }
 
+/** somebody bumped into us hard enough to matter. The velocity is theirs
+    to propose and ours to apply: `net/shove.ts`'s taker decides whether it
+    is a stumble, a flop or nothing (seated, flying, just knocked down). The
+    server only forwards it when the two are standing near each other */
+export interface WorldShove {
+  type: 'world-shove'
+  from: PlayerId
+  vx: number
+  vy: number
+  vz: number
+}
+
 export type WorldServerMessage =
+  | WorldShove
   | WorldWelcome
   | WorldEnter
   | WorldExit
@@ -250,6 +263,10 @@ export type WorldClientMessage =
   | { type: 'world-unseat' }
   /** where the machine I am driving now is. Ignored from anyone who is not
       its driver, which is the whole of the server's opinion about physics */
+  /** I bumped into this player: here is the velocity it should take.
+      Relayed to them alone, clamped, rate-limited, and dropped unless the
+      two of us are within WORLD_SHOVE_REACH of each other and on foot */
+  | { type: 'world-shove'; to: PlayerId; vx: number; vy: number; vz: number }
   | {
       type: 'world-vehicle'
       v: number
