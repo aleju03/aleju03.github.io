@@ -1143,16 +1143,36 @@ if (want('destruction')) {
     // DESTRUCTION_EXTRA=<s> runs on past the film's end, to watch it settle
     const extra = Number(process.env.DESTRUCTION_EXTRA ?? 0)
     const spikes = []
-    advanceScenario(s, c, s.duration + extra, (t, _dt, m) => {
-      ms.push(m)
-      if (m > 9) spikes.push(`${f(t, 2)}s ${f(m, 0)}ms (lumps ${dmg.stats.lumps}, slice ${f(dmg.stats.sliceMs, 1)})`)
-      most = Math.max(most, dmg.stats.lumps)
-    })
+    // how much rubble is still moving, and the fastest of it
+    const moving = () => {
+      let n = 0
+      let top = 0
+      sb.forEach((p) => {
+        if (!p.data.rubble || p.mode !== 'dynamic' || p.body.isSleeping()) return
+        const v = p.body.linvel()
+        n++
+        top = Math.max(top, Math.hypot(v.x, v.y, v.z))
+      })
+      return `${n} moving (fastest ${f(top, 1)} u/s)`
+    }
+    const settle = []
+    // the film's length, then on four and eight seconds (and any extra)
+    const marks = [s.duration, s.duration + 4, s.duration + 8]
+    if (extra > 8) marks.push(s.duration + extra)
+    for (const to of marks) {
+      advanceScenario(s, c, to, (t, _dt, m) => {
+        ms.push(m)
+        if (m > 9) spikes.push(`${f(t, 2)}s ${f(m, 0)}ms (lumps ${dmg.stats.lumps}, slice ${f(dmg.stats.sliceMs, 1)})`)
+        most = Math.max(most, dmg.stats.lumps)
+      })
+      settle.push(`+${f(to - s.duration, 0)} s: ${moving()}`)
+    }
     ms.sort((a, b) => a - b)
     const q = (k) => ms[Math.min(ms.length - 1, Math.floor(ms.length * k))]
     console.log(`destruction ${pad(id, 22)} at ${Math.round(c.x)},${Math.round(c.z)}  ${s.report ? s.report(c) : ''}`)
     console.log(`            frame ms: median ${f(q(0.5), 2)}, p95 ${f(q(0.95), 2)}, worst ${f(ms[ms.length - 1], 2)}; ` +
       `most rubble at once ${most}; ${dmg.log.length} damage events`)
+    console.log(`            settling: ${settle.join('; ')}; fastest anything put to rest was caught at ${f(dmg.stats.settledMax, 1)} u/s`)
     // what is still moving at the end, by level, and how fast
     const lv = {}
     sb.forEach((p) => {

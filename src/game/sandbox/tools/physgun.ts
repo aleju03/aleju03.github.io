@@ -337,6 +337,9 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
       emit('unfreeze', point.x, point.y, point.z, 0, p.id)
     }
     prop = p
+    // a mark for the systems that settle things on their own (destruction's
+    // rubble): a player has had their hands on this one, leave it be
+    p.data.handled = true
     sb.wake(p.id)
     sb.getTransform(p.id, va, qa)
     // the exact point touched, in the prop's own frame
