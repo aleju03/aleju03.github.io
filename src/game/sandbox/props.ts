@@ -96,6 +96,13 @@ export interface SpawnOpts {
   mass?: number
   /** anything the caller wants to keep on the record */
   data?: Record<string, unknown>
+  /** seconds this prop passes through other props (it still meets the
+      ground, the world's solids, walkers and vehicles), and after that
+      until it is clear of every prop it overlaps, for at most a second.
+      For pieces born inside a crowd: a broken crate's panels start where the
+      crate was, pressed against whatever stood on it and beside it, and
+      colliding at once they shoved a whole column of crates upward */
+  phase?: number
 }
 
 export type PropMode = 'dynamic' | 'frozen' | 'kinematic'
@@ -184,6 +191,10 @@ interface Rec extends Prop {
   baseAng: number
   radius: number
   shape: ShapeSpec
+  /** passing through props until this simulated time (then until clear),
+      and never past `phaseMax`; -1 when solid */
+  phaseUntil: number
+  phaseMax: number
 }
 
 /** props farther than this from the focus are parked */
@@ -201,6 +212,7 @@ const IMPACT_GAP = 0.09
 const LOST_DEPTH = 1.5
 const MAX_RESCUES = 3
 
+const ZERO = { x: 0, y: 0, z: 0 }
 const hashBuf = new Float64Array(14)
 const hashBytes = new Uint8Array(hashBuf.buffer)
 
@@ -343,6 +355,8 @@ export interface Props {
   /** where a kinematic prop should be at the end of the next slice */
   moveKinematic: (id: PropId, pos: Vec3Like, quat?: QuatLike) => void
   wake: (id: PropId) => void
+  /** is any other prop in contact with this one right now */
+  inContact: (id: PropId) => boolean
   onImpact: (fn: (e: ImpactEvent) => void) => () => void
   /** a prop went into the water hard */
   onSplash: (fn: (e: SplashEvent) => void) => () => void
@@ -367,6 +381,10 @@ export const createProps = (o: PropsOpts): Props => {
   const recs = new Map<PropId, Rec>()
   const byCollider = new Map<number, Rec>()
   const forced = new Set<Rec>()
+  const phasing = new Set<Rec>()
+  /** a removal being kept quiet (see remove) */
+  let quiet: { at: number; sleepers: Rec[]; falling: Set<Rec> } | null = null
+  const above: Rec[] = []
   const impactFns = new Set<(e: ImpactEvent) => void>()
   const splashFns = new Set<(e: SplashEvent) => void>()
   const spawnFns = new Set<(p: Prop) => void>()
@@ -503,6 +521,14 @@ export const createProps = (o: PropsOpts): Props => {
       baseAng,
       radius: extents.length(),
       shape,
+      phaseUntil: -1,
+      phaseMax: -1,
+    }
+    if (opts.phase && opts.phase > 0) {
+      r.phaseUntil = pw.time + opts.phase
+      r.phaseMax = pw.time + Math.max(1, opts.phase)
+      for (const c of colliders) c.setCollisionGroups(GROUPS.propPhased)
+      phasing.add(r)
     }
     body.userData = r
     recs.set(id, r)
@@ -513,12 +539,89 @@ export const createProps = (o: PropsOpts): Props => {
     return id
   }
 
+  /** is `c2` sitting on `c`: touching, across a contact whose normal (from
+      c to c2) points up more than it points sideways. A crate beside a flat
+      splinter has its centre higher and is not resting on it */
+  const nrm = { x: 0, y: 0, z: 0 }
+  const restsOn = (c: RCollider, c2: RCollider) => {
+    let on = false
+    world.contactPair(c, c2, (m, flipped) => {
+      if (on) return
+      // not `numContacts() > 0`: a pair that went to sleep keeps its normal
+      // and drops its points, and trusting the count let a removed splinter
+      // leave the barrel it held asleep in mid-air
+      const n = m.normal(nrm)
+      if (n.x * n.x + n.y * n.y + n.z * n.z < 0.25) {
+        // ...and some sleeping pairs keep no normal at all: then the
+        // centres say which is on top
+        const a = c.translation().y
+        const b = c2.translation().y
+        if (b - a > 0.05) on = true
+        return
+      }
+      if ((flipped ? -n.y : n.y) > 0.15) on = true
+    })
+    return on
+  }
+
+  /** are these two within contact range at all (any manifold, any normal) */
+  const touches = (c: RCollider, c2: RCollider) => {
+    let on = false
+    world.contactPair(c, c2, () => {
+      on = true
+    })
+    return on
+  }
+
   const remove = (id: PropId) => {
     const r = recs.get(id)
     if (!r) return false
     for (const fn of removeFns) fn(r)
     for (const c of r.colliders) byCollider.delete(c.handle)
     forced.delete(r)
+    phasing.delete(r)
+    /*
+      Quietly. Rapier wakes whatever touched a removed collider, and its
+      whole island with it, and a settled pile is one island: clearing the
+      gibs from under a heap of forty props woke all forty, and it shuffled
+      for three more seconds. There is no flag for that (the wake happens
+      inside the next step), so it is undone after it: every prop asleep now
+      is remembered, and once the step that processes the removal has run,
+      those it woke are put back to sleep, except what was resting on this
+      one and everything stacked on top of that. Those have lost their
+      support, and fall. (Breakables no longer clears a splinter that any
+      prop touches; this is for every other removal: undo, cleanup, a gib
+      lying on its own.)
+    */
+    if (r.body.isEnabled()) {
+      if (!quiet) {
+        quiet = { at: pw.time, sleepers: [], falling: new Set() }
+        for (const q of recs.values()) {
+          if (q.mode === 'dynamic' && !q.parked && q.body.isSleeping()) quiet.sleepers.push(q)
+        }
+      }
+      for (const c of r.colliders) {
+        world.contactPairsWith(c, (c2) => {
+          const q = byCollider.get(c2.handle)
+          if (q && q !== r && restsOn(c, c2)) above.push(q)
+        })
+      }
+      // what rests on those, and on that, all the way up
+      for (let i = 0; i < above.length && i < 64; i++) {
+        const q = above[i]
+        if (quiet.falling.has(q)) continue
+        quiet.falling.add(q)
+        for (const c of q.colliders) {
+          world.contactPairsWith(c, (c2) => {
+            const o = byCollider.get(c2.handle)
+            if (o && o !== r && !quiet!.falling.has(o) && restsOn(c, c2)) above.push(o)
+          })
+        }
+      }
+      above.length = 0
+      for (const c of r.colliders) world.removeCollider(c, false)
+      for (const q of quiet.falling) if (q !== r && recs.has(q.id)) q.body.wakeUp()
+    }
     world.removeRigidBody(r.body)
     if (r.mesh) r.mesh.removeFromParent()
     recs.delete(id)
@@ -823,8 +926,58 @@ export const createProps = (o: PropsOpts): Props => {
     return false
   }
 
+  /** does any solid (not itself phased) prop overlap this one right now */
+  const crowded = (r: Rec) => {
+    let hit = false
+    for (const c of r.colliders) {
+      world.intersectionsWithShape(c.translation(), c.rotation(), c.shape, (o) => {
+        const q = byCollider.get(o.handle)
+        if (q && q !== r && q.phaseUntil < 0) {
+          hit = true
+          return false
+        }
+        return true
+      }, undefined, GROUPS.queryProps, undefined, r.body)
+      if (hit) return true
+    }
+    return false
+  }
+
+  /** phased props whose moment is up rejoin, each once it is clear */
+  const rejoin = (t: number) => {
+    if (!phasing.size) return
+    for (const r of phasing) {
+      if (t < r.phaseUntil) continue
+      if (t < r.phaseMax && crowded(r)) continue
+      solidAgain.push(r)
+    }
+    // after the queries, never inside one: a query holds the world borrowed
+    for (const r of solidAgain) {
+      r.phaseUntil = -1
+      phasing.delete(r)
+      for (const c of r.colliders) c.setCollisionGroups(GROUPS.prop)
+    }
+    solidAgain.length = 0
+  }
+  const solidAgain: Rec[] = []
+
   const afterSlice = (h: number) => {
     const t = pw.time + h
+    rejoin(t)
+    // the step after a quiet removal has woken its neighbours: back to sleep
+    // with whatever was only touching, not standing on, what went
+    if (quiet && t > quiet.at + 1e-9) {
+      for (const q of quiet.sleepers) {
+        if (!recs.has(q.id) || quiet.falling.has(q) || q.body.isSleeping()) continue
+        // with its velocity cleared: `sleep` keeps it, and the one slice of
+        // gravity each wake left behind added up over a few clear-ups until
+        // a whole heap woke already falling at two units a second
+        q.body.setLinvel(ZERO, false)
+        q.body.setAngvel(ZERO, false)
+        q.body.sleep()
+      }
+      quiet = null
+    }
     for (const r of recs.values()) {
       if (r.parked) continue
       if (r.mode === 'kinematic') {
@@ -995,6 +1148,17 @@ export const createProps = (o: PropsOpts): Props => {
         if (quat) r.body.setNextKinematicRotation(quat)
       }),
     wake: (id) => with_(id, (r) => r.body.wakeUp()),
+    inContact: (id) => {
+      const r = recs.get(id)
+      if (!r) return false
+      let on = false
+      for (const c of r.colliders) {
+        world.contactPairsWith(c, (c2) => {
+          if (!on && byCollider.has(c2.handle) && touches(c, c2)) on = true
+        })
+      }
+      return on
+    },
     onImpact: (fn) => {
       impactFns.add(fn)
       return () => impactFns.delete(fn)

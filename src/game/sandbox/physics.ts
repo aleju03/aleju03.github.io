@@ -145,6 +145,10 @@ export const groups = (member: number, filter: number) => ((member & 0xffff) << 
 export const GROUPS = {
   world: groups(G_WORLD, G_PROP),
   prop: groups(G_PROP, G_WORLD | G_PROP | G_PLAYER | G_VEHICLE),
+  /** a prop passing through other props for a moment (a gib being born):
+      still a prop, so queries and walkers see it, but its filter leaves
+      props out, and a pair touches only when each is in the other's filter */
+  propPhased: groups(G_PROP, G_WORLD | G_PLAYER | G_VEHICLE),
   player: groups(G_PLAYER, G_PROP),
   vehicle: groups(G_VEHICLE, G_PROP),
   /** a query that sees props only (the walker's questions) */
