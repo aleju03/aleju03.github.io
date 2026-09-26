@@ -64,11 +64,11 @@ export interface Explosions {
 }
 
 /** the throw a power-1 blast gives a `LAUNCH_MASS` prop at its centre, u/s:
-    about seven units of height for a barrel beside it, which is a couple of
-    heads over the player and back down within a second and a half, landing
-    a dozen units off. Lighter things go faster (by the square root of the
+    about ten units of height for a barrel beside it, which is well over the
+    player's head (Garry's Mod throws barrels higher than the ragdolls), and
+    back down within two seconds. Lighter things go faster (by the square root of the
     mass ratio, so a can is not fired into orbit), heavier ones slower */
-export const BLAST_DV = 27
+export const BLAST_DV = 33
 const LAUNCH_MASS = 30
 /** no blast changes a prop's velocity by more than this, u/s */
 const MAX_DV = 46
