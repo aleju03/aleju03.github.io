@@ -664,7 +664,7 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
   // the streamer fades a chunk in over its baked birth stamp and holds the
   // glass at zero opacity by day; a still frame wants both settled
   ;(mats.glass as THREE.MeshBasicMaterial).opacity =
-    spec.tod < 0.22 || spec.tod > 0.78 ? 1 : 0
+    spec.tod < 0.24 || spec.tod > 0.74 ? 1 : 0
 
   const out: ShotResult[] = []
   if (spec.alts?.length && spec.climb !== undefined) {

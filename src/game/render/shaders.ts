@@ -475,7 +475,11 @@ export const GRADE_FRAG = /* glsl */ `
       // three or four hard stripes across the top of every high view. The
       // clouds are hard-edged shapes of their own, so a seam here only ever
       // lands on a gradient
-      if (uPost.x > 0.5) lab.x = band(lab.x, uPost.x * 1.6, bayer(p), 0.6);
+      // Many steps, fully dithered: with a narrow seam each step was a
+      // dotted ruler line across the sky from the air, and concentric arcs
+      // round the zenith. A full ordered dither between fine steps is a
+      // texture, not a line
+      if (uPost.x > 0.5) lab.x = band(lab.x, uPost.x * 2.5, bayer(p), 1.0);
     } else if (uPost.x > 0.5) {
       lab.x += (hash(vec2(p) + fract(uFrame * 0.618) * 97.0) - 0.5) * uPost.w;
       lab.x = band(lab.x, uPost.x, bayer(p), uPost.z);
