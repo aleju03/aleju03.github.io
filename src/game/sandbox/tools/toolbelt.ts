@@ -109,6 +109,10 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   /** the holder's view direction as of the last update: the body's gun
       points along it in third person, not along the chase camera */
   const aimDir = new THREE.Vector3(0, 0, -1)
+  const aimEye = new THREE.Vector3()
+  /** what the gun points at: the held thing's target, the surface a miss
+      found, or a point well down the view */
+  const aimAt = new THREE.Vector3()
 
   const offEvents = physgun.on((e) => {
     switch (e.type) {
@@ -159,6 +163,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
 
   const update = (input: ToolInput, active: boolean) => {
     aimDir.copy(input.aim.dir)
+    aimEye.copy(input.aim.eye)
     if (!active) {
       if (physgun.holding) physgun.release(false)
       lastActive = false
@@ -180,11 +185,14 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     if (beam) beam.root.visible = true
     physgun.sync()
     const shown = f.active && SLOTS[slot] === 'physgun'
+    if (physgun.holding) aimAt.copy(physgun.view.target)
+    else if (physgun.view.mode === 'miss') aimAt.copy(physgun.view.end)
+    else aimAt.copy(aimDir).multiplyScalar(24).add(aimEye)
     if (vm) {
       vm.update({
         camera: f.camera, dt: f.dt, gait: f.gait, grounded: f.grounded,
         holding: physgun.holding, strain: physgun.view.strain,
-        firstPerson: f.firstPerson, hand: f.hand, aim: aimDir, shown,
+        firstPerson: f.firstPerson, hand: f.hand, aim: aimDir, aimAt, shown,
       })
     }
     if (beam) {
@@ -195,7 +203,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       }
       beam.holdHalo(shown ? physgun.prop?.mesh ?? null : null)
       beam.update({
-        muzzle, end: physgun.view.end, target: physgun.view.target, mode: shown ? physgun.view.mode : 'off',
+        muzzle, forward, end: physgun.view.end, target: physgun.view.target, mode: shown ? physgun.view.mode : 'off',
         strain: physgun.view.strain, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
       })
     }

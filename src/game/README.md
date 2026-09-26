@@ -320,6 +320,22 @@ world/
                   bay), plus the support graph and Voronoi shattering.
                   Pure, so `measure fracture` runs it on every building
   streamer.ts     the ring, the build budget, the collision shelf
+  farfield.ts     everything past the ring, for a camera in the air: nested
+                  square rings of coarse terrain tiles (8, 16, 32, 64-unit
+                  cells, gfx.farLevels of them) out to 2-4 km, the sea held
+                  flat with its depth banded and a one-pixel foam line,
+                  streets, a lit canopy and town impostors (the first lot of
+                  every block drawn off buildBlock's own seeded draws) in one
+                  program and one draw a tile. It discards what a finer ring
+                  or a solid chunk already draws, stitches its ring edges to
+                  the next ring's polyline, swaps a ring in whole, and builds
+                  in resumable slices inside the streamer's budget. From the
+                  air the ring shrinks to the flora chunks (RADIUS_FAR) and
+                  this draws the rest
+  groundLook.ts   the chunk ground's shader: a material per texel (paved,
+                  sand, snow, rock, soil) with ragged pixel borders, cliffs
+                  and beaches decided by geometry, and each material painted
+                  on the texel grid (render/texel.ts)
   grass.ts        the grass, as two scrolling lattices: a dense near field
                   whose blades actually touch (which is the whole difference
                   between turf and scattered tufts) and a sparse far one
@@ -369,6 +385,18 @@ npm run shoot -- town:midrise --life 25     25s of animals and pedestrians,
 npm run shoot -- biome:plains --glb /os/models/animals/fox.glb@5,-4:Walk~0.4
                                             a candidate model in real light
 
+npm run shoot -- town:downtown biome:forest biome:beach --alt 10,40,120,300
+                                            noclip/helicopter views through the
+                                            real streamer: a row per target
+npm run shoot -- town:suburb --alt 20,80,300 --climb 0
+                                            the same, flown at 60 Hz under the
+                                            frame budget (0 s on the ground: the
+                                            far field not yet built)
+npm run shoot -- town:downtown --alt 120 --far 0
+                                            without the far field, for a before
+
+npm run measure -- far         far-field build cost per slice and per tile, and
+                               the chunk ring it replaces from the air
 npm run measure -- kits        every prop kit: verts, cards, bounding box
 npm run measure -- chunks      build cost and vertex budget, by tier and zone
 npm run measure -- landmarks   site density and the kind mix
@@ -443,6 +471,17 @@ scattered, and no screenshot was ever going to say otherwise.
   walked against 0.7 u/s of progress) unless a turn just taken is allowed to
   finish; and both systems together cost 0.01 ms/frame in open country and
   0.15 ms in the busiest town, against 2520 solids.
+- **From the air, the far field draws the planet and the sky must let it.**
+  `levels/altitude.ts` is the one place that says how the view opens with
+  height, and the game and the harness both call it: the fog opens to the far
+  field's reach, the lens's far plane grows past its rim, and the sky dome
+  (`SkyHandles.setScale`) grows with the lens, because the domes are drawn in
+  the transparent pass with the depth test on and at their built 430 units
+  they hid every tile past them (a sphere centred on the eye projects the
+  same at any radius, so scaling it changes only depth). The look's air takes
+  the same altitude (`airForSky`'s `alt`/`reach`): a height layer so a ray
+  looking down crosses only the top of the haze, and an `edge` where the air
+  takes everything, so the world's rim draws no line.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs
@@ -775,14 +814,20 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   which puts their links in the first frame under the boot cover.
   `npm run film -- props:links` counts `linkProgram` through a spawn of every
   kind, a break of every breakable and a blast: it must print 0 and 0.
-- **Air is not solid, and fire is.** Smoke must not write alpha under one
-  (that is a hole) and must not write depth (the look outlines depth edges,
-  and an outlined puff is a boulder). It dissolves through a Bayer dither on
-  `gl_FragCoord` instead, which in the look's target is whole art pixels.
-  Fire tried the same and read as a screen door: orange balls you could see
-  the street through, their hot heart and edge lost to the pattern. Flame is
-  opaque and depth-writing, shaded in three bands off how squarely it faces
-  the lens (`fx.ts`'s `bandedFire`), and shrinks away instead of thinning.
+- **Fire and smoke are solid.** Nothing may write alpha under the look (that
+  is a hole), and both used to dissolve through a Bayer dither on
+  `gl_FragCoord` instead: fire read as a screen door (orange balls you could
+  see the street through) and smoke as a sparse dot pattern laid over the
+  scene. Both are now opaque and depth-writing, shaded in three bands off
+  how squarely each fragment faces the lens (`fx.ts`'s `banded`), and go by
+  shrinking. Ground dust is a flat lens rather than a ball, or it reads as a
+  stone.
+- **A bang is a light before it is a ball.** For three frames the look's
+  `lights.flash` is hard and wide (1.5x the blast radius), lighting the
+  street, the fronts and the props around it and washing the air, then it
+  falls to the fireball's orange glow; under it, a burst of white-hot balls,
+  flame tongues thrown radially (`jets`) and a fireball about fourteen units
+  across for a barrel.
 - **A blast throws, and it is late.** `explode` sets a velocity change (out,
   50-70 degrees up, tumbling), not an impulse, falling with the square root
   of the mass; blasts a beat apart redirect more than they add. Explosives
@@ -799,15 +844,19 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   out contact pairs is how you get a panic. A blast is hotter than a knock:
   it sets an explosive off at half the blow and lights it at a fifth.
 - **The physgun's hold pays the weight outside its budget.** Every slice the
-  grab point is pulled toward the target on the view ray by a spring solved
+  grab point is pulled toward the target on the view ray (at the distance it
+  was grabbed at, until the wheel says otherwise) by a spring solved
   implicitly (stable at any stiffness, dead still when held still), fed half
-  the target's own velocity (all of it overshoots by 13%), delivered as an
-  impulse capped at an acceleration budget that falls with mass, with the
-  prop's weight paid on top. So the beam always holds a thing up, and what
-  mass costs you is how fast it can be *moved*: a ball snaps onto a flick, a
-  900 kg block trails a swing by five units and sails past where you
-  stopped. `tune()` is the whole feel; `measure physics physgun` prints
-  settle time, overshoot, jitter held still and throw speed per kind.
+  the target's own velocity, delivered as an impulse capped at an
+  acceleration budget that falls with mass, with the prop's weight paid on
+  top. So the beam always holds a thing up, and what mass costs you is how
+  fast it can be *moved*. `tune()` is the whole feel, in three bands: a ball
+  is stiff and critical (settles in 267 ms, flicks at 61 u/s); a crate is
+  underdamped (8% overshoot, a second to settle, a softer orientation spring
+  so it swings on its grab point, flicks at 35 u/s); a 900 kg block drags
+  (trails a swing by 14 units, flicks at 8 u/s), with a small integral term
+  that winds out the sag a soft spring leaves under that much weight.
+  `measure physics physgun` prints all of it per kind.
 - **A throw leaves along the swing's tangent.** Letting go hands the prop
   most of the gap between the beam's speed and its own, so it flies the way
   it was being swung, not where you are looking. The throw film lets go a
@@ -843,6 +892,8 @@ npm run film -- props:turntable        every model four ways round
 npm run film -- props:thumbs           the spawn menu's icons
 npm run film -- props:sounds           every prop sound's peak, next to a footstep
 npm run film -- props:links            shader links on first spawn/break/blast
+npm run drive -- links                 the same count in the real /world: first
+                                       spawn, a break, a fuse and a chain (0)
 
 npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
 
@@ -1145,6 +1196,14 @@ thinner over open country and down a street (`BIOME_AIR`, fed by
 `outsideWorld.biomeAt`); at night the lamps come from every chunk's `lamps`
 list (the streamer's `nearLamps`, the nearest sixteen) and the headlamp rides
 the walker's eye while they are on foot in the overworld.
+
+From the air the air is height-aware (`Air.liftK`, `liftBase`,
+`liftScale`: the optical depth of an exponential haze layer between the eye
+and the surface, rather than plain range) and has an `edge` at the far
+field's rim where it takes everything; a pixel that is nothing but air bands
+with the sky, so the rim is not a dithered seam against it. The silhouette
+ink against the sky fades with what the fog and the air have left of the
+thing, which is what used to draw a ghost skyline on empty haze.
 
 The knobs are `LookKnobs`, `Air` and `FakeLights` (`pixelLook.ts`) and `Grade`
 (`grade.ts`), and all of them are uniforms or a target size, so any of them

@@ -4,7 +4,7 @@ import { supportY } from '../physics/collision'
 import { seeded } from '../core/rand'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
-  B, BODY_Y0, BONE_COUNT, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
+  B, BODY_Y0, BONE_COUNT, BUILD_COUNT, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
   NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, boneRestWorld,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
@@ -451,7 +451,7 @@ export function buildPlayerBody(
     parent.add(o)
     return o
   }
-  const skullC = anchor(head, 0, 0.34, 0)
+  const skullC = anchor(head, 0, 0.34, 0.16) // the head sits forward on the hunch
   const mittL = anchor(handL, 0, -0.1, 0)
   const mittR = anchor(handR, 0, -0.1, 0)
   const soleL = anchor(shinL, 0, -SHIN, 0)
@@ -467,7 +467,7 @@ export function buildPlayerBody(
     everybody's client agrees on how a given player stands, with no extra
     field on the wire.
   */
-  const persona = { lean: 0, roll: 0, tilt: 0, armL: 0, armR: 0 }
+  const persona = { lean: 0, roll: 0, tilt: 0, armL: 0, armR: 0, build: 0 }
   const personaFor = (l: PlayerLook) => {
     let h = 2166136261
     for (const ch of `${l.shell}${l.trim}${l.accent}${l.glow}${l.hat ?? 0}`) {
@@ -483,6 +483,7 @@ export function buildPlayerBody(
     const leftHigh = r() < 0.5
     persona.armL = leftHigh ? hi : lo
     persona.armR = leftHigh ? lo : hi
+    persona.build = h % BUILD_COUNT
   }
   personaFor(look)
 
@@ -491,7 +492,8 @@ export function buildPlayerBody(
   // the geometry is the one for this body's headgear; a repaint that changes
   // hat swaps it (see setLook)
   let hatNow = look.hat ?? 0
-  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow), paint.material)
+  let buildNow = persona.build
+  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow), paint.material)
   mesh.castShadow = true
   mesh.frustumCulled = false // hugs the camera; culling would blink limbs out
   // for callers that do cull it (remote bodies): a fixed sphere round the
@@ -1069,7 +1071,9 @@ export function buildPlayerBody(
       fidgetIn -= dt
       if (fidgetIn <= 0) {
         const r = rnd()
-        fidget = r < 0.3 ? 'stretch' : r < 0.55 ? 'bounce' : r < 0.8 ? 'wave' : 'look'
+        // no waves and no stretches on their own: an arm raised overhead to
+        // the crowd is a mascot's beat. They remain as emotes for a player
+        fidget = r < 0.5 ? 'bounce' : 'look'
         fidgetT = 0
         fidgetForced = false
       }
@@ -1217,7 +1221,10 @@ export function buildPlayerBody(
       lean * 0.5 + airK * 0.12 * fallK + spineLook + jellyPitch * show +
         // in the air the body lags its own flight: rising it tips back,
         // falling it pitches over, rather than stretching into a tube
-        airK * THREE.MathUtils.clamp(-pose.vy * 0.03, -0.4, 0.4),
+        // a lunge, not a hop: in the air the body pitches into its travel
+        // (and forward even from a standing jump), limbs trailing behind
+        airK * (0.3 + THREE.MathUtils.clamp(fwdS * 0.05, -0.2, 0.35) +
+          THREE.MathUtils.clamp(-pose.vy * 0.012, -0.15, 0.15)) * (1 - flyK),
       // standing in the guard the trunk weaves: a slow twist and a lean to
       // one side, so no two frames of an idle are symmetrical
       chestLook - strafeYaw * 0.55 + stepS * 0.14 * gait +
@@ -1361,7 +1368,7 @@ export function buildPlayerBody(
     const dangle = Math.sin(idleT * 1.3) * 0.2 * flyK
     const leadThigh = (-0.55 - fallK * 0.45) * flyN + (-0.32 + dangle) * flyK
     const leadShin = (0.35 + fallK * 0.75) * flyN + 0.75 * flyK
-    const trailThigh = (0.55 - fallK * 0.3) * flyN + (0.18 - dangle) * flyK
+    const trailThigh = (0.95 - fallK * 0.45) * flyN + (0.18 - dangle) * flyK
     const trailShin = (0.25 + fallK * 0.65) * flyN + 0.6 * flyK
     const airSplay = (0.1 + fallK * 0.22) * flyN + 0.15 * flyK
     qInv.copy(pelvis.quaternion).invert()
@@ -1478,8 +1485,10 @@ export function buildPlayerBody(
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
+    // (negative is behind: rising, the arms trail back from the lunge, and
+    // come forward to reach for the ground on the way down)
     const airX =
-      airK * (0.75 + fallK * 0.45) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
+      airK * (-0.45 + fallK * 1.15) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
     // at rest the long arms hang forward like a sleepwalker's, which is where
     // a brawler's goof comes from (and where a grab starts)
     // and standing about they reach, low and forward and never level, each
@@ -2040,9 +2049,10 @@ export function buildPlayerBody(
       personaFor(next)
       paint.setLook(next)
       const hat = next.hat ?? 0
-      if (hat !== hatNow) {
+      if (hat !== hatNow || persona.build !== buildNow) {
         hatNow = hat
-        mesh.geometry = bodyGeometry(hat)
+        buildNow = persona.build
+        mesh.geometry = bodyGeometry(hat, buildNow)
       }
     },
     showHead,

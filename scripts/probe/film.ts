@@ -118,6 +118,15 @@ let renderer: THREE.WebGLRenderer | null = null
 let linkCount = 0
 /** ...and what they were, by three's SHADER_NAME, so a stray link can be found */
 let linked: string[] = []
+/** three's programs at the warm-up, so what came after can be named by its
+    material (a RawShaderMaterial has no SHADER_NAME to read off the source) */
+let warmPrograms = new Set<unknown>()
+const lateMaterials = () => {
+  type Prog = { name: string; cacheKey: string }
+  return ((renderer?.info.programs ?? []) as unknown as Prog[])
+    .filter((p) => !warmPrograms.has(p))
+    .map((p) => p.name || p.cacheKey.split(',').slice(0, 2).join('/').slice(0, 60))
+}
 /** the look's internal lines, for anything sized in pixels */
 let lookLines = 540
 /** the game's own post pass, so a film is judged through the real look */
@@ -289,12 +298,18 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   sb.tick({ dt: 0, active: true, focus: { x: c.x, y: c.y, z: c.z } })
   // ...and a render side's staged warm-up is drawn once and put away, the
   // way CrtScene's boot cover does it; links are counted from here on
-  if (pres && renderer) {
+  // The first frame is always drawn before the count starts, as the game's
+  // boot cover draws its warm-up frame: compileAsync links the main pass
+  // only, so the shadow pass's depth programs and the look's own three
+  // were linking on the first still and being reported as late links. What
+  // is counted after this is what a first use in the game would link
+  if (renderer) {
     draw(renderer, stage)
-    pres.warmed?.()
+    pres?.warmed?.()
   }
   linkCount = 0
   linked = []
+  warmPrograms = new Set(renderer?.info.programs ?? [])
   return stage
 }
 
@@ -387,6 +402,8 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
     look = createPixelLook(renderer)
     // an exact 2x of whatever one frame is drawn at, as the shoot does
     look.knobs.lines = lines
+    // and its programs linked now, as CrtScene does under its cover
+    look.compile()
   }
   renderer.shadowMap.enabled = true
   renderer.shadowMap.type = THREE.PCFShadowMap
@@ -466,6 +483,33 @@ const label = (x: number, y: number, text: string, big = false) => {
   labels.appendChild(d)
 }
 
+/*
+  The crosshair over a first-person film, drawn the way the game draws it
+  (components/os/Crosshair.tsx: a 13-cell bitmap, four ticks with a dark
+  rim and a centre dot, stepping out a cell and changing colour when the aim
+  is on something). Mirrored here because the harness has no React; keep
+  the two in step.
+*/
+const CROSS_TINT = { none: '#f3ead6', prop: '#c0705c', held: '#8fd0ff', frozen: '#7fb2ff' } as const
+const crosshair = (cx: number, cy: number, aim: keyof typeof CROSS_TINT, scale: number) => {
+  const out = aim === 'none' ? 0 : 1
+  const ticks = [[6, 1 - out, 1, 3], [6, 9 + out, 1, 3], [1 - out, 6, 3, 1], [9 + out, 6, 3, 1]]
+  const fill = CROSS_TINT[aim]
+  const size = 13 * scale
+  const rim = 'rgba(28,22,16,0.75)'
+  const cells = [
+    ...ticks.map(([x, y, w, h]) => `<rect x="${x - 0.5}" y="${y - 0.5}" width="${w + 1}" height="${h + 1}" fill="${rim}"/>`),
+    `<rect x="5.5" y="5.5" width="2" height="2" fill="${rim}"/>`,
+    ...ticks.map(([x, y, w, h]) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}"/>`),
+    `<rect x="6" y="6" width="1" height="1" fill="${fill}"/>`,
+  ].join('')
+  const d = document.createElement('div')
+  d.style.cssText = `position:absolute;left:${cx - size / 2}px;top:${cy - size / 2}px;width:${size}px;height:${size}px`
+  d.innerHTML = `<svg width="${size}" height="${size}" viewBox="-1 -1 15 15" shape-rendering="crispEdges">${cells}</svg>`
+  labels.appendChild(d)
+}
+const crossScale = (h: number) => Math.max(1, Math.round(h / 180))
+
 const median = (a: number[]) => {
   if (!a.length) return 0
   const s = [...a].sort((x, y) => x - y)
@@ -490,6 +534,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     r.setScissor(col * tw, (rows - row - 1) * th, tw, th)
     prep(st, t)
     draw(r, st)
+    if (st.pres?.aim) crosshair(col * tw + tw / 2, row * th + th / 2, st.pres.aim(), crossScale(th))
     if (spec.labels !== false) {
       label(col * tw + 8, row * th + th - 30, `t = ${t.toFixed(2)} s`)
       if (i === 0) label(col * tw + 8, row * th + 8, `${st.s.id}: ${st.s.title}`, true)
@@ -526,7 +571,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     msPerFrame: median(st.ticks),
     frames: spec.frames,
     links: linkCount,
-    linked: linked.join(', '),
+    linked: `${linked.join(', ')} [materials: ${lateMaterials().join(', ')}]`,
     from: st.cam.userData.shot.from.map((n: number) => Math.round(n * 10) / 10),
     to: st.cam.userData.shot.to.map((n: number) => Math.round(n * 10) / 10),
     fov: st.cam.userData.shot.fov,
@@ -561,6 +606,7 @@ export const videoFrame = () => {
   prep(st, t)
   draw(renderer, st)
   labels.innerHTML = ''
+  if (st.pres?.aim) crosshair(size.x / 2, size.y / 2, st.pres.aim(), crossScale(size.y))
   if (videoLabels) label(8, size.y - 30, `${st.s.id}  t = ${t.toFixed(2)} s`)
   vFrame++
   return true
@@ -694,6 +740,7 @@ export const sounds = async () => {
   for (const s of ['wood', 'glass', 'melon'] as const) await put(`${s} break`, () => S.breakSound(s, 1, 2, 0, 0))
   await put('boom at 4 units', () => S.boom(1, 4, 0, 0))
   await put('boom at 30 units', () => S.boom(1, 30, 0, 0))
+  await put('boom at 100 units', () => S.boom(1, 100, 0, 0))
   await put('ignite, and a second of sputter', () => S.igniteSound(2, 0, 0, 1))
   // the references: core/sfx.ts's own one-shots, the mix the prop sounds
   // have to sit in. sfx.ts keeps the first context it is handed for good, so

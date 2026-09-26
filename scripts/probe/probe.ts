@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
-import { makeChunkMats } from '../../src/game/world/streamer'
+import { buildWorld, makeChunkMats } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
 import { SEA_Y, sampleAt, terrainY } from '../../src/game/world/terrain'
 import { landmarkIn, type LandmarkKind } from '../../src/game/world/landmarks'
@@ -19,6 +19,9 @@ import {
   BIOME_AIR, airForSky, lightsForSky, nearestLamps,
 } from '../../src/game/render/atmosphere'
 import type { SkyState } from '../../src/game/levels/sky'
+import { altitudeOf, domeScaleFor, fogForAltitude, viewFarFor } from '../../src/game/levels/altitude'
+import { windUniforms } from '../../src/game/world/wind'
+import { gfx } from '../../src/game/world/quality'
 
 /*
   The world, rendered off to one side so it can be photographed.
@@ -102,6 +105,15 @@ export interface ShotSpec {
       `day` / `night` objects overriding the grade presets (render/grade.ts).
       For tuning the look without an edit-reload cycle */
   look?: Record<string, unknown>
+  /** altitudes: each target is shot from each of these heights over its
+      ground, through the real streamer (see altTile). A row per target */
+  alts?: number[]
+  /** far-field rings for altitude tiles (world/quality.ts's farLevels);
+      0 draws the world without one */
+  farLevels?: number
+  /** with `alts`: fly it instead of placing it (see climbRow). Seconds on
+      the ground before take-off */
+  climb?: number
 }
 
 export interface Prop {
@@ -130,6 +142,10 @@ export interface ShotResult {
       from a street whose crowd all spawned behind the camera */
   animals?: number
   people?: number
+  /** altitude tiles: meshes drawn (after frustum culling is not counted) */
+  draws?: number
+  /** altitude tiles: what the far field holds */
+  far?: { tiles: number; verts: number; tris: number; pending: number; reach?: number; worstMs?: number; fog?: number[]; camFar?: number; alt?: number }
 }
 
 /* ------------------------------------------------------------- searching -- */
@@ -211,8 +227,12 @@ const resolveAllLandmarks = () => landmarkRings(() => true, 9)
 const HEMI_ROAM = 1.5
 const noop = () => {}
 
-export const lightFor = (scene: THREE.Scene, tod: Tod, cam: THREE.Vector3) => {
+/** the sky the last lightFor built, for a climb that re-dresses it per frame */
+let lastSky: ReturnType<typeof buildSky> | null = null
+export const lightFor = (scene: THREE.Scene, tod: Tod, cam: THREE.Vector3, far = 900) => {
   const sky = buildSky({ parent: scene, trackTexture: noop, trackDisposable: noop })
+  lastSky = sky
+  sky.setScale(domeScaleFor(far))
   const st = sky.update(cam, tod)
   // sky.ts only asks for a sun map while the sun is strong enough to cast
   // one, and CrtScene bakes it once under the boot cover regardless. A still
@@ -245,7 +265,7 @@ const lampD2 = new Float32Array(16)
 const sunDir = new THREE.Vector3()
 export const dressLook = (
   look: PixelLook, scene: THREE.Scene, st: SkyState, cam: THREE.Camera,
-  biome: string | null, lamps: number[] = [], headlamp = true,
+  biome: string | null, lamps: number[] = [], headlamp = true, alt = 0, reach = 0,
 ) => {
   look.setMood(st.night * (1 - st.twilight))
   let sun: THREE.DirectionalLight | null = null
@@ -256,7 +276,10 @@ export const dressLook = (
   })
   const s = sun as THREE.DirectionalLight | null
   if (s) sunDir.subVectors(s.position, s.target.position).normalize()
-  airForSky(look.air, st, BIOME_AIR[biome ?? ''] ?? 1, sunDir, s ? s.color : new THREE.Color())
+  airForSky(
+    look.air, st, BIOME_AIR[biome ?? ''] ?? 1, sunDir, s ? s.color : new THREE.Color(),
+    alt, reach, SEA_Y,
+  )
   cam.updateMatrixWorld()
   const cp = cam.getWorldPosition(new THREE.Vector3())
   const n = nearestLamps(cp.x, cp.z, lamps, lamps.length / 3, lampPick, 16, lampD2)
@@ -404,14 +427,204 @@ const disposeTiles = () => {
   tiles = []
 }
 
+/*
+  The view from the air: noclip, or the helicopter.
+
+  Every other tile here is a fixed neighbourhood of chunks built once, which
+  is honest at a walker's eye and a lie from a hundred units up, where what
+  the frame is made of is the streamer's own decisions: how far the ring
+  reaches at this height, which tier each ring gets, what stands past it,
+  and how the fog and the air open up. So an altitude tile runs the real
+  streamer (`buildWorld`) at the camera, primes the whole ring with no frame
+  budget, settles every fade, and dresses the sky, the fog and the look
+  through the same altitude module the game uses (levels/altitude.ts).
+
+  The camera stands `alt` over the target's ground, backed off along the
+  bearing and pitched down a fixed sixteen degrees: the horizon sits in the
+  top quarter of the frame and the target in the lower third, which is how
+  anybody actually flies in noclip.
+*/
+const ALT_PITCH = 0.28
+const altTile = (
+  spec: ShotSpec, x: number, z: number, label: string, alt: number,
+  tw: number, th: number, index: number,
+): ShotResult => {
+  const r = renderer!
+  const scene = new THREE.Scene()
+  const gy = terrainY(x, z)
+  const back = Math.max(10, alt / Math.tan(0.63))
+  const cam = new THREE.PerspectiveCamera(58, tw / th, 0.2, 900)
+  // a low camera downtown can land inside a tower: swing the bearing round
+  // to the first one whose lens is in the open (the chunk under the lens is
+  // built for its boxes and thrown away; the real ring is built below)
+  const mats = makeChunkMats(noop, noop)
+  let yaw = spec.yaw
+  for (const off of [0, 1.05, -1.05, 2.1, -2.1, Math.PI]) {
+    yaw = spec.yaw + off
+    const px = x + Math.cos(yaw) * back
+    const pz = z + Math.sin(yaw) * back
+    const c = buildChunk(chunkX(px), chunkZ(pz), 'bare', mats)
+    const p = new THREE.Vector3(px, gy + alt, pz)
+    const inside = c.boxes.some((b) => b.clone().expandByScalar(2).containsPoint(p))
+    for (const g of c.geos) g.dispose()
+    if (!inside) break
+  }
+  cam.position.set(x + Math.cos(yaw) * back, gy + alt, z + Math.sin(yaw) * back)
+  cam.lookAt(
+    cam.position.x - Math.cos(yaw) * Math.cos(ALT_PITCH),
+    cam.position.y - Math.sin(ALT_PITCH),
+    cam.position.z - Math.sin(yaw) * Math.cos(ALT_PITCH),
+  )
+  const camAlt = altitudeOf(cam.position.y, terrainY(cam.position.x, cam.position.z))
+  // --far 0 is the world as it was before the far field: the wide ring and
+  // the old fog ramp, for a before and after
+  const farWas = gfx.farLevels
+  if (spec.farLevels !== undefined) gfx.farLevels = spec.farLevels
+  const world = buildWorld({
+    scene, obstacles: [], trackTexture: noop, trackDisposable: noop,
+  })
+  gfx.farLevels = farWas
+  // the first update plans the far field and picks the ring for this height;
+  // the far field is then built whole (a game spreads it over frames), the
+  // ring re-picked now that it exists, and primed with no frame budget
+  world.update(cam.position.x, cam.position.z, 1 / 60, camAlt)
+  world.primeFar(cam.position.x, cam.position.z, camAlt, 1e5)
+  world.update(cam.position.x, cam.position.z, 1 / 60, camAlt)
+  world.prime(cam.position.x, cam.position.z, 1e9)
+  // every chunk dissolves in over world/fade.ts's FADE_S from its birth
+  // stamp; a still frame wants them all arrived, and the far field's mask
+  // wants to know they have
+  windUniforms.uTime.value += 30
+  world.update(cam.position.x, cam.position.z, 0, camAlt)
+  const reach = world.farReach(cam.position.x, cam.position.z)
+  cam.far = viewFarFor(camAlt, reach)
+  cam.updateProjectionMatrix()
+  const st = lightFor(scene, spec.tod, cam.position, cam.far)
+  fogForAltitude(st, camAlt, reach)
+  const fog = scene.fog as THREE.Fog
+  fog.near = st.fogNear
+  fog.far = st.fogFar
+  world.setNight(st.night)
+  world.setWaterTint(st.fogColor, st.day)
+  if (look) {
+    const lampBuf = new Float32Array(16 * 3)
+    const n = world.nearLamps(cam.position.x, cam.position.z, lampBuf, 16)
+    dressLook(
+      look, scene, st, cam, airGround(cam.position.x, cam.position.z),
+      Array.from(lampBuf.subarray(0, n * 3)), false, camAlt, reach,
+    )
+  }
+  tiles.push({ scene, cam, chunks: [] })
+  if (look) look.render(scene, cam)
+  else r.render(scene, cam)
+  const err = r.getContext().getError()
+  if (err && !lastGlError) lastGlError = `0x${err.toString(16)} on tile ${index} (${label})`
+  const s = sampleAt(x, z)
+  let verts = 0
+  let draws = 0
+  scene.traverseVisible((o) => {
+    const m = o as THREE.Mesh
+    if (!m.isMesh) return
+    draws++
+    verts += m.geometry.getAttribute('position')?.count ?? 0
+  })
+  return {
+    label, x: Math.round(x), z: Math.round(z), y: Math.round(gy * 10) / 10,
+    biome: s.biome, district: s.place.district, verts, draws,
+    far: { ...world.farStats(), reach: Math.round(reach), fog: [Math.round(fog.near), Math.round(fog.far)], camFar: Math.round(cam.far), alt: Math.round(camAlt) },
+  }
+}
+
+/*
+  A climb, as the game plays it: one streamer, ticked a sixtieth of a second
+  at a time under its real frame budget, with the wind clock (and so every
+  chunk's fade) running. The camera stands at the target's eye line for
+  `climb` seconds (the far field builds in the background there, the way it
+  does while somebody walks), then rises at 30 u/s while drifting forward at
+  20, and a frame is photographed as it passes each of `alts`. With
+  `--climb 0` it takes off at once, which is the worst case: nothing past
+  the ring is built yet, and the frames show what stands in meanwhile.
+*/
+const climbRow = (
+  spec: ShotSpec, x: number, z: number, label: string,
+  tw: number, th: number, row: number, canvasH: number,
+): ShotResult[] => {
+  const r = renderer!
+  const scene = new THREE.Scene()
+  const world = buildWorld({ scene, obstacles: [], trackTexture: noop, trackDisposable: noop })
+  const cam = new THREE.PerspectiveCamera(58, tw / th, 0.2, 900)
+  const yaw = spec.yaw
+  const fx = -Math.cos(yaw)
+  const fz = -Math.sin(yaw)
+  let px = x
+  let pz = z
+  let alt = 3.84
+  const dt = 1 / 60
+  world.update(px, pz, dt, alt)
+  world.prime(px, pz, 200)
+  lightFor(scene, spec.tod, new THREE.Vector3(px, terrainY(px, pz) + alt, pz))
+  const sky = lastSky!
+  const out: ShotResult[] = []
+  const alts = [...(spec.alts ?? [])].sort((a, b) => a - b)
+  let next = 0
+  let t = 0
+  let worst = 0
+  while (next < alts.length && t < 120) {
+    const flying = t >= (spec.climb ?? 0)
+    if (flying) {
+      alt += 30 * dt
+      px += fx * 20 * dt
+      pz += fz * 20 * dt
+    }
+    const t0 = performance.now()
+    world.update(px, pz, dt, alt)
+    worst = Math.max(worst, performance.now() - t0)
+    t += dt
+    if (!flying || alt < alts[next]) continue
+    const gy = terrainY(px, pz)
+    cam.position.set(px, gy + alt, pz)
+    cam.lookAt(px + fx * Math.cos(ALT_PITCH), gy + alt - Math.sin(ALT_PITCH), pz + fz * Math.cos(ALT_PITCH))
+    const reach = world.farReach(px, pz)
+    cam.far = viewFarFor(alt, reach)
+    cam.updateProjectionMatrix()
+    const st = sky.update(cam.position, spec.tod)
+    sky.setScale(domeScaleFor(cam.far))
+    sky.sun.shadow.needsUpdate = true
+    fogForAltitude(st, alt, reach)
+    const fog = scene.fog as THREE.Fog
+    fog.near = st.fogNear
+    fog.far = st.fogFar
+    world.setNight(st.night)
+    world.setWaterTint(st.fogColor, st.day)
+    if (look) {
+      dressLook(look, scene, st, cam, airGround(px, pz), [], false, alt, reach)
+    }
+    r.setViewport(next * tw, canvasH - (row + 1) * th, tw, th)
+    r.setScissor(next * tw, canvasH - (row + 1) * th, tw, th)
+    if (look) look.render(scene, cam)
+    else r.render(scene, cam)
+    tiles.push({ scene, cam, chunks: [] })
+    const s = sampleAt(px, pz)
+    out.push({
+      label: `${label} climb @${alts[next]} t=${t.toFixed(1)}s`,
+      x: Math.round(px), z: Math.round(pz), y: Math.round(gy),
+      biome: s.biome, district: s.place.district, verts: 0,
+      far: { ...world.farStats(), reach: Math.round(reach), worstMs: Math.round(worst * 10) / 10 },
+    })
+    next++
+  }
+  return out
+}
+
 export const shoot = (spec: ShotSpec): ShotResult[] => {
   const canvas = document.getElementById('c') as HTMLCanvasElement
   const list = spec.targets.length === 1 && spec.targets[0].kind === 'landmark'
     && spec.targets[0].arg === '*'
     ? resolveAllLandmarks()
     : spec.targets.map(resolve)
-  const cols = Math.min(spec.cols, list.length)
-  const rows = Math.ceil(list.length / cols)
+  const count = list.length * Math.max(1, spec.alts?.length ?? 0)
+  const cols = spec.alts?.length ? spec.alts.length : Math.min(spec.cols, count)
+  const rows = Math.ceil(count / cols)
   const [tw, th] = spec.tile
   canvas.width = tw * cols
   canvas.height = th * rows
@@ -454,6 +667,28 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     spec.tod < 0.22 || spec.tod > 0.78 ? 1 : 0
 
   const out: ShotResult[] = []
+  if (spec.alts?.length && spec.climb !== undefined) {
+    list.forEach((t, row) => {
+      out.push(...climbRow(spec, t.x, t.z, t.label, tw, th, row, canvas.height))
+    })
+    return out
+  }
+  if (spec.alts?.length) {
+    // targets down the rows, altitudes across: `--alt 10,40,120,300` over
+    // three places is one sheet a critic can read left to right as a climb
+    let i = 0
+    for (const t of list) {
+      for (const alt of spec.alts) {
+        const col = i % cols
+        const row = Math.floor(i / cols)
+        renderer.setViewport(col * tw, canvas.height - (row + 1) * th, tw, th)
+        renderer.setScissor(col * tw, canvas.height - (row + 1) * th, tw, th)
+        out.push(altTile(spec, t.x, t.z, `${t.label} @${alt}`, alt, tw, th, i))
+        i++
+      }
+    }
+    return out
+  }
   for (let i = 0; i < list.length; i++) {
     const { x, z, label } = list[i]
     const scene = new THREE.Scene()

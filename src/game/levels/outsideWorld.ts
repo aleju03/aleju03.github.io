@@ -5,6 +5,7 @@ import type { GrabHandle } from '../world/pedestrians'
 import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { YARD } from './houseWorld'
+import { domeScaleFor, fogForAltitude, viewFarFor } from './altitude'
 
 /*
   Everything past the property line: the sky above it (sky.ts) and the endless
@@ -129,6 +130,10 @@ export interface OutsideHandles {
       room tier. The look thickens its air over woods and wetland and thins
       it over open country and down a street */
   biomeAt: (x: number, z: number) => string | null
+  /** the camera's height over the ground at the last update, how far the
+      far field reached past it, and the far plane that wants: the look's
+      air and CrtScene's lens both read these */
+  readonly view: { readonly alt: number; readonly reach: number; readonly far: number }
   /** fetch the world modules without building them; free to call early */
   preloadWorld: () => void
   /**
@@ -297,6 +302,8 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   }
 
   let active = true
+  /** what the last update saw from the camera, for the look and the lens */
+  const view = { alt: 0, reach: 0, far: viewFarFor(0) }
 
   let lastT = 0
   const groundBase = new THREE.Color('#6f7d4a')
@@ -304,6 +311,12 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
 
   const update = (camPos: THREE.Vector3, todOverride?: number) => {
     const state = sky.update(camPos, todOverride)
+    view.alt = 0
+    view.reach = 0
+    view.far = viewFarFor(0)
+    // (the sky follows the lens: see SkyHandles.setScale; reset here and
+    // grown again below when the world reports a far field in view)
+    if (!(active && w)) sky.setScale(1)
     // the stand-in is unlit, so nothing in the light rig darkens it at dusk;
     // track the day cycle by hand or it stays noon-bright under a night sky
     if (!w) placeholderMat.color.copy(groundBase).multiplyScalar(0.16 + 0.84 * state.day)
@@ -336,11 +349,18 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       w.birds.update(camPos, dt, state.day, state.twilight)
       w.fauna.update(camPos, dt)
       w.pedestrians.update(camPos, dt)
-      if (alt > 20) {
-        const k = Math.min(1, (alt - 20) / 100)
-        state.fogNear *= 1 + k * 0.5
-        state.fogFar *= 1 + k * 0.55
-      }
+      /*
+        From the air the far field (world/farfield.ts) draws the planet past
+        the ring, and the fog opens out to its rim; the look's air takes the
+        same altitude and reach (see `view` below), so what was a white wall
+        from a hundred units up is a town and its hills to the horizon.
+      */
+      const reach = w.world.farReach(camPos.x, camPos.z)
+      fogForAltitude(state, alt, reach)
+      view.alt = alt
+      view.reach = reach
+      view.far = viewFarFor(alt, reach)
+      sky.setScale(domeScaleFor(view.far))
       // windows and streetlamps come up with the dark; the water takes its
       // colour from the fog, which is most of what makes it read as water
       w.world.setNight(state.night)
@@ -395,6 +415,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       return s.place.district ? 'town' : s.biome
     },
     preloadWorld: () => void loadMods(),
+    view,
     attachWorld,
   }
 }

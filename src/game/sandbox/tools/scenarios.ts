@@ -22,7 +22,7 @@ import { emptyInput, type RigEntry, type ToolInput } from './types'
   physics measured (`npm run measure -- physics physgun`) are the same run.
 
     npm run film -- sandbox:physgun-swing       lift a crate and swing it round in an arc, freeze it mid-air
-    npm run film -- sandbox:physgun-rotate      E + mouse turns it, Shift snaps it square, freeze, R drops it
+    npm run film -- sandbox:physgun-rotate      E + mouse turns it, Shift snaps it to 45 degrees, freeze, R drops it
     npm run film -- sandbox:physgun-heavy       the 900 kg block lagging a swing and sailing past
     npm run film -- sandbox:physgun-throw       a barrel flung off the beam into a stack of crates
     npm run film -- sandbox:physgun-ragdoll     a body picked up by the head, pinned in the air, let down
@@ -177,8 +177,18 @@ const presentFor = (third: boolean) => (c: ScenarioCtx, scene: THREE.Scene, cam:
   }
   // the covered compile and first draw, as the game's boot cover does it
   r.tb.stage(cam)
+  let lastT = 0
+  const aimDir = new THREE.Vector3()
   return {
+    // what the game's crosshair would say: holding, or what the ray is on
+    aim: third ? undefined : () => {
+      if (r.tb.physgun.holding) return 'held' as const
+      const [yaw, pitch] = r.script.look(lastT)
+      const hit = c.sb.raycast(r.eye, dirOf(yaw, pitch, aimDir), 150, { world: false })
+      return hit?.prop ? (hit.prop.mode === 'frozen' ? 'frozen' as const : 'prop' as const) : 'none' as const
+    },
     frame: (t: number, dt: number, lines: number) => {
+      lastT = t
       const [yaw, pitch] = r.script.look(t)
       if (body) {
         body.group.position.set(r.eye.x, r.eye.y - EYE, r.eye.z)
@@ -243,10 +253,10 @@ gunScenario({
   name: 'swing',
   title: 'lift a crate on the beam, swing it round in an arc, freeze it mid-air',
   duration: 6,
-  tp: { back: 12, side: 7, up: 3.2, ahead: 6, lift: 1.2, fov: 62 },
+  tp: { back: 10, side: 6, up: 3, ahead: 7, lift: 1.4, fov: 60 },
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
-    const D = 12
+    const D = 15
     const cx = c.x + c.dx * D
     const cz = c.z + c.dz * D
     const cy = c.sb.restY('crate', cx, cz)
@@ -366,7 +376,7 @@ gunScenario({
   tp: { back: 12, side: 7, up: 3.2, ahead: 6, lift: 0.8, fov: 62 },
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
-    const D = 10
+    const D = 13
     const bx = c.x + c.dx * D
     const bz = c.z + c.dz * D
     const by = c.sb.restY('block', bx, bz)
@@ -404,7 +414,7 @@ const ROWS = 4
 const T0 = 1.9
 // tuned headless (`npm run measure -- physics physgun`): the sweep's
 // length, how far into it the trigger is let go, and how much it rises
-const REL = 0.155
+const REL = 0.19
 const SWEEP = 0.35
 const LOFT = 0.3
 
@@ -420,7 +430,7 @@ gunScenario({
     // the stack, a tower of crates two wide and four high, well ahead and a
     // little right, where the barrel's arc lets go toward it
     const h = 2.42
-    const D = 21
+    const D = 16
     const wx = c.x + c.dx * D + nx * 4
     const wz = c.z + c.dz * D + nz * 4
     const base = c.sb.restY('crate', wx, wz)

@@ -359,24 +359,32 @@ export const boom = (power: number, x: number, y: number, z: number) => {
   const now = a.currentTime
   if ((lastBy.get('boom') ?? -1) > now - 0.04) return
   lastBy.set('boom', now)
-  const pl = place(a, x, y, z, 0.31 * Math.sqrt(k), 45)
+  // distance is most of what makes a bang read as near or far, so it falls
+  // off hard (a quarter of the level at 30 units, a twentieth at 100, where
+  // the reach was once 45 units and a bang down the street peaked at two
+  // thirds of one beside you) and loses its top end with it: close up a
+  // crack, down the block a thud, across town a low roll
+  const pl = place(a, x, y, z, 0.35 * Math.sqrt(k), 14)
   if (!pl) return
-  // the further away, the less of the crack and the more of the rumble
   const lp = a.createBiquadFilter()
   lp.type = 'lowpass'
-  lp.frequency.value = Math.max(700, 16000 / (1 + pl.d / 30))
+  lp.frequency.value = Math.max(380, 12000 / (1 + pl.d / 8))
   lp.Q.value = 0.5
   pl.head.connect(lp).connect(bus)
   const o: Out = { a, node: pl.out, at: now + pl.d / 800 }
-  burst(o, 'highpass', 1400, 0.6, 0.7, 0.06)
+  const near = Math.max(0, 1 - pl.d / 60)
+  if (near > 0) burst(o, 'highpass', 1400, 0.6, 0.7 * near, 0.06)
   burst(o, 'lowpass', 3200, 0.6, 1, 1.5 * k, 0.002, 140)
   mode(o, 78, 1, 0.7 * k, 0, 0.38)
   mode(o, 46, 0.7, 0.9 * k, 0.01, 0.6)
-  burst(o, 'bandpass', 190, 0.7, 0.4, 2.4 * k, 0.05)
-  // debris pattering down afterwards
-  for (let i = 0; i < 7; i++) {
-    const t = 0.35 + Math.random() * 1.1
-    burst(o, 'bandpass', 700 + Math.random() * 1500, 1.4, 0.12, 0.04, t)
+  // the far rumble rolls on longer than the near one
+  burst(o, 'bandpass', 190, 0.7, 0.4, (2.4 + pl.d / 40) * k, 0.05)
+  // debris pattering down afterwards, heard only close by
+  if (pl.d < 40) {
+    for (let i = 0; i < 7; i++) {
+      const t = 0.35 + Math.random() * 1.1
+      burst(o, 'bandpass', 700 + Math.random() * 1500, 1.4, 0.12 * near, 0.04, t)
+    }
   }
 }
 
