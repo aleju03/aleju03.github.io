@@ -1088,6 +1088,12 @@ const PROBES: Array<[number, number]> = [
   [-SKID_X, SKID_Z1],
 ]
 
+/** the two chairs: the seated face, either side of the centreline */
+const SEAT_X = 0.7
+const SEAT_Y = 2.72
+const SEAT_Z = -0.5
+const SEAT_FIT = 0.78
+
 export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   const model = buildModel(opts.mats)
   const root = model.root
@@ -1096,7 +1102,12 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   // same height by construction
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(-0.8, 2.55, 0.06)
+  // forward of where the robot sat: the character is deeper through the
+  // chest and its backpack went into the engine cowling at z 0.06. `fit`
+  // is how far `sit()` folds a body smaller about its eye to clear the
+  // cabin floor (see playerBody's CABIN_FIT)
+  driverSeat.position.set(SEAT_X * -1, SEAT_Y, SEAT_Z)
+  driverSeat.userData.fit = SEAT_FIT
   root.add(driverSeat)
   // the right-hand seat. This was always a two-seat piston machine — the
   // rotor was sized for one (see registry.ts on the clear disc at home) —
@@ -1104,7 +1115,8 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   // about the cabin has to change to hold somebody
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(0.8, 2.55, 0.06)
+  passengerSeat.position.set(SEAT_X, SEAT_Y, SEAT_Z)
+  passengerSeat.userData.fit = SEAT_FIT
   root.add(passengerSeat)
   const pos = root.position
 
@@ -1467,8 +1479,8 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
       stretch: 4,
       fov: 60,
       anchor: new THREE.Vector3(0, 2.6, 1.0),
-      eye: new THREE.Vector3(-0.8, 2.55, -0.7),
-      eye2: new THREE.Vector3(0.8, 2.55, -0.7),
+      eye: new THREE.Vector3(-SEAT_X, SEAT_Y, SEAT_Z - 0.2),
+      eye2: new THREE.Vector3(SEAT_X, SEAT_Y, SEAT_Z - 0.2),
     },
     size: SIZE,
     hull: HULL,

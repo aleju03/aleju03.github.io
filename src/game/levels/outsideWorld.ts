@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
+import type { ImpactWatch } from '../player/impacts'
 import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { YARD } from './houseWorld'
@@ -108,6 +109,9 @@ export interface OutsideHandles {
       near it; null for a chunk not built (or no world yet). The sandbox's
       props read the world's solids through this */
   chunkSolids: (cx: number, cz: number) => readonly Solid[] | null
+  /** let the movers an impact watch is tracking knock the town's
+      pedestrians over. A no-op until the world is attached */
+  knockPeople: (watch: ImpactWatch) => void
   /** fetch the world modules without building them; free to call early */
   preloadWorld: () => void
   /**
@@ -362,6 +366,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     prime: (x, z, ms) => w?.world.prime(x, z, ms),
     hasWorld: () => w !== null,
     chunkSolids: (cx, cz) => (w ? w.world.solidsIn(cx, cz) : null),
+    knockPeople: (watch) => w?.pedestrians.knock(watch),
     preloadWorld: () => void loadMods(),
     attachWorld,
   }

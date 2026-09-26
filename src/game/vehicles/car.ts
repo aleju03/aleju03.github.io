@@ -1146,6 +1146,12 @@ export interface CarOpts {
   mats: VehicleMaterials
 }
 
+/** the seated face in either front seat, and how far `sit()` folds a body
+    smaller about it (playerBody's CABIN_FIT). Lower than the robot's 2.05:
+    the character's beanie stood up through the headliner there */
+const SEAT_EYE_Y = 1.9
+const SEAT_FIT = 0.8
+
 export function buildCar(opts: CarOpts): Vehicle {
   const { mats } = opts
   const slots = mats.slots
@@ -1723,21 +1729,23 @@ export function buildCar(opts: CarOpts): Vehicle {
      body instead of staying uncannily level while the car moves underneath.
 
      Its y is the seated body's *face*, not its hips (`playerBody.sit()`
-     hangs the fold from the eye), which is why it is the same 2.05 the
+     hangs the fold from the eye), which is why it is the same SEAT_EYE_Y the
      cockpit lens below uses: the lens sits at the avatar's face, so the two
-     numbers were always meant to be one. The hips end up around 0.4, sunk
-     through a cushion drawn at 1.00. This cabin is 1.65 tall inside and a
-     body is 2.06 from hip to crown, so something has to give, and the head
-     under the headliner is the half that anyone can see. */
+     numbers were always meant to be one. This cabin is 1.65 tall inside and
+     the character is a good deal more than that from seat to crown, so the
+     seat carries a `fit` that folds the seated body smaller about its eye
+     (playerBody's CABIN_FIT) until it clears both the floor and the roof. */
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(DX, 2.05, 0.62)
+  driverSeat.position.set(DX, SEAT_EYE_Y, 0.62)
+  driverSeat.userData.fit = SEAT_FIT
   body.add(driverSeat)
   // the other side of the same bench: this is left-hand drive, so the mirror
   // of the driver's centreline is the passenger's
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(-DX, 2.05, 0.62)
+  passengerSeat.position.set(-DX, SEAT_EYE_Y, 0.62)
+  passengerSeat.userData.fit = SEAT_FIT
   body.add(passengerSeat)
   root.add(body)
 
@@ -2409,8 +2417,8 @@ export function buildCar(opts: CarOpts): Vehicle {
       stretch: 3.5,
       fov: 62,
       anchor: new THREE.Vector3(0, 1.7, 0.2),
-      eye: new THREE.Vector3(-0.78, 2.05, 0.35),
-      eye2: new THREE.Vector3(0.78, 2.05, 0.35),
+      eye: new THREE.Vector3(-0.78, SEAT_EYE_Y, 0.35),
+      eye2: new THREE.Vector3(0.78, SEAT_EYE_Y, 0.35),
     },
     size: SIZE,
     hull: HULL,

@@ -16,6 +16,7 @@ import {
   randomLook,
   type PlayerLook,
 } from '../../game/player/look'
+import { useI18n } from '../../i18n'
 
 /*
   Who you are in the shared world, and what you look like while being it: the
@@ -133,8 +134,8 @@ function BodyPreview({ look, active }: { look: PlayerLook; active: boolean }) {
     const pivot = new THREE.Group()
     scene.add(pivot)
     const rig = buildPlayerBody(PREVIEW_EYE, 34, look)
-    // The body is modelled facing +Z — visor, belly screen and toe caps all
-    // point that way — so with the camera on +Z it needs no turn at all. The
+    // The body is modelled facing +Z (face, headlamp and boot toes all
+    // point that way), so with the camera on +Z it needs no turn at all. The
     // scene's `facing + Math.PI` is not the same thing and must not be copied
     // here: that π converts a compass yaw, where 0 means -Z, and applying it
     // to a preview shows you the back of your own head.
@@ -222,7 +223,9 @@ function BodyPreview({ look, active }: { look: PlayerLook; active: boolean }) {
       scene.traverse((o) => {
         const m = o as THREE.Mesh
         if (!m.isMesh) return
-        m.geometry.dispose()
+        // the body's geometry is shared by every body in the session (the
+        // world's included), so it is not this preview's to throw away
+        if (!m.geometry.userData.shared) m.geometry.dispose()
         const mat = m.material
         if (Array.isArray(mat)) mat.forEach((x) => x.dispose())
         else mat.dispose()
@@ -235,7 +238,7 @@ function BodyPreview({ look, active }: { look: PlayerLook; active: boolean }) {
       renderer.domElement.remove()
     }
     // built once; repaints go through the effect below, which costs four
-    // Color.set() calls rather than a whole robot
+    // Color.set() calls rather than a whole body
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -331,6 +334,7 @@ export default function WorldIdentity({
   error,
   active,
 }: WorldIdentityProps) {
+  const { t } = useI18n()
   const [draft, setDraft] = useState(name)
   // the server is the authority on what our name is: when it answers — and it
   // may answer with a trimmed version of what was typed — the field follows
@@ -466,25 +470,25 @@ export default function WorldIdentity({
             </button>
           </div>
           <Swatches
-            label="shell"
+            label={t.look.suit}
             options={SHELL_SWATCHES}
             value={look.shell}
             onPick={(shell) => onLook({ ...look, shell })}
           />
           <Swatches
-            label="trim"
+            label={t.look.trim}
             options={TRIM_SWATCHES}
             value={look.trim}
             onPick={(trim) => onLook({ ...look, trim })}
           />
           <Swatches
-            label="joints"
+            label={t.look.accent}
             options={ACCENT_SWATCHES}
             value={look.accent}
             onPick={(accent) => onLook({ ...look, accent })}
           />
           <Swatches
-            label="eyes"
+            label={t.look.glow}
             options={GLOW_SWATCHES}
             value={look.glow}
             onPick={(glow) => onLook({ ...look, glow })}

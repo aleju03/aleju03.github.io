@@ -15,7 +15,8 @@
     <canvas id="c" width="16" height="16"></canvas>
     <script type="module">
       import { shoot, pick, preload, loadLife, lastTiles, glError, bench } from './probe.ts'
-      window.__probe = { shoot, pick, preload, loadLife, lastTiles, glError, bench, ready: true }
+      import { shootBody } from './body.ts'
+      window.__probe = { shoot, pick, preload, loadLife, lastTiles, glError, bench, shootBody, ready: true }
     </script>
   </body>
 </html>
