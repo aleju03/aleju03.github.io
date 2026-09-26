@@ -3086,6 +3086,7 @@ export default function CrtScene({
               collision: overworld.collision,
               waterY: () => outside.waterY,
               waveAt: outside.waveAt,
+              splash: outside.splash,
               chunkSolids: outside.chunkSolids,
             })
             sandbox.gravity = -GRAVITY * rules.gravity

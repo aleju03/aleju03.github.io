@@ -2,7 +2,7 @@
   `npm run measure -- physics`: the sandbox's physics core, headless.
 
   Appended to measure.mjs's prelude (so THREE, buildChunk, MATS, terrainY and
-  the rest are in scope) and bundled with the sandbox. Five sections, each a
+  the rest are in scope) and bundled with the sandbox. The sections, each a
   claim the sandbox makes and the number that holds it to it:
 
     ground     the heightfields agree with terrainY (the drawn mesh)
@@ -11,14 +11,19 @@
     tunnel     fast things do not pass through thin things or the ground
     walker     the walk pushes a crate, is stopped by a block, stands on a
                stack and rides a moving plank
-    float      each kind dropped into still water: waterline, attitude, and
-               how long it takes to stop rolling
+    rest       the forty-prop pile: when its last prop falls asleep
+    determinism  every scenario twice, and on uneven frames: same hash?
+    float      each kind dropped on the drawn swell: waterline, attitude,
+               and whether it is still alive (heave, drift, turn, rock)
+               without churning
     scenarios  every registered scenario, run to its end, with its report
 */
 import { createSandbox } from '../../src/game/sandbox/sandbox.ts'
 import { SCENARIOS, stageScenario, advanceScenario } from '../../src/game/sandbox/scenarios.ts'
 import { makeCollisionSet } from '../../src/game/physics/collision.ts'
 import { createWalkController } from '../../src/game/player/walkController.ts'
+import { waveHeightAt } from '../../src/game/world/streamer.ts'
+import { windUniforms, tickWind } from '../../src/game/world/wind.ts'
 
 const only = process.argv[2]
 const want = (s) => !only || only === s
@@ -35,9 +40,19 @@ const chunkSolids = (cx, cz) => {
   }
   return c.boxes
 }
-const newSandbox = (withSolids = true) => {
+// the drawn swell, on the same clock the film runs it on: the wave's time
+// starts at zero with each sandbox and moves one slice per slice, so the sea
+// here is the sea in the pictures, crest for crest
+// `walker: false` is how the film stages a scenario (nobody walks in it),
+// and it matters to the bit: the walker's kinematic capsule is one more
+// body in the world, and a pile near where it waits settles differently
+const newSandbox = (withSolids = true, walker = true) => {
   const collision = makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, [])
-  const sb = createSandbox({ collision, waterY: () => SEA_Y, chunkSolids: withSolids ? chunkSolids : undefined })
+  windUniforms.uTime.value = 0
+  const sb = createSandbox({
+    collision, waterY: () => SEA_Y, waveAt: waveHeightAt, chunkSolids: withSolids ? chunkSolids : undefined, walker,
+  })
+  sb.onAfterSlice((h) => tickWind(h))
   return { sb, collision }
 }
 const flat = SCENARIOS.find((s) => s.id === 'sandbox:stack').site()
@@ -315,13 +330,112 @@ if (want('sites')) {
   }
 }
 
+/* --------------------------------------------------------------- rest -- */
+if (want('rest')) {
+  // the pile, run long: when does the last prop fall asleep? Round two's
+  // film had a barrel still spinning in place at 20 s with 7/40 awake.
+  // Listed per kind (the last of each to sleep), and anything still awake at
+  // the end with its speed and spin
+  const s = SCENARIOS.find((o) => o.id === 'sandbox:pile')
+  const { sb } = newSandbox()
+  await sb.whenReady
+  const c = stageScenario(s, sb)
+  const lastOf = {}
+  let allAt = null
+  let quietAt = null
+  const awakeAt = {}
+  advanceScenario(s, c, 30, (t) => {
+    let awake = 0
+    sb.forEach((p) => {
+      if (p.mode !== 'dynamic' || p.body.isSleeping()) return
+      awake++
+      lastOf[p.kind.id] = t
+    })
+    for (const k of [5, 10, 15, 20]) if (Math.abs(t - k) < 1e-6) awakeAt[k] = awake
+    if (awake <= 2 && quietAt === null && t > 3) quietAt = t
+    if (awake === 0 && allAt === null) allAt = t
+    if (awake > 0) allAt = null
+  })
+  const rows = []
+  sb.forEach((p) => {
+    if (p.body.isSleeping() || p.mode !== 'dynamic') return
+    const v = p.body.linvel()
+    const w = p.body.angvel()
+    rows.push(`${p.kind.id} v ${f(Math.hypot(v.x, v.y, v.z), 3)} w ${f(Math.hypot(w.x, w.y, w.z), 3)}`)
+  })
+  console.log(`rest     pile of 40: awake at 5/10/15/20 s ${[5, 10, 15, 20].map((k) => awakeAt[k]).join('/')}, ` +
+    `2 or fewer awake from ${quietAt === null ? 'never' : f(quietAt, 2) + ' s'}, ` +
+    `all asleep from ${allAt === null ? 'never <-- ' + rows.join('; ') : f(allAt, 2) + ' s'}`)
+  console.log(`         last to sleep, by kind: ${Object.entries(lastOf).sort((a, b) => b[1] - a[1]).map(([k, t]) => `${k} ${f(t, 1)} s`).join(', ')}`)
+  sb.dispose()
+}
+
+/* -------------------------------------------------------- determinism -- */
+if (want('determinism')) {
+  // every scenario, staged twice in this process on fresh sandboxes, must
+  // end with the same state to the bit (sb.stateHash: every prop's pose and
+  // velocity, and the clock). The hash is the same one `npm run film` prints
+  // under each sheet, so a browser run can be held against this one too.
+  // A third run feeds the same simulated time as uneven frames (a 144 Hz
+  // panel with hitches): the slices are fixed, so only when they land
+  // relative to the frames changes, and a scenario with no per-frame input
+  // must still end identically
+  for (const s of SCENARIOS) {
+    const hashes = []
+    for (let run = 0; run < 3; run++) {
+      const { sb } = newSandbox(true, false)
+      await sb.whenReady
+      const c = stageScenario(s, sb)
+      if (run < 2) advanceScenario(s, c, s.duration)
+      else {
+        const focus = { x: c.x, y: c.y, z: c.z }
+        const steps = Math.round(s.duration * 60)
+        let fed = 0
+        let k = 0
+        const pattern = [1 / 144, 1 / 144, 1 / 144, 1 / 30, 1 / 144, 1 / 90, 1 / 60]
+        // uneven frames, but never past the last slice boundary, and a
+        // final frame that lands on it exactly
+        while (sb.stats.time < steps / 60 - 1e-9) {
+          const dt = pattern[k++ % pattern.length]
+          sb.tick({ dt, active: true, focus })
+          fed += dt
+        }
+      }
+      hashes.push(sb.stateHash())
+      sb.dispose()
+    }
+    const same = hashes[0] === hashes[1]
+    const uneven = hashes[2] === hashes[0]
+    console.log(`determ   ${pad(s.id, 16)} ${hashes[0]}  rerun ${same ? 'identical' : '<-- DIVERGED ' + hashes[1]}, ` +
+      `uneven frames ${uneven ? 'identical' : 'differ ' + hashes[2] + (s.events || s.id === 'sandbox:stack' ? ' (it has per-slice input)' : ' <--')}`)
+  }
+}
+
 /* -------------------------------------------------------------- float -- */
 if (want('float')) {
-  // each kind dropped tilted into still open water, one at a time, and
-  // watched for ten seconds: where it rides, how it lies, when it stops
-  // rolling. "flat" is the angle from the nearest face-on orientation, so 0
-  // is a crate riding level and 45 is one floating on an edge
+  // each kind dropped tilted into open water on the drawn swell, one at a
+  // time, and watched for fourteen seconds. The first line is how it rides:
+  // its waterline, how it lies ("flat" is the angle from the nearest face-on
+  // orientation, so 0 is a crate riding level and 45 one on an edge) and
+  // when the tumbling of its fall stopped. The second is whether it is still
+  // alive from 6 s on, which is where round two's props went dead: heave
+  // (peak to peak), drift speed, how far it turned, how much it rocks, the
+  // fastest it spun (churn) and whether it ever slept
   const sea = SCENARIOS.find((s) => s.id === 'sandbox:float').site()
+  const upOf = (q) => {
+    const quat = new THREE.Quaternion(q.x, q.y, q.z, q.w)
+    let best = 90
+    let axis = null
+    for (const ax of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)]) {
+      const w = ax.clone().applyQuaternion(quat)
+      const d = Math.acos(Math.min(1, Math.abs(w.y))) * 180 / Math.PI
+      if (d < best) {
+        best = d
+        axis = w
+      }
+    }
+    return { flat: best, axis }
+  }
   for (const kind of ['crate', 'barrel', 'ball', 'plank', 'cone', 'block']) {
     const { sb } = newSandbox(false)
     await sb.whenReady
@@ -332,38 +446,58 @@ if (want('float')) {
     })
     const p = sb.get(id)
     let settled = 0
-    let lateSpin = 0
-    let lateBob = 0
-    let lastY = null
-    for (let i = 0; i < 600; i++) {
+    let churn = 0
+    let yMin = Infinity
+    let yMax = -Infinity
+    let tiltMin = Infinity
+    let tiltMax = -Infinity
+    let turned = 0
+    let lastYaw = null
+    let slept = 0
+    let x6 = 0
+    let z6 = 0
+    for (let i = 0; i < 60 * 14; i++) {
       sb.tick({ dt: 1 / 60, active: true, focus })
       const w = p.body.angvel()
       const spin = Math.hypot(w.x, w.y, w.z)
-      if (spin > 0.35) settled = (i + 1) / 60
-      const y = p.body.translation().y
-      if (process.env.DEBUG_FLOAT === kind && i % 20 === 0) {
-        const v = p.body.linvel()
-        const tt = p.body.translation()
-        console.log(i, 'y', f(tt.y - SEA_Y, 2), 'w', f(w.x, 2), f(w.y, 2), f(w.z, 2), 'v', f(v.x, 2), f(v.y, 2), f(v.z, 2), 'damp', f(p.body.linearDamping(), 2), f(p.body.angularDamping(), 2), 'sleep', p.body.isSleeping())
+      if (spin > 0.6) settled = (i + 1) / 60
+      const t = p.body.translation()
+      if (i === 360) {
+        x6 = t.x
+        z6 = t.z
       }
       if (i >= 360) {
-        lateSpin = Math.max(lateSpin, spin)
-        if (lastY !== null) lateBob = Math.max(lateBob, Math.abs(y - lastY) * 60)
+        churn = Math.max(churn, spin)
+        yMin = Math.min(yMin, t.y)
+        yMax = Math.max(yMax, t.y)
+        const u = upOf(p.body.rotation())
+        tiltMin = Math.min(tiltMin, u.flat)
+        tiltMax = Math.max(tiltMax, u.flat)
+        // heading: the body's local x (or z) carried into the world, flattened
+        const q = p.body.rotation()
+        const fx = new THREE.Vector3(1, 0, 0).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
+        const yaw = Math.atan2(fx.z, fx.x)
+        if (lastYaw !== null) {
+          let d = yaw - lastYaw
+          d -= Math.round(d / (2 * Math.PI)) * 2 * Math.PI
+          turned += Math.abs(d)
+        }
+        lastYaw = yaw
+        if (p.body.isSleeping()) slept++
       }
-      lastY = y
-    }
-    const q = p.body.rotation()
-    const quat = new THREE.Quaternion(q.x, q.y, q.z, q.w)
-    let flat = 90
-    for (const ax of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)]) {
-      const d = Math.abs(ax.applyQuaternion(quat).y)
-      flat = Math.min(flat, Math.acos(Math.min(1, d)) * 180 / Math.PI)
     }
     const t = p.body.translation()
+    const { flat } = upOf(p.body.rotation())
     const e = p.extents
+    const drift = Math.hypot(t.x - x6, t.z - z6) / 8
+    const sunk = t.y < SEA_Y - e.y * 1.2
     console.log(`float    ${pad(kind, 7)} centre ${f(t.y - SEA_Y, 2).padStart(6)} over the water ` +
-      `(half-height ${f(e.y, 2)}), ${f(flat, 0).padStart(2)} deg off a face, stopped rolling at ${f(settled, 1)} s, ` +
-      `after 6 s spin <= ${f(lateSpin, 2)} rad/s, bob <= ${f(lateBob, 2)} u/s`)
+      `(half-height ${f(e.y, 2)}), ${f(flat, 0).padStart(2)} deg off a face, fall stopped tumbling at ${f(settled, 1)} s`)
+    const alive = sunk || (yMax - yMin > 0.08 && drift > 0.1 && turned * 180 / Math.PI > 15 && slept === 0)
+    console.log(`         ${pad('', 7)} 6-14 s: heave ${f(yMax - yMin, 2)} p-p, drift ${f(drift, 2)} u/s, ` +
+      `turned ${f(turned * 180 / Math.PI, 0)} deg, rocks ${f(tiltMax - tiltMin, 1)} deg p-p, ` +
+      `churn <= ${f(churn, 2)} rad/s, asleep ${slept} slices ` +
+      (sunk ? '(sunk, rests on the bottom)' : alive && churn < 1.2 ? '(alive)' : churn >= 1.2 ? '<-- CHURNING' : '<-- DEAD'))
     sb.dispose()
   }
 }
@@ -371,7 +505,7 @@ if (want('float')) {
 /* ---------------------------------------------------------- scenarios -- */
 if (want('scenarios')) {
   for (const s of SCENARIOS) {
-    const { sb } = newSandbox()
+    const { sb } = newSandbox(true, false)
     await sb.whenReady
     const c = stageScenario(s, sb)
     const ms = []

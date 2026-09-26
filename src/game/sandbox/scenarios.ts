@@ -258,6 +258,9 @@ const lying = (dx: number, dz: number) => {
   return { x: (kx / l) * s, y: 0, z: (kz / l) * s, w: s }
 }
 
+/** how far the stack's ram is tilted end to end, radians */
+const RAM_SLANT = 0.3
+
 const settle = (c: ScenarioCtx) => {
   // report helper: how many of the ids are asleep
   let asleep = 0
@@ -270,7 +273,7 @@ const settle = (c: ScenarioCtx) => {
 
 defineScenario({
   id: 'sandbox:stack',
-  title: 'a 3x5 tower of crates, a plank punted through its second row',
+  title: 'a 3x5 tower of crates, a slanted plank rammed through its base',
   site: siteFlat,
   duration: 6,
   frames: 12,
@@ -290,39 +293,51 @@ defineScenario({
     const h = 2.4
     const yaw = Math.atan2(c.dx, c.dz)
     // stacked by hand, not by a grid: a few centimetres and a few degrees of
-    // slop per crate, which is what lets a falling tower twist and come apart
-    // the way a real one does instead of pivoting over as one perfect slab
+    // slop per crate, and no two packed the same (a crate's weight varies by
+    // a third either way), which is what lets a falling tower twist and come
+    // apart the way a real one does instead of pivoting over as one perfect
+    // slab. Identical crates in a perfect grid get identical impulses, so
+    // whole rows fell as one piece
     let seed = 11
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) - 0.5
     for (let row = 0; row < 5; row++)
       for (let col = -1; col <= 1; col++) {
-        const px = c.x + c.dx * col * (h + 0.04) + rnd() * 0.12
-        const pz = c.z + c.dz * col * (h + 0.04) + rnd() * 0.12
+        const px = c.x + c.dx * col * (h + 0.05) + rnd() * 0.16
+        const pz = c.z + c.dz * col * (h + 0.05) + rnd() * 0.16
         const y = c.sb.restY('crate', c.x, c.z) + row * (h + 0.01)
-        c.ids.push(c.sb.spawn('crate', { x: px, y, z: pz }, { yaw: yaw + rnd() * 0.12 }))
+        c.ids.push(c.sb.spawn('crate', { x: px, y, z: pz }, {
+          yaw: yaw + rnd() * 0.16, mass: 35 * (1 + rnd() * 0.7),
+        }))
       }
     // the ram: a plank held level, a little askew so it meets one end of the
-    // tower first, punted through the second row at the speed a physgun
+    // tower first, swung through the *bottom* row at the speed a physgun
     // throw leaves the hand, then let go. Leaning on the tower slowly only
     // ever pivoted it over whole, as one slab (which is what a real stack of
-    // boxes does when pushed slowly, and not what anyone films); knocking a
-    // row out from under it is what makes the rows above come down in pieces
+    // boxes does when pushed slowly, and not what anyone films), and round
+    // two's punt through the second row at 16 u/s left the bottom row
+    // standing and dropped the top three as one block. Knocking the base out
+    // hard is what makes everything above come down in pieces
     const nx = c.dz
     const nz = -c.dx
-    const ry = c.sb.restY('crate', c.x, c.z) + 1.0 * h
-    const ramYaw = yaw + 0.25
+    // and slanted: one end low through the bottom row, the other through
+    // the second, so the three columns are each hit at a different height
+    // and moment and nothing above gets an even shove to fall as one
+    const ry = c.sb.restY('crate', c.x, c.z) + 0.45 * h
+    const ramYaw = yaw + 0.3
     const back = 7
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(nx, 0, nz), RAM_SLANT)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ramYaw))
     const ram = c.sb.spawn('plank', { x: c.x - nx * back, y: ry, z: c.z - nz * back }, {
-      quaternion: { x: 0, y: Math.sin(ramYaw / 2), z: 0, w: Math.cos(ramYaw / 2) },
+      quaternion: { x: q.x, y: q.y, z: q.z, w: q.w },
     })
     c.sb.setMode(ram, 'kinematic')
     let t = 0
     const off = c.sb.onBeforeSlice((dt) => {
       t += dt
       if (!c.sb.get(ram)) return off()
-      const d = back - Math.max(0, Math.min(t - 1.0, 0.75)) * 16
-      c.sb.moveKinematic(ram, { x: c.x - nx * d, y: ry, z: c.z - nz * d })
-      if (t > 1.75) {
+      const d = back - Math.max(0, Math.min(t - 1.0, 0.5)) * 30
+      c.sb.moveKinematic(ram, { x: c.x - nx * d, y: ry, z: c.z - nz * d }, q)
+      if (t > 1.5) {
         c.sb.setMode(ram, 'dynamic')
         off()
       }

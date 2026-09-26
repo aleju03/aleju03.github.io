@@ -1,9 +1,9 @@
 import * as THREE from 'three'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
-import { makeChunkMats, waveHeightAt } from '../../src/game/world/streamer'
+import { makeChunkMats, splashAt, waveHeightAt } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
 import { SEA_Y } from '../../src/game/world/terrain'
-import { tickWind } from '../../src/game/world/wind'
+import { tickWind, windUniforms } from '../../src/game/world/wind'
 import { makeCollisionSet, type Solid } from '../../src/game/physics/collision'
 import { createSandbox, type Sandbox } from '../../src/game/sandbox/sandbox'
 import {
@@ -66,6 +66,8 @@ export interface FilmSpec {
   dist?: number
   height?: number
   fov?: number
+  /** false: no time labels or title on the stills, for judging blind */
+  labels?: boolean
 }
 
 export interface FilmResult {
@@ -81,6 +83,9 @@ export interface FilmResult {
   from: number[]
   to: number[]
   fov: number
+  /** the sandbox's state hash at the last still: two runs of the same spec
+      must print the same one (and the same as `measure physics determinism`) */
+  hash: string
 }
 
 let renderer: THREE.WebGLRenderer | null = null
@@ -118,6 +123,10 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   const s = scenarioById(spec.id)
   if (!s) throw new Error(`no scenario "${spec.id}"; have ${SCENARIOS.map((o) => o.id).join(', ')}`)
   teardown()
+  // the sea's clock starts with the scenario, so the swell every floater
+  // meets is the same on every run (it is a page global, and used to carry
+  // over from whatever was filmed before in the same page)
+  windUniforms.uTime.value = 0
   const scene = new THREE.Scene()
   const mats = makeChunkMats(() => {}, () => {})
   const tod = spec.tod ?? s.tod ?? 0.42
@@ -150,6 +159,7 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
     collision: makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, []),
     waterY: () => SEA_Y,
     waveAt: waveHeightAt,
+    splash: splashAt,
     chunkSolids: (cx, cz) => byKey.get(`${cx},${cz}`)?.boxes ?? null,
     walker: false,
   })
@@ -258,8 +268,10 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     r.setViewport(col * tw, (rows - row - 1) * th, tw, th)
     r.setScissor(col * tw, (rows - row - 1) * th, tw, th)
     draw(r, st)
-    label(col * tw + 8, row * th + th - 30, `t = ${t.toFixed(2)} s`)
-    if (i === 0) label(col * tw + 8, row * th + 8, `${st.s.id}: ${st.s.title}`, true)
+    if (spec.labels !== false) {
+      label(col * tw + 8, row * th + th - 30, `t = ${t.toFixed(2)} s`)
+      if (i === 0) label(col * tw + 8, row * th + 8, `${st.s.id}: ${st.s.title}`, true)
+    }
   }
   return {
     id: st.s.id,
@@ -272,17 +284,20 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     from: st.cam.userData.shot.from.map((n: number) => Math.round(n * 10) / 10),
     to: st.cam.userData.shot.to.map((n: number) => Math.round(n * 10) / 10),
     fov: st.cam.userData.shot.fov,
+    hash: st.sb.stateHash(),
   }
 }
 
 let vFrame = 0
 let vFps = 30
+let videoLabels = true
 
 /** set up a scenario for frame-by-frame capture at `fps` */
 export const videoStart = async (spec: FilmSpec, w: number, h: number, fps: number) => {
   makeRenderer(w, h, !!spec.raw, Math.round(h / 2))
   const st = await build(spec, w, h)
   labels.innerHTML = ''
+  videoLabels = spec.labels !== false
   vFrame = 0
   vFps = fps
   return { frames: Math.round(st.duration * fps) + 1, id: st.s.id }
@@ -299,7 +314,7 @@ export const videoFrame = () => {
   renderer.setScissor(0, 0, size.x, size.y)
   draw(renderer, st)
   labels.innerHTML = ''
-  label(8, size.y - 30, `${st.s.id}  t = ${t.toFixed(2)} s`)
+  if (videoLabels) label(8, size.y - 30, `${st.s.id}  t = ${t.toFixed(2)} s`)
   vFrame++
   return true
 }

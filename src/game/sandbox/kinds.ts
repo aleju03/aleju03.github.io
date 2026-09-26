@@ -69,6 +69,11 @@ export interface PropKind {
       half its depth: a uniform cube at that density is only stable resting
       on an edge, and floats like a diamond */
   ballast?: { share: number; at: [number, number, number] }
+  /** rolling resistance, as a coefficient (0.01 a steel wheel on rail, 0.04
+      a drum on asphalt). Rapier has none: a round thing on a 2% camber
+      rolls forever, and a pile of drums and balls was still creeping at
+      twenty seconds. Omit it for things that do not roll */
+  rolling?: number
   /** draw it once, centred on the body's origin; each prop gets a clone that
       shares the geometry and material. Omitted, the prop has no mesh (which
       is what a headless run and a debris piece with its own mesh both want) */
@@ -274,6 +279,7 @@ export const KINDS: Record<string, PropKind> = {
     // steel on ground loses a little to rolling resistance; without it a drum
     // on the flat rolls to the horizon
     angularDamping: 0.25,
+    rolling: 0.04,
     mesh: barrelMesh(BARREL_R, BARREL_HH),
   },
   ball: {
@@ -286,6 +292,7 @@ export const KINDS: Record<string, PropKind> = {
     density: 0.08,
     linearDamping: 0.08,
     angularDamping: 0.35,
+    rolling: 0.05,
     mesh: ballMesh(0.62),
   },
   plank: {
@@ -315,6 +322,7 @@ export const KINDS: Record<string, PropKind> = {
     friction: 0.85,
     restitution: 0.25,
     density: 1.3,
+    rolling: 0.08,
     mesh: coneMesh(CONE_R, CONE_HH, CONE_FOOT, CONE_FOOT_H),
   },
   block: {
