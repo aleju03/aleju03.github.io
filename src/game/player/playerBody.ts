@@ -4,7 +4,7 @@ import { supportY } from '../physics/collision'
 import { seeded } from '../core/rand'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
-  B, BODY_Y0, BONE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
+  B, BODY_Y0, BONE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HELPERS, HIP_X, HIP_Y,
   NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, bindMatrixWorld,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
@@ -842,6 +842,25 @@ export function buildPlayerBody(
     basisQuat(q, xA, yA, zA)
   }
 
+  /** turn a unit direction toward an axis until it is at most `maxAng` off
+      it: a joint limit applied to the bones the ragdoll is draped with (the
+      particles themselves stay free, so the heap still lands as it lands) */
+  const limitTo = (dir: THREE.Vector3, axis: THREE.Vector3, maxAng: number) => {
+    const c = THREE.MathUtils.clamp(dir.dot(axis), -1, 1)
+    const a = Math.acos(c)
+    if (a <= maxAng || a < 1e-4) return
+    const sa = Math.sin(a)
+    if (sa < 1e-4) {
+      // straight back along the axis: any perpendicular will do
+      dir.set(axis.y, axis.z, axis.x).cross(axis).normalize().multiplyScalar(Math.sin(maxAng)).addScaledVector(axis, Math.cos(maxAng))
+      return
+    }
+    const t = maxAng / a
+    const ka = Math.sin((1 - t) * a) / sa
+    const kd = Math.sin(t * a) / sa
+    dir.multiplyScalar(kd).addScaledVector(axis, ka).normalize()
+  }
+
   /** drape the rigid skeleton over the particle cloud (group-local space) */
   const fitFromParticles = () => {
     group.updateMatrixWorld(true)
@@ -858,6 +877,10 @@ export function buildPlayerBody(
     za.normalize()
     xa.crossVectors(up, za).normalize()
     basisQuat(qPelv, xa, up, za)
+    // the cone a thigh may point in: tipped forward of straight down, so a
+    // leg swings far out in front and only a little behind (vKnee is free
+    // scratch here; the IK is not running)
+    vKnee.copy(up).negate().addScaledVector(za, 0.75).normalize()
     pelvis.position.copy(lp[P_PELV])
     pelvis.quaternion.copy(qPelv)
     pelvis.scale.set(1, 1, 1)
@@ -867,8 +890,11 @@ export function buildPlayerBody(
     armInv.set(1, 1, 1)
     qInv.copy(qPelv).invert()
 
-    // head grows +Y toward its particle
+    // head grows +Y toward its particle, but only so far off the trunk's
+    // own axis: the head is the top of the bean, and a bean folded double
+    // at the neck creased its own face
     dirTmp.copy(lp[P_HEAD]).sub(lp[P_CHEST]).normalize()
+    limitTo(dirTmp, up, 0.5)
     zA.crossVectors(xa, dirTmp)
     if (zA.lengthSq() < 1e-8) zA.set(0, 0, 1)
     zA.normalize()
@@ -885,8 +911,11 @@ export function buildPlayerBody(
       to: THREE.Vector3,
       parentQ: THREE.Quaternion,
       out: THREE.Quaternion,
+      axis?: THREE.Vector3,
+      maxAng = Math.PI,
     ) => {
       dirTmp.copy(to).sub(from).normalize()
+      if (axis) limitTo(dirTmp, axis, maxAng)
       refX.set(1, 0, 0).applyQuaternion(parentQ)
       limbQuat(qSeg, dirTmp, refX)
       out.copy(qSeg)
@@ -900,14 +929,33 @@ export function buildPlayerBody(
     handR.quaternion.identity()
     // legs from the pelvis frame's hip sockets
     vTmp.set(HIP_X, 0, 0).applyQuaternion(qPelv).add(lp[P_PELV])
-    fitLimb(thighL, vTmp, lp[P_KNEEL], qPelv, qUpper)
+    // a stub of a leg swings a long way forward but not up past the belly,
+    // and not far back at all: past either the skin at the hip folds (see
+    // limitTo)
+    fitLimb(thighL, vTmp, lp[P_KNEEL], qPelv, qUpper, vKnee, 1.2)
     fitLimb(shinL, lp[P_KNEEL], lp[P_FOOTL], qUpper, qLower)
     vTmp.set(-HIP_X, 0, 0).applyQuaternion(qPelv).add(lp[P_PELV])
-    fitLimb(thighR, vTmp, lp[P_KNEER], qPelv, qUpper)
+    fitLimb(thighR, vTmp, lp[P_KNEER], qPelv, qUpper, vKnee, 1.2)
     fitLimb(shinR, lp[P_KNEER], lp[P_FOOTR], qUpper, qLower)
     // a crumpled body's toes hang relaxed, not frozen in the last stride
     ankleL.rotation.set(0.35, 0, 0)
     ankleR.rotation.set(0.35, 0, 0)
+  }
+
+  /*
+    The helper bones. A raised arm is a bend of two radians at one joint,
+    and linear blend skinning answers a bend that sharp by folding the skin
+    round it over itself: the fillet where an arm grows out of a single
+    surface came out as a scribble of inside-out triangles in the armpit.
+    So each shoulder and each hip has a second bone on the same pivot that
+    turns with about half of its limb, and the flesh round the joint is weighted to
+    it (bodyShape's beanChain), which spreads one sharp bend into two soft
+    ones. Nothing poses them: they only ever follow, whatever posed the limb.
+  */
+  const followHelpers = () => {
+    for (const [hb, limb, share] of HELPERS) {
+      bones[hb].quaternion.identity().slerp(bones[limb].quaternion, share)
+    }
   }
 
   /*
@@ -917,6 +965,7 @@ export function buildPlayerBody(
     frame late, which nobody can see).
   */
   const secondary = (dt: number, show: number) => {
+    followHelpers()
     jiggleEnergy = 0
     group.updateMatrixWorld(true)
     const s = S
@@ -928,13 +977,17 @@ export function buildPlayerBody(
     else head.position.copy(REST[B.HEAD])
     head.updateMatrixWorld()
     head.getWorldPosition(vRest)
-    stepJiggle(jHead, vRest, 70, 4, 0, 0.3 * s, dt)
+    // the head is the top of the bean, not a ball on a neck: a stiffer,
+    // better damped spring than the brawler's, tuned well off a run's stride
+    // (which rang the old one at resonance and slopped the head a third of a
+    // unit side to side), and a gentler tilt for the same offset
+    stepJiggle(jHead, vRest, 120, 9, 0, 0.16 * s, dt)
     vTmp2.subVectors(jHead.p, vRest)
     torso.getWorldQuaternion(qW)
     vTmp2.applyQuaternion(qW.invert()).multiplyScalar(1 / s)
     head.position.add(vTmp2)
-    head.rotation.x += vTmp2.z * 3.2
-    head.rotation.z -= vTmp2.x * 3.2
+    head.rotation.x += vTmp2.z * 1.8
+    head.rotation.z -= vTmp2.x * 1.8
 
     // the belly is jelly: its own point mass, soft and slow to settle, so a
     // footfall, a stop or a landing sets the front of the bean wobbling
@@ -1198,7 +1251,7 @@ export function buildPlayerBody(
     // one foot to the other now and then, which is most of what reads as
     // alive in a body doing nothing
     const shift = Math.sin(idleT * 0.55 + 1.1) * Math.sin(idleT * 0.21) * 0.05 * idleK * (1 - riseFold)
-    const waddleX = -stepS * (0.085 - 0.03 * runK) * moveK + shift
+    const waddleX = -stepS * (0.075 - 0.045 * runK) * moveK + shift
     const dip = -Math.abs(stepS) * 0.07 * gait * (1 - runK)
     // a run's hips are lowest just after a foot lands and highest in the
     // flight before the next one does (see the toe-off in the feet below)
@@ -1207,7 +1260,8 @@ export function buildPlayerBody(
     pelvis.position.set(
       waddleX, hipH + dip + pop + bounceY + breathe * 0.006 + Math.sin(idleT * 1.7) * 0.05 * flyK, 0,
     )
-    const waddleRoll = stepS * (0.17 - 0.06 * runK) * moveK + shift * 1.2
+    // a walk waddles; a run is upright and bouncy, the roll mostly gone
+    const waddleRoll = stepS * (0.15 - 0.11 * runK) * moveK + shift * 1.2
     // the get-up hunch is not gated by pose.show: it is the shape of the
     // action, not flair, and the lens is off the head for the whole of it
     // A bean runs nearly upright: the lean is a hint of the speed and a
@@ -1413,7 +1467,8 @@ export function buildPlayerBody(
       const L = THREE.MathUtils.clamp(dirTmp.length(), 0.25, THIGH + SHIN - 0.01)
       dirTmp.normalize()
       // knee pole: forward with a nudge outward, kept off the leg axis
-      vPole.set(side * 0.2, 0, 1)
+      // a deep crouch opens the knees out, or two stub legs fold into each other
+      vPole.set(side * (0.2 + 0.7 * pose.crouchK), 0, 1)
       vPole.addScaledVector(dirTmp, -vPole.dot(dirTmp))
       if (vPole.lengthSq() < 1e-6) vPole.set(0, 0, 1)
       vPole.normalize()
@@ -1506,7 +1561,7 @@ export function buildPlayerBody(
     // held clear of the body at rest, with a gap of air down each side: a
     // wider build holds them wider
     const spread =
-      0.58 + (persona.girth - 1) * 0.9 - 0.04 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.35 + swingOut
+      0.62 + (persona.girth - 1) * 0.9 - 0.04 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.35 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
@@ -1962,6 +2017,7 @@ export function buildPlayerBody(
       seatLook = passenger ? 0.45 + rnd() * 0.2 : (rnd() - 0.5) * 0.2
       for (const j of JIGGLES) j.fresh = true
       seatedPose(0)
+      followHelpers()
     },
     seatedTick: (dt) => {
       if (!seated) return

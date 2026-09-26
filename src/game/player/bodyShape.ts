@@ -69,7 +69,7 @@ export const ANKLE_H = 0.1
 /** pelvis bone up to the torso bone. The bean is weighted across it */
 export const WAIST_OFF = 0.3
 /** the shoulder joints sit just inside the flank, so an arm grows out of it */
-export const SHOULDER_X = 0.43
+export const SHOULDER_X = 0.5
 export const SHOULDER_OFF = 0.62
 /** torso bone up to the head bone: where the bean stops being body and
     starts being head, which is only ever a matter of weights */
@@ -82,7 +82,7 @@ export const EYE_OFF = 0.24
 /** head bone up to the top of the bean */
 export const CROWN_OFF = 0.72
 /** the A-pose the arms are drawn in, radians out from hanging. See the header */
-export const ARM_BIND = 0.8
+export const ARM_BIND = 0.85
 
 /* ------------------------------------------------------------ bones ----- */
 
@@ -111,8 +111,22 @@ export const B = {
   EYES: 15,
   POM: 16,
   PACK: 17,
+  // helpers: a shoulder and a hip at each limb's own pivot that turn with
+  // a share of the limb (HELPERS), so the skin round a joint bends
+  // over two bones instead of one. See the note above `followHelpers`
+  // in playerBody.ts
+  SHOULDER_L: 18,
+  SHOULDER_R: 19,
+  HIP_L: 20,
+  HIP_R: 21,
 } as const
-export const BONE_COUNT = 18
+export const BONE_COUNT = 22
+/** each helper, the limb bone it follows, and how much of that limb's
+    rotation it takes */
+export const HELPERS: ReadonlyArray<readonly [number, number, number]> = [
+  [B.SHOULDER_L, B.UARM_L, 0.5], [B.SHOULDER_R, B.UARM_R, 0.5],
+  [B.HIP_L, B.THIGH_L, 0.55], [B.HIP_R, B.THIGH_R, 0.55],
+]
 
 /*
   The builds: every body is one of five beans, the same drawing with a
@@ -170,6 +184,10 @@ export const BONE_REST: Array<{ parent: number; at: [number, number, number] }> 
   // the knot at the back that tails swing off, on the head's own surface
   { parent: B.HEAD, at: [0, EYE_OFF + 0.2, -0.38] },
   { parent: B.TORSO, at: [0, 0.0, 0.42] }, // belly
+  { parent: B.TORSO, at: [SHOULDER_X, SHOULDER_OFF, 0] }, // shoulder helper L
+  { parent: B.TORSO, at: [-SHOULDER_X, SHOULDER_OFF, 0] }, // shoulder helper R
+  { parent: B.PELVIS, at: [HIP_X, 0, 0] }, // hip helper L
+  { parent: B.PELVIS, at: [-HIP_X, 0, 0] }, // hip helper R
 ]
 
 /** each bone's rest position in the model's frame, design units */
@@ -187,7 +205,8 @@ export const boneRestWorld = (i: number, out: THREE.Vector3): THREE.Vector3 => {
 /** the rotation each bone is *drawn* at: identity except the upper arms,
     held out in the A-pose */
 const bindRot = (i: number) =>
-  i === B.UARM_L ? ARM_BIND : i === B.UARM_R ? -ARM_BIND : 0
+  i === B.UARM_L ? ARM_BIND : i === B.UARM_R ? -ARM_BIND
+    : i === B.SHOULDER_L ? ARM_BIND * HELPERS[0][2] : i === B.SHOULDER_R ? -ARM_BIND * HELPERS[1][2] : 0
 /** a bone's world matrix in the bind pose (what the mesh was drawn around);
     the inverse bind matrices are these inverted */
 export const bindMatrixWorld = (i: number, out: THREE.Matrix4): THREE.Matrix4 => {
@@ -230,6 +249,8 @@ export const HEAD_FLAG = 16
 
 /** the numbers a variant is built from, resolved per build */
 interface Frame {
+  /** which build this is */
+  index: number
   bd: Build
   bean: Field
   /** the bean's horizontal radius (x) at a height, and its depth there */
@@ -241,6 +262,11 @@ interface Frame {
   body: Field
   sh: [THREE.Vector3, THREE.Vector3]
   dir: [THREE.Vector3, THREE.Vector3]
+  /** the blend radius where an arm (0 left, 1 right) or a leg meets the
+      bean, at a point: the fillet the field draws, and the band the
+      weights are shared over, which must be the same thing */
+  armK: (k: 0 | 1, x: number, y: number, z: number) => number
+  legK: (y: number) => number
 }
 
 /** Math.hypot is several times slower than this in V8, and the fields are
@@ -318,10 +344,14 @@ const frameFor = (b: number): Frame => {
 
   const legs: Field[] = []
   for (const side of [1, -1]) {
-    const x = side * HIP_X
-    const stump = roundCone(x, HIP_Y + 0.06, 0, x, ANKLE_H + 0.06, 0.0, 0.19, 0.15)
+    // drawn a hair wider than the hip bones and a little slimmer than the
+    // arms are long: two stumps closer than a couple of grid cells are one
+    // stump with a web between them, and a web folds the moment one leg
+    // swings forward and the other back
+    const x = side * (HIP_X + 0.03)
+    const stump = roundCone(x, HIP_Y + 0.06, 0, x, ANKLE_H + 0.06, 0.0, 0.165, 0.14)
     // a rounded stub of a foot pushed a little forward, the sole flattened
-    const foot = ellipsoid(x, 0.1, 0.07, 0.15, 0.12, 0.22)
+    const foot = ellipsoid(x, 0.1, 0.07, 0.14, 0.12, 0.21)
     legs.push((px, py, pz) => smax(smin(stump(px, py, pz), foot(px, py, pz), 0.1), -py, 0.03))
   }
 
@@ -333,25 +363,25 @@ const frameFor = (b: number): Frame => {
   // it is not evaluated at all: most of the grid is nowhere near an arm
   const ARM_R = 0.16 + 0.23
   const LEG_R = 0.3 + 0.2
+  // a generous fillet where an arm leaves the flank, tightening along it so
+  // the arm is free of the body well before the elbow
+  const armK = (k: 0 | 1, x: number, y: number, z: number) => {
+    const S = k === 0 ? SL : SR
+    const ds = Math.sqrt((x - S.x) ** 2 + (y - S.y) ** 2 + (z - S.z) ** 2)
+    return 0.025 + 0.2 * (1 - smooth(0.1, 0.36, ds))
+  }
+  // and the same where the legs leave the bottom of the bean
+  const legK = (y: number) => 0.03 + 0.15 * smooth(0.28, 0.5, y)
   const body: Field = (x, y, z) => {
     let d = bean(x, y, z)
-    // a generous fillet where an arm leaves the flank, tightening along it
-    // so the upper arm is free of the body by the elbow
-    if (segDist(x, y, z, SL.x, SL.y, SL.z, TL.x, TL.y, TL.z) - ARM_R < d) {
-      const dsl = Math.sqrt((x - SL.x) ** 2 + (y - SL.y) ** 2 + (z - SL.z) ** 2)
-      d = smin(d, aL(x, y, z), 0.03 + 0.2 * (1 - smooth(0.12, 0.42, dsl)))
-    }
-    if (segDist(x, y, z, SR.x, SR.y, SR.z, TR.x, TR.y, TR.z) - ARM_R < d) {
-      const dsr = Math.sqrt((x - SR.x) ** 2 + (y - SR.y) ** 2 + (z - SR.z) ** 2)
-      d = smin(d, aR(x, y, z), 0.03 + 0.2 * (1 - smooth(0.12, 0.42, dsr)))
-    }
-    // and the same where the legs leave the bottom of the bean
-    const kl = 0.03 + 0.15 * smooth(0.28, 0.5, y)
-    if (segDist(x, y, z, HIP_X, HIP_Y + 0.06, 0, HIP_X, 0.1, 0.07) - LEG_R < d) d = smin(d, lL(x, y, z), kl)
-    if (segDist(x, y, z, -HIP_X, HIP_Y + 0.06, 0, -HIP_X, 0.1, 0.07) - LEG_R < d) d = smin(d, lR(x, y, z), kl)
+    if (segDist(x, y, z, SL.x, SL.y, SL.z, TL.x, TL.y, TL.z) - ARM_R < d) d = smin(d, aL(x, y, z), armK(0, x, y, z))
+    if (segDist(x, y, z, SR.x, SR.y, SR.z, TR.x, TR.y, TR.z) - ARM_R < d) d = smin(d, aR(x, y, z), armK(1, x, y, z))
+    const kl = legK(y)
+    if (segDist(x, y, z, HIP_X + 0.03, HIP_Y + 0.06, 0, HIP_X + 0.03, 0.1, 0.07) - LEG_R < d) d = smin(d, lL(x, y, z), kl)
+    if (segDist(x, y, z, -HIP_X - 0.03, HIP_Y + 0.06, 0, -HIP_X - 0.03, 0.1, 0.07) - LEG_R < d) d = smin(d, lR(x, y, z), kl)
     return d
   }
-  const f: Frame = { bd, bean, rx, arm: [aL, aR], leg: [lL, lR], body, sh, dir }
+  const f: Frame = { index: b, bd, bean, rx, arm: [aL, aR], leg: [lL, lR], body, sh, dir, armK, legK }
   FRAMES[b] = f
   return f
 }
@@ -373,6 +403,17 @@ const beanChain = (fr: Frame, x: number, y: number, z: number, acc: Float32Array
   const belly = 0.55 * front * band * band
   pel *= 1 - belly
   tor *= 1 - belly
+  // the flesh round a shoulder or a hip goes with the helper there
+  for (let k = 0; k < 2; k++) {
+    const S = fr.sh[k]
+    const cS = 1 - smooth(0.12, 0.4, len(x - S.x, y - S.y, z - S.z))
+    acc[k === 0 ? B.SHOULDER_L : B.SHOULDER_R] += w * tor * cS
+    tor *= 1 - cS
+    const hx = k === 0 ? HIP_X : -HIP_X
+    const cH = 1 - smooth(0.12, 0.4, len(x - hx, y - HIP_Y, z))
+    acc[k === 0 ? B.HIP_L : B.HIP_R] += w * pel * cH
+    pel *= 1 - cH
+  }
   acc[B.PELVIS] += w * pel
   acc[B.TORSO] += w * tor
   acc[B.HEAD] += w * hed
@@ -383,32 +424,41 @@ const armChain = (fr: Frame, k: 0 | 1, x: number, y: number, z: number, acc: Flo
   const S = fr.sh[k]
   const d = fr.dir[k]
   const s = (x - S.x) * d.x + (y - S.y) * d.y + (z - S.z) * d.z
-  const kE = smooth(UARM - 0.12, UARM + 0.1, s)
-  const kW = smooth(UARM + FARM - 0.06, UARM + FARM + 0.05, s)
+  const kE = smooth(UARM - 0.2, UARM + 0.16, s)
+  const kW = smooth(UARM + FARM - 0.1, UARM + FARM + 0.08, s)
   const [ua, fa, ha] = k === 0 ? [B.UARM_L, B.FARM_L, B.HAND_L] : [B.UARM_R, B.FARM_R, B.HAND_R]
-  acc[ua] += w * (1 - kE)
+  // the root of the arm shares with the shoulder helper
+  const root = 0.5 * (1 - smooth(0.0, 0.2, s))
+  acc[k === 0 ? B.SHOULDER_L : B.SHOULDER_R] += w * (1 - kE) * root
+  acc[ua] += w * (1 - kE) * (1 - root)
   acc[fa] += w * kE * (1 - kW)
   acc[ha] += w * kE * kW
 }
 
 const legChain = (k: 0 | 1, y: number, z: number, acc: Float32Array, w: number) => {
   const [th, sn, ft] = k === 0 ? [B.THIGH_L, B.SHIN_L, B.FOOT_L] : [B.THIGH_R, B.SHIN_R, B.FOOT_R]
-  const kK = smooth(HIP_Y - THIGH - 0.1, HIP_Y - THIGH + 0.1, y)
-  const kF = (1 - smooth(ANKLE_H + 0.02, ANKLE_H + 0.14, y)) * (0.6 + 0.4 * smooth(-0.05, 0.12, z))
-  acc[th] += w * kK
+  const kK = smooth(HIP_Y - THIGH - 0.16, HIP_Y - THIGH + 0.16, y)
+  const kF = (1 - smooth(ANKLE_H - 0.02, ANKLE_H + 0.2, y)) * (0.6 + 0.4 * smooth(-0.05, 0.14, z))
+  // and the top of a leg with the hip helper
+  const root = 0.7 * smooth(HIP_Y - 0.34, HIP_Y - 0.06, y)
+  acc[k === 0 ? B.HIP_L : B.HIP_R] += w * kK * root
+  acc[th] += w * kK * (1 - root)
   acc[sn] += w * (1 - kK) * (1 - kF)
   acc[ft] += w * (1 - kK) * kF
 }
 
-/** the blend radius the parts share a vertex over: a little wider than the
-    widest fillet, so the weights change more slowly than the shape does */
-const SHARE = 0.17
+/** how much wider than the fillet the weights are shared over: a little,
+    so the weights change more slowly than the shape does. The band follows
+    the fillet (wide at the shoulder, tight down the arm), because a single
+    radius everywhere gave the flank beside a hanging elbow a share of the
+    arm, and swinging the arm out dragged a web of body with it, stretched
+    six times over */
+const SHARE_K = 1.1
 const acc = new Float32Array(BONE_COUNT)
 /** weights for a point of the body, written as 4 indices + 4 weights; also
     returns how much of it is bean and how much leg (for the paint) */
 const weighBody = (
-  fr: Frame, x: number, y: number, z: number,
-  si: Uint16Array, sw: Float32Array, o: number, part: Float32Array, po: number,
+  fr: Frame, x: number, y: number, z: number, full: Float32Array, o: number, part: Float32Array, po: number,
 ) => {
   acc.fill(0)
   const d0 = fr.bean(x, y, z)
@@ -416,17 +466,26 @@ const weighBody = (
   const d2 = fr.arm[1](x, y, z)
   const d3 = fr.leg[0](x, y, z)
   const d4 = fr.leg[1](x, y, z)
-  const dm = Math.min(d0, d1, d2, d3, d4)
-  const r = (d: number) => {
-    const t = Math.max(0, 1 - (d - dm) / SHARE)
+  // each part shares with the bean over its own fillet: a vertex belongs to
+  // the bean and a part in proportion to how deep into their blend it is
+  const share = (d: number, k: number) => {
+    const t = Math.max(0, 1 - (d - d0) / (k * SHARE_K))
     return t * t * t
   }
-  const w0 = r(d0)
-  const w1 = r(d1)
-  const w2 = r(d2)
-  const w3 = r(d3)
-  const w4 = r(d4)
-  const sum = w0 + w1 + w2 + w3 + w4
+  const bean = (d: number, k: number) => {
+    const t = Math.max(0, 1 - (d0 - d) / (k * SHARE_K))
+    return t * t * t
+  }
+  const k1 = fr.armK(0, x, y, z)
+  const k2 = fr.armK(1, x, y, z)
+  const kl = fr.legK(y)
+  const w1 = share(d1, k1)
+  const w2 = share(d2, k2)
+  const w3 = share(d3, kl)
+  const w4 = share(d4, kl)
+  // the bean's own weight falls away as the vertex goes deeper into a part
+  const w0 = Math.min(bean(d1, k1), bean(d2, k2), bean(d3, kl), bean(d4, kl))
+  const sum = w0 + w1 + w2 + w3 + w4 || 1
   beanChain(fr, x, y, z, acc, w0 / sum)
   if (w1) armChain(fr, 0, x, y, z, acc, w1 / sum)
   if (w2) armChain(fr, 1, x, y, z, acc, w2 / sum)
@@ -434,7 +493,56 @@ const weighBody = (
   if (w4) legChain(1, y, z, acc, w4 / sum)
   part[po] = w0 / sum
   part[po + 1] = (w3 + w4) / sum
-  pick4(si, sw, o)
+  full.set(acc, o)
+}
+
+/*
+  Then the weights are smoothed over the mesh itself: a few rounds of each
+  vertex's weights moving halfway to its neighbours' average. Weights
+  computed per point from distances change as fast as the distances do, and
+  across a crease (an armpit, the back of a knee, the front of an ankle) that
+  is fast enough for linear blend skinning to fold the skin over itself when
+  the joint bends: the armpit of a raised arm showed as a scribble of
+  inside-out triangles. Smoothed along the surface, a joint's weights ramp
+  over a few rows of triangles instead, and only along the skin, so nothing
+  leaks across the gap between two legs or an arm and the flank.
+*/
+const SMOOTH_ROUNDS = 10
+const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number) => {
+  // neighbour lists, compressed
+  const deg = new Uint32Array(V + 1)
+  for (let t = 0; t < idx.length; t++) deg[idx[t] + 1] += 2
+  for (let v = 0; v < V; v++) deg[v + 1] += deg[v]
+  const nb = new Uint32Array(deg[V])
+  const fill = deg.slice(0, V)
+  for (let t = 0; t < idx.length; t += 3) {
+    for (let e = 0; e < 3; e++) {
+      const a = idx[t + e]
+      nb[fill[a]++] = idx[t + ((e + 1) % 3)]
+      nb[fill[a]++] = idx[t + ((e + 2) % 3)]
+    }
+  }
+  let src: Float32Array = full
+  let dst: Float32Array = new Float32Array(full.length)
+  for (let r = 0; r < SMOOTH_ROUNDS; r++) {
+    for (let v = 0; v < V; v++) {
+      const n = deg[v + 1] - deg[v]
+      const o = v * BONE_COUNT
+      if (!n) {
+        for (let b = 0; b < BONE_COUNT; b++) dst[o + b] = src[o + b]
+        continue
+      }
+      for (let b = 0; b < BONE_COUNT; b++) {
+        let m = 0
+        for (let k = deg[v]; k < deg[v + 1]; k++) m += src[nb[k] * BONE_COUNT + b]
+        dst[o + b] = 0.5 * src[o + b] + (0.5 * m) / n
+      }
+    }
+    const t = src
+    src = dst
+    dst = t
+  }
+  if (src !== full) full.set(src)
 }
 
 /** the four heaviest bones in `acc`, normalized */
@@ -491,8 +599,14 @@ const bodySurface = (b: number): Piece => {
   const si = new Uint16Array(V * 4)
   const sw = new Float32Array(V * 4)
   const part = new Float32Array(V * 2)
+  const full = new Float32Array(V * BONE_COUNT)
   for (let v = 0; v < V; v++) {
-    weighBody(fr, m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2], si, sw, v * 4, part, v * 2)
+    weighBody(fr, m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2], full, v * BONE_COUNT, part, v * 2)
+  }
+  smoothWeights(full, m.idx, V)
+  for (let v = 0; v < V; v++) {
+    acc.set(full.subarray(v * BONE_COUNT, v * BONE_COUNT + BONE_COUNT))
+    pick4(si, sw, v * 4)
   }
   const p: Piece = { pos: m.pos, nrm: m.nrm, si, sw, part, role: ROLE.SUIT, idx: m.idx }
   BODY_SURF[b] = p
@@ -510,21 +624,89 @@ const gearPiece = (
   const si = new Uint16Array(V * 4)
   const sw = new Float32Array(V * 4)
   const part = new Float32Array(V * 2)
+  const body = bodySurface(fr.index)
+  const near = nearestOn(body)
+  const full = new Float32Array(V * BONE_COUNT)
   for (let v = 0; v < V; v++) {
     const x = m.pos[v * 3]
     const y = m.pos[v * 3 + 1]
     const z = m.pos[v * 3 + 2]
     acc.fill(0)
-    beanChain(fr, x, y, z, acc, 1)
+    // headgear moves with the skin it sits on: the weights of the nearest
+    // point of the (smoothed) bean, or the bean's own chain for anything
+    // standing well clear of it, like the tip of a party hat. Weighted on
+    // its own, a hood disagreed with the neck under it and folded
+    const at = near(x, y, z)
+    if (at >= 0) for (let k = 0; k < 4; k++) acc[body.si[at * 4 + k]] += body.sw[at * 4 + k]
+    else beanChain(fr, x, y, z, acc, 1)
     if (tails) {
       // a tail hangs off the knot: the further down it, the more it swings
       const k = smooth(0.04, 0.16, len(x - tails.x, y - tails.y, z - tails.z))
       for (let b = 0; b < BONE_COUNT; b++) acc[b] *= 1 - k
       acc[B.POM] += k
     }
+    full.set(acc, v * BONE_COUNT)
+  }
+  // nearest-vertex weights are piecewise constant; smoothed over the
+  // piece's own surface they ramp the way the skin under them does
+  smoothWeights(full, m.idx, V)
+  for (let v = 0; v < V; v++) {
+    acc.set(full.subarray(v * BONE_COUNT, v * BONE_COUNT + BONE_COUNT))
     pick4(si, sw, v * 4)
   }
   return { pos: m.pos, nrm: m.nrm, si, sw, part, role, idx: m.idx }
+}
+
+/** a lookup of the bean vertex nearest a point (within NEAR_R, else -1),
+    through a hash of cells: headgear has a few thousand vertices and the
+    body five, so a brute-force search would cost more than the surface */
+const NEAR_R = 0.3
+const NEAR = new WeakMap<Piece, (x: number, y: number, z: number) => number>()
+const nearestOn = (p: Piece) => {
+  const hit = NEAR.get(p)
+  if (hit) return hit
+  const C = 0.1
+  const cells = new Map<number, number[]>()
+  const key = (i: number, j: number, k: number) => ((i + 512) * 1024 + (j + 512)) * 1024 + (k + 512)
+  const V = p.pos.length / 3
+  for (let v = 0; v < V; v++) {
+    // only the bean's own skin: a hood's hem lies over the root of each arm,
+    // and hung off the arm it followed the arm about
+    if (p.part[v * 2] < 0.6) continue
+    const kk = key(Math.floor(p.pos[v * 3] / C), Math.floor(p.pos[v * 3 + 1] / C), Math.floor(p.pos[v * 3 + 2] / C))
+    let list = cells.get(kk)
+    if (!list) cells.set(kk, (list = []))
+    list.push(v)
+  }
+  const R = Math.ceil(NEAR_R / C)
+  const fn = (x: number, y: number, z: number) => {
+    const ci = Math.floor(x / C)
+    const cj = Math.floor(y / C)
+    const ck = Math.floor(z / C)
+    let best = -1
+    let bd = NEAR_R * NEAR_R
+    // rings outward, stopping once a ring cannot beat what was found
+    for (let r = 0; r <= R; r++) {
+      if (best >= 0 && ((r - 1) * C) ** 2 > bd) break
+      for (let i = ci - r; i <= ci + r; i++)
+        for (let j = cj - r; j <= cj + r; j++)
+          for (let k = ck - r; k <= ck + r; k++) {
+            if (Math.max(Math.abs(i - ci), Math.abs(j - cj), Math.abs(k - ck)) !== r) continue
+            const list = cells.get(key(i, j, k))
+            if (!list) continue
+            for (const v of list) {
+              const d = (p.pos[v * 3] - x) ** 2 + (p.pos[v * 3 + 1] - y) ** 2 + (p.pos[v * 3 + 2] - z) ** 2
+              if (d < bd) {
+                bd = d
+                best = v
+              }
+            }
+          }
+    }
+    return best
+  }
+  NEAR.set(p, fn)
+  return fn
 }
 
 /** the headgear, in `look.ts`'s HATS order */
@@ -694,7 +876,9 @@ const hatPieces = (fr: Frame, kind: number): Piece[] => {
     case HOOD: {
       // a hood up over the head and down onto the shoulders, the face
       // looking out of it, two cords hanging from the front
-      const yBot = 1.78
+      // the hem clears the shoulders: the fillet where each arm grows out
+      // bulges up under a lower one and moves about inside it
+      const yBot = HIP_Y + WAIST_OFF + SHOULDER_OFF + 0.28
       const fz = fr.rx(EYE_Y) * zs
       const hole = ellipsoid(0, EYE_Y - 0.02, fz + 0.1, 0.34, 0.31, 0.42)
       const shell: Field = (x, y, z) =>
@@ -784,6 +968,12 @@ export const bodyGeometry = (
   lastBuildMs = (typeof performance !== 'undefined' ? performance.now() : 0) - t0
   return g
 }
+
+/** the body's own field for a build: negative inside the skin. What the
+    measure uses to leave out of its fold count anything buried inside the
+    body, where nobody can see it (the underside of a hat, the inner face of
+    a hood) */
+export const bodyField = (buildIndex: number): Field => frameFor(clampBuild(buildIndex)).body
 
 /** build one variant from nothing (its bean, its headgear) and report the
     milliseconds, without touching the cache anybody is drawing from: what
