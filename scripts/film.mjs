@@ -39,7 +39,7 @@ const flag = (name, fallback) => {
 }
 const has = (name) => argv.includes(`--${name}`)
 const VALUED = new Set([
-  'frames', 'tile', 'cols', 'fps', 'size', 'tod', 'duration', 'rings', 'out',
+  'frames', 'tile', 'cols', 'fps', 'size', 'tod', 'duration', 'rings', 'out', 'dense-fps',
   'start', 'from', 'to', 'yaw', 'dist', 'height', 'fov', 'angles', 'icon', 'labels',
 ])
 const targets = argv.filter((a, i) => !a.startsWith('--') && !(argv[i - 1]?.startsWith('--') && VALUED.has(argv[i - 1].slice(2))))
@@ -59,6 +59,8 @@ options
   --cols <n>       sheet columns                  (default 4)
   --video          also write an MP4 of the whole run
   --gif            also write a GIF (smaller, 15 fps unless --fps)
+  --dense          also write dense contact sheets off the video frames:
+                   <id>-dense-01.png... at --dense-fps (default 10), 8x6 a page
   --fps <n>        video frame rate               (default 30)
   --size <WxH>     video size                     (default 960x600)
   --tod <0..1>     time of day                    (default the scenario's)
@@ -90,7 +92,9 @@ const frames = Number(flag('frames', 12))
 const [vw, vh] = String(flag('size', '960x600')).split('x').map(Number)
 const outDir = resolve(flag('out', 'shots/film'))
 const gif = has('gif')
-const video = has('video') || gif
+const dense = has('dense')
+const denseFps = Number(flag('dense-fps', 10))
+const video = has('video') || gif || dense
 const fps = Number(flag('fps', gif && !has('video') ? 15 : 30))
 const rows = Math.ceil(frames / Math.min(cols, frames))
 
@@ -210,7 +214,17 @@ for (const id of ids) {
       writeFileSync(join(dir, `${String(i).padStart(5, '0')}.png`), await probe.screenshot(vw, vh))
     }
     const outs = []
-    if (has('video') || !gif) {
+    if (dense) {
+      // pages of 48 stills, 8 across, at denseFps, straight off the frames
+      const pat = join(outDir, `${name}-dense-%02d.png`)
+      const r = spawnSync('ffmpeg', [
+        '-y', '-loglevel', 'error', '-framerate', String(fps), '-i', join(dir, '%05d.png'),
+        '-vf', `fps=${denseFps},scale=${Math.min(vw, 400)}:-1,tile=8x6`, pat,
+      ], { stdio: 'inherit' })
+      if (r.status === 0) outs.push(pat.replace('%02d', '*'))
+      else failed = true
+    }
+    if (has('video') || (!gif && !dense)) {
       const mp4 = join(outDir, `${name}.mp4`)
       const r = spawnSync('ffmpeg', [
         '-y', '-loglevel', 'error', '-framerate', String(fps), '-i', join(dir, '%05d.png'),
@@ -232,6 +246,10 @@ for (const id of ids) {
     rmSync(dir, { recursive: true, force: true })
     const vl = await probe.evaluate('window.__film.videoLinks()')
     console.log(`${''.padEnd(16)} ${v.frames} frames at ${fps} fps, ${vl} programs linked after warm-up -> ${outs.join(', ')}`)
+    // the report again, as the video's run left it: the sheet's line above
+    // is only as far as its last still (one frame at t = 0 with --frames 1)
+    const vr = await probe.evaluate('window.__film.videoReport()')
+    if (vr) console.log(`${''.padEnd(16)} at the end of the video: ${vr}`)
   }
 }
 

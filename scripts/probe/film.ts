@@ -526,7 +526,10 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
   labels.innerHTML = ''
   const t0 = Math.max(0, Math.min(st.duration, spec.start ?? 0))
   for (let i = 0; i < spec.frames; i++) {
-    const t = t0 + ((st.duration - t0) * i) / Math.max(1, spec.frames - 1)
+    // one still with no start is the end of the run, so its report is whole
+    const t = spec.frames === 1 && spec.start === undefined
+      ? st.duration
+      : t0 + ((st.duration - t0) * i) / Math.max(1, spec.frames - 1)
     advance(st, t)
     const col = i % cols
     const row = Math.floor(i / cols)
