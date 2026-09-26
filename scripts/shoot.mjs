@@ -96,6 +96,12 @@ options
   --pick <x>,<y>       also raycast that pixel of tile 0 and print the hits
   --pixel <n>          body targets only: draw the look at 1/n of the tile
                        height instead of the default exact 2x (3 is chunkier)
+  --alt <n[,n...]>     noclip/helicopter view: the camera n units over the
+                       target's ground, backed off along --yaw and pitched
+                       16 degrees down so the horizon is in frame, through
+                       the real streamer (ring, far field, altitude fog and
+                       air). Several heights make a row per target:
+                       --alt 10,40,120,300 town:downtown biome:forest biome:beach
   --keep               leave chrome and vite running (for repeated shots)
 `)
   process.exit(0)
@@ -166,7 +172,9 @@ const spec = {
   lines: Number(flag('lines', 0)),
   look: JSON.parse(flag('look', '{}')),
   pixel: Number(flag('pixel', 1)),
+  alts: flag('alt', null) ? String(flag('alt')).split(',').map(Number) : undefined,
 }
+if (spec.alts) spec.cols = spec.alts.length
 const outPath = resolve(
   flag('out', `shots/${targets[0].replace(/[^a-z0-9]+/gi, '-')}.png`),
 )
@@ -316,6 +324,7 @@ for (const r of rows) {
     `${String(r.label).padEnd(22)} ${String(r.x).padStart(7)},${String(r.z).padStart(7)}` +
     `  y ${String(r.y).padStart(7)}  ${r.biome.padEnd(8)}` +
     `${r.district ? ' ' + r.district : ''}  ${r.verts} verts` +
+    (r.draws === undefined ? '' : `  ${r.draws} meshes`) +
     (r.animals === undefined ? '' : `  ${r.animals} animals, ${r.people} people`),
   )
 }

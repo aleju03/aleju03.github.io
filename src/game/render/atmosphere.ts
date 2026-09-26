@@ -73,7 +73,9 @@ const HEAD_GAIN = 0.9
  */
 export const airForSky = (
   air: Air, s: SkyNumbers, biome: number, sunDir: THREE.Vector3, sunColor: THREE.Color,
+  alt = 0,
 ) => {
+  void alt
   const out = 1 - s.indoor
   // the haze distance: open at noon, closing in through twilight to night
   // noon is thin on purpose: a friendly day has contrast half a kilometre

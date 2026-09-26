@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
-import { makeChunkMats } from '../../src/game/world/streamer'
+import { buildWorld, makeChunkMats } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
 import { SEA_Y, sampleAt, terrainY } from '../../src/game/world/terrain'
 import { landmarkIn, type LandmarkKind } from '../../src/game/world/landmarks'
@@ -19,6 +19,8 @@ import {
   BIOME_AIR, airForSky, lightsForSky, nearestLamps,
 } from '../../src/game/render/atmosphere'
 import type { SkyState } from '../../src/game/levels/sky'
+import { altitudeOf, fogForAltitude, viewFarFor } from '../../src/game/levels/altitude'
+import { windUniforms } from '../../src/game/world/wind'
 
 /*
   The world, rendered off to one side so it can be photographed.
@@ -102,6 +104,9 @@ export interface ShotSpec {
       `day` / `night` objects overriding the grade presets (render/grade.ts).
       For tuning the look without an edit-reload cycle */
   look?: Record<string, unknown>
+  /** altitudes: each target is shot from each of these heights over its
+      ground, through the real streamer (see altTile). A row per target */
+  alts?: number[]
 }
 
 export interface Prop {
@@ -130,6 +135,8 @@ export interface ShotResult {
       from a street whose crowd all spawned behind the camera */
   animals?: number
   people?: number
+  /** altitude tiles: meshes drawn (after frustum culling is not counted) */
+  draws?: number
 }
 
 /* ------------------------------------------------------------- searching -- */
@@ -245,7 +252,7 @@ const lampD2 = new Float32Array(16)
 const sunDir = new THREE.Vector3()
 export const dressLook = (
   look: PixelLook, scene: THREE.Scene, st: SkyState, cam: THREE.Camera,
-  biome: string | null, lamps: number[] = [], headlamp = true,
+  biome: string | null, lamps: number[] = [], headlamp = true, alt = 0,
 ) => {
   look.setMood(st.night * (1 - st.twilight))
   let sun: THREE.DirectionalLight | null = null
@@ -256,7 +263,9 @@ export const dressLook = (
   })
   const s = sun as THREE.DirectionalLight | null
   if (s) sunDir.subVectors(s.position, s.target.position).normalize()
-  airForSky(look.air, st, BIOME_AIR[biome ?? ''] ?? 1, sunDir, s ? s.color : new THREE.Color())
+  airForSky(
+    look.air, st, BIOME_AIR[biome ?? ''] ?? 1, sunDir, s ? s.color : new THREE.Color(), alt,
+  )
   cam.updateMatrixWorld()
   const cp = cam.getWorldPosition(new THREE.Vector3())
   const n = nearestLamps(cp.x, cp.z, lamps, lamps.length / 3, lampPick, 16, lampD2)
@@ -404,14 +413,97 @@ const disposeTiles = () => {
   tiles = []
 }
 
+/*
+  The view from the air: noclip, or the helicopter.
+
+  Every other tile here is a fixed neighbourhood of chunks built once, which
+  is honest at a walker's eye and a lie from a hundred units up, where what
+  the frame is made of is the streamer's own decisions: how far the ring
+  reaches at this height, which tier each ring gets, what stands past it,
+  and how the fog and the air open up. So an altitude tile runs the real
+  streamer (`buildWorld`) at the camera, primes the whole ring with no frame
+  budget, settles every fade, and dresses the sky, the fog and the look
+  through the same altitude module the game uses (levels/altitude.ts).
+
+  The camera stands `alt` over the target's ground, backed off along the
+  bearing and pitched down a fixed sixteen degrees: the horizon sits in the
+  top quarter of the frame and the target in the lower third, which is how
+  anybody actually flies in noclip.
+*/
+const ALT_PITCH = 0.28
+const altTile = (
+  spec: ShotSpec, x: number, z: number, label: string, alt: number,
+  tw: number, th: number, index: number,
+): ShotResult => {
+  const r = renderer!
+  const scene = new THREE.Scene()
+  const gy = terrainY(x, z)
+  const back = Math.max(10, alt / Math.tan(0.63))
+  const cam = new THREE.PerspectiveCamera(58, tw / th, 0.2, 900)
+  cam.position.set(x + Math.cos(spec.yaw) * back, gy + alt, z + Math.sin(spec.yaw) * back)
+  cam.lookAt(
+    cam.position.x - Math.cos(spec.yaw) * Math.cos(ALT_PITCH),
+    cam.position.y - Math.sin(ALT_PITCH),
+    cam.position.z - Math.sin(spec.yaw) * Math.cos(ALT_PITCH),
+  )
+  const camAlt = altitudeOf(cam.position.y, terrainY(cam.position.x, cam.position.z))
+  const world = buildWorld({
+    scene, obstacles: [], trackTexture: noop, trackDisposable: noop,
+  })
+  // the first update picks the ring radius for this height (and builds one
+  // chunk under the frame budget); prime then builds the rest with none
+  world.update(cam.position.x, cam.position.z, 1 / 60, camAlt)
+  world.prime(cam.position.x, cam.position.z, 1e9)
+  // every chunk dissolves in over world/fade.ts's FADE_S from its birth
+  // stamp; a still frame wants them all arrived
+  windUniforms.uTime.value += 30
+  world.update(cam.position.x, cam.position.z, 0, camAlt)
+  const st = lightFor(scene, spec.tod, cam.position)
+  fogForAltitude(st, camAlt)
+  const fog = scene.fog as THREE.Fog
+  fog.near = st.fogNear
+  fog.far = st.fogFar
+  world.setNight(st.night)
+  world.setWaterTint(st.fogColor, st.day)
+  cam.far = viewFarFor(camAlt)
+  cam.updateProjectionMatrix()
+  if (look) {
+    const lampBuf = new Float32Array(16 * 3)
+    const n = world.nearLamps(cam.position.x, cam.position.z, lampBuf, 16)
+    dressLook(
+      look, scene, st, cam, airGround(cam.position.x, cam.position.z),
+      Array.from(lampBuf.subarray(0, n * 3)), false, camAlt,
+    )
+  }
+  tiles.push({ scene, cam, chunks: [] })
+  if (look) look.render(scene, cam)
+  else r.render(scene, cam)
+  const err = r.getContext().getError()
+  if (err && !lastGlError) lastGlError = `0x${err.toString(16)} on tile ${index} (${label})`
+  const s = sampleAt(x, z)
+  let verts = 0
+  let draws = 0
+  scene.traverseVisible((o) => {
+    const m = o as THREE.Mesh
+    if (!m.isMesh) return
+    draws++
+    verts += m.geometry.getAttribute('position')?.count ?? 0
+  })
+  return {
+    label, x: Math.round(x), z: Math.round(z), y: Math.round(gy * 10) / 10,
+    biome: s.biome, district: s.place.district, verts, draws,
+  }
+}
+
 export const shoot = (spec: ShotSpec): ShotResult[] => {
   const canvas = document.getElementById('c') as HTMLCanvasElement
   const list = spec.targets.length === 1 && spec.targets[0].kind === 'landmark'
     && spec.targets[0].arg === '*'
     ? resolveAllLandmarks()
     : spec.targets.map(resolve)
-  const cols = Math.min(spec.cols, list.length)
-  const rows = Math.ceil(list.length / cols)
+  const count = list.length * Math.max(1, spec.alts?.length ?? 0)
+  const cols = spec.alts?.length ? spec.alts.length : Math.min(spec.cols, count)
+  const rows = Math.ceil(count / cols)
   const [tw, th] = spec.tile
   canvas.width = tw * cols
   canvas.height = th * rows
@@ -454,6 +546,22 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     spec.tod < 0.22 || spec.tod > 0.78 ? 1 : 0
 
   const out: ShotResult[] = []
+  if (spec.alts?.length) {
+    // targets down the rows, altitudes across: `--alt 10,40,120,300` over
+    // three places is one sheet a critic can read left to right as a climb
+    let i = 0
+    for (const t of list) {
+      for (const alt of spec.alts) {
+        const col = i % cols
+        const row = Math.floor(i / cols)
+        renderer.setViewport(col * tw, canvas.height - (row + 1) * th, tw, th)
+        renderer.setScissor(col * tw, canvas.height - (row + 1) * th, tw, th)
+        out.push(altTile(spec, t.x, t.z, `${t.label} @${alt}`, alt, tw, th, i))
+        i++
+      }
+    }
+    return out
+  }
   for (let i = 0; i < list.length; i++) {
     const { x, z, label } = list[i]
     const scene = new THREE.Scene()

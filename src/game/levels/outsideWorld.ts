@@ -5,6 +5,7 @@ import type { GrabHandle } from '../world/pedestrians'
 import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { YARD } from './houseWorld'
+import { fogForAltitude } from './altitude'
 
 /*
   Everything past the property line: the sky above it (sky.ts) and the endless
@@ -332,11 +333,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       w.birds.update(camPos, dt, state.day, state.twilight)
       w.fauna.update(camPos, dt)
       w.pedestrians.update(camPos, dt)
-      if (alt > 20) {
-        const k = Math.min(1, (alt - 20) / 100)
-        state.fogNear *= 1 + k * 0.5
-        state.fogFar *= 1 + k * 0.55
-      }
+      fogForAltitude(state, alt)
       // windows and streetlamps come up with the dark; the water takes its
       // colour from the fog, which is most of what makes it read as water
       w.world.setNight(state.night)
