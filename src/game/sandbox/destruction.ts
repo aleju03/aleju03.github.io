@@ -2,8 +2,8 @@ import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
 import { rearmRuins, type Opened, type Ruins, type Standing } from '../world/debris'
 import {
-  breakDecor, chipFrags, cornerPoints, fragsToGeometry, hullPoints, massOf, shatterFrags, unsupported,
-  type Frag, type Piece,
+  breakDecor, chipFrags, cornerPoints, fractureStructure, fragsToGeometry, hullPoints, massOf, shatterFrags,
+  unsupported, type Frag, type Piece, type StructureRec,
 } from '../world/fracture'
 import { gfx } from '../world/quality'
 import { msg, registerCommand, type CommandCtx } from './commands'
@@ -123,7 +123,7 @@ const SHARD_VOL = 0.9
     building apart (triangles of fracture work, about 3 ms), making rubble
     bodies and breaking landed lumps. Counted in work rather than time so a
     destruction comes out the same on every machine */
-const OPEN_SLICE_WORK = 1200
+const OPEN_SLICE_WORK = 2000
 const SPAWNS_PER_SLICE = 14
 const BREAKS_PER_SLICE = 6
 /** a prop's impulse (kg*u/s) per unit of damage against a wall */
@@ -1384,6 +1384,32 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   }
   function rearm() {
     rearmRuins(ruins)
+  }
+  // The cutting, shattering and chipping are cold code until the first
+  // building comes down, and V8 compiles them on first use: the first blast
+  // in a session cost six milliseconds more than every later one. Run them
+  // once on a small wall now, while the world is attaching under the cover
+  {
+    const g = new THREE.BoxGeometry(6, 4, 0.6, 2, 2, 1).toNonIndexed()
+    const p = Array.from(g.getAttribute('position').array as Float32Array)
+    const wall: Frag = {
+      p, n: Array.from(g.getAttribute('normal').array as Float32Array), c: p.map(() => 0.5),
+      surf: 2, closed: true, core: [0.3, 0.3, 0.3], face: 0, glass: false,
+    }
+    g.dispose()
+    for (let k = 0; k < 6; k++) {
+      for (const sh of shatterFrags([wall], k + 1, 4)) breakDecor(chipFrags(sh, k + 7, 2), k, k % 3, 2)
+    }
+    // ...and a whole fracture of a two-storey block, which is the rest of it
+    const block = new THREE.BoxGeometry(14, 10, 12, 3, 3, 3).translate(0, 5, 0).toNonIndexed()
+    block.setAttribute('color', new THREE.BufferAttribute(new Float32Array(block.getAttribute('position').count * 3).fill(0.5), 3))
+    const n = block.getAttribute('position').count
+    const warmRec: StructureRec = {
+      id: 'warm', kind: 'midrise', baseY: 0, storeyH: 4.6, grade: 1,
+      det: [0, n, 0, 0], gl: null, marks: new Int32Array([0, 0]), gmarks: new Int32Array(0), boxes: [],
+    }
+    fractureStructure(warmRec, block, null)?.detail?.dispose()
+    block.dispose()
   }
   attached.set(sb, d)
   return d

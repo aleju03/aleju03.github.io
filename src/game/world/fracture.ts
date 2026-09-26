@@ -925,14 +925,20 @@ export function* fractureSteps(
 
   let frags: Frag[] = []
   const shellSet = new Set(shells)
-  raw.forEach((f, i) => {
+  for (let i = 0; i < raw.length; i++) {
+    const f = raw[i]
     if (!shellSet.has(i)) {
       frags.push(f)
-      return
+      continue
     }
     const ey = boxes[i].max.y - boxes[i].min.y
     frags.push(...hollow(f, T, Math.min(T, ey * 0.45), buriedIn(i)))
-  })
+    work += (f.p.length / 9) * 4
+    if (work > budget) {
+      yield
+      work = 0
+    }
+  }
 
   // floors at every storey line of every shell tall enough to have storeys
   const floors: Array<{ y: number; box: THREE.Box3 }> = []
@@ -962,8 +968,8 @@ export function* fractureSteps(
     }
   }
 
-  // hollowing and flooring: about twice the stamps' own triangles
-  for (const f of raw) work += (f.p.length / 9) * 2
+  // flooring
+  work += shells.length * 20
   if (work > budget) {
     yield
     work = 0
@@ -999,6 +1005,8 @@ export function* fractureSteps(
       const hi = pl.nx ? b.max.x : pl.ny ? b.max.y : b.max.z
       if (hi <= pl.d + EPS || lo >= pl.d - EPS) continue
       const [fa, fb2] = splitFrag(f, pl)
+      // every cut is work in proportion to what it cut
+      work += f.p.length / 9
       // a fragment still on its way through several planes is re-faced as it
       // goes once it has fragmented, or every later cut pays for every
       // sliver the earlier ones left
@@ -1010,7 +1018,6 @@ export function* fractureSteps(
   }
   for (const f of frags) {
     cutBy(f, 0, false)
-    work += f.p.length / 9
     if (work > budget) {
       yield
       work = 0
