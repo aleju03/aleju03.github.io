@@ -500,7 +500,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
              float core = smoothstep(cover + 0.04, cover + 0.2, f);
              float under = smoothstep(0.02, 0.2, dir.y);
              litK = clamp(litK * 0.55 + core * 0.45, 0.0, 1.0) * mix(0.55, 1.0, under);
-             litK = floor(litK * 2.999) * 0.5;
+             // two tones, lit and shaded: with three, a deck of any cover
+             // broke into a camouflage of patches rather than into clouds
+             litK = 0.4 + 0.6 * step(0.45, litK);
              vec3 col = mix(uCloudShade, uCloudLit, litK);
              // the silver lining: the edge of a cloud in front of the sun,
              // as one flat step rather than a gradient
@@ -513,7 +515,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
                vec3 q = vec3(dir.x, dir.y * 0.22, dir.z) * 5.6
                         + vec3(uCloudTime * 0.032, 0.0, uCloudTime * 0.021);
                float wisp = cNoise(q) * 0.66 + cNoise(q * 2.4) * 0.34;
-               float aw = smoothstep(0.5, 0.78, wisp) * 0.5 * (1.0 - cov);
+               // hard-edged and sparse: a soft half-alpha veil over the blue
+               // posterized into a camouflage of pale patches across the deck
+               float aw = smoothstep(0.7, 0.72, wisp) * 0.8 * (1.0 - cov);
                a = cov + aw;
                col = mix(mix(uCloudShade, uCloudLit, 0.9), col, cov / max(a, 0.001));
              #endif

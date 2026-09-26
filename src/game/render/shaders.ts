@@ -354,7 +354,9 @@ export const GRADE_FRAG = /* glsl */ `
       silK *= 1.0 - smoothstep(0.7, 0.97, air);
       // and a rim the air has taken most of carries no line against the
       // sky: inked, the far edge of the world read as the lip of a bowl
-      if (skyBehind) silK *= 1.0 - smoothstep(0.3, 0.7, air);
+      // Distance takes the line too, whatever the air says: a ridge a few
+      // hundred metres off inked against the sky is the lip of a bowl
+      if (skyBehind) silK *= (1.0 - smoothstep(0.3, 0.7, air)) * (1.0 - smoothstep(90.0, 260.0, range));
       col *= 1.0 - sil * silK * (1.0 - emits);
     } else {
       // ---- the sky, tied to the air --------------------------------------
