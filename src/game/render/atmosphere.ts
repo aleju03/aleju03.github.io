@@ -59,7 +59,7 @@ export interface SkyNumbers {
 }
 
 /** the lamp colour, before the night gain: sodium-warm, friendly */
-const LAMP = [1.0, 0.7, 0.4] as const
+const LAMP = [1.0, 0.52, 0.16] as const
 /** how hard a lamp pool lights, at full night */
 const LAMP_GAIN = 6
 /** the headlamp: a warm white, and how hard */
@@ -160,8 +160,8 @@ export const lightsForSky = (
     lights.pools[i * 4] = lamps[i * 3]
     lights.pools[i * 4 + 1] = lamps[i * 3 + 1]
     lights.pools[i * 4 + 2] = lamps[i * 3 + 2]
-    // a streetlamp six units up lights a pool about eleven across
-    lights.pools[i * 4 + 3] = 11
+    // a streetlamp six units up lights a pool about eight across
+    lights.pools[i * 4 + 3] = 8.5
   }
   lights.count = n
   const k = LAMP_GAIN * Math.min(1, s.night * 1.4)

@@ -292,8 +292,8 @@ export const createPixelLook = (
     pools: new Float32Array(MAX_POOLS * 4),
     count: 0,
     poolColor: new THREE.Color(0, 0, 0),
-    halo: 0.03,
-    haloRadius: 1.5,
+    halo: 0.05,
+    haloRadius: 0.8,
     ambient: new THREE.Color(0.05, 0.06, 0.08),
     head: {
       on: false,

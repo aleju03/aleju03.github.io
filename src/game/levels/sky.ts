@@ -311,7 +311,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       starCol[i * 3 + 1] = b * (warm ? 0.96 : 0.93)
       starCol[i * 3 + 2] = b * (warm ? 0.86 : 1)
       starPhase[i] = rand() * Math.PI * 2
-      starSize[i] = rand() < 0.06 ? 5.5 + rand() * 3 : 2 + rand() * 2
+      // in *internal* pixels: the look renders a few hundred lines and
+      // scales them up three or four times, so a 3 here was a snowflake
+      starSize[i] = rand() < 0.06 ? 2 : 1
     }
   }
   const starGeo = new THREE.BufferGeometry()
@@ -486,59 +488,65 @@ export function buildSky(opts: BuildOpts): SkyHandles {
            if (horizon < 0.004) {
              gl_FragColor.a = 0.0;
            } else {
-             vec3 flat3 = vec3(dir.x, dir.y * 0.42, dir.z);
-             // smaller cells than the deck used to have: at the old scale a
-             // cumulus filled half a view from the air
-             vec3 p = flat3 * 7.6;
-             p.xz += vec2(0.82, 0.57) * (uCloudTime * 0.011);
-             // the weather: banks and open blue, on their own slow drift
-             float bank = cNoise(flat3 * 1.1 + vec3(uCloudTime * 0.004, 0.0, 0.0));
+             /*
+               A cloud LAYER, not a painted dome: the view ray is carried up
+               to a flat deck one unit overhead and the noise is sampled
+               where it lands, so clouds are big overhead and shrink and
+               crowd toward the horizon in true perspective. Sampled on the
+               dome's own direction they were decals, one size from the
+               zenith to the skyline.
+
+               Three flat tones, each for a reason: the side away from the
+               sun (the density climbs toward the sun there), a flat shaded
+               base (the part of the cloud nearest the horizon on screen,
+               which is the underside a cumulus shows from below), and the
+               lit rest. Blue-grey shade, a white or warm lit face, and a
+               soft rim that the look's posterize cuts to one step.
+             */
+             float dy = max(dir.y, 0.018);
+             vec2 uv = dir.xz / dy;
+             float far0 = length(uv);
+             vec2 drift = vec2(0.82, 0.57) * (uCloudTime * 0.011);
+             vec3 p = vec3(uv * 2.2 + drift, uCloudTime * 0.004);
+             // weather banks on a slower, bigger field
+             float bank = cNoise(vec3(uv * 0.22 + drift * 0.3, 0.5));
+             // thinning toward the horizon (A4's rise of the cover threshold
+             // over the lowest degrees), and with distance along the deck,
+             // so the far clouds break up rather than packing into a wall
              float cover = uCover - (bank - 0.5) * 0.24
-               + pow(1.0 - smoothstep(0.0, 0.22, dir.y), 1.5) * 0.7;
+               + pow(1.0 - smoothstep(0.0, 0.22, dir.y), 1.5) * 0.7
+               + smoothstep(4.0, 16.0, far0) * 0.08;
              float f = cFbm(p);
-             // A near-hard rim and three flat tones (shadow, mid, lit): the
-             // look posterizes whatever arrives here, and a soft gradient
-             // came out as a blotch of many bands with a dithered halo round
-             // it. Handing it a cumulus already drawn in a few flat shapes is
-             // what lets it read as a painted cloud
-             float cov = smoothstep(cover + 0.03, cover + 0.05, f);
-             float f2 = cFbm(p + normalize(uSunDir) * 0.3);
-             // Two tones, a lit top and a shaded base: where there is more
-             // cloud just above this point than here, this is the underside.
-             // The earlier tones came from the sun-offset sample and the
-             // density, and across a whole deck they read as camouflage
-             // patches rather than as volumes lit from above
-             float fUp = cFbm(p + vec3(0.0, 0.32, 0.0));
-             float base = step(0.015, fUp - f) * smoothstep(0.012, 0.03, dir.y);
-             float litK = 1.0 - 0.6 * base;
-             // and the face turned from the sun a step down from its lit face
-             litK *= 1.0 - 0.18 * step(f, f2) * (1.0 - base);
+             // the rim is as wide as a pixel or two whatever the cloud's size
+             // on screen: a fixed width in noise units was a hard edge at the
+             // horizon and a blurry one overhead
+             float rimW = clamp(fwidth(f) * 2.0, 0.003, 0.03);
+             float cov = smoothstep(cover, cover + rimW, f);
+             vec2 sunXZ = uSunDir.xz;
+             sunXZ = dot(sunXZ, sunXZ) > 1e-4 ? normalize(sunXZ) : vec2(0.0, 1.0);
+             float fSun = cFbm(p + vec3(sunXZ * 0.28, 0.0));
+             vec2 away = normalize(dir.xz + vec2(1e-5));
+             float fOut = cFbm(p + vec3(away * (0.22 + 0.02 * far0), 0.0));
+             float base = step(fOut, cover + 0.02) * step(0.06, dir.y);
+             float shadeK = step(f + 0.012, fSun);
+             float litK = base > 0.5 ? 0.0 : (shadeK > 0.5 ? 0.55 : 1.0);
              vec3 col = mix(uCloudShade, uCloudLit, litK);
-             // the silver lining: the edge of a cloud in front of the sun,
-             // as one flat step rather than a gradient
              float rim = step(0.93, dot(dir, normalize(uSunDir)));
              col += uCloudLit * rim * 0.25 * litK;
              float a = cov;
              #ifdef RICH_SKY
-               // the high layer: thinner, faster, and always lit — it is
-               // above the deck, so it never sits in the deck's shadow
-               vec3 q = vec3(dir.x, dir.y * 0.22, dir.z) * 5.6
-                        + vec3(uCloudTime * 0.032, 0.0, uCloudTime * 0.021);
+               // the high layer, on a deck twice as far up: thinner, faster,
+               // always lit, and thinning toward the skyline like the deck
+               vec3 q = vec3(uv * 0.5 + vec2(uCloudTime * 0.032, uCloudTime * 0.021), 1.7);
                float wisp = cNoise(q) * 0.66 + cNoise(q * 2.4) * 0.34;
-               // hard-edged and sparse: a soft half-alpha veil over the blue
-               // posterized into a camouflage of pale patches across the deck
-               // and, like the deck, thinning out toward the skyline rather
-               // than running into it: from the air the wisps were the
-               // pillars of cloud cut flat along the horizon
-               float aw = smoothstep(0.7 + 0.25 * (1.0 - smoothstep(0.02, 0.25, dir.y)), 0.72
-                 + 0.25 * (1.0 - smoothstep(0.02, 0.25, dir.y)), wisp) * 0.8 * (1.0 - cov);
+               float th = 0.7 + 0.25 * (1.0 - smoothstep(0.02, 0.25, dir.y));
+               float aw = smoothstep(th, th + clamp(fwidth(wisp) * 2.0, 0.003, 0.02), wisp)
+                 * 0.7 * (1.0 - cov);
                a = cov + aw;
                col = mix(mix(uCloudShade, uCloudLit, 0.9), col, cov / max(a, 0.001));
              #endif
              // a cloud at the skyline is seen through the same air as the
-             // ground under it; without this it floats in front of the fog.
-             // Not all the way to the fog colour — a bank on the horizon has
-             // to keep enough of itself to still read as a cloud
+             // ground under it
              col = mix(uHaze, col, 0.3 + 0.7 * smoothstep(0.0, 0.26, dir.y));
              gl_FragColor.rgb = col;
              gl_FragColor.a = clamp(a, 0.0, 1.0) * horizon * uCloudOpacity;
@@ -714,7 +722,7 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   const CLOUD_LIT_NIGHT = new THREE.Color('#39435c')
   // a cumulus's shadow side is a light blue-grey, not a storm: with the
   // darker shade the whole deck read as grey paper by the time it was graded
-  const CLOUD_SHADE_DAY = new THREE.Color('#c4d5ea')
+  const CLOUD_SHADE_DAY = new THREE.Color('#8fa6c4')
   const CLOUD_SHADE_DUSK = new THREE.Color('#6d7488')
   const CLOUD_SHADE_NIGHT = new THREE.Color('#1a2233')
 
@@ -827,7 +835,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     // alone, golden hour was the greyest moment of the day instead of the one
     // everything else in the scene is warmest at
     sunLight.intensity =
-      (2.3 * Math.pow(Math.max(0, sunEl), 0.65) + twilight * 0.9 * (sunEl > 0 ? 1 : 0.25)) *
+      // the below-horizon share is the afterglow's warm key on whatever
+      // faces the set sun: without it a dusk town was one flat blue-grey
+      (2.3 * Math.pow(Math.max(0, sunEl), 0.65) + twilight * 0.9 * (sunEl > 0 ? 1 : 0.7)) *
       (1 - 0.88 * indoor)
     sunLight.color.lerpColors(SUN_LOW, SUN_HIGH, clamp01(sunEl * 1.6))
     // `castShadow` stays true forever so the door cannot change shader
