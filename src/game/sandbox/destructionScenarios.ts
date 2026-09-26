@@ -31,7 +31,7 @@ import type { Sandbox } from './sandbox'
 */
 
 let standIn: ChunkMats | null = null
-const cache = new Map<string, { recs: StructureRec[]; boxes: Solid[] }>()
+const cache = new Map<string, { recs: StructureRec[]; boxes: Solid[]; trees: Array<[number, number]> }>()
 
 /** what chunk.ts records in one chunk, built with throwaway materials */
 const recordsIn = (cx: number, cz: number) => {
@@ -42,7 +42,9 @@ const recordsIn = (cx: number, cz: number) => {
     standIn ??= { ground: m(), detail: m(), glass: m(), water: m(), leaf: m(), leafDepth: m() }
     const ch = buildChunk(cx, cz, 'full', standIn)
     for (const g of ch.geos) g.dispose()
-    hit = { recs: ch.structures, boxes: ch.boxes }
+    // a tree's solid is its trunk, and its crown is what blocks a lens
+    const trees = ch.smash.props.filter((p) => p.rTop > 0.5).map((p) => [p.x, p.z] as [number, number])
+    hit = { recs: ch.structures, boxes: ch.boxes, trees }
     cache.set(k, hit)
   }
   return hit
@@ -67,7 +69,14 @@ const openness = (x: number, z: number, dx: number, dz: number, r0: number, r1: 
       const pz = z + dz * r + sz * half * k
       n++
       let blocked = false
-      const boxes = recordsIn(chunkX(px), chunkZ(pz)).boxes
+      const here = recordsIn(chunkX(px), chunkZ(pz))
+      for (const [tx, tz] of here.trees) {
+        if ((tx - px) ** 2 + (tz - pz) ** 2 < 36) {
+          blocked = true
+          break
+        }
+      }
+      const boxes = blocked ? [] : here.boxes
       for (const b of boxes) {
         if (skip.has(b) || b.max.y - b.min.y < 2.4) continue
         if (px > b.min.x - 0.5 && px < b.max.x + 0.5 && pz > b.min.z - 0.5 && pz < b.max.z + 0.5) {
@@ -98,7 +107,7 @@ interface Found {
  */
 const siteBuilding = (
   kinds: string[], from: [number, number], dist: (w: number, h: number) => number,
-  opts: { minH?: number; maxH?: number; side?: boolean; minOpen?: number } = {},
+  opts: { minH?: number; maxH?: number; side?: boolean; minOpen?: number; fall?: boolean } = {},
 ): Found => {
   const c0 = chunkX(from[0])
   const d0 = chunkZ(from[1])
@@ -120,6 +129,34 @@ const siteBuilding = (
           const w = Math.max(b.max.x - b.min.x, b.max.z - b.min.z)
           const skip = new Set<Solid>(r.boxes)
           const far = dist(w, h)
+          if (opts.fall) {
+            // the ground it falls across first (the most open run out to its
+            // own height), and the lens square to that, on whichever flank
+            // is clearer
+            let bf = -1
+            let fk = 0
+            for (let k = 0; k < 16; k++) {
+              const a = (k / 16) * Math.PI * 2
+              const o = openness(x, z, Math.cos(a), Math.sin(a), w * 0.5 + 2, w * 0.5 + h * 0.9, w * 0.35, skip)
+              if (o > bf) {
+                bf = o
+                fk = k
+              }
+            }
+            if (bf < (opts.minOpen ?? 0.6)) continue
+            const fa = (fk / 16) * Math.PI * 2
+            const fdx = Math.cos(fa)
+            const fdz = Math.sin(fa)
+            const mx = x + fdx * h * 0.4
+            const mz = z + fdz * h * 0.4
+            const l = openness(mx, mz, -fdz, fdx, h * 0.3, far, 5, skip)
+            const rr = openness(mx, mz, fdz, -fdx, h * 0.3, far, 5, skip)
+            const side = l >= rr ? 1 : -1
+            return {
+              x, z, dx: -fdz * side, dz: fdx * side,
+              memo: { w, h, far, side: 0, base: r.baseY, open: bf, fdx, fdz },
+            }
+          }
           let best = -1
           let bestK = -1
           let bestSide = 0
@@ -144,6 +181,11 @@ const siteBuilding = (
             }
           }
           if (best < (opts.minOpen ?? 0.7)) continue
+          {
+            const a = (bestK / 16) * Math.PI * 2 + 0.2
+            // the lens itself, with room round it
+            if (openness(x, z, Math.cos(a), Math.sin(a), far - 2, far + 2, 4, skip) < 1) continue
+          }
           const a = (bestK / 16) * Math.PI * 2 + 0.2
           return {
             x, z, dx: Math.cos(a), dz: Math.sin(a),
@@ -180,7 +222,7 @@ const report = (sb: Sandbox, c: ScenarioCtx) => {
     total = b.open.alive.length
     for (let i = 0; i < total; i++) alive += b.open.alive[i]
   }
-  return `${total - alive}/${total} pieces down, ${s.lumps} rubble (${s.awake} moving, ${s.frozen} welded), ` +
+  return `[w ${c.memo.w.toFixed(0)} h ${c.memo.h.toFixed(0)} open ${c.memo.open.toFixed(2)}] ${total - alive}/${total} pieces down, ${s.lumps} rubble (${s.awake} moving, ${s.frozen} welded, ${s.lost} lost), ` +
     `open ${s.openMs.toFixed(1)} ms, last slice ${s.sliceMs.toFixed(2)} ms`
 }
 
@@ -196,12 +238,14 @@ defineScenario({
     const w = c.memo.w
     const h = c.memo.h
     const d = c.memo.far
-    // three-quarters on from the open bearing, a storey over the eaves
-    const a = Math.atan2(c.dz, c.dx) + 0.35 * (c.memo.side || 1)
+    // straight down the open bearing, a storey over the eaves
+    const a = Math.atan2(c.dz, c.dx)
+    const dd = Math.min(d, w * 1.3 + 9)
     return {
-      from: [c.x + Math.cos(a) * d, c.memo.base + h * 0.55 + 5, c.z + Math.sin(a) * d],
-      to: [c.x, c.memo.base + h * 0.35, c.z],
-      fov: Math.min(60, 38 + w),
+      from: [c.x + Math.cos(a) * dd, c.memo.base + h + 5, c.z + Math.sin(a) * dd],
+      to: [c.x, c.memo.base + h * 0.3, c.z],
+      fov: 58,
+      clear: true,
     }
   },
   setup: (c) => {
@@ -244,22 +288,25 @@ defineScenario({
 defineScenario({
   id: 'sandbox:tower',
   title: 'charges along one side of a tower\'s ground floor: it leans into the hole and comes down',
-  site: once('tower', () => siteBuilding(['tower', 'slab'], [0, -340], (w, h) => Math.max(w * 2.2, h * 1.5) + 20, {
-    minH: 30, maxH: 90, side: true, minOpen: 0.55,
+  site: once('tower', () => siteBuilding(['tower', 'slab'], [0, -340], (_w, h) => h * 1.3 + 10, {
+    minH: 30, maxH: 90, fall: true, minOpen: 0.85,
   })),
   duration: 9,
   frames: 12,
   camera: (c) => {
     const h = c.memo.h
-    const d = c.memo.far
-    const side = c.memo.side || 1
-    // off the open bearing, and shifted toward where it will land
-    const sx = -c.dz * side
-    const sz = c.dx * side
+    const fx = c.memo.fdx
+    const fz = c.memo.fdz
+    // square on to the fall, over the rooftops, looking at the arc it
+    // sweeps: the stump on one side of the frame, the landing on the other
+    const mx = c.x + fx * h * 0.42
+    const mz = c.z + fz * h * 0.42
+    const d = h * 1.25 + 12
     return {
-      from: [c.x + c.dx * d + sx * h * 0.2, c.memo.base + h * 0.35 + 6, c.z + c.dz * d + sz * h * 0.2],
-      to: [c.x + sx * h * 0.35, c.memo.base + h * 0.3, c.z + sz * h * 0.35],
-      fov: 58,
+      from: [mx + c.dx * d, c.memo.base + h * 0.8, mz + c.dz * d],
+      to: [mx, c.memo.base + h * 0.28, mz],
+      fov: 60,
+      clear: true,
     }
   },
   setup: () => {},
@@ -268,9 +315,8 @@ defineScenario({
       const s = building(c)
       if (!s) return
       const b = s.box
-      const side = c.memo.side || 1
-      const sx = -c.dz * side
-      const sz = c.dx * side
+      const sx = c.memo.fdx
+      const sz = c.memo.fdz
       const hx = (b.max.x - b.min.x) / 2
       const hz = (b.max.z - b.min.z) / 2
       const cx = (b.min.x + b.max.x) / 2
@@ -311,6 +357,7 @@ defineScenario({
       from: [c.x + c.dx * d * 0.85 + sx * d * 0.55, c.memo.base + 7, c.z + c.dz * d * 0.85 + sz * d * 0.55],
       to: [c.x + c.dx * c.memo.w * 0.3, c.memo.base + 2.5, c.z + c.dz * c.memo.w * 0.3],
       fov: 55,
+      clear: true,
     }
   },
   setup: (c) => {

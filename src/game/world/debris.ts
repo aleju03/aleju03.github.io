@@ -349,6 +349,39 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
     pos.needsUpdate = true
   }
 
+  /**
+   * A wall's box is its whole slab, mitred corner and all, so two walls
+   * meeting at a corner both claim the corner square. That is harmless while
+   * both stand and a bomb once one of them leaves: the piece is born inside
+   * its neighbour's box and the solver fires it out at sixty units a second.
+   * So a piece leaving takes its share of every neighbour's box with it:
+   * each box it overlaps gives up the overlap along its thinnest axis.
+   */
+  const carve = (o: Opened, pc: Opened['frac']['pieces'][number]) => {
+    for (const list of [pc.side, pc.under, pc.over]) {
+      for (const j of list) {
+        const b = o.solids[j]
+        if (!b || !o.alive[j] || b.isEmpty()) continue
+        const ox = Math.min(b.max.x, pc.max.x) - Math.max(b.min.x, pc.min.x)
+        const oy = Math.min(b.max.y, pc.max.y) - Math.max(b.min.y, pc.min.y)
+        const oz = Math.min(b.max.z, pc.max.z) - Math.max(b.min.z, pc.min.z)
+        if (ox <= 0.02 || oy <= 0.02 || oz <= 0.02) continue
+        // give up the overlap on the axis where it is thinnest, from the
+        // side the leaving piece is on
+        if (ox <= oy && ox <= oz) {
+          if (pc.min.x > b.min.x) b.max.x = Math.max(b.min.x + 0.05, pc.min.x)
+          else b.min.x = Math.min(b.max.x - 0.05, pc.max.x)
+        } else if (oz <= oy) {
+          if (pc.min.z > b.min.z) b.max.z = Math.max(b.min.z + 0.05, pc.min.z)
+          else b.min.z = Math.min(b.max.z - 0.05, pc.max.z)
+        } else {
+          if (pc.min.y > b.min.y) b.max.y = Math.max(b.min.y + 0.05, pc.min.y)
+          else b.min.y = Math.min(b.max.y - 0.05, pc.max.y)
+        }
+      }
+    }
+  }
+
   const ruins: Ruins & { arm: (set: SmashSet) => void } = {
     near: (x, y, z, r, out = []) => {
       out.length = 0
@@ -434,6 +467,7 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
         if (pc.d && o.mesh) collapse(o.mesh.geometry, [pc.d[0], pc.d[1], 0, 0])
         if (pc.g && o.glass) collapse(o.glass.geometry, [pc.g[0], pc.g[1], 0, 0])
         o.solids[i]?.makeEmpty()
+        carve(o, pc)
       }
       ruins.onSolids?.()
     },

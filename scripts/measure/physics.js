@@ -531,7 +531,9 @@ if (want('destruction')) {
     const collision = makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, [])
     const sb = createSandbox({
       collision, waterY: () => SEA_Y,
-      chunkSolids: (cx, cz) => chunks.get(cx + ',' + cz)?.boxes ?? chunkSolids(cx, cz),
+      // what the streamer has loaded and nothing else, as in the game: a
+      // chunk built here on demand would be billed to the collapse
+      chunkSolids: (cx, cz) => chunks.get(cx + ',' + cz)?.boxes ?? null,
     })
     await sb.whenReady
     const debris = buildDebris({ parent: new THREE.Group(), obstacles: [], groundAt: terrainY, trackDisposable: () => {} })
@@ -541,8 +543,12 @@ if (want('destruction')) {
     const c = stageScenario(s, sb)
     const ms = []
     let most = 0
-    advanceScenario(s, c, s.duration, (_t, _dt, m) => {
+    // DESTRUCTION_EXTRA=<s> runs on past the film's end, to watch it settle
+    const extra = Number(process.env.DESTRUCTION_EXTRA ?? 0)
+    const spikes = []
+    advanceScenario(s, c, s.duration + extra, (t, _dt, m) => {
       ms.push(m)
+      if (m > 20) spikes.push(`${f(t, 2)}s ${f(m, 0)}ms (open ${f(dmg.stats.openMs, 0)}, lumps ${dmg.stats.lumps})`)
       most = Math.max(most, dmg.stats.lumps)
     })
     ms.sort((a, b) => a - b)
@@ -550,6 +556,20 @@ if (want('destruction')) {
     console.log(`destruction ${pad(id, 22)} at ${Math.round(c.x)},${Math.round(c.z)}  ${s.report ? s.report(c) : ''}`)
     console.log(`            frame ms: median ${f(q(0.5), 2)}, p95 ${f(q(0.95), 2)}, worst ${f(ms[ms.length - 1], 2)}; ` +
       `most rubble at once ${most}; ${dmg.log.length} damage events`)
+    // what is still moving at the end, by level, and how fast
+    const lv = {}
+    sb.forEach((p) => {
+      if (!p.data.rubble || p.mode !== 'dynamic' || p.body.isSleeping()) return
+      const v = p.body.linvel()
+      const a = p.body.angvel()
+      const k = lv[p.data.level] ??= { n: 0, v: 0, w: 0 }
+      k.n++
+      k.v = Math.max(k.v, Math.hypot(v.x, v.y, v.z))
+      k.w = Math.max(k.w, Math.hypot(a.x, a.y, a.z))
+    })
+    if (spikes.length) console.log(`            spikes: ${spikes.slice(0, 8).join('; ')}`)
+    console.log(`            buildings opened ${dmg.stats.buildings}; awake by level: ` +
+      Object.entries(lv).map(([k, o]) => `L${k} ${o.n} (v<=${f(o.v, 2)} w<=${f(o.w, 2)})`).join(', '))
     dmg.dispose()
     sb.dispose()
   }

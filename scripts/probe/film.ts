@@ -209,6 +209,7 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
     const height = spec.height ?? shot.from[1] - to[1]
     from = [to[0] + Math.cos(yaw) * dist, to[1] + height, to[2] + Math.sin(yaw) * dist]
   }
+  if (shot.clear && !spec.from && spec.yaw === undefined) from = clearLens(chunks, from, to)
   const fov = spec.fov ?? shot.fov ?? 50
   const cam = new THREE.PerspectiveCamera(fov, w / h, 0.2, 900)
   cam.position.set(...from)
@@ -258,6 +259,56 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   // the first frame: the ground and solids under the site are built here
   sb.tick({ dt: 0, active: true, focus: { x: c.x, y: c.y, z: c.z } })
   return stage
+}
+
+/**
+ * Swing a lens round its target, keeping its distance and height, to the
+ * nearest bearing from which five rays at the target (its middle, either
+ * side, above and below) reach it without meeting chunk geometry. Leaf cards
+ * count as blocking, holes and all, which errs the right way.
+ */
+const clearLens = (chunks: Chunk[], from: number[], to: number[]): [number, number, number] => {
+  const meshes: THREE.Mesh[] = []
+  for (const c of chunks) {
+    for (const m of [c.smash.meshes.detail, c.smash.meshes.leaf]) if (m) meshes.push(m)
+  }
+  const T = new THREE.Vector3(...(to as [number, number, number]))
+  const dx = from[0] - to[0]
+  const dz = from[2] - to[2]
+  const dist = Math.hypot(dx, dz)
+  const yaw0 = Math.atan2(dz, dx)
+  const ray = new THREE.Raycaster()
+  const lens = new THREE.Vector3()
+  const side = new THREE.Vector3()
+  const aim = new THREE.Vector3()
+  const score = (yaw: number) => {
+    lens.set(to[0] + Math.cos(yaw) * dist, from[1], to[2] + Math.sin(yaw) * dist)
+    side.set(-Math.sin(yaw), 0, Math.cos(yaw)).multiplyScalar(dist * 0.12)
+    let n = 0
+    for (const [sx, sy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -0.6], [0, -9], [1.5, -9], [-1.5, -9]]) {
+      aim.copy(T).addScaledVector(side, sx)
+      aim.y += sy * dist * 0.1
+      // the three low rays are the ground under the target, a little up
+      if (sy < -5) aim.y = terrainY(aim.x, aim.z) + 1
+      const d = aim.clone().sub(lens)
+      const far = d.length() - 3
+      ray.set(lens, d.normalize())
+      ray.far = far
+      if (ray.intersectObjects(meshes, false).length) n++
+    }
+    return n
+  }
+  let best = yaw0
+  let bestN = Infinity
+  for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.75, -1.75, 2.1, -2.1, 2.5, -2.5, Math.PI]) {
+    const n = score(yaw0 + off)
+    if (n < bestN) {
+      bestN = n
+      best = yaw0 + off
+    }
+    if (n === 0) break
+  }
+  return [to[0] + Math.cos(best) * dist, from[1], to[2] + Math.sin(best) * dist]
 }
 
 const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {

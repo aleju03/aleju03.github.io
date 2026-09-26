@@ -5,6 +5,7 @@ import {
   cornerPoints, fragsToGeometry, hullPoints, massOf, shatterFrags, unsupported, type Frag, type Piece,
 } from '../world/fracture'
 import { gfx } from '../world/quality'
+import { seeded } from '../core/rand'
 import { msg, registerCommand, type CommandCtx } from './commands'
 import { falloff } from './explosion'
 import { historyOf, type HistoryEntry } from './history'
@@ -74,8 +75,8 @@ registerKind({
   friction: 0.95,
   restitution: 0.03,
   density: 2.3,
-  linearDamping: 0.08,
-  angularDamping: 0.35,
+  linearDamping: 0.12,
+  angularDamping: 0.6,
   surface: 'concrete',
 })
 registerKind({
@@ -86,8 +87,8 @@ registerKind({
   friction: 0.9,
   restitution: 0.05,
   density: 1.4,
-  linearDamping: 0.08,
-  angularDamping: 0.35,
+  linearDamping: 0.12,
+  angularDamping: 0.6,
   surface: 'wood',
 })
 
@@ -156,6 +157,8 @@ export interface Destruction {
     /** ms spent in the last opening (fracture) and in the last slice's work */
     openMs: number
     sliceMs: number
+    /** rubble the sandbox took away itself (fell out of the world, undo) */
+    lost: number
   }
   readonly ruins: Ruins
   dispose: () => void
@@ -281,13 +284,16 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   const had = attached.get(sb)
   if (had) return had
 
+  // everything that is chosen is chosen off one seeded stream, so a
+  // scenario comes out the same twice and a record replays the same way
+  const rnd = seeded(0x5eed)
   const wrecks = new Map<string, Wreck>()
   const lumps = new Map<PropId, Lump>()
   const jobs: Job[] = []
   const log: DamageRecord[] = []
   let now = 0
   let seq = 1
-  const stats = { lumps: 0, awake: 0, frozen: 0, buildings: 0, openMs: 0, sliceMs: 0 }
+  const stats = { lumps: 0, awake: 0, frozen: 0, buildings: 0, openMs: 0, sliceMs: 0, lost: 0 }
   const breakQueue: Array<{ L: Lump; e: ImpactEvent }> = []
   const nearList: Standing[] = []
   const tint: [number, number, number] = [0.5, 0.48, 0.44]
@@ -477,9 +483,9 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     const p = poseOf(parent, rc)
     if (push) p.vel.add(push)
     if (spin) {
-      p.ang.x += (Math.random() - 0.5) * spin
-      p.ang.y += (Math.random() - 0.5) * spin * 0.5
-      p.ang.z += (Math.random() - 0.5) * spin
+      p.ang.x += (rnd() - 0.5) * spin
+      p.ang.y += (rnd() - 0.5) * spin * 0.5
+      p.ang.z += (rnd() - 0.5) * spin
     }
     const mesh = meshFor(w, all.filter((f) => !f.glass), rc)
     const id = sb.spawn(w.kindId, p.pos, {
@@ -538,20 +544,29 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   /** make room for `n` more moving lumps: weld the oldest settled ones where
       they lie, and past the hard cap let the oldest go in a puff */
   const makeRoom = (n: number) => {
-    if (dynamicCount() + n <= budget()) return true
+    const cap = budget()
+    if (lumps.size + n <= cap) return true
+    let moving = dynamicCount()
+    if (moving + n <= cap) return true
     for (const L of lumps.values()) {
-      if (dynamicCount() + n <= budget() * 0.85) break
+      if (moving + n <= cap * 0.85) break
       const p = sb.get(L.id)
       if (!p || p.mode !== 'dynamic' || !p.body.isSleeping()) continue
       sb.freeze(L.id)
+      moving--
     }
-    if (lumps.size + n > budget() * 2.5) {
+    let staying = 0
+    for (const L of lumps.values()) if (L.going < 0) staying++
+    if (staying + n > cap * 2.5) {
+      // oldest first (the map keeps spawn order), and never the big ones
       for (const L of lumps.values()) {
-        if (lumps.size + n <= budget() * 2.2) break
-        if (L.going < 0) L.going = 0
+        if (staying + n <= cap * 2.2) break
+        if (L.going >= 0 || L.vol > 40) continue
+        L.going = 0
+        staying--
       }
     }
-    return dynamicCount() + n <= budget() * 1.15
+    return moving + n <= cap * 1.15
   }
 
   /** a piece or a shard of it leaves the building */
@@ -564,12 +579,12 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         const shards = shatterFrags(pc.frags, (pc.key * 2654435761 + ev.rec.seed) >>> 0, pc.vol > 8 ? 4 : 3)
         for (const sh of shards) {
           const kick = new THREE.Vector3(
-            vel.x + (Math.random() - 0.5) * 4, vel.y + Math.random() * 3, vel.z + (Math.random() - 0.5) * 4)
+            vel.x + (rnd() - 0.5) * 4, vel.y + rnd() * 3, vel.z + (rnd() - 0.5) * 4)
           spawnLump(w, ev, 4, [i], sh, null, kick, 3)
         }
       } else {
         const kick = new THREE.Vector3(
-          vel.x + (Math.random() - 0.5) * 2, vel.y + Math.random() * 1.5, vel.z + (Math.random() - 0.5) * 2)
+          vel.x + (rnd() - 0.5) * 2, vel.y + rnd() * 1.5, vel.z + (rnd() - 0.5) * 2)
         spawnLump(w, ev, 3, [i], null, null, kick, energy > 1 ? 2 : 0.6)
       }
       if (pc.g) sb.fx.debris('glass', pc.center, vel, Math.min(3, (pc.max.x - pc.min.x + pc.max.z - pc.min.z) / 3))
@@ -643,7 +658,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       return d
     })
     rest.forEach((i, k) => {
-      const t = lean ? 0.12 + hold * (dist[k] / maxD) ** 1.3 : 0.1 + Math.random() * 0.25
+      const t = lean ? 0.12 + hold * (dist[k] / maxD) ** 1.3 : 0.1 + rnd() * 0.25
       later(t, ev, () => crush(w, ev, i))
     })
     // dust out of the base all round, and the groan of it going
@@ -655,7 +670,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       const rx = (frac.max.x - frac.min.x) / 2 + 0.5
       const rz = (frac.max.z - frac.min.z) / 2 + 0.5
       tmpV.set(cx + Math.cos(ang0) * rx, y, cz + Math.sin(ang0) * rz)
-      later(0.05 + Math.random() * 0.3, ev, () => sb.fx.plume(tmpV.clone(), width * 0.35,
+      later(0.05 + rnd() * 0.3, ev, () => sb.fx.plume(tmpV.clone(), width * 0.35,
         tint[0] * 1.15, tint[1] * 1.12, tint[2] * 1.08))
     }
     rumble(Math.min(1, 0.35 + (frac.max.y - frac.min.y) / 50), cx, y, cz)
@@ -748,7 +763,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     for (const s of ruins.near(p.x, p.y, p.z, radius, nearList).slice()) {
       const ev = newEvent({
         building: s.rec.id, how, x: p.x, y: p.y, z: p.z, power, radius,
-        dx: d?.x ?? 0, dy: d?.y ?? 0, dz: d?.z ?? 0, seed: (Math.random() * 0x7fffffff) | 0,
+        dx: d?.x ?? 0, dy: d?.y ?? 0, dz: d?.z ?? 0, seed: (rnd() * 0x7fffffff) | 0,
       })
       const speed = d ? d.length() : 0
       if (d && speed > 1e-3) d.multiplyScalar(1 / speed)
@@ -766,7 +781,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       : new THREE.Vector3((frac.min.x + frac.max.x) / 2, frac.y0, (frac.min.z + frac.max.z) / 2)
     const ev = newEvent({
       building: s.rec.id, how: 'collapse', x: f.x, y: f.y, z: f.z, power: 0, radius: 0,
-      dx: 0, dy: 0, dz: 0, seed: (Math.random() * 0x7fffffff) | 0,
+      dx: 0, dy: 0, dz: 0, seed: (rnd() * 0x7fffffff) | 0,
     })
     ev.w.push(w)
     // the lowest storey with walls in it lets go
@@ -872,11 +887,13 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     }
     // anything heavy hitting a building's solid damages it: a thrown block,
     // a falling storey, the car's hull when it is a prop
-    if (e.with === 'solid' && e.solid) {
+    if (e.with === 'solid' && e.solid && e.speed > 6) {
       const own = ruins.owner(e.solid)
       if (!own) return
       const dmg = e.impulse / IMPULSE_PER_DAMAGE
-      if (dmg < RESIST[Math.max(0, Math.min(2, own.s.rec.grade))] * 0.25) return
+      // a knock that could not break a piece in two blows is only a knock:
+      // rubble settling against a wall must not chip the town down
+      if (dmg < RESIST[Math.max(0, Math.min(2, own.s.rec.grade))] * 0.5) return
       impacts.push({ s: own.s, e, dmg })
     }
   })
@@ -889,6 +906,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   const offRemove = sb.onRemove((p: Prop) => {
     const L = lumps.get(p.id)
     if (!L) return
+    stats.lost++
     lumps.delete(p.id)
     L.ev.live.delete(p.id)
     L.mesh?.userData.dispose?.()
@@ -906,7 +924,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       sb.getVelocity(e.id, vIn)
       const ev = newEvent({
         building: s.rec.id, how: 'impact', x: e.x, y: e.y, z: e.z, power: dmg, radius: 0,
-        dx: vIn.x, dy: vIn.y, dz: vIn.z, seed: (Math.random() * 0x7fffffff) | 0,
+        dx: vIn.x, dy: vIn.y, dz: vIn.z, seed: (rnd() * 0x7fffffff) | 0,
       })
       const r = Math.min(4.5, 1.2 + Math.cbrt(p.mass) * 0.12)
       const before = s.open ? countAlive(s.open) : -1
@@ -941,6 +959,12 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     }
     // small shards age out, and anything the budget let go shrinks away
     for (const L of lumps.values()) {
+      // a piece born brushing a box it could not be carved out of is shoved
+      // out by the solver; nothing that young has a reason to be that fast
+      if (now - L.born < 0.4 && sb.getVelocity(L.id, vIn) && vIn.lengthSq() > 30 * 30) {
+        vIn.setLength(30)
+        sb.setVelocity(L.id, vIn)
+      }
       if (L.going < 0 && L.level === 4 && L.vol < SHARD_VOL && now - L.born > SHARD_LIFE) L.going = 0
       if (L.going < 0) continue
       L.going += h

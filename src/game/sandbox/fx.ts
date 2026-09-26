@@ -516,11 +516,16 @@ export const createFx = (o: FxOpts): Fx => {
       }
     },
 
-    plume: (at, size, r, g, b) => {
+    plume: (at, size, r0, g0, b0) => {
       // lighter and warmer than smoke: pulverised render and brick, so a
       // collapse reads as a dust storm and not as a fire
-      const n = Math.min(14, 3 + Math.round(size * 0.9))
-      const sz = Math.min(3.2, 0.7 + size * 0.14)
+      const n = Math.min(9, 2 + Math.round(size * 0.55))
+      const sz = Math.min(1.9, 0.55 + size * 0.1)
+      // the dust is the wall's colour, pulled toward a warm grey: pale
+      // render goes up as a buff haze rather than as snow
+      const r = r0 * 0.45 + 0.13
+      const g = g0 * 0.45 + 0.12
+      const b = b0 * 0.45 + 0.1
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2
         const out = rnd(2, 7) * Math.min(2.2, 0.6 + size * 0.1)
@@ -529,7 +534,7 @@ export const createFx = (o: FxOpts): Fx => {
         emit(puffs, at.x + Math.cos(a) * size * 0.3, at.y + rnd(-0.3, 1.2), at.z + Math.sin(a) * size * 0.3,
           Math.cos(a) * out, rnd(0.4, 2.6), Math.sin(a) * out, rnd(2.8, 5.2), s, s, s,
           r * k, g * k, b * k,
-          { delay: rnd(0, 0.35), grow: rnd(2.2, 3.2), drag: 0.9, spin: 0.6, fadeAt: 0.3 })
+          { delay: rnd(0, 0.35), grow: rnd(1.7, 2.4), drag: 0.9, spin: 0.6, fadeAt: 0.25 })
       }
     },
 

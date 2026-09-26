@@ -289,6 +289,6 @@ const build = spawnSync('npx', [
   `--outfile=${out}`, '--log-level=error',
 ], { stdio: 'inherit', cwd: ROOT })
 if (build.status !== 0) process.exit(build.status ?? 1)
-const run = spawnSync(process.execPath, [out, ...((what === 'physics' || what === 'console' || what === 'fracture') && arg ? [arg] : [])], { stdio: 'inherit' })
+const run = spawnSync(process.execPath, [...(process.env.PROF ? ['--cpu-prof', `--cpu-prof-dir=${process.env.PROF}`] : []), out, ...((what === 'physics' || what === 'console' || what === 'fracture') && arg ? [arg] : [])], { stdio: 'inherit' })
 rmSync(stage, { recursive: true, force: true })
 process.exit(run.status ?? 0)
