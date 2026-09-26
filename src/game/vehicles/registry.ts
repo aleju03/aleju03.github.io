@@ -204,6 +204,10 @@ export interface VehicleFleet {
   readonly cockpit: boolean
   /** flip the drive camera between chase and cockpit */
   toggleView: () => void
+  /** a ring of dust kicked up at a point: the sandbox borrows the fleet's
+      particle pool (already compiled, one draw) to set a spawned prop down
+      with. `r` is the footprint's radius, `color` a hex */
+  puff: (x: number, y: number, z: number, r: number, color?: number) => void
   /** mouse-look, same signature the walk controller takes. While driving the
       lens belongs to the boom, not to the suspended walker's head */
   turn: (dx: number, dy: number, sign: 1 | -1, sens: number) => void
@@ -922,6 +926,19 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     },
     toggleView: () => {
       cam.cockpit = !cam.cockpit
+    },
+    puff: (x, y, z, r, color = 0xcdbf9f) => {
+      dustColor.setHex(color)
+      const n = 10 + Math.round(r * 6)
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + fxRand() * 0.5
+        const sp = 2.2 + fxRand() * 2.4
+        effects.emit(
+          x + Math.cos(a) * r * 0.8, y + 0.1, z + Math.sin(a) * r * 0.8,
+          Math.cos(a) * sp, 0.5 + fxRand() * 0.9, Math.sin(a) * sp,
+          dustColor, 0.42, 0.45 + r * 0.25, 2.2, 0.55 + fxRand() * 0.3, 2.6, 0.25,
+        )
+      }
     },
     turn: (dx, dy, sign, sens) => cam.turn(dx, dy, sign, sens),
     nearest,

@@ -173,7 +173,7 @@ settle(0.1)
 
 /* ----------------------------------------------------------- complete -- */
 {
-  const names = (l) => complete(l, host).suggestions.map((s) => s.label)
+  const names = (l) => complete(l, host).suggestions.map((s) => say(s.label, 'en'))
   check(names('/sp').some((n) => n.startsWith('spawn')), 'a command name completes', names('/sp').join(', '))
   check(names('/spawn ').includes('crate'), 'a kind completes', names('/spawn ').join(', '))
   check(names('/tp landmark:w').includes('landmark:windmill'), 'a place completes', names('/tp landmark:w').join(', '))

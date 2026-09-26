@@ -68,7 +68,7 @@ const FALLBACK: Record<string, { category: string; labelEs: string }> = {
   plank: { category: 'building', labelEs: 'tablón' },
   block: { category: 'building', labelEs: 'bloque de concreto' },
   cone: { category: 'street', labelEs: 'cono' },
-  ball: { category: 'toys', labelEs: 'bola' },
+  ball: { category: 'toys', labelEs: 'pelota' },
 }
 
 /** the optional fields a kind may carry for the menu; read, never required */

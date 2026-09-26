@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useI18n } from '../../i18n'
-import type { Completion, Msg, Tone } from '../../game/sandbox/commands'
+import { argName, type Completion, type Msg, type Tone } from '../../game/sandbox/commands'
 import { MARK, stockTexture } from './paper'
 
 /*
@@ -118,7 +118,7 @@ function Composer({
   complete: (line: string) => Completion | null
   say: Say
 }) {
-  const { t } = useI18n()
+  const { t, language } = useI18n()
   const s = t.sandbox.console
   const inputRef = useRef<HTMLInputElement>(null)
   const [value, setValue] = useState(seed)
@@ -197,7 +197,7 @@ function Composer({
               style={i === completion.argIndex ? { color: THERMAL } : undefined}
             >
               {' '}
-              {a.optional ? `[${a.name}]` : `<${a.name}>`}
+              {a.optional ? `[${argName(a, language)}]` : `<${argName(a, language)}>`}
             </span>
           ))}
           <span className="block italic">{say(cmd.help)}</span>
@@ -230,7 +230,7 @@ function Composer({
                     }}
                   />
                 )}
-                <span className="relative shrink-0">{sg.label}</span>
+                <span className="relative shrink-0">{say(sg.label)}</span>
                 {sg.detail && <span className="relative min-w-0 truncate italic opacity-80">{say(sg.detail)}</span>}
               </button>
             </li>

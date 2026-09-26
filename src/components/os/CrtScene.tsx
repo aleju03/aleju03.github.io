@@ -27,7 +27,7 @@ import { createRoamInput } from '../../game/core/input'
 import { blockedAt, makeCollisionSet, supportY } from '../../game/physics/collision'
 import { createCollisionDebug } from '../../game/physics/collisionDebug'
 import { createDisposer } from '../../game/core/disposer'
-import { footstep, landThump } from '../../game/core/sfx'
+import { footstep, landThump, spawnPop } from '../../game/core/sfx'
 // the registry itself is loaded on demand with the rest of the world; only its
 // types are needed up front, and those cost nothing at runtime
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
@@ -41,6 +41,7 @@ import { historyOf, labelIn, LOCAL, type History } from '../../game/sandbox/hist
 import { createWorldRules } from '../../game/sandbox/rules'
 import { GRAVITY } from '../../game/sandbox/physics'
 import SandboxConsole, { type FeedLine } from './SandboxConsole'
+import Crosshair, { type CrosshairAim } from './Crosshair'
 import SpawnMenu, { type CatalogueSource, type OrderLine } from './SpawnMenu'
 import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
@@ -321,6 +322,8 @@ export default function CrtScene({
   /** sitting on something: what the HUD says you may get off, and whether
       this particular cushion can see the television */
   const [seated, setSeated] = useState<{ label: string; atTv: boolean } | null>(null)
+  /** what the crosshair is on (Crosshair.tsx) */
+  const [aim, setAim] = useState<CrosshairAim>('none')
   /** the channel the set is showing, while you are sitting in front of it */
   const [tvChannel, setTvChannel] = useState<string | null>(null)
   const [locked, setLocked] = useState(false)
@@ -1245,6 +1248,12 @@ export default function CrtScene({
           })
         }
         let hereNow = 0
+        let aimNow: CrosshairAim = 'none'
+        /** props still scaling in from a spawn, and how long that takes */
+        const pops: { mesh: THREE.Object3D; t: number }[] = []
+        const POP_S = 0.24
+        /** how far the crosshair notices a prop: the console's own reach */
+        const AIM_REACH = 120
 
         // prompt bookkeeping mirrored into React state only on change
         let nearNow = false
@@ -2054,6 +2063,26 @@ export default function CrtScene({
             return true
           },
           clear: () => setFeed([]),
+          // a spawn arrives: every piece scales in with a little overshoot, a
+          // ring of dust goes up where it sits down, and one pop plays for the
+          // lot (ten crates are one order, not ten)
+          spawned: (ids) => {
+            if (!sandbox || !ids.length) return
+            let mass = 0
+            for (const id of ids) {
+              const p = sandbox.get(id)
+              if (!p) continue
+              mass = Math.max(mass, p.mass)
+              if (p.mesh) {
+                p.mesh.scale.setScalar(0.05)
+                pops.push({ mesh: p.mesh, t: 0 })
+              }
+              const at = p.body.translation()
+              fleet.puff(at.x, at.y - p.extents.y, at.z, Math.max(p.extents.x, p.extents.z))
+            }
+            if (pops.length > 60) pops.splice(0, pops.length - 60)
+            spawnPop(mass)
+          },
         }
         const sbConsole = createConsole(host)
         consoleRef.current = sbConsole
@@ -2083,7 +2112,7 @@ export default function CrtScene({
           if (!history || !sandbox) return
           const e = history.undo()
           pushFeed(e
-            ? { tone: 'ok', text: bilingual(`undone: ${labelIn(e.label, 'en')}`, `deshecho: ${labelIn(e.label, 'es')}`) }
+            ? { tone: 'ok', text: bilingual(`undone: ${labelIn(e.label, 'en')}`, `deshice: ${labelIn(e.label, 'es')}`) }
             : { tone: 'err', text: bilingual('nothing left to undo', 'no queda nada que deshacer') })
         }
 
@@ -2721,6 +2750,19 @@ export default function CrtScene({
               focus: camera.position,
             })
             if (sbf.moving && level.id === 'overworld') followSunShadow(camera.position, now)
+            // the spawn pop: scale in over POP_S with an ease-out-back, so it
+            // lands a hair big and settles, which is what reads as arriving
+            for (let i = pops.length - 1; i >= 0; i--) {
+              const pp = pops[i]
+              pp.t += dt / POP_S
+              const u = Math.min(1, pp.t)
+              const c = 2.2
+              pp.mesh.scale.setScalar(1 + (c + 1) * Math.pow(u - 1, 3) + c * Math.pow(u - 1, 2))
+              if (u >= 1) {
+                pp.mesh.scale.setScalar(1)
+                pops.splice(i, 1)
+              }
+            }
           }
           // the sim reports footfalls and touchdowns; the level says what is
           // underfoot (the backrooms are carpet wall to wall), and crouched
@@ -2907,6 +2949,18 @@ export default function CrtScene({
           // still the head here — chase.apply() only borrows the camera below
           headPos.copy(camera.position)
           headDir.copy(gazeVec)
+          // what the crosshair is on: one props-only ray a frame, mirrored
+          // into React only when the answer changes
+          {
+            const hit = sandbox && level.id === 'overworld' && !rig.down
+              ? sandbox.raycast(headPos, headDir, AIM_REACH, { world: false })
+              : null
+            const a: CrosshairAim = hit?.prop ? (hit.prop.mode === 'frozen' ? 'frozen' : 'prop') : 'none'
+            if (a !== aimNow) {
+              aimNow = a
+              setAim(a)
+            }
+          }
           // no prompts while the body is a heap on the floor
           const isNear = !rig.down && dist < 3.4 && gazeVec.dot(toScreen.normalize()) > 0.35
           if (isNear !== nearNow) {
@@ -2970,8 +3024,10 @@ export default function CrtScene({
           if (level.id === 'overworld') outside.knockPeople(impacts)
           // ...and its prompt is the lowest-priority one: the machine and a
           // door both win, because both are things you are standing right at
+          // (and not to a flyer: a car offered to somebody passing overhead
+          // at thirty units a second is noise)
           const atVehicle =
-            isNear || verb || propVerb || seating.current || rig.down || levels.frozen
+            isNear || verb || propVerb || seating.current || rig.down || levels.frozen || walk.noclip
               ? null
               : fs.prompt
           // "drive" when the wheel is free, "ride" when it is not: the prompt
@@ -3844,9 +3900,23 @@ export default function CrtScene({
           esc to skip
         </p>
       )}
-      {roam && walking && !paused && (
-        <p className="pointer-events-none absolute right-5 bottom-4 z-10 font-mono text-[11px] text-stone-500">
-          {!locked && !typing && !menuOpen
+      {/* the key hints, on a strip of masking tape stuck to the bottom of
+          the screen: dark ink on cream reads over grass, asphalt and night
+          alike, which the bare grey line it replaced did not. The console and
+          the catalogue carry their own hints, so the tape comes off while
+          either is up (and never contradicts their "esc closes") */}
+      {roam && walking && !paused && typing === null && !menuOpen && (
+        <p
+          className="pointer-events-none absolute right-4 bottom-3 z-10 max-w-[min(640px,calc(100vw-420px))] px-3 py-[3px] text-right font-mono text-[11px] leading-snug"
+          style={{
+            color: '#3f3325',
+            background: 'linear-gradient(90deg, rgba(246,236,208,0.93), rgba(238,226,194,0.95))',
+            boxShadow: '0 1px 3px rgba(40,30,18,0.35)',
+            transform: 'rotate(-0.5deg)',
+            clipPath: 'polygon(0 12%, 1.2% 0, 98.8% 6%, 100% 0, 99.2% 88%, 100% 100%, 1% 94%, 0 100%)',
+          }}
+        >
+          {!locked
             ? t.sandbox.hud.grab
             : driving
               ? // the controls change with the medium, so the line does too:
@@ -3939,12 +4009,10 @@ export default function CrtScene({
           onClose={() => closeMenuRef.current?.()}
         />
       )}
-      {roam && walking && locked && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute top-1/2 left-1/2 z-10 size-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-stone-400/70"
-        />
-      )}
+      {/* the crosshair, whenever there is a walk to aim: also with the
+          mouse freed for the catalogue, because that is exactly when you
+          need to know where the thing you click is going to land */}
+      {roam && walking && !paused && !driving && !seated && <Crosshair aim={aim} />}
       {/* the nudge that exists so nobody walks a whole session as guest-08c9
           without ever learning there was a choice. Not a button: at this
           moment the mouse is usually captured and there is no cursor to click
