@@ -373,27 +373,16 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   }
 
   /** a lump joins its event's undo entry */
-  const own = (ev: Ev, id: PropId, parent?: PropId) => {
+  const own = (ev: Ev, id: PropId) => {
     ev.live.add(id)
     const h = history()
-    if (parent !== undefined && ev.entry) {
-      h.adopt(parent, [id])
-      return
-    }
     if (!ev.entry) {
       const label = ev.rec.how === 'collapse' || ev.rec.how === 'command'
         ? { en: 'demolition', es: 'demolición' } : { en: 'rubble', es: 'escombros' }
       ev.entry = h.record({ label, props: id, undo: () => undoEvent(ev) })
       return
     }
-    // any lump of the event still in the entry will do as the anchor
-    for (const other of ev.live) {
-      if (other !== id && sb.get(other)) {
-        h.adopt(other, [id])
-        return
-      }
-    }
-    ev.entry.props.add(id)
+    h.attach(ev.entry, [id])
   }
 
   const noteLift = (ev: Ev, w: Wreck, list: number[]) => {
@@ -477,7 +466,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
 
   const spawnLump = (
     w: Wreck, ev: Ev, level: Level, list: number[], frags: Frag[] | null,
-    parent: Pose | null, push: THREE.Vector3 | null, spin: number, parentId?: PropId,
+    parent: Pose | null, push: THREE.Vector3 | null, spin: number, _parentId?: PropId,
     /** born this far from where it stood (a piece a ram is already inside) */
     ahead?: THREE.Vector3 | null,
   ): PropId | null => {
@@ -509,7 +498,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       id, w, level, pieces: list, frags, rc: rc.clone(), vol: m.vol, born: now, ev, going: -1, mesh,
     }
     lumps.set(id, L)
-    own(ev, id, parentId)
+    own(ev, id)
     return id
   }
 

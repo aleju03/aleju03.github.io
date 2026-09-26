@@ -35,6 +35,7 @@ import { SCENARIOS, stageScenario, advanceScenario } from '../../src/game/sandbo
 import '../../src/game/sandbox/propScenarios.ts'
 import '../../src/game/sandbox/destructionScenarios.ts'
 import { attachDestruction } from '../../src/game/sandbox/destruction.ts'
+import { historyOf } from '../../src/game/sandbox/history.ts'
 import { buildDebris } from '../../src/game/world/debris.ts'
 import { CATALOGUE } from '../../src/game/sandbox/catalogue.ts'
 import { KINDS } from '../../src/game/sandbox/kinds.ts'
@@ -906,6 +907,23 @@ if (want('destruction')) {
     if (spikes.length) console.log(`            spikes: ${spikes.slice(0, 8).join('; ')}`)
     console.log(`            buildings opened ${dmg.stats.buildings}; awake by level: ` +
       Object.entries(lv).map(([k, o]) => `L${k} ${o.n} (v<=${f(o.v, 2)} w<=${f(o.w, 2)})`).join(', '))
+    // undo, as Z would: every entry the demolition made, newest first, and
+    // the building must stand whole again with its rubble gone
+    if (id === 'sandbox:demolish-house') {
+      const h = historyOf(sb)
+      let n = 0
+      while (h.undo()) n++
+      let alive = 0
+      let total = 0
+      for (const st of debris.ruins.near(c.x, c.y, c.z, 3)) {
+        if (!st.open) continue
+        total += st.open.alive.length
+        for (let i = 0; i < st.open.alive.length; i++) alive += st.open.alive[i]
+      }
+      let rubble = 0
+      sb.forEach((p) => { if (p.data.rubble) rubble++ })
+      console.log(`            undo x${n}: ${alive}/${total} pieces standing again, ${rubble} rubble left`)
+    }
     dmg.dispose()
     sb.dispose()
   }
