@@ -1,5 +1,5 @@
 import type { Bump, Bumpable, BodyExtent } from '../player/bodyContact'
-import { bodyExtent } from '../player/bodyContact'
+import { bodyExtent, posedPoints } from '../player/bodyContact'
 import type { PlayerId } from './protocol'
 import type { RemoteWorld } from './remotePlayers'
 
@@ -55,6 +55,8 @@ const STUMBLE_MAX = 6
 const LEAN_EVERY = 0.3
 const KNOCK_EVERY = 0.7
 
+type PosedRig = Parameters<typeof posedPoints>[0]
+
 export interface RemoteBumps extends Bumpable {
   /** take this frame's roster; call once a frame after `sample` */
   refresh: () => void
@@ -64,7 +66,7 @@ export interface RemoteBumpOpts {
   world: RemoteWorld
   /** the body drawn for a player, whose mesh sizes their cylinder, or null
       before it has been spawned */
-  rigOf: (id: PlayerId) => { group: import('three').Object3D } | null
+  rigOf: (id: PlayerId) => ({ group: import('three').Object3D } & Partial<PosedRig>) | null
   /** sitting in one of the fleet's chairs: not standing anywhere */
   seated: (id: PlayerId) => boolean
   /** put a shove on the wire */
@@ -105,6 +107,12 @@ export function createRemoteBumps(o: RemoteBumpOpts): RemoteBumps {
       // a crouch folds the body about a quarter shorter
       out.height = ext.height * (1 - 0.25 * p.crouchK)
       return true
+    },
+    // their limbs as this screen draws them, so a lean or an arm reaching
+    // out of their trunk is met where it is seen
+    points: (i, out) => {
+      const rig = o.rigOf(ids[i])
+      return rig && 'limbPos' in rig ? posedPoints(rig as PosedRig, 0, 0, 0, out) : 0
     },
     // never: see the header
     nudge: () => false,

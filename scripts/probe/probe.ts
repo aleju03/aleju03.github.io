@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
-import { buildWorld, makeChunkMats } from '../../src/game/world/streamer'
+import { buildWorld, makeChunkMats, tintWater } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
 import { SEA_Y, sampleAt, terrainY } from '../../src/game/world/terrain'
 import { landmarkIn, type LandmarkKind } from '../../src/game/world/landmarks'
@@ -754,6 +754,7 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     place(bestYaw)
     cam.lookAt(aim)
     const sky = lightFor(scene, spec.tod, cam.position)
+    tintWater(mats.water, sky.fogColor, sky.day)
     // the lattice is pinned under whatever it is updated at: the target, so
     // an orbit shot has turf where it is looking rather than under the lens
     buildGrass({ parent: scene, trackDisposable: noop }).update(x, z)

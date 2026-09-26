@@ -152,8 +152,10 @@ export interface WalkController {
       off a head you landed on, somebody else's shoulder arriving over the
       network. Planar velocity the walk's own control does not eat (it
       decays on its own, quickly underfoot and slowly in the air), and an
-      upward kick that leaves the ground. Ignored in noclip */
-  push: (vx: number, vy: number, vz: number) => void
+      upward kick that leaves the ground. `stun` is a knock-back: the speed
+      the walk was carrying is mostly lost and the keys do nothing for that
+      many seconds. Ignored in noclip */
+  push: (vx: number, vy: number, vz: number, stun?: number) => void
   /** kill planar velocity only (the moment a level cut triggers) */
   haltPlanar: () => void
   /** zero all motion state (level swap, sitting down) */
@@ -206,6 +208,8 @@ export function createWalkController(
       would swallow a bump in a frame or two, which reads as hitting a wall
       rather than being knocked back */
   const shove = new THREE.Vector3()
+  /** seconds left of a knock-back during which the keys do nothing */
+  let stunT = 0
   const wish = new THREE.Vector3()
   const vel = new THREE.Vector3()
   const want = new THREE.Vector3()
@@ -357,7 +361,13 @@ export function createWalkController(
       grounded = true
       rig.position.set(x, y + tune.eye, z)
     },
-    push: (px, py, pz) => {
+    push: (px, py, pz, stun = 0) => {
+      if (stun > 0 && !noclip) {
+        // the run is lost: most of the speed the walk was carrying goes, and
+        // for `stun` seconds the keys do nothing but the shove plays out
+        stunT = Math.max(stunT, stun)
+        vel.multiplyScalar(0.15)
+      }
       if (noclip) return
       shove.x += px
       shove.z += pz
@@ -379,6 +389,7 @@ export function createWalkController(
       drift.set(0, 0, 0)
       shove.set(0, 0, 0)
       fly.set(0, 0, 0)
+      stunT = 0
       crouchK = 0
       vy = 0
       grounded = true
@@ -390,8 +401,11 @@ export function createWalkController(
       const { dt, keys, frozen, groundY, groundAt, ceilingY, waterY, collision, fovBase } = o
       step.flying = false
       const grav = tune.grav * gravityScale
-      const fwd = frozen ? 0 : axis(keys, 'back', 'forward')
-      const side = frozen ? 0 : axis(keys, 'left', 'right')
+      // knocked back off somebody: the legs are not the player's for a beat
+      const stunned = stunT > 0
+      if (stunned) stunT = Math.max(0, stunT - dt)
+      const fwd = frozen || stunned ? 0 : axis(keys, 'back', 'forward')
+      const side = frozen || stunned ? 0 : axis(keys, 'left', 'right')
       // shift sprints, ctrl (or c) crouches; crouching wins the argument
       const duck = held(keys, 'crouch')
       const run = !duck && held(keys, 'sprint')
@@ -460,7 +474,7 @@ export function createWalkController(
         floorY,
       )
       // space jumps; holding it bunny-hops off each landing
-      if (!frozen && !swimming && held(keys, 'jump') && grounded && !duck) {
+      if (!frozen && !stunned && !swimming && held(keys, 'jump') && grounded && !duck) {
         grounded = false
         vy = tune.jumpV
       }

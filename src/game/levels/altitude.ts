@@ -42,10 +42,15 @@ export const fogForAltitude = (
     fog.fogFar *= 1 + k * 0.55
     return
   }
-  // opens early: at 40 up a third of the way, most of it by 80
+  // The scene fog steps out of the way entirely: it is linear in view
+  // depth, the look's air (render/atmosphere.ts) is exponential in range,
+  // and two curves meeting in the middle distance drew a flat grey band
+  // with clearer land beyond it. From the air the look's one curve does all
+  // of the aerial perspective, rim included. Opens early: a third of the
+  // way by 40 up, most of it by 80
   const e = Math.pow(k, 0.6)
-  fog.fogNear += (reach * 0.35 - fog.fogNear) * e
-  fog.fogFar += (reach * 1.2 - fog.fogFar) * e
+  fog.fogNear += (reach * 2.5 - fog.fogNear) * e
+  fog.fogFar += (reach * 4 - fog.fogFar) * e
 }
 
 /** the camera's far plane at this height. It must clear the sky dome's
