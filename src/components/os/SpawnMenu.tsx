@@ -4,6 +4,7 @@ import type { PropKind } from '../../game/sandbox/kinds'
 import type { SpawnCategory, SpawnEntry } from '../../game/sandbox/spawnlist'
 import { MARK, stockTexture } from './paper'
 import { sketchKind } from './propSketch'
+import { keyHint } from '../../game/sandbox/bindings'
 
 /*
   The spawn menu is a mail-order catalogue.
@@ -103,7 +104,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn }: SpawnMenuPr
   const pageOf = (id: string) => (id === ALL ? 2 : 3 + cats.findIndex((c) => c.id === id))
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/15">
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/15" onPointerDown={(e) => e.stopPropagation()}>
       <style>{`
         @keyframes cat-up { from { transform: translateY(46px) rotate(1.6deg); opacity: 0 } to { transform: rotate(-0.6deg); opacity: 1 } }
         @keyframes cat-page { from { transform: translateX(10px); opacity: 0 } to { transform: none; opacity: 1 } }
@@ -190,7 +191,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn }: SpawnMenuPr
                 ))}
               </ol>
             )}
-            <p className="mt-1.5 font-mono text-[10px]" style={{ color: INK_SOFT }}>{s.undoHint}</p>
+            <p className="mt-1.5 font-mono text-[10px]" style={{ color: INK_SOFT }}>{keyHint(s.undoHint, language)}</p>
           </div>
         </section>
 
@@ -271,7 +272,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn }: SpawnMenuPr
             </div>
           )}
           <div className="mt-1 flex items-baseline justify-between font-mono text-[10px]" style={{ color: INK_SOFT }}>
-            <span>{s.close}</span>
+            <span>{keyHint(s.close, language)}</span>
             <span>
               {s.page} {pageOf(current)}
             </span>

@@ -33,7 +33,7 @@ import { footstep, landThump } from '../../game/core/sfx'
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { Sandbox } from '../../game/sandbox/sandbox'
-import { createEdges, held } from '../../game/sandbox/bindings'
+import { createEdges, held, keyHint } from '../../game/sandbox/bindings'
 import {
   createConsole, msg as bilingual, say as sayIn, type Console, type Msg, type SandboxHost,
 } from '../../game/sandbox/commands'
@@ -391,7 +391,7 @@ export default function CrtScene({
   const [orders, setOrders] = useState<OrderLine[]>([])
   /** noclip, mirrored for the key hints */
   const [flying, setFlying] = useState(false)
-  const { t } = useI18n()
+  const { t, language } = useI18n()
   // named for what it is: a mirror of proximityVoice.ts's state for the HUD,
   // not the voice channel itself (that lives in the scene effect below)
   const [voiceHud, setVoiceHud] = useState<VoiceHud>({
@@ -1936,6 +1936,23 @@ export default function CrtScene({
           setFlying(on)
         }
         const canAct = () => !fleet.riding && !levels.frozen && !seating.current && !rig.down
+        /** Garry's Mod lets you noclip or teleport out of a heap on the
+            floor, so the console and the noclip key do too: the body stands
+            up on the spot, at once, where the ragdoll came to rest */
+        const standNow = () => {
+          if (!rig.down) return
+          rig.getupSpot(getupPt)
+          const level = levels.current
+          chase.drop()
+          walk.resetMotion()
+          walk.teleport(
+            getupPt.x, getupPt.z,
+            supportY(getupPt.x, getupPt.z, getupPt.y, level.collision, floorOf(level, getupPt.x, getupPt.z)),
+          )
+          rig.reset()
+          rig.face(walk.yaw)
+          poseBody()
+        }
         const host: SandboxHost = {
           sandbox: () => sandbox,
           history: () => history,
@@ -1948,6 +1965,7 @@ export default function CrtScene({
           teleport: (x, z, y, yaw) => {
             if (fleet.riding) leaveVehicle()
             if (seating.current) leaveSeat()
+            standNow()
             if (fleet.riding || rig.down) return
             const level = levels.current
             const floor = floorOf(level, x, z)
@@ -1966,6 +1984,7 @@ export default function CrtScene({
           },
           home: () => ({ x: SPAWN.x, z: SPAWN.z }),
           noclip: (on) => {
+            if (on && !levels.frozen && !fleet.riding && !seating.current) standNow()
             if (on !== undefined && canAct()) setNoclip(on)
             return walk.noclip
           },
@@ -2619,7 +2638,7 @@ export default function CrtScene({
           })
           // a fall that is too far to land lands you flat instead, carried on
           // with whatever speed you came in with
-          if (step.landing > FALL_FLOP && !rig.down && !sitting) {
+          if (step.landing > FALL_FLOP && !rig.down && !sitting && !godMode) {
             rig.flop(step.vx, Math.min(6, step.landing * 0.15), step.vz)
           }
           if (sitting) {
@@ -2695,7 +2714,8 @@ export default function CrtScene({
           chase.third = prefsRef.current.third
           if (edges.pressed('camera') && !levels.frozen) setPrefs((p) => ({ ...p, third: !p.third }))
           // noclip: not from a chair, a heap on the floor or mid-cut
-          if (edges.pressed('noclip') && !levels.frozen && !sitting && !rig.down) {
+          if (edges.pressed('noclip') && !levels.frozen && !sitting) {
+            standNow()
             setNoclip(!walk.noclip)
           }
           const flopNow = edges.pressed('ragdoll')
@@ -3062,6 +3082,9 @@ export default function CrtScene({
               Object.assign(window, {
                 __sandbox: Object.assign(sandbox, { run, console: sbConsole }),
                 __sandboxCamera: camera,
+                // the walk's yaw and pitch, which a headless drive cannot
+                // steer any other way (it is never granted the pointer lock)
+                __sandboxWalk: walk,
               })
             }
             fleet = registry.buildFleet({
@@ -3797,9 +3820,9 @@ export default function CrtScene({
                 driving.seat !== 0
                 ? `along for the ride · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
                 : `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
-              : `${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
+              : keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
                   mp.status === 'live' ? ` · ${t.sandbox.hud.voice}` : ''
-                } · ${t.sandbox.hud.pauses}`}
+                } · ${t.sandbox.hud.pauses}`, language)}
         </p>
       )}
       {/* the instrument panel. Deliberately the same quiet mono the rest of
@@ -3853,10 +3876,10 @@ export default function CrtScene({
                   ? t.sandbox.console.nobody
                   : `${mp.here} ${t.sandbox.console.nearby}`}
                 {voiceHud.enabled &&
-                  ` · ${voiceHud.mode === 'ptt' ? t.sandbox.console.micHold : t.sandbox.console.micOpen}${
+                  ` · ${voiceHud.mode === 'ptt' ? keyHint(t.sandbox.console.micHold) : t.sandbox.console.micOpen}${
                     voiceHud.peers > 0 ? ` · ${voiceHud.peers} ${t.sandbox.console.voice}` : ''
                   }`}
-                {voiceHud.available && !voiceHud.enabled && ` · ${t.sandbox.console.micOffer}`}
+                {voiceHud.available && !voiceHud.enabled && ` · ${keyHint(t.sandbox.console.micOffer)}`}
                 {voiceHud.error && ` · ${voiceHud.error}`}
               </>
             ) : null

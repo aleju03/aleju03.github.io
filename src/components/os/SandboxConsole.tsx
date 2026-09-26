@@ -256,7 +256,7 @@ function Composer({
           autoComplete="off"
           spellCheck={false}
           className="min-w-0 flex-1 bg-transparent text-[12px] font-semibold outline-none placeholder:font-normal"
-          style={{ color: THERMAL, caretColor: THERMAL_RED }}
+          style={{ color: THERMAL, caretColor: THERMAL_RED, outline: 'none', boxShadow: 'none' }}
           placeholder={online ? s.placeholder : s.placeholderOffline}
         />
       </form>

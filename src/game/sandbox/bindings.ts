@@ -43,12 +43,14 @@ export const BINDINGS = {
   vehicleView: ['KeyV', 'F5'],
 
   /* --- in noclip ------------------------------------------------------- */
-  /** rise and sink are jump and crouch, the way Garry's Mod does it; fast is
-      sprint. Slow gets its own key because crouch is already spoken for */
+  /** Garry's Mod's own noclip keys: jump rises, sprint is fast and duck is
+      slow, so ctrl stops meaning crouch the moment you leave the ground.
+      Sinking has no key there (you look down and push forward); c gets it
+      here because a straight drop onto a roof is worth a key */
   flyUp: ['Space'],
-  flyDown: ['ControlLeft', 'ControlRight', 'KeyC'],
+  flyDown: ['KeyC'],
   flyFast: ['ShiftLeft', 'ShiftRight'],
-  flySlow: ['AltLeft', 'AltRight'],
+  flySlow: ['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight'],
 
   /* --- the sandbox ----------------------------------------------------- */
   /** held: the spawn menu */
@@ -144,14 +146,20 @@ export const createEdges = (): Edges => {
 }
 
 /** how a key is written in a hint line: `v`, `f5`, `space`, `/` */
-export const keyLabel = (action: Action): string => {
+export const keyLabel = (action: Action, lang: 'en' | 'es' = 'en'): string => {
   const code: string = BINDINGS[action][0]
   if (code.startsWith('Key')) return code.slice(3).toLowerCase()
   if (code.startsWith('Digit')) return code.slice(5)
   if (code === 'Slash') return '/'
-  if (code === 'Space') return 'space'
+  if (code === 'Space') return lang === 'es' ? 'espacio' : 'space'
   if (code.startsWith('Shift')) return 'shift'
   if (code.startsWith('Control')) return 'ctrl'
   if (code.startsWith('Alt')) return 'alt'
   return code.toLowerCase()
 }
+
+/** a hint line with its keys filled in from this table: `{noclip} fly`
+    reads `v fly` today and follows the table if the key moves, so no copy
+    in either language names a key the table does not */
+export const keyHint = (line: string, lang: 'en' | 'es' = 'en'): string =>
+  line.replace(/\{(\w+)\}/g, (m, a: string) => (a in BINDINGS ? keyLabel(a as Action, lang) : m))

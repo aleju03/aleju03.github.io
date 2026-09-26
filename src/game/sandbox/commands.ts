@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import type { History } from './history'
 import type { PropKind } from './kinds'
 import type { WorldRules } from './rules'
-import type { PropId, Sandbox } from './sandbox'
+import type { Prop, PropId, Sandbox } from './sandbox'
 
 /*
   The console's commands: a registry, a parser, a completer, and the commands
@@ -231,9 +231,15 @@ const isNum = (s: string) => s.trim() !== '' && Number.isFinite(Number(s))
 const distance = (a: string, b: string) => {
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
   for (let j = 1; j <= b.length; j++) d[0][j] = j
-  for (let i = 1; i <= a.length; i++)
-    for (let j = 1; j <= b.length; j++)
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
       d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+      // a swapped pair is one slip of the fingers, not two ("spwan")
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1)
+      }
+    }
+  }
   return d[a.length][b.length]
 }
 const nearest = (word: string, options: readonly string[]) => {
@@ -815,12 +821,16 @@ registerCommand({
     const c = hit!.point.clone().addScaledVector(hit!.normal, 0.5)
     let n = 0
     const pos = new THREE.Vector3()
+    const caught: Prop[] = []
     sb.queryBall(c, radius, (p) => {
-      if (p.mode === 'frozen') return
+      caught.push(p)
+    })
+    for (const p of caught) {
+      if (p.mode === 'frozen') continue
       sb.getTransform(p.id, pos)
       const d = pos.distanceTo(c)
       const fall = 1 - d / radius
-      if (fall <= 0) return
+      if (fall <= 0) continue
       const dir = pos.sub(c).normalize()
       dir.y += 0.5 // explosions throw things up, not just out
       dir.normalize()
@@ -828,7 +838,7 @@ registerCommand({
       sb.wake(p.id)
       sb.applyImpulse(p.id, dir.multiplyScalar(speed * p.mass))
       n++
-    })
+    }
     const me = ctx.host.here?.()
     if (me && !ctx.host.god?.()) {
       const d = Math.hypot(me.x - c.x, me.y + 2 - c.y, me.z - c.z)

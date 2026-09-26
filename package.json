@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "shoot": "node scripts/shoot.mjs",
     "film": "node scripts/film.mjs",
+    "drive": "node scripts/sandbox-drive.mjs",
     "measure": "node scripts/measure.mjs",
     "preview": "vite preview"
   },

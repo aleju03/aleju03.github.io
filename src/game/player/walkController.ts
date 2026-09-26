@@ -43,8 +43,8 @@ import { axis, held } from '../sandbox/bindings'
 
   And `noclip` is Garry's Mod's free flight, the third integrator in here and
   the simplest: no collision, no gravity, no ground. You fly where you look
-  (pitch included, so W at the sky climbs), jump and crouch rise and sink
-  straight up and down, sprint is fast and alt is slow. Velocity chases the
+  (pitch included, so W at the sky climbs), jump rises and c sinks straight
+  up and down, sprint is fast and ctrl is slow (the key table's fly* rows). Velocity chases the
   wished one through an exponential ease, quicker to speed up than to coast
   down, which is what makes it feel like a body with a little mass rather
   than a camera on rails, and the lens banks a hair into a strafe. Switching
@@ -162,7 +162,7 @@ const CROWN = 0.4
 
 /** free flight's cruising speed, units/s: a little under three sprints,
     which crosses a town block in a couple of seconds. Sprint multiplies it,
-    alt divides it */
+    ctrl divides it */
 const FLY_SPEED = 26
 const FLY_FAST = 3.2
 const FLY_SLOW = 0.22
@@ -183,6 +183,12 @@ export function createWalkController(
   let gravityScale = 1
   let bank = 0 // the flight's strafe roll, radians
   const fly = new THREE.Vector3() // the flight's velocity, all three axes
+  /** what a flight hands the fall when noclip goes off mid-air: planar
+      momentum that only air drag takes away, on top of the walk's own
+      air control (which eases toward the keys at the same quick rate it
+      does on the ground, and would otherwise stop a 26 u/s flyer dead in a
+      few frames). Zero again the moment the feet touch anything */
+  const drift = new THREE.Vector3()
   const wish = new THREE.Vector3()
   const vel = new THREE.Vector3()
   const want = new THREE.Vector3()
@@ -294,7 +300,9 @@ export function createWalkController(
         grounded = false
       } else {
         // and land the same way round: the flight's velocity becomes a fall
-        vel.set(fly.x, 0, fly.z)
+        // that keeps its drift until it lands
+        vel.set(0, 0, 0)
+        drift.set(fly.x, 0, fly.z)
         vy = fly.y
         grounded = false
         fly.set(0, 0, 0)
@@ -331,10 +339,12 @@ export function createWalkController(
     },
     haltPlanar: () => {
       vel.set(0, 0, 0)
+      drift.set(0, 0, 0)
       fly.set(0, 0, 0)
     },
     resetMotion: () => {
       vel.set(0, 0, 0)
+      drift.set(0, 0, 0)
       fly.set(0, 0, 0)
       crouchK = 0
       vy = 0
@@ -375,11 +385,20 @@ export function createWalkController(
       // ease the velocity so steps start and stop with a little weight
       vel.lerp(want, 1 - Math.exp(-10 * dt))
       rig.position.addScaledVector(vel, dt)
+      const driftX = rig.position.x
+      const driftZ = rig.position.z
+      if (!grounded && !swimming) {
+        drift.multiplyScalar(Math.exp(-0.35 * dt))
+        rig.position.addScaledVector(drift, dt)
+      } else drift.set(0, 0, 0)
       // a solid is only a wall where it overlaps the body: standing, ledges
       // up to tune.step are climbed through; airborne, nothing is, so a hop
       // has to clear a surface before it can carry over it
       const stepUp = grounded ? tune.step : 0
       resolveXZ(rig.position, collision, feetY, feetY + tune.eye, stepUp)
+      // a wall met mid-drift takes that axis of the drift away
+      if (drift.x !== 0 && Math.abs(rig.position.x - driftX) < Math.abs(drift.x * dt) * 0.5) drift.x = 0
+      if (drift.z !== 0 && Math.abs(rig.position.z - driftZ) < Math.abs(drift.z * dt) * 0.5) drift.z = 0
       // whatever is under the feet now — the level floor unless a box top
       // stands between. The floor itself is per-position where the level says
       // so (terrain), and it is sampled here rather than before the move: the
@@ -492,8 +511,8 @@ export function createWalkController(
         waterY === undefined
           ? 0
           : Math.min(1, Math.max(0, (waterY - feetY) / Math.max(0.01, tune.eye)))
-      step.vx = vel.x
-      step.vz = vel.z
+      step.vx = vel.x + drift.x
+      step.vz = vel.z + drift.z
       step.vy = grounded ? 0 : vy
       step.support = support
       step.moved =
