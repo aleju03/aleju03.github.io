@@ -6,9 +6,11 @@
   the paint it wears (`bodyShape.ts`), and four of those paints are the
   player's: the jelly itself (body, legs, arms, fists), the headgear, the
   headgear's detail (its stripes, laces, band or trim), and the pupils. Plus
-  one choice that is not a colour: which headgear, out of seven (a sweatband,
-  a wrestler's mask, a bucket hat, a party hat, a hard hat, a bandana, or
-  nothing). That is the whole of the costume on purpose: a jelly brawler is
+  one choice that is not a colour: which headgear, out of eight (a sweatband,
+  a wrestler's mask, a bucket hat, a party hat, a hard hat, a bandana,
+  nothing, or a hood). The body's outline also varies, between three builds
+  hashed from the whole look (see playerBody's persona), which is why it
+  needs no field of its own. That is the whole of the costume on purpose: a jelly brawler is
   its colours and its hat.
 
   **The hat rides in the colours.** The wire carries 24 hex characters and
@@ -59,15 +61,15 @@ export interface PlayerLook {
 
 /** the headgear, in wire order (see the header: the index rides in the low
     bits of `accent`). No beanies */
-export const HATS = ['band', 'mask', 'bucket', 'party', 'hardhat', 'bandana', 'none'] as const
+export const HATS = ['band', 'mask', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood'] as const
 export type HatKind = (typeof HATS)[number]
 
-/** a saturated blue brawler in a black sweatband. (It was green in a red
+/** a saturated blue brawler in a red sweatband. (It was green in a red
     wrestler's mask, which read as the Android logo in a luchador cap) */
 export const DEFAULT_LOOK: PlayerLook = {
   shell: '#2f6fcf',
   trim: '#f2eee0',
-  accent: '#1c1c20',
+  accent: '#c84028',
   glow: '#1c1a22',
   hat: 0,
 }
