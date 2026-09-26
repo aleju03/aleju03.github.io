@@ -74,6 +74,12 @@ net/                 the shared walk, see "Multiplayer" below
                      simultaneous arrivals out of each other's ribcage
 vehicles/            three driveable machines, see "The fleet" below
 sandbox/             rigid-body props on Rapier, see "The sandbox" below
+render/              the look: pixel art in 3D, see "The look" below
+  pixelLook.ts       createPixelLook(): low-res scene target, outlines, grade,
+                     dithered posterize, nearest upscale. Every visible frame
+  grade.ts           the colour identity as OKLab arithmetic, baked to a LUT
+  shaders.ts         the look's two programs (grade at low res, blit)
+  texel.ts           TEXELS_PER_UNIT and texelate(): the surfaces' pixel grid
 props/
   paperPlane.ts      the landed dart souvenir
 ```
@@ -729,6 +735,86 @@ without it the graph is correct and silent.
 The known gap is NAT: there is only public STUN and no TURN relay, so some
 visitors will fail to open a voice channel to some peers. Everything else about
 them still works.
+
+## The look
+
+Every visible frame of the room, the house, the backrooms and the world goes
+through `render/pixelLook.ts`, and that is what makes this a pixel-art game
+rather than a low-poly one. The scene renders into a target a few hundred
+lines tall (the tier's `pixelLines`, 520 on a real card, times the visitor's
+pixel size and render scale, times whatever the adaptive governor has left),
+with no antialiasing and a depth texture. A second pass at that same small
+size draws the outlines from depth, applies exposure and ACES, looks the
+result up in the baked grade (`render/grade.ts`: two 32-cube LUTs, day and
+night, crossfaded by `setMood`), vignettes it and posterizes it in OKLab with
+a 4x4 Bayer dither. A third pass upscales it nearest-neighbour to the canvas,
+integer where the screen allows (1080p is exactly 2x, 1440p exactly 3x).
+
+The knobs are `LookKnobs` (`pixelLook.ts`) and `Grade` (`grade.ts`), and all
+of them are uniforms or a target size, so any of them may move on any frame.
+The pause sheet exposes two: **pixels** (small, medium, large: taste) and
+**render scale** (a share of those lines: cost, and the governor's ceiling).
+`npm run shoot` draws every tile through the look; `--raw` skips it for a
+before and after, `--look '{"outline":0.8,"day":{"sat":0.9}}'` tunes it
+without an edit, `--lines` sets the tile's internal height (default: an exact
+2x), and `--bench n` measures a frame against `--raw`. A tile of 900x620 at
+2x is chunkier than the game (310 lines against the game's 540 over the same
+field of view); `--tile 1920x1080 --lines 540 --cols 1` is 1:1 with a 1080p
+screen.
+
+### Rules for anything drawn through it
+
+These are what later art has to respect to look right in this pipeline, and
+every one of them has a failure you can see in a harness shot.
+
+- **Judge it through the look, never `--raw`.** The grade compresses chroma
+  (a soft cap at OKLab 0.17), lifts black to 0.05 and pulls white to 0.96,
+  and gathers every hue part of the way toward six anchors: brick 32°, ochre
+  72°, moss 122°, teal 175°, slate 238° and plum 312° (OKLab hue). A colour
+  that looks right raw can land a family away.
+- **Pick colours from the anchor families, and do not oversaturate to
+  compensate.** Past the chroma cap extra saturation buys nothing but a hue
+  that lands on the knee. If a whole biome needs a different mood, that is a
+  `Grade` change in one place, not forty palette edits.
+- **Separate forms by value, not by hue.** The posterize has 18 lightness
+  steps. Two neighbouring surfaces less than one step apart in lightness
+  become one band with a dither seam between them; a trim, a kerb or a door
+  frame wants at least two steps against what it sits on.
+- **Surface detail lives on the texel grid**: `TEXELS_PER_UNIT` = 16. New
+  `surface.ts` treatments read `u`/`v` after the snap and draw joints with
+  `sfLine`, so a mortar line is one texel with a hard edge and fades to its
+  coverage when a texel shrinks under a pixel. A canvas texture mapped at a
+  known world scale should be painted at 16 texels per unit and passed
+  through `texelate()` (nearest magnification, mipmapped minification).
+  Detail finer than a texel does not survive: it becomes dither noise.
+- **Silhouettes and creases are what get outlined, so build with them.**
+  A pixel loses `outline` (0.6) of its light where a neighbour lies more
+  than `0.25 + 4.5%` of the depth behind it, and a fold lifts or darkens where the second
+  difference of 1/z says so, which is zero on any plane. Chunky, flat-shaded
+  shapes with real depth separation read; a smooth-shaded gentle curve, a
+  coplanar decal or a detail modelled as a colour change does not. Outlines
+  fade with the scene's fog, so what the fog swallows loses its line too.
+- **Foliage cards are outlined at every card edge that has depth behind it.**
+  Many small, overlapping cards turn a crown into outline noise; fewer,
+  bigger cards with real holes (see the foliage rules above) read as a
+  pixel-art canopy.
+- **No material may lean on the renderer's tone mapping or output encoding.**
+  Both are switched off (`prepareRenderer`), because three keys every program
+  on them and a warm-up drawn to the canvas must compile what the look's
+  target draws. Emissive and `toneMapped: false` colours go through the
+  look's ACES like everything else, so an emissive meant to glow wants HDR
+  intensity, not a hand-picked display colour.
+- **Draw visible frames with `look.render`, never `renderer.render`.** A
+  warm-up or a shadow bake may call the renderer directly (the programs are
+  identical); a frame someone sees may not.
+- **A hole is anything under full alpha.** The CSS3D glass (the AlejOS
+  screen, the house TV) writes a near-zero alpha; the look skips outlines
+  there and writes premultiplied colour, so the DOM behind still shows.
+  Anything else translucent that writes alpha below 0.99 into the target
+  becomes a hole too, so transparent materials blend rather than write alpha.
+- **The look adds no programs after boot.** Two RawShaderMaterials, compiled
+  by `look.compile()` at construction. A new knob is a uniform, never a
+  `#define`, and nothing in it allocates per frame.
 
 ## How to add things
 

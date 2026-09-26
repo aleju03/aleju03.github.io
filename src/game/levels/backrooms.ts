@@ -5,6 +5,7 @@ import { buildBackroomsProps } from './backroomsProps'
 import { seeded } from '../core/rand'
 import { canvasTexture } from '../core/textures'
 import { noStand } from '../physics/collision'
+import { texelate } from '../render/texel'
 
 /*
   The backrooms. A span of the living room's east wall renders like wall but
@@ -563,10 +564,10 @@ export function buildBackrooms(opts: BuildOpts): BackroomsHandles {
   root.add(new THREE.HemisphereLight('#ffedbc', '#96814f', 1.3))
   root.add(new THREE.AmbientLight('#cdb87f', 0.4))
 
-  const paperTex = track(makePaperTexture())
-  const carpetTex = track(makeCarpetTexture())
-  const ceilTex = track(makeCeilTexture())
-  const stainTex = track(makeStainTexture())
+  const paperTex = track(texelate(makePaperTexture()))
+  const carpetTex = track(texelate(makeCarpetTexture()))
+  const ceilTex = track(texelate(makeCeilTexture()))
+  const stainTex = track(texelate(makeStainTexture()))
 
   const paperMat = new THREE.MeshStandardMaterial({ map: paperTex, roughness: 0.92 })
   const carpetMat = new THREE.MeshStandardMaterial({ map: carpetTex, roughness: 1 })

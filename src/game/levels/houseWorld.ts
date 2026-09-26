@@ -7,6 +7,7 @@ import { applyFixedSurface, SURF, type SurfaceId } from '../world/surface'
 import { buildKitTree } from '../world/treeMesh'
 import { buildFittings, facingOf, type FittingHandles, type FittingSpec } from './fittings'
 import type { SeatSpec } from '../player/seating'
+import { texelate } from '../render/texel'
 
 /** anything with a .scene group — a GLTFLoader result or a slice of one */
 export interface ModelLike {
@@ -640,10 +641,10 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   /* ------------------------------------------------------- floor planes -- */
 
-  const plankBedTex = track(makePlankTexture('#2a2018', '#1c150e', 0xbed0))
-  const plankLivTex = track(makePlankTexture('#32261c', '#221912', 0x11f0))
-  const tileTex = track(makeTileTexture())
-  const grassTex = track(makeGrassTexture())
+  const plankBedTex = track(texelate(makePlankTexture('#2a2018', '#1c150e', 0xbed0)))
+  const plankLivTex = track(texelate(makePlankTexture('#32261c', '#221912', 0x11f0)))
+  const tileTex = track(texelate(makeTileTexture()))
+  const grassTex = track(texelate(makeGrassTexture()))
 
   const floorPlane = (
     x0: number, x1: number, z0: number, z1: number,

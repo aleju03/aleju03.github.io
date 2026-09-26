@@ -33,7 +33,9 @@ import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { Sandbox } from '../../game/sandbox/sandbox'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
-import { classifyGpu, setGfxTier, type GfxTier } from '../../game/world/quality'
+import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/quality'
+import { createPixelLook, type PixelLook } from '../../game/render/pixelLook'
+import { texelateTree } from '../../game/render/texel'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
 import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
 import {
@@ -47,7 +49,7 @@ import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
-import { PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
+import { PIXEL_LINES_K, PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
 import { createProximityVoice, type VoiceMode } from './proximityVoice'
 import type { Session } from './osContext'
 import { track } from '../../analytics'
@@ -71,6 +73,15 @@ import { OS_SCENE_READY_EVENT } from '../../events'
   game/physics/collision, and which world is live (house/yard vs the
   backrooms, including the noclip cut between them) to game/levels. The
   walkTick below is just the per-frame conductor calling each in order.
+
+  Every frame of it, room and world alike, is drawn through the pixel look
+  (game/render/pixelLook.ts): a low internal resolution, outlines, a baked
+  grade and a dithered posterize, upscaled nearest-neighbour. That is why the
+  renderer here has no antialiasing, no tone mapping and a linear output
+  (the look does all three itself), why the adaptive governor sheds the
+  look's internal lines rather than the canvas's pixel ratio, and why the
+  glass holes still work: the look keeps alpha. The live-DOM screen behind
+  the glass is untouched by any of it and stays crisp.
 
   Models are CC assets, see public/os/models/LICENSE.md (computer by Charlie
   CC BY 3.0, desk/mug/plant by Quaternius and Kenney CC0). If WebGL or the
@@ -470,6 +481,7 @@ export default function CrtScene({
     // to be torn down explicitly rather than left to the disposer: an engine
     // that is only garbage-collected keeps idling under an unmounted scene
     let disposeFleet: (() => void) | null = null
+    let disposeLook: (() => void) | null = null
     const disposer = createDisposer()
 
     const bail = setTimeout(() => {
@@ -491,21 +503,27 @@ export default function CrtScene({
 
         const W = mount.clientWidth
         const H = mount.clientHeight
+        // no antialiasing: every frame is drawn through the pixel look into
+        // its own aliased target, and a multisampled canvas would be memory
+        // and a resolve spent on a single upscale triangle
         webgl = new THREE.WebGLRenderer({
-          antialias: true,
+          antialias: false,
           alpha: true,
           powerPreference: 'high-performance',
         })
-        // The renderer's resolution ceiling: the panel's own ratio, capped at
-        // 2 (past which the returns vanish and the cost keeps squaring), times
-        // whatever the visitor left the render-scale dial on. It is a `let`
-        // rather than the constant it used to be because that dial moves
-        // mid-roam, and the adaptive governor below sheds *from* this number,
-        // so the two have to be the same number.
+        // The canvas runs at the panel's own ratio (capped at 2) and never
+        // moves: it only ever receives the look's nearest-neighbour upscale,
+        // and a canvas below the panel's resolution would be stretched again
+        // by the compositor, bilinearly, which blurs every pixel the look
+        // drew. What the render-scale dial and the governor move instead is
+        // the look's internal resolution, as a multiplier on its lines:
+        // `prCeil` is the dial, `pr` what the governor has left of it. They
+        // are `let`s because the dial moves mid-roam, and the governor sheds
+        // *from* it, so the two have to be the same number.
         const PR_BASE = Math.min(window.devicePixelRatio, 2)
         let prScale = prefsRef.current.scale
-        let prCeil = PR_BASE * prScale
-        webgl.setPixelRatio(prCeil)
+        let prCeil = prScale
+        webgl.setPixelRatio(PR_BASE)
         webgl.setSize(W, H)
         webgl.shadowMap.enabled = true
         // PCFSoft is less prone to the blotchy VSM halos that show up around
@@ -515,8 +533,14 @@ export default function CrtScene({
         // baked once (light.shadow.autoUpdate = false) and re-rendered only
         // for the light near the player on frames where a caster moved
         webgl.shadowMap.autoUpdate = true
-        webgl.toneMapping = THREE.ACESFilmicToneMapping
-        webgl.toneMappingExposure = 1.1
+        // tone mapping and output encoding belong to the look now, which
+        // switches the renderer's own off before any material compiles
+        // (pixelLook.ts's header says why that ordering is load-bearing)
+        const look: PixelLook = createPixelLook(webgl)
+        let pixSize = prefsRef.current.pixels
+        look.setScale(prCeil)
+        look.compile()
+        disposeLook = look.dispose
         // Pick the graphics tier BEFORE any level builds: grass density,
         // canopy fullness and the sun's shadow map are baked at construction
         // time (world/quality.ts). The GPU string decides it by default, and
@@ -540,6 +564,7 @@ export default function CrtScene({
         }
         const builtTier = detailTier(prefsRef.current.detail, autoTier)
         setGfxTier(builtTier)
+        look.knobs.lines = gfx.pixelLines * PIXEL_LINES_K[pixSize]
         setTierInfo({ auto: autoTier, built: builtTier })
         // three only reads a program's link status when this is on, and that
         // read (getProgramInfoLog/getShaderInfoLog) blocks the main thread
@@ -899,6 +924,9 @@ export default function CrtScene({
         // pile in parallel: the old synchronous compile() blocked the main
         // thread for its whole duration, which froze the warp tunnel's canvas
         // mid-ride. The intro flight lifts off once this resolves (below).
+        // the desk models' own textures (keyboard, mouse) magnify as texels
+        // like everything else in the look; set before the uploads below
+        texelateTree(scene)
         disposer.textures.forEach((texture) => webgl?.initTexture(texture))
         stageRef.current?.('shaders')
         const firstCompile = webgl.compileAsync(scene, camera).catch(() => {})
@@ -1896,13 +1924,17 @@ export default function CrtScene({
           sceneFog.near = sky.fogNear
           sceneFog.far = sky.fogFar
           sceneBg.copy(sky.fogColor)
+          // the grade leans toward its night table as the light goes, but
+          // not through the twilight: golden hour is the warmest moment of
+          // the day, and the night table's drained chroma would grey it out
+          look.setMood(sky.night * (1 - sky.twilight))
           levels.current.overrideLight?.(lightRig)
         }
 
         const render = () => {
           if (!webgl || !scene) return
           applyLight()
-          webgl.render(scene, camera)
+          look.render(scene, camera)
           css3d.render(cssScene, camera)
         }
 
@@ -2253,11 +2285,17 @@ export default function CrtScene({
           // back until the average had crawled out of the last one.
           if (prefsRef.current.scale !== prScale) {
             prScale = prefsRef.current.scale
-            prCeil = PR_BASE * prScale
+            prCeil = prScale
             pr = prCeil
             emaMs = 16
             prWait = 1.5
-            webgl?.setPixelRatio(pr)
+            look.setScale(pr)
+          }
+          // the pixel size is taste rather than cost, so it leaves the
+          // governor alone: a new line target, the same share of it
+          if (prefsRef.current.pixels !== pixSize) {
+            pixSize = prefsRef.current.pixels
+            look.knobs.lines = gfx.pixelLines * PIXEL_LINES_K[pixSize]
           }
           // 22 ms is the budget with nothing capping the loop. Under the
           // limiter the frame time *is* the interval by construction, so the
@@ -2265,14 +2303,16 @@ export default function CrtScene({
           // cope and sheds resolution it had no reason to. A cap of 60 or
           // faster leaves these numbers exactly where they were.
           const budget = Math.max(22, interval * 1.3)
-          // the floor is 1, or the ceiling itself once the dial is under it:
-          // somebody who has already chosen to render at 60% has made this
-          // decision by hand, and there is nothing left for the governor to
-          // take that they have not taken
-          const prFloor = Math.min(1, prCeil)
+          // the floor is half the lines, or the ceiling itself once the dial
+          // is under it: somebody who has already chosen to render at 60% has
+          // made this decision by hand, and there is nothing left for the
+          // governor to take that they have not taken. Steps are fractions
+          // of the lines, so each one is a real fill saving (an eighth of the
+          // lines is about a quarter of the pixels)
+          const prFloor = Math.min(0.5, prCeil)
           if (prWait <= 0 && emaMs > budget && pr > prFloor) {
-            pr = Math.max(prFloor, pr - (emaMs > budget * 2 ? 0.5 : 0.25))
-            webgl?.setPixelRatio(pr)
+            pr = Math.max(prFloor, pr - (emaMs > budget * 2 ? 0.25 : 0.125))
+            look.setScale(pr)
             prWait = 1.2
           }
           /*
@@ -2963,12 +3003,12 @@ export default function CrtScene({
           // pause sheet, and a pause can end in sitting down as easily as in
           // resuming, so it may well have moved since the last roam
           prScale = prefsRef.current.scale
-          prCeil = PR_BASE * prScale
+          prCeil = prScale
           pr = prCeil
           emaMs = 16
           prWait = 1.5
           nextFrame = 0
-          webgl.setPixelRatio(pr)
+          look.setScale(pr)
           // announce ourselves while the stand-up glide plays, so the roster
           // and the first snapshots have landed by the time the controls do
           joinWorld()
@@ -3067,7 +3107,7 @@ export default function CrtScene({
             key.shadow.needsUpdate = true
             // sit back down at full resolution; the governor only runs walking
             pr = prCeil
-            webgl.setPixelRatio(pr)
+            look.setScale(pr)
           }
           nearNow = false
           doorVerbNow = null
@@ -3257,6 +3297,9 @@ export default function CrtScene({
           const models: HouseModels = { plant, mug }
           for (const e of entries) if (e) models[e[0]] = e[1]
           house.furnish(models)
+          // crisp texels on the few furniture models that carry a texture,
+          // before any of them has been drawn (render/texel.ts)
+          texelateTree(house.root)
           /*
             The furniture is in, so its working parts can be wired up.
 
@@ -3399,6 +3442,7 @@ export default function CrtScene({
           mats.forEach((m) => m.dispose())
         })
       }
+      disposeLook?.()
       webgl?.dispose()
       disposer.disposeAll()
       cleanupDom?.()

@@ -9,9 +9,12 @@
   detents that only the menu knows about is a list the loader will happily
   accept a value from between.
 
-  Two of them are graphics knobs and they are deliberately different in kind,
-  because the renderer is. `scale` is live: it is one number on the renderer
-  and moving it repaints the next frame. `detail` is not: `world/quality.ts`
+  Three of them are graphics knobs and they are deliberately different in
+  kind, because the renderer is. `pixels` is taste: how big a pixel of the
+  pixel-art look (`game/render/pixelLook.ts`) is, live. `scale` is cost: a
+  multiplier on the look's internal resolution, which is also the ceiling
+  the adaptive governor sheds from, and it is live too, because it is one
+  target size. `detail` is not: `world/quality.ts`
   is baked into merged chunk geometry, two grass lattices and one #define in
   the sky shader at construction time, so choosing it is a statement about the
   next load. The menu is the one place that difference is visible, so the menu
@@ -42,12 +45,21 @@ export type Detail = (typeof DETAILS)[number]
 export const detailTier = (detail: Detail, auto: GfxTier): GfxTier =>
   detail === 'auto' ? auto : detail === 'full' ? 'high' : 'medium'
 
-/** how far the render-scale dial may pull the renderer's pixel ratio down.
-    It only sheds: 1 is the panel's own ratio (itself already capped at 2, past
-    which the returns vanish and the cost keeps squaring), and the bottom is
-    where a 1x screen still reads as a picture rather than as a mosaic */
+/** how far the render-scale dial may pull the look's internal resolution
+    down. It only sheds: 1 is the lines the pixel size asks for, and the
+    bottom is where a picture is still a picture rather than a mosaic */
 export const SCALE_MIN = 0.5
 export const SCALE_MAX = 1
+
+/**
+  How big a pixel of the look is, as three words rather than a number,
+  because what matters is the feel and the device-pixel size falls out of the
+  screen: at "medium" a 1080p panel is an exact 2x and a 1440p one an exact
+  3x. Each is a multiplier on the tier's `pixelLines`.
+*/
+export const PIXEL_SIZES = ['small', 'medium', 'large'] as const
+export type PixelSize = (typeof PIXEL_SIZES)[number]
+export const PIXEL_LINES_K: Record<PixelSize, number> = { small: 1.4, medium: 1, large: 0.7 }
 
 /** how far either voice dial may be pushed. Unity is already a working level
     (`proximityVoice` carries its own makeup gain under the dial and a limiter
@@ -69,9 +81,11 @@ export interface RoamPrefs {
   cap: number
   /** how much world to build: the tier override, applied on the next load */
   detail: Detail
-  /** multiplier on the renderer's pixel ratio, and the ceiling the adaptive
-      governor sheds from. Live */
+  /** multiplier on the look's internal resolution, and the ceiling the
+      adaptive governor sheds from. Live */
   scale: number
+  /** how chunky the pixel art is. Live */
+  pixels: PixelSize
 }
 
 /**
@@ -95,7 +109,7 @@ export const fpsCapLabel = (cap: number) => (cap === 0 ? 'no limit' : `${cap} fp
 export const PREFS_KEY = 'alejos-roam-prefs'
 const PREFS_DEFAULT: RoamPrefs = {
   fov: 60, sens: 1, third: false, cap: 160, detail: 'auto', scale: 1,
-  micVol: 1, voiceVol: 1,
+  pixels: 'medium', micVol: 1, voiceVol: 1,
 }
 
 /** a stored volume, which may be a 0 somebody meant: `Number(x) || d` would
@@ -126,6 +140,9 @@ export const loadPrefs = (): RoamPrefs => {
           ? (p.detail as Detail)
           : PREFS_DEFAULT.detail,
         scale: Math.min(SCALE_MAX, Math.max(SCALE_MIN, Number(p.scale) || PREFS_DEFAULT.scale)),
+        pixels: PIXEL_SIZES.includes(p.pixels as PixelSize)
+          ? (p.pixels as PixelSize)
+          : PREFS_DEFAULT.pixels,
       }
     }
   } catch {

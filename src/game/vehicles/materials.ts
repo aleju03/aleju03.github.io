@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { canvasTexture } from '../core/textures'
 import type { Slot } from './parts'
+import { texelate } from '../render/texel'
 
 /*
   What makes a shape read as a vehicle rather than as a shape.
@@ -155,7 +156,7 @@ export function createVehicleMaterials(track: {
     track.texture(envTex)
   }
 
-  const tread = typeof document !== 'undefined' ? track.texture(makeTreadTexture()) : null
+  const tread = typeof document !== 'undefined' ? track.texture(texelate(makeTreadTexture())) : null
   if (tread) {
     tread.wrapS = tread.wrapT = THREE.RepeatWrapping
     tread.repeat.set(1, 1)

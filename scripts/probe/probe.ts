@@ -11,6 +11,10 @@ import { buildFauna, loadFaunaModels, type FaunaModels } from '../../src/game/wo
 import { buildPedestrians } from '../../src/game/world/pedestrians'
 import type { Solid } from '../../src/game/physics/collision'
 import type { BiomeId } from '../../src/game/world/biomes'
+import { buildSky } from '../../src/game/levels/sky'
+import { buildHouse } from '../../src/game/levels/houseWorld'
+import { buildGrass } from '../../src/game/world/grass'
+import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
 
 /*
   The world, rendered off to one side so it can be photographed.
@@ -29,12 +33,21 @@ import type { BiomeId } from '../../src/game/world/biomes'
   every wall as a grey rectangle. One shot taken that way is indistinguishable
   from a real regression, and it cost most of a conversation.
 
+  The same rule covers the frame itself. Every tile is drawn through the
+  game's own post pass (`render/pixelLook.ts`: the low internal resolution,
+  outlines, grade and dithered posterize), under the game's own sky
+  (`levels/sky.ts`, pinned at the asked-for `tod`, which also hands back the
+  fog and the sun), over the game's own grass field. A shot without those is
+  a picture of a different game; `raw` skips only the post pass, for a
+  before and after of the look itself.
+
   Two things it deliberately does not have. There is no walker, no physics and
-  no day cycle: the light rig below is CrtScene's numbers pinned at whatever
-  `tod` was asked for. And there is no streaming, just a fixed neighbourhood
-  of chunks built once, because a probe that streams has the reused-renderer
-  ghosting problem the notes warn about, where late-built chunk geometry draws
-  nothing at all and impersonates whatever you just changed.
+  no running clock: the light rig below is CrtScene's numbers pinned at
+  whatever `tod` was asked for. And there is no streaming, just a fixed
+  neighbourhood of chunks built once, because a probe that streams has the
+  reused-renderer ghosting problem the notes warn about, where late-built
+  chunk geometry draws nothing at all and impersonates whatever you just
+  changed.
 */
 
 export type Tod = number
@@ -75,6 +88,16 @@ export interface ShotSpec {
       is photographed is otherwise the live system, wandering, grazing and
       following the pavement exactly as it does in the world */
   life?: number
+  /** skip the pixel look: the renderer's own ACES straight to the canvas,
+      antialiased, the way every frame was drawn before render/ existed */
+  raw?: boolean
+  /** internal lines per tile for the look; 0 picks half the tile height,
+      which is an exact 2x upscale */
+  lines?: number
+  /** overrides for the look's knobs (render/pixelLook.ts's LookKnobs), plus
+      `day` / `night` objects overriding the grade presets (render/grade.ts).
+      For tuning the look without an edit-reload cycle */
+  look?: Record<string, unknown>
 }
 
 export interface Prop {
@@ -178,47 +201,25 @@ const resolveAllLandmarks = () => landmarkRings(() => true, 9)
 
 /* --------------------------------------------------------------- the rig -- */
 
-/** CrtScene's own roam numbers, pinned at a time of day instead of animated.
-    Copied rather than imported because sky.ts drives them off a live clock
-    and a mounted scene graph; the constants are what matter here. */
-const HEMI_SKY_DAY = new THREE.Color('#cfe2f2')
-const HEMI_GROUND_DAY = new THREE.Color('#5f6a52')
-const HEMI_SKY_NIGHT = new THREE.Color('#5a6678')
-const HEMI_GROUND_NIGHT = new THREE.Color('#241d16')
-const SUN_LOW = new THREE.Color('#ffb066')
-const SUN_HIGH = new THREE.Color('#fff2dc')
-const FOG_NIGHT = new THREE.Color('#0d1220')
-const FOG_DAY = new THREE.Color('#a9c0d4')
+/** CrtScene's roam hemisphere: HEMI_ROAM scaled by the sky's own day boost,
+    in the sky's own colours. The sun, the fog and the domes are the real
+    sky module's, pinned at `tod`. */
+const HEMI_ROAM = 1.5
+const noop = () => {}
 
-export const lightFor = (scene: THREE.Scene, tod: Tod, at: THREE.Vector3) => {
-  // elevation of the sun over the horizon, 0 at dawn/dusk, 1 at noon
-  const sunEl = Math.sin((tod - 0.25) * Math.PI * 2)
-  const day = Math.max(0, Math.min(1, sunEl * 3))
-  const dayBoost = 1 + 2.1 * day
-  const hemi = new THREE.HemisphereLight(
-    HEMI_SKY_NIGHT.clone().lerp(HEMI_SKY_DAY, day),
-    HEMI_GROUND_NIGHT.clone().lerp(HEMI_GROUND_DAY, day),
-    1.5 * dayBoost,
-  )
+export const lightFor = (scene: THREE.Scene, tod: Tod, cam: THREE.Vector3) => {
+  const sky = buildSky({ parent: scene, trackTexture: noop, trackDisposable: noop })
+  const st = sky.update(cam, tod)
+  // sky.ts only asks for a sun map while the sun is strong enough to cast
+  // one, and CrtScene bakes it once under the boot cover regardless. A still
+  // frame has no boot: at dusk and at night the shadow sampler would have no
+  // map behind it, and every lit draw fails validation and draws nothing
+  sky.sun.shadow.needsUpdate = true
+  const hemi = new THREE.HemisphereLight(st.hemiSky, st.hemiGround, HEMI_ROAM * st.dayBoost)
   scene.add(hemi)
-  const sun = new THREE.DirectionalLight(
-    SUN_LOW.clone().lerp(SUN_HIGH, Math.max(0, Math.min(1, sunEl * 1.6))),
-    2.3 * Math.pow(Math.max(0, sunEl), 0.65),
-  )
-  const a = (tod - 0.25) * Math.PI * 2
-  sun.position.set(at.x + Math.cos(a) * 60, at.y + Math.max(0.02, sunEl) * 60, at.z + 12.6)
-  sun.target.position.copy(at)
-  sun.castShadow = true
-  sun.shadow.mapSize.set(2048, 2048)
-  sun.shadow.bias = -0.0004
-  sun.shadow.normalBias = 0.5
-  const c = sun.shadow.camera
-  c.left = -70; c.right = 70; c.top = 70; c.bottom = -70; c.near = 1; c.far = 220
-  c.updateProjectionMatrix()
-  scene.add(sun, sun.target)
-  const fog = FOG_NIGHT.clone().lerp(FOG_DAY, day)
-  scene.fog = new THREE.Fog(fog, 26 + day * 30, 176 + day * 64)
-  scene.background = fog.clone().lerp(new THREE.Color('#ffffff'), 0.12)
+  scene.fog = new THREE.Fog(st.fogColor.clone(), st.fogNear, st.fogFar)
+  scene.background = st.fogColor.clone()
+  return st
 }
 
 /* ----------------------------------------------------------------- props -- */
@@ -311,7 +312,6 @@ const addLife = (
   scene: THREE.Scene, x: number, z: number, gy: number, seconds: number,
   obstacles: Solid[],
 ) => {
-  const noop = () => {}
   const fauna = buildFauna({
     parent: scene, obstacles, trackDisposable: noop, ring: { near: 14, spread: 26 },
   })
@@ -347,6 +347,9 @@ const addLife = (
 /* ---------------------------------------------------------------- shoot -- */
 
 let renderer: THREE.WebGLRenderer | null = null
+let look: PixelLook | null = null
+/** the first GL error flagged straight after drawing a tile, this shot */
+let lastGlError = ''
 /** the built tiles of the last shot, so `pick` can raycast into them */
 let tiles: Array<{ scene: THREE.Scene; cam: THREE.Camera; chunks: Chunk[] }> = []
 
@@ -370,17 +373,33 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
   // a fresh renderer per shot, deliberately. A reused one ghosts late-built
   // chunk geometry: valid, raycastable, in the scene, and drawing nothing,
   // which impersonates exactly the feature you just changed
+  look?.dispose()
+  look = null
   renderer?.dispose()
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+  // antialiasing only for the raw frame: the look renders into its own
+  // aliased target and would pay for a multisampled canvas it never uses
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: !!spec.raw })
   renderer.setPixelRatio(1)
   renderer.setSize(canvas.width, canvas.height, false)
-  renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 1.1
+  if (spec.raw) {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.1
+  } else {
+    look = createPixelLook(renderer)
+    // what the tile is drawn at: an exact 2x unless asked otherwise
+    look.knobs.lines = spec.lines || Math.round(th / 2)
+    const { day, night, ...knobs } = (spec.look ?? {}) as {
+      day?: Record<string, unknown>; night?: Record<string, unknown>
+    }
+    Object.assign(look.knobs, knobs)
+    look.setGrade(day, night)
+  }
   renderer.shadowMap.enabled = true
   renderer.shadowMap.type = THREE.PCFSoftShadowMap
   renderer.setScissorTest(true)
 
   disposeTiles()
+  lastGlError = ''
   const keep: THREE.Texture[] = []
   const mats = makeChunkMats((t) => keep.push(t), () => {})
   // the streamer fades a chunk in over its baked birth stamp and holds the
@@ -393,7 +412,21 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     const { x, z, label } = list[i]
     const scene = new THREE.Scene()
     const gy = terrainY(x, z)
-    lightFor(scene, spec.tod, new THREE.Vector3(x, gy, z))
+    const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.2, 900)
+    if (spec.eye) {
+      cam.position.set(x, gy + 3.55, z)
+      cam.lookAt(x + Math.sin(spec.yaw) * 20, gy + 2.0, z + Math.cos(spec.yaw) * 20)
+    } else {
+      cam.position.set(
+        x + Math.cos(spec.yaw) * spec.dist, gy + spec.height,
+        z + Math.sin(spec.yaw) * spec.dist)
+      cam.lookAt(x, gy + spec.height * 0.32, z)
+    }
+    const sky = lightFor(scene, spec.tod, cam.position)
+    look?.setMood(sky.night * (1 - sky.twilight))
+    // the lattice is pinned under whatever it is updated at: the target, so
+    // an orbit shot has turf where it is looking rather than under the lens
+    buildGrass({ parent: scene, trackDisposable: noop }).update(x, z)
 
     const c0 = chunkX(x)
     const d0 = chunkZ(z)
@@ -415,19 +448,34 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
         for (const g of c.geos) verts += g.getAttribute('position').count
       }
 
+    // the property is a hole in the generated world (grid.ts's RESERVED), so
+    // the house has to be stood in it or `home` photographs the fog through
+    // a rectangle. Architecture only: the furniture is ~35 downloaded GLBs,
+    // and the lamp it clones onto each ceiling is an empty stand-in
+    if (label === 'home') {
+      const house = buildHouse({
+        scene, obstacles: [],
+        darkWoodMat: new THREE.MeshStandardMaterial({ color: '#3b2a1f', roughness: 0.7 }),
+        windowGlassMat: new THREE.MeshStandardMaterial({
+          color: '#9fb4c4', roughness: 0.1, transparent: true, opacity: 0.35,
+        }),
+        lamp: { scene: new THREE.Group() },
+        trackTexture: noop, trackDisposable: noop,
+      })
+      house.setDay(sky.day)
+      // its spot lights hand-bake their maps (CrtScene does it under the
+      // boot cover). A shadow sampler with no map behind it fails every lit
+      // draw with INVALID_OPERATION, and the whole tile renders as fog
+      for (const l of house.shadowLights) l.shadow.needsUpdate = true
+      house.root.traverse((o) => {
+        const m = o as THREE.Mesh
+        if (m.isMesh) { m.castShadow = true; m.receiveShadow = true }
+      })
+    }
+
     if (spec.props?.length) addProps(scene, x, z, spec.props)
     const life = spec.life ? addLife(scene, x, z, gy, spec.life, boxes) : null
 
-    const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.2, 900)
-    if (spec.eye) {
-      cam.position.set(x, gy + 3.55, z)
-      cam.lookAt(x + Math.sin(spec.yaw) * 20, gy + 2.0, z + Math.cos(spec.yaw) * 20)
-    } else {
-      cam.position.set(
-        x + Math.cos(spec.yaw) * spec.dist, gy + spec.height,
-        z + Math.sin(spec.yaw) * spec.dist)
-      cam.lookAt(x, gy + spec.height * 0.32, z)
-    }
     tiles.push({ scene, cam, chunks })
 
     const col = i % cols
@@ -436,7 +484,10 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     const py = canvas.height - (row + 1) * th
     renderer.setViewport(px, py, tw, th)
     renderer.setScissor(px, py, tw, th)
-    renderer.render(scene, cam)
+    if (look) look.render(scene, cam)
+    else renderer.render(scene, cam)
+    const err = renderer.getContext().getError()
+    if (err && !lastGlError) lastGlError = `0x${err.toString(16)} on tile ${i} (${label})`
 
     const s = sampleAt(x, z)
     out.push({
@@ -485,3 +536,42 @@ export const pick = (tile: number, px: number, py: number) => {
     }
   })
 }
+
+/**
+ * Frame cost of the last shot's first tile: `n` redraws of it, each forced
+ * to finish with a one-pixel readback so the clock measures the GPU rather
+ * than the command queue. Median milliseconds per frame, which is how the
+ * look's fill saving and the cost of its passes are measured against --raw.
+ */
+export const bench = (n = 60) => {
+  const t = tiles[0]
+  if (!t || !renderer) return null
+  const gl = renderer.getContext()
+  const px = new Uint8Array(4)
+  const draw = () => {
+    if (look) look.render(t.scene, t.cam)
+    else renderer!.render(t.scene, t.cam)
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px)
+  }
+  for (let i = 0; i < 5; i++) draw()
+  const ms: number[] = []
+  for (let i = 0; i < n; i++) {
+    const t0 = performance.now()
+    draw()
+    ms.push(performance.now() - t0)
+  }
+  ms.sort((a, b) => a - b)
+  return {
+    median: Math.round(ms[n >> 1] * 100) / 100,
+    p90: Math.round(ms[Math.floor(n * 0.9)] * 100) / 100,
+    internal: look ? `${look.internal.w}x${look.internal.h}` : 'native',
+  }
+}
+
+/** the GL error flag read straight after each tile of the last shot. A draw that fails validation
+    (a shadow sampler with no map, a feedback loop) draws nothing and throws
+    nothing, so the harness asks */
+export const glError = () => lastGlError
+
+/** the last shot's tiles, for poking at from the console over CDP */
+export const lastTiles = () => ({ tiles, renderer, look })

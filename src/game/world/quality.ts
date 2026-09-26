@@ -65,6 +65,13 @@ export interface Gfx {
       layer. Three extra noise samples over a third of the screen — free on a
       real card, not on a cold iGPU */
   richSky: boolean
+  /** internal lines the pixel look (render/pixelLook.ts) aims for at the
+      visitor's "pixels: medium" and full render scale. Unlike everything
+      else in here it is live, because it is a target size and not geometry;
+      it lives in the record because what a card can fill is a tier question.
+      About Lethal Company's own 520 on a real card, a little chunkier on a
+      cold iGPU, which is also a fill-cost saving of about a sixth */
+  pixelLines: number
 }
 
 // The two lattices are deliberately the same size on each tier, which puts
@@ -73,11 +80,11 @@ export interface Gfx {
 // that all of it was being spent at distances where none of it could be seen.
 const MEDIUM: Gfx = {
   grassSide: 144, grassNearSide: 144, flowerSide: 44, shadowMap: 1024, canopyK: 1,
-  birds: 26, fauna: 8, pedestrians: 5, richSky: false,
+  birds: 26, fauna: 8, pedestrians: 5, richSky: false, pixelLines: 480,
 }
 const HIGH: Gfx = {
   grassSide: 224, grassNearSide: 224, flowerSide: 60, shadowMap: 2048, canopyK: 1.45,
-  birds: 54, fauna: 14, pedestrians: 9, richSky: true,
+  birds: 54, fauna: 14, pedestrians: 9, richSky: true, pixelLines: 520,
 }
 
 export const gfx: Gfx = { ...MEDIUM }
