@@ -9,7 +9,8 @@ import { createSandbox, type Sandbox } from '../../src/game/sandbox/sandbox'
 import {
   SCENARIOS, advanceScenario, scenarioById, stageScenario, type Scenario, type ScenarioCtx,
 } from '../../src/game/sandbox/scenarios'
-import { lightFor } from './probe'
+import { dressLook, lightFor } from './probe'
+import type { SkyState } from '../../src/game/levels/sky'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
 
 /*
@@ -102,6 +103,8 @@ interface Stage {
   chunks: Chunk[]
   ticks: number[]
   duration: number
+  /** the pinned sky, which the look is dressed from every frame */
+  sky: SkyState
   /** the scenario's render side, if it has one */
   pres: ReturnType<NonNullable<Scenario['present']>> | null
   /** last drawn time, for the render side's dt */
@@ -164,7 +167,6 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   await sb.whenReady
   const c = stageScenario(s, sb)
   const sky = lightFor(scene, tod, new THREE.Vector3(c.x, c.y, c.z))
-  look?.setMood(sky.night * (1 - sky.twilight))
   const shot = s.camera(c)
   const to = spec.to ?? shot.to
   let from = spec.from ?? shot.from
@@ -184,7 +186,7 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   cam.userData.shot = { from: [...from], to: [...to], fov }
   const pres = s.present ? s.present(c, scene, cam) : null
   stage = {
-    s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration, pres, drawnAt: 0,
+    s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration, sky, pres, drawnAt: 0,
   }
   // link every program before the first still: an uncompiled material's
   // first draw can land a frame late, which films as props that are not
@@ -236,7 +238,11 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
 }
 
 const draw = (r: THREE.WebGLRenderer, st: Stage) => {
-  if (look && !lookRaw) look.render(st.scene, st.cam)
+  if (look && !lookRaw) {
+    // dressed per frame: the camera may have moved and the look may be new
+    dressLook(look, st.scene, st.sky, st.cam, null)
+    look.render(st.scene, st.cam)
+  }
   else r.render(st.scene, st.cam)
 }
 
