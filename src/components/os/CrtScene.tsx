@@ -189,12 +189,16 @@ interface VoiceHud {
 /** the receipt keeps this many lines; anything older has been torn off */
 const FEED_KEEP = 80
 
-/** a hint line that wraps only between its hints, never inside one */
-const tapeLine = (line: string) =>
-  line.split(' · ').flatMap((h, i) => [
-    i > 0 ? ' · ' : '',
-    <span key={i} className="whitespace-nowrap">{h}</span>,
+/** a hint line that wraps only between its hints, never inside one, and
+    never with a separator starting the next line: each dot is glued to the
+    hint before it, so the only break is the space after */
+const tapeLine = (line: string) => {
+  const hints = line.split(' · ')
+  return hints.flatMap((h, i) => [
+    i > 0 ? ' ' : '',
+    <span key={i} className="whitespace-nowrap">{i < hints.length - 1 ? `${h} ·` : h}</span>,
   ])
+}
 
 const EASE = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 const MODELS = [
@@ -434,6 +438,8 @@ export default function CrtScene({
   const typingRef = useRef(false)
   // set by the effect: give the mouse back to the walk once an overlay closes
   const relockRef = useRef<(() => void) | null>(null)
+  /** the crosshair's wrapper, moved off centre in third person (walkTick) */
+  const crossRef = useRef<HTMLDivElement>(null)
   const closeChat = () => {
     typingRef.current = false
     setTyping(null)
@@ -1279,6 +1285,10 @@ export default function CrtScene({
         }
         let hereNow = 0
         let aimNow: CrosshairAim = 'none'
+        const crossPt = new THREE.Vector3()
+        const crossBox = new THREE.Vector3()
+        const camRight = new THREE.Vector3()
+        let crossMoved = false
         /** props still scaling in from a spawn, and how long that takes */
         const pops: { mesh: THREE.Object3D; t: number }[] = []
         const POP_S = 0.24
@@ -3155,6 +3165,47 @@ export default function CrtScene({
           chaseEnv.pitch = walk.pitch
           chaseEnv.focus = rig.ragdolling ? rig.focus(focusPt) : null
           chase.apply(camera, dt, chaseEnv)
+          // the crosshair marks where the head's gaze lands. In first person
+          // that is the middle of the screen; with the boom out the middle is
+          // the back of your own head, so the gaze's hit (or a point well
+          // down it) is projected through the boom's lens and the mark moves
+          // there, which is also exactly where a spawn will go
+          if (crossRef.current) {
+            const el = crossRef.current
+            if (chase.dist > 1.2 && !rig.down) {
+              const cp = Math.cos(walk.pitch)
+              aimDir.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp)
+              const hit = sandbox && level.id === 'overworld' ? sandbox.raycast(headPos, aimDir, AIM_REACH) : null
+              // the boom has only just moved the lens; its inverse is last
+              // frame's until this, and every projection below would be too
+              camera.updateMatrixWorld()
+              crossPt.copy(headPos).addScaledVector(aimDir, hit ? hit.distance : 40).project(camera)
+              const w = webgl ? webgl.domElement.clientWidth : 0
+              const h = webgl ? webgl.domElement.clientHeight : 0
+              // a mark that would land on your own back says nothing (the
+              // point it stands for is behind you from the lens's side), so
+              // it is hidden while the body covers it: the body's screen box
+              // is its crown and its soles projected, a shoulder's width wide.
+              // The boom sits on the gaze line, so in practice the mark is
+              // hidden whenever the body is in frame and shows only once the
+              // boom has swung clear of it (a steep look up or down)
+              crossBox.copy(headPos).setY(headPos.y + 0.6).project(camera)
+              const top = crossBox.y
+              const midX = crossBox.x
+              crossBox.set(headPos.x, walk.feetY, headPos.z).project(camera)
+              const bottom = crossBox.y
+              crossBox.copy(headPos).addScaledVector(camRight.setFromMatrixColumn(camera.matrixWorld, 0), 1.3).project(camera)
+              const halfW = Math.abs(crossBox.x - midX)
+              const onBody = crossPt.y < top && crossPt.y > bottom && Math.abs(crossPt.x - midX) < halfW
+              el.style.visibility = crossPt.z < 1 && !onBody ? '' : 'hidden'
+              el.style.transform = `translate(${Math.round(crossPt.x * w * 0.5)}px, ${Math.round(-crossPt.y * h * 0.5)}px)`
+              crossMoved = true
+            } else if (crossMoved) {
+              el.style.transform = ''
+              el.style.visibility = ''
+              crossMoved = false
+            }
+          }
           // the gun and the beam go where the lens ended up: in the hand of
           // the body when the boom is out, in front of the lens when it is not
           if (tools) {
@@ -4155,7 +4206,11 @@ export default function CrtScene({
       {/* the crosshair, whenever there is a walk to aim: also with the
           mouse freed for the catalogue, because that is exactly when you
           need to know where the thing you click is going to land */}
-      {roam && walking && !paused && !driving && !seated && <Crosshair aim={aim} />}
+      {roam && walking && !paused && !driving && !seated && (
+        <div ref={crossRef} className="pointer-events-none absolute inset-0 z-10">
+          <Crosshair aim={aim} />
+        </div>
+      )}
       {/* the nudge that exists so nobody walks a whole session as guest-08c9
           without ever learning there was a choice. Not a button: at this
           moment the mouse is usually captured and there is no cursor to click

@@ -154,6 +154,41 @@ settle(0.1)
   check(broke.length === 0, `all ${commandList().length} commands run without throwing`, broke.join('; '))
 }
 
+/* ---------------------------------------------------------- placement -- */
+{
+  // the drive's own sequence at one crosshair: a pile, then drums, then
+  // melons. Nothing may end up balanced on the pile, inside it, behind the
+  // viewer, or rolling back towards them
+  Object.assign(me, { x: flat.x, z: flat.z, y: gy })
+  sb.clear()
+  settle(0.1)
+  await run('spawn crate 6')
+  settle(0.2)
+  await run('spawn barrel 3')
+  settle(0.2)
+  await run('spawn melon 3')
+  settle(3)
+  const fwd = new THREE.Vector3(0, 0, -1) // host.here's yaw is 0
+  let behind = 0
+  let perched = 0
+  let near = Infinity
+  let wide = 0
+  sb.forEach((p) => {
+    const t = p.body.translation()
+    const along = (t.x - me.x) * fwd.x + (t.z - me.z) * fwd.z
+    const side = Math.abs((t.x - me.x) * -fwd.z + (t.z - me.z) * fwd.x)
+    if (along < 2) behind++
+    // inside the walk's lens: about 86 degrees across on a 16:10 window
+    if (side > along * Math.tan(0.75)) wide++
+    near = Math.min(near, Math.hypot(t.x - me.x, t.z - me.z))
+    if (p.kind.id !== 'crate' && t.y - terrainY(t.x, t.z) > p.extents.y + 0.6) perched++
+  })
+  check(behind === 0 && near > 3, 'every spawn lands in front of the viewer and clear of them', `nearest ${near.toFixed(1)} u`)
+  check(perched === 0, 'drums and melons land on the ground beside the pile, not on it', `${perched} perched`)
+  check(wide === 0, 'and all of it is still in view', `${wide} out of frame`)
+  sb.clear()
+}
+
 /* -------------------------------------------------------------- parse -- */
 {
   let out = await run('spawn crate lots')

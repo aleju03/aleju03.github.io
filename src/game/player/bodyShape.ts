@@ -65,7 +65,7 @@ export const ANKLE_H = 0.1
 /** pelvis bone up to the torso bone. The bean is weighted across it */
 export const WAIST_OFF = 0.3
 // heavy shoulders: the widest part of the bean is up where the arms hang
-export const SHOULDER_X = 0.6
+export const SHOULDER_X = 0.52
 export const SHOULDER_OFF = 0.74
 /** torso bone up to the head bone: where the bean stops being body and
     starts being head, which is only ever a matter of weights */
@@ -76,7 +76,7 @@ export const UARM = 0.5
 export const FARM = 0.48
 /** head bone up to the eyes: a face set into the upper bean, below the
     band, not jammed up under it */
-export const EYE_OFF = 0.3
+export const EYE_OFF = 0.24
 /** head bone up to the top of the bean: a small head on big shoulders */
 export const CROWN_OFF = 0.72
 
@@ -122,7 +122,7 @@ const BODY_ZS = 0.86
     standstill at every point, and the flat band it left at each one read as
     a quilted jacket, rings stacked up the body */
 const PROF: Array<[number, number]> = [
-  [0, 0.57], [0.14, 0.64], [0.32, 0.65], [0.5, 0.67], [0.6, 0.65], [0.7, 0.5], [0.8, 0.42], [1, 0.4],
+  [0, 0.6], [0.16, 0.7], [0.34, 0.7], [0.5, 0.62], [0.62, 0.5], [0.7, 0.42], [0.8, 0.45], [1, 0.43],
 ]
 /** dough under gravity: the front of the belly sags forward a little, low
     down, so the body is not a lathe-perfect capsule */
@@ -535,7 +535,8 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     const sh = rest(ua)
     const el = rest(fa)
     const wr = rest(hb)
-    const elbow = blend(fa, ua, el.y, 0.09)
+    // a soft elbow: the bend is spread over a long band, so a bent arm curves
+    const elbow = blend(fa, ua, el.y, 0.17)
     const root = sh.clone().add(new THREE.Vector3(-side * 0.14, 0.0, 0))
     const armW: Weigh = (p) => {
       const out = side * p.x
@@ -548,7 +549,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
       return [ua, B.TORSO, 0.55 + 0.45 * k]
     }
     tube(
-      s, [root, sh, el, wr.clone().add(new THREE.Vector3(0, 0.02, 0))], 0.23, 0.155, ROLE.SUIT + H,
+      s, [root, sh, el, wr.clone().add(new THREE.Vector3(0, 0.02, 0))], 0.25, 0.12, ROLE.SUIT + H,
       armW, 10,
     )
     ellipsoid(
@@ -576,7 +577,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     tube(
       s,
       [hip.clone().add(new THREE.Vector3(0, 0.24, 0)), hip, knee, ank.clone().add(new THREE.Vector3(0, 0.1, 0))],
-      0.27, 0.2, ROLE.SUIT, legW, 10,
+      0.28, 0.17, ROLE.SUIT, legW, 10,
     )
     ellipsoid(
       s, new THREE.Vector3(ank.x, 0.12, 0.07), new THREE.Vector3(0.22, 0.16, 0.27),
@@ -678,8 +679,8 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
       // the sweatband: low on the brow, right over the eyes, tails at the
       // back, with a proper dome of head showing above it (set higher, it
       // read from above as the lip of an open tin)
-      const y = eyeY + 0.13
-      ringAt(y, 0.01, 0.055, A)
+      const y = eyeY + 0.22
+      ringAt(y, 0.01, 0.05, A, 1.25)
       knotAndTails(y, A)
       break
     }
@@ -715,7 +716,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     }
     case 2: {
       // the bucket hat: a soft crown and a floppy brim tipped down all round
-      const y0 = eyeY + 0.16
+      const y0 = eyeY + 0.2
       const r0 = beanR(tOf(y0)) + 0.05
       rev((t) => [r0 * (1 - 0.12 * t) * (t > 0.85 ? Math.sqrt(Math.max(0, 1 - ((t - 0.85) / 0.15) ** 2)) : 1), y0 + (crownY + 0.12 - y0) * t], A, [22, 8])
       rev((t) => [r0 + 0.24 * t, y0 - 0.09 * t * t], A, [24, 3])
@@ -739,7 +740,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     case 4: {
       // the hard hat: a stiff shell a size too big, a peak out front and a
       // ridge over the top
-      const y0 = eyeY + 0.15
+      const y0 = eyeY + 0.2
       cap(y0, 1.12, A, 8)
       rev((t) => [beanR(tOf(y0)) * 1.12 + 0.06 * t, y0 - 0.01 * t], A, [24, 2])
       const peak: THREE.Vector3[] = []
@@ -760,7 +761,7 @@ export const bodyGeometry = (hat = 0): THREE.BufferGeometry => {
     case 5: {
       // the bandana: cloth tied tight over the top, knotted at the back with
       // two long tails, and a few dots
-      const y0 = eyeY + 0.17
+      const y0 = eyeY + 0.2
       cap(y0, 1.035, A, 8)
       knotAndTails(y0 + 0.02, A, 0.34)
       for (const [th, dy] of [[1.2, 0.12], [1.95, 0.1], [0.4, 0.18], [2.7, 0.2], [1.55, 0.3], [-0.5, 0.15], [3.6, 0.14]] as const) {

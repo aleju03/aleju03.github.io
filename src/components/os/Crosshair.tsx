@@ -5,61 +5,92 @@
   It is drawn to the same pixel grid as the world rather than as a vector
   sight, because the frame under it is a low-resolution picture scaled up
   nearest-neighbour, and a smooth hairline over chunky pixels reads as a
-  sticker on the glass. So it is a 13-by-13 bitmap, blown up by whole
-  pixels: four cream ticks with a dark rim (it has to read over snow and
-  over asphalt), a gap in the middle where the thing you are aiming at stays
-  visible, and a centre dot. When the aim is on something that can be
-  picked up, pushed or spawned against, the ticks step out one pixel and
-  turn the pencil colour of the pause sheet's marker, which is the whole of
-  its vocabulary: the physgun piece reads the same `aim` prop, and its own
-  states (holding, frozen) are two more entries in `TINT`.
+  sticker on the glass. So it is a 15-by-15 bitmap blown up by whole pixels
+  (3 by default, about the world's own grain): four ticks and a centre dot,
+  and round every lit cell a full cell of dark ink, the one-pixel outline the
+  look gives every object, so it reads on snow, on asphalt, on a blue drum
+  and against the sky alike. The middle is left open so what you aim at
+  stays visible. When the aim is on something that can be picked up, pushed
+  or spawned against, the ticks step out one cell and turn warm; the
+  physgun's own states (holding, frozen) are two more entries in `TINT`.
 
   Pure presentation. What it is aimed at is decided by the scene (one
-  sandbox raycast a frame, mirrored here only when it changes).
+  sandbox raycast a frame, mirrored here only when it changes), and so is
+  where it sits: dead centre in first person, and in third person wherever
+  the head's gaze actually lands, which the scene projects and moves this
+  with (see CrtScene's crosshair wrapper), hidden while that point is behind
+  your own body, because the middle of a chase view is the back of your head
+  and a mark drawn on it points at nothing.
 */
-import { MARK } from './paper'
 
 export type CrosshairAim = 'none' | 'prop' | 'held' | 'frozen'
 
 const TINT: Record<CrosshairAim, string> = {
-  none: '#f3ead6',
-  prop: MARK,
-  held: '#8fd0ff',
-  frozen: '#7fb2ff',
+  none: '#fff3d6',
+  prop: '#ffb24a',
+  held: '#8fd6ff',
+  frozen: '#86b8ff',
+}
+const INKED = 'rgba(22,16,10,0.88)'
+
+const N = 15
+const C = 7
+
+/** the lit cells for one spread, as a set of `x,y` */
+const litCells = (out: number) => {
+  const lit = new Set<string>([`${C},${C}`])
+  for (let i = 0; i < 3; i++) {
+    const d = 3 + out + i
+    lit.add(`${C},${C - d}`)
+    lit.add(`${C},${C + d}`)
+    lit.add(`${C - d},${C}`)
+    lit.add(`${C + d},${C}`)
+  }
+  return lit
 }
 
-/** the ticks, as (x, y, w, h) cells on a 13-grid, for the two spreads */
-const TICKS = (out: number) => [
-  [6, 1 - out, 1, 3],
-  [6, 9 + out, 1, 3],
-  [1 - out, 6, 3, 1],
-  [9 + out, 6, 3, 1],
-]
+/** every cell touching a lit one (8 ways) that is not itself lit */
+const rimCells = (lit: Set<string>) => {
+  const rim = new Set<string>()
+  for (const k of lit) {
+    const [x, y] = k.split(',').map(Number)
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const n = `${x + dx},${y + dy}`
+        if (!lit.has(n)) rim.add(n)
+      }
+    }
+  }
+  return rim
+}
+
+const SHAPES = [0, 1].map((out) => {
+  const lit = litCells(out)
+  return { lit: [...lit], rim: [...rimCells(lit)] }
+})
+
+const cell = (k: string, fill: string) => {
+  const [x, y] = k.split(',').map(Number)
+  return <rect key={k} x={x} y={y} width={1} height={1} fill={fill} />
+}
 
 export default function Crosshair({ aim = 'none', scale = 3 }: { aim?: CrosshairAim; scale?: number }) {
-  const on = aim !== 'none'
-  const ticks = TICKS(on ? 1 : 0)
-  const fill = TINT[aim]
-  const size = 13 * scale
+  const shape = SHAPES[aim === 'none' ? 0 : 1]
+  const size = N * scale
   return (
     <svg
       aria-hidden
       width={size}
       height={size}
-      viewBox="-1 -1 15 15"
+      viewBox={`0 0 ${N} ${N}`}
       shapeRendering="crispEdges"
-      className="pointer-events-none absolute top-1/2 left-1/2 z-10 -translate-x-1/2 -translate-y-1/2"
-      style={{ transition: 'none' }}
+      className="pointer-events-none absolute top-1/2 left-1/2 z-10"
+      // whole-pixel offsets: half of an odd size would put every cell edge
+      // on a half pixel and smear the bitmap it is meant to be
+      style={{ transform: `translate(${-Math.floor(size / 2)}px, ${-Math.floor(size / 2)}px)` }}
     >
-      {/* the rim: every cell grown by one, in dark ink */}
-      {ticks.map(([x, y, w, h], i) => (
-        <rect key={`r${i}`} x={x - 0.5} y={y - 0.5} width={w + 1} height={h + 1} fill="rgba(28,22,16,0.75)" />
-      ))}
-      <rect x={5.5} y={5.5} width={2} height={2} fill="rgba(28,22,16,0.75)" />
-      {ticks.map(([x, y, w, h], i) => (
-        <rect key={`t${i}`} x={x} y={y} width={w} height={h} fill={fill} />
-      ))}
-      <rect x={6} y={6} width={1} height={1} fill={fill} />
+      {shape.rim.map((k) => cell(k, INKED))}
+      {shape.lit.map((k) => cell(k, TINT[aim]))}
     </svg>
   )
 }
