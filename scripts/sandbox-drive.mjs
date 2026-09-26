@@ -8,6 +8,12 @@
                                       third-person strip of the float pose
     npm run drive                     all three
 
+  --at x,z | place       where the console and menu shots stand (280,480)
+  --fly-at place         where the noclip films start (town:suburb)
+  --lang es              the Spanish copy; --out <dir> (shots/sandbox)
+  --debug                print pointer-lock changes and key presses, which is
+                         how an esc that paused the game got caught
+
   Unlike `shoot` and `film`, which stage the world in a probe page, this boots
   the real site at /world (everything loaded, already standing) in headless
   Chrome and drives it the way a player would: real key events for t, enter,
@@ -120,6 +126,12 @@ try {
     360, 500, 'the walk and the sandbox',
   )
   await evaluate('window.__sandbox.whenReady')
+  if (has('debug')) {
+    await evaluate(`window.__log = []; const L = (m) => window.__log.push(m + ' ' + (performance.now() | 0));
+      document.addEventListener('pointerlockchange', () => L('lock ' + !!document.pointerLockElement));
+      document.addEventListener('pointerlockerror', () => L('lockerror'));
+      window.addEventListener('keydown', (e) => L('down ' + e.code), true); true`)
+  }
   console.log(`  standing after ${((Date.now() - t0) / 1000).toFixed(1)} s`)
   // let the first rings stream in and the stand-up settle
   await sleep(4000)
@@ -262,6 +274,7 @@ try {
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
   }
 
+  if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))
   if (probe.errors.length) {
     console.log(`\npage errors (${probe.errors.length}):`)
     for (const e of probe.errors.slice(0, 10)) console.log(`  ${String(e).split('\n')[0]}`)

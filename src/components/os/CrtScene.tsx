@@ -1779,7 +1779,28 @@ export default function CrtScene({
           if (on) input.releaseLock()
           else relock()
         }
+        // Closing either one with esc must not take the lock back while esc
+        // is still down: Chrome grants the request and then spends the same
+        // key's release on unlocking again, which reads as esc and pauses.
+        // So an esc close waits for the key to come up (the keypress is
+        // still the user activation the request needs)
+        let escHeld = false
+        let relockOnEscUp = false
+        const onEscKey = (e: KeyboardEvent) => {
+          if (e.code !== 'Escape') return
+          escHeld = e.type === 'keydown'
+          if (!escHeld && relockOnEscUp) {
+            relockOnEscUp = false
+            setTimeout(relock, 30)
+          }
+        }
+        window.addEventListener('keydown', onEscKey, true)
+        window.addEventListener('keyup', onEscKey, true)
         const relock = () => {
+          if (escHeld) {
+            relockOnEscUp = true
+            return
+          }
           if (roaming && fps && !pausedNow && !typingRef.current && !menuNow) input.tryLock()
         }
         relockRef.current = relock
@@ -3610,6 +3631,8 @@ export default function CrtScene({
           tv = null
           avatars.dispose()
           input.dispose()
+          window.removeEventListener('keydown', onEscKey, true)
+          window.removeEventListener('keyup', onEscKey, true)
           prevCleanup?.()
         }
 
