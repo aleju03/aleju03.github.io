@@ -53,6 +53,18 @@ export interface FilmSpec {
   rings: number
   /** skip the pixel look and draw the renderer's own ACES frame */
   raw?: boolean
+  /** first still's time, seconds; the rest spread evenly to the end */
+  start?: number
+  /** reframe: absolute world points for the lens and its target... */
+  from?: [number, number, number]
+  to?: [number, number, number]
+  /** ...or an orbit around the scenario's own target: bearing (radians,
+      0 = +x), distance and height over the target. Any one of the three
+      switches to the orbit; the others fall back to the default shot's */
+  yaw?: number
+  dist?: number
+  height?: number
+  fov?: number
 }
 
 export interface FilmResult {
@@ -67,6 +79,10 @@ export interface FilmResult {
       links a shader shows up here, and it should be zero */
   links: number
   frames: number
+  /** the shot actually used, so a reframe can start from it */
+  from: number[]
+  to: number[]
+  fov: number
 }
 
 let renderer: THREE.WebGLRenderer | null = null
@@ -150,9 +166,22 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   const sky = lightFor(scene, tod, new THREE.Vector3(c.x, c.y, c.z))
   look?.setMood(sky.night * (1 - sky.twilight))
   const shot = s.camera(c)
-  const cam = new THREE.PerspectiveCamera(shot.fov ?? 50, w / h, 0.2, 900)
-  cam.position.set(...shot.from)
-  cam.lookAt(new THREE.Vector3(...shot.to))
+  const to = spec.to ?? shot.to
+  let from = spec.from ?? shot.from
+  if (!spec.from && (spec.yaw !== undefined || spec.dist !== undefined || spec.height !== undefined)) {
+    // an orbit around the target, starting from wherever the default stood
+    const dx = shot.from[0] - to[0]
+    const dz = shot.from[2] - to[2]
+    const yaw = spec.yaw ?? Math.atan2(dz, dx)
+    const dist = spec.dist ?? Math.hypot(dx, dz)
+    const height = spec.height ?? shot.from[1] - to[1]
+    from = [to[0] + Math.cos(yaw) * dist, to[1] + height, to[2] + Math.sin(yaw) * dist]
+  }
+  const fov = spec.fov ?? shot.fov ?? 50
+  const cam = new THREE.PerspectiveCamera(fov, w / h, 0.2, 900)
+  cam.position.set(...from)
+  cam.lookAt(new THREE.Vector3(...to))
+  cam.userData.shot = { from: [...from], to: [...to], fov }
   const pres = s.present ? s.present(c, scene, cam) : null
   stage = {
     s, c, sb, scene, cam, chunks, ticks: [], duration: spec.duration ?? s.duration, pres, drawnAt: 0,
@@ -260,8 +289,9 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
   const r = makeRenderer(tw * cols, th * rows, !!spec.raw, Math.round(th / 2))
   const st = await build(spec, tw, th)
   labels.innerHTML = ''
+  const t0 = Math.max(0, Math.min(st.duration, spec.start ?? 0))
   for (let i = 0; i < spec.frames; i++) {
-    const t = (st.duration * i) / Math.max(1, spec.frames - 1)
+    const t = t0 + ((st.duration - t0) * i) / Math.max(1, spec.frames - 1)
     advance(st, t)
     const col = i % cols
     const row = Math.floor(i / cols)
@@ -281,6 +311,9 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     msPerFrame: median(st.ticks),
     frames: spec.frames,
     links,
+    from: st.cam.userData.shot.from.map((n: number) => Math.round(n * 10) / 10),
+    to: st.cam.userData.shot.to.map((n: number) => Math.round(n * 10) / 10),
+    fov: st.cam.userData.shot.fov,
   }
 }
 

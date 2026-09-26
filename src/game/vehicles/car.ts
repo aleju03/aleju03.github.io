@@ -1147,10 +1147,14 @@ export interface CarOpts {
 }
 
 /** the seated face in either front seat, and how far `sit()` folds a body
-    smaller about it (playerBody's CABIN_FIT). Lower than the robot's 2.05:
-    the character's beanie stood up through the headliner there */
-const SEAT_EYE_Y = 1.9
-const SEAT_FIT = 0.8
+    smaller about it (playerBody's CABIN_FIT). The face is in the side
+    window, where somebody outside can see who is driving; the fold is what
+    keeps the beanie under the roof skin and the seat of the pants above the
+    floor at that height */
+const SEAT_EYE_Y = 2.12
+/** forward of the robot's 0.62, which put a round head behind the B-pillar */
+const SEAT_Z = 0.2
+const SEAT_FIT = 0.66
 
 export function buildCar(opts: CarOpts): Vehicle {
   const { mats } = opts
@@ -1737,14 +1741,14 @@ export function buildCar(opts: CarOpts): Vehicle {
      (playerBody's CABIN_FIT) until it clears both the floor and the roof. */
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(DX, SEAT_EYE_Y, 0.62)
+  driverSeat.position.set(DX, SEAT_EYE_Y, SEAT_Z)
   driverSeat.userData.fit = SEAT_FIT
   body.add(driverSeat)
   // the other side of the same bench: this is left-hand drive, so the mirror
   // of the driver's centreline is the passenger's
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(-DX, SEAT_EYE_Y, 0.62)
+  passengerSeat.position.set(-DX, SEAT_EYE_Y, SEAT_Z)
   passengerSeat.userData.fit = SEAT_FIT
   body.add(passengerSeat)
   root.add(body)
@@ -2417,8 +2421,8 @@ export function buildCar(opts: CarOpts): Vehicle {
       stretch: 3.5,
       fov: 62,
       anchor: new THREE.Vector3(0, 1.7, 0.2),
-      eye: new THREE.Vector3(-0.78, SEAT_EYE_Y, 0.35),
-      eye2: new THREE.Vector3(0.78, SEAT_EYE_Y, 0.35),
+      eye: new THREE.Vector3(-0.78, SEAT_EYE_Y, SEAT_Z - 0.2),
+      eye2: new THREE.Vector3(0.78, SEAT_EYE_Y, SEAT_Z - 0.2),
     },
     size: SIZE,
     hull: HULL,

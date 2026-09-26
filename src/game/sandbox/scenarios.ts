@@ -1,6 +1,9 @@
 import { SEA_Y, sampleAt, slopeAt, terrainY } from '../world/terrain'
 import { placeAt, roadAt } from '../world/settlements'
-import { inReserved } from '../world/grid'
+import { chunkX, chunkZ, inReserved } from '../world/grid'
+import { buildChunk, type ChunkMats } from '../world/chunk'
+import * as THREE from 'three'
+import type { Solid } from '../physics/collision'
 import type { Sandbox } from './sandbox'
 import type { PropId } from './props'
 
@@ -50,8 +53,9 @@ export interface Shot {
 export interface Scenario {
   id: string
   title: string
-  /** where: a point and a layout direction */
-  site: () => { x: number; z: number; dx: number; dz: number }
+  /** where: a point and a layout direction, plus anything the camera or
+      setup wants to know about the place (copied into `memo`) */
+  site: () => { x: number; z: number; dx: number; dz: number; memo?: Record<string, number> }
   camera: (c: ScenarioCtx) => Shot
   /** seconds of simulation the film covers */
   duration: number
@@ -121,19 +125,70 @@ export const siteFlat = () => {
   return { x, z, dx: 1, dz: 0 }
 }
 
-/** a hillside with a steady fall over forty units */
+/*
+  What stands on a patch of the world, for sites that need open ground. The
+  world's solids only exist once a chunk is built, so this builds it (with
+  stand-in materials, geometry thrown away at once) and keeps the boxes.
+  Sites are searched once per run, so a handful of chunk builds is the cost.
+*/
+const solidCache = new Map<string, Solid[]>()
+let standIn: ChunkMats | null = null
+const solidsIn = (cx: number, cz: number) => {
+  const k = `${cx},${cz}`
+  let boxes = solidCache.get(k)
+  if (!boxes) {
+    const m = () => new THREE.MeshBasicMaterial()
+    standIn ??= { ground: m(), detail: m(), glass: m(), water: m(), leaf: m(), leafDepth: m() }
+    const ch = buildChunk(cx, cz, 'full', standIn)
+    for (const g of ch.geos) g.dispose()
+    boxes = ch.boxes
+    solidCache.set(k, boxes)
+  }
+  return boxes
+}
+/** is a rectangle in a frame laid along (dx, dz) empty of solids? `a` runs
+    along the direction, `b` across it (to its left, (-dz, dx)) */
+export const clearOf = (
+  x: number, z: number, dx: number, dz: number, a0: number, a1: number, b0: number, b1: number,
+) => {
+  const sx = -dz
+  const sz = dx
+  const corners = [[a0, b0], [a0, b1], [a1, b0], [a1, b1]].map(([a, b]) => [
+    x + dx * a + sx * b, z + dz * a + sz * b,
+  ])
+  const minX = Math.min(...corners.map((c) => c[0]))
+  const maxX = Math.max(...corners.map((c) => c[0]))
+  const minZ = Math.min(...corners.map((c) => c[1]))
+  const maxZ = Math.max(...corners.map((c) => c[1]))
+  for (let cz = chunkZ(minZ); cz <= chunkZ(maxZ); cz++)
+    for (let cx = chunkX(minX); cx <= chunkX(maxX); cx++)
+      for (const b of solidsIn(cx, cz)) {
+        const bx = (b.min.x + b.max.x) / 2 - x
+        const bz = (b.min.z + b.max.z) / 2 - z
+        const r = Math.max(b.max.x - b.min.x, b.max.z - b.min.z) / 2
+        const a = bx * dx + bz * dz
+        const bb = bx * sx + bz * sz
+        if (a > a0 - r && a < a1 + r && bb > b0 - r && bb < b1 + r) return false
+      }
+  return true
+}
+
+/** a hillside with a steady fall over forty units, and nothing on it: no
+    tree in the run and none between the run and where the camera stands */
 export const siteHill = () => {
-  let best: { x: number; z: number; dx: number; dz: number } | null = null
+  let best: { x: number; z: number; dx: number; dz: number; memo: Record<string, number> } | null = null
   spiral((x, z) => {
     if (inReserved(x, z, 40)) return false
     const s = sampleAt(x, z)
+    // no biome gate: a clear run is what matters, and clearOf below asks the
+    // chunk's own solids for it. (Steep open grass is rare in this world;
+    // gated on biome as well, eight kilometres of search found two hills)
     if (s.place.district || s.height < SEA_Y + 6) return false
-    // open ground: a roll through a forest is a roll into the first trunk
-    if (s.biome !== 'plains' && s.biome !== 'savanna' && s.biome !== 'tundra' && s.biome !== 'desert') return false
+    if (roadAt(x, z, s.place).grade > 0) return false
     const gx = (terrainY(x + 2, z) - terrainY(x - 2, z)) / 4
     const gz = (terrainY(x, z + 2) - terrainY(x, z - 2)) / 4
     const g = Math.hypot(gx, gz)
-    if (g < 0.3 || g > 0.5) return false
+    if (g < 0.24 || g > 0.5) return false
     const dx = -gx / g
     const dz = -gz / g
     // the fall must keep going the same way for the run of the roll
@@ -143,9 +198,14 @@ export const siteHill = () => {
       const hx = (terrainY(px + 2, pz) - terrainY(px - 2, pz)) / 4
       const hz = (terrainY(px, pz + 2) - terrainY(px, pz - 2)) / 4
       const along = -(hx * dx + hz * dz)
-      if (along < 0.18 || terrainY(px, pz) < SEA_Y + 1) return false
+      if (along < 0.14 || terrainY(px, pz) < SEA_Y + 1) return false
     }
-    best = { x, z, dx, dz }
+    // the run itself, eleven either side, and a strip out to one side for the
+    // lens, whichever side is open
+    if (!clearOf(x, z, dx, dz, -6, 40, -11, 11)) return false
+    const side = clearOf(x, z, dx, dz, 8, 28, 11, 27) ? 1 : clearOf(x, z, dx, dz, 8, 28, -27, -11) ? -1 : 0
+    if (!side) return false
+    best = { x, z, dx, dz, memo: { side } }
     return true
   }, [200, -200], 36)
   return best ?? { x: 0, z: -300, dx: 1, dz: 0 }
@@ -222,7 +282,7 @@ const settle = (c: ScenarioCtx) => {
 
 defineScenario({
   id: 'sandbox:stack',
-  title: 'a 3x5 tower of crates, shoved over by a plank',
+  title: 'a 3x5 tower of crates, a plank punted through its second row',
   site: siteFlat,
   duration: 6,
   frames: 12,
@@ -253,28 +313,28 @@ defineScenario({
         const y = c.sb.restY('crate', c.x, c.z) + row * (h + 0.01)
         c.ids.push(c.sb.spawn('crate', { x: px, y, z: pz }, { yaw: yaw + rnd() * 0.12 }))
       }
-    // the ram: a plank held level against the fourth row, the way a physgun
-    // holds one, a little askew so it meets one end of the tower first, driven
-    // through at a walking pace and then let go
+    // the ram: a plank held level, a little askew so it meets one end of the
+    // tower first, punted through the second row at the speed a physgun
+    // throw leaves the hand, then let go. Leaning on the tower slowly only
+    // ever pivoted it over whole, as one slab (which is what a real stack of
+    // boxes does when pushed slowly, and not what anyone films); knocking a
+    // row out from under it is what makes the rows above come down in pieces
     const nx = c.dz
     const nz = -c.dx
-    const ry = c.sb.restY('crate', c.x, c.z) + 2.5 * h
-    const ramYaw = yaw + 0.3
-    const ram = c.sb.spawn('plank', { x: c.x - nx * 2.6, y: ry, z: c.z - nz * 2.6 }, {
+    const ry = c.sb.restY('crate', c.x, c.z) + 1.0 * h
+    const ramYaw = yaw + 0.25
+    const back = 7
+    const ram = c.sb.spawn('plank', { x: c.x - nx * back, y: ry, z: c.z - nz * back }, {
       quaternion: { x: 0, y: Math.sin(ramYaw / 2), z: 0, w: Math.cos(ramYaw / 2) },
     })
     c.sb.setMode(ram, 'kinematic')
-    c.memo.ram = ram
-    c.memo.ry = ry
-    c.memo.q = yaw
     let t = 0
     const off = c.sb.onBeforeSlice((dt) => {
       t += dt
-      const p = c.sb.get(ram)
-      if (!p) return off()
-      const push = Math.max(0, Math.min(t - 1.2, 1.4))
-      c.sb.moveKinematic(ram, { x: c.x - nx * (2.6 - push * 4.5), y: ry, z: c.z - nz * (2.6 - push * 4.5) })
-      if (t > 2.7) {
+      if (!c.sb.get(ram)) return off()
+      const d = back - Math.max(0, Math.min(t - 1.0, 0.75)) * 16
+      c.sb.moveKinematic(ram, { x: c.x - nx * d, y: ry, z: c.z - nz * d })
+      if (t > 1.75) {
         c.sb.setMode(ram, 'dynamic')
         off()
       }
@@ -298,23 +358,23 @@ defineScenario({
   id: 'sandbox:roll',
   title: 'barrels rolling down a real hillside',
   site: siteHill,
-  duration: 7,
+  duration: 4.5,
   frames: 12,
   camera: (c) => {
-    // side-on, looking across the fall line, a little down the slope
-    const sx = -c.dz
-    const sz = c.dx
+    // side-on across the fall line, from the side the site found open, a
+    // little above the run so the drums read as rolling rather than as a
+    // row of red discs
+    const side = c.memo.side ?? 1
+    const sx = -c.dz * side
+    const sz = c.dx * side
     const mx = c.x + c.dx * 16
     const mz = c.z + c.dz * 16
     const gy = terrainY(mx, mz)
-    // from whichever side of the fall line stands higher, so the lens looks
-    // across the slope rather than up it from a ditch
-    const side = terrainY(mx + sx * 24, mz + sz * 24) >= terrainY(mx - sx * 24, mz - sz * 24) ? 1 : -1
-    const fx = mx + side * sx * 24 - c.dx * 4
-    const fz = mz + side * sz * 24 - c.dz * 4
+    const fx = mx + sx * 27 - c.dx * 4
+    const fz = mz + sz * 27 - c.dz * 4
     return {
-      from: [fx, Math.max(gy, terrainY(fx, fz)) + 9, fz],
-      to: [mx + c.dx * 2, gy - 1, mz + c.dz * 2],
+      from: [fx, Math.max(gy, terrainY(fx, fz)) + 10, fz],
+      to: [mx, gy, mz],
       fov: 60,
     }
   },
@@ -322,25 +382,32 @@ defineScenario({
     const sx = -c.dz
     const sz = c.dx
     const q = lying(c.dx, c.dz)
-    for (let i = -2; i <= 2; i++) {
-      // staggered down the slope as well as across it, so they do not set off
-      // as one rank
-      const px = c.x + sx * i * 4.2 - c.dx * Math.abs(i) * 1.5
-      const pz = c.z + sz * i * 4.2 - c.dz * Math.abs(i) * 1.5
-      c.ids.push(c.sb.spawn('barrel', { x: px, y: c.sb.groundY(px, pz) + 1.2, z: pz }, { quaternion: q }))
+    // a nudge downhill, and the spin that goes with rolling at that speed:
+    // w = (up x d) v / r, about the drum's own axis
+    const v = 2.5
+    const spin = { x: (c.dz * v) / 0.72, y: 0, z: (-c.dx * v) / 0.72 }
+    for (let i = 0; i < 4; i++) {
+      // a loose diagonal: six units apart across the slope (a drum is 2.1
+      // long, so they cannot meet end to end and roll as one) and three down
+      const k = i - 1.5
+      const px = c.x + sx * k * 6 + c.dx * i * 3
+      const pz = c.z + sz * k * 6 + c.dz * i * 3
+      c.ids.push(c.sb.spawn('barrel', { x: px, y: c.sb.groundY(px, pz) + 0.76, z: pz }, {
+        quaternion: q,
+        velocity: { x: c.dx * v, y: 0, z: c.dz * v },
+        angular: spin,
+      }))
     }
-    // for contrast: crates slide and tumble, a ball bounds ahead
-    for (const [k, kind] of [[-1, 'crate'], [1, 'crate'], [0, 'ball']] as const) {
-      const px = c.x + sx * k * 5 - c.dx * 5
-      const pz = c.z + sz * k * 5 - c.dz * 5
+    // for contrast: a crate slides and tumbles, a ball bounds ahead
+    for (const [k, kind] of [[-1, 'crate'], [1, 'ball']] as const) {
+      const px = c.x + sx * k * 9 - c.dx * 4
+      const pz = c.z + sz * k * 9 - c.dz * 4
       c.ids.push(c.sb.spawn(kind, { x: px, y: c.sb.restY(kind, px, pz) + 0.5, z: pz }))
     }
-    c.memo.x0 = c.x
-    c.memo.z0 = c.z
   },
   report: (c) => {
     const d: string[] = []
-    for (const id of c.ids.slice(0, 5)) {
+    for (const id of c.ids.slice(0, 4)) {
       const p = c.sb.get(id)
       if (!p) {
         d.push('gone')
@@ -404,12 +471,12 @@ defineScenario({
   frames: 12,
   camera: (c) => {
     // on the shore, looking out
-    const bx = c.x - c.dx * 26
-    const bz = c.z - c.dz * 26
+    const bx = c.x - c.dx * 17
+    const bz = c.z - c.dz * 17
     return {
-      from: [bx - c.dz * 10, Math.max(SEA_Y, terrainY(bx, bz)) + 6, bz + c.dx * 10],
-      to: [c.x, SEA_Y + 0.5, c.z],
-      fov: 52,
+      from: [bx - c.dz * 6, Math.max(SEA_Y, terrainY(bx, bz)) + 4.5, bz + c.dx * 6],
+      to: [c.x, SEA_Y + 0.3, c.z],
+      fov: 46,
     }
   },
   setup: (c) => {
@@ -442,7 +509,7 @@ export const stageScenario = (s: Scenario, sb: Sandbox): ScenarioCtx => {
   const site = s.site()
   const c: ScenarioCtx = {
     sb, x: site.x, y: terrainY(site.x, site.z), z: site.z, dx: site.dx, dz: site.dz,
-    ids: [], memo: { t: 0 },
+    ids: [], memo: { ...(site.memo ?? {}), t: 0 },
   }
   s.setup(c)
   return c
