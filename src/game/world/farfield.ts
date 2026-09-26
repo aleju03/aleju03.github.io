@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { seeded } from '../core/rand'
 import { CHUNK, OFF_X, OFF_Z, RESERVED, chunkX, chunkZ, originX, originZ } from './grid'
 import { groundSample, heightAt, SEA_Y } from './terrain'
-import { blockInset, buildingHeightAt, placeAt, type District } from './settlements'
+import { blockInset, buildingHeightAt, placeAt, roadAt, type District } from './settlements'
 import { BLOCK_KIND_FOR, BLOCK_KIND_RATE, KIND_FOR, type BuildKind } from './buildings'
 import { BIOMES, type BiomeId } from './biomes'
 import { hash2 } from './noise'
@@ -69,9 +69,11 @@ const N = 32
 const SPAN = 2
 /** the chunk mask's edge, in chunks, centred on the camera's chunk */
 const MASK = 16
-/** only the two nearest rings carry town impostors; past two kilometres a
-    city is a grey smudge the ground colour already draws */
-const IMPOSTOR_LEVELS = 2
+/** how many rings carry town impostors, and of what: the first all of a
+    town, the second its midrise and downtown, the third only the towers
+    (blockImpostors). Past that, and under each cut, the ground shader
+    paints the blocks as roofs */
+const IMPOSTOR_LEVELS = 3
 
 export interface FarField {
   /** parented to the streamer's root */
@@ -180,9 +182,12 @@ const FAR_FRAG_COLOR = /* glsl */ `
       if (vDepth > 0.0) {
         // the sea in three flat shelves, lighter where it is shallow, and a
         // foam line one pixel wide where it meets the land
-        float shelf = vDepth < 2.5 ? 0.0 : vDepth < 8.0 ? 0.45 : vDepth < 18.0 ? 0.75 : 1.0;
-        vec3 shallow = uWater * vec3(1.16, 1.42, 1.38) + 0.02;
-        diffuseColor.rgb = mix(shallow, uWater, shelf);
+        // the same shelves the near sea draws (streamer.ts), out to the
+        // horizon: reef, shelf, slope, and the open sea past the drop-off
+        float jd = vDepth + (farHash(floor(vFarW.xz * 0.25)) - 0.5) * 1.2;
+        float shelf = jd < 2.2 ? 0.0 : jd < 6.0 ? 0.45 : jd < 13.0 ? 0.78 : 1.0;
+        vec3 shallow = uWater * vec3(1.25, 1.75, 1.6) + 0.02;
+        diffuseColor.rgb = mix(shallow, uWater, shelf) * (jd > 22.0 ? 0.74 : 1.0);
       }
       if (vDepth <= 0.0 && vFar.z < 0.5) {
         // what the chunk ground (groundLook.ts) draws by geometry alone, so
@@ -213,15 +218,47 @@ const FAR_FRAG_COLOR = /* glsl */ `
         float d = min(g.x, g.y);
         float asph = 1.0 - smoothstep(3.2 - px * 0.5, 3.2 + px * 0.5, d);
         float walk = 1.0 - smoothstep(4.7 - px * 0.5, 4.7 + px * 0.5, d);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.105, 0.105, 0.1), (walk - asph) * vFar.z);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.024, 0.026, 0.03), asph * vFar.z);
+        float townK = clamp(vFar.z, 0.0, 1.0);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.105, 0.105, 0.1), (walk - asph) * townK);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.024, 0.026, 0.03), asph * townK);
+        // Past the rings that carry impostors, the blocks are painted: a
+        // suburb's nine lots (the middle one garden), a midrise's four, a
+        // downtown block's one, each a roof in the district's colours, on
+        // the same grid chunk.ts builds on. At a kilometre that is what a
+        // town is from the air, and it keeps the town to the horizon
+        float code = floor(vFar.z + 0.5);
+        int lv = int(vFar.y + 0.5);
+        bool paint = (code == 1.0 && lv >= 1) || (code == 2.0 && lv >= 2) || (code == 3.0 && lv >= 3);
+        if (paint && d > 5.7) {
+          vec2 cellW = (vFarW.xz - vec2(${OFF_X.toFixed(2)}, ${OFF_Z.toFixed(2)})) / ${CHUNK.toFixed(1)};
+          vec2 loc = fract(cellW) * ${CHUNK.toFixed(1)} - 5.7;
+          float n = code == 1.0 ? 3.0 : code == 2.0 ? 2.0 : 1.0;
+          float lotS = 52.6 / n;
+          vec2 li = floor(loc / lotS);
+          vec2 lf = loc / lotS - li;
+          float hh = farHash(floor(cellW) * 7.0 + li);
+          float fill = code == 1.0 ? 0.3 : code == 2.0 ? 0.4 : 0.43;
+          vec2 e = abs(lf - 0.5);
+          float keep = (code == 1.0 && li.x == 1.0 && li.y == 1.0) ? 0.0 : step(hh, 0.88);
+          keep *= step(li.x, n - 1.0) * step(li.y, n - 1.0);
+          float inside = step(max(e.x, e.y), fill) * keep;
+          float rd = 1.0 - smoothstep(0.5, 1.2, px / (lotS * fill));
+          float cover = mix(fill * fill * 4.0 * 0.85, inside, rd);
+          vec3 roof = code == 1.0
+            ? (hh < 0.3 ? vec3(0.4, 0.12, 0.07) : hh < 0.5 ? vec3(0.2, 0.12, 0.08) : hh < 0.7 ? vec3(0.12, 0.13, 0.15) : vec3(0.26, 0.24, 0.21))
+            : code == 2.0 ? vec3(0.15, 0.14, 0.13) : vec3(0.1, 0.1, 0.11);
+          // a suburb roof has a ridge: its two slopes in two tones
+          if (code == 1.0) roof *= mix(1.0, (hh > 0.5 ? lf.x : lf.y) < 0.5 ? 1.0 : 0.72, rd);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuse * roof, cover);
+          farLit += uNight * cover * (code == 1.0 ? 0.03 : 0.07);
+        }
         // ...lit at night by a lamp every 24 units along the kerb, the dots
         // a city is made of from the air after dark
         float along = g.x < g.y ? vFarW.z : vFarW.x;
         float wlamp = 0.6 + px * 0.5;
         float lamp = (1.0 - smoothstep(0.0, wlamp, abs(mod(along, 24.0) - 12.0))) *
           (1.0 - smoothstep(0.0, wlamp, abs(d - 4.9)));
-        farLit = uNight * lamp * vFar.z * 1.3;
+        farLit += uNight * lamp * townK * 1.3;
       }
       if (vDepth <= 0.0 && vFar.w > 0.01) {
         // a canopy: one crown per 8-unit cell where the biome's tree count
@@ -256,7 +293,10 @@ const FAR_FRAG_COLOR = /* glsl */ `
           if (best < 1.0) farHit = detail * step(best, 0.62);
         }
         // past the point a crown is a pixel, the canopy is a flat tone
-        diffuseColor.rgb = mix(diffuseColor.rgb, vLeaf * 0.72, (1.0 - detail) * vFar.w * 0.9);
+        // with stands and gaps in it at a scale that survives distance, or
+        // a forest four kilometres off is a flat green felt
+        float stand = farNoise(vFarW.xz / 28.0) * 0.6 + farNoise(vFarW.xz / 9.0) * 0.4;
+        diffuseColor.rgb = mix(diffuseColor.rgb, vLeaf * (0.5 + 0.45 * stand), (1.0 - detail) * vFar.w * 0.9);
       }
     } else if (vFar.x < 1.5) {
       // a wall: windows on a floor grid, glass by day, some lit by night
@@ -474,6 +514,7 @@ const blockImpostors = (
   if (!district) return
   // the second ring only keeps what stands up out of the ground colour
   if (level > 0 && district === 'suburb') return
+  if (level > 1 && district !== 'downtown') return
   const rng = seeded(hash2(cx, cz, 0x2f61))
   if (district !== 'downtown' && rng() < (district === 'suburb' ? 0.13 : 0.1)) return
   const inner = CHUNK - blockInset * 2
@@ -537,6 +578,69 @@ const blockImpostors = (
     }
 }
 
+/* ---------------------------------------------------------------- roads -- */
+
+const ASPHALT = new THREE.Color('#2b2d31').multiplyScalar(1.1)
+
+/**
+ * The roads out in the country, as flat strips laid on the far terrain. In
+ * town the ground shader draws every street itself (they run along every
+ * chunk border); outside one, only some borders carry a road, so each
+ * border segment of the tile asks `roadAt` at three points along it and a
+ * strip goes down where it says asphalt. The strip follows the tile's own
+ * height samples along the border, which is a vertex column of the terrain,
+ * so it lies on the drawn surface, lifted a little more the coarser the ring.
+ */
+const countryRoads = (
+  s: Soup, level: number, c0: number, d0: number, per: number, cell: number,
+  ground: (x: number, z: number) => number,
+) => {
+  const lift = 0.4 + cell * 0.06
+  const half = 3.4
+  const step = Math.max(cell, 8)
+  const strip = (ax: number, az: number, bx: number, bz: number, alongX: boolean) => {
+    const n = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az) / step))
+    const o = s.count
+    for (let i = 0; i <= n; i++) {
+      const x = ax + ((bx - ax) * i) / n
+      const z = az + ((bz - az) * i) / n
+      const y = Math.max(ground(x, z), SEA_Y + 0.3) + lift
+      if (alongX) {
+        s.vert(x, y, z - half, 0, 1, 0, ASPHALT, 2, level, 0, 0)
+        s.vert(x, y, z + half, 0, 1, 0, ASPHALT, 2, level, 0, 0)
+      } else {
+        s.vert(x - half, y, z, 0, 1, 0, ASPHALT, 2, level, 0, 0)
+        s.vert(x + half, y, z, 0, 1, 0, ASPHALT, 2, level, 0, 0)
+      }
+      if (i > 0) {
+        const p = o + (i - 1) * 2
+        // wound to face up whichever way the strip runs
+        if (alongX) s.idx.push(p, p + 1, p + 3, p, p + 3, p + 2)
+        else s.idx.push(p, p + 2, p + 3, p, p + 3, p + 1)
+      }
+    }
+  }
+  const asphalt = (x: number, z: number) => {
+    const pl = placeAt(x, z)
+    if (pl.district) return false
+    return roadAt(x, z, pl).asphalt
+  }
+  for (let j = 0; j <= per; j++)
+    for (let i = 0; i < per; i++) {
+      // the border along x at the chunk row's minimum z, and the one along z
+      const zl = originZ(d0 + j)
+      const xa = originX(c0 + i)
+      let hits = 0
+      for (const t of [0.25, 0.5, 0.75]) if (asphalt(xa + CHUNK * t, zl)) hits++
+      if (hits >= 2) strip(xa, zl, xa + CHUNK, zl, true)
+      const xl = originX(c0 + j)
+      const za = originZ(d0 + i)
+      hits = 0
+      for (const t of [0.25, 0.5, 0.75]) if (asphalt(xl, za + CHUNK * t)) hits++
+      if (hits >= 2) strip(xl, za, xl, za + CHUNK, false)
+    }
+}
+
 /* ---------------------------------------------------------------- tiles -- */
 
 const tileCol = new THREE.Color()
@@ -577,7 +681,10 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       nx /= nl; ny /= nl; nz /= nl
       const g = groundSample(x, z, y, Math.hypot(gx, gz))
       tileCol.setRGB(g.r, g.g, g.b)
-      const town = placeAt(x, z).district ? 1 : 0
+      // the district, as a code the shader paints by: 1 suburb, 2 midrise,
+      // 3 downtown
+      const dist = placeAt(x, z).district
+      const town = dist === 'downtown' ? 3 : dist === 'midrise' ? 2 : dist ? 1 : 0
       // a town keeps a few garden trees; the sea none
       // (-1 is bare rock: a cliff band the shader draws in strata)
       const canopy = wet ? 0 : town ? 0.12 * (1 - g.paved)
@@ -601,19 +708,19 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       // the diagonal the chunk lattice uses (terrain.ts): a -> d
       s.idx.push(p, p + V, p + V + 1, p, p + V + 1, p + 1)
     }
+  const ground = (x: number, z: number) => {
+    const fa = Math.min(N, Math.max(0, (x - x0) / cell))
+    const fb = Math.min(N, Math.max(0, (z - z0) / cell))
+    const a = Math.min(N - 1, Math.floor(fa))
+    const b = Math.min(N - 1, Math.floor(fb))
+    const u = fa - a
+    const v = fb - b
+    return (H(a, b) * (1 - u) + H(a + 1, b) * u) * (1 - v) + (H(a, b + 1) * (1 - u) + H(a + 1, b + 1) * u) * v
+  }
+  const c0 = chunkX(x0 + 1)
+  const d0 = chunkZ(z0 + 1)
+  const per = S / CHUNK
   if (level < IMPOSTOR_LEVELS) {
-    const ground = (x: number, z: number) => {
-      const fa = Math.min(N, Math.max(0, (x - x0) / cell))
-      const fb = Math.min(N, Math.max(0, (z - z0) / cell))
-      const a = Math.min(N - 1, Math.floor(fa))
-      const b = Math.min(N - 1, Math.floor(fb))
-      const u = fa - a
-      const v = fb - b
-      return (H(a, b) * (1 - u) + H(a + 1, b) * u) * (1 - v) + (H(a, b + 1) * (1 - u) + H(a + 1, b + 1) * u) * v
-    }
-    const c0 = chunkX(x0 + 1)
-    const d0 = chunkZ(z0 + 1)
-    const per = S / CHUNK
     for (let dz = 0; dz < per; dz++) {
       for (let dx = 0; dx < per; dx++) {
         blockImpostors(s, level, c0 + dx, d0 + dz, ground)
@@ -622,6 +729,8 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       yield
     }
   }
+  countryRoads(s, level, c0, d0, per, cell, ground)
+  yield
   return s.build()
 }
 
