@@ -15,7 +15,7 @@ import type { Sandbox } from './sandbox'
   tank go off, either at once on a hard enough blow or after burning for a
   couple of seconds when the blow was only half that. Explosions deal damage
   too (explosion.ts calls `damage`), which is what makes a row of barrels a
-  chain reaction.
+  chain reaction; what a blast does is its own rule, below `damage`.
 
   Damage is measured as a change of velocity, the same number the impact
   event already carries, so a kind's `breaks.speed` reads as "a blow that
@@ -23,8 +23,9 @@ import type { Sandbox } from './sandbox'
   of velocity when it hits something, and a prop that was *hit* takes the
   other one's impulse divided by its own mass, which is how a falling
   concrete block crushes a crate that barely moved (its own dv was tiny, the
-  block's impulse enormous). A single blow at the threshold breaks it; blows
-  over half of it chip away at a health of one, so the third hard knock on a
+  block's impulse enormous), though never by much more than the block's own
+  blow. A single blow at the threshold breaks it; blows over `CHIP` of it
+  wear away at a health of one, so the third or fourth hard knock on a
   crate finishes it.
 
   Gibs are real props: small boxes spawned where the pieces were, with the
@@ -72,10 +73,29 @@ export interface PropLife {
 export const GIB_LIFE = 8
 const GIB_FADE = 0.6
 /** gibs about at once; past this the oldest start to go */
-export const MAX_GIBS = 180
+export const MAX_GIBS = 300
 /** a fuse burns this long (plus up to FUSE_JITTER) before the bang */
 const FUSE = 2.2
 const FUSE_JITTER = 1.4
+/** blows over this share of `breaks.speed` wear a breakable down... */
+const CHIP = 0.6
+/** ...by this much health per multiple of it */
+const CHIP_WEAR = 0.45
+/** a fuse lit by a blast is short: it goes while it is still flying or
+    just after it lands */
+const BLAST_FUSE = 0.5
+const BLAST_FUSE_JITTER = 1.1
+/** an explosive right beside a blast goes this long after it (plus up to
+    the jitter), at about the top of the arc the blast threw it on */
+const BLAST_DELAY = 0.32
+const BLAST_DELAY_JITTER = 0.34
+/** how much health a blast takes off a breakable per multiple of its
+    `breaks.speed`: a crate at the heart of a power-1 blast is left with
+    half, which a landing from the top of its throw (about 23 u/s) does not
+    quite finish */
+const BLAST_WEAR = 0.22
+/** and what each blast after the worst one takes */
+const BLAST_STACK = 0.08
 
 const gibKind = (surface: Surface, density: number, friction: number, restitution: number): PropKind =>
   registerKind({
@@ -107,6 +127,8 @@ interface State {
   fuse: number
   /** seconds until a pending detonation, or -1 */
   boom: number
+  /** the fuse it was lit with, for how far along the burn is */
+  lit: number
 }
 
 interface Gib {
@@ -135,7 +157,7 @@ export const createLife = (
   const stateOf = (id: PropId) => {
     let s = state.get(id)
     if (!s) {
-      s = { hp: 1, fuse: -1, boom: -1 }
+      s = { hp: 1, fuse: -1, boom: -1, lit: 1 }
       state.set(id, s)
     }
     return s
@@ -227,14 +249,15 @@ export const createLife = (
     emitBreak({ id, kind: p.kind.id, x: at.x, y: at.y, z: at.z, how: 'explode', gibs: ids })
   }
 
-  const ignite = (id: PropId) => {
+  const ignite = (id: PropId, fuse?: number) => {
     const p = sb.get(id)
     if (!p?.kind.explodes) return
     const s = stateOf(id)
     if (s.fuse >= 0 || s.boom >= 0) return
-    s.fuse = FUSE + sb.random() * FUSE_JITTER
+    s.fuse = fuse ?? FUSE + sb.random() * FUSE_JITTER
+    s.lit = s.fuse
     const t = p.body.translation()
-    igniteSound(t.x, t.y, t.z)
+    igniteSound(t.x, t.y, t.z, s.fuse)
   }
 
   const detonate = (id: PropId, delay = 0) => {
@@ -248,6 +271,23 @@ export const createLife = (
     s.boom = s.boom >= 0 ? Math.min(s.boom, delay) : delay
   }
 
+  /*
+    A blast is fire as well as a shove, and it is the flight that sells it,
+    so what it does to an explosive is almost never "go off now". Right
+    beside the bang (the blow reaching the kind's `explodes.speed`) the
+    barrel is thrown and blows a third to two thirds of a second later,
+    which is at the top of its arc; further out it catches: the fuse is
+    lit short (`BLAST_FUSE`) and it sputters flame from its top as it flies,
+    rolls and lands, and goes off wherever it has got to. A row of barrels is
+    then several bangs over a couple of seconds, each from somewhere new,
+    rather than one blob.
+
+    A breakable is almost never broken outright by a blast either: glass
+    and melons are (a blow four times their `breaks.speed`), but a crate
+    takes the blast as wear on its health and is thrown whole, and it is
+    the landing that finishes a crate the blast left weak. Most crates
+    beside a barrel come down whole and stay to be played with.
+  */
   const damage = (id: PropId, amount: number, from?: Vec3Like, blast = false) => {
     const p = sb.get(id)
     if (!p || amount <= 0) return
@@ -255,31 +295,55 @@ export const createLife = (
     if (k.explodes) {
       const s = stateOf(id)
       if (s.boom >= 0) return
-      // a blast is fire as well as a shove: it sets off at half the blow a
-      // knock needs, and lights a fuse at a fifth
-      const hot = blast ? 2 : 1
-      const lights = blast ? 0.2 : 0.5
-      if (amount * hot >= k.explodes.speed) {
-        // a blast chains with a beat between links, which is what makes a row
-        // of barrels read as a chain rather than as one bang
-        detonate(id, blast ? 0.1 + sb.random() * 0.16 : 0)
+      if (blast) {
+        const r = amount / k.explodes.speed
+        if (r >= 1) {
+          detonate(id, BLAST_DELAY + sb.random() * BLAST_DELAY_JITTER)
+          return
+        }
+        if (r >= 0.18) {
+          const fuse = BLAST_FUSE + sb.random() * BLAST_FUSE_JITTER
+          if (s.fuse < 0) ignite(id, fuse)
+          else s.fuse = Math.min(s.fuse, fuse)
+        }
         return
       }
-      if (amount >= k.explodes.speed * lights) {
-        s.hp -= (amount * hot) / k.explodes.speed
+      if (amount >= k.explodes.speed) {
+        detonate(id, 0)
+        return
+      }
+      if (amount >= k.explodes.speed * 0.5) {
+        s.hp -= amount / k.explodes.speed
         if (s.hp <= 0) detonate(id, 0.05)
         else ignite(id)
       }
       return
     }
     if (!k.breaks) return
+    if (blast) {
+      const r = amount / k.breaks.speed
+      if (r >= 4) {
+        shatter(id, from)
+        return
+      }
+      const s = stateOf(id)
+      // the worst blast it has been in, and a little for each other: two
+      // barrels a beat apart are one hammering, not two
+      s.hp = Math.min(s.hp - BLAST_STACK, 1 - r * BLAST_WEAR)
+      // never broken by the blast itself: the landing finishes it or not
+      s.hp = Math.max(0.05, s.hp)
+      return
+    }
     if (amount >= k.breaks.speed) {
       shatter(id, from)
       return
     }
-    if (amount >= k.breaks.speed * 0.5) {
+    // a blow over CHIP of the threshold wears it down, so the third or
+    // fourth hard knock finishes a crate; a pile settling (many blows at a
+    // third of it) never does
+    if (amount >= k.breaks.speed * CHIP) {
       const s = stateOf(id)
-      s.hp -= (amount / k.breaks.speed) * 0.55
+      s.hp -= (amount / k.breaks.speed) * CHIP_WEAR
       if (s.hp <= 0) shatter(id, from)
     }
   }
@@ -301,8 +365,12 @@ export const createLife = (
     if (k.breaks || k.explodes) blows.push({ id: e.id, amount: e.speed, x: e.x, y: e.y, z: e.z })
     const o = e.other
     if (o && (o.kind.breaks || o.kind.explodes)) {
-      // the blow dealt to what it hit: this prop's impulse over its mass
-      blows.push({ id: o.id, amount: Math.min(e.impulse / Math.max(0.1, o.mass), e.speed * 4), x: e.x, y: e.y, z: e.z })
+      // the blow dealt to what it hit: this prop's impulse over its mass,
+      // but never much more than the blow it took itself. A struck body's
+      // change of velocity is at most about twice the closing speed, and at
+      // four times it a concrete block settling onto a crate at a walking
+      // pace crushed it: a poured pile of forty lost eight crates that way
+      blows.push({ id: o.id, amount: Math.min(e.impulse / Math.max(0.1, o.mass), e.speed * 1.6), x: e.x, y: e.y, z: e.z })
     }
   })
 
@@ -313,6 +381,14 @@ export const createLife = (
     }
     // fuses, pending bangs
     for (const [id, s] of state) {
+      if (s.boom < 0 && s.fuse < 0) continue
+      const p = sb.get(id)
+      if (p && sb.getTransform(id, pos, quat)) {
+        // flames lick out of the top, wherever the top has rolled to; a
+        // barrel about to go is burning flat out
+        tmp.set(0, p.extents.y * 0.9, 0).applyQuaternion(quat).add(pos)
+        fx.burn(tmp, s.boom >= 0 ? 1 : 1 - Math.max(0, s.fuse) / Math.max(0.1, s.lit))
+      }
       if (s.boom >= 0) {
         s.boom -= h
         if (s.boom <= 0) {
@@ -321,18 +397,10 @@ export const createLife = (
         }
         continue
       }
-      if (s.fuse >= 0) {
-        s.fuse -= h
-        const p = sb.get(id)
-        if (p && sb.getTransform(id, pos, quat)) {
-          // flames lick out of the top, wherever the top has rolled to
-          tmp.set(0, p.extents.y * 0.9, 0).applyQuaternion(quat).add(pos)
-          fx.burn(tmp, 1 - Math.max(0, s.fuse) / FUSE)
-        }
-        if (s.fuse <= 0) {
-          s.fuse = -1
-          goOff(id)
-        }
+      s.fuse -= h
+      if (s.fuse <= 0) {
+        s.fuse = -1
+        goOff(id)
       }
     }
     // gibs age, shrink and go

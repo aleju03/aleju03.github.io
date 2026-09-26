@@ -541,9 +541,9 @@ def('cinder', {
     category: 'construction',
     name: { en: 'Steel girder', es: 'Viga de acero' },
     shape: compound([
-      { shape: box(hl, 0.04, hw), at: [0, hh - 0.04, 0] },
-      { shape: box(hl, 0.04, hw), at: [0, -hh + 0.04, 0] },
-      { shape: box(hl, hh - 0.08, 0.04) },
+      { shape: box(hl, 0.06, hw), at: [0, hh - 0.06, 0] },
+      { shape: box(hl, 0.06, hw), at: [0, -hh + 0.06, 0] },
+      { shape: box(hl, hh - 0.12, 0.05) },
     ]),
     mass: 220,
     friction: 0.55,
