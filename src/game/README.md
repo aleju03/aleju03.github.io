@@ -544,8 +544,11 @@ sandbox/
   thumbnails.ts renderThumbnails(): spawn-menu icons, in a context of its own
   propScenarios.ts  catalogue, chain, smash, crowd (and the turntable's lot)
   props.ts      the registry and the per-slice work: forces re-laid,
-                buoyancy at eight samples, impacts from the change in
-                velocity, poses kept for interpolation, parking and rescue
+                buoyancy on the drawn swell, the moving sea, splashes,
+                impacts from the change in velocity, rolling resistance,
+                poses kept for interpolation, parking and rescue
+  wake.ts       the waterline cue: foam collars and shed rings around
+                floaters, splash rings and spray, two instanced draws
   walker.ts     the walker among the props: the CollisionSet's `dynamic`
                 provider (stand, push out, blocks), the capped shove, weight,
                 riding, and the kinematic capsule that props bounce off
@@ -569,7 +572,7 @@ sandbox/
 ### The contract
 
 ```ts
-const sb = createSandbox({ parent, collision, waterY, waveAt, chunkSolids })
+const sb = createSandbox({ parent, collision, waterY, waveAt, splash, chunkSolids })
 await sb.whenReady                      // optional: spawns before it are queued
 sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
 
@@ -583,14 +586,17 @@ sb.freeze(id); sb.unfreeze(id); sb.setMode(id, 'dynamic' | 'frozen' | 'kinematic
 sb.moveKinematic(id, pos, quat?); sb.wake(id)
 sb.onImpact(e => ...)  // { id, prop, with: 'prop'|'ground'|'solid'|'vehicle'|'player',
                        //   other, solid, impulse, speed, x, y, z }
+sb.onSplash(e => ...)  // { id, prop, x, y, z, speed, impulse }: went into the sea hard
 sb.onSpawn(p => ...); sb.onRemove(p => ...)
 sb.onBeforeSlice(h => ...); sb.onAfterSlice(h => ...)   // per fixed slice
 sb.raycast(origin, dir, maxDist, { props?, world? })    // { distance, point, normal, prop, solid, ground }
 sb.queryBall(center, r, p => ...)
 sb.groundY(x, z); sb.restY(kind, x, z); sb.focus
 sb.gravity = -34; sb.timescale = 1
+sb.stateHash()                                          // '9f3c01ab@6.0000': every pose and velocity, to the bit
+sb.random()                                             // the simulation's seeded chance, 0..1
 sb.rapier; sb.physics                                   // the raw world, for joints
-registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, mesh?,
+registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, rolling?, mesh?,
                surface?, breaks?: { speed }, explodes?: { power, radius, speed } })
 
 sb.explode(at, power = 1, radius = 16)  // impulse, damage (chains), fx, boom
@@ -610,7 +616,8 @@ await renderThumbnails(ids?, size = 96)  // [{ id, canvas }], pixel-art icons
 ```
 
 A `Prop` carries `id`, `kind`, `body` (the Rapier body), `colliders`, `mesh`,
-`extents`, `mass`, `mode`, `parked` and a free `data` bag. Every call that
+`extents`, `mass`, `mode`, `parked`, `wet` (the share of it under the sea)
+and a free `data` bag. Every call that
 takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
 `window.__sandbox` and the lens on `window.__sandboxCamera`.
 
@@ -653,6 +660,25 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   plank's tiny long-axis inertia. Drag is Rapier's own damping (integrated
   implicitly, stable at any strength), scaled by the water displaced per
   kilogram, so a beach ball is held hard and a concrete block barely.
+- **The sea moves, so floaters never sleep.** A body asleep lays no
+  buoyancy, and round two's floaters went to sleep on the swell and sat on
+  it like decals while it slid under them. Anything lighter than water is
+  woken every slice it is wet. And damping alone drags a floater to a dead
+  stop, so it drags toward the *water's* velocity instead: a force of
+  `damping * mass * u` makes `u` the speed it settles on, where `u` is a slow
+  current downwind, windage on what stands out of the water and an eddy per
+  prop, plus a wandering yaw and a gentle rock, each torque scaled by the
+  body's own inertia about that axis (one number for all three spun a plank
+  about its length at 18 rad/s). None of it depends on the prop's velocity,
+  so it drives without pumping. `measure physics float` prints heave, drift,
+  turn, rock and churn from six seconds on, and flags a dead or churning
+  floater.
+- **Rapier has no rolling resistance.** A drum on a 2% camber rolls forever,
+  and one standing on its end spins like a top: round two's pile still had a
+  barrel turning in place at twenty seconds. A kind's `rolling` coefficient
+  takes `rolling * g` a second off the speed and spin together, only while
+  it is touching something and dry. `measure physics rest` reports when the
+  pile's last prop sleeps (about 6.5 s).
 - **A uniform cube floats on an edge.** At density 0.5 a homogeneous cube's
   metacentre is below its centre of mass, and it floats like a diamond; that
   is physics, not a bug. A crate floats level because its load is on its
@@ -672,6 +698,23 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   jump past a stride (a spawn, a recall, a level cut) is a `setTranslation`:
   an infinitely heavy capsule swept across the room bulldozes everything
   between the two spots.
+- **Deterministic, and checkable.** The same spawns, per-slice pokes and
+  sea give the same world to the bit, however the frames that carried the
+  slices were spaced, and Node and Chrome agree (the header of `physics.ts`
+  says why and where the edge is). `sb.stateHash()` fingerprints it;
+  `measure physics determinism` runs every scenario twice and once more on
+  uneven frames, and `npm run film` prints the same hash under each sheet
+  (as long as its `--rings` cover everywhere the props go: the film only
+  builds the solids of the chunks it draws, and `sandbox:chain` throws gibs
+  far enough to need `--rings 4`). That is why the ground streams at the
+  head of every slice rather than every frame: which colliders exist, and
+  the order they were made in, is simulation state.
+  The swell is the one input the sandbox reads rather than owns: the
+  harnesses pin the water's clock to the slice clock, and a replay or a
+  shared world must too. Anything wandering (a floater's drift) reads
+  `physics.time` and the prop id, and anything left to chance in the
+  simulation (a gib's kick, a fuse) draws `sb.random()`, the facade's seeded
+  generator, never `Math.random` or the wall clock. Sparks and sounds may.
 - **Queries see what was stepped.** Rapier's broad phase updates in `step`, so
   a collider added this frame is invisible to a raycast until the next slice.
 - **One material, one atlas, one draw per shape.** Every prop, gib and bit of
@@ -709,6 +752,7 @@ npm run film -- sandbox:float --start 5 --duration 7 --frames 11    0.2 s apart
 npm run film -- sandbox:pile --yaw 1.2 --dist 30 --height 12       orbit the target
 npm run film -- sandbox:pile --from x,y,z --to x,y,z --fov 40      or place the lens
 npm run film -- sandbox:stack --raw    the bare frame, without the pixel look
+npm run film -- sandbox:stack --labels off    no time stamps or title, to judge blind
 npm run film -- --list
 
 npm run film -- sandbox:catalogue      every prop on a town street
@@ -721,7 +765,7 @@ npm run film -- props:sounds           every prop sound's peak, next to a footst
 npm run film -- props:links            shader links on first spawn/break/blast
 
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
-                                       float catalogue breaks blast scenarios
+                                       rest determinism float catalogue breaks blast scenarios
 npm run measure -- physics walker      one section
 ```
 

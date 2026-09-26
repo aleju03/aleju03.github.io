@@ -85,6 +85,9 @@ export interface OutsideHandles {
       and under the troughs; this is the swell the water shader draws, so a
       boat rides the sea that is actually on screen */
   waveAt: (x: number, z: number) => number
+  /** drop the water shader's splash rings at a point (nothing before the
+      world attaches) */
+  splash: (x: number, z: number) => void
   /** true while the property owns the ground under this point: the house
       answers for its own lawn, porch and paths */
   onProperty: (x: number, z: number) => boolean
@@ -363,6 +366,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     },
     surfaceAt: (x, z) => (w ? w.mods.terrain.surfaceAt(x, z) : 'grass'),
     waveAt: (x, z) => (w ? w.mods.streamer.waveHeightAt(x, z) : 0),
+    splash: (x, z) => w?.world.splash(x, z),
     onProperty,
     sun: sky.sun,
     doorPrompt: (p, gaze) => (w ? w.shopDoors.doorPrompt(p, gaze) : null),

@@ -101,8 +101,8 @@ export const createExplosions = (
     imp.copy(dir).multiplyScalar(Math.max(j, 0))
     // off-centre, on the side facing the blast, so it tumbles as it goes
     at.copy(pos).addScaledVector(dir, -reach * 0.6)
-    at.x += (Math.random() - 0.5) * reach
-    at.z += (Math.random() - 0.5) * reach
+    at.x += (sb.random() - 0.5) * reach
+    at.z += (sb.random() - 0.5) * reach
     sb.wake(id)
     sb.applyImpulse(id, imp, at)
   }

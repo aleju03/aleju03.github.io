@@ -224,6 +224,8 @@ const pushSplash = (x: number, z: number) => {
   rippleU.uRippleTimes.value[rippleHead] = windUniforms.uTime.value
   rippleHead = (rippleHead + 1) % RIPPLES
 }
+/** the same, for anything that has no world handle to hand (the film harness) */
+export const splashAt = pushSplash
 
 /**
  * Stylized water, by injection rather than by a whole custom shader — so it
