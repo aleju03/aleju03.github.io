@@ -190,10 +190,10 @@ export const createExplosions = (
       // pushed first and damaged after, so a crate the blast breaks hands
       // the blast's velocity on to its pieces
       if (h.f >= 0 && p.mode === 'dynamic') {
-        // (every other one, near enough: a whole row of barrels sailing off
-        // leaves the crates it was meant to wreck standing, so about half
-        // go off where they are and half go up)
-        const loft = !!p.kind.explodes && sb.random() < 0.5
+        // (two in three: a whole row of barrels sailing off leaves the
+        // crates it was meant to wreck standing, so a third go off where
+        // they are, and the rest fly whole, spinning, and go off late)
+        const loft = !!p.kind.explodes && sb.random() < 0.65
         // (breakables.ts reads it: a lofted barrel waits for the top of its
         // arc, one left low goes off beside what it was standing among)
         if (p.kind.explodes) p.data.lofted = loft
