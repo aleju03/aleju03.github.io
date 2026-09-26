@@ -371,14 +371,20 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       const l = live
       if (!l) return
       const seen = new Set<PropId>()
+      const found: Prop[] = []
       l.pw.world.intersectionsWithShape(center, { x: 0, y: 0, z: 0, w: 1 }, new l.pw.R.Ball(r), (c) => {
         const p = l.props.ofCollider(c)
         if (p && !seen.has(p.id)) {
           seen.add(p.id)
-          fn(p)
+          found.push(p)
         }
         return true
       }, undefined, GROUPS.queryProps)
+      // handed out after the query, never from inside it: the query holds
+      // Rapier's world borrowed, so a callback that wakes or pushes a body
+      // throws across the WASM boundary, the error is lost, and the world is
+      // left borrowed (an explosion threw nothing and the next dispose died)
+      for (const p of found) fn(p)
     },
     groundY: terrainY,
     restY: (kind, x, z) => {

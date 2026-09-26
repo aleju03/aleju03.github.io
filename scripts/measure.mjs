@@ -8,6 +8,8 @@
     node scripts/measure.mjs smoke         build a few thousand chunks, catch throws
     node scripts/measure.mjs physics       the sandbox: ground, cost, stacks,
                                            tunnelling, the walker, scenarios
+    node scripts/measure.mjs console       every console command run headless
+                                           against a real sandbox, and noclip
     node scripts/measure.mjs eval <file>   run your own probe with the world imported
 
   `src/game/` is renderer-free by design, so all of it runs here: fields, chunk
@@ -238,8 +240,8 @@ const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
 // the sandbox's report lives in its own file (it is long, and it imports the
 // sandbox, which nothing else here needs); `physics <section>` runs one part
-if (what === 'physics') {
-  body = readFileSync(join(ROOT, 'scripts', 'measure', 'physics.js'), 'utf8')
+if (what === 'physics' || what === 'console') {
+  body = readFileSync(join(ROOT, 'scripts', 'measure', `${what}.js`), 'utf8')
     .replace(/'\.\.\/\.\.\/src\//g, `'${ROOT}/src/`)
 }
 if (what === 'eval') {
@@ -247,7 +249,7 @@ if (what === 'eval') {
   body = readFileSync(resolve(arg), 'utf8')
 }
 if (!body) {
-  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|physics [section]|eval <file>>`)
+  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|physics [section]|console|eval <file>>`)
   console.error('\nan `eval` file is plain JS with the whole world already imported:')
   console.error('  buildChunk tierFor kitsFor VARIANTS SNAP BIOMES classify')
   console.error('  landmarkIn landmarkAt LANDMARK_CELL placeAt roadAt')

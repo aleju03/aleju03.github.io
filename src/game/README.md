@@ -537,6 +537,16 @@ sandbox/
   sandbox.ts    createSandbox(): the facade, and the only thing CrtScene calls
   scenarios.ts  scripted physics (a site, a setup, a camera, a clock), shared
                 by the film harness and `measure physics`
+  bindings.ts   the one key table: every key the walk, the sandbox and its
+                tools answer to, by action (`held`, `axis`, `createEdges`,
+                `keyHint`). Nobody else spells a KeyboardEvent code
+  commands.ts   the console: a typed command registry with completion and
+                help in both languages, run against a `SandboxHost`
+  history.ts    undo (Z) and cleanup, one stack per owner (`historyOf(sb)`)
+  rules.ts      the shared knobs (gravity, timescale, cleanup of everyone's)
+                and the seam the network routes them through
+  places.ts     what `tp town:downtown` and `tp landmark:lighthouse` find
+  spawnlist.ts  what the spawn menu lists and under which heading
 ```
 
 ### The contract
@@ -676,6 +686,55 @@ spawned.
   `onBeforeSlice`, with `setVelocity` toward a target or `addForce`, or switch
   one to `kinematic` and `moveKinematic` it every slice. Per-frame writes land
   on the first slice only.
+
+### The console, the keys and undo
+
+The walk and the sandbox read keys through `bindings.ts` only: `held(keys,
+'noclip')`, `axis(keys, 'back', 'forward')`, and one `createEdges()` per
+scene for presses. Noclip is V and third person F5 (one line to swap back);
+in flight space rises, c sinks, shift is fast and ctrl slow, as in Garry's
+Mod. Hint copy names keys as `{noclip}` and `keyHint()` fills them in, so no
+string in either language can name a key the table does not.
+
+```ts
+registerCommand({ name, aliases?, args?: [{ name, type, optional?, choices? }],
+                  help: msg(en, es), run: (ctx) => { ctx.ok(msg(en, es)) } })
+historyOf(sb).record({ label: msg(en, es), kind?, props: ids, undo?, owner? })
+historyOf(sb).adopt(parentId, gibIds)      // gibs go with their parent's undo
+rules.propose('gravity', 0.5)              // 'applied' offline, 'sent' online
+```
+
+A second `registerCommand` under a taken name replaces it: that is the seam
+the props piece's real explosion replaces `explode` through. Handlers never
+touch the scene; they reach it through the `SandboxHost` CrtScene builds
+(teleport, noclip, time, fog, players, chat), and a missing capability is
+reported rather than thrown. Most commands are the typist's own business;
+gravity, timescale and `cleanup all` are the world's and go through
+`rules.ts`, which offline applies at once and online hands the request to
+`rules.transport` and waits for the server's `apply` (not wired yet; see
+rules.ts's header). Undo and cleanup filter by `history.me`, which CrtScene
+sets from the welcome's player id.
+
+The React side is `components/os/SandboxConsole.tsx` (a thermal receipt
+printer: t, enter or / opens it, /command runs, plain text chats online and
+works offline) and `components/os/SpawnMenu.tsx` (a mail-order catalogue held
+up with q; its find line pins it open). Both free the pointer, and CrtScene's
+`onLock` knows an unlock they asked for is not esc.
+
+One rule that bit: **never touch a body from inside a Rapier query
+callback.** The query holds the world borrowed, the error thrown across the
+WASM boundary is lost, and the world stays borrowed: an explosion pushed
+nothing and the next `dispose` died. `queryBall` now collects first and calls
+back after.
+
+```
+npm run measure -- console     every command headless, undo/cleanup by owner,
+                               the rules seam, noclip against a wall
+npm run drive                  the real /world in headless Chrome: the
+                               console, the catalogue and a noclip film
+                               (shots/sandbox/*.png; --lang es, --fly-at)
+window.__sandbox.run('spawn crate 10')   dev: resolves with the printed lines
+```
 
 ## Multiplayer
 

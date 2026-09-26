@@ -143,6 +143,10 @@ export interface PlayerPose {
       reads great from a chase camera or another player but, with the lens
       riding the head, would shove your own body into the frame */
   show: number
+  /** 0..1 in noclip: airborne without falling. The legs hang half-reached,
+      the arms drift and the whole body bobs a little, the relaxed float of
+      somebody with nowhere to land rather than the tuck of a jump */
+  fly?: number
 }
 
 /** a point on the body a physics world, a grab beam or a camera can use */
@@ -580,6 +584,7 @@ export function buildPlayerBody(
   let strafeYaw = 0
   let airK = 0
   let fallK = 0 // within air: 0 rising .. 1 falling
+  let flyK = 0 // noclip's float, eased
   let springP = 0 // landing spring on the pelvis, design units (<= 0)
   let springV = 0
   let wobP = 0 // the jelly wobble on the trunk's volume
@@ -1073,7 +1078,10 @@ export function buildPlayerBody(
     springP = Math.max(-0.7, springP + springV * dt)
 
     airK += ((pose.grounded ? 0 : 1) - airK) * ease(pose.grounded ? 14 : 9)
-    fallK += ((pose.vy < 0 ? 1 : 0) - fallK) * ease(7)
+    flyK += ((pose.fly ?? 0) - flyK) * ease(4)
+    // a flyer is neither rising nor falling: the legs settle halfway between
+    // the jump's tuck and the fall's reach, which reads as hanging loose
+    fallK += ((pose.fly ? 0.55 : pose.vy < 0 ? 1 : 0) - fallK) * ease(7)
 
     // hips angle toward where the feet are actually going; chest holds the
     // camera line, so strafing reads as stepping sideways, not gliding
@@ -1119,7 +1127,9 @@ export function buildPlayerBody(
     // flight before the next one does (see the toe-off in the feet below)
     const stepFrac = stepT - Math.floor(stepT)
     const pop = runK * gait * (0.5 - 0.5 * Math.cos(2 * Math.PI * (stepFrac - 0.35))) * 0.2
-    pelvis.position.set(waddleX, hipH + dip + pop + bounceY + breathe * 0.006, 0)
+    pelvis.position.set(
+      waddleX, hipH + dip + pop + bounceY + breathe * 0.006 + Math.sin(idleT * 1.7) * 0.05 * flyK, 0,
+    )
     const waddleRoll = stepS * (0.17 - 0.06 * runK) * moveK + shift * 1.2
     // the get-up hunch is not gated by pose.show: it is the shape of the
     // action, not flair, and the lens is off the head for the whole of it
@@ -1133,7 +1143,10 @@ export function buildPlayerBody(
       -yawRateS * (0.02 + 0.04 * runK) * gait - sideS * 0.014,
       -0.26, 0.26,
     )
-    pelvis.rotation.set(lean * 0.5, strafeYaw - stepS * 0.12 * gait, bank * 0.45 + waddleRoll)
+    // and flying fast lays the whole body into the flight, legs trailing,
+    // the way everyone in Garry's Mod crosses a map in noclip
+    const flyLean = flyK * THREE.MathUtils.clamp(fwdS * 0.02, -0.25, 0.8)
+    pelvis.rotation.set(lean * 0.5 + flyLean, strafeYaw - stepS * 0.12 * gait, bank * 0.45 + waddleRoll)
 
     // the chest is jelly on top of the hips: a roll spring that wants to
     // hold the shoulders level over the waddle, and so arrives late and
@@ -1278,11 +1291,15 @@ export function buildPlayerBody(
     // rising, the legs are still extended from the shove, trailing long
     // under the body; the knee only comes up at the top, and falling both
     // reach apart for the ground
-    const leadThigh = -0.55 - fallK * 0.45
-    const leadShin = 0.35 + fallK * 0.75
-    const trailThigh = 0.55 - fallK * 0.3
-    const trailShin = 0.25 + fallK * 0.65
-    const airSplay = 0.1 + fallK * 0.22
+    // noclip swaps both for a dangle: knees soft, one leg a little ahead of
+    // the other and the pair swaying slowly, like feet hanging off a pier
+    const flyN = 1 - flyK
+    const dangle = Math.sin(idleT * 1.3) * 0.2 * flyK
+    const leadThigh = (-0.55 - fallK * 0.45) * flyN + (-0.32 + dangle) * flyK
+    const leadShin = (0.35 + fallK * 0.75) * flyN + 0.75 * flyK
+    const trailThigh = (0.55 - fallK * 0.3) * flyN + (0.18 - dangle) * flyK
+    const trailShin = (0.25 + fallK * 0.65) * flyN + 0.6 * flyK
+    const airSplay = (0.1 + fallK * 0.22) * flyN + 0.15 * flyK
     qInv.copy(pelvis.quaternion).invert()
     const solveLeg = (
       thigh: THREE.Bone,
@@ -1388,10 +1405,13 @@ export function buildPlayerBody(
     const elbowBase = 0.35 + 0.5 * runK * gait
     // held well out from the body, standing or not: a round belly and a
     // loose shoulder, never glued to the hips; a fall flings them wide
-    const spread = 0.5 + breathe * 0.05 + airK * (0.5 + fallK * 0.9) + runK * gait * 0.15 + swingOut
+    const spread =
+      0.5 + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
-    // the body drops away under them
-    const airX = airK * (1.5 + fallK * 0.6)
+    // the body drops away under them. A flyer is not falling, so its arms
+    // hang loose and a little forward and drift, out of step with the legs
+    const airX =
+      airK * (1.5 + fallK * 0.6) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
     const swayLX = (Math.sin(idleT * 1.7) * 0.07 + Math.sin(idleT * 0.83 + 1.3) * 0.05) * idleK - 0.12
     const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.07 + Math.sin(idleT * 0.94 + 2.1) * 0.05) * idleK - 0.12
     const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.06 * idleK
