@@ -755,6 +755,16 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   so it drives without pumping. `measure physics float` prints heave, drift,
   turn, rock and churn from six seconds on, and flags a dead or churning
   floater.
+- **Prop on prop friction multiplies.** Averaged, two crates at 0.42 held
+  each other until a board under them tipped past 35 degrees, while a
+  three-high column of them tips over its edge at about 27: every stack went
+  over as one welded piece, whatever knocked it, and moving the blow only
+  hid that. Props now combine friction by product (0.18 crate on crate), and
+  everything else they meet carries `WORLD_FRICTION` (1.45) times its old
+  value so a prop on the ground grips exactly as before. `measure physics
+  lean` tips a column on a board: the top crate now slides at 20 degrees,
+  before the column can tip, which is a leaning stack shedding its top. It
+  applies to every prop, the demolitions' rubble included.
 - **A piece born inside a crowd passes through it for a moment.** A broken
   crate's gibs start where the crate was, pressed into whatever stood on it,
   and spawned solid they held a whole column of crates up (round three

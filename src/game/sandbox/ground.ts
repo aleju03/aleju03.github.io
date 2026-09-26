@@ -2,7 +2,7 @@ import type RAPIER_NS from '@dimforge/rapier3d-compat'
 import type { CollisionSet, Hull, Solid } from '../physics/collision'
 import { CHUNK, GRID, originX, originZ } from '../world/grid'
 import { latticeHeight } from '../world/terrain'
-import { GROUPS, type PhysicsWorld, type RBody, type RCollider } from './physics'
+import { GROUPS, WORLD_FRICTION, type PhysicsWorld, type RBody, type RCollider } from './physics'
 
 /*
   Everything a prop can hit that is not another prop: the ground, the world's
@@ -112,7 +112,7 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
       .setTranslation(originX(cx) + CHUNK / 2, 0, originZ(cz) + CHUNK / 2)
       .setRotation(QUARTER)
       .setCollisionGroups(GROUPS.world)
-      .setFriction(0.8)
+      .setFriction(WORLD_FRICTION)
       .setRestitution(0.05)
     const col = world.createCollider(desc)
     groundHandles.add(col.handle)
@@ -211,7 +211,7 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
 
   const addMirror = (b: Solid) => {
     const col = world.createCollider(
-      R.ColliderDesc.cuboid(0.5, 0.5, 0.5).setCollisionGroups(GROUPS.world).setFriction(0.7),
+      R.ColliderDesc.cuboid(0.5, 0.5, 0.5).setCollisionGroups(GROUPS.world).setFriction(WORLD_FRICTION * 0.875),
     )
     const m: Mirror = { col, minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0, on: true }
     place(m, b)
@@ -313,7 +313,7 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
     const desc = R.ColliderDesc.convexHull(new Float32Array(pts))
     if (desc) {
       const col = world.createCollider(
-        desc.setCollisionGroups(GROUPS.vehicle).setFriction(0.6),
+        desc.setCollisionGroups(GROUPS.vehicle).setFriction(WORLD_FRICTION * 0.6),
         body,
       )
       vehicleHandles.add(col.handle)
