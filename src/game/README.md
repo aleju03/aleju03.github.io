@@ -895,7 +895,7 @@ npm run film -- props:links            shader links on first spawn/break/blast
 npm run drive -- links                 the same count in the real /world: first
                                        spawn, a break, a fuse and a chain (0)
 
-npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
+npm run film -- 'sandbox:physgun-*' --dense   the physgun films, 1p and 3p, + 10 fps sheets
 
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
                                        rest determinism float catalogue breaks blast physgun scenarios

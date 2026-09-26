@@ -25,9 +25,9 @@ import { emptyInput, type RigEntry, type ToolInput } from './types'
     npm run film -- sandbox:physgun-swing       lift a crate and swing it round in an arc, freeze it mid-air
     npm run film -- sandbox:physgun-rotate      E + mouse turns it, Shift snaps it to 45 degrees, freeze, R drops it
     npm run film -- sandbox:physgun-heavy       the 900 kg block lagging a swing and sailing past
-    npm run film -- sandbox:physgun-throw       a barrel flung off the beam into a stack of crates
+    npm run film -- sandbox:physgun-throw       a barrel flung off the beam into a tower of small crates
     npm run film -- sandbox:physgun-ragdoll     a body picked up by the head, pinned in the air, let down
-    ...each with a -3p twin, and `--video` for an MP4
+    ...each with a -3p twin; `--video` for an MP4, `--dense` for 10 fps sheets
 */
 
 const EYE = 3.84
