@@ -97,6 +97,11 @@ export interface PropKind {
       half its depth: a uniform cube at that density is only stable resting
       on an edge, and floats like a diamond */
   ballast?: { share: number; at: [number, number, number] }
+  /** rolling resistance, as a coefficient (0.01 a steel wheel on rail, 0.04
+      a drum on asphalt). Rapier has none: a round thing on a 2% camber
+      rolls forever, and a pile of drums and balls was still creeping at
+      twenty seconds. Omit it for things that do not roll */
+  rolling?: number
   /** how it sounds when it hits something; 'wood' when omitted */
   surface?: Surface
   /** comes apart into gibs (models.ts's GIBS) on a hard enough blow */

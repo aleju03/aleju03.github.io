@@ -168,6 +168,7 @@ def('barrel', {
   friction: 0.55,
   restitution: 0.18,
   density: 0.3,
+  rolling: 0.04,
   // steel on ground loses a little to rolling resistance; without it a drum
   // on the flat rolls to the horizon
   angularDamping: 0.25,
@@ -184,6 +185,7 @@ def('trashcan', {
   friction: 0.5,
   restitution: 0.2,
   density: 0.25,
+  rolling: 0.05,
   angularDamping: 0.3,
   surface: 'sheet',
 })
@@ -195,6 +197,7 @@ def('sawblade', {
   friction: 0.3,
   restitution: 0.3,
   density: 7.8,
+  rolling: 0.02,
   angularDamping: 0.05,
   surface: 'sheet',
 })
@@ -206,6 +209,7 @@ def('pipe', {
   friction: 0.5,
   restitution: 0.15,
   density: 2,
+  rolling: 0.03,
   angularDamping: 0.5,
   surface: 'metal',
 })
@@ -243,6 +247,7 @@ def('cone', {
   friction: 0.85,
   restitution: 0.25,
   density: 1.3,
+  rolling: 0.08,
   surface: 'plastic',
 })
 def('ball', {
@@ -253,6 +258,7 @@ def('ball', {
   friction: 0.8,
   restitution: 0.72,
   density: 0.08,
+  rolling: 0.05,
   linearDamping: 0.08,
   angularDamping: 0.35,
   surface: 'rubber',
@@ -265,6 +271,7 @@ def('bucket', {
   friction: 0.7,
   restitution: 0.25,
   density: 0.3,
+  rolling: 0.06,
   surface: 'plastic',
 })
 def('milk_crate', {
@@ -440,6 +447,7 @@ def('door', {
     friction: 0.6,
     restitution: 0.18,
     density: 0.95,
+    rolling: 0.06,
     angularDamping: 0.2,
     surface: 'melon',
     breaks: { speed: 17 },
@@ -456,6 +464,7 @@ def('bottle', {
   friction: 0.4,
   restitution: 0.2,
   density: 0.5,
+  rolling: 0.05,
   surface: 'glass',
   breaks: { speed: 12 },
 })
@@ -467,6 +476,7 @@ def('soda_can', {
   friction: 0.5,
   restitution: 0.25,
   density: 1.05,
+  rolling: 0.04,
   angularDamping: 0.3,
   surface: 'sheet',
 })
@@ -576,6 +586,7 @@ def('tyre', {
   friction: 1,
   restitution: 0.45,
   density: 0.5,
+  rolling: 0.025,
   angularDamping: 0.15,
   surface: 'rubber',
 })
@@ -600,6 +611,7 @@ def('barrel_explosive', {
   friction: 0.55,
   restitution: 0.18,
   density: 0.3,
+  rolling: 0.04,
   angularDamping: 0.25,
   surface: 'drum',
   explodes: { power: 1, radius: 16, speed: 56 },
@@ -623,6 +635,7 @@ def('propane', {
   friction: 0.5,
   restitution: 0.2,
   density: 0.4,
+  rolling: 0.04,
   angularDamping: 0.2,
   surface: 'metal',
   explodes: { power: 1.35, radius: 19, speed: 64 },

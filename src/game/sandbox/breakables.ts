@@ -161,9 +161,9 @@ export const createLife = (
       const spin = new THREE.Vector3().crossVectors(ang, r)
       // a kick outward from the middle, and away from whatever broke it
       const out = r.lengthSq() > 1e-4 ? r.clone().normalize() : new THREE.Vector3(0, 1, 0)
-      const kick = 2.5 + Math.random() * 3
+      const kick = 2.5 + sb.random() * 3
       const v = lin.clone().add(spin).addScaledVector(out, kick)
-      v.y += 1.5 + Math.random() * 2
+      v.y += 1.5 + sb.random() * 2
       if (from) v.add(new THREE.Vector3(pos.x - from.x, 0, pos.z - from.z).normalize().multiplyScalar(2))
       tq.copy(quat)
       if (g.rot) tq.multiply(new THREE.Quaternion().setFromEuler(te.set(g.rot[0], g.rot[1], g.rot[2])))
@@ -171,7 +171,7 @@ export const createLife = (
       const id = sb.spawn(kindId, tmp, {
         quaternion: { x: tq.x, y: tq.y, z: tq.z, w: tq.w },
         velocity: v,
-        angular: { x: ang.x + (Math.random() - 0.5) * 8, y: ang.y + (Math.random() - 0.5) * 8, z: ang.z + (Math.random() - 0.5) * 8 },
+        angular: { x: ang.x + (sb.random() - 0.5) * 8, y: ang.y + (sb.random() - 0.5) * 8, z: ang.z + (sb.random() - 0.5) * 8 },
         shape: { type: 'box', hx: g.half[0], hy: g.half[1], hz: g.half[2] },
         mass: Math.max(0.1, p.mass * g.share),
         mesh,
@@ -217,10 +217,10 @@ export const createLife = (
       const v = new THREE.Vector3()
       sb.getVelocity(g, v)
       v.multiplyScalar(0.3)
-      v.x += (Math.random() - 0.5) * 30
-      v.z += (Math.random() - 0.5) * 30
-      v.y += 18 + Math.random() * 20
-      sb.setVelocity(g, v, { x: (Math.random() - 0.5) * 20, y: (Math.random() - 0.5) * 20, z: (Math.random() - 0.5) * 20 })
+      v.x += (sb.random() - 0.5) * 30
+      v.z += (sb.random() - 0.5) * 30
+      v.y += 18 + sb.random() * 20
+      sb.setVelocity(g, v, { x: (sb.random() - 0.5) * 20, y: (sb.random() - 0.5) * 20, z: (sb.random() - 0.5) * 20 })
     }
     sb.remove(id)
     explodeAt(at, power, radius, id)
@@ -232,7 +232,7 @@ export const createLife = (
     if (!p?.kind.explodes) return
     const s = stateOf(id)
     if (s.fuse >= 0 || s.boom >= 0) return
-    s.fuse = FUSE + Math.random() * FUSE_JITTER
+    s.fuse = FUSE + sb.random() * FUSE_JITTER
     const t = p.body.translation()
     igniteSound(t.x, t.y, t.z)
   }
@@ -262,7 +262,7 @@ export const createLife = (
       if (amount * hot >= k.explodes.speed) {
         // a blast chains with a beat between links, which is what makes a row
         // of barrels read as a chain rather than as one bang
-        detonate(id, blast ? 0.1 + Math.random() * 0.16 : 0)
+        detonate(id, blast ? 0.1 + sb.random() * 0.16 : 0)
         return
       }
       if (amount >= k.explodes.speed * lights) {
