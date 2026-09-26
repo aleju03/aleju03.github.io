@@ -365,20 +365,51 @@ defineScenario({
   camera: (c) => {
     const W = c.memo.wall
     // along the street, a little back from the throw, the wall on the right
-    const f = at(c, W * 0.18, 13)
-    const t = at(c, W * 0.72, -0.5)
-    return { from: [f.x, c.y + 5.5, f.z], to: [t.x, c.y + 2.6, t.z], fov: 58 }
+    const lane = c.memo.lane ?? 0
+    // along the street from whichever side has no lamp post in the sightline
+    const t = at(c, W * 0.62, lane)
+    let f = at(c, W * 0.2, lane - 14)
+    let fewest = Infinity
+    for (const side of [-1, 1]) {
+      const q = at(c, W * 0.2, lane + side * 14)
+      let n = 0
+      for (let k = 0.05; k < 0.9; k += 0.05) {
+        if (solidNear(q.x + (t.x - q.x) * k, q.z + (t.z - q.z) * k, 1.2)) n++
+      }
+      if (n < fewest) {
+        fewest = n
+        f = q
+      }
+    }
+    return { from: [f.x, c.y + 5.5, f.z], to: [t.x, c.y + 2.2, t.z], fov: 54 }
   },
   setup: (c) => {
     seed = 29
     c.memo.thrown = 0
+    // a lane across the street with no lamp post in it
+    c.memo.lane = 0
+    // (wide: a post a few units off the lane still stands in front of the
+    // impacts from a lens looking along the street)
+    for (const b of [0, 2, -2, 4, -4, 6, -6, 8, -8, 10, -10]) {
+      let open = true
+      for (let a = 1; a < c.memo.wall - 0.5 && open; a += 1) {
+        for (const o of [-6, -4, -2, 0, 2, 4, 6]) {
+          const q = at(c, a, b + o)
+          if (solidNear(q.x, q.z, 0.9)) open = false
+        }
+      }
+      if (open) {
+        c.memo.lane = b
+        break
+      }
+    }
   },
   events: THROWN.map((kind, i): [number, (c: ScenarioCtx) => void] => [0.25 + i * 0.36, (c) => {
     const W = c.memo.wall
-    const b0 = (rnd() - 0.5) * 3
+    const b0 = c.memo.lane + (rnd() - 0.5) * 3
     const s = at(c, 0.5, b0)
     const sy = c.y + 2.2 + rnd() * 1.2
-    const t = at(c, W, b0 * 0.6 + (rnd() - 0.5) * 3)
+    const t = at(c, W, c.memo.lane + (b0 - c.memo.lane) * 0.6 + (rnd() - 0.5) * 3)
     const ty = c.y + 1.8 + rnd() * 3
     const d = Math.hypot(t.x - s.x, t.z - s.z)
     const speed = 38 + rnd() * 10
@@ -420,10 +451,14 @@ defineScenario({
   },
   setup: (c) => {
     seed = 41
+    // three loose layers, dropped from low enough that the bottles and
+    // melons land whole: the point is three hundred props, not the gibs
     for (let i = 0; i < 300; i++) {
       const kind = CROWD_MIX[i % CROWD_MIX.length]
-      const p = at(c, rnd() * 40, (rnd() - 0.5) * 18)
-      c.ids.push(c.sb.spawn(kind, { x: p.x, y: c.y + 3 + (i % 25) * 1.4, z: p.z }, {
+      const layer = Math.floor(i / 100)
+      const k = i % 100
+      const p = at(c, (k % 10) * 4 + (rnd() - 0.5) * 1.2, ((Math.floor(k / 10) - 4.5) * 1.75) + (rnd() - 0.5) * 0.6)
+      c.ids.push(c.sb.spawn(kind, { x: p.x, y: c.sb.restY(kind, p.x, p.z) + 0.3 + layer * 2.6, z: p.z }, {
         quaternion: yawQ(rnd() * 6.28),
         angular: { x: rnd() - 0.5, y: rnd() - 0.5, z: rnd() - 0.5 },
       }))

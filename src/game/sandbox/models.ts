@@ -989,7 +989,11 @@ const tv = () => {
   m.box([0, 0, hz - 0.22], [2 * hx, 2 * hy, 0.44], { pz: dark, all: shell })
   const back = new THREE.BoxGeometry(1, 1, 1)
   const p = back.getAttribute('position')
-  for (let i = 0; i < p.count; i++) if (p.getZ(i) < 0) p.setXYZ(i, p.getX(i) * 0.62, p.getY(i) * 0.66, p.getZ(i))
+  // tapered to the sides and over the top, flat underneath: it sits on
+  // the bottom of its case like a real set, not on its bezel
+  for (let i = 0; i < p.count; i++) {
+    if (p.getZ(i) < 0) p.setXYZ(i, p.getX(i) * 0.62, p.getY(i) > 0 ? p.getY(i) * 0.36 - 0.14 : p.getY(i), p.getZ(i))
+  }
   back.computeVertexNormals()
   m.geo(back, [0, 0.02, -0.22], [2 * hx - 0.1, 2 * hy - 0.12, 1.16], shell)
   back.dispose()
@@ -1002,7 +1006,7 @@ const tv = () => {
   m.cyl([0, hy + 0.05, -0.2], 0.16, 0.1, dark, { seg: 8 })
   for (const s of [-1, 1]) m.cyl([s * 0.36, hy + 0.7, -0.2], 0.02, 1.4, flat('#c9ccd0'), { seg: 4, rot: [0, 0, -s * 0.55] })
   // feet
-  for (const x of [-1, 1]) m.box([x * (hx - 0.2), -hy - 0.03, 0.2], [0.2, 0.06, 0.8], dark)
+  for (const x of [-1, 1]) m.box([x * (hx * 0.62 - 0.12), -hy - 0.03, 0], [0.2, 0.06, 2 * hz - 0.2], dark)
   return m.mesh()
 }
 
@@ -1115,6 +1119,9 @@ const stopsign = () => {
     pts.push([Math.cos(a) * plate, Math.sin(a) * plate])
   }
   m.prism([0, post - 0.3 + 0.1, 0.08], pts, 0.04, { top: { cell: 'stop' }, side: flat('#d0d2d4') })
+  // a portable sign's rubber foot, which is what keeps it standing
+  m.box([0, -post - 0.3 + 0.07, 0], [1.1, 0.14, 1.1], flat(PAL.rubber))
+  m.box([0, -post - 0.3 + 0.19, 0], [0.34, 0.12, 0.34], flat(PAL.rubber))
   return m.mesh()
 }
 
@@ -1372,7 +1379,10 @@ const crateGibs = (h: number): GibSpec[] => {
   const half = (face: 'x' | 'y' | 'z', sign: number, k: number) => {
     const cellName = face === 'y' ? 'crate_top' : face === 'x' ? 'crate_side' : 'crate_mark'
     const sub: [number, number, number, number] = [0, k === 0 ? 0 : 0.5, 1, k === 0 ? 0.5 : 1]
-    const paint = { cell: cellName, sub }
+    // a shade under the whole crate: the inside of a panel is unweathered
+    // but it lies in its own shadow, and a pale plank is a white card at a
+    // distance
+    const paint = { cell: cellName, sub, tint: '#cbb89c' }
     const edge = { cell: 'gib_edge' }
     const mesh = cloneOf(() => {
       const m = model()

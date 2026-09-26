@@ -28,9 +28,10 @@ import type { Sandbox } from './sandbox'
 
   Damage is the same falloff in the currency breakables.ts deals in (a
   change of velocity): crates within about half the radius come apart, and
-  another explosive inside half its radius goes off after a beat, inside the
-  whole of it catches light and goes a couple of seconds later. That is the
-  whole chain reaction, and it needs no special case.
+  another explosive inside about half its radius goes off after a beat (a
+  blast counts double against an explosive, see breakables.ts), and out to
+  two thirds of it catches light and goes a couple of seconds later. That is
+  the whole chain reaction, and it needs no special case.
 
   People are not props (the walker is a kinematic capsule and pedestrians
   are session rigs), so knocking them flat is the subscribers' job: every

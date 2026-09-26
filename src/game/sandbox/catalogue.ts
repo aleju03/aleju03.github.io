@@ -206,7 +206,7 @@ def('pipe', {
   friction: 0.5,
   restitution: 0.15,
   density: 2,
-  angularDamping: 0.2,
+  angularDamping: 0.5,
   surface: 'metal',
 })
 {
@@ -406,9 +406,10 @@ def('door', {
   def('tv', {
     category: 'furniture',
     name: { en: 'Old TV', es: 'Televisor viejo' },
+    // the case is flat underneath (on two runners) and tapers over the top
     shape: hull([
-      [-hx, -hy, hz], [hx, -hy, hz], [-hx, hy, hz], [hx, hy, hz],
-      [-hx * 0.62, -hy * 0.66, -hz], [hx * 0.62, -hy * 0.66, -hz], [-hx * 0.62, hy * 0.66, -hz], [hx * 0.62, hy * 0.66, -hz],
+      [-hx, -hy - 0.06, hz], [hx, -hy - 0.06, hz], [-hx, hy, hz], [hx, hy, hz],
+      [-hx * 0.62, -hy - 0.06, -hz], [hx * 0.62, -hy - 0.06, -hz], [-hx * 0.62, hy * 0.36 - 0.1, -hz], [hx * 0.62, hy * 0.36 - 0.1, -hz],
     ]),
     mass: 25,
     friction: 0.5,
@@ -554,8 +555,10 @@ def('cinder', {
     shape: compound([
       { shape: box(0.06, post, 0.06), at: [0, -0.3, 0] },
       { shape: { type: 'hull', points: oct.flat() }, at: [0, post - 0.2, 0.08] },
+      // the rubber foot is most of its weight: it stands, and it rocks back
+      { shape: box(0.55, 0.07, 0.55), at: [0, -post - 0.3 + 0.07, 0], w: 30 },
     ]),
-    mass: 7,
+    mass: 14,
     friction: 0.5,
     restitution: 0.2,
     density: 3,
@@ -667,7 +670,9 @@ def('vending', {
     name: { en: 'Street lamp', es: 'Farola' },
     shape: compound([
       // the cast base is most of the iron, so it stands until pushed hard
-      { shape: cyl(0.42, 0.36), at: [0, y0 + 0.36, 0], w: 6 },
+      // a square foot, not the drawn octagon: a nine-unit post on a round
+      // rim rocked on the heightfield's facets and pumped itself up
+      { shape: box(0.4, 0.36, 0.4), at: [0, y0 + 0.36, 0], w: 10 },
       { shape: cyl(0.15, 4.5), at: [0, y0 + 5.1, 0] },
       { shape: box(1.1, 0.16, 0.28), at: [1.1, y0 + 9.45, 0] },
     ]),
@@ -675,6 +680,8 @@ def('vending', {
     friction: 0.6,
     restitution: 0.05,
     density: 3,
+    // a tall thing on a small foot rocks for ever without this
+    angularDamping: 0.5,
     surface: 'metal',
   })
 }

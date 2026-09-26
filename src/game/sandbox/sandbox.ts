@@ -17,6 +17,11 @@ import { createBatcher, warmBatch, type Batcher } from './batch'
 import { createFx, type Fx } from './fx'
 import { createLife, type BreakEvent, type PropLife } from './breakables'
 import { createExplosions, type ExplosionEvent, type Explosions } from './explosion'
+// the scene reaches these through its dynamic import of this module, so
+// knocking the walker and the town flat costs the room boot nothing
+export { blastImpact, blastWatch } from './explosion'
+export { CATALOGUE, CATEGORIES, catalogueEntry, inCategory, type CatalogueEntry, type Category } from './catalogue'
+export { renderThumbnails } from './thumbnails'
 import { setEar, setEarFallback } from './impactSounds'
 
 /*
