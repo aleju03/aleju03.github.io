@@ -508,7 +508,14 @@ const weighBody = (
   leaks across the gap between two legs or an arm and the flank.
 */
 const SMOOTH_ROUNDS = 10
-const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number) => {
+/**
+ * Smooth `full` (V rows of BONE_COUNT weights) over the triangle mesh, but
+ * only in the band that starts at the vertices `seed` picks and grows by a
+ * ring each round. Everywhere else the weights are already smooth functions
+ * of position (the bean's height bands, an elbow's ramp), and sweeping the
+ * whole skin was most of what a variant cost to build.
+ */
+const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number, seed: (v: number) => boolean) => {
   // neighbour lists, compressed
   const deg = new Uint32Array(V + 1)
   for (let t = 0; t < idx.length; t++) deg[idx[t] + 1] += 2
@@ -522,27 +529,62 @@ const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number) => {
       nb[fill[a]++] = idx[t + ((e + 2) % 3)]
     }
   }
-  let src: Float32Array = full
-  let dst: Float32Array = new Float32Array(full.length)
+  const inBand = new Uint8Array(V)
+  let band: number[] = []
+  for (let v = 0; v < V; v++) {
+    if (seed(v)) {
+      inBand[v] = 1
+      band.push(v)
+    }
+  }
+  const nx = new Float32Array(V * BONE_COUNT)
+  // which bones each vertex carries, as bits: a vertex only ever mixes the
+  // few bones around it, and looping all of them was most of the cost
+  const mask = new Uint32Array(V)
+  for (let v = 0; v < V; v++) {
+    let m = 0
+    for (let b = 0; b < BONE_COUNT; b++) if (full[v * BONE_COUNT + b] > 0) m |= 1 << b
+    mask[v] = m
+  }
+  const mix = new Uint32Array(V)
   for (let r = 0; r < SMOOTH_ROUNDS; r++) {
-    for (let v = 0; v < V; v++) {
-      const n = deg[v + 1] - deg[v]
-      const o = v * BONE_COUNT
-      if (!n) {
-        for (let b = 0; b < BONE_COUNT; b++) dst[o + b] = src[o + b]
-        continue
-      }
-      for (let b = 0; b < BONE_COUNT; b++) {
-        let m = 0
-        for (let k = deg[v]; k < deg[v + 1]; k++) m += src[nb[k] * BONE_COUNT + b]
-        dst[o + b] = 0.5 * src[o + b] + (0.5 * m) / n
+    // grow first, so this round already reaches one ring further
+    const n0 = band.length
+    for (let i = 0; i < n0; i++) {
+      const v = band[i]
+      for (let k = deg[v]; k < deg[v + 1]; k++) {
+        const u = nb[k]
+        if (!inBand[u]) {
+          inBand[u] = 1
+          band.push(u)
+        }
       }
     }
-    const t = src
-    src = dst
-    dst = t
+    for (const v of band) {
+      const n = deg[v + 1] - deg[v]
+      const o = v * BONE_COUNT
+      let bits = mask[v]
+      for (let k = deg[v]; k < deg[v + 1]; k++) bits |= mask[nb[k]]
+      mix[v] = bits
+      for (let b = 0; bits; b++, bits >>>= 1) {
+        if (!(bits & 1)) continue
+        if (!n) {
+          nx[o + b] = full[o + b]
+          continue
+        }
+        let m = 0
+        for (let k = deg[v]; k < deg[v + 1]; k++) m += full[nb[k] * BONE_COUNT + b]
+        nx[o + b] = 0.5 * full[o + b] + (0.5 * m) / n
+      }
+    }
+    for (const v of band) {
+      const o = v * BONE_COUNT
+      let bits = mix[v]
+      for (let b = 0; bits; b++, bits >>>= 1) if (bits & 1) full[o + b] = nx[o + b]
+      mask[v] = mix[v]
+    }
   }
-  if (src !== full) full.set(src)
+  band = []
 }
 
 /** the four heaviest bones in `acc`, normalized */
@@ -584,7 +626,7 @@ interface Piece {
 
 /** the grid step of the body and of the (smaller, thinner) headgear */
 const BODY_STEP = 0.047
-const GEAR_STEP = 0.03
+const GEAR_STEP = 0.033
 
 const BODY_SURF: Array<Piece | null> = new Array(BUILD_COUNT).fill(null)
 const bodySurface = (b: number): Piece => {
@@ -603,7 +645,8 @@ const bodySurface = (b: number): Piece => {
   for (let v = 0; v < V; v++) {
     weighBody(fr, m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2], full, v * BONE_COUNT, part, v * 2)
   }
-  smoothWeights(full, m.idx, V)
+  // the band: wherever the skin is shared between the bean and a limb
+  smoothWeights(full, m.idx, V, (v) => part[v * 2] > 0.002 && part[v * 2] < 0.998)
   for (let v = 0; v < V; v++) {
     acc.set(full.subarray(v * BONE_COUNT, v * BONE_COUNT + BONE_COUNT))
     pick4(si, sw, v * 4)
@@ -618,54 +661,63 @@ const bodySurface = (b: number): Piece => {
 const gearPiece = (
   fr: Frame, f: Field, lo: [number, number, number], hi: [number, number, number], role: number,
   tails?: THREE.Vector3,
+  step = GEAR_STEP,
 ): Piece => {
-  const m = surfaceNets(f, lo, hi, GEAR_STEP)
+  // a generous Lipschitz allowance: flattened ellipsoids and a drooped brim
+  // overstate their distances, and a block wrongly skipped as far is a
+  // hole in a brim
+  const m = surfaceNets(f, lo, hi, step, 2.5)
   const V = m.pos.length / 3
   const si = new Uint16Array(V * 4)
   const sw = new Float32Array(V * 4)
   const part = new Float32Array(V * 2)
   const body = bodySurface(fr.index)
   const near = nearestOn(body)
-  const full = new Float32Array(V * BONE_COUNT)
+  const ni = new Int32Array(KN)
+  const nd = new Float64Array(KN)
   for (let v = 0; v < V; v++) {
     const x = m.pos[v * 3]
     const y = m.pos[v * 3 + 1]
     const z = m.pos[v * 3 + 2]
     acc.fill(0)
     // headgear moves with the skin it sits on: the weights of the nearest
-    // point of the (smoothed) bean, or the bean's own chain for anything
-    // standing well clear of it, like the tip of a party hat. Weighted on
-    // its own, a hood disagreed with the neck under it and folded
-    const at = near(x, y, z)
-    if (at >= 0) for (let k = 0; k < 4; k++) acc[body.si[at * 4 + k]] += body.sw[at * 4 + k]
-    else beanChain(fr, x, y, z, acc, 1)
+    // points of the bean, blended by inverse distance so they ramp the way
+    // the skin under them does, or the bean's own chain for anything well
+    // clear of it, like the tip of a party hat. Weighted on its own, a hood
+    // disagreed with the neck under it and folded
+    const n = near(x, y, z, ni, nd)
+    if (n) {
+      let tw = 0
+      for (let q = 0; q < n; q++) {
+        const wq = 1 / (nd[q] + 1e-4)
+        tw += wq
+        for (let k = 0; k < 4; k++) acc[body.si[ni[q] * 4 + k]] += body.sw[ni[q] * 4 + k] * wq
+      }
+      for (let b = 0; b < BONE_COUNT; b++) acc[b] /= tw
+    } else beanChain(fr, x, y, z, acc, 1)
     if (tails) {
       // a tail hangs off the knot: the further down it, the more it swings
       const k = smooth(0.04, 0.16, len(x - tails.x, y - tails.y, z - tails.z))
       for (let b = 0; b < BONE_COUNT; b++) acc[b] *= 1 - k
       acc[B.POM] += k
     }
-    full.set(acc, v * BONE_COUNT)
-  }
-  // nearest-vertex weights are piecewise constant; smoothed over the
-  // piece's own surface they ramp the way the skin under them does
-  smoothWeights(full, m.idx, V)
-  for (let v = 0; v < V; v++) {
-    acc.set(full.subarray(v * BONE_COUNT, v * BONE_COUNT + BONE_COUNT))
     pick4(si, sw, v * 4)
   }
   return { pos: m.pos, nrm: m.nrm, si, sw, part, role, idx: m.idx }
 }
 
-/** a lookup of the bean vertex nearest a point (within NEAR_R, else -1),
-    through a hash of cells: headgear has a few thousand vertices and the
-    body five, so a brute-force search would cost more than the surface */
+/** a lookup of the (up to) four bean vertices nearest a point, within
+    NEAR_R, through a hash of cells: headgear has a few thousand vertices
+    and the body five, so a brute-force search would cost more than the
+    surface. Fills `idx`/`d2` and returns how many it found */
 const NEAR_R = 0.3
-const NEAR = new WeakMap<Piece, (x: number, y: number, z: number) => number>()
-const nearestOn = (p: Piece) => {
+const KN = 4
+type Near = (x: number, y: number, z: number, idx: Int32Array, d2: Float64Array) => number
+const NEAR = new WeakMap<Piece, Near>()
+const nearestOn = (p: Piece): Near => {
   const hit = NEAR.get(p)
   if (hit) return hit
-  const C = 0.1
+  const C = 0.15
   const cells = new Map<number, number[]>()
   const key = (i: number, j: number, k: number) => ((i + 512) * 1024 + (j + 512)) * 1024 + (k + 512)
   const V = p.pos.length / 3
@@ -679,15 +731,15 @@ const nearestOn = (p: Piece) => {
     list.push(v)
   }
   const R = Math.ceil(NEAR_R / C)
-  const fn = (x: number, y: number, z: number) => {
+  const fn: Near = (x, y, z, idx, d2) => {
     const ci = Math.floor(x / C)
     const cj = Math.floor(y / C)
     const ck = Math.floor(z / C)
-    let best = -1
-    let bd = NEAR_R * NEAR_R
-    // rings outward, stopping once a ring cannot beat what was found
+    let n = 0
+    const worst = () => (n < KN ? NEAR_R * NEAR_R : d2[n - 1])
+    // rings outward, stopping once a ring cannot beat the worst kept
     for (let r = 0; r <= R; r++) {
-      if (best >= 0 && ((r - 1) * C) ** 2 > bd) break
+      if (n === KN && ((r - 1) * C) ** 2 > worst()) break
       for (let i = ci - r; i <= ci + r; i++)
         for (let j = cj - r; j <= cj + r; j++)
           for (let k = ck - r; k <= ck + r; k++) {
@@ -696,14 +748,21 @@ const nearestOn = (p: Piece) => {
             if (!list) continue
             for (const v of list) {
               const d = (p.pos[v * 3] - x) ** 2 + (p.pos[v * 3 + 1] - y) ** 2 + (p.pos[v * 3 + 2] - z) ** 2
-              if (d < bd) {
-                bd = d
-                best = v
+              if (d >= worst()) continue
+              // insertion into the sorted short list
+              let at = Math.min(n, KN - 1)
+              while (at > 0 && d2[at - 1] > d) {
+                d2[at] = d2[at - 1]
+                idx[at] = idx[at - 1]
+                at--
               }
+              d2[at] = d
+              idx[at] = v
+              if (n < KN) n++
             }
           }
     }
-    return best
+    return n
   }
   NEAR.set(p, fn)
   return fn
@@ -777,35 +836,38 @@ const hatPieces = (fr: Frame, kind: number): Piece[] => {
       const shell: Field = (x, y, z) => smax(dome(x, y, z), yc - y, 0.02)
       const fz = fr.rx(yc) * zs
       const tilt = 0.22
-      const brim = ellipsoid(0, yc + 0.015, fz + 0.12, 0.25, 0.028, 0.19,
+      const brim = ellipsoid(0, yc + 0.015, fz + 0.12, 0.25, 0.036, 0.2,
         [1, 0, 0, 0, Math.cos(tilt), -Math.sin(tilt), 0, Math.sin(tilt), Math.cos(tilt)])
       const button = ellipsoid(0, crown + 0.04, 0, 0.055, 0.035, 0.055)
       const [lo, hi] = box(0.1, yc - 0.05, crown + 0.12)
       return [
         gearPiece(fr, (x, y, z) => Math.min(shell(x, y, z), button(x, y, z)), lo, hi, A),
-        gearPiece(fr, brim, [-0.3, yc - 0.1, fz - 0.1], [0.3, yc + 0.12, fz + 0.36], T),
+        gearPiece(fr, brim, [-0.3, yc - 0.12, fz - 0.12], [0.3, yc + 0.14, fz + 0.38], T, undefined, 0.02),
       ]
     }
     case BUCKET: {
       // a bucket hat: a soft crown and a floppy brim tipped down all round,
       // a band where they meet
-      const yc = EYE_Y + 0.16
+      const yc = EYE_Y + 0.22
       const r0 = fr.rx(yc) + 0.05
       const izs = 1 / zs
       const body = roundCone(0, yc, 0, 0, crown - 0.08, 0, r0, r0 * 0.72)
       const top: Field = (x, y, z) => smax(body(x, y, z * izs), yc - y, 0.02)
-      const Rb = r0 + 0.22
+      const Rb = r0 + 0.18
       const brim: Field = (x, y, z) => {
         const rho = len(x, z * izs)
-        const yy = y - yc + 0.1 * Math.max(0, (rho - r0) / (Rb - r0)) ** 2 * 1.2
+        const yy = y - yc + 0.08 * Math.max(0, (rho - r0) / (Rb - r0)) ** 2
         const dx = rho - Rb
-        const dy = Math.abs(yy) - 0.015
-        return Math.min(Math.max(dx, dy), 0) + len(Math.max(dx, 0), Math.max(dy, 0)) - 0.02
+        const dy = Math.abs(yy) - 0.02
+        return (Math.min(Math.max(dx, dy), 0) + len(Math.max(dx, 0), Math.max(dy, 0)) - 0.025) * zs
       }
       const band = bandField(fr, yc + 0.06, 0, 0, 0.06, 0.035, 0.045)
-      const [lo, hi] = box(0.32, yc - 0.2, crown + 0.08)
+      const [lo, hi] = box(0.36, yc - 0.2, crown + 0.08)
       return [
-        gearPiece(fr, (x, y, z) => smin(top(x, y, z), brim(x, y, z), 0.04), lo, hi, A),
+        // the crown on the ordinary grid and only the thin brim on the fine
+        // one: the two overlap where they meet, which nobody can see
+        gearPiece(fr, top, [lo[0] + 0.2, lo[1] + 0.12, lo[2] + 0.2], [hi[0] - 0.2, hi[1], hi[2] - 0.2], A),
+        gearPiece(fr, brim, lo, [hi[0], yc + 0.08, hi[2]], A),
         gearPiece(fr, band, lo, [hi[0], yc + 0.2, hi[2]], T),
       ]
     }
@@ -824,17 +886,19 @@ const hatPieces = (fr: Frame, kind: number): Piece[] => {
           const pz = z - base.z
           const a = px * ax.x + py * ax.y + pz * ax.z
           const rho = len(px - ax.x * a, py - ax.y * a, pz - ax.z * a)
-          return len(rho - rAt, a - t * Hh) - 0.03
+          return len(rho - rAt, a - t * Hh) - 0.038
         }
       }
       const r1 = ring(0.2)
       const r2 = ring(0.52)
       const pom = ellipsoid(tip.x, tip.y + 0.03, tip.z, 0.09, 0.09, 0.09)
-      const lo: [number, number, number] = [-0.4, crown - 0.25, -0.4]
+      // the base's round end dips well into the crown: a box that clipped
+      // it cut the cone open underneath
+      const lo: [number, number, number] = [-0.4, crown - 0.45, -0.4]
       const hi: [number, number, number] = [0.5, crown + 0.7, 0.4]
       return [
         gearPiece(fr, cone, lo, hi, A),
-        gearPiece(fr, (x, y, z) => Math.min(r1(x, y, z), r2(x, y, z), pom(x, y, z)), lo, hi, T),
+        gearPiece(fr, (x, y, z) => Math.min(r1(x, y, z), r2(x, y, z), pom(x, y, z)), lo, hi, T, undefined, 0.022),
       ]
     }
     case HARDHAT: {
@@ -966,7 +1030,42 @@ export const bodyGeometry = (
   g.userData.shared = true
   SHARED[key] = g
   lastBuildMs = (typeof performance !== 'undefined' ? performance.now() : 0) - t0
+  warmLater()
   return g
+}
+
+/*
+  A variant costs a couple of dozen milliseconds to build, which is a
+  dropped frame if it is built the moment a stranger in a new hat walks
+  into view. So once the first body exists, the rest are built in the
+  background, one per idle period long enough to hold one (the browser's
+  own requestIdleCallback, never forced by a timeout): the dearest part,
+  each build's bean, first, then every headgear on every build. On the
+  desk, where the 3D layer draws nothing, that is all of them within a
+  second or two of boot; in a busy walk it may be none, and a variant is
+  then built when it is first worn, as before. Headless (no
+  requestIdleCallback) nothing is scheduled.
+*/
+type Idle = (cb: (d: { timeRemaining: () => number }) => void) => number
+let warming = false
+const warmLater = () => {
+  const ric = (globalThis as { requestIdleCallback?: Idle }).requestIdleCallback
+  if (warming || !ric) return
+  warming = true
+  const next = (): (() => void) | null => {
+    for (let b = 0; b < BUILD_COUNT; b++) if (!BODY_SURF[b]) return () => bodySurface(b)
+    for (let k = 0; k < SHARED.length; k++) {
+      if (!SHARED[k]) return () => bodyGeometry(Math.floor(k / BUILD_COUNT), k % BUILD_COUNT)
+    }
+    return null
+  }
+  const step = (d: { timeRemaining: () => number }) => {
+    const job = next()
+    if (!job) return
+    if (d.timeRemaining() >= 14) job()
+    ric(step)
+  }
+  ric(step)
 }
 
 /** the body's own field for a build: negative inside the skin. What the

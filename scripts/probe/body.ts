@@ -492,6 +492,29 @@ const seats = (spec: BodySpec, snap: Snap) => {
   })
 }
 
+/** every headgear, one each, close, on a spread of builds, outfits and
+    colours: the wardrobe in one sheet */
+const WARDROBE: PlayerLook[] = [0, 1, 2, 3, 4, 5, 6, 7].map((hat) => ({
+  shell: ['#2f6fcf', '#d2452f', '#3f9a38', '#e0a21a', '#8a4fc8', '#d9508f', '#1f9a8a', '#e8e2d2'][hat],
+  trim: ['#f2eee0', '#f2eee0', '#e0a218', '#2f6fcc', '#1c1c20', '#3f9a38', '#d2452c', '#8a4fc8'][hat],
+  accent: ['#c84028', '#1c1c20', '#f0e8e0', '#e86810', '#e8b818', '#2860c8', '#c84028', '#e86810'][hat],
+  glow: ['#1c1a20', '#1c1a20', '#2b3a50', '#1c1a20', '#4a2e20', '#1c1a20', '#f4f1e0', '#1c1a20'][hat],
+  hat,
+  costume: [0, 2, 1, 0, 3, 0, 1, 2][hat],
+  build: [0, 1, 2, 3, 4, 0, 1, 2][hat],
+}))
+const wardrobe = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  for (const look of WARDROBE) {
+    const a = actor(st, look, st.x, st.z, 0)
+    for (let f = 0; f < 200; f++) tick(a, st.env)
+    snap(`hat ${look.hat} build ${look.build} outfit ${look.costume}`,
+      camAt(tw, th, new THREE.Vector3(st.x, st.gy + 2.9, st.z), Math.PI - 0.55, 10, 1.4, 34))
+    st.scene.remove(a.rig.group)
+  }
+}
+
 /*
   Where the skin folds: a posed body with every triangle that faces against
   its own skinned vertex normals painted red over it (the same test
@@ -592,6 +615,7 @@ export const shootBody = (spec: BodySpec) => {
     if (a === 'fp') return n + 4
     if (a === 'seat') return n + 9
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
+    if (a === 'wardrobe') return n + WARDROBE.length
     return n
   }, 0)
   const motionOnly = spec.targets.every((t) => t.arg === 'motion' || t.arg?.startsWith('strip'))
@@ -671,6 +695,7 @@ export const shootBody = (spec: BodySpec) => {
     else if (a.startsWith('strip:')) run((sp, s) => strip(sp, a.slice(6), s))
     else if (a === 'fp') run(firstPerson)
     else if (a === 'seat') run(seats)
+    else if (a === 'wardrobe') run(wardrobe)
     else if (a.startsWith('folds')) run((sp, sn) => folds(sp, sn, Number(a.split(':')[1] ?? 0)))
     else throw new Error(`unknown body target "${a}"`)
   }

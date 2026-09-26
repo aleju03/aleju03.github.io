@@ -77,6 +77,7 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
     uFace: { value: 0 },
     uLid: { value: 1 },
     uCostume: { value: look.costume ?? 0 },
+    uHat: { value: look.hat ?? 0 },
   }
   // soft vinyl: a broad sheen, a touch glossier than dough, the way the
   // beans this is drawn after read under a sun
@@ -113,6 +114,7 @@ uniform float uGummy;
 uniform float uFace;
 uniform float uLid;
 uniform float uCostume;
+uniform float uHat;
 varying float vRole;
 varying vec2 vPart;
 varying vec3 vBind;
@@ -199,6 +201,13 @@ if (role == 1) {
   if (int(uFace + 0.5) == 3) eyeD = min(eyeD, length(vec2(fq.x, fq.y + 0.125)) - 0.028);
   bodyCol = mix(bodyCol, uPal[4], aaStep(eyeD) * facePanel);
 }
+// the bandana is printed: dots of the detail colour on the cloth, which is
+// what tells it from a beanie across a street
+if (role == 3 && int(uHat + 0.5) == 5) {
+  vec3 p = vBind / 0.13;
+  float d = length(fract(p) - 0.5) - 0.28;
+  bodyCol = mix(bodyCol, uPal[2], aaStep(d * 0.13));
+}
 diffuseColor.rgb = bodyCol;`,
       )
       .replace(
@@ -226,6 +235,7 @@ totalEmissiveRadiance += diffuseColor.rgb * uGummy * (0.55 + 0.45 * (1.0 - rim))
       pal[4].set(next.glow)
       faceFor(next.glow, pal[0])
       uniforms.uCostume.value = next.costume ?? 0
+      uniforms.uHat.value = next.hat ?? 0
     },
     setFace: (face) => {
       uniforms.uFace.value = face
