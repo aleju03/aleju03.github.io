@@ -103,6 +103,11 @@ export interface SpawnOpts {
       crate was, pressed against whatever stood on it and beside it, and
       colliding at once they shoved a whole column of crates upward */
   phase?: number
+  /** a uniform size for this one prop: its shape, its ballast and its mesh
+      (its mass goes with the cube unless `mass` says otherwise). Things
+      that are the same thing are never quite the same size, and a stack of
+      identical crates falls as one welded wall */
+  scale?: number
 }
 
 export type PropMode = 'dynamic' | 'frozen' | 'kinematic'
@@ -215,6 +220,30 @@ const MAX_RESCUES = 3
 const ZERO = { x: 0, y: 0, z: 0 }
 const hashBuf = new Float64Array(14)
 const hashBytes = new Uint8Array(hashBuf.buffer)
+
+/** a shape grown or shrunk about its origin */
+export const scaleShape = (s: ShapeSpec, k: number): ShapeSpec => {
+  switch (s.type) {
+    case 'box':
+      return { type: 'box', hx: s.hx * k, hy: s.hy * k, hz: s.hz * k }
+    case 'ball':
+      return { type: 'ball', r: s.r * k }
+    case 'cylinder':
+    case 'cone':
+      return { type: s.type, r: s.r * k, hh: s.hh * k }
+    case 'hull':
+      return { type: 'hull', points: s.points.map((v) => v * k) }
+    case 'compound':
+      return {
+        type: 'compound',
+        parts: s.parts.map((p) => ({
+          ...p,
+          shape: scaleShape(p.shape, k) as typeof p.shape,
+          at: p.at ? [p.at[0] * k, p.at[1] * k, p.at[2] * k] : undefined,
+        })),
+      }
+  }
+}
 
 const volumeOf = (s: Exclude<ShapeSpec, { type: 'compound' }>) => {
   switch (s.type) {
@@ -454,8 +483,9 @@ export const createProps = (o: PropsOpts): Props => {
     const id = opts.id ?? nextId++
     if (id >= nextId) nextId = id + 1
     if (recs.has(id)) remove(id)
-    const shape = opts.shape ?? kind.shape
-    const mass = opts.mass ?? kind.mass
+    const k = opts.scale && opts.scale > 0 ? opts.scale : 1
+    const shape = opts.shape ?? (k === 1 ? kind.shape : scaleShape(kind.shape, k))
+    const mass = opts.mass ?? kind.mass * k * k * k
     const q = opts.quaternion ??
       (opts.yaw !== undefined
         ? { x: 0, y: Math.sin(opts.yaw / 2), z: 0, w: Math.cos(opts.yaw / 2) }
@@ -483,7 +513,9 @@ export const createProps = (o: PropsOpts): Props => {
     }
     if (ballast && carried > 0) {
       // a point load: Rapier folds it in with the parallel-axis theorem
-      const [bx, by, bz] = ballast.at
+      const bx = ballast.at[0] * k
+      const by = ballast.at[1] * k
+      const bz = ballast.at[2] * k
       body.setAdditionalMassProperties(
         carried, { x: bx, y: by, z: bz }, { x: 1e-4, y: 1e-4, z: 1e-4 }, { x: 0, y: 0, z: 0, w: 1 }, false,
       )
@@ -494,6 +526,7 @@ export const createProps = (o: PropsOpts): Props => {
       mesh.userData.propId = id
       mesh.position.set(at.x, at.y, at.z)
       mesh.quaternion.set(q.x, q.y, q.z, q.w)
+      if (k !== 1 && !opts.shape) mesh.scale.multiplyScalar(k)
       root.add(mesh)
     }
     const extents = shapeExtents(shape)

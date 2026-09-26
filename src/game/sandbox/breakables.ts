@@ -91,10 +91,12 @@ const BLAST_FUSE_JITTER = 1.1
 const BLAST_DELAY = 0.32
 const BLAST_DELAY_JITTER = 0.34
 /** how much health a blast takes off a breakable per multiple of its
-    `breaks.speed`: a crate at the heart of a power-1 blast is left with
-    half, which a landing from the top of its throw (about 23 u/s) does not
-    quite finish */
-const BLAST_WEAR = 0.22
+    `breaks.speed`: a crate near a power-1 blast is left with about a third,
+    which a hard landing from the top of its throw finishes */
+const BLAST_WEAR = 0.3
+/** a wooden breakable this close to a blast (its blow over this many times
+    `breaks.speed`) is smashed outright rather than thrown */
+const BLAST_SHATTER = 2.1
 /** and what each blast after the worst one takes */
 const BLAST_STACK = 0.08
 
@@ -330,7 +332,9 @@ export const createLife = (
     if (!k.breaks) return
     if (blast) {
       const r = amount / k.breaks.speed
-      if (r >= 4) {
+      // glass and melons go at four times their threshold; a crate right up
+      // against the barrel (a blow over BLAST_SHATTER of its) goes too
+      if (r >= 4 || (r >= BLAST_SHATTER && k.surface === 'wood')) {
         shatter(id, from)
         return
       }

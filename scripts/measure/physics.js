@@ -469,11 +469,11 @@ if (want('sites')) {
 
 /* --------------------------------------------------------------- fall -- */
 if (want('fall')) {
-  // sandbox:stack, watched for how it comes down: when the first crate of
-  // the base breaks, and for each column's top crate how long after that it
-  // starts to descend, how far it first rose above where it stood (round
-  // three's gibs, born inside the column, shoved it up for 0.4 s), and how
-  // many of the fifteen are still standing in their row at the end
+  // sandbox:stack, watched for how it comes down: how soon the seams
+  // between its crates open once the ram strikes (round four's stood as one
+  // welded wall for half a second), how long each column's top crate takes
+  // to start down and how far it first rose, and how many of the fifteen
+  // are still standing in their row at the end
   const s = SCENARIOS.find((o) => o.id === 'sandbox:stack')
   const { sb } = newSandbox(true, false)
   await sb.whenReady
@@ -482,23 +482,47 @@ if (want('fall')) {
   const y0 = ids.map((id) => sb.get(id).body.translation().y)
   const x0 = ids.map((id) => sb.get(id).body.translation().x)
   const z0 = ids.map((id) => sb.get(id).body.translation().z)
-  let baseAt = null
   const rise = [0, 0, 0]
   const fellAt = [null, null, null]
+  // the seams of the twelve crates above the base: every neighbouring pair,
+  // side by side in a row or one on another in a column, and when (after
+  // the ram struck) each first opened by half a unit. A wall that stays
+  // welded opens none of them until it hits the ground
+  const pairs = []
+  for (let i = 3; i < 15; i++) {
+    if (i % 3 !== 2) pairs.push([i, i + 1])
+    if (i + 3 < 15) pairs.push([i, i + 3])
+  }
+  const dist = (a, b) => {
+    const p = sb.get(ids[a])
+    const q = sb.get(ids[b])
+    if (!p || !q) return null
+    const u = p.body.translation()
+    const v = q.body.translation()
+    return Math.hypot(u.x - v.x, u.y - v.y, u.z - v.z)
+  }
+  const d0 = pairs.map(([a, b]) => dist(a, b))
+  const openAt = pairs.map(() => null)
+  // the moment the ram first shoves any crate a quarter unit sideways
+  let hitAt = null
   advanceScenario(s, c, s.duration, (t) => {
-    // the base is gone when a bottom crate breaks or is knocked a unit out
-    if (baseAt === null && ids.slice(0, 3).some((id, i) => {
+    if (hitAt === null && ids.some((id, i) => {
       const p = sb.get(id)
       if (!p) return true
       const q = p.body.translation()
-      return Math.hypot(q.x - x0[i], q.z - z0[i]) > 1
-    })) baseAt = t
+      return Math.hypot(q.x - x0[i], q.z - z0[i]) > 0.25
+    })) hitAt = t
+    if (hitAt !== null) pairs.forEach(([a, b], k) => {
+      if (openAt[k] !== null) return
+      const d = dist(a, b)
+      if (d === null || d > d0[k] + 0.5) openAt[k] = t - hitAt
+    })
     for (let k = 0; k < 3; k++) {
       const p = sb.get(ids[12 + k])
       if (!p) continue
       const y = p.body.translation().y
       rise[k] = Math.max(rise[k], y - y0[12 + k])
-      if (baseAt !== null && fellAt[k] === null && y < y0[12 + k] - 0.05) fellAt[k] = t
+      if (hitAt !== null && fellAt[k] === null && y < y0[12 + k] - 0.05) fellAt[k] = t
     }
   })
   let standing = 0
@@ -510,12 +534,18 @@ if (want('fall')) {
     const p = sb.get(id)
     return !p || p.body.translation().y < y0[12 + k] - 4.7
   }).length
-  const delays = fellAt.map((t) => (t === null || baseAt === null ? 'never' : `${f(Math.max(0, t - baseAt), 2)} s`))
-  const worst = Math.max(...fellAt.map((t) => (t === null || baseAt === null ? 99 : t - baseAt)))
-  console.log(`fall     stack: base broke at ${baseAt === null ? 'never' : f(baseAt, 2) + ' s'}, top crates began to fall ` +
+  const opened = openAt.filter((t) => t !== null).sort((x, y) => x - y)
+  const within = (k) => opened.filter((t) => t <= k).length
+  console.log(`fall     seams: ${pairs.length} between the twelve above the base; first opened ` +
+    `${opened.length ? f(opened[0], 2) + ' s' : 'never'} after the ram struck, half of them by ` +
+    `${opened.length >= pairs.length / 2 ? f(opened[Math.floor(pairs.length / 2) - 1], 2) + ' s' : 'never'}; ` +
+    `open by 0.5 / 1.0 / 2.0 s: ${within(0.5)} / ${within(1)} / ${within(2)}` +
+    (within(0.5) >= 4 ? ' (comes apart)' : ' <-- WELDED'))
+  const delays = fellAt.map((t) => (t === null || hitAt === null ? 'never' : `${f(Math.max(0, t - hitAt), 2)} s`))
+  console.log(`fall     stack: struck at ${hitAt === null ? 'never' : f(hitAt, 2) + ' s'}, top crates began to fall ` +
     `${delays.join(' / ')} after, rose at most ${rise.map((r) => f(r, 2)).join(' / ')} first, ` +
     `${standing}/15 still standing where they were and ${low}/3 top crates down two rows or more at ${s.duration} s ` +
-    (worst <= 0.1 && low === 3 ? '(comes down)' : worst > 0.1 ? '<-- HANGS' : '<-- TIMID'))
+    (low === 3 && standing <= 3 ? '(comes down)' : '<-- TIMID'))
   sb.dispose()
   // and the case round three hung on: the base *shattered* under the tower
   // (every bottom crate broken at once, its gibs born where it stood), with
@@ -558,12 +588,14 @@ if (want('fall')) {
 
 /* --------------------------------------------------------------- rest -- */
 if (want('rest')) {
-  // the pile, run long: when does the last prop fall asleep? Round two's
+  // the pile, run long, on its own street and staged as the film stages it
+  // (no walker in the world: the walker's capsule is one more body, and the
+  // two runs came apart): when does the last prop fall asleep? Round two's
   // film had a barrel still spinning in place at 20 s with 7/40 awake.
   // Listed per kind (the last of each to sleep), and anything still awake at
   // the end with its speed and spin
   const s = SCENARIOS.find((o) => o.id === 'sandbox:pile')
-  const { sb } = newSandbox()
+  const { sb } = newSandbox(true, false)
   await sb.whenReady
   const c = stageScenario(s, sb)
   const lastOf = {}
@@ -604,6 +636,45 @@ if (want('rest')) {
 }
 
 /* -------------------------------------------------------- determinism -- */
+/*
+  A scenario staged exactly as `npm run film` stages it: the two rings of
+  chunks round its site built and nothing else (so a prop that flies past
+  them finds no solids, in both), the world's ruins armed over them and
+  destruction attached (without it the demolitions knock nothing down and
+  there is nothing to hash), no walker. Fresh chunks each time, because a
+  demolition takes the chunk it stands in apart.
+*/
+const stageAsFilmed = async (s) => {
+  const site = s.site()
+  const chunks = new Map()
+  const boxes = []
+  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+    const ch = buildChunk(chunkX(site.x) + dx, chunkZ(site.z) + dz, 'full', MATS)
+    chunks.set(ch.cx + ',' + ch.cz, ch)
+    for (const b of ch.boxes) boxes.push(b)
+  }
+  const collision = makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, [])
+  windUniforms.uTime.value = 0
+  const sb = createSandbox({
+    collision, waterY: () => SEA_Y, waveAt: waveHeightAt, walker: false,
+    chunkSolids: (cx, cz) => chunks.get(cx + ',' + cz)?.boxes ?? null,
+  })
+  sb.onAfterSlice((h) => tickWind(h))
+  await sb.whenReady
+  const debris = buildDebris({ parent: new THREE.Group(), obstacles: boxes, groundAt: terrainY, trackDisposable: () => {} })
+  for (const ch of chunks.values()) debris.arm(ch.smash)
+  debris.ruins.onSolids = () => sb.solidsChanged()
+  attachDestruction(sb, debris.ruins)
+  const c = stageScenario(s, sb)
+  // the film's first frame, which builds the ground under the site
+  sb.tick({ dt: 0, active: true, focus: { x: c.x, y: c.y, z: c.z } })
+  const dispose = () => {
+    sb.dispose()
+    for (const ch of chunks.values()) for (const g of ch.geos) g.dispose()
+  }
+  return { sb, c, dispose }
+}
+
 if (want('determinism')) {
   // every scenario, staged twice in this process on fresh sandboxes, must
   // end with the same state to the bit (sb.stateHash: every prop's pose and
@@ -615,10 +686,9 @@ if (want('determinism')) {
   // must still end identically
   for (const s of SCENARIOS) {
     const hashes = []
+    const counts = []
     for (let run = 0; run < 3; run++) {
-      const { sb } = newSandbox(true, false)
-      await sb.whenReady
-      const c = stageScenario(s, sb)
+      const { sb, c, dispose } = await stageAsFilmed(s)
       if (run < 2) advanceScenario(s, c, s.duration)
       else {
         const focus = { x: c.x, y: c.y, z: c.z }
@@ -660,11 +730,19 @@ if (want('determinism')) {
         }
       }
       hashes.push(sb.stateHash())
-      sb.dispose()
+      if (run === 0) counts.push(sb.count)
+      dispose()
     }
     const same = hashes[0] === hashes[1]
     const uneven = hashes[2] === hashes[0]
-    console.log(`determ   ${pad(s.id, 16)} ${hashes[0]}  rerun ${same ? 'identical' : '<-- DIVERGED ' + hashes[1]}, ` +
+    // a scenario that ends with no props has nothing the hash can hold (the
+    // empty hash, 811c9dc5, is what "identical" would be comparing), so it
+    // is said so rather than counted as a pass
+    if (!counts[0]) {
+      console.log(`determ   ${pad(s.id, 16)} no props at the end, nothing to compare: ${s.id.includes('ragdoll') || s.id.includes('showroom') ? 'what moves there is not a sandbox body' : 'nothing ran'}`)
+      continue
+    }
+    console.log(`determ   ${pad(s.id, 16)} ${hashes[0]} over ${counts[0]} props  rerun ${same ? 'identical' : '<-- DIVERGED ' + hashes[1]}, ` +
       `uneven frames ${uneven ? 'identical' : '<-- differ ' + hashes[2]}`)
   }
 }

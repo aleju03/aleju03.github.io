@@ -16,6 +16,10 @@
                                            against a real sandbox, and noclip
     node scripts/measure.mjs fracture      every building in a few town blocks
                                            taken apart: pieces, cost, support
+    node scripts/measure.mjs bodies        bumping into people: the film's street run
+                                           headless, a sweep of approaches for the
+                                           closest two bodies ever get, the pass's
+                                           cost, and a shove between two players
     node scripts/measure.mjs eval <file>   run your own probe with the world imported
 
   `src/game/` is renderer-free by design, so all of it runs here: fields, chunk
@@ -343,7 +347,7 @@ const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
 // the sandbox's report lives in its own file (it is long, and it imports the
 // sandbox, which nothing else here needs); `physics <section>` runs one part
-if (what === 'physics' || what === 'console' || what === 'fracture') {
+if (what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies') {
   body = readFileSync(join(ROOT, 'scripts', 'measure', `${what}.js`), 'utf8')
     .replace(/'\.\.\/\.\.\/src\//g, `'${ROOT}/src/`)
 }
@@ -376,6 +380,6 @@ const build = spawnSync('npx', [
   `--outfile=${out}`, '--log-level=error',
 ], { stdio: 'inherit', cwd: ROOT })
 if (build.status !== 0) process.exit(build.status ?? 1)
-const run = spawnSync(process.execPath, [...(process.env.PROF ? ['--cpu-prof', `--cpu-prof-dir=${process.env.PROF}`] : []), out, ...((what === 'physics' || what === 'console' || what === 'fracture') && arg ? [arg] : [])], { stdio: 'inherit' })
+const run = spawnSync(process.execPath, [...(process.env.PROF ? ['--cpu-prof', `--cpu-prof-dir=${process.env.PROF}`] : []), out, ...((what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies') && arg ? [arg] : [])], { stdio: 'inherit' })
 rmSync(stage, { recursive: true, force: true })
 process.exit(run.status ?? 0)
