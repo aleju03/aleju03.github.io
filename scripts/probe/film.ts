@@ -281,8 +281,8 @@ const clearLens = (chunks: Chunk[], from: number[], to: number[]): [number, numb
   const lens = new THREE.Vector3()
   const side = new THREE.Vector3()
   const aim = new THREE.Vector3()
-  const score = (yaw: number) => {
-    lens.set(to[0] + Math.cos(yaw) * dist, from[1], to[2] + Math.sin(yaw) * dist)
+  const score = (yaw: number, y: number) => {
+    lens.set(to[0] + Math.cos(yaw) * dist, y, to[2] + Math.sin(yaw) * dist)
     side.set(-Math.sin(yaw), 0, Math.cos(yaw)).multiplyScalar(dist * 0.12)
     let n = 0
     for (const [sx, sy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -0.6], [0, -9], [1.5, -9], [-1.5, -9]]) {
@@ -298,17 +298,25 @@ const clearLens = (chunks: Chunk[], from: number[], to: number[]): [number, numb
     }
     return n
   }
+  // bearings nearest the asked-for one first, then the same again higher up
+  // (over the rooftops), so a clear shot at the asked-for height wins
   let best = yaw0
+  let bestY = from[1]
   let bestN = Infinity
-  for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.75, -1.75, 2.1, -2.1, 2.5, -2.5, Math.PI]) {
-    const n = score(yaw0 + off)
-    if (n < bestN) {
-      bestN = n
-      best = yaw0 + off
+  const rise = Math.max(8, from[1] - to[1])
+  search: for (const up of [0, 0.5, 1]) {
+    for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.75, -1.75, 2.1, -2.1, 2.5, -2.5, Math.PI]) {
+      const y = from[1] + rise * up
+      const n = score(yaw0 + off, y) + up * 1.5
+      if (n < bestN) {
+        bestN = n
+        best = yaw0 + off
+        bestY = y
+      }
+      if (n === 0) break search
     }
-    if (n === 0) break
   }
-  return [to[0] + Math.cos(best) * dist, from[1], to[2] + Math.sin(best) * dist]
+  return [to[0] + Math.cos(best) * dist, bestY, to[2] + Math.sin(best) * dist]
 }
 
 const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {

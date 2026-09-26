@@ -106,8 +106,11 @@ const HOLD = [0.7, 1.3, 2.1]
     timber, brick, concrete */
 const DENSITY = [70, 150, 170]
 /** the change of velocity that breaks a lump of each level when it lands:
-    cluster, storey, side, piece; a shard never breaks again */
-const BREAK_DV = [5, 6.5, 8, 11]
+    cluster, storey, side, piece; a shard never breaks again. A cluster is
+    the whole building over a failed storey, and it is tough on purpose: it
+    must survive its own corner hitting the street while it leans, or a
+    felled tower pancakes where it stood instead of going over */
+const BREAK_DV = [13, 7, 8, 11]
 /** a piece smaller than this is not shattered further (cubic units) */
 const SHATTER_MIN = 2.2
 /** seconds a small shard lies about before it shrinks away */
@@ -159,6 +162,8 @@ export interface Destruction {
     sliceMs: number
     /** rubble the sandbox took away itself (fell out of the world, undo) */
     lost: number
+    /** the furthest any whole cluster has leaned from upright, degrees */
+    lean: number
   }
   readonly ruins: Ruins
   dispose: () => void
@@ -297,7 +302,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   const log: DamageRecord[] = []
   let now = 0
   let seq = 1
-  const stats = { lumps: 0, awake: 0, frozen: 0, buildings: 0, openMs: 0, sliceMs: 0, lost: 0 }
+  const stats = { lumps: 0, awake: 0, frozen: 0, buildings: 0, openMs: 0, sliceMs: 0, lost: 0, lean: 0 }
   const breakQueue: Array<{ L: Lump; e: ImpactEvent }> = []
   const nearList: Standing[] = []
   const tint: [number, number, number] = [0.5, 0.48, 0.44]
@@ -946,6 +951,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
 
   const vIn = new THREE.Vector3()
   const tmpA = new THREE.Vector3()
+  const tmpQ = new THREE.Quaternion()
   const vPre = new THREE.Vector3()
   const offSlice = sb.onAfterSlice((h) => {
     const t0 = performance.now()
@@ -991,6 +997,10 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     }
     // small shards age out, and anything the budget let go shrinks away
     for (const L of lumps.values()) {
+      if (L.level === 0 && sb.getTransform(L.id, tmpA, tmpQ)) {
+        const up = tmpA.set(0, 1, 0).applyQuaternion(tmpQ).y
+        stats.lean = Math.max(stats.lean, (Math.acos(Math.min(1, up)) * 180) / Math.PI)
+      }
       // a piece born brushing a box it could not be carved out of is shoved
       // out by the solver; nothing that young has a reason to be that fast
       if (now - L.born < 0.4 && sb.getVelocity(L.id, vIn) && vIn.lengthSq() > 48 * 48) {

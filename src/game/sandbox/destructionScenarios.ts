@@ -61,7 +61,11 @@ const boundsOf = (r: StructureRec) => {
 
 /** how much of a corridor from (x, z) along (dx, dz), from r0 to r1 out and
     `half` either side, is free of any solid taller than a fence */
-const openness = (x: number, z: number, dx: number, dz: number, r0: number, r1: number, half: number, skip: Set<Solid>) => {
+const openness = (
+  x: number, z: number, dx: number, dz: number, r0: number, r1: number, half: number, skip: Set<Solid>,
+  /** boxes whose tops are under this height are looked over, not into */
+  over = -Infinity,
+) => {
   let free = 0
   let n = 0
   const sx = -dz
@@ -81,7 +85,7 @@ const openness = (x: number, z: number, dx: number, dz: number, r0: number, r1: 
       }
       const boxes = blocked ? [] : here.boxes
       for (const b of boxes) {
-        if (skip.has(b) || b.max.y - b.min.y < 2.4) continue
+        if (skip.has(b) || b.max.y - b.min.y < 2.4 || b.max.y < over) continue
         if (px > b.min.x - 0.5 && px < b.max.x + 0.5 && pz > b.min.z - 0.5 && pz < b.max.z + 0.5) {
           blocked = true
           break
@@ -147,13 +151,26 @@ const siteBuilding = (
               }
             }
             if (bf < (opts.minOpen ?? 0.6)) continue
+            // and it stands over its neighbours: nothing more than half its
+            // height within a fall's length on most sides, or the film is a
+            // photograph of the block in front of it
+            let tall = 0
+            for (let k = 0; k < 8; k++) {
+              const a = (k / 8) * Math.PI * 2
+              tall += openness(x, z, Math.cos(a), Math.sin(a), w * 0.5 + 2, w * 0.5 + h, w * 0.4, skip, r.baseY + h * 0.5)
+            }
+            if (tall / 8 < 0.6) continue
             const fa = (fk / 16) * Math.PI * 2
             const fdx = Math.cos(fa)
             const fdz = Math.sin(fa)
             const mx = x + fdx * h * 0.4
             const mz = z + fdz * h * 0.4
-            const l = openness(mx, mz, -fdz, fdx, h * 0.3, far, 5, skip)
-            const rr = openness(mx, mz, fdz, -fdx, h * 0.3, far, 5, skip)
+            // the lens stands at 0.8 of its height, so anything under half
+            // its height is looked over
+            const over = r.baseY + h * 0.5
+            const l = openness(mx, mz, -fdz, fdx, h * 0.3, far, 6, skip, over)
+            const rr = openness(mx, mz, fdz, -fdx, h * 0.3, far, 6, skip, over)
+            if (Math.max(l, rr) < 0.9) continue
             const side = l >= rr ? 1 : -1
             return {
               x, z, dx: -fdz * side, dz: fdx * side,
@@ -226,7 +243,7 @@ const report = (sb: Sandbox, c: ScenarioCtx) => {
     for (let i = 0; i < total; i++) alive += b.open.alive[i]
   }
   return `[w ${c.memo.w.toFixed(0)} h ${c.memo.h.toFixed(0)} open ${c.memo.open.toFixed(2)}] ${total - alive}/${total} pieces down, ${s.lumps} rubble (${s.awake} moving, ${s.frozen} welded, ${s.lost} lost), ` +
-    `open ${s.openMs.toFixed(1)} ms, last slice ${s.sliceMs.toFixed(2)} ms`
+    `open ${s.openMs.toFixed(1)} ms, clusters leaned to ${s.lean.toFixed(0)} deg`
 }
 
 /* ------------------------------------------------------------ the house -- */
@@ -304,9 +321,9 @@ defineScenario({
     // sweeps: the stump on one side of the frame, the landing on the other
     const mx = c.x + fx * h * 0.42
     const mz = c.z + fz * h * 0.42
-    const d = h * 1.25 + 12
+    const d = h * 1.0 + 10
     return {
-      from: [mx + c.dx * d, c.memo.base + h * 0.8, mz + c.dz * d],
+      from: [mx + c.dx * d, c.memo.base + h * 0.72, mz + c.dz * d],
       to: [mx, c.memo.base + h * 0.28, mz],
       fov: 60,
       clear: true,
