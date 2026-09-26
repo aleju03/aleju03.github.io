@@ -78,6 +78,15 @@ export interface MeshBuilder {
       that stamp's span in the merged result — which is what lets world/debris
       lift one tree out of a chunk's soup and collapse what it left behind */
   readonly indexCount: number
+  /**
+   * When set, every stamp (`add`, `quad`, `tri`) pushes its first vertex and
+   * its first index here before writing. That is the finer-grained twin of the
+   * span: a chunk records the span of a whole building, and these marks say
+   * where each wall, roof and window inside it starts, which is what
+   * world/fracture.ts needs to take a building apart along its own stamps. Off
+   * (null) unless a caller is recording, so a forest pays nothing for it
+   */
+  marks: number[] | null
   /** hand over the merged geometry, or null if nothing was ever added */
   build: () => THREE.BufferGeometry | null
 }
@@ -104,11 +113,13 @@ export function createMeshBuilder(withUV = false): MeshBuilder {
 
   const builder: MeshBuilder = {
     surface: 0,
+    marks: null,
     add(geo, m, color, swaySpan, shadeSpan) {
       const p = geo.getAttribute('position')
       const n = geo.getAttribute('normal')
       const srcUV = withUV ? geo.getAttribute('uv') : null
       const base = pos.length / 3
+      if (builder.marks) builder.marks.push(base, idx.length)
       nm.getNormalMatrix(m)
       for (let i = 0; i < p.count; i++) {
         if (withUV) {
@@ -147,6 +158,7 @@ export function createMeshBuilder(withUV = false): MeshBuilder {
     },
     quad(a, b, c, d, color) {
       const base = pos.length / 3
+      if (builder.marks) builder.marks.push(base, idx.length)
       fn.copy(ab.subVectors(b, a)).cross(ad.subVectors(d, a)).normalize()
       for (const p of [a, b, c, d]) {
         pos.push(p.x, p.y, p.z)
@@ -160,6 +172,7 @@ export function createMeshBuilder(withUV = false): MeshBuilder {
     },
     tri(a, b, c, color) {
       const base = pos.length / 3
+      if (builder.marks) builder.marks.push(base, idx.length)
       fn.copy(ab.subVectors(b, a)).cross(ad.subVectors(c, a)).normalize()
       for (const p of [a, b, c]) {
         pos.push(p.x, p.y, p.z)

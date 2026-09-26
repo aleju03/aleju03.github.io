@@ -73,9 +73,27 @@ export const surfaceVertHead = (fixed?: number) => /* glsl */ `
   varying vec3 vWNrm;
 `
 
-/** goes after <begin_vertex>, so it sees the final (swayed) position */
-export const surfaceVertBody = (fixed?: number) => /* glsl */ `
-  vSurf = ${fixed === undefined ? 'aSurf' : `float(${fixed})`};
+/**
+ * Goes after <begin_vertex>, so it sees the final (swayed) position.
+ *
+ * The chunk soup's pattern is read in *object* space, not world space. A chunk
+ * is built in world coordinates under an identity transform, so for anything
+ * standing the two are the same number; the difference is everything that
+ * leaves: a felled trunk, a wall panel off a collapsing building. Those keep
+ * their rest-world coordinates in the geometry and are moved by their model
+ * matrix, so their brick courses and bark stay painted on them as they
+ * tumble, instead of the pattern swimming across a moving face and swapping
+ * projection every time it turns past forty-five degrees. The house's fixed
+ * treatment keeps world space: its GLB nodes carry transforms of their own.
+ */
+export const surfaceVertBody = (fixed?: number) => fixed === undefined
+  ? /* glsl */ `
+  vSurf = aSurf;
+  vWPos = transformed;
+  vWNrm = normalize(objectNormal);
+`
+  : /* glsl */ `
+  vSurf = float(${fixed});
   vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
   vWNrm = normalize(mat3(modelMatrix) * objectNormal);
 `

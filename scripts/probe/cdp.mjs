@@ -79,7 +79,7 @@ export const openProbe = async ({ port, cdp, page, ready, width, height, keep = 
     }
     if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
       const en = m.params.entry
-      if (!/favicon/.test(`${en.url ?? ''} ${en.text}`)) errors.push(en.text)
+      if (!/favicon/.test(`${en.url ?? ''} ${en.text}`)) errors.push(en.url ? `${en.text} (${en.url})` : en.text)
     }
     if (m.method === 'Runtime.exceptionThrown') {
       const d = m.params.exceptionDetails
