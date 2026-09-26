@@ -853,6 +853,13 @@ const slabFrom = (pts: number[], y: number, th: number, sx: number, sz: number):
 
 /* ------------------------------------------------------------ the build -- */
 
+/** a building's id as a seed (FNV-1a) */
+const hashId = (id: string) => {
+  let h = 2166136261
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619)
+  return h >>> 0
+}
+
 const CELL_MIN = 5
 const CELL_MAX = 9
 
@@ -940,6 +947,26 @@ export function* fractureSteps(
     }
   }
 
+  // The footings go. A kit sinks its body a couple of units into the lot so
+  // no slope shows daylight under it, and that is right for a building and
+  // wrong for its rubble: a wall panel born with a metre of foundation under
+  // the street is pushed by the solver whichever way is out, and half the
+  // time that is down, through a heightfield that has no thickness
+  {
+    const cutAt: Plane = { nx: 0, ny: 1, nz: 0, d: rec.baseY - 0.3 }
+    const kept: Frag[] = []
+    for (const f of frags) {
+      const b = fragBox(f, tmpBox)
+      if (b.min.y >= cutAt.d) {
+        kept.push(f)
+        continue
+      }
+      const up = splitFrag(f, cutAt)[0]
+      if (up) kept.push(up)
+    }
+    frags = kept
+  }
+
   // floors at every storey line of every shell tall enough to have storeys
   const floors: Array<{ y: number; box: THREE.Box3 }> = []
   const bySize = [...shells].sort((a, b) => {
@@ -985,11 +1012,46 @@ export function* fractureSteps(
   const nx = Math.max(1, Math.round(ex / cellOf(ex)))
   const nz = Math.max(1, Math.round(ez / cellOf(ez)))
   const planes: Plane[] = []
-  for (let i = 1; i < nx; i++) planes.push({ nx: 1, ny: 0, nz: 0, d: body.min.x + (i * ex) / nx })
-  for (let i = 1; i < nz; i++) planes.push({ nx: 0, ny: 0, nz: 1, d: body.min.z + (i * ez) / nz })
+  // Breaks are not drawn with a ruler. The upright cuts lean a little (a
+  // lot on a low building, where a leaning cut is a diagonal crack down a
+  // wall, very little on a tower, where it would wander a whole bay over the
+  // height), and every storey is split again by one slanted plane across its
+  // middle, so a wall comes away in stepped, raked chunks rather than as
+  // storey-high rectangles. All of it seeded by the building's own id, so the
+  // pieces and their keys are the same on every tier and every machine
+  const rndCut = seeded(hashId(rec.id))
+  const midY = (rec.baseY + top) / 2
+  const lean = ny <= 2 ? 0.32 : ny <= 4 ? 0.14 : 0.05
+  const tilted = (ax: number, az: number, at: number): Plane => {
+    const ty = (rndCut() - 0.5) * 2 * lean
+    const l = Math.hypot(ax, ty, az)
+    const p: Plane = { nx: ax / l, ny: ty / l, nz: az / l, d: 0 }
+    p.d = p.nx * (ax ? at : 0) + p.ny * midY + p.nz * (az ? at : 0)
+    return p
+  }
+  for (let i = 1; i < nx; i++) planes.push(tilted(1, 0, body.min.x + (i * ex) / nx))
+  for (let i = 1; i < nz; i++) planes.push(tilted(0, 1, body.min.z + (i * ez) / nz))
   // a storey's cut sits half a unit under its floor, so the slab belongs to
   // the storey it is the floor of
   for (let k = 1; k < ny; k++) planes.push({ nx: 0, ny: 1, nz: 0, d: rec.baseY + k * binH - 0.5 })
+  // ...and the raked cut through the middle of each storey tall enough
+  const rakes: Array<Plane | null> = []
+  for (let k = 0; k < ny; k++) {
+    if (binH < 3.5) {
+      rakes.push(null)
+      continue
+    }
+    const sx = (rndCut() - 0.5) * 0.7
+    const sz = (rndCut() - 0.5) * 0.7
+    const l = Math.hypot(sx, 1, sz)
+    const y = rec.baseY + k * binH + binH * (0.4 + rndCut() * 0.2)
+    const cx = (body.min.x + body.max.x) / 2
+    const cz = (body.min.z + body.max.z) / 2
+    const p: Plane = { nx: sx / l, ny: 1 / l, nz: sz / l, d: 0 }
+    p.d = p.nx * cx + p.ny * y + p.nz * cz
+    rakes.push(p)
+    planes.push(p)
+  }
 
   const fb = new THREE.Box3()
   const DBG = (globalThis as unknown as { __fracDbg?: number[] }).__fracDbg
@@ -1001,9 +1063,12 @@ export function* fractureSteps(
     const b = fragBox(f, new THREE.Box3())
     for (let k = from; k < planes.length; k++) {
       const pl = planes[k]
-      const lo = pl.nx ? b.min.x : pl.ny ? b.min.y : b.min.z
-      const hi = pl.nx ? b.max.x : pl.ny ? b.max.y : b.max.z
-      if (hi <= pl.d + EPS || lo >= pl.d - EPS) continue
+      // the box's extent along the plane's normal (planes lean now, so this
+      // is the support of the box, not one of its axes)
+      const c = pl.nx * (b.min.x + b.max.x) / 2 + pl.ny * (b.min.y + b.max.y) / 2 + pl.nz * (b.min.z + b.max.z) / 2
+      const r = Math.abs(pl.nx) * (b.max.x - b.min.x) / 2 + Math.abs(pl.ny) * (b.max.y - b.min.y) / 2 +
+        Math.abs(pl.nz) * (b.max.z - b.min.z) / 2
+      if (c + r <= pl.d + EPS || c - r >= pl.d - EPS) continue
       const [fa, fb2] = splitFrag(f, pl)
       // every cut is work in proportion to what it cut
       work += f.p.length / 9
@@ -1059,7 +1124,10 @@ export function* fractureSteps(
         if (face === 5) face = 4
       }
     }
-    const cell = (iy * nx + ix) * nz + iz
+    // over or under its storey's raked cut
+    const rk = rakes[iy]
+    const ih = rk && rk.nx * cen.x + rk.ny * cen.y + rk.nz * cen.z > rk.d ? 1 : 0
+    const cell = ((iy * 2 + ih) * nx + ix) * nz + iz
     const key = cell * 6 + face
     let g = groups.get(key)
     if (!g) {
@@ -1094,7 +1162,7 @@ export function* fractureSteps(
     const cell = Math.floor(key / 6)
     const iz = cell % nz
     const ix = Math.floor(cell / nz) % nx
-    const iy = Math.floor(cell / (nz * nx))
+    const iy = Math.floor(Math.floor(cell / (nz * nx)) / 2)
     const min = new THREE.Vector3(Infinity, Infinity, Infinity)
     const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity)
     let vol = 0
@@ -1115,6 +1183,8 @@ export function* fractureSteps(
     }
     if (vol > 1e-6) center.multiplyScalar(1 / vol)
     else center.addVectors(min, max).multiplyScalar(0.5)
+    if (center.x < min.x || center.y < min.y || center.z < min.z ||
+      center.x > max.x || center.y > max.y || center.z > max.z) center.addVectors(min, max).multiplyScalar(0.5)
     // a piece of open surface only still weighs something
     vol = Math.max(vol, 0.05 * (max.x - min.x + max.y - min.y + max.z - min.z))
     // a wall is anything standing that carries: a hollowed face, or a solid
@@ -1338,6 +1408,9 @@ export const massOf = (frags: Frag[]) => {
   }
   if (vol > 1e-6) center.multiplyScalar(1 / vol)
   else if (!box.isEmpty()) box.getCenter(center)
+  // a sliver whose triangles nearly cancel (a raked cut grazing a face)
+  // reports a centroid anywhere at all: nothing's middle is outside itself
+  if (!box.isEmpty() && !box.containsPoint(center)) box.getCenter(center)
   if (!box.isEmpty()) {
     const e = box.getSize(c)
     vol = Math.max(vol, 0.05 * (e.x + e.y + e.z))
