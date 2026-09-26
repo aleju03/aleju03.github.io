@@ -21,6 +21,7 @@ import {
 import type { SkyState } from '../../src/game/levels/sky'
 import { altitudeOf, domeScaleFor, fogForAltitude, viewFarFor } from '../../src/game/levels/altitude'
 import { windUniforms } from '../../src/game/world/wind'
+import { gfx } from '../../src/game/world/quality'
 
 /*
   The world, rendered off to one side so it can be photographed.
@@ -107,6 +108,9 @@ export interface ShotSpec {
   /** altitudes: each target is shot from each of these heights over its
       ground, through the real streamer (see altTile). A row per target */
   alts?: number[]
+  /** far-field rings for altitude tiles (world/quality.ts's farLevels);
+      0 draws the world without one */
+  farLevels?: number
 }
 
 export interface Prop {
@@ -444,16 +448,36 @@ const altTile = (
   const gy = terrainY(x, z)
   const back = Math.max(10, alt / Math.tan(0.63))
   const cam = new THREE.PerspectiveCamera(58, tw / th, 0.2, 900)
-  cam.position.set(x + Math.cos(spec.yaw) * back, gy + alt, z + Math.sin(spec.yaw) * back)
+  // a low camera downtown can land inside a tower: swing the bearing round
+  // to the first one whose lens is in the open (the chunk under the lens is
+  // built for its boxes and thrown away; the real ring is built below)
+  const mats = makeChunkMats(noop, noop)
+  let yaw = spec.yaw
+  for (const off of [0, 1.05, -1.05, 2.1, -2.1, Math.PI]) {
+    yaw = spec.yaw + off
+    const px = x + Math.cos(yaw) * back
+    const pz = z + Math.sin(yaw) * back
+    const c = buildChunk(chunkX(px), chunkZ(pz), 'bare', mats)
+    const p = new THREE.Vector3(px, gy + alt, pz)
+    const inside = c.boxes.some((b) => b.clone().expandByScalar(2).containsPoint(p))
+    for (const g of c.geos) g.dispose()
+    if (!inside) break
+  }
+  cam.position.set(x + Math.cos(yaw) * back, gy + alt, z + Math.sin(yaw) * back)
   cam.lookAt(
-    cam.position.x - Math.cos(spec.yaw) * Math.cos(ALT_PITCH),
+    cam.position.x - Math.cos(yaw) * Math.cos(ALT_PITCH),
     cam.position.y - Math.sin(ALT_PITCH),
-    cam.position.z - Math.sin(spec.yaw) * Math.cos(ALT_PITCH),
+    cam.position.z - Math.sin(yaw) * Math.cos(ALT_PITCH),
   )
   const camAlt = altitudeOf(cam.position.y, terrainY(cam.position.x, cam.position.z))
+  // --far 0 is the world as it was before the far field: the wide ring and
+  // the old fog ramp, for a before and after
+  const farWas = gfx.farLevels
+  if (spec.farLevels !== undefined) gfx.farLevels = spec.farLevels
   const world = buildWorld({
     scene, obstacles: [], trackTexture: noop, trackDisposable: noop,
   })
+  gfx.farLevels = farWas
   // the first update plans the far field and picks the ring for this height;
   // the far field is then built whole (a game spreads it over frames), the
   // ring re-picked now that it exists, and primed with no frame budget

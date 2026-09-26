@@ -6,6 +6,9 @@
     node scripts/measure.mjs chunks        build cost and vertex budget
     node scripts/measure.mjs landmarks     site density and the kind mix
     node scripts/measure.mjs smoke         build a few thousand chunks, catch throws
+    node scripts/measure.mjs far           the far field: build cost per slice
+                                           and in total, what it holds, and the
+                                           chunk ring it replaces from the air
     node scripts/measure.mjs physics       the sandbox: ground, cost, stacks,
                                            tunnelling, the walker, scenarios
     node scripts/measure.mjs console       every console command run headless
@@ -92,6 +95,47 @@ for (const [label, cx, cz] of zones) {
     }
     console.log(label.padEnd(12) + tier.padEnd(6) + String(Math.round(v / n)).padStart(6) +
       ' verts  ' + ((performance.now() - t0) / n).toFixed(2).padStart(6) + ' ms/chunk')
+  }
+}
+`,
+  // the far field (world/farfield.ts): what it costs to build, in slices
+  // and in total, what it holds, and what it replaces from the air
+  far: `
+const { buildFarField } = await import('${W}/farfield.ts')
+const { setGfxTier, gfx } = await import('${W}/quality.ts')
+const spots = [['home', 0, 30], ['downtown', 0, -340], ['forest', -147, -845], ['coast', -1725, -1300]]
+for (const tier of ['medium', 'high']) {
+  setGfxTier(tier)
+  for (const [label, x, z] of spots) {
+    const far = buildFarField({ parent: new THREE.Group(), water: new THREE.Color(), trackDisposable: () => {} })
+    far.update(x, z, 200, () => false)
+    let total = 0, slices = 0, worst = 0
+    while (far.pending) {
+      const ms = far.work(0.001)
+      total += ms; slices++; worst = Math.max(worst, ms)
+      far.update(x, z, 200, () => false)
+    }
+    const st = far.stats()
+    console.log(tier.padEnd(7) + label.padEnd(10) + String(st.tiles).padStart(4) + ' tiles ' +
+      String(st.verts).padStart(7) + ' verts ' + String(st.tris).padStart(7) + ' tris  ' +
+      total.toFixed(0).padStart(5) + ' ms total, ' + (total / st.tiles).toFixed(1) + ' ms/tile, ' +
+      slices + ' slices, worst ' + worst.toFixed(2) + ' ms, reach ' + Math.round(far.reach(x, z)))
+    far.dispose()
+  }
+}
+// what the ring costs from the air: the old wide ring against the one the
+// far field lets it shrink to (streamer.ts's RADIUS_HIGH and RADIUS_FAR)
+setGfxTier('medium')
+for (const [label, x, z] of spots.slice(1)) {
+  const cx = chunkX(x), cz = chunkZ(z)
+  for (const r of [6, 3]) {
+    let v = 0, n = 0
+    const t0 = performance.now()
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      v += vertsOf(buildChunk(cx + dx, cz + dz, tierFor(Math.max(Math.abs(dx), Math.abs(dz))), MATS)); n++
+    }
+    console.log('ring ' + r + '  ' + label.padEnd(10) + String(n).padStart(4) + ' chunks ' +
+      String(v).padStart(8) + ' verts  ' + (performance.now() - t0).toFixed(0).padStart(5) + ' ms to build')
   }
 }
 `,

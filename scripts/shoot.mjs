@@ -102,6 +102,9 @@ options
                        the real streamer (ring, far field, altitude fog and
                        air). Several heights make a row per target:
                        --alt 10,40,120,300 town:downtown biome:forest biome:beach
+  --far <n>            far-field rings for --alt tiles (default: the tier's,
+                       3 headless); --far 0 is the world without one, for
+                       a before and after
   --keep               leave chrome and vite running (for repeated shots)
 `)
   process.exit(0)
@@ -172,6 +175,7 @@ const spec = {
   lines: Number(flag('lines', 0)),
   look: JSON.parse(flag('look', '{}')),
   pixel: Number(flag('pixel', 1)),
+  farLevels: flag('far', null) === null ? undefined : Number(flag('far')),
   alts: flag('alt', null) ? String(flag('alt')).split(',').map(Number) : undefined,
 }
 if (spec.alts) spec.cols = spec.alts.length

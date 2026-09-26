@@ -191,6 +191,13 @@ const FAR_FRAG_COLOR = /* glsl */ `
         float walk = 1.0 - smoothstep(4.7 - px * 0.5, 4.7 + px * 0.5, d);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.105, 0.105, 0.1), (walk - asph) * vFar.z);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.024, 0.026, 0.03), asph * vFar.z);
+        // ...lit at night by a lamp every 24 units along the kerb, the dots
+        // a city is made of from the air after dark
+        float along = g.x < g.y ? vFarW.z : vFarW.x;
+        float wlamp = 0.6 + px * 0.5;
+        float lamp = (1.0 - smoothstep(0.0, wlamp, abs(mod(along, 24.0) - 12.0))) *
+          (1.0 - smoothstep(0.0, wlamp, abs(d - 4.9)));
+        farLit = uNight * lamp * vFar.z * 1.3;
       }
       if (vDepth <= 0.0 && vFar.w > 0.01) {
         // a canopy: one crown per 8-unit cell where the biome's tree count
@@ -240,8 +247,11 @@ const FAR_FRAG_COLOR = /* glsl */ `
       float share = mix(0.18, 0.4, office);
       float glass = mix(share, win, detail);
       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03, 0.04, 0.05), glass * 0.85);
-      float on = step(farHash(floor(wv) + vFar.w), 0.42);
-      farLit = uNight * mix(share * 0.42, win * on, detail);
+      // a third of the windows are lit; once a window is under a pixel the
+      // wall keeps only their share of the glow, or a far block at night
+      // is one lit slab
+      float on = step(farHash(floor(wv) + vFar.w), 0.34);
+      farLit = uNight * mix(share * 0.035, win * on, detail);
     }
   }
 `
@@ -264,9 +274,7 @@ interface FarUniforms {
 const makeFarMaterial = (u: FarUniforms) => {
   // the same grey the chunk detail soup multiplies by: the chunk ground's
   // detail map averages a little under white, so this is the match for it
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xe0e0e0, vertexColors: true, roughness: 1, metalness: 0,
-  })
+  const mat = new THREE.MeshLambertMaterial({ color: 0xe0e0e0, vertexColors: true })
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, u)
     shader.vertexShader = shader.vertexShader
@@ -592,6 +600,8 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
 
 interface Tile {
   key: string
+  i: number
+  j: number
   mesh: THREE.Mesh
 }
 
@@ -635,7 +645,9 @@ export const buildFarField = (opts: {
   const maskTex = new THREE.DataTexture(maskData, MASK, MASK, THREE.RedFormat, THREE.UnsignedByteType)
   maskTex.minFilter = maskTex.magFilter = THREE.NearestFilter
   maskTex.needsUpdate = true
-  const levels = Math.max(1, Math.min(TILE.length, gfx.farLevels))
+  // 0 rings is a far field that never shows (and a ring that widens the old
+  // way): the harness's before-and-after, and a floor for a card that needs one
+  const levels = Math.max(0, Math.min(TILE.length, gfx.farLevels))
   const U: FarUniforms = {
     uMask: { value: maskTex },
     uMaskO: { value: new THREE.Vector2(-1e4, -1e4) },
@@ -687,6 +699,15 @@ export const buildFarField = (opts: {
       U.uRect.value[l].copy(rings[l].rect)
       if (l > 0 && committed(rings[l - 1])) U.uHole.value[l].copy(rings[l - 1].rect)
       else U.uHole.value[l].set(0, 0, 0, 0)
+      // a tile wholly inside the hole would only be discarded pixel by
+      // pixel, after paying for its vertices: about a third of every ring
+      const h = U.uHole.value[l]
+      const S = rings[l].S
+      for (const t of rings[l].tiles.values()) {
+        const x0 = OFF_X + t.i * S
+        const z0 = OFF_Z + t.j * S
+        t.mesh.visible = !(x0 >= h.x && z0 >= h.y && x0 + S <= h.z && z0 + S <= h.w)
+      }
     }
   }
 
@@ -770,7 +791,7 @@ export const buildFarField = (opts: {
     // the far field shows once the camera is off the ground; the hysteresis
     // keeps a hovering helicopter from toggling it every frame
     const want = visible ? alt > 12 : alt > 16
-    visible = want && committed(rings[0])
+    visible = want && rings.length > 0 && committed(rings[0])
     tilesRoot.visible = visible
     if (!visible) return
     const pcx = chunkX(x)
@@ -800,7 +821,7 @@ export const buildFarField = (opts: {
       const step = job.gen.next()
       if (!step.done) continue
       jobs.shift()
-      const t: Tile = { key: job.key, mesh: tileMesh(step.value) }
+      const t: Tile = { key: job.key, i: job.i, j: job.j, mesh: tileMesh(step.value) }
       const n = job.ring.next
       if (n && n.tiles.has(job.key)) n.tiles.set(job.key, t)
       else step.value.dispose()
@@ -824,7 +845,7 @@ export const buildFarField = (opts: {
     work,
     reach,
     get complete() {
-      return rings.every(committed)
+      return rings.length > 0 && rings.every(committed)
     },
     get visible() {
       return visible
