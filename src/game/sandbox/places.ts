@@ -82,7 +82,7 @@ export const findLandmark = (kind: LandmarkKind, x0: number, z0: number): Found 
   // twice, which costs a lookup and nothing else). One site per cell at most
   const c0 = Math.floor(x0 / LANDMARK_CELL)
   const d0 = Math.floor(z0 / LANDMARK_CELL)
-  let best: { x: number; z: number; d: number } | null = null
+  let best = null as { x: number; z: number; d: number } | null
   for (let r = 0; r < 60; r++) {
     for (let i = -r; i <= r; i++) {
       const cells = r === 0 ? [[0, 0]] : [[i, -r], [i, r], [-r, i], [r, i]]

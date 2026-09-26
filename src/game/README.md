@@ -35,12 +35,22 @@ player/
   walkController.ts  createWalkController(): the FPS movement sim (velocity,
                      gravity/jump/crouch, step-up and ledge falls over an
                      absolute feetY, footstep bob, sprint fov)
-  playerBody.ts      buildPlayerBody() is the articulated robot: kinetic stance
-                     (accel lean, turn bank, landing spring), world-planted
-                     stepping feet solved with two-bone IK, and the ragdoll
-                     fit/recovery over the same skeleton
-  ragdoll.ts         createRagdoll(): verlet particles + constraints against
-                     the level's floor and collision boxes
+  playerBody.ts      buildPlayerBody() is the character: a soft little person
+                     in a work suit and beanie. Kinetic stance (waddle, lean,
+                     turn bank, squash-and-stretch landing spring), world-
+                     planted stepping feet solved with two-bone IK, sprung
+                     arms, jiggling head/pom-pom/backpack/mittens, idle
+                     fidgets, the ragdoll, and a muscle-driven get-up. Also
+                     the sandbox hooks: hit(), grab(), limbs, limbPos()
+  bodyShape.ts       the drawing: one skinned mesh, shared by every body,
+                     each vertex tagged with the paint it wears
+  bodyMaterial.ts    the one material: palette uniform + first-person head
+                     discard injected into a MeshStandardMaterial
+  ragdoll.ts         createRagdoll(): massed verlet particles + constraints
+                     against the ground and collision boxes, with kick/pin/
+                     drive (impulses, grabs, muscles) for anything outside
+  impacts.ts         createImpactWatch(): turns where the fleet was last frame
+                     into speeds and asks whether one is running a body over
   chaseCam.ts        createChaseCam(): the third-person boom (v), collision-
                      clamped, which also frames a downed body
   seating.ts         createSeating(): sitting on the furniture. A seat is a
@@ -320,10 +330,11 @@ world/
                   each one is re-cut onto. The only downloaded models out
                   here, loaded after the planet attaches and never awaited
   pedestrians.ts  ...and the same idea in a town. Each is a buildPlayerBody()
-                  rig — the robot the player and every remote player wear —
-                  walking the sidewalk slab by sampling roadAt().walk rather
-                  than following a navmesh, and crossing the road where the
-                  pavement runs out at a junction
+                  rig (the character the player and every remote player
+                  wear) walking the sidewalk slab by sampling roadAt().walk
+                  rather than following a navmesh, and crossing the road
+                  where the pavement runs out at a junction. A car driven
+                  into one knocks it flat; it lies there, then gets up
   quality.ts      the graphics tier: every density and budget knob, read at
                   build time, plus the GPU sniff that picks between them. New
                   knobs go in the record, not beside it. The visitor can
@@ -549,7 +560,7 @@ sb.queryBall(center, r, p => ...)
 sb.groundY(x, z); sb.restY(kind, x, z); sb.focus
 sb.gravity = -34; sb.timescale = 1
 sb.rapier; sb.physics                                   // the raw world, for joints
-registerKind({ id, label, shape, mass, friction, restitution, density, mesh? })
+registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, mesh? })
 ```
 
 A `Prop` carries `id`, `kind`, `body` (the Rapier body), `colliders`, `mesh`,
@@ -575,17 +586,37 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   CollisionSet's `dynamic` hook, so the controller, the body's feet and the
   chase boom meet props without changing. A push is two things, the walker
   stopping and the prop being shoved with an impulse capped at `PUSH_FORCE`,
-  and that cap against friction is what makes mass matter: a crate slides at
-  a walk, a 900 kg block does not move.
+  toward a speed that falls with mass (`shoveSpeed`): a ball is kicked ahead
+  of your feet, a plank goes at a walk, a 35 kg crate at about a third of one,
+  and against friction the cap stops a 900 kg block dead. The walker, held
+  back by the push-out, moves at the prop's pace.
 - **A ride carries translation and heading, never tilt.** Carrying the stand
   point through the full rotation was a motor: the walker's weight tips the
   prop a hair, the tilt carries the foot outward, the lever grows, and a
   two-crate stack walked itself out from under the player (19 units).
-- **Water drag is per volume, not per prop.** Buoyancy is eight samples at
-  the octant centres carrying `mass * g / density` between them. With one
-  damping for everything, a 1.2 kg beach ball buoyed at twelve times its
-  weight was fired twenty units out of the sea; drag now scales with the
-  water a prop displaces per kilogram.
+- **Reset torques as well as forces.** Rapier keeps the two in separate
+  accumulators and `resetForces` leaves torques alone. Every force laid at a
+  point adds a torque, so for a round the buoyancy torque of every floater
+  grew without bound, and the sea swung crates forty degrees a frame and
+  flipped drums end over end. `props.ts` clears both before re-laying.
+- **Buoyancy must stay conservative, and drag must stay implicit.** Samples
+  are the points of a 3x3x3 grid inside the actual shape, each ramping from
+  dry to under over a fixed thickness (the shape's smallest cell side). A
+  ramp that changed with the body's attitude pumped a plank to 30 rad/s of
+  tumbling in still water; an explicit drag torque did the same through a
+  plank's tiny long-axis inertia. Drag is Rapier's own damping (integrated
+  implicitly, stable at any strength), scaled by the water displaced per
+  kilogram, so a beach ball is held hard and a concrete block barely.
+- **A uniform cube floats on an edge.** At density 0.5 a homogeneous cube's
+  metacentre is below its centre of mass, and it floats like a diamond; that
+  is physics, not a bug. A crate floats level because its load is on its
+  floor: the kind's `ballast` carries a third of its mass as a point load low
+  down. `measure physics float` reports each kind's waterline, attitude and
+  settling time.
+- **The first step costs 50 ms, once.** V8 compiles WASM lazily, so the first
+  step of any world touches most of Rapier cold. `loadRapier` pays it on a
+  throwaway world right after init, which is the planet attaching under the
+  boot cover, rather than on the first physics frame of a walk.
 - **Nothing falls forever.** Props farther than `PARK_RANGE` (200) from the
   focus are disabled where they stand and wake when someone comes back; a
   prop found well under the drawn ground is lifted back onto it three times
@@ -601,18 +632,24 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
 ### Looking at it
 
 ```
-npm run film -- sandbox:stack          a 3x5 crate tower shoved over by a plank
-npm run film -- sandbox:*              every scenario, one contact sheet each
+npm run film -- sandbox:stack          a 3x5 crate tower, a plank punted through it
+npm run film -- 'sandbox:*'            every scenario, one contact sheet each (quote it in zsh)
 npm run film -- sandbox:roll --video   ...plus an MP4 (--gif for a GIF)
+npm run film -- sandbox:float --start 5 --duration 7 --frames 11    0.2 s apart
+npm run film -- sandbox:pile --yaw 1.2 --dist 30 --height 12       orbit the target
+npm run film -- sandbox:pile --from x,y,z --to x,y,z --fov 40      or place the lens
+npm run film -- sandbox:stack --raw    the bare frame, without the pixel look
 npm run film -- --list
 
-npm run measure -- physics             all of: ground cost stack tunnel walker scenarios
+npm run measure -- physics             all of: ground cost stack tunnel walker sites
+                                       float scenarios
 npm run measure -- physics walker      one section
 ```
 
 `film` writes `shots/film/<id>.png`: `--frames` stills at even sim-time steps
 through the game's own chunk materials and the real sandbox, labelled with
-their time, plus the scenario's report line. It takes `PROBE_PORT`/`PROBE_CDP`
+their time, plus the scenario's report line and the shot it used (so a
+reframe starts from `--from`/`--to` it printed). It takes `PROBE_PORT`/`PROBE_CDP`
 like `shoot`, keeps a vite dependency cache per port, and kills only what it
 spawned.
 
@@ -621,14 +658,17 @@ spawned.
 - **A prop kind**: one entry in `kinds.ts`'s `KINDS` (or `registerKind()` from
   your own module): a `ShapeSpec` (box, ball, cylinder, cone, hull, or a
   compound of them), mass in kg, friction, restitution, density relative to
-  water, and a `mesh()` drawn around the body's origin. Nothing else names a
-  kind. A one-off shape (a debris piece) is `spawn(kind, at, { shape, mesh,
+  water, an optional `ballast` (a share of the mass as a point load, which
+  lowers the centre of mass: a crate's contents), and a `mesh()` drawn around
+  the body's origin. Nothing else names a kind. A one-off shape (a debris piece) is `spawn(kind, at, { shape, mesh,
   mass })` instead.
 - **A scenario**: `defineScenario({ id, title, site, camera, duration, setup,
   events?, report? })` in any module, and one line in `scripts/probe/film.ts`'s
   `SCENARIO_MODULES` if that module is not `scenarios.ts`. Sites are pure
   field searches (`siteFlat`, `siteHill`, `siteStreet`, `siteSea` are
-  exported), so the same scenario always lands in the same place.
+  exported), so the same scenario always lands in the same place; a site may
+  return a `memo` the camera and setup read, and `clearOf()` asks the
+  chunks' own solids whether a rectangle is open ground.
 - **A tool that holds props** (the physgun): drive them from
   `onBeforeSlice`, with `setVelocity` toward a target or `addForce`, or switch
   one to `kinematic` and `moveKinematic` it every slice. Per-frame writes land

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { DESIGN_EYE, DESIGN_SEAT_BOTTOM } from './playerBody'
 
 /*
   Sitting down on the furniture.
@@ -74,9 +75,11 @@ export interface SeatingHandles {
 /** Seated eye height, as a fraction of the standing one, over the cushion.
     It places the body as well as the lens now, since `playerBody.sit()` hangs
     the fold from its eye, so it is also what lands a sitter's hips on the
-    cushion instead of through it: at this fraction the pelvis settles about a
-    finger's width into one, which is what a cushion is for. */
-const SEATED = 0.46
+    cushion instead of through it. So it is measured off the body rather than
+    picked: the folded body's eye over the seat of its pants, less a little
+    for the cushion to give. A soft body with a big trunk sits tall, which is
+    why this is higher than the 0.46 the long-legged robot sat at. */
+const SEATED = (DESIGN_SEAT_BOTTOM - 0.05) / DESIGN_EYE
 /** how far the head turns either side of the seat's own facing, by default */
 const CONE = Math.PI * 0.62
 /** and how far it may look down: enough to see your own lap, not your chest */

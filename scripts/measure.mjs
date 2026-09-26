@@ -112,6 +112,96 @@ for (const [k, n] of [...tally].sort((a, b) => b[1] - a[1])) {
   console.log('  ' + k.padEnd(12) + String(n).padStart(5) + '  ' + (100 * n / hit).toFixed(1) + '%')
 }
 `,
+  // what one body costs, because a town wears several: build time, draw calls,
+  // vertices, and one frame of a walking pose including the matrix update the
+  // renderer would otherwise pay for it
+  body: `
+const { buildPlayerBody } = await import('${ROOT}/src/game/player/playerBody.ts')
+const { makeCollisionSet } = await import('${ROOT}/src/game/physics/collision.ts')
+const env = { groundY: 0, collision: makeCollisionSet({ minX: -1e3, maxX: 1e3, minZ: -1e3, maxZ: 1e3 }) }
+let t0 = performance.now()
+const rigs = []
+for (let i = 0; i < 20; i++) rigs.push(buildPlayerBody(3.84, 34))
+const build = (performance.now() - t0) / 20
+let meshes = 0, verts = 0, bones = 0
+const mats = new Set()
+rigs[1].group.traverse((o) => {
+  if (o.isBone) bones++
+  if (o.isMesh) { meshes++; verts += o.geometry.getAttribute('position').count; mats.add(o.material) }
+})
+const pose = { dt: 1 / 60, gait: 0.6, crouchK: 0, grounded: true, run: false, yaw: 0, pitch: 0,
+  vx: 0, vz: -3, vy: 0, landing: 0, show: 1 }
+for (const r of rigs) r.update(pose, env)
+const N = 600
+const tick = (label, mutate) => {
+  const t = performance.now()
+  for (let f = 0; f < N; f++) for (const r of rigs) {
+    mutate(r, f)
+    r.update(pose, env)
+    r.group.updateMatrixWorld(true)
+    r.group.traverse((o) => { if (o.isSkinnedMesh) o.skeleton.update() })
+  }
+  const us = ((performance.now() - t) / N / rigs.length) * 1000
+  console.log('  ' + label.padEnd(10) + us.toFixed(1).padStart(7) + ' us/rig/frame')
+}
+// every triangle should face the way its own vertex normals say, or it is
+// culled from the side it is meant to be seen from
+rigs[1].group.traverse((o) => {
+  if (!o.isSkinnedMesh) return
+  const g = o.geometry, P = g.getAttribute('position'), Nn = g.getAttribute('normal')
+  const R = g.getAttribute('aRole'), I = g.getIndex()
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3()
+  const bad = {}
+  for (let t = 0; t < I.count; t += 3) {
+    const [i0, i1, i2] = [I.getX(t), I.getX(t + 1), I.getX(t + 2)]
+    a.fromBufferAttribute(P, i0); b.fromBufferAttribute(P, i1).sub(a); c.fromBufferAttribute(P, i2).sub(a)
+    const g0 = new THREE.Vector3().crossVectors(b, c)
+    if (g0.lengthSq() < 1e-12) continue
+    n.fromBufferAttribute(Nn, i0).add(a.fromBufferAttribute(Nn, i1)).add(a.fromBufferAttribute(Nn, i2))
+    if (g0.dot(n) < 0) { const r = R.getX(i0); bad[r] = (bad[r] ?? 0) + 1 }
+  }
+  console.log('triangles facing against their normals, by role code: ' + JSON.stringify(bad))
+})
+console.log('build ' + build.toFixed(2) + ' ms/rig, ' + meshes + ' meshes (draw calls, x2 with a shadow), ' +
+  mats.size + ' materials, ' + verts + ' verts' + (bones ? ', ' + bones + ' bones' : ''))
+tick('walk', (r) => { r.group.position.z -= 3 / 60 })
+pose.vz = 0; pose.gait = 0
+tick('idle', () => {})
+for (const r of rigs) r.flop(4, 3, -2)
+tick('ragdoll', () => {})
+
+// the sandbox hooks, end to end on one body: knocked flat by an impulse at
+// the hip, picked up by the left hand and dragged, dropped, left to settle,
+// and stood back up. Every limb must stay finite and the body must end up
+const r = buildPlayerBody(3.84, 34)
+const p = new THREE.Vector3()
+const step = (n) => { for (let i = 0; i < n; i++) { r.update(pose, env); r.group.updateMatrixWorld(true) } }
+const finite = () => r.limbs.every((l) => { r.limbPos(l.index, p); return Number.isFinite(p.x + p.y + p.z) })
+step(30)
+r.limbPos(0, p)
+r.hit(new THREE.Vector3(0, 5, 12).multiplyScalar(r.mass), p)
+step(60)
+const hand = r.limbs.find((l) => l.name === 'handL').index
+const target = r.limbPos(hand, new THREE.Vector3()).clone().add(new THREE.Vector3(0, 6, 0))
+r.grab(hand, target)
+for (let i = 0; i < 90; i++) { target.x += 0.05; step(1) }
+const held = r.limbPos(hand, new THREE.Vector3()).distanceTo(target)
+const heldSettled = r.settled
+r.grab(hand, null)
+let t = 0
+while (!r.settled && t < 600) { step(1); t++ }
+const settleS = t / 60
+r.getupSpot(p)
+r.group.position.set(p.x, 0, p.z)
+r.group.updateMatrixWorld(true)
+r.beginRecover()
+t = 0
+while (r.down && t < 300) { step(1); t++ }
+console.log('hooks: hit ok, held ' + held.toFixed(2) + ' units off the grab point' +
+  (heldSettled ? ' (WRONG: a held body reported settled)' : '') +
+  ', settled ' + settleS.toFixed(2) + ' s after release, stood up in ' + (t / 60).toFixed(2) +
+  ' s, limbs ' + (finite() ? 'finite' : 'NaN') + ', ' + (r.down ? 'STILL DOWN' : 'standing'))
+`,
   smoke: `
 let bad = 0, n = 0
 const t0 = performance.now()

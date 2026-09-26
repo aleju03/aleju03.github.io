@@ -8,6 +8,7 @@ import {
 } from '../player/look'
 import { blockedAt, makeCollisionSet, type Solid } from '../physics/collision'
 import type { RagdollEnv } from '../player/ragdoll'
+import type { Impact, ImpactWatch } from '../player/impacts'
 import { gfx } from './quality'
 import { SEA_Y, terrainY } from './terrain'
 import { ROAD_HALF, WALK_W, placeAt, roadAt } from './settlements'
@@ -60,6 +61,9 @@ import { inReserved } from './grid'
 export interface PedestrianHandles {
   /** advance the crowd; call once per rendered frame */
   update: (camPos: THREE.Vector3, dt: number) => void
+  /** let anything the watch is tracking (a car, mostly) bowl people over.
+      Call after the watch has been told where the movers are this frame */
+  knock: (watch: ImpactWatch) => void
 }
 
 interface BuildOpts {
@@ -125,6 +129,10 @@ interface Person {
   /** seconds paused, looking at a window */
   pause: number
   live: boolean
+  /** knocked flat: the ragdoll's world while it lies there (the solids near
+      where it fell, not the whole town's), and how long it has been down */
+  down: RagdollEnv | null
+  downFor: number
 }
 
 const swatch = <T,>(list: readonly T[], r: number) => list[Math.floor(r * list.length) % list.length]
@@ -144,8 +152,8 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     dt: 0, gait: 0, crouchK: 0, grounded: true, run: false,
     yaw: 0, pitch: 0, vx: 0, vz: 0, vy: 0, landing: 0, show: 1,
   }
-  // a pedestrian never ragdolls, so this is a formality the rig's contract
-  // requires rather than anything that is ever consulted
+  // walking, the rig only asks this for the floor under its feet; a body that
+  // has been knocked down gets a world of its own (see `knock`)
   const env: RagdollEnv = {
     groundY: 0,
     collision: makeCollisionSet({ minX: 0, maxX: 0, minZ: 0, maxZ: 0 }),
@@ -290,6 +298,9 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     p.settle = 0
     p.pause = 0
     p.live = true
+    // whoever was lying in the road back there is somebody new over here
+    p.down = null
+    p.rig.reset()
     p.rig.setLook(look())
     p.rig.face(p.yaw)
     p.group.position.set(p.x, groundAt(p.x, p.z), p.z)
@@ -308,7 +319,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     root.add(rig.group)
     crowd.push({
       rig, group: rig.group, x: 0, z: 0, yaw: 0,
-      gait: 0, settle: 0, pause: 0, live: false,
+      gait: 0, settle: 0, pause: 0, live: false, down: null, downFor: 0,
     })
   }
 
@@ -337,6 +348,38 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
         p.live = false
         p.group.visible = false
         if (inTown) recut(p, camPos.x, camPos.z)
+        continue
+      }
+
+      /* ---- knocked flat ------------------------------------------------- */
+      // the ragdoll owns the body until it has settled a while, then they
+      // stand up where they lie and carry on down the pavement from there
+      if (p.down) {
+        p.downFor += dt
+        pose.dt = dt
+        pose.gait = 0
+        pose.vx = 0
+        pose.vz = 0
+        if (p.rig.ragdolling && p.rig.settled && p.downFor > 2.2) {
+          p.rig.getupSpot(getup)
+          p.x = getup.x
+          p.z = getup.z
+          p.group.position.set(p.x, groundAt(p.x, p.z), p.z)
+          p.group.rotation.y = p.rig.facing + Math.PI
+          p.group.updateMatrixWorld(true)
+          p.rig.beginRecover()
+        }
+        if (!p.rig.ragdolling) {
+          p.group.position.set(p.x, groundAt(p.x, p.z), p.z)
+          p.group.rotation.y = p.rig.facing + Math.PI
+        }
+        p.down.groundY = groundAt(p.x, p.z)
+        p.rig.update(pose, p.down)
+        if (!p.rig.down) {
+          p.down = null
+          p.yaw = p.rig.facing
+          p.pause = 1 + rnd() * 1.5 // a moment to collect themselves
+        }
         continue
       }
 
@@ -384,6 +427,36 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     }
   }
 
+  const getup = new THREE.Vector3()
+  const feet = new THREE.Vector3()
+  const hit: Impact = { impulse: new THREE.Vector3(), point: new THREE.Vector3() }
+  /** the solids within reach of a body lying at (x, z): the ragdoll tests
+      every one of them every substep, and the town has thousands */
+  const nearSolids = (x: number, z: number) => {
+    const R = 14
+    return opts.obstacles.filter(
+      (b) => b.max.x > x - R && b.min.x < x + R && b.max.z > z - R && b.min.z < z + R,
+    )
+  }
+  const knock = (watch: ImpactWatch) => {
+    for (const p of crowd) {
+      if (!p.live) continue
+      feet.set(p.x, groundAt(p.x, p.z), p.z)
+      if (!watch.strike(p.rig, feet, BODY_H, p.rig.mass, hit)) continue
+      if (!p.down) {
+        p.down = {
+          groundY: feet.y,
+          groundAt,
+          collision: makeCollisionSet(
+            { minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, nearSolids(p.x, p.z),
+          ),
+        }
+      }
+      p.downFor = 0
+      p.rig.hit(hit.impulse, hit.point)
+    }
+  }
+
   trackDisposable({
     dispose: () => {
       crowd.length = 0
@@ -391,5 +464,5 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     },
   })
 
-  return { update }
+  return { update, knock }
 }
