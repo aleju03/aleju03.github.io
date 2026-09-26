@@ -714,8 +714,8 @@ export const createFx = (o: FxOpts): Fx => {
       // along the ground the way a collapse pushes its dust ahead of it, then
       // rising, swelling and thinning to nothing: translucent sprites, so a
       // cloud of it shows the ruin through it
-      const n = Math.min(16, 4 + Math.round(size * 1.1))
-      const sz = Math.min(1.8, 0.7 + size * 0.1)
+      const n = Math.min(10, 3 + Math.round(size * 0.8))
+      const sz = Math.min(1.4, 0.5 + size * 0.07)
       const r = r0 * 0.5 + 0.12
       const g = g0 * 0.5 + 0.11
       const b = b0 * 0.5 + 0.095
@@ -725,9 +725,9 @@ export const createFx = (o: FxOpts): Fx => {
         const s = rnd(0.7, 1.3) * sz
         const k = i % 3 === 0 ? rnd(0.72, 0.82) : rnd(0.95, 1.1)
         emit(dust, at.x + Math.cos(a) * size * 0.25, at.y + rnd(-0.2, 0.8), at.z + Math.sin(a) * size * 0.25,
-          Math.cos(a) * out, rnd(0.6, 2.4), Math.sin(a) * out, rnd(2.4, 4.4), s, s * rnd(0.75, 1), s,
+          Math.cos(a) * out, rnd(0.6, 2.4), Math.sin(a) * out, rnd(1.8, 3.2), s, s * rnd(0.75, 1), s,
           r * k, g * k, b * k,
-          { delay: rnd(0, 0.3), grow: rnd(2.4, 3.4), drag: 1.2, spin: 0.5, fadeAt: 0.2 })
+          { delay: rnd(0, 0.3), grow: rnd(1.8, 2.6), drag: 1.2, spin: 0.5, fadeAt: 0.1 })
       }
     },
 
@@ -903,7 +903,7 @@ export const createFx = (o: FxOpts): Fx => {
           // climbs away from the fire that lit it (masonry dust was never
           // lit by a fire, and only dims a little as it spreads)
           const a = t < f0 ? Math.min(1, age / 0.08) : Math.max(0, 1 - (t - f0) / (1 - f0))
-          P.alpha.setX(i, P === dust ? a * 0.8 : a)
+          P.alpha.setX(i, P === dust ? a * 0.6 : a)
           const dk = P === dust ? 1 - 0.2 * t : 1 - 0.55 * t
           col.setRGB(P.c[i3] * dk, P.c[i3 + 1] * dk, P.c[i3 + 2] * dk)
           P.mesh.setColorAt(i, col)
