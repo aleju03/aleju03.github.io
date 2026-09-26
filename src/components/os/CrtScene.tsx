@@ -18,6 +18,10 @@ import { packLook, sanitizeLook, unpackLook, type PlayerLook } from '../../game/
 import type { RagdollEnv } from '../../game/player/ragdoll'
 import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
 import { createImpactWatch, type Impact } from '../../game/player/impacts'
+import {
+  bodyExtent, createBodyContact, type BodyExtent, type Bumpable, type Bumper, type ContactStep,
+} from '../../game/player/bodyContact'
+import { createRemoteBumps, createShoveTaker } from '../../game/net/shove'
 import { createWalkController } from '../../game/player/walkController'
 import { createSeating } from '../../game/player/seating'
 import { facingOf } from '../../game/levels/fittings'
@@ -1061,6 +1065,8 @@ export default function CrtScene({
         const chase = createChaseCam()
         /** the right hand, where the body carries the physgun in third person */
         const handR = rig.limbs.findIndex((l) => l.name === 'handR')
+        /** where a shove from another player lands */
+        const chestLimb = Math.max(0, rig.limbs.findIndex((l) => l.name === 'chest'))
         /*
           Getting hit. The fleet moves (somebody else's car on foot, your own
           at the wheel) and the watch turns where each machine was last frame
@@ -1569,6 +1575,36 @@ export default function CrtScene({
         const fleetNet = createRemoteFleet()
         const avatars = createRemoteAvatars(EYE, 34)
         scene.add(avatars.root)
+        /*
+          Bumping into people (game/player/bodyContact.ts). The town's
+          pedestrians and the other players are upright cylinders sized off
+          their own rigs, and one pass a frame after the walk has moved
+          settles the walker against them: a lean pushes apart, a sprint or
+          a hop knocks them flat, a landing on a head bounces. The crowd is
+          ours to push; the other players are not, so they are walls here and
+          anything harder than a lean travels to them as a world-shove their
+          own client applies (game/net/shove.ts)
+        */
+        const contact = createBodyContact()
+        const remoteBumps = createRemoteBumps({
+          world: remote,
+          rigOf: avatars.rigOf,
+          seated: (id) => fleetNet.seatOf(id) !== null,
+          send: (to, vx, vy, vz) => net?.shove(to, vx, vy, vz),
+          now: () => performance.now() / 1000,
+        })
+        const shoveTaker = createShoveTaker()
+        const shoveV = new THREE.Vector3()
+        const bumpSets: (Bumpable | null)[] = [null, null]
+        const myExtent: BodyExtent = { radius: 1, height: EYE }
+        const bumper: Bumper = {
+          eye: camera.position, feetY: 0, vx: 0, vz: 0, vy: 0, grounded: true, radius: 1, height: EYE,
+        }
+        // one record, refilled each frame (the walk frame allocates nothing)
+        const contactIn: ContactStep = {
+          me: bumper, push: walk.push, collision: makeCollisionSet({ minX: 0, maxX: 0, minZ: 0, maxZ: 0 }),
+          stepUp: 0, sets: bumpSets, now: 0,
+        }
         let net: ReturnType<typeof createWorldNet> | null = null
         let voice: ReturnType<typeof createProximityVoice> | null = null
         // the character screen's brush. Local first: the body you are standing
@@ -1717,6 +1753,21 @@ export default function CrtScene({
                 case 'world-signal':
                   voice?.accept(msg.from, msg.data)
                   break
+                // somebody bumped into us: our own body, our own call
+                case 'world-shove': {
+                  shoveV.set(msg.vx, msg.vy, msg.vz)
+                  const able =
+                    !fleet.riding && !seating.current && !walk.noclip && !godMode && !rig.down && !levels.frozen
+                  const fx = shoveTaker.take(shoveV, performance.now() / 1000, able)
+                  if (fx === 'flop') {
+                    rig.limbPos(chestLimb, impact.point)
+                    impact.impulse.copy(shoveV).multiplyScalar(rig.mass)
+                    rig.hit(impact.impulse, impact.point)
+                  } else if (fx === 'stumble') {
+                    walk.push(shoveV.x, 0, shoveV.z)
+                  }
+                  break
+                }
                 // somebody renamed or repainted. Both land on the roster
                 // first — a body that has not spawned yet reads it there —
                 // and only then on the meshes, if there are any
@@ -2860,6 +2911,33 @@ export default function CrtScene({
               focus: camera.position,
             })
             if (sbf.moving && level.id === 'overworld') followSunShadow(camera.position, now)
+          }
+          // other bodies: after the walk and the ride have moved the head and
+          // before anything reads it. Not from a seat, a heap on the floor, a
+          // level cut or noclip, where the walker is not a body anybody meets
+          if (!sitting && !walk.noclip && !rig.down && !levels.frozen) {
+            bodyExtent(body, myExtent)
+            bumper.feetY = walk.feetY
+            bumper.vx = step.vx
+            bumper.vz = step.vz
+            bumper.vy = step.vy
+            bumper.grounded = step.grounded
+            bumper.radius = myExtent.radius
+            bumper.height = myExtent.height * (1 - 0.25 * walk.crouchK)
+            remoteBumps.refresh()
+            // the crowd only walks the overworld's streets
+            bumpSets[0] = level.id === 'overworld' ? outside.crowd : null
+            bumpSets[1] = net ? remoteBumps : null
+            contactIn.collision = level.collision
+            contactIn.stepUp = step.grounded ? EYE * 0.12 : 0
+            contactIn.now = now / 1000
+            const cr = contact.step(contactIn)
+            // a knock or a stomp lands with a thump off whoever it hit
+            if (cr.knocks + cr.stomps > 0 && !pausedNow) {
+              landThump('grass', cr.stomps ? 0.8 : 0.55)
+            }
+          }
+          if (sandbox) {
             // the spawn pop: scale in over POP_S with an ease-out-back, so it
             // lands a hair big and settles, which is what reads as arriving
             for (let i = pops.length - 1; i >= 0; i--) {

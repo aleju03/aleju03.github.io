@@ -9,6 +9,7 @@ import {
 import { blockedAt, makeCollisionSet, type Solid } from '../physics/collision'
 import type { RagdollEnv } from '../player/ragdoll'
 import type { Impact, ImpactWatch } from '../player/impacts'
+import { bodyExtent, type BodyExtent, type Bumpable, type Bump } from '../player/bodyContact'
 import { gfx } from './quality'
 import { SEA_Y, terrainY } from './terrain'
 import { ROAD_HALF, WALK_W, placeAt, roadAt } from './settlements'
@@ -37,6 +38,15 @@ import { inReserved } from './grid'
   It follows fauna.ts's rules, and for the same reasons: session state that
   never streams and never travels, a fixed pool re-cut beyond the fog, and no
   collision box of its own. It adds one of its own.
+
+  **Bodies bump.** A pedestrian has no box in the level's collision (it
+  moves, and a box the walk could stand on would be a ladder onto a head),
+  but it is a `Bumpable` (`player/bodyContact.ts`): the walker's contact
+  pass asks where each one is, shoves it half the overlap when it has room
+  behind it, staggers it when leaned on hard, and knocks it into the same
+  flop a car does when charged, tackled or landed on. A body lying in the
+  road is trampled: walked through, it takes a kick. All of it is local
+  session state, so this client is the authority and nothing travels.
 
   **The pavement is the path.** There is no navmesh and there should not be
   one: `settlements.ts` already answers "is this the sidewalk slab" for any
@@ -68,6 +78,16 @@ export interface PedestrianHandles {
       limb. Taking one knocks them flat the way a car does, so the crowd's
       own tick hands the body to the ragdoll and stands it up afterwards */
   grabbable: () => Iterable<{ key: string; rig: GrabHandle }>
+  /** the crowd as bodies the walker bumps into (see the header) */
+  bumpable: Bumpable
+  /** put people exactly here, standing for `pause` seconds (a harness's
+      way to stage a street; the game never calls it). The rest are parked */
+  stage: (spots: readonly { x: number; z: number; yaw: number; pause?: number }[]) => void
+  /** the chest of body i if it is lying down, into `out`; false otherwise */
+  lying: (i: number, out: THREE.Vector3) => boolean
+  /** how many are knocked down right now, and how many times in all */
+  readonly downed: number
+  readonly knocks: number
 }
 
 /** the part of a rig a grab beam needs (the physgun's `GrabRig`) */
@@ -110,6 +130,13 @@ const IDLE_CHECK = 0.75
 
 /** how tall a body the wall test asks about */
 const BODY_H = 4.2
+/** how fast a stagger bleeds away, per second */
+const STAGGER_GRIP = 4.5
+/** a trample: the share of the walker's velocity a body lying underfoot is
+    kicked with, the lift, and how often one body can be kicked */
+const TRAMPLE_K = 0.55
+const TRAMPLE_UP = 1.6
+const TRAMPLE_EVERY = 0.35
 
 /** the middle of the sidewalk slab: kerb plus half the walkway */
 const WALK_MID = ROAD_HALF + WALK_W * 0.5
@@ -144,6 +171,17 @@ interface Person {
       where it fell, not the whole town's), and how long it has been down */
   down: RagdollEnv | null
   downFor: number
+  /** the soles, and the walk's velocity this frame, for the contact pass */
+  y: number
+  vx: number
+  vz: number
+  /** a stagger from being leaned on: velocity that bleeds away, units/s */
+  sx: number
+  sz: number
+  /** the cylinder it bumps as, measured off the rig (bodyContact.ts) */
+  ext: BodyExtent
+  /** seconds until a body lying down may be trampled again */
+  kicked: number
 }
 
 const swatch = <T,>(list: readonly T[], r: number) => list[Math.floor(r * list.length) % list.length]
@@ -314,8 +352,10 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     p.live = true
     // whoever was lying in the road back there is somebody new over here
     p.down = null
+    p.sx = p.sz = 0
     p.rig.reset()
     p.rig.setLook(look())
+    bodyExtent(p.group, p.ext)
     p.rig.face(p.yaw)
     p.group.position.set(p.x, groundAt(p.x, p.z), p.z)
     p.group.visible = true
@@ -334,6 +374,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     crowd.push({
       rig, group: rig.group, x: 0, z: 0, yaw: 0,
       gait: 0, settle: 0, pause: 0, live: false, down: null, downFor: 0,
+      y: 0, vx: 0, vz: 0, sx: 0, sz: 0, ext: { radius: 1, height: BODY_H }, kicked: 0,
     })
   }
 
@@ -369,6 +410,9 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       // the ragdoll owns the body until it has settled a while, then they
       // stand up where they lie and carry on down the pavement from there
       if (p.down) {
+        p.vx = p.vz = 0
+        p.sx = p.sz = 0
+        p.kicked = Math.max(0, p.kicked - dt)
         p.downFor += dt
         pose.dt = dt
         pose.gait = 0
@@ -409,6 +453,24 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
         if (rnd() < dt * 0.04) p.pause = 2 + rnd() * 4
       }
       let speed = PACE * p.gait
+      // a stagger from being leaned on: carried back a step or two, the
+      // walk held while it lasts, and never into a wall
+      const staggered = p.sx !== 0 || p.sz !== 0
+      if (staggered) {
+        const nx = p.x + p.sx * dt
+        const nz = p.z + p.sz * dt
+        const ny = groundAt(nx, nz)
+        if (!blockedAt(nx, nz, ny, ny + BODY_H, solids, 0.5)) {
+          p.x = nx
+          p.z = nz
+        } else p.sx = p.sz = 0
+        const k = Math.exp(-STAGGER_GRIP * dt)
+        p.sx *= k
+        p.sz *= k
+        if (p.sx * p.sx + p.sz * p.sz < 0.04) p.sx = p.sz = 0
+        speed = 0
+        p.gait = Math.max(0, p.gait - dt * 4)
+      }
       if (speed > 0.05) {
         const step = steer(p, dt)
         if (step === 'go') {
@@ -429,12 +491,15 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
 
       /* ---- the body ------------------------------------------------------ */
       const y = groundAt(p.x, p.z)
+      p.y = y
+      p.vx = fwdX(p.yaw) * speed + p.sx
+      p.vz = fwdZ(p.yaw) * speed + p.sz
       p.group.position.set(p.x, y, p.z)
       pose.dt = dt
-      pose.gait = p.gait * 0.5 // PACE against the walk's own run cap
+      pose.gait = staggered ? Math.min(1, Math.hypot(p.sx, p.sz) / 5.9) : p.gait * 0.5 // PACE against the walk's own run cap
       pose.yaw = p.yaw
-      pose.vx = fwdX(p.yaw) * speed
-      pose.vz = fwdZ(p.yaw) * speed
+      pose.vx = p.vx
+      pose.vz = p.vz
       env.groundY = y
       p.rig.update(pose, env)
       p.group.rotation.y = p.rig.facing + Math.PI
@@ -478,23 +543,130 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     for (let i = 0; i < crowd.length; i++) if (crowd[i].live) yield handles[i]
   }
 
+  let knocks = 0
+  /** hand a body to its ragdoll, in a world of the solids near where it
+      fell. Counts it once however many blows land on the heap after */
+  const fell = (p: Person) => {
+    if (!p.down) {
+      p.down = downEnv(p)
+      knocks++
+    }
+    p.downFor = 0
+  }
+
   const knock = (watch: ImpactWatch) => {
     for (const p of crowd) {
       if (!p.live) continue
       feet.set(p.x, groundAt(p.x, p.z), p.z)
       if (!watch.strike(p.rig, feet, BODY_H, p.rig.mass, hit)) continue
-      if (!p.down) {
-        p.down = {
-          groundY: feet.y,
-          groundAt,
-          collision: makeCollisionSet(
-            { minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, nearSolids(p.x, p.z),
-          ),
-        }
-      }
-      p.downFor = 0
+      fell(p)
       p.rig.hit(hit.impulse, hit.point)
     }
+  }
+
+  /* ---- bumping into people (player/bodyContact.ts) ---------------------- */
+  const chest = new THREE.Vector3()
+  const bumpable: Bumpable = {
+    get size() {
+      return crowd.length
+    },
+    peer: (i, out) => {
+      const p = crowd[i]
+      if (!p.live || p.down) return false
+      out.x = p.x
+      out.z = p.z
+      out.feetY = p.y
+      out.vx = p.vx
+      out.vz = p.vz
+      out.radius = p.ext.radius
+      out.height = p.ext.height
+      return true
+    },
+    // shoved half the overlap, if there is room behind them: the same wall
+    // test their own walk steers by, so a body is never pushed into a shop
+    nudge: (i, dx, dz) => {
+      const p = crowd[i]
+      const x = p.x + dx
+      const z = p.z + dz
+      const y = groundAt(x, z)
+      if (blockedAt(x, z, y, y + BODY_H, solids, 0.5)) return false
+      p.x = x
+      p.z = z
+      p.y = y
+      p.group.position.set(x, y, z)
+      return true
+    },
+    hit: (i: number, b: Bump) => {
+      const p = crowd[i]
+      if (b.kind === 'lean') {
+        // leaned on: staggered back, and a moment's pause before they walk
+        // on, turned a little off whoever is in the way
+        if (b.vx !== 0 || b.vz !== 0) {
+          p.sx = b.vx
+          p.sz = b.vz
+        }
+        if (p.pause <= 0) {
+          p.pause = 0.4 + rnd() * 0.5
+          const side = fwdX(p.yaw) * -b.nz + fwdZ(p.yaw) * b.nx >= 0 ? 1 : -1
+          p.yaw += side * 0.5
+          p.settle = 0.8
+        }
+        return
+      }
+      fell(p)
+      hit.impulse.set(b.vx, b.vy, b.vz).multiplyScalar(p.rig.mass)
+      hit.point.set(b.px, b.py, b.pz)
+      p.rig.hit(hit.impulse, hit.point)
+    },
+    // walked through while lying there: a kick at the chest, along the walk
+    trample: (x, z, feetY, vx, vz, radius) => {
+      let n = 0
+      for (const p of crowd) {
+        if (!p.live || !p.down || !p.rig.ragdolling || p.kicked > 0) continue
+        p.rig.focus(chest)
+        const dx = chest.x - x
+        const dz = chest.z - z
+        const r = radius + 0.6
+        if (dx * dx + dz * dz > r * r || chest.y > feetY + 1.5) continue
+        p.kicked = TRAMPLE_EVERY
+        p.downFor = Math.min(p.downFor, 1)
+        hit.impulse.set(vx * TRAMPLE_K, TRAMPLE_UP, vz * TRAMPLE_K).multiplyScalar(p.rig.mass)
+        hit.point.copy(chest)
+        p.rig.hit(hit.impulse, hit.point)
+        n++
+      }
+      return n
+    },
+  }
+
+  const stage = (spots: readonly { x: number; z: number; yaw: number; pause?: number }[]) => {
+    crowd.forEach((p, i) => {
+      const s = spots[i]
+      if (!s) {
+        p.live = false
+        p.group.visible = false
+        return
+      }
+      p.x = s.x
+      p.z = s.z
+      p.y = groundAt(s.x, s.z)
+      p.yaw = s.yaw
+      p.gait = s.pause ? 0 : 1
+      p.pause = s.pause ?? 0
+      p.settle = 1
+      p.live = true
+      p.down = null
+      p.sx = p.sz = 0
+      p.rig.reset()
+      p.rig.setLook(look())
+      bodyExtent(p.group, p.ext)
+      p.rig.face(s.yaw)
+      p.group.position.set(s.x, p.y, s.z)
+      p.group.rotation.y = p.rig.facing + Math.PI
+      p.group.visible = true
+    })
+    // and nobody from the parked pool is re-cut into the staged street
+    retryIn = 1e9
   }
 
   trackDisposable({
@@ -504,5 +676,21 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     },
   })
 
-  return { update, knock, grabbable }
+  return {
+    update, knock, grabbable, bumpable, stage,
+    lying: (i, out) => {
+      const p = crowd[i]
+      if (!p || !p.live || !p.down) return false
+      p.rig.focus(out)
+      return true
+    },
+    get downed() {
+      let n = 0
+      for (const p of crowd) if (p.live && p.down) n++
+      return n
+    },
+    get knocks() {
+      return knocks
+    },
+  }
 }

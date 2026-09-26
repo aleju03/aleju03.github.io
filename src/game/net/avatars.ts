@@ -79,6 +79,9 @@ export interface RemoteAvatars {
       canvas the size of the word. A body that has not spawned yet needs
       neither — `update` reads the roster on the way in */
   reskin: (id: PlayerId, entry: { name: string; admin: boolean; look?: string }) => void
+  /** the body drawn for a player, or null before it has spawned: what the
+      walker's contact pass sizes their cylinder from (net/shove.ts) */
+  rigOf: (id: PlayerId) => PlayerRig | null
   dispose: () => void
 }
 
@@ -479,6 +482,10 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       a.name.scale.set(NAME_H * aspect, NAME_H, 1)
       a.nameTex.dispose()
       a.nameTex = tex
+    },
+
+    rigOf(id) {
+      return avatars.get(id)?.rig ?? null
     },
 
     say(id, text) {

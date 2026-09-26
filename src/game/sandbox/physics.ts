@@ -130,6 +130,25 @@ export const STEP = 1 / 60
 export const SOLVER_ITERATIONS = 8
 /** most slices one frame may take; past this, time slows instead */
 export const MAX_STEPS = 6
+/*
+  Friction multiplies. Every prop's colliders combine friction by product
+  (Rapier's Multiply rule, which outranks the default Average whichever
+  side of a pair asks for it), so two crates at 0.42 grip each other at
+  0.18 and a crate on the ground at 0.42 * WORLD_FRICTION. The reason is how
+  a stack goes over. On a tipping board (`measure physics lean`), a
+  three-high crate column tips over its edge at 27 to 33 degrees; averaged,
+  crate on crate held until 35, so the column always went over first, as
+  one welded piece, whatever knocked it; multiplied, the top crate slides
+  at 20, so a leaning stack sheds its top crates as it goes, which is how
+  Garry's Mod (whose Havok also multiplies) reads. Everything the props
+  meet that is not a prop (the ground, the world's solids, the vehicles'
+  hulls, the walker) carries WORLD_FRICTION times what it used to, so a
+  crate on the grass grips the grass exactly as it did under averaging
+  (0.42 * 1.45 = 0.61, the old average with 0.8) and only prop on prop
+  changed.
+*/
+export const WORLD_FRICTION = 1.45
+
 /** the default downward acceleration, units/s², the walker's own */
 export const GRAVITY = 34
 

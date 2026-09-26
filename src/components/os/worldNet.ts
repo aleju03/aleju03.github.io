@@ -68,6 +68,9 @@ export interface WorldNet {
   seat: (v: number, seat: number) => void
   /** give up whichever chair we hold */
   unseat: () => void
+  /** we bumped into this player: the velocity their own client should take
+      (game/net/shove.ts). Throttled by the caller, clamped by the server */
+  shove: (to: PlayerId, vx: number, vy: number, vz: number) => void
   /** where the machine we are driving is; throttled like `move` */
   vehicle: (
     v: number,
@@ -343,6 +346,11 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
 
     unseat() {
       inWorld({ type: 'world-unseat' })
+    },
+
+    shove(to, vx, vy, vz) {
+      const r = (n: number) => Math.round(n * 100) / 100
+      inWorld({ type: 'world-shove', to, vx: r(vx), vy: r(vy), vz: r(vz) })
     },
 
     setLevel(next) {

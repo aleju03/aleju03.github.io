@@ -340,16 +340,16 @@ const WATER_DRAG = 5
 const WATER_SPIN_DRAG = 1.4
 /** the sea's current, u/s, and the heading it veers about: downwind, the
     way the grass leans (wind.ts's uWind, 0.82 / 0.57) */
-const CURRENT = 0.3
+const CURRENT = 0.45
 const CURRENT_HEADING = Math.atan2(0.57, 0.82)
 /** what a wholly dry floater would add in wind, u/s (a ball rides high) */
-const WINDAGE = 0.55
+const WINDAGE = 0.7
 /** each floater's own wander on top, u/s */
-const EDDY = 0.14
+const EDDY = 0.3
 /** the yaw rate a floater wanders about, rad/s */
-const TURN = 0.16
+const TURN = 0.3
 /** the rocking drive about the horizontals, rad/s it would reach unrighted */
-const ROCK = 0.2
+const ROCK = 0.4
 /** a prop entering the water faster than this, downward, splashes */
 const SPLASH_SPEED = 5
 
@@ -506,7 +506,8 @@ export const createProps = (o: PropsOpts): Props => {
     const carried = ballast ? mass * ballast.share : 0
     for (const d of colliderDescs(shape, mass - carried)) {
       const c = world.createCollider(
-        d.setFriction(kind.friction).setRestitution(kind.restitution).setCollisionGroups(GROUPS.prop),
+        d.setFriction(kind.friction).setRestitution(kind.restitution).setCollisionGroups(GROUPS.prop)
+          .setFrictionCombineRule(R.CoefficientCombineRule.Multiply),
         body,
       )
       colliders.push(c)

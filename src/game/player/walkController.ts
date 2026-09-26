@@ -148,6 +148,12 @@ export interface WalkController {
       came to rest); feetY is absolute, so a body that settled on the sofa
       stands up on the sofa */
   teleport: (x: number, z: number, feetY: number) => void
+  /** a shove from outside the walk: a bump off another body, the bounce
+      off a head you landed on, somebody else's shoulder arriving over the
+      network. Planar velocity the walk's own control does not eat (it
+      decays on its own, quickly underfoot and slowly in the air), and an
+      upward kick that leaves the ground. Ignored in noclip */
+  push: (vx: number, vy: number, vz: number) => void
   /** kill planar velocity only (the moment a level cut triggers) */
   haltPlanar: () => void
   /** zero all motion state (level swap, sitting down) */
@@ -168,6 +174,10 @@ const FLY_FAST = 3.2
 const FLY_SLOW = 0.22
 /** the most downward speed a flight hands the fall that follows it, u/s */
 const LAND_CARRY = 10
+/** how fast a shove bleeds away, per second: underfoot the soles grip and
+    a bump is a stagger of a step or two; in the air only drag takes it */
+const SHOVE_GRIP = 5.5
+const SHOVE_AIR = 1.2
 
 export function createWalkController(
   rig: THREE.PerspectiveCamera,
@@ -191,6 +201,11 @@ export function createWalkController(
       does on the ground, and would otherwise stop a 26 u/s flyer dead in a
       few frames). Zero again the moment the feet touch anything */
   const drift = new THREE.Vector3()
+  /** a push from outside (see `push`), decaying at its own rate. Kept apart
+      from `vel` because `vel` eases toward the keys ten times a second and
+      would swallow a bump in a frame or two, which reads as hitting a wall
+      rather than being knocked back */
+  const shove = new THREE.Vector3()
   const wish = new THREE.Vector3()
   const vel = new THREE.Vector3()
   const want = new THREE.Vector3()
@@ -342,14 +357,27 @@ export function createWalkController(
       grounded = true
       rig.position.set(x, y + tune.eye, z)
     },
+    push: (px, py, pz) => {
+      if (noclip) return
+      shove.x += px
+      shove.z += pz
+      // a kick up takes the feet off the ground and never slows a rise
+      // already under way (a stomp's bounce mid-hop is still a bounce)
+      if (py > 0) {
+        grounded = false
+        vy = Math.max(vy, py)
+      }
+    },
     haltPlanar: () => {
       vel.set(0, 0, 0)
       drift.set(0, 0, 0)
+      shove.set(0, 0, 0)
       fly.set(0, 0, 0)
     },
     resetMotion: () => {
       vel.set(0, 0, 0)
       drift.set(0, 0, 0)
+      shove.set(0, 0, 0)
       fly.set(0, 0, 0)
       crouchK = 0
       vy = 0
@@ -396,6 +424,13 @@ export function createWalkController(
         drift.multiplyScalar(Math.exp(-0.35 * dt))
         rig.position.addScaledVector(drift, dt)
       } else drift.set(0, 0, 0)
+      // a shove rides on top of both, and is walled the same way below
+      const shoving = shove.x !== 0 || shove.z !== 0
+      if (shoving) {
+        rig.position.addScaledVector(shove, dt)
+        shove.multiplyScalar(Math.exp(-(grounded || swimming ? SHOVE_GRIP : SHOVE_AIR) * dt))
+        if (shove.x * shove.x + shove.z * shove.z < 1e-4) shove.set(0, 0, 0)
+      }
       // a solid is only a wall where it overlaps the body: standing, ledges
       // up to tune.step are climbed through; airborne, nothing is, so a hop
       // has to clear a surface before it can carry over it
@@ -404,6 +439,12 @@ export function createWalkController(
       // a wall met mid-drift takes that axis of the drift away
       if (drift.x !== 0 && Math.abs(rig.position.x - driftX) < Math.abs(drift.x * dt) * 0.5) drift.x = 0
       if (drift.z !== 0 && Math.abs(rig.position.z - driftZ) < Math.abs(drift.z * dt) * 0.5) drift.z = 0
+      // ...and of a shove: a body knocked into a wall stops against it
+      // rather than grinding along it for the rest of the decay
+      if (shoving) {
+        if (Math.abs(rig.position.x - driftX) < Math.abs((drift.x + shove.x) * dt) * 0.5) shove.x = 0
+        if (Math.abs(rig.position.z - driftZ) < Math.abs((drift.z + shove.z) * dt) * 0.5) shove.z = 0
+      }
       // whatever is under the feet now — the level floor unless a box top
       // stands between. The floor itself is per-position where the level says
       // so (terrain), and it is sampled here rather than before the move: the
@@ -516,12 +557,12 @@ export function createWalkController(
         waterY === undefined
           ? 0
           : Math.min(1, Math.max(0, (waterY - feetY) / Math.max(0.01, tune.eye)))
-      step.vx = vel.x + drift.x
-      step.vz = vel.z + drift.z
+      step.vx = vel.x + drift.x + shove.x
+      step.vz = vel.z + drift.z + shove.z
       step.vy = grounded ? 0 : vy
       step.support = support
       step.moved =
-        planar > 0.05 || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02 || feetY !== support
+        planar > 0.05 || shoving || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02 || feetY !== support
       return step
     },
   }

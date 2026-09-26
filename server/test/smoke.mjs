@@ -645,6 +645,51 @@ async function main() {
   assert.deepEqual(seats4.seats[2], [2, 0, 0], 'nobody flies into the backrooms');
   w2.send({ type: 'world-level', level: 'overworld' });
 
+  // 17c. Shoves. One walker bumping another is a velocity relayed to the
+  //      victim alone, and only when it is honest: the two standing near each
+  //      other, both on foot, and the push clamped to what a body can do.
+  //      Anything else is dropped in silence, so each refusal is followed by
+  //      a chat line and the victim must see the chat without a shove first.
+  const noShoveBefore = async (client, label) => {
+    for (let i = 0; i < 40; i++) {
+      const msg = await client.next(label);
+      assert.notEqual(msg.type, 'world-shove', `${label}: a shove got through`);
+      if (msg.type === 'world-chat') return;
+    }
+    throw new Error(`never saw the chat marker (${label})`);
+  };
+  // w1 is still at the wheel of the car: a seated body cannot be bumped
+  w1.send({ type: 'world-move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  w2.send({ type: 'world-move', x: 2, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  await w1.nextOf('world-tick', 'both on the pavement');
+  w2.send({ type: 'world-shove', to: welcome1.you, vx: 8, vy: 3, vz: 0 });
+  w2.send({ type: 'world-chat', text: 'marker: seated' });
+  await noShoveBefore(w1, 'a shove at a seated driver is dropped');
+  w1.send({ type: 'world-unseat' });
+  await w1.nextOf('world-seats', 'the driver gets out');
+  await w2.nextOf('world-seats', 'everyone sees the car emptied');
+  // on foot and side by side: relayed, from the right player, clamped
+  w1.send({ type: 'world-shove', to: welcome2.you, vx: 90, vy: 3.004, vz: 0 });
+  const shoved = await w2.nextOf('world-shove', 'a shove reaches its victim');
+  assert.equal(shoved.from, welcome1.you, 'the victim is told who bumped them');
+  assert.equal(shoved.vx, 24, 'the planar push is clamped to WORLD_SHOVE_MAX');
+  assert.equal(shoved.vy, 3, 'rounded like every other number on the wire');
+  // across the street is not a bump
+  w2.send({ type: 'world-move', x: 60, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  await w1.nextOf('world-tick', 'the victim walks off');
+  w1.send({ type: 'world-shove', to: welcome2.you, vx: 8, vy: 3, vz: 0 });
+  w1.send({ type: 'world-chat', text: 'marker: far' });
+  await noShoveBefore(w2, 'a shove from sixty units away is dropped');
+  // nor is one at yourself, and garbage is a strike rather than a relay
+  w1.send({ type: 'world-shove', to: welcome1.you, vx: 8, vy: 0, vz: 0 });
+  w1.send({ type: 'world-chat', text: 'marker: self' });
+  await noShoveBefore(w1, 'a shove at yourself is dropped');
+  // back behind the wheel, for 17b's last check: a dropped driver's seat
+  w1.send({ type: 'world-seat', v: 0, seat: 0 });
+  await w1.nextOf('world-seats', 'the driver gets back in');
+  await w2.nextOf('world-seats', 'everyone sees it');
+  console.log('17c. open world: shoves relayed to the victim only when near, on foot and clamped');
+
   w1.ws.close();
   const exited = await w2.nextOf('world-exit', 'walker departure announced');
   assert.equal(exited.id, welcome1.you);

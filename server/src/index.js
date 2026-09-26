@@ -150,6 +150,14 @@ const WORLD_FLEET = 3;
 const WORLD_SEATS = 2;
 const WORLD_SEAT_RATE_MAX = 20; // door-handle spam, per window
 const WORLD_SEAT_RATE_WINDOW_MS = 10_000;
+// Bumping into people. A shove is a velocity one walker proposes for another
+// and the victim's own client applies to itself (src/game/net/shove.ts); this
+// process only checks that the two are actually standing near each other,
+// clamps it and forwards it. Mirrors SHOVE_MAX there.
+const WORLD_SHOVE_MAX = 24; // units/s, planar and vertical
+const WORLD_SHOVE_REACH = 12; // between the two last reported poses; lag is generous
+const WORLD_SHOVE_RATE_MAX = 12; // a held lean is ~3 a second
+const WORLD_SHOVE_RATE_WINDOW_MS = 3_000;
 
 const MAX_TEXT_LEN = 600;
 const HISTORY_LIMIT = 60;
@@ -853,6 +861,8 @@ function handleDuelRematch(ws) {
 //      proximity voice is browser-to-browser and no audio touches this box
 //   4. the fleet — the one piece of world state that exists, and the one
 //      question clients cannot settle between themselves: who has the wheel
+//   5. shoves — one walker bumping another, relayed to the victim alone
+//      when the two are near each other and both on foot
 //
 // Sockets stay in the world independently of chat: `ws.world` is set by
 // world-join and is the whole of a player's server-side state.
@@ -864,6 +874,7 @@ const worldChatRate = new WeakMap();
 const worldSignalRate = new WeakMap();
 const worldSeatRate = new WeakMap();
 const worldLookRate = new WeakMap();
+const worldShoveRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
 
@@ -1250,6 +1261,44 @@ function handleWorldSignal(ws, msg) {
   send(peer, { type: 'world-signal', from: w.id, data: msg.data });
 }
 
+// Somebody bumped into somebody. Nobody's position is ever moved here: the
+// velocity goes to the victim, whose own client decides whether it is a
+// stumble, a flop or nothing. What this process guards is that a shove comes
+// from someone standing next to its target (their last reported poses, with
+// room for the playback lag), that neither is sitting in a machine or flying
+// through the world in noclip, and that it is not a firehose.
+function worldSeated(id) {
+  for (const v of worldFleet) if (v.seats.includes(id)) return true;
+  return false;
+}
+
+function handleWorldShove(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (!Number.isInteger(msg.to) || !finite(msg.vx) || !finite(msg.vy) || !finite(msg.vz)) {
+    strike(ws);
+    return;
+  }
+  // dropped, never punished: a lean held into somebody is a steady stream
+  if (!allowWorld(worldShoveRate, ws, WORLD_SHOVE_RATE_MAX, WORLD_SHOVE_RATE_WINDOW_MS)) return;
+  const peer = worldPlayers.get(msg.to);
+  if (!peer || peer === ws || peer.world.level !== w.level) return;
+  const p = peer.world;
+  if (Math.hypot(p.x - w.x, p.z - w.z) > WORLD_SHOVE_REACH) return;
+  if (Math.abs(p.y - w.y) > WORLD_SHOVE_REACH) return;
+  if ((w.f | p.f) & W_FLY) return;
+  if (worldSeated(w.id) || worldSeated(p.id)) return;
+  let vx = msg.vx;
+  let vz = msg.vz;
+  const planar = Math.hypot(vx, vz);
+  if (planar > WORLD_SHOVE_MAX) {
+    vx *= WORLD_SHOVE_MAX / planar;
+    vz *= WORLD_SHOVE_MAX / planar;
+  }
+  const vy = Math.max(-WORLD_SHOVE_MAX, Math.min(WORLD_SHOVE_MAX, msg.vy));
+  send(peer, { type: 'world-shove', from: w.id, vx: r2(vx), vy: r2(vy), vz: r2(vz) });
+}
+
 // ---------------------------------------------------------------- analytics
 
 // A failure here must never take the chat down with it: a bad Turso token or
@@ -1606,6 +1655,9 @@ function handleMessage(ws, msg) {
       return;
     case 'world-look':
       handleWorldLook(ws, msg);
+      return;
+    case 'world-shove':
+      handleWorldShove(ws, msg);
       return;
     case 'peeko-monitor':
       handlePeekoMonitor(ws, msg);
