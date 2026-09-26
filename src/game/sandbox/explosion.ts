@@ -8,18 +8,15 @@ import type { Sandbox } from './sandbox'
 /*
   Explosions: `explode(point, power, radius)`, and everything a bang does.
 
-  A blast is a radial impulse, a damage pass and a show. Every prop whose
-  collider reaches into the ball is pushed away from the centre with an
-  impulse that falls off with distance (`falloff`: full inside a fifth of the
-  radius, easing to nothing at its edge) and is thrown upward as well as out,
-  because a blast at ground level has nowhere to push but up and a barrel
-  that only skids sideways reads as a shove, not a bang. The impulse is
-  delivered off-centre, on the side facing the blast, so what flies also
-  tumbles. How far a thing goes is its mass's business: the impulse is a
-  number of kilogram-units-a-second, so a can is fired over the rooftops, a
-  crate is thrown down the street, a fridge rocks and a container shrugs.
-  A velocity cap (`MAX_DV`) stops the lightest things from leaving the
-  planet.
+  A blast is a throw, a damage pass and a show. Every prop whose collider
+  reaches into the ball is thrown away from the centre and well up, tumbling
+  end over end, with a speed that falls off with distance (`falloff`: full
+  inside a fifth of the radius, easing to nothing at its edge) and with the
+  square root of the mass (`blastThrow`): a barrel beside the bang goes about
+  seven units up and lands a dozen away, a can goes over the rooftops, a
+  fridge hops and a container shrugs. Blasts a beat apart redirect what is
+  already flying more than they speed it up, so a chain of them does not
+  stack a crate into orbit.
 
   Walls shelter. Before pushing a prop the blast casts a ray at it through
   the world's own solids (never the props), and anything behind a building
@@ -27,11 +24,14 @@ import type { Sandbox } from './sandbox'
   rule too and the reason a barrel inside a crate pile throws the crates.
 
   Damage is the same falloff in the currency breakables.ts deals in (a
-  change of velocity): crates within about half the radius come apart, and
-  another explosive inside about half its radius goes off after a beat (a
-  blast counts double against an explosive, see breakables.ts), and out to
-  two thirds of it catches light and goes a couple of seconds later. That is
-  the whole chain reaction, and it needs no special case.
+  change of velocity), and breakables.ts decides what a blast does with it,
+  which is almost never "now": an explosive right beside the bang blows a
+  third of a second later, at the top of the arc it was thrown on, and one
+  further out catches and sputters and goes wherever it lands; a crate is
+  worn down and thrown whole, and it is the landing that may finish it. That
+  is the whole chain reaction (several bangs from several places over a
+  couple of seconds, with most of the crates left to play with), and it
+  needs no special case.
 
   People are not props (the walker is a kinematic capsule and pedestrians
   are session rigs), so knocking them flat is the subscribers' job: every
@@ -63,10 +63,18 @@ export interface Explosions {
   onExplosion: (fn: (e: ExplosionEvent) => void) => () => void
 }
 
-/** the impulse a power-1 blast gives at its centre, kg*u/s */
-export const BLAST_IMPULSE = 1500
+/** the throw a power-1 blast gives a `LAUNCH_MASS` prop at its centre, u/s:
+    about seven units of height for a barrel beside it, which is a couple of
+    heads over the player and back down within a second and a half, landing
+    a dozen units off. Lighter things go faster (by the square root of the
+    mass ratio, so a can is not fired into orbit), heavier ones slower */
+export const BLAST_DV = 27
+const LAUNCH_MASS = 30
 /** no blast changes a prop's velocity by more than this, u/s */
-const MAX_DV = 55
+const MAX_DV = 46
+/** end-over-end spin at the centre of a power-1 blast, rad/s, for a prop
+    thrown at the full `BLAST_DV` (scaled with the throw) */
+const BLAST_SPIN = 9
 /** the damage a power-1 blast deals at its centre, in breakables' u/s */
 const BLAST_DAMAGE = 70
 /** how much of a blast gets round a wall */
@@ -78,6 +86,10 @@ export const falloff = (d: number, radius: number) => {
   return (1 - t) * (1 - t)
 }
 
+/** the speed a blast of falloff `f` throws a prop of `mass` at, u/s */
+export const blastThrow = (mass: number, power: number, f: number) =>
+  Math.min(MAX_DV, BLAST_DV * Math.sqrt(LAUNCH_MASS / Math.max(0.05, mass))) * Math.min(1.6, power) * f
+
 export const createExplosions = (
   sb: Sandbox,
   fx: Fx,
@@ -86,31 +98,64 @@ export const createExplosions = (
   const fns = new Set<(e: ExplosionEvent) => void>()
   const pos = new THREE.Vector3()
   const dir = new THREE.Vector3()
-  const imp = new THREE.Vector3()
-  const at = new THREE.Vector3()
+  const lin = new THREE.Vector3()
+  const ang = new THREE.Vector3()
+  const axis = new THREE.Vector3()
   const hitList: Array<{ id: PropId; f: number }> = []
 
-  /** out and up: the offset's direction plus a lift, so a blast at ground
-      level throws things into the air rather than along it */
-  const push = (id: PropId, mass: number, reach: number, len: number, f: number) => {
+  /*
+    The throw is a change of velocity rather than an impulse, because what
+    reads as a bang is the flight, and the flight wants to be the same
+    story at every mass: out, and well up (a blast at ground level has
+    nowhere to go but up, and the elevation never drops under about fifty
+    degrees, so a barrel beside it is seen in the air over the fireball
+    rather than skidding off along the street), with a tumble end over end
+    about the axis across the throw, the way a drum cartwheels away in
+    Garry's Mod. Spin is set, not left to an off-centre impulse: through a
+    compound shape's inertia that was a lottery between a lazy wobble and a
+    top.
+  */
+  const push = (id: PropId, mass: number, len: number, f: number, power: number) => {
     if (len < 1e-3) dir.set(0, 1, 0)
     else dir.multiplyScalar(1 / len)
-    dir.y = Math.max(dir.y, 0) + 0.55
+    const h = Math.hypot(dir.x, dir.z)
+    if (h > 1e-3) {
+      dir.x /= h
+      dir.z /= h
+    } else {
+      const a = sb.random() * Math.PI * 2
+      dir.x = Math.cos(a)
+      dir.z = Math.sin(a)
+    }
+    // elevation between 50 and 70 degrees, a little each way
+    const up = 1.2 + Math.max(0, dir.y) + (sb.random() - 0.5) * 0.5
+    dir.y = up
     dir.normalize()
-    const j = Math.min(BLAST_IMPULSE * powerNow * f, MAX_DV * f * mass)
-    imp.copy(dir).multiplyScalar(Math.max(j, 0))
-    // off-centre, on the side facing the blast, so it tumbles as it goes
-    at.copy(pos).addScaledVector(dir, -reach * 0.6)
-    at.x += (sb.random() - 0.5) * reach
-    at.z += (sb.random() - 0.5) * reach
+    const dv = blastThrow(mass, power, f)
+    if (!sb.getVelocity(id, lin, ang)) return
+    // blasts a beat apart do not stack into a rocket: what is already
+    // flying is redirected more than it is sped up, so the second barrel
+    // of a chain throws the crate between them no higher than the first did
+    const before = lin.length()
+    lin.addScaledVector(dir, dv)
+    const cap = Math.max(before, dv) * 1.15
+    const now = lin.length()
+    if (now > cap) lin.multiplyScalar(cap / now)
+    // tumble away from the blast: about the horizontal axis across the
+    // throw, plus some wobble so no two drums turn alike
+    const spin = Math.min(14, BLAST_SPIN * (dv / BLAST_DV))
+    axis.set(dir.z, 0, -dir.x)
+    axis.x += (sb.random() - 0.5) * 0.8
+    axis.y += (sb.random() - 0.5) * 0.8
+    axis.z += (sb.random() - 0.5) * 0.8
+    axis.normalize()
+    ang.addScaledVector(axis, spin * (0.7 + sb.random() * 0.6))
     sb.wake(id)
-    sb.applyImpulse(id, imp, at)
+    sb.setVelocity(id, lin, ang)
   }
-  let powerNow = 1
 
   const explode = (c: Vec3Like, power = 1, radius = 16, source: PropId | null = null): ExplosionEvent => {
     const R = Math.max(1, radius)
-    powerNow = power
     hitList.length = 0
     sb.queryBall(c, R, (p) => {
       if (p.id === source || p.mode === 'frozen') {
@@ -140,7 +185,7 @@ export const createExplosions = (
       // pushed first and damaged after, so a crate the blast breaks hands
       // the blast's velocity on to its pieces
       if (h.f >= 0 && p.mode === 'dynamic') {
-        push(h.id, p.mass, reach, len, f)
+        push(h.id, p.mass, len, f, power)
         pushed++
       }
       damage(h.id, BLAST_DAMAGE * power * f, c, true)
