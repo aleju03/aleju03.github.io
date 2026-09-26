@@ -2,11 +2,11 @@ import * as THREE from 'three'
 import { defineScenario, type ScenarioCtx, type Shot } from './scenarios'
 import { siteAvenue } from './propScenarios'
 import { buildPedestrians, type PedestrianHandles } from '../world/pedestrians'
-import { buildPlayerBody, type PlayerPose, type PlayerRig } from '../player/playerBody'
+import { buildPlayerBody, resetRigSerial, type PlayerPose, type PlayerRig } from '../player/playerBody'
 import { createWalkController, type WalkController, type WalkStep } from '../player/walkController'
 import {
-  bodyExtent, createBodyContact, type BodyContact, type BodyExtent, type Bumpable, type Bumper,
-  type ContactReport, type ContactStep,
+  MAX_POINTS, bodyExtent, createBodyContact, posedPoints, type BodyContact, type BodyExtent, type Bumpable,
+  type Bumper, type ContactReport, type ContactStep,
 } from '../player/bodyContact'
 import { makeCollisionSet, type CollisionSet } from '../physics/collision'
 import type { RagdollEnv } from '../player/ragdoll'
@@ -40,7 +40,8 @@ const TUNE = {
 }
 
 interface Leg {
-  /** which pedestrian, by staging order; -1 is "the nearest one lying down" */
+  /** which pedestrian, by staging order; -1 is "the nearest one lying down",
+      -2 the crates */
   who: number
   /** the longest it lasts, seconds. A leg at somebody standing also ends
       the moment they go down */
@@ -54,10 +55,15 @@ interface Leg {
 const LEGS: Leg[] = [
   { who: 0, max: 2.1 },
   { who: 1, max: 2, run: true },
-  { who: 2, max: 2.6, jumpAt: 4.4 },
+  // up onto the crates, then off them onto a head: from flat ground a hop's
+  // apex (2.08) never gets the soles over anybody's shoulders
+  { who: -2, max: 2, jumpAt: 2.3 },
+  { who: 2, max: 2, jumpAt: 6.3 },
   { who: 3, max: 2, jumpAt: 3.2 },
   { who: -1, max: 1.6 },
 ]
+/** the crates' half size: the catalogue's small crate */
+const CRATE = 0.72
 /** the beat between legs, and before the first */
 const REST = 0.35
 
@@ -111,9 +117,12 @@ defineScenario({
     const rz = c.dx
     const along = (k: number, l: number, y: number): [number, number, number] =>
       [c.x + c.dx * k + rx * l, c.y + y, c.z + c.dz * k + rz * l]
-    return { from: along(u - 12, -7, 9.5), to: along(u + 5, 1.5, 1.5), fov: 56 }
+    return { from: along(u - 12, -7, 9.5), to: along(u + 2, 1, 2), fov: 56 }
   },
   setup: (c) => {
+    // the same bodies every staging: a film's stills and its video are two
+    // stagings in one page, and each rig's idle is seeded by its serial
+    resetRigSerial()
     const scene = c.sb.root.parent
     const holder = new THREE.Group()
     if (scene) scene.add(holder)
@@ -122,7 +131,28 @@ defineScenario({
     const at = (u: number, l: number) => ({ x: c.x + F[0] * u + R[0] * l, z: c.z + F[1] * u + R[1] * l })
     // everyone faces back up the street, toward where the walker starts
     const back = Math.atan2(F[0], F[1])
-    const spots = [at(7, 0), at(14, 7), at(23, 2), at(21, -5)]
+    const spots = [at(7, 0), at(14, 7), at(26.5, 2), at(24, -6)]
+    // two small crates end to end along the street, frozen: something to
+    // jump off. The walk meets them as one box, like any solid out here
+    const crateAt = at(19, 2)
+    const crateY = terrainY(crateAt.x, crateAt.z)
+    for (const u of [-CRATE, CRATE]) {
+      const x = crateAt.x + F[0] * u
+      const z = crateAt.z + F[1] * u
+      c.sb.spawn('crate_small', { x, y: crateY + CRATE, z }, { frozen: true })
+    }
+    const crateBox = new THREE.Box3(
+      new THREE.Vector3(
+        crateAt.x - (Math.abs(F[0]) * 2 + Math.abs(R[0])) * CRATE - 0.3,
+        crateY - 1,
+        crateAt.z - (Math.abs(F[1]) * 2 + Math.abs(R[1])) * CRATE - 0.3,
+      ),
+      new THREE.Vector3(
+        crateAt.x + (Math.abs(F[0]) * 2 + Math.abs(R[0])) * CRATE + 0.3,
+        crateY + CRATE * 2,
+        crateAt.z + (Math.abs(F[1]) * 2 + Math.abs(R[1])) * CRATE + 0.3,
+      ),
+    )
     const peds = buildPedestrians({
       parent: holder,
       obstacles: [],
@@ -139,20 +169,27 @@ defineScenario({
     body.showHead(true)
     holder.add(body.group)
     body.face(walk.yaw)
-    const collision = makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 })
+    const collision = makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, [crateBox])
     const env: RagdollEnv = { groundY: c.y, groundAt: terrainY, collision }
     const ext: BodyExtent = { radius: 1, height: EYE }
     const run: Run = {
       walk, cam, keys: new Set(), body, peds, contact: createBodyContact(), collision,
-      me: { eye: cam.position, feetY: 0, vx: 0, vz: 0, vy: 0, grounded: true, radius: 1, height: EYE },
-      ext, t: 0, step: null, spots, memo: { gap: Infinity, leanT: 0, stomps: 0, bounce: 0, trampled: 0 },
+      me: {
+        eye: cam.position, feetY: 0, vx: 0, vz: 0, vy: 0, grounded: true, radius: 1, height: EYE,
+        pts: new Float32Array(MAX_POINTS * 4), npts: 0,
+      },
+      ext, t: 0, step: null, spots,
+      memo: { gap: Infinity, leanT: 0, stomps: 0, bounce: 0, trampled: 0, sunk: 0, mesh: 0, meshAt: 0, recoil: 0 },
       costs: [], how: [],
     }
     runs.set(c, run)
     const target = new THREE.Vector3()
     // the staged body's live position, standing or lying; -1 is whoever
     // is lying down nearest
-    const aim = (who: number) => (who >= 0 ? (peerAt(run, who, target) ? target : null) : downedNear(run, target))
+    const aim = (who: number) =>
+      who >= 0 ? (peerAt(run, who, target) ? target : null)
+        : who === -2 ? target.set(crateAt.x, 0, crateAt.z)
+          : downedNear(run, target)
     // the crowd, watched: the same object the game hands the pass, with
     // each first knock written down on its way through
     const crowd = peds.bumpable
@@ -161,9 +198,13 @@ defineScenario({
         return crowd.size
       },
       peer: crowd.peer,
+      points: crowd.points,
       nudge: crowd.nudge,
       hit: (i, b) => {
-        if (b.kind !== 'lean' && !run.how[i]) run.how[i] = `${b.kind}@${run.t.toFixed(1)}s`
+        if (b.kind !== 'lean' && !run.how[i]) {
+          run.how[i] = `${b.kind}@${run.t.toFixed(1)}s`
+          run.memo[`hitAt${i}`] = run.t
+        }
         crowd.hit(i, b)
       },
       trample: crowd.trample,
@@ -181,7 +222,12 @@ defineScenario({
       const legNo = run.memo.leg ?? 0
       const leg = LEGS[legNo] as Leg | undefined
       const since = t - (run.memo.legAt ?? 0)
-      const done = leg && (since > REST + leg.max || (leg.who >= 0 && run.how[leg.who]))
+      const onCrate = run.step?.grounded && walk.feetY > crateY + CRATE
+      const done = leg && (
+        since > REST + leg.max ||
+        (leg.who >= 0 && run.how[leg.who]) ||
+        (leg.who === -2 && onCrate && since > REST + 0.3)
+      )
       if (done) {
         run.memo.leg = legNo + 1
         run.memo.legAt = t
@@ -225,6 +271,21 @@ defineScenario({
       const rep: ContactReport = run.contact.step(input)
       run.costs.push(performance.now() - t0)
       if (rep.gap < run.memo.gap) run.memo.gap = rep.gap
+      if (rep.sunk > run.memo.sunk) run.memo.sunk = rep.sunk
+      // the rebound off a knock: how far the walker is carried back along
+      // the line it came in on, over the next half second
+      if (rep.knocks) {
+        run.memo.kAt = t
+        run.memo.kx = cam.position.x
+        run.memo.kz = cam.position.z
+        run.memo.kdx = -step.vx
+        run.memo.kdz = -step.vz
+      }
+      if (t - (run.memo.kAt ?? -9) < 0.6) {
+        const k = Math.hypot(run.memo.kdx, run.memo.kdz) || 1
+        const back = ((cam.position.x - run.memo.kx) * run.memo.kdx + (cam.position.z - run.memo.kz) * run.memo.kdz) / k
+        if (back > run.memo.recoil) run.memo.recoil = back
+      }
       if (rep.leans) run.memo.leanT += h
       run.memo.stomps += rep.stomps
       run.memo.trampled += rep.trampled
@@ -252,8 +313,33 @@ defineScenario({
       env.groundY = terrainY(cam.position.x, cam.position.z)
       body.update(pose, env)
       body.group.rotation.y = body.facing + Math.PI
+      body.group.updateMatrixWorld(true)
+      me.npts = body.ragdolling || !me.pts ? 0 : posedPoints(body, cam.position.x, walk.feetY, cam.position.z, me.pts)
+      // the honest number: the drawn meshes, posed, against each other's
+      // trunk, while both are standing side by side
+      // the pop: how far each victim's torso has gone a tenth of a second
+      // after the blow (a knock that only topples reads as a hug)
+      for (let i = 0; i < spots.length; i++) {
+        const at = run.memo[`hitAt${i}`]
+        if (at === undefined || run.memo[`pop${i}`] !== undefined) continue
+        if (!peds.lying(i, target)) continue
+        if (run.memo[`hx${i}`] === undefined) {
+          run.memo[`hx${i}`] = target.x
+          run.memo[`hy${i}`] = target.y
+          run.memo[`hz${i}`] = target.z
+        } else if (t - at >= 0.1) {
+          run.memo[`pop${i}`] = Math.hypot(
+            target.x - run.memo[`hx${i}`], target.y - run.memo[`hy${i}`], target.z - run.memo[`hz${i}`])
+        }
+      }
+      const sunk = meshSunk(run)
+      if (sunk > run.memo.mesh) {
+        run.memo.mesh = sunk
+        run.memo.meshAt = t
+      }
     })
   },
+  hash: (c) => bumpHash(c),
   report: (c) => {
     const r = runs.get(c)
     if (!r) return ''
@@ -262,14 +348,91 @@ defineScenario({
     const worst = s.length ? s[s.length - 1] : 0
     const p0 = new THREE.Vector3()
     const moved = peerAt(r, 0, p0) ? Math.hypot(p0.x - r.spots[0].x, p0.z - r.spots[0].z) : NaN
-    const how = r.spots.map((_, i) => `#${i} ${r.how[i] ?? 'stood'}`).join(', ')
-    return `min gap ${r.memo.gap.toFixed(3)} (under 0 is interpenetration), ${how}; ` +
+    const how = r.spots.map((_, i) => {
+      const pop = r.memo[`pop${i}`]
+      return `#${i} ${r.how[i] ?? 'stood'}${pop !== undefined ? ` (torso ${pop.toFixed(2)} in 0.1 s)` : ''}`
+    }).join(', ')
+    return `trunks ${r.memo.gap.toFixed(3)} apart at the closest, posed limbs at most ${r.memo.sunk.toFixed(2)} ` +
+      `into a trunk, drawn mesh at most ${r.memo.mesh.toFixed(2)} into a trunk (at ${r.memo.meshAt.toFixed(2)} s); ${how}; ` +
+      `rebound ${r.memo.recoil.toFixed(1)} off the charge; ` +
       `leaned ${r.memo.leanT.toFixed(2)} s and pushed the first ${moved.toFixed(1)}, ` +
       `${r.peds.knocks} knocked flat (${r.memo.stomps} by a stomp, whose bounce peaked ${r.memo.bounce.toFixed(1)} over the road), ` +
       `${r.memo.trampled} trampled, ${r.peds.downed} still down; ` +
       `contact pass ${(med * 1000).toFixed(1)} us median, ${(worst * 1000).toFixed(0)} us worst`
   },
 })
+
+/*
+  How deep one drawn body gets into another. Every fourth vertex of the
+  walker's skinned mesh, posed exactly as it will be drawn, against each
+  standing pedestrian's trunk cylinder, and the same the other way round.
+  A vertex of an arm hanging past a trunk is not inside anybody, so this is
+  a trunk measure; what it catches is a head or a fist drawn inside a chest,
+  which is what the circles alone missed.
+*/
+const vtx = new THREE.Vector3()
+const skins = new WeakMap<THREE.Object3D, THREE.SkinnedMesh | null>()
+const skinOf = (g: THREE.Object3D) => {
+  let m = skins.get(g)
+  if (m === undefined) {
+    m = null
+    g.traverse((o) => {
+      if ((o as THREE.SkinnedMesh).isSkinnedMesh) m = o as THREE.SkinnedMesh
+    })
+    skins.set(g, m)
+  }
+  return m
+}
+const insideOf = (g: THREE.Object3D, cx: number, cz: number, feet: number, radius: number, height: number) => {
+  const mesh = skinOf(g)
+  if (!mesh) return 0
+  const n = mesh.geometry.getAttribute('position').count
+  let worst = 0
+  for (let i = 0; i < n; i += 4) {
+    mesh.getVertexPosition(i, vtx).applyMatrix4(mesh.matrixWorld)
+    if (vtx.y < feet || vtx.y > feet + height) continue
+    const pen = radius - Math.hypot(vtx.x - cx, vtx.z - cz)
+    if (pen > worst) worst = pen
+  }
+  return worst
+}
+const standing = { x: 0, z: 0, feetY: 0, vx: 0, vz: 0, radius: 0, height: 0 }
+const meshSunk = (r: Run) => {
+  if (r.body.ragdolling) return 0
+  let worst = 0
+  for (let i = 0; i < r.spots.length; i++) {
+    const g = r.peds.groupOf(i)
+    if (!g || !r.peds.bumpable.peer(i, standing)) continue
+    const d = Math.hypot(standing.x - r.cam.position.x, standing.z - r.cam.position.z)
+    if (d > standing.radius + r.me.radius + 3) continue
+    // on top of them is a stomp, not a body inside a body
+    if (r.walk.feetY > standing.feetY + standing.height * 0.3) continue
+    g.updateMatrixWorld(true)
+    worst = Math.max(
+      worst,
+      insideOf(r.body.group, standing.x, standing.z, standing.feetY, standing.radius, standing.height),
+      insideOf(g, r.cam.position.x, r.cam.position.z, r.walk.feetY, r.me.radius, r.me.height),
+    )
+  }
+  return worst
+}
+
+/** FNV-1a over where everybody is, to the float: the film's state hash */
+export const bumpHash = (c: ScenarioCtx) => {
+  const r = runs.get(c)
+  if (!r) return ''
+  const v = new THREE.Vector3()
+  const nums = [r.cam.position.x, r.walk.feetY, r.cam.position.z]
+  for (let i = 0; i < r.spots.length; i++) {
+    if (peerAt(r, i, v)) nums.push(v.x, v.y, v.z)
+    else nums.push(NaN)
+  }
+  const f = new Float32Array(nums)
+  const b = new Uint8Array(f.buffer)
+  let h = 0x811c9dc5
+  for (const x of b) h = Math.imul(h ^ x, 0x01000193) >>> 0
+  return h.toString(16).padStart(8, '0') + '@' + r.t.toFixed(4)
+}
 
 /** a staged pedestrian's live position, standing or lying down */
 const scratch = { x: 0, z: 0, feetY: 0, vx: 0, vz: 0, radius: 0, height: 0 }

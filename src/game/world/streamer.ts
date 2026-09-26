@@ -363,9 +363,12 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
          // a long bright ramp once turned a whole ocean into a strip of milk
          float jit = (wHash2(floor(vWXZ * 4.0)).x - 0.5) * 0.7;
          float shelf = vDepth + jit;
-         float shallow = shelf < 1.6 ? 1.0 : shelf < 4.5 ? 0.62 : shelf < 10.0 ? 0.3 : 0.0;
+         float shallow = shelf < 2.2 ? 1.0 : shelf < 6.0 ? 0.55 : shelf < 13.0 ? 0.22 : 0.0;
          gl_FragColor.rgb = mix(
-           gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.16, 1.42, 1.38) + 0.02, shallow * 0.75);
+           gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.25, 1.75, 1.6) + 0.02, shallow);
+         // ...and the open sea a shelf darker again, past the drop-off,
+         // so the bands carry on out rather than stopping at the reef
+         gl_FragColor.rgb *= shelf > 22.0 ? 0.74 : 1.0;
          // the shore in lines, not a gradient: a solid lip of foam where the
          // water meets the sand, a line a little further out that breathes
          // in and out with the swell, and the swell's crests catching light
@@ -460,6 +463,21 @@ export const makeChunkMats = (
     ground: groundMat, detail: detailMat, glass: glassMat, water: waterMat,
     leaf: leafMat, leafDepth,
   }
+}
+
+const WATER_DAY = new THREE.Color('#1b4f93')
+const WATER_NIGHT = new THREE.Color('#111d26')
+
+/** the sea's colour for a moment of the day: the streamer's day cycle, and
+    the harness's still frames, which build the materials without a world */
+export const tintWater = (mat: THREE.Material, sky: THREE.Color, sun: number) => {
+  const m = mat as THREE.MeshStandardMaterial
+  m.color.lerpColors(WATER_NIGHT, WATER_DAY, sun)
+  // a touch of the sky's own colour, which is most of what makes water
+  // read as water rather than as blue-painted ground
+  m.color.lerp(sky, 0.15)
+  // the glints are sunlight; by night they dim to a ghost of themselves
+  waterCel.value = 0.07 + sun * 0.75
 }
 
 export function buildWorld(opts: Opts): WorldHandles {
@@ -838,9 +856,6 @@ export function buildWorld(opts: Opts): WorldHandles {
     return nearestLamps(x, z, lampScratch, m, out, Math.min(max, lampD2.length), lampD2)
   }
 
-  const WATER_DAY = new THREE.Color('#2a6fc0')
-  const WATER_NIGHT = new THREE.Color('#111d26')
-
   return {
     root,
     update,
@@ -868,14 +883,7 @@ export function buildWorld(opts: Opts): WorldHandles {
       glassMat.opacity = night
       far.setNight(night)
     },
-    setWaterTint: (sky, sun) => {
-      waterMat.color.lerpColors(WATER_NIGHT, WATER_DAY, sun)
-      // a touch of the sky's own colour, which is most of what makes water
-      // read as water rather than as blue-painted ground
-      waterMat.color.lerp(sky, 0.15)
-      // the caustic web is sunlight; by night it dims to a ghost of itself
-      waterCel.value = 0.07 + sun * 0.75
-    },
+    setWaterTint: (sky, sun) => tintWater(waterMat, sky, sun),
   }
 }
 

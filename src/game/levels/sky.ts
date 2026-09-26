@@ -343,7 +343,11 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       .replace(
         'gl_PointSize = size;',
         `gl_PointSize = aSize;
-         vTw = (0.55 + 0.45 * sin(uTwinkle * 1.7 + aPhase)) * uFade;`,
+         vTw = (0.55 + 0.45 * sin(uTwinkle * 1.7 + aPhase)) * uFade;
+         // and by the sky's own brightness: the horizon glows at night
+         // (the moonlit haze, the city), and a star over it is a dot on a
+         // lit wall, so they thin out below twenty degrees or so
+         vTw *= smoothstep(0.08, 0.38, normalize(position).y);`,
       )
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n varying float vTw;')
@@ -473,18 +477,24 @@ export function buildSky(opts: BuildOpts): SkyHandles {
            // front of it there, and uHaze below puts it in the same air. The
            // fade is only the last degree or so, where the dome's own far side
            // would otherwise show through under the fog line
-           // faded over the lowest few degrees rather than cut: from any
-           // height the deck used to end on a ruler-straight line
-           float horizon = smoothstep(0.0, 0.09, dir.y);
+           // Toward the skyline the deck thins rather than fades: the cover
+           // threshold rises over the lowest degrees, so the last clouds end
+           // on their own hard rims. An alpha fade there (and a cut before
+           // it) posterized into a ruler-straight edge across every view
+           // from the air, the clouds sliced flat along it
+           float horizon = smoothstep(0.0, 0.012, dir.y);
            if (horizon < 0.004) {
              gl_FragColor.a = 0.0;
            } else {
              vec3 flat3 = vec3(dir.x, dir.y * 0.42, dir.z);
-             vec3 p = flat3 * 5.4;
+             // smaller cells than the deck used to have: at the old scale a
+             // cumulus filled half a view from the air
+             vec3 p = flat3 * 7.6;
              p.xz += vec2(0.82, 0.57) * (uCloudTime * 0.011);
              // the weather: banks and open blue, on their own slow drift
              float bank = cNoise(flat3 * 1.1 + vec3(uCloudTime * 0.004, 0.0, 0.0));
-             float cover = uCover - (bank - 0.5) * 0.24;
+             float cover = uCover - (bank - 0.5) * 0.24
+               + pow(1.0 - smoothstep(0.0, 0.22, dir.y), 1.5) * 0.7;
              float f = cFbm(p);
              // A near-hard rim and three flat tones (shadow, mid, lit): the
              // look posterizes whatever arrives here, and a soft gradient
@@ -493,16 +503,16 @@ export function buildSky(opts: BuildOpts): SkyHandles {
              // what lets it read as a painted cloud
              float cov = smoothstep(cover + 0.03, cover + 0.05, f);
              float f2 = cFbm(p + normalize(uSunDir) * 0.3);
-             float litK = clamp(0.5 + (f - f2) * 7.5, 0.0, 1.0);
-             // a massed form: the dense core is lit, the thin fringe and the
-             // base sit in the cloud's own shade, so it reads as a volume
-             // with a lit side rather than as a stencil of one tone
-             float core = smoothstep(cover + 0.04, cover + 0.2, f);
-             float under = smoothstep(0.02, 0.2, dir.y);
-             litK = clamp(litK * 0.55 + core * 0.45, 0.0, 1.0) * mix(0.55, 1.0, under);
-             // two tones, lit and shaded: with three, a deck of any cover
-             // broke into a camouflage of patches rather than into clouds
-             litK = 0.4 + 0.6 * step(0.45, litK);
+             // Two tones, a lit top and a shaded base: where there is more
+             // cloud just above this point than here, this is the underside.
+             // The earlier tones came from the sun-offset sample and the
+             // density, and across a whole deck they read as camouflage
+             // patches rather than as volumes lit from above
+             float fUp = cFbm(p + vec3(0.0, 0.32, 0.0));
+             float base = step(0.015, fUp - f) * smoothstep(0.012, 0.03, dir.y);
+             float litK = 1.0 - 0.6 * base;
+             // and the face turned from the sun a step down from its lit face
+             litK *= 1.0 - 0.18 * step(f, f2) * (1.0 - base);
              vec3 col = mix(uCloudShade, uCloudLit, litK);
              // the silver lining: the edge of a cloud in front of the sun,
              // as one flat step rather than a gradient
@@ -517,7 +527,11 @@ export function buildSky(opts: BuildOpts): SkyHandles {
                float wisp = cNoise(q) * 0.66 + cNoise(q * 2.4) * 0.34;
                // hard-edged and sparse: a soft half-alpha veil over the blue
                // posterized into a camouflage of pale patches across the deck
-               float aw = smoothstep(0.7, 0.72, wisp) * 0.8 * (1.0 - cov);
+               // and, like the deck, thinning out toward the skyline rather
+               // than running into it: from the air the wisps were the
+               // pillars of cloud cut flat along the horizon
+               float aw = smoothstep(0.7 + 0.25 * (1.0 - smoothstep(0.02, 0.25, dir.y)), 0.72
+                 + 0.25 * (1.0 - smoothstep(0.02, 0.25, dir.y)), wisp) * 0.8 * (1.0 - cov);
                a = cov + aw;
                col = mix(mix(uCloudShade, uCloudLit, 0.9), col, cov / max(a, 0.001));
              #endif
@@ -862,7 +876,8 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     cloudU.uCloudOpacity.value = 0.3 + day * 0.66 + twilight * 0.12
     // the weather breathes: a two-and-a-half minute swing between a scattered
     // sky and a covered one, slow enough to be a mood rather than an effect
-    cloudU.uCover.value = 0.53 - Math.sin(ct * 0.041) * 0.06
+    // (fewer clouds than the deck first had: the sky is the blue, they are in it)
+    cloudU.uCover.value = 0.57 - Math.sin(ct * 0.041) * 0.06
     cloudU.uHaze.value.copy(state.fogColor)
 
     // the red-eye, strobing through its slow circle

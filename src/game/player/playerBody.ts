@@ -377,6 +377,11 @@ const ramp = (a: number, b: number, t: number) => SMOOTH(THREE.MathUtils.clamp((
 
 /** rigs are seeded apart so a crowd does not blink and fidget in unison */
 let rigSerial = 0
+/** start the serial over: a harness that stages the same scene twice in one
+    page (a film's stills, then its video) must build the same bodies */
+export const resetRigSerial = () => {
+  rigSerial = 0
+}
 
 /** the inverse bind matrices. The bind pose is the rest pose except for the
     upper arms, which the surface was drawn holding out (see bodyShape's

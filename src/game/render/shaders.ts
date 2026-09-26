@@ -74,9 +74,13 @@ export const GRADE_FRAG = /* glsl */ `
   /** how far the sky at the horizon is pulled into the air, how far up that
       reaches, and how much of the whole sky goes with it */
   uniform vec3 uSkyAir;
-  /** the air's height layer: base y, thickness, how much it applies (0 off,
-      the walker's air), and the range at which the world ends (0 none) */
+  /** the air from altitude: (unused, unused, how far off the ground the
+      camera is 0..1, and the range at which the world ends, 0 none) */
   uniform vec4 uAirLift;
+  /** dusk: the warm band along the skyline (colour*strength), and how much
+      darker the air is on a thing than on the sky behind it (1 none) */
+  uniform vec3 uDuskBand;
+  uniform float uAirDim;
 
   /** lamp pools: world xyz and radius; their count, colour*gain */
   uniform vec4 uPools[${MAX_POOLS}];
@@ -249,14 +253,26 @@ export const GRADE_FRAG = /* glsl */ `
       // in any material, so they cost no program and can come and go freely
       vec3 albedo = clamp(col / max(uAmbient, vec3(0.004)), 0.0, 1.2);
       vec3 lit = vec3(0.0);
-      for (int i = 0; i < ${MAX_POOLS}; i++) {
-        if (i >= uPoolCount) break;
-        vec4 L = uPools[i];
-        vec3 d = wp - L.xyz;
-        float k = clamp(1.0 - dot(d, d) / (L.w * L.w), 0.0, 1.0);
-        // a streetlamp shines down: nothing above the head is lit by it
-        k *= smoothstep(0.6, -0.4, d.y);
-        lit += uPoolCol * (k * k);
+      // A lamp pool lies on the ground it lights: only surfaces facing up
+      // and down near the lamp's foot take it, so it never lands on a roof
+      // or a facade as a floating disc, and its falloff is cut into a few
+      // flat bands with a dithered seam between them, a drawn pool rather
+      // than a soft ellipse
+      if (uPoolCount > 0) {
+        vec3 nW = normalize(uCamRot * normalAt(p));
+        float up = smoothstep(0.55, 0.85, nW.y);
+        float pool = 0.0;
+        for (int i = 0; i < ${MAX_POOLS}; i++) {
+          if (i >= uPoolCount) break;
+          vec4 L = uPools[i];
+          vec3 d = wp - L.xyz;
+          float k = clamp(1.0 - dot(d.xz, d.xz) / (L.w * L.w), 0.0, 1.0);
+          // the foot of the lamp: five to eight units under the lens
+          k *= smoothstep(-3.8, -5.2, d.y) * smoothstep(-9.0, -7.5, d.y);
+          pool = max(pool, k * k);
+        }
+        pool = band(pool * up, 4.0, bayer(p + ivec2(2, 1)), 0.45);
+        lit += uPoolCol * pool;
       }
       if (uHeadK.w > 0.5) {
         vec3 d = wp - uHeadPos;
@@ -266,7 +282,7 @@ export const GRADE_FRAG = /* glsl */ `
         float cone = smoothstep(uHeadK.y, uHeadK.z, dot(d / max(r, 1e-3), uHeadDir));
         cone *= cone;
         float fall = 1.0 / (1.0 + (r / uHeadK.x) * (r / uHeadK.x) * 4.0);
-        lit += uHeadCol * cone * fall;
+        lit += uHeadCol * cone * fall * (1.0 + (bayer(p + ivec2(3, 2)) - 0.5) * 0.7);
       }
       if (uFlash.w > 0.0) {
         // a blast lights everything round it, above and below, by day too
@@ -274,9 +290,10 @@ export const GRADE_FRAG = /* glsl */ `
         float k = clamp(1.0 - dot(d, d) / (uFlash.w * uFlash.w), 0.0, 1.0);
         lit += uFlashCol * (k * k);
       }
-      // an ordered jitter on the light itself, so the posterize cuts its
-      // falloff into dithered steps instead of concentric rings
-      col += albedo * lit * (1.0 + (bayer(p + ivec2(3, 2)) - 0.5) * 0.7) * (1.0 - emits);
+      // (the headlamp's falloff takes an ordered jitter, so the posterize
+      // cuts it into dithered steps instead of concentric rings; the pools
+      // are already banded)
+      col += albedo * lit * (1.0 - emits);
 
       // ---- outlines, from depth alone -----------------------------------
       float fogK = uFog.z > 0.5 ? 1.0 - smoothstep(uFog.x, uFog.y, zc) : 1.0;
@@ -307,33 +324,49 @@ export const GRADE_FRAG = /* glsl */ `
         float lap = ((1.0 / zl + 1.0 / zr) + (1.0 / zu + 1.0 / zd) - 4.0 * ic) / ic;
         convex = smoothstep(uEdgeK.w, uEdgeK.w * 2.5, -lap);
       }
-      col *= 1.0 - fold * (1.0 - convex) * uEdge.y * fogK;
-      col *= 1.0 + convex * uEdge.z * fogK;
+      // From the air the scene fog steps aside (levels/altitude.ts) and
+      // the look's air is the only thing distance does, so the ink fades
+      // with the air there instead: with nothing fading it, every ridge in
+      // the far field wore a dark line
+      float inkK = fogK * mix(1.0, 1.0 - smoothstep(0.08, 0.3, 1.0 - exp(-max(0.0, range - uAir.x) / uAir.y)), uAirLift.z);
+      col *= 1.0 - fold * (1.0 - convex) * uEdge.y * inkK;
+      col *= 1.0 + convex * uEdge.z * inkK;
 
       // ---- the air ------------------------------------------------------
       // aerial perspective as a few readable planes: near things keep their
       // colour, the middle distance flattens toward the air, the far one is
       // a silhouette in it. Quantized with the same banded dither as the
       // colour, so the planes step rather than smear
-      // From the air, a ray looking down crosses the thin top of the haze
-      // and a ray along the ground crosses all of it: the optical depth of
-      // an exponential layer between the two heights, per unit of range
-      float optical = range;
-      if (uAirLift.z > 0.0) {
-        float hc = max(uCamPos.y - uAirLift.x, 0.0) / uAirLift.y;
-        float hp = max(wp.y - uAirLift.x, 0.0) / uAirLift.y;
-        float dh = hc - hp;
-        float f = abs(dh) < 1e-3 ? exp(-hc) : (exp(-hp) - exp(-hc)) / dh;
-        optical = range * mix(1.0, f, uAirLift.z);
-      }
-      float air = 1.0 - exp(-max(0.0, optical - uAir.x) / uAir.y);
+      // One curve, rising with range and nothing else. An earlier cut
+      // weighed the air by the heights a ray ran between (the haze as a
+      // layer near the ground), and from the air that inverted aerial
+      // perspective: a low valley at a kilometre came out greyer than a
+      // ridge at three, so the frame read as a haze band with sharper,
+      // greener land beyond it. Height only lengthens the curve now
+      // (atmosphere.ts), so farther is always hazier
+      float air = 1.0 - exp(-max(0.0, range - uAir.x) / uAir.y);
       if (uAir.w > 0.5) air = band(air, uAir.w, bayer(p + ivec2(1, 3)), 0.25);
       air *= uAir.z;
-      // ...and where the world ends, the air has all of it
-      if (uAirLift.w > 0.0) air = max(air, smoothstep(uAirLift.w * 0.45, uAirLift.w, range));
+      // ...and toward where the world ends, the air takes the rest of it
+      // on the same curve's tail, so the rim of the far field dissolves
+      // into the horizon's air instead of standing against the sky
+      if (uAirLift.w > 0.0) {
+        float rim = smoothstep(uAirLift.w * 0.3, uAirLift.w, range);
+        air += (1.0 - air) * rim * rim;
+      }
+      // Something that shines at night (a lit window, a lamp's pool, the
+      // lens itself) keeps its light through the air: that is what the eye
+      // picks out of a dark haze. Found by how far over the night's ambient
+      // it is, and only once the lamps are on
+      float nightK = clamp(dot(uPoolCol, vec3(0.3333)) / 2.0, 0.0, 1.0);
+      float shine = smoothstep(4.0, 12.0, dot(col, vec3(0.2126, 0.7152, 0.0722))
+        / max(dot(uAmbient, vec3(0.2126, 0.7152, 0.0722)), 1e-3)) * nightK;
+      air *= 1.0 - 0.85 * shine;
       airAll = air;
       float toward = max(dot(dirW, uSunDir), 0.0);
-      vec3 airCol = uAirCol + uSunGlow * pow(toward, 6.0);
+      // the air on a thing is darker than the sky behind it at dusk, so a
+      // tower stands against the afterglow instead of melting into it
+      vec3 airCol = (uAirCol + uSunGlow * pow(toward, 6.0)) * uAirDim;
       col = mix(col, airCol, air);
 
       // the silhouette's ink goes on *after* the air, so a roofline a block
@@ -349,7 +382,7 @@ export const GRADE_FRAG = /* glsl */ `
       float seen = uFog.z > 0.5 ? 1.0 - smoothstep(uFog.x, uFog.y, zc) : 1.0;
       float silK = skyBehind
         ? min(0.92, uEdge.x * 1.5) * max(fogK, 0.6 * smoothstep(0.0, 0.45, seen))
-        : uEdge.x * fogK;
+        : uEdge.x * inkK;
       // a light has no ink: the physgun's beam is a glow, not an object
       silK *= 1.0 - smoothstep(0.7, 0.97, air);
       // and a rim the air has taken most of carries no line against the
@@ -371,8 +404,12 @@ export const GRADE_FRAG = /* glsl */ `
       // Gradually, over the dip from the geometric horizon down to the rim:
       // a step here drew a pale band with a ruler-straight top edge across
       // every high view, the clouds sliced off flat along it
-      if (uAirLift.w > 0.0) pull = max(pull, uAirLift.z * smoothstep(0.16, -0.04, dirW.y));
+      if (uAirLift.w > 0.0) pull = max(pull, uAirLift.z * smoothstep(0.05, -0.05, dirW.y));
       col = mix(col, airCol, pull);
+      // the afterglow: a warm band along the whole skyline at dusk, hottest
+      // toward the set sun, drawn over the cool air rather than under it
+      float band0 = 1.0 - smoothstep(-0.02, 0.2, dirW.y);
+      col += uDuskBand * band0 * band0 * (0.35 + 0.65 * toward * toward);
     }
 
     // ---- lamp halos: the air lit around each lamp ----------------------
@@ -390,7 +427,9 @@ export const GRADE_FRAG = /* glsl */ `
       }
       // jittered like the pools, or a halo in the sky (which bands with no
       // dithered seam at all) posterizes into a stack of hard rings
-      glow *= 1.0 + (bayer(p + ivec2(1, 2)) - 0.5) * 0.9;
+      // cut into three flat rings with a dithered seam, like the pools:
+      // a soft gaussian here read as a blurry ball stuck on the frame
+      glow = band(min(glow, 1.0), 3.0, bayer(p + ivec2(1, 2)), 0.5);
       col += uPoolCol * glow * uHalo.x;
     }
     // ...and the flash's, a ball of lit air a third of its radius across
@@ -423,7 +462,11 @@ export const GRADE_FRAG = /* glsl */ `
       // own chroma untouched. A cloud is a soft gradient over a large area,
       // and the ground's treatment turned every one into a blotch with a
       // dithered halo round it
-      if (uPost.x > 0.5) lab.x = band(lab.x, uPost.x * 1.6, 0.5, 0.0);
+      // Dithered, finely: undithered, a smooth sky gradient stepped into
+      // three or four hard stripes across the top of every high view. The
+      // clouds are hard-edged shapes of their own, so a seam here only ever
+      // lands on a gradient
+      if (uPost.x > 0.5) lab.x = band(lab.x, uPost.x * 1.6, bayer(p), 0.6);
     } else if (uPost.x > 0.5) {
       lab.x += (hash(vec2(p) + fract(uFrame * 0.618) * 97.0) - 0.5) * uPost.w;
       lab.x = band(lab.x, uPost.x, bayer(p), uPost.z);

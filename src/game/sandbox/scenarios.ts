@@ -73,6 +73,9 @@ export interface Scenario {
   events?: Array<[number, (c: ScenarioCtx) => void]>
   /** one line of numbers about how it went */
   report?: (c: ScenarioCtx) => string
+  /** the state the film prints as its hash, for a scenario whose state is
+      not props (bodies walking into bodies); the sandbox's own otherwise */
+  hash?: (c: ScenarioCtx) => string
   /** a moving camera: where the lens is at simulated time t. Overrides
       `camera` frame by frame (a first-person physgun film) */
   lens?: (c: ScenarioCtx, t: number) => Shot
@@ -298,6 +301,9 @@ const RAM_SPEED = 24
     `measure physics fall` over heights 0 to 6 and speeds 18 and 24: half
     the seams open in 1.53 s from the base, 0.2 s from here */
 const RAM_HEIGHT = 3.6
+/** when it sets off, seconds: the tower is spawned touching and has settled
+    in a tenth of that, and the film had a second of nothing at its start */
+const RAM_AT = 0.3
 
 /** the roll's lens, beside the drums at `along` down the slope and
     `across` it, looking a little ahead of them */
@@ -334,6 +340,45 @@ const settle = (c: ScenarioCtx) => {
   return asleep
 }
 
+/**
+ * A tower of crates three wide and five high, lined along the layout axis
+ * and stacked by hand (see inside), its fifteen ids pushed onto `c.ids` in
+ * row order, bottom row first. Shared by every scenario that knocks one
+ * down, so the stack being judged is the same stack whatever hits it.
+ */
+export const crateTower = (c: ScenarioCtx) => {
+  // a tower three crates wide and five high, lined along the layout axis,
+  // spawned touching so it settles in a frame rather than falling into place
+  const h = 2.4
+  const yaw = Math.atan2(c.dx, c.dz)
+  // stacked by hand, not by a grid: a few centimetres and a few degrees of
+  // slop per crate, no two packed the same (a crate's weight varies by a
+  // third either way) and no two quite the same size (each is 0.9 to 1.06
+  // of the kind, and a column stands as tall as its own crates make it).
+  // Identical crates in a perfect grid get identical impulses, so whole
+  // rows fell as one piece; and with the size slop gone too, the twelve
+  // crates above the base stood for half a second as one welded wall with
+  // no seam opening, then went over as a hinged chain. With rows that do
+  // not line up, every crate rests on one neighbour and leans on the next
+  // at a different height, and the seams open as it falls
+  let seed = 11
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) - 0.5
+  const half = h / 2
+  const pitch = h * 1.06 + 0.05
+  const tops = [-1, 0, 1].map((col) => c.sb.groundY(c.x + c.dx * col * pitch, c.z + c.dz * col * pitch))
+  for (let row = 0; row < 5; row++)
+    for (let col = -1; col <= 1; col++) {
+      const k = 0.98 + rnd() * 0.16
+      const px = c.x + c.dx * col * pitch + rnd() * 0.16
+      const pz = c.z + c.dz * col * pitch + rnd() * 0.16
+      const y = tops[col + 1] + half * k + 0.01
+      tops[col + 1] = y + half * k
+      c.ids.push(c.sb.spawn('crate', { x: px, y, z: pz }, {
+        yaw: yaw + rnd() * 0.16, scale: k, mass: 35 * k * k * k * (1 + rnd() * 0.7),
+      }))
+    }
+}
+
 defineScenario({
   id: 'sandbox:stack',
   title: 'a 3x5 tower of crates, a girder rammed through it a third of the way up',
@@ -351,36 +396,7 @@ defineScenario({
     }
   },
   setup: (c) => {
-    // a tower three crates wide and five high, lined along the layout axis,
-    // spawned touching so it settles in a frame rather than falling into place
-    const h = 2.4
-    const yaw = Math.atan2(c.dx, c.dz)
-    // stacked by hand, not by a grid: a few centimetres and a few degrees of
-    // slop per crate, no two packed the same (a crate's weight varies by a
-    // third either way) and no two quite the same size (each is 0.9 to 1.06
-    // of the kind, and a column stands as tall as its own crates make it).
-    // Identical crates in a perfect grid get identical impulses, so whole
-    // rows fell as one piece; and with the size slop gone too, the twelve
-    // crates above the base stood for half a second as one welded wall with
-    // no seam opening, then went over as a hinged chain. With rows that do
-    // not line up, every crate rests on one neighbour and leans on the next
-    // at a different height, and the seams open as it falls
-    let seed = 11
-    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) - 0.5
-    const half = h / 2
-    const pitch = h * 1.06 + 0.05
-    const tops = [-1, 0, 1].map((col) => c.sb.groundY(c.x + c.dx * col * pitch, c.z + c.dz * col * pitch))
-    for (let row = 0; row < 5; row++)
-      for (let col = -1; col <= 1; col++) {
-        const k = 0.98 + rnd() * 0.16
-        const px = c.x + c.dx * col * pitch + rnd() * 0.16
-        const pz = c.z + c.dz * col * pitch + rnd() * 0.16
-        const y = tops[col + 1] + half * k + 0.01
-        tops[col + 1] = y + half * k
-        c.ids.push(c.sb.spawn('crate', { x: px, y, z: pz }, {
-          yaw: yaw + rnd() * 0.16, scale: k, mass: 35 * k * k * k * (1 + rnd() * 0.7),
-        }))
-      }
+    crateTower(c)
     // the ram: a steel girder held level and turned off square, swung
     // through the tower a third of the way up (RAM_HEIGHT), then let go.
     // Leaning on the tower slowly only ever pivoted it over whole; round
@@ -404,9 +420,9 @@ defineScenario({
     const off = c.sb.onBeforeSlice((dt) => {
       t += dt
       if (!c.sb.get(ram)) return off()
-      const d = back - Math.max(0, Math.min(t - 1.0, 15 / RAM_SPEED)) * RAM_SPEED
+      const d = back - Math.max(0, Math.min(t - RAM_AT, 15 / RAM_SPEED)) * RAM_SPEED
       c.sb.moveKinematic(ram, { x: c.x - nx * d, y: ry, z: c.z - nz * d }, q)
-      if (t > 1 + 15 / RAM_SPEED) {
+      if (t > RAM_AT + 15 / RAM_SPEED) {
         c.sb.setMode(ram, 'dynamic')
         off()
       }
@@ -421,6 +437,60 @@ defineScenario({
       const t = p.body.translation()
       const row = Math.floor(i / 3)
       if (t.y < base + row * 2.4 - 1) fallen++
+    }
+    return `${fallen}/15 crates came down, ${settle(c)}/${c.ids.length} asleep`
+  },
+})
+
+defineScenario({
+  id: 'sandbox:topple',
+  title: 'the same crate tower, a drum thrown into the foot of one end',
+  site: siteFlat,
+  duration: 5,
+  frames: 12,
+  camera: (c) => {
+    // side-on to the tower's face, so a column leaning out of it shows
+    // whether its crates keep their faces flush or slide off each other
+    const nx = c.dz
+    const nz = -c.dx
+    return {
+      from: [c.x - nx * 26 + c.dx * 4, c.y + 6, c.z - nz * 26 + c.dz * 4],
+      to: [c.x, c.y + 4.5, c.z],
+      fov: 50,
+    }
+  },
+  // a second, different blow to the same stack, so nothing about the way a
+  // stack comes apart can have been tuned to one ram: a 28 kg drum, thrown
+  // hard and low into the end column's bottom crate, the way a player
+  // throws one off the physgun. The column above loses its footing on one
+  // side and leans out over the gap, and the question is what its crates
+  // do while it leans
+  setup: (c) => crateTower(c),
+  events: [[0.3, (c) => {
+    const nx = c.dz
+    const nz = -c.dx
+    const pitch = 2.4 * 1.06 + 0.05
+    // the end column, its bottom crate's height, from twelve units off
+    const tx = c.x - c.dx * pitch
+    const tz = c.z - c.dz * pitch
+    const y = c.sb.restY('crate', tx, tz)
+    const q = lying(c.dx, c.dz)
+    c.ids.push(c.sb.spawn('barrel', { x: tx - nx * 12, y, z: tz - nz * 12 }, {
+      quaternion: q,
+      velocity: { x: nx * 60, y: 1, z: nz * 60 },
+      angular: { x: c.dx * 3, y: 0, z: c.dz * 3 },
+    }))
+  }]],
+  report: (c) => {
+    let fallen = 0
+    const base = c.sb.restY('crate', c.x, c.z)
+    for (let i = 0; i < 15; i++) {
+      const p = c.sb.get(c.ids[i])
+      if (!p) {
+        fallen++
+        continue
+      }
+      if (p.body.translation().y < base + Math.floor(i / 3) * 2.4 - 1) fallen++
     }
     return `${fallen}/15 crates came down, ${settle(c)}/${c.ids.length} asleep`
   },
