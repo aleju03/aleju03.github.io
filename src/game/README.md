@@ -1067,7 +1067,7 @@ Rules that bite:
 npm run film -- sandbox:demolish-house   barrels along one side; it folds over
 npm run film -- sandbox:tower            charges along one side; it is felled
 npm run film -- sandbox:wall             a barrier thrown through a shopfront
-npm run film -- sandbox:ruin --frames 1 --start 11 --tile 1280x800   the ruin at eye height
+npm run film -- sandbox:ruin --frames 1 --start 10.9 --tile 1280x800   the ruin at eye height
 npm run film -- props:collapse-links     shader links during both (must be 0)
 npm run measure -- physics destruction   pieces, rubble, frame cost (DESTRUCTION_EXTRA=12 to watch it settle)
 npm run measure -- fracture              every building and landmark taken apart
