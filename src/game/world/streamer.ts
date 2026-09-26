@@ -380,6 +380,11 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
          float foam = max(max(lip, surf * 0.85), crest * 0.5);
          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.92, 0.96, 0.97), clamp(foam, 0.0, 0.9));
          gl_FragColor.a *= smoothstep(0.0, 0.5, vDepth);
+         // Deep water is opaque. Seen at a slant from the air, the seabed
+         // under the ring's last chunks lies past the ring's edge, where no
+         // chunk and (by the far field's mask) no far tile is drawn, so the
+         // outer half-chunk of sea read as a pale seam round the ring
+         gl_FragColor.a = mix(gl_FragColor.a, 1.0, smoothstep(2.5, 6.0, vDepth));
          // a freshly streamed sea eases in with its chunk (world/fade.ts)
          ${FADE_FRAG_ALPHA}`,
       )
