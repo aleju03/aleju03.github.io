@@ -419,7 +419,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
           <div className="mt-1 flex items-baseline justify-between pr-9 font-mono text-[10px]" style={{ color: INK_SOFT }}>
             <span>{finding ? s.closeFinding : keyHint(s.close, language)}</span>
             <span>
-              {s.page} {pageOf(current)}
+              {s.page} {pageOf(q ? ALL : current)}
             </span>
           </div>
         </section>

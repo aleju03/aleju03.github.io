@@ -25,8 +25,10 @@
   through `window.__sandboxWalk`, since headless Chrome is never granted the
   pointer lock that mouse-look needs.
 
-  Writes shots/sandbox/<what>.png (and noclip-first.png / noclip-third.png as
-  labelled strips). Ports come from PROBE_PORT / PROBE_CDP like the other
+  Writes shots/sandbox/: console, console-tab, console-closed (the receipt
+  over what it spawned, at the crosshair), menu, menu-category, menu-find,
+  menu-after (the catalogue, then the orders standing in front of you), and
+  noclip-first / noclip-third (labelled eight-frame strips). Ports come from PROBE_PORT / PROBE_CDP like the other
   harnesses, and it kills only what it spawned (scripts/probe/cdp.mjs).
 */
 import { spawnSync } from 'node:child_process'
