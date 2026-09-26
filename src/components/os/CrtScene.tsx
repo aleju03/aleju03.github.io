@@ -1327,7 +1327,7 @@ export default function CrtScene({
           walk.resetMotion()
           rig.reset()
           // a machine's seat node says how far its cabin needs a body folded
-          rig.sit(seatNode(v, seat).userData.fit ?? CABIN_FIT)
+          rig.sit(seatNode(v, seat).userData.fit ?? CABIN_FIT, seat !== SEAT_DRIVER)
           chase.drop()
           // This is the same articulated avatar used on foot, not a vehicle's
           // approximation of it. The seat owns position and vehicle attitude;
@@ -2406,6 +2406,8 @@ export default function CrtScene({
         const gaugeNow = { speed: -1, load: 0, altitude: -1, gear: -1 }
 
         const driveTick = (now: number, dt: number) => {
+          // the seated body slumps, lolls and jiggles with the machine
+          rig.seatedTick(dt)
           const v = fleet.riding
           if (!v) return
           const driver = fleet.seat === SEAT_DRIVER
@@ -2685,6 +2687,7 @@ export default function CrtScene({
             walk.pitch = held.pitch
             camera.rotation.set(held.pitch, held.yaw, 0)
             poseSeated(sitting)
+            rig.seatedTick(dt)
             // a/d works the set from the sofa, the way a remote does: a dark
             // tube wakes rather than skipping a channel it is not showing.
             // Only from a seat that faces it: the keys are free on every

@@ -235,11 +235,11 @@ const getUp = (a: Actor) => {
     drawn from look.ts's own palettes */
 const LOOKS: PlayerLook[] = [
   DEFAULT_LOOK,
-  { shell: '#e8b83a', trim: '#fbe9a8', accent: '#c9493f', glow: '#1c1a22' },
-  { shell: '#5fa35a', trim: '#d6f0cf', accent: '#eeeae0', glow: '#1c1a22' },
-  { shell: '#e27aa6', trim: '#f6d3de', accent: '#1c1c22', glow: '#2b3a55' },
-  { shell: '#9a6cc8', trim: '#e4d8f3', accent: '#e6b43c', glow: '#1c1a22' },
-  { shell: '#d9503f', trim: '#f7d2b3', accent: '#3d6fb5', glow: '#4a2e22' },
+  { shell: '#e0a21a', trim: '#1c1c22', accent: '#2860c8', glow: '#1c1a22', hat: 2 },
+  { shell: '#2f6fcf', trim: '#d2452f', accent: '#f0e8e0', glow: '#1c1a22', hat: 3 },
+  { shell: '#d9508f', trim: '#1c1c22', accent: '#e8b818', glow: '#2b3a55', hat: 4 },
+  { shell: '#8a4fc8', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a22', hat: 5 },
+  { shell: '#d2452f', trim: '#e0a21a', accent: '#f0e8e0', glow: '#4a2e22', hat: 0 },
 ]
 
 /* -------------------------------------------------------------- the tiles -- */
@@ -472,7 +472,7 @@ const seats = (spec: BodySpec, snap: Snap) => {
     st.scene.add(v.root)
     for (const [seat, look] of [[v.driverSeat, LOOKS[0]], [v.passengerSeat, LOOKS[1]]] as const) {
       const rig = buildPlayerBody(EYE, GRAV, look)
-      rig.sit(seat.userData.fit ?? CABIN_FIT)
+      rig.sit(seat.userData.fit ?? CABIN_FIT, seat === v.passengerSeat)
       seat.add(rig.group)
       rig.group.position.set(0, 0, 0)
       rig.group.rotation.set(0, Math.PI, 0)

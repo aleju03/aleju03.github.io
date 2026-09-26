@@ -4,7 +4,7 @@ import {
   buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../player/playerBody'
 import {
-  ACCENT_SWATCHES, GLOW_SWATCHES, SHELL_SWATCHES, TRIM_SWATCHES, type PlayerLook,
+  ACCENT_SWATCHES, GLOW_SWATCHES, HATS, SHELL_SWATCHES, TRIM_SWATCHES, type PlayerLook,
 } from '../player/look'
 import { blockedAt, makeCollisionSet, type Solid } from '../physics/collision'
 import type { RagdollEnv } from '../player/ragdoll'
@@ -164,6 +164,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     trim: swatch(TRIM_SWATCHES, rnd()),
     accent: swatch(ACCENT_SWATCHES, rnd()),
     glow: swatch(GLOW_SWATCHES, rnd()),
+    hat: Math.floor(rnd() * HATS.length) % HATS.length,
   })
 
   /* the world's solids, wrapped for `blockedAt`. Infinite bounds: those are

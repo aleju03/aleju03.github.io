@@ -120,6 +120,19 @@ for (const [k, n] of [...tally].sort((a, b) => b[1] - a[1])) {
   body: `
 const { buildPlayerBody } = await import('${ROOT}/src/game/player/playerBody.ts')
 const { makeCollisionSet } = await import('${ROOT}/src/game/physics/collision.ts')
+const { bodyGeometry, HAT_COUNT } = await import('${ROOT}/src/game/player/bodyShape.ts')
+// every headgear variant: its vertex count, and anything non-finite in it
+for (let h = 0; h < HAT_COUNT; h++) {
+  const g = bodyGeometry(h)
+  const P = g.getAttribute('position'), Nn = g.getAttribute('normal'), R = g.getAttribute('aRole')
+  let badP = 0, badN = 0
+  const roles = new Set()
+  for (let i = 0; i < P.count; i++) {
+    if (!Number.isFinite(P.getX(i) + P.getY(i) + P.getZ(i))) { badP++; roles.add(R.getX(i)) }
+    if (!Number.isFinite(Nn.getX(i) + Nn.getY(i) + Nn.getZ(i))) { badN++; roles.add(R.getX(i)) }
+  }
+  console.log('hat ' + h + ': ' + P.count + ' verts' + (badP + badN ? '  NON-FINITE pos ' + badP + ' nrm ' + badN + ' roles ' + [...roles] : ''))
+}
 const env = { groundY: 0, collision: makeCollisionSet({ minX: -1e3, maxX: 1e3, minZ: -1e3, maxZ: 1e3 }) }
 let t0 = performance.now()
 const rigs = []
