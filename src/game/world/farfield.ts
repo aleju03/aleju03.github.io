@@ -595,10 +595,10 @@ const ASPHALT = new THREE.Color('#2b2d31').multiplyScalar(1.1)
  * height samples along the border, which is a vertex column of the terrain,
  * so it lies on the drawn surface, lifted a little more the coarser the ring.
  */
-const countryRoads = (
+function* countryRoads(
   s: Soup, level: number, c0: number, d0: number, per: number, cell: number,
   ground: (x: number, z: number) => number,
-) => {
+): Generator<void, void> {
   const lift = 0.4 + cell * 0.06
   const half = 3.4
   const step = Math.max(cell, 8)
@@ -642,6 +642,8 @@ const countryRoads = (
       hits = 0
       for (const t of [0.25, 0.5, 0.75]) if (asphalt(xl, za + CHUNK * t)) hits++
       if (hits >= 2) strip(xl, za, xl, za + CHUNK, false)
+      // a slice per few segments: the outer ring's tile has two thousand
+      if ((i & 7) === 7) yield
     }
 }
 
@@ -733,7 +735,7 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       yield
     }
   }
-  countryRoads(s, level, c0, d0, per, cell, ground)
+  yield* countryRoads(s, level, c0, d0, per, cell, ground)
   yield
   return s.build()
 }
