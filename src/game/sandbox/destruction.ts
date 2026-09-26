@@ -273,6 +273,10 @@ const tintOf = (pieces: Piece[], out: [number, number, number]) => {
   return out
 }
 
+/** a wall that carries something: a shop's shelving is a wall to the
+    fracture and holds up nothing, and must not count toward the storey */
+const bears = (pc: Piece) => pc.kind === 'wall' && pc.over.length > 0
+
 /* ------------------------------------------------------------ the thing -- */
 
 const attached = new WeakMap<Sandbox, Destruction>()
@@ -309,7 +313,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     if (!o) return null
     const pieces = o.frac.pieces
     const cap0 = new Float32Array(o.frac.ny)
-    for (const pc of pieces) if (pc.kind === 'wall') cap0[pc.iy] += pc.vol
+    for (const pc of pieces) if (bears(pc)) cap0[pc.iy] += pc.vol
     const grade = Math.max(0, Math.min(2, s.rec.grade))
     const w: Wreck = {
       s, o, pieces,
@@ -332,7 +336,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     const a = w.o.alive
     for (let i = 0; i < w.pieces.length; i++) {
       const pc = w.pieces[i]
-      if (a[i] && pc.iy === iy && pc.kind === 'wall') v += pc.vol
+      if (a[i] && pc.iy === iy && bears(pc)) v += pc.vol
     }
     return v
   }
@@ -468,6 +472,8 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   const spawnLump = (
     w: Wreck, ev: Ev, level: Level, list: number[], frags: Frag[] | null,
     parent: Pose | null, push: THREE.Vector3 | null, spin: number, parentId?: PropId,
+    /** born this far from where it stood (a piece a ram is already inside) */
+    ahead?: THREE.Vector3 | null,
   ): PropId | null => {
     const pieceObjs = list.map((i) => w.pieces[i])
     const all: Frag[] = frags ?? pieceObjs.flatMap((pc) => pc.frags)
@@ -481,6 +487,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     const shape: ShapeSpec = { type: 'hull', points }
     const mass = Math.min(60000, Math.max(15, m.vol * w.dens))
     const p = poseOf(parent, rc)
+    if (ahead) p.pos.add(ahead)
     if (push) p.vel.add(push)
     if (spin) {
       p.ang.x += (rnd() - 0.5) * spin
@@ -570,7 +577,9 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   }
 
   /** a piece or a shard of it leaves the building */
-  const throwPieces = (w: Wreck, ev: Ev, list: number[], vel: THREE.Vector3, energy: number) => {
+  const throwPieces = (
+    w: Wreck, ev: Ev, list: number[], vel: THREE.Vector3, energy: number, ahead: THREE.Vector3 | null = null,
+  ) => {
     for (const i of list) {
       const pc = w.pieces[i]
       const big = pc.vol >= SHATTER_MIN && energy > 1.4 && makeRoom(3)
@@ -580,12 +589,12 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         for (const sh of shards) {
           const kick = new THREE.Vector3(
             vel.x + (rnd() - 0.5) * 4, vel.y + rnd() * 3, vel.z + (rnd() - 0.5) * 4)
-          spawnLump(w, ev, 4, [i], sh, null, kick, 3)
+          spawnLump(w, ev, 4, [i], sh, null, kick, 3, undefined, ahead)
         }
       } else {
         const kick = new THREE.Vector3(
           vel.x + (rnd() - 0.5) * 2, vel.y + rnd() * 1.5, vel.z + (rnd() - 0.5) * 2)
-        spawnLump(w, ev, 3, [i], null, null, kick, energy > 1 ? 2 : 0.6)
+        spawnLump(w, ev, 3, [i], null, null, kick, energy > 1 ? 2 : 0.6, undefined, ahead)
       }
       if (pc.g) sb.fx.debris('glass', pc.center, vel, Math.min(3, (pc.max.x - pc.min.x + pc.max.z - pc.min.z) / 3))
       sb.fx.rubble(pc.center, vel, Math.min(4, Math.cbrt(pc.vol) * 1.4), tint[0], tint[1], tint[2])
@@ -682,13 +691,25 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     ruins.lift(w.o, [i])
     noteLift(ev, w, [i])
     w.hp[i] = 0
-    // it bows out from under the weight
+    // it bursts out from under the weight. Most of a crushed wall is dust
+    // and gravel, not a panel: a wall that left as a whole slab would stand
+    // there on its edge holding the load up as well as it did before
     const frac = w.o.frac
     const ox = pc.center.x - (frac.min.x + frac.max.x) / 2
     const oz = pc.center.z - (frac.min.z + frac.max.z) / 2
     const ol = Math.hypot(ox, oz) || 1
-    const v = new THREE.Vector3((ox / ol) * 2.5, 0.5, (oz / ol) * 2.5)
-    throwPieces(w, ev, [i], v, 1.6)
+    const v = new THREE.Vector3((ox / ol) * 5, 1, (oz / ol) * 5)
+    tintOf([pc], tint)
+    if (rnd() < 0.35 && makeRoom(3)) throwPieces(w, ev, [i], v, 2)
+    else {
+      const size = Math.min(5, Math.cbrt(pc.vol) * 1.6)
+      sb.fx.rubble(pc.center, v, size, tint[0], tint[1], tint[2])
+      tmpV.set(pc.center.x, pc.min.y + 0.6, pc.center.z)
+      sb.fx.rubble(tmpV, v, size, tint[0] * 0.8, tint[1] * 0.8, tint[2] * 0.8)
+      if (pc.g) sb.fx.debris('glass', pc.center, v, 2)
+    }
+    sb.fx.plume({ x: pc.center.x, y: pc.min.y + 0.5, z: pc.center.z }, Math.min(8, pc.max.y - pc.min.y + 2),
+      tint[0], tint[1], tint[2])
     settle(w, ev, pc.center)
   }
 
@@ -704,7 +725,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   /** deal damage to one building; returns the pieces it broke */
   const hurt = (
     s: Standing, ev: Ev, at: THREE.Vector3, power: number, radius: number,
-    dir: THREE.Vector3 | null, throwK: number,
+    dir: THREE.Vector3 | null, throwK: number, carried = false,
   ) => {
     // a building too far or too strong to lose a single piece is left
     // closed: opening one is the expensive part
@@ -745,8 +766,14 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         v.normalize()
       }
       const over = Math.min(4, -w.hp[i] + 1)
-      v.multiplyScalar(throwK * Math.min(2.2, 0.6 + 0.5 * over))
-      throwPieces(w, ev, [i], v, over)
+      // a piece a ram carries leaves ahead of it, a little faster than it
+      // came (or the ram runs into what it just broke and bounces off);
+      // one a blast throws goes as hard as the blast was over its strength
+      v.multiplyScalar(carried ? throwK * (1.1 + 0.25 * rnd()) : throwK * Math.min(2.2, 0.6 + 0.5 * over))
+      // what a ram broke is born clear of it: the ram is already some way
+      // into the wall, and a piece born inside it is shoved back into its
+      // face by the solver, which stops a tonne of concrete dead
+      throwPieces(w, ev, [i], v, over, carried && dir ? tmpA.copy(dir).setLength(1.4) : null)
     }
     tintOf(broke.map((i) => w.pieces[i]), tint)
     sb.fx.plume(at, Math.min(10, 2 + broke.length), tint[0] * 1.15, tint[1] * 1.12, tint[2] * 1.08)
@@ -887,13 +914,18 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     }
     // anything heavy hitting a building's solid damages it: a thrown block,
     // a falling storey, the car's hull when it is a prop
-    if (e.with === 'solid' && e.solid && e.speed > 6) {
+    if (e.with === "solid" && e.solid && e.speed > 6) {
       const own = ruins.owner(e.solid)
       if (!own) return
-      const dmg = e.impulse / IMPULSE_PER_DAMAGE
+      // rubble smaller than a wall section does not bring the next building
+      // down, or one tower takes the whole of downtown with it
+      const lump = lumps.get(e.id)
+      if (lump && lump.level > 2) return
+      const R = RESIST[Math.max(0, Math.min(2, own.s.rec.grade))]
+      const dmg = Math.min(e.impulse / IMPULSE_PER_DAMAGE, R * 4)
       // a knock that could not break a piece in two blows is only a knock:
       // rubble settling against a wall must not chip the town down
-      if (dmg < RESIST[Math.max(0, Math.min(2, own.s.rec.grade))] * 0.5) return
+      if (dmg < R * 0.5) return
       impacts.push({ s: own.s, e, dmg })
     }
   })
@@ -913,6 +945,8 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   })
 
   const vIn = new THREE.Vector3()
+  const tmpA = new THREE.Vector3()
+  const vPre = new THREE.Vector3()
   const offSlice = sb.onAfterSlice((h) => {
     const t0 = performance.now()
     now += h
@@ -926,22 +960,20 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         building: s.rec.id, how: 'impact', x: e.x, y: e.y, z: e.z, power: dmg, radius: 0,
         dx: vIn.x, dy: vIn.y, dz: vIn.z, seed: (rnd() * 0x7fffffff) | 0,
       })
-      const r = Math.min(4.5, 1.2 + Math.cbrt(p.mass) * 0.12)
-      const before = s.open ? countAlive(s.open) : -1
-      hurt(s, ev, tmpV.set(e.x, e.y, e.z), dmg, r, vIn.lengthSq() > 1 ? vIn.clone() : null, 0.5)
+      // as wide as what hit: a barrier broadside takes a bay, a brick a hole
+      const r = Math.min(5, Math.max(1.4, Math.max(p.extents.x, p.extents.y, p.extents.z) * 1.15))
+      // the face it struck, pointing into the solid, and so the velocity it
+      // had before the bounce the slice already gave it
+      const b = e.solid!
+      const cx = (b.min.x + b.max.x) / 2
+      const cz = (b.min.z + b.max.z) / 2
+      const nx = Math.abs(e.x - cx) / (b.max.x - b.min.x + 1e-3) > Math.abs(e.z - cz) / (b.max.z - b.min.z + 1e-3)
+        ? -Math.sign(e.x - cx) : 0
+      const nz = nx === 0 ? -Math.sign(e.z - cz) : 0
+      vPre.set(vIn.x + nx * e.speed, vIn.y, vIn.z + nz * e.speed)
+      const broke = hurt(s, ev, tmpV.set(e.x, e.y, e.z), dmg, r, vPre.lengthSq() > 1 ? vPre.clone() : null, 1, true)
       // a prop that went *through* keeps most of its way: what it hit gave
-      if (before >= 0 && s.open && countAlive(s.open) < before && !lumps.has(e.id)) {
-        const back = Math.max(0, e.speed * 0.6)
-        tmpV.set(e.x, e.y, e.z)
-        const b = e.solid!
-        // the face it struck, pointing into the solid
-        const cx = (b.min.x + b.max.x) / 2
-        const cz = (b.min.z + b.max.z) / 2
-        const nx = Math.abs(e.x - cx) / (b.max.x - b.min.x + 1e-3) > Math.abs(e.z - cz) / (b.max.z - b.min.z + 1e-3)
-          ? -Math.sign(e.x - cx) : 0
-        const nz = nx === 0 ? -Math.sign(e.z - cz) : 0
-        sb.setVelocity(e.id, { x: vIn.x + nx * back, y: vIn.y, z: vIn.z + nz * back })
-      }
+      if (broke && !lumps.has(e.id)) sb.setVelocity(e.id, vPre.multiplyScalar(0.72))
     }
     // lumps that landed hard
     while (breakQueue.length) {
@@ -961,8 +993,8 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     for (const L of lumps.values()) {
       // a piece born brushing a box it could not be carved out of is shoved
       // out by the solver; nothing that young has a reason to be that fast
-      if (now - L.born < 0.4 && sb.getVelocity(L.id, vIn) && vIn.lengthSq() > 30 * 30) {
-        vIn.setLength(30)
+      if (now - L.born < 0.4 && sb.getVelocity(L.id, vIn) && vIn.lengthSq() > 48 * 48) {
+        vIn.setLength(48)
         sb.setVelocity(L.id, vIn)
       }
       if (L.going < 0 && L.level === 4 && L.vol < SHARD_VOL && now - L.born > SHARD_LIFE) L.going = 0
@@ -974,12 +1006,6 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     }
     stats.sliceMs = performance.now() - t0
   })
-
-  const countAlive = (o: Opened) => {
-    let n = 0
-    for (let i = 0; i < o.alive.length; i++) n += o.alive[i]
-    return n
-  }
 
   // a car through a wall: the ruins' breakable-solid hook
   ruins.onHit = (s, _piece, x, y, z, dx, dz, speed) => {

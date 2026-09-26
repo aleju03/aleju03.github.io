@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { buildChunk, type ChunkMats } from '../world/chunk'
 import { CHUNK, chunkX, chunkZ, inReserved, originX, originZ } from '../world/grid'
 import type { StructureRec } from '../world/fracture'
+import type { ShopDoorSpec } from '../world/shopDoors'
 import type { Solid } from '../physics/collision'
 import { destructionOf } from './destruction'
 import { defineScenario, type ScenarioCtx } from './scenarios'
@@ -18,9 +19,9 @@ import type { Sandbox } from './sandbox'
     ground floor. The storey fails from that side outward, and the tower
     leans into the hole and comes down across the street like a felled tree,
     breaking up storey by storey when it lands.
-  - `sandbox:wall`: a shipping container rammed into a shopfront at the
-    speed a physgun throw leaves the hand: through the wall and into the
-    shop, with the storefront bay coming away round it.
+  - `sandbox:wall`: a concrete Jersey barrier thrown broadside into a
+    shopfront at the speed a physgun throw leaves the hand: through the wall
+    and into the shop, with the storefront bay coming away round it.
 
   The sites are real buildings found by walking a spiral of chunks and
   reading the structures chunk.ts records, so each film always lands on the
@@ -31,7 +32,9 @@ import type { Sandbox } from './sandbox'
 */
 
 let standIn: ChunkMats | null = null
-const cache = new Map<string, { recs: StructureRec[]; boxes: Solid[]; trees: Array<[number, number]> }>()
+const cache = new Map<string, {
+  recs: StructureRec[]; boxes: Solid[]; trees: Array<[number, number]>; doors: ShopDoorSpec[]
+}>()
 
 /** what chunk.ts records in one chunk, built with throwaway materials */
 const recordsIn = (cx: number, cz: number) => {
@@ -44,7 +47,7 @@ const recordsIn = (cx: number, cz: number) => {
     for (const g of ch.geos) g.dispose()
     // a tree's solid is its trunk, and its crown is what blocks a lens
     const trees = ch.smash.props.filter((p) => p.rTop > 0.5).map((p) => [p.x, p.z] as [number, number])
-    hit = { recs: ch.structures, boxes: ch.boxes, trees }
+    hit = { recs: ch.structures, boxes: ch.boxes, trees, doors: ch.doors }
     cache.set(k, hit)
   }
   return hit
@@ -342,49 +345,132 @@ defineScenario({
 
 /* ------------------------------------------------------------- the wall -- */
 
+/** nothing standing (over knee height) in a rectangle `a0..a1` out along
+    (dx, dz) from a point and `half` either side of that line */
+const runClear = (x: number, z: number, dx: number, dz: number, a0: number, a1: number, half: number, skip: Set<Solid>) => {
+  const sx = -dz
+  const sz = dx
+  const cs = [[a0, -half], [a0, half], [a1, -half], [a1, half]].map(([a, b]) => [x + dx * a + sx * b, z + dz * a + sz * b])
+  const x0 = Math.min(...cs.map((c) => c[0]))
+  const x1 = Math.max(...cs.map((c) => c[0]))
+  const z0 = Math.min(...cs.map((c) => c[1]))
+  const z1 = Math.max(...cs.map((c) => c[1]))
+  for (let cz = chunkZ(z0); cz <= chunkZ(z1); cz++) {
+    for (let cx = chunkX(x0); cx <= chunkX(x1); cx++) {
+      for (const b of recordsIn(cx, cz).boxes) {
+        if (skip.has(b) || b.isEmpty() || b.max.y - b.min.y < 0.8) continue
+        if (b.max.x > x0 && b.min.x < x1 && b.max.z > z0 && b.min.z < z1) return false
+      }
+    }
+  }
+  return true
+}
+
+/** a shop with its front door on an open street: the front's outward
+    normal is the site's direction, and memo carries where the ram lands */
+const siteShop = (from: [number, number]): Found => {
+  const c0 = chunkX(from[0])
+  const d0 = chunkZ(from[1])
+  for (let ring = 0; ring < 30; ring++) {
+    for (let dz = -ring; dz <= ring; dz++) {
+      for (let dx = -ring; dx <= ring; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue
+        const here = recordsIn(c0 + dx, d0 + dz)
+        for (const r of here.recs) {
+          if (r.kind !== 'shop') continue
+          const b = boundsOf(r)
+          if (b.isEmpty()) continue
+          const door = here.doors.find((d) => d.x > b.min.x - 1 && d.x < b.max.x + 1 && d.z > b.min.z - 1 && d.z < b.max.z + 1)
+          if (!door) continue
+          const skip = new Set<Solid>(r.boxes)
+          const x = (b.min.x + b.max.x) / 2
+          const z = (b.min.z + b.max.z) / 2
+          const hx = (b.max.x - b.min.x) / 2
+          const hz = (b.max.z - b.min.z) / 2
+          const face = Math.abs(door.fx) * hx + Math.abs(door.fz) * hz
+          // the ram's run: straight out of the front, clear for twenty units
+          const tx = -door.fz
+          const tz = door.fx
+          const along = Math.abs(tx) * hx + Math.abs(tz) * hz
+          // a bay beside the door, away from it, whose run out into the
+          // street is clear of every post and bench as wide as the ram
+          const dside = (door.x - x) * tx + (door.z - z) * tz > 0 ? -1 : 1
+          let hitX = 0
+          let hitZ = 0
+          let ok = false
+          for (const k of [0.45, 0.3, 0.6, 0.15]) {
+            hitX = x + door.fx * face + tx * dside * along * k
+            hitZ = z + door.fz * face + tz * dside * along * k
+            if (runClear(hitX, hitZ, door.fx, door.fz, 0.5, 30, 3.6, skip)) {
+              ok = true
+              break
+            }
+          }
+          if (!ok) continue
+          return {
+            x, z, dx: door.fx, dz: door.fz,
+            memo: { w: Math.max(hx, hz) * 2, h: b.max.y - r.baseY, far: 24, side: dside, base: r.baseY, open: 1,
+              hitX, hitZ, tx, tz },
+          }
+        }
+      }
+    }
+  }
+  return { x: from[0], z: from[1], dx: 1, dz: 0, memo: { w: 10, h: 6, far: 24, side: 1, base: 0, open: 0, hitX: from[0], hitZ: from[1], tx: 0, tz: 1 } }
+}
+
 defineScenario({
   id: 'sandbox:wall',
-  title: 'a shipping container rammed through a shopfront',
-  site: once('shop', () => siteBuilding(['shop'], [0, -340], (w) => w * 1.2 + 16, { minOpen: 0.8 })),
+  title: 'a concrete barrier thrown through a shopfront',
+  site: once('shop', () => siteShop([0, -340])),
   duration: 5,
   frames: 12,
   camera: (c) => {
-    const d = c.memo.far
-    // from the street, off to one side of the container's run
-    const sx = -c.dz
-    const sz = c.dx
+    // out in the street, three-quarters on to the bay it hits, from the
+    // side the door is not on so the hole opens toward the lens
+    const hx = c.memo.hitX
+    const hz = c.memo.hitZ
+    const sx = c.memo.tx * c.memo.side
+    const sz = c.memo.tz * c.memo.side
     return {
-      from: [c.x + c.dx * d * 0.85 + sx * d * 0.55, c.memo.base + 7, c.z + c.dz * d * 0.85 + sz * d * 0.55],
-      to: [c.x + c.dx * c.memo.w * 0.3, c.memo.base + 2.5, c.z + c.dz * c.memo.w * 0.3],
-      fov: 55,
+      from: [hx + c.dx * 17 + sx * 13, c.memo.base + 7.5, hz + c.dz * 17 + sz * 13],
+      to: [hx - c.dx * 2, c.memo.base + 2.8, hz - c.dz * 2],
+      fov: 56,
       clear: true,
     }
   },
   setup: (c) => {
-    const s = building(c)
-    if (!s) return
-    const b = s.box
-    // the face toward the street, where the container starts
-    const hx = (b.max.x - b.min.x) / 2
-    const hz = (b.max.z - b.min.z) / 2
-    const face = Math.abs(c.dx) * hx + Math.abs(c.dz) * hz
-    const start = face + 14
-    const px = c.x + c.dx * start
-    const pz = c.z + c.dz * start
+    // a Jersey barrier (1.1 tonnes of concrete) carried broadside at the
+    // speed of a physgun throw, the way sandbox:stack punts its plank, and
+    // let go a stride short of the wall so what hits it is a free body with
+    // all of that speed in it
+    const start = 24
+    const half = 1.2
     const yaw = Math.atan2(c.dx, c.dz)
-    const y = c.sb.restY('container', px, pz) + 0.6
-    const id = c.sb.spawn('container', { x: px, y, z: pz }, { yaw: yaw + Math.PI / 2 })
+    const q = { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }
+    const y = Math.max(c.memo.base, c.sb.groundY(c.memo.hitX, c.memo.hitZ)) + 1.6
+    const at = (d: number) => ({ x: c.memo.hitX + c.dx * d, y, z: c.memo.hitZ + c.dz * d })
+    const id = c.sb.spawn('barrier', at(start), { quaternion: q })
+    c.sb.setMode(id, 'kinematic')
     c.ids.push(id)
-    c.memo.start = start
+    let t = 0
+    const off = c.sb.onBeforeSlice((h) => {
+      t += h
+      if (!c.sb.get(id)) return off()
+      const d = start - Math.max(0, t - 0.4) * 34
+      if (d > half + 1.2) {
+        c.sb.moveKinematic(id, at(d), q)
+        return
+      }
+      c.sb.setMode(id, 'dynamic')
+      c.sb.setVelocity(id, { x: -c.dx * 34, y: 1, z: -c.dz * 34 })
+      off()
+    })
   },
-  events: [
-    [0.4, (c) => {
-      const id = c.ids[0]
-      if (!c.sb.get(id)) return
-      // thrown: flat and fast at the wall, with a little lift
-      c.sb.setVelocity(id, { x: -c.dx * 30, y: 2.5, z: -c.dz * 30 })
-      c.sb.wake(id)
-    }],
-  ],
-  report: (c) => report(c.sb, c),
+  report: (c) => {
+    const p = new THREE.Vector3()
+    const inside = c.sb.getTransform(c.ids[0], p)
+      ? ((p.x - c.memo.hitX) * -c.dx + (p.z - c.memo.hitZ) * -c.dz).toFixed(1) : 'gone'
+    return `${report(c.sb, c)}; the barrier ended ${inside} units past the wall line`
+  },
 })

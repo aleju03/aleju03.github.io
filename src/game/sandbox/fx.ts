@@ -266,21 +266,28 @@ export const createFx = (o: FxOpts): Fx => {
   const smokeMat = ditherFade(new THREE.MeshLambertMaterial({ color: 0xffffff }), 'sandbox-smoke')
   smokeMat.name = 'sandbox-smoke'
 
-  const CAP = { bits: 700, puffs: 480, fire: 300, sparks: 260 }
+  const CAP = { bits: 700, puffs: 480, fire: 300, sparks: 260, dust: 520 }
   const ico0 = withFade(new THREE.IcosahedronGeometry(1, 1), CAP.puffs)
   const ico1 = withFade(new THREE.IcosahedronGeometry(1, 1), CAP.fire)
   const cube = pinnedUV(new THREE.BoxGeometry(1, 1, 1), whiteUV[0], whiteUV[1])
   const spark = withFade(new THREE.BoxGeometry(1, 1, 1), CAP.sparks)
+  const ico2 = withFade(new THREE.IcosahedronGeometry(1, 1), CAP.dust)
 
   const bits = pool(cube, litMat, CAP.bits, 'fall')
   const puffs = pool(ico0, smokeMat, CAP.puffs, 'smoke')
   const fire = pool(ico1, fireMat, CAP.fire, 'fire')
   const sparks = pool(spark, fireMat, CAP.sparks, 'spark')
+  // masonry dust: the fire's unlit dithering material (so no new program)
+  // drawn in flat earth colours. Lit, a billow is a ball with a bright top
+  // and a dark underside, and at this resolution that reads as a boulder;
+  // flat, a crowd of them overlapping in two tones reads as a cloud
+  const dust = pool(ico2, fireMat, CAP.dust, 'smoke')
   // air last: after everything solid, the fire over its own smoke
   puffs.mesh.renderOrder = 10
   fire.mesh.renderOrder = 11
   sparks.mesh.renderOrder = 11
-  const pools = [bits, puffs, fire, sparks]
+  dust.mesh.renderOrder = 10
+  const pools = [bits, puffs, fire, sparks, dust]
   for (const p of pools) root.add(p.mesh)
 
   /* decals: a small ring of flat quads, two materials, one program */
@@ -517,24 +524,24 @@ export const createFx = (o: FxOpts): Fx => {
     },
 
     plume: (at, size, r0, g0, b0) => {
-      // lighter and warmer than smoke: pulverised render and brick, so a
-      // collapse reads as a dust storm and not as a fire
-      const n = Math.min(9, 2 + Math.round(size * 0.55))
-      const sz = Math.min(1.9, 0.55 + size * 0.1)
-      // the dust is the wall's colour, pulled toward a warm grey: pale
-      // render goes up as a buff haze rather than as snow
-      const r = r0 * 0.45 + 0.13
-      const g = g0 * 0.45 + 0.12
-      const b = b0 * 0.45 + 0.1
+      // many small billows rather than a few big ones, in two tones of the
+      // wall's own colour pulled toward a warm grey, hugging the ground and
+      // rolling outward the way a collapse pushes its dust ahead of it
+      const n = Math.min(18, 5 + Math.round(size * 1.2))
+      const sz = Math.min(1.3, 0.5 + size * 0.07)
+      const r = r0 * 0.4 + 0.1
+      const g = g0 * 0.4 + 0.095
+      const b = b0 * 0.4 + 0.08
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2
-        const out = rnd(2, 7) * Math.min(2.2, 0.6 + size * 0.1)
-        const s = rnd(0.7, 1.3) * sz
-        const k = rnd(0.85, 1.15)
-        emit(puffs, at.x + Math.cos(a) * size * 0.3, at.y + rnd(-0.3, 1.2), at.z + Math.sin(a) * size * 0.3,
-          Math.cos(a) * out, rnd(0.4, 2.6), Math.sin(a) * out, rnd(2.8, 5.2), s, s, s,
+        const out = rnd(3, 9) * Math.min(1.8, 0.6 + size * 0.08)
+        const s = rnd(0.6, 1.3) * sz
+        // a darker core low down, paler billows over it
+        const k = i % 3 === 0 ? rnd(0.62, 0.72) : rnd(0.92, 1.08)
+        emit(dust, at.x + Math.cos(a) * size * 0.25, at.y + rnd(-0.3, 0.8) + (k > 0.8 ? 0.6 : 0), at.z + Math.sin(a) * size * 0.25,
+          Math.cos(a) * out, rnd(0.2, 1.8), Math.sin(a) * out, rnd(1.6, 3.4), s, s * rnd(0.7, 1), s,
           r * k, g * k, b * k,
-          { delay: rnd(0, 0.35), grow: rnd(1.7, 2.4), drag: 0.9, spin: 0.6, fadeAt: 0.25 })
+          { delay: rnd(0, 0.3), grow: rnd(1.8, 2.6), drag: 1.5, spin: 0.8, fadeAt: 0.12 })
       }
     },
 
@@ -603,7 +610,7 @@ export const createFx = (o: FxOpts): Fx => {
     dispose: () => {
       root.removeFromParent()
       for (const P of pools) P.mesh.dispose()
-      ico0.dispose(); ico1.dispose(); cube.dispose(); spark.dispose()
+      ico0.dispose(); ico1.dispose(); ico2.dispose(); cube.dispose(); spark.dispose()
       smokeMat.dispose()
       decalGeo.dispose()
       fireMat.dispose(); scorchMat.dispose(); splatMat.dispose()
