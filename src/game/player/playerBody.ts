@@ -243,7 +243,7 @@ export type Emote = 'stretch' | 'bounce' | 'wave' | 'look'
   with nothing under it, and everyone saw everyone else as a head shorter
   than themselves.)
 */
-export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.35
+export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.22
 /** the top of the head and its band: what anything floating over a head clears */
 export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 2.9
 /** the group's scale for a given standing eye height */
@@ -324,7 +324,7 @@ const LIMB_NAMES: BodyLimb['name'][] = [
 ]
 /** design-unit radii per particle, and relative masses: a heavy head and
     trunk, light fists, so a tumble leads with the head and the hands flap */
-const RADII = [0.38, 0.46, 0.5, 0.17, 0.17, 0.14, 0.14, 0.19, 0.19, 0.2, 0.2, 0.19, 0.19, 0.58, 0.36]
+const RADII = [0.46, 0.44, 0.46, 0.17, 0.17, 0.14, 0.14, 0.19, 0.19, 0.21, 0.21, 0.2, 0.2, 0.68, 0.4]
 const MASSES = [3, 2.6, 2.4, 0.9, 0.9, 0.6, 0.6, 0.45, 0.45, 0.9, 0.9, 0.8, 0.8, 1.2, 0.6]
 /** the whole body, for turning an impulse into a velocity */
 const MASS = 70
@@ -395,6 +395,31 @@ export function buildPlayerBody(
   const pack = bones[B.PACK]
   const REST = BONE_REST.map(({ at }) => new THREE.Vector3(at[0], at[1], at[2]))
 
+  /*
+    The arms hang off the torso, and the torso's bone carries the trunk's
+    squash-and-stretch as a non-uniform scale. A child inherits that scale in
+    its parent's frame, so an arm swung level in a landing came out stretched
+    along the torso's widened axis, twice its length and hose-thin. Undoing
+    it with the arm's own scale is wrong too: a bone's scale is applied in its
+    own (rotated) frame, which for a level arm multiplied the stretch instead.
+    What undoes it is the inverse squash in the *parent's* frame, before the
+    arm's rotation, which a plain Object3D cannot express, so the two upper
+    arms compose their own matrix: position, then the inverse squash, then
+    the rotation.
+  */
+  const armInv = new THREE.Vector3(1, 1, 1)
+  const armS = new THREE.Matrix4()
+  const armUnsquash = (bone: THREE.Bone) => {
+    bone.updateMatrix = () => {
+      bone.matrix.makeRotationFromQuaternion(bone.quaternion)
+      bone.matrix.premultiply(armS.makeScale(armInv.x, armInv.y, armInv.z))
+      bone.matrix.setPosition(bone.position)
+      bone.matrixWorldNeedsUpdate = true
+    }
+  }
+  armUnsquash(uarmL)
+  armUnsquash(uarmR)
+
   // plain anchors the ragdoll and the limb list read: where a particle sits
   // on a bone that is not itself a joint
   const anchor = (parent: THREE.Object3D, x: number, y: number, z: number) => {
@@ -403,12 +428,12 @@ export function buildPlayerBody(
     parent.add(o)
     return o
   }
-  const skullC = anchor(head, 0, 0.5, 0)
+  const skullC = anchor(head, 0, 0.42, 0)
   const mittL = anchor(handL, 0, -0.1, 0)
   const mittR = anchor(handR, 0, -0.1, 0)
   const soleL = anchor(shinL, 0, -SHIN, 0)
   const soleR = anchor(shinR, 0, -SHIN, 0)
-  const bellyC = anchor(torso, 0, 0.2, 0.05)
+  const bellyC = anchor(torso, 0, 0.0, 0.05)
   // the back of the bean: what a body lying face up rests on
   const backC = anchor(torso, 0, 0.35, -0.2)
 
@@ -761,6 +786,7 @@ export function buildPlayerBody(
     torso.position.copy(REST[B.TORSO])
     torso.quaternion.identity()
     torso.scale.set(1, 1, 1)
+    armInv.set(1, 1, 1)
     qInv.copy(qPelv).invert()
 
     // head grows +Y toward its particle
@@ -823,7 +849,7 @@ export function buildPlayerBody(
     head.position.copy(REST[B.HEAD])
     head.updateMatrixWorld()
     head.getWorldPosition(vRest)
-    stepJiggle(jHead, vRest, 100, 5.5, 0, 0.24 * s, dt)
+    stepJiggle(jHead, vRest, 70, 4, 0, 0.3 * s, dt)
     vTmp2.subVectors(jHead.p, vRest)
     torso.getWorldQuaternion(qW)
     vTmp2.applyQuaternion(qW.invert()).multiplyScalar(1 / s)
@@ -836,7 +862,7 @@ export function buildPlayerBody(
     pack.position.copy(REST[B.PACK])
     pack.updateMatrixWorld()
     pack.getWorldPosition(vRest)
-    stepJiggle(jPack, vRest, 150, 5, 0, 0.14 * s, dt)
+    stepJiggle(jPack, vRest, 110, 3.5, 0, 0.18 * s, dt)
     vTmp2.subVectors(jPack.p, vRest)
     torso.getWorldQuaternion(qW)
     vTmp2.applyQuaternion(qW.invert()).multiplyScalar(1 / s)
@@ -1112,7 +1138,7 @@ export function buildPlayerBody(
     // the chest is jelly on top of the hips: a roll spring that wants to
     // hold the shoulders level over the waddle, and so arrives late and
     // overshoots, and a pitch spring kicked by starts, stops and landings
-    const jellyRoll = spring(20, -waddleRoll * 0.75, 90, 5.5, -accS * 0.25, dt, -0.5, 0.5)
+    const jellyRoll = spring(20, -waddleRoll * 0.9, 70, 3.5, -accS * 0.4 - yawRateS * 0.8 * gait, dt, -0.55, 0.55)
     const jellyPitch = spring(
       22, 0, 110, 6.5, -accF * 0.18 + (pose.landing > 0 ? pose.landing * 2.6 : 0), dt, -0.5, 0.5,
     )
@@ -1125,7 +1151,8 @@ export function buildPlayerBody(
     // squash on a landing, stretch on the way up, breathe standing still
     // the jelly wobble: the trunk's volume on its own spring, kicked by every
     // footfall, takeoff and landing, ringing a few times before it settles
-    wobV += (-240 * wobP - 4.5 * wobV) * dt
+    // a stop, a start or a swerve shakes it too, not just a footfall
+    wobV += (-240 * wobP - 3.5 * wobV + Math.abs(accF) * 0.35 + Math.abs(yawRateS) * 0.6 * gait) * dt
     wobP = THREE.MathUtils.clamp(wobP + wobV * dt, -0.25, 0.25)
     const squash = THREE.MathUtils.clamp(
       1 + springP * 2.6 + airK * (1 - fallK) * 0.14 + breathe * 0.014 + stretchK * 0.07 +
@@ -1137,6 +1164,9 @@ export function buildPlayerBody(
     // is weighted to the pelvis) compresses too, not just the chest
     torso.position.y -= (1 - Math.min(1, squash)) * 0.25
     torso.scale.set(bulge, squash, bulge)
+    // the arms hang off the torso and must not take its squash with them
+    // (see armUnsquash below)
+    armInv.set(1 / bulge, 1 / squash, 1 / bulge)
 
     // head: keeps the gaze on the camera line, in both axes, for outside
     // viewers only; under the first-person lens the head stays level
@@ -1383,8 +1413,9 @@ export function buildPlayerBody(
       sprS[3] += 2.2 * gait
       sprS[9] += 2.2 * gait
       // and jiggles the jelly
-      wobV -= (0.9 + 0.6 * runK) * gait
-      jPack.v.y -= 2.2 * S * gait
+      wobV -= (1.9 + 0.9 * runK) * gait
+      jPack.v.y -= 3.6 * S * gait
+      jHead.v.y -= 1.6 * S * gait
     }
     if (takeoff) wobV += 1.2
     if (pose.landing > 0) {
@@ -1724,6 +1755,7 @@ export function buildPlayerBody(
       torso.position.set(0, SIT_WAIST, 0)
       torso.rotation.set(-SIT_SLOUCH, 0, 0)
       torso.scale.set(1, 1, 1)
+      armInv.set(1, 1, 1)
       head.position.set(0, SIT_NECK, 0)
       head.rotation.set(SIT_SLOUCH, 0, 0)
       head.scale.set(1 / SIT_SPREAD, 1 / SIT_SQUASH, 1 / SIT_SPREAD)
@@ -1845,6 +1877,7 @@ export function buildPlayerBody(
       // the seated squash and anything else scaled comes off
       pelvis.scale.set(1, 1, 1)
       torso.scale.set(1, 1, 1)
+      armInv.set(1, 1, 1)
       head.scale.set(1, 1, 1)
       eyes.scale.set(1, 1, 1)
       head.position.copy(REST[B.HEAD])

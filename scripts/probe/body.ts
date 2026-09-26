@@ -235,11 +235,11 @@ const getUp = (a: Actor) => {
     drawn from look.ts's own palettes */
 const LOOKS: PlayerLook[] = [
   DEFAULT_LOOK,
-  { shell: '#e8b83a', trim: '#2b3a55', accent: '#c9493f', glow: '#1c1a22' },
-  { shell: '#5fa35a', trim: '#6b4a33', accent: '#eeeae0', glow: '#1c1a22' },
-  { shell: '#e27aa6', trim: '#5a2e3a', accent: '#1c1c22', glow: '#2b3a55' },
-  { shell: '#9a6cc8', trim: '#d9d6cf', accent: '#e6b43c', glow: '#1c1a22' },
-  { shell: '#d9503f', trim: '#5d6670', accent: '#3d6fb5', glow: '#f4f1e6' },
+  { shell: '#e8b83a', trim: '#fbe9a8', accent: '#c9493f', glow: '#1c1a22' },
+  { shell: '#5fa35a', trim: '#d6f0cf', accent: '#eeeae0', glow: '#1c1a22' },
+  { shell: '#e27aa6', trim: '#f6d3de', accent: '#1c1c22', glow: '#2b3a55' },
+  { shell: '#9a6cc8', trim: '#e4d8f3', accent: '#e6b43c', glow: '#1c1a22' },
+  { shell: '#d9503f', trim: '#f7d2b3', accent: '#3d6fb5', glow: '#4a2e22' },
 ]
 
 /* -------------------------------------------------------------- the tiles -- */

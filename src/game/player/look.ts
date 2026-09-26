@@ -4,11 +4,10 @@
 
   The body in `playerBody.ts` is one skinned mesh whose every vertex names
   the paint it wears (`bodyShape.ts`), and four of those paints are the
-  player's: the jelly itself (the bean, the arms, the fists), the shorts (the
-  lower third of the bean and the stubby legs), the headband, and the two
-  dots that are the face. That is the whole of the costume on purpose: a jelly
-  brawler is its colours, and two of them in the same body colour are still
-  told apart by their shorts and their band.
+  player's: the jelly itself (the pear, the stub legs, the arms, the fists), a
+  paler belly patch, the headband, and the pupils of the two big eyes. That is
+  the whole of the costume on purpose: a jelly brawler is its colours, and two
+  of them in the same body colour are still told apart by belly and band.
 
   The four field names are older than this body (they were a robot's shell,
   trim, accent joints and eye glow) and they stay, because they are the wire
@@ -34,7 +33,7 @@ export interface PlayerLook {
   /** the jelly: the bean, the arms and the fists. The biggest block of
       colour on the body, and the one a player is recognised by */
   shell: string
-  /** the shorts: the lower third of the bean and the legs */
+  /** the belly: a paler patch of a second gummy on the front of the pear */
   trim: string
   /** the headband and its tails */
   accent: string
@@ -46,7 +45,7 @@ export interface PlayerLook {
     Not red: a warm jelly under the grade reads as bare skin */
 export const DEFAULT_LOOK: PlayerLook = {
   shell: '#4f86c6',
-  trim: '#2a2522',
+  trim: '#cfe3f0',
   accent: '#eeeae0',
   glow: '#1c1a22',
 }
@@ -61,9 +60,11 @@ export const SHELL_SWATCHES = [
   '#9a6cc8', '#e27aa6', '#3fa79a', '#e8e2d2',
 ] as const
 
+/** belly patches are pale: a lighter gummy under a darker one is what reads
+    as a belly rather than a hole cut in the body */
 export const TRIM_SWATCHES = [
-  '#2b3a55', '#2a2522', '#6b4a33', '#4c5536',
-  '#5a2e3a', '#5d6670', '#e2893f', '#d9d6cf',
+  '#cfe3f0', '#f3ead8', '#f6d3de', '#fbe9a8',
+  '#d6f0cf', '#e4d8f3', '#f7d2b3', '#ffffff',
 ] as const
 
 export const ACCENT_SWATCHES = [

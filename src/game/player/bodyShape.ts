@@ -4,14 +4,16 @@ import * as THREE from 'three'
   The drawing of the player character: one skinned soup, built once per
   session and shared by every body in the world.
 
-  The character is a jelly brawler in the Gang Beasts mould: one soft gummy
-  bean that is body and head at once (the head is just the top of it, with
-  the faintest pinch where a neck would be), two stubby peg legs with round
-  feet, two tube arms ending in round fists, a face that is two dark dots,
-  and one accessory, a brawler's headband tied at the back with two tails
-  that swing. No costume: the colours are the character. The lower third is
-  a second colour, like a pair of shorts pulled up high, so two players in
-  the same body colour can still be told apart.
+  The character is a jelly brawler in the Gang Beasts mould: one continuous
+  piece of gummy shaped like a pear, a narrow round-domed head flowing into a
+  wide soft belly (the head is only the top of it), two stubby nubs of the
+  same gummy for legs, two tube arms ending in round fists, a face that is two
+  big goofy eyes and nothing else, and one accessory, a brawler's headband
+  tied at the back with two tails that swing. No costume: the colours are the
+  character. A paler belly patch, the band and the pupils are the other three
+  colours, so two players in the same gummy are still told apart. An earlier
+  version had a straight-sided body on dark shorts and shoes, and from any
+  distance it read as three things stacked, a tin can on trousers.
 
   It is drawn for the look the whole game is rendered through (a low
   internal resolution, posterized, outlined), so everything that carries
@@ -67,8 +69,9 @@ export const NECK_OFF = 0.8
 // its outline in a fall
 export const UARM = 0.38
 export const FARM = 0.36
-/** head bone up to the eyes, high on the bean like a Gang Beasts face */
-export const EYE_OFF = 0.55
+/** head bone up to the eyes: a face set into the upper bean, below the
+    band, not jammed up under it */
+export const EYE_OFF = 0.42
 /** head bone up to the top of the bean and its headband */
 export const CROWN_OFF = 1.1
 
@@ -106,21 +109,30 @@ export const BONE_COUNT = 18
 export const BODY_Y0 = HIP_Y - 0.26
 const BODY_Y1 = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF - 0.02
 const BODY_ZS = 0.86
-/** the bean's radius at t in [0, 1] bottom to top: fullest at the belly, a
-    faint pinch under the head, a round dome on top */
+/** the bean's radius at t in [0, 1] bottom to top: a pear. Widest low in the
+    belly, narrowing steadily into a head that ends in a round dome. The
+    control points are joined by a Catmull-Rom spline, which keeps the slope
+    running through each of them: a cosine blend between them came to a
+    standstill at every point, and the flat band it left at each one read as
+    a quilted jacket, rings stacked up the body */
 const PROF: Array<[number, number]> = [
-  [0, 0.54], [0.24, 0.66], [0.46, 0.62], [0.6, 0.55], [0.78, 0.58], [1, 0.52],
+  [0, 0.64], [0.15, 0.74], [0.33, 0.7], [0.52, 0.58], [0.68, 0.5], [0.8, 0.47], [1, 0.45],
 ]
 const beanR = (t: number) => {
   let i = 1
   while (i < PROF.length - 1 && PROF[i][0] < t) i++
-  const [t0, r0] = PROF[i - 1]
-  const [t1, r1] = PROF[i]
-  const k = THREE.MathUtils.clamp((t - t0) / (t1 - t0), 0, 1)
-  const r = r0 + (r1 - r0) * (0.5 - 0.5 * Math.cos(Math.PI * k))
-  // rounded ends: a dome on top, a softer one underneath
-  const bot = t < 0.14 ? Math.sqrt(Math.max(0, 1 - ((0.14 - t) / 0.14) ** 2)) : 1
-  const top = t > 0.72 ? Math.sqrt(Math.max(0, 1 - ((t - 0.72) / 0.28) ** 2)) : 1
+  const p0 = PROF[Math.max(0, i - 2)][1]
+  const p1 = PROF[i - 1][1]
+  const p2 = PROF[i][1]
+  const p3 = PROF[Math.min(PROF.length - 1, i + 1)][1]
+  const k = THREE.MathUtils.clamp((t - PROF[i - 1][0]) / (PROF[i][0] - PROF[i - 1][0]), 0, 1)
+  const r =
+    0.5 *
+    (2 * p1 + (-p0 + p2) * k + (2 * p0 - 5 * p1 + 4 * p2 - p3) * k * k +
+      (-p0 + 3 * p1 - 3 * p2 + p3) * k * k * k)
+  // a round bottom, and a round dome as tall as it is wide on top
+  const bot = t < 0.18 ? Math.sqrt(Math.max(0, 1 - ((0.18 - t) / 0.18) ** 2)) : 1
+  const top = t > 0.8 ? Math.sqrt(Math.max(0, 1 - ((t - 0.8) / 0.2) ** 2)) : 1
   return r * bot * top
 }
 const tOf = (y: number) => (y - BODY_Y0) / (BODY_Y1 - BODY_Y0)
@@ -149,8 +161,8 @@ export const BONE_REST: Array<{ parent: number; at: [number, number, number] }> 
   { parent: B.THIGH_R, at: [0, -THIGH, 0] },
   { parent: B.SHIN_R, at: [0, -SHIN + ANKLE_H, 0] },
   { parent: B.HEAD, at: [0, EYE_OFF, 0.44] }, // eyes (blink pivot)
-  { parent: B.HEAD, at: [0, 0.78, -0.5] }, // headband knot, tails swing off it
-  { parent: B.TORSO, at: [0, 0.15, 0.42] }, // belly
+  { parent: B.HEAD, at: [0, 0.66, -0.44] }, // headband knot, tails swing off it
+  { parent: B.TORSO, at: [0, 0.02, 0.5] }, // belly
 ]
 
 /** each bone's rest position in the model's frame, design units */
@@ -481,11 +493,30 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
       },
       24, rings, role, bean, new THREE.Vector3(0, (BODY_Y0 + BODY_Y1) / 2, 0),
     )
-  const tShorts = tOf(pelvisY + 0.2)
+  // one gummy, one colour, bottom to crown: no waistline, no trousers
   const tHead = tOf(headY + 0.06)
-  slice(0, tShorts, ROLE.TRIM, 5) // the shorts
-  slice(tShorts, tHead, ROLE.SUIT, 10) // the body
-  slice(tHead, 1, ROLE.SUIT + H, 16) // the head, which the lens must not see
+  slice(0, tHead, ROLE.SUIT, 26) // the body
+  slice(tHead, 1, ROLE.SUIT + H, 18) // the head, which the lens must not see
+
+  // the belly patch: a second, paler gummy tone on the front of the pear. It
+  // is the pear's own surface a hair proud of itself over an oval, so it
+  // follows every curve and rides the belly's jiggle with it (a flat disc
+  // stood off the side of the body like a lid)
+  {
+    const t0 = tOf(bellyY - 0.52)
+    const t1 = tOf(bellyY + 0.34)
+    patch(
+      s,
+      (u, v, out) => {
+        const t = t0 + (t1 - t0) * v
+        const half = 0.72 * Math.sqrt(Math.max(0, 1 - (2 * v - 1) ** 2))
+        const th = Math.PI / 2 + (u * 2 - 1) * half
+        const r = beanR(t) + 0.012
+        out.set(Math.cos(th) * r, BODY_Y0 + (BODY_Y1 - BODY_Y0) * t, Math.sin(th) * r * BODY_ZS)
+      },
+      14, 12, ROLE.TRIM, bean, new THREE.Vector3(0, bellyY, 0),
+    )
+  }
 
   // --- arms: one tube each, shoulder to wrist, soft across the elbow, and a
   // round fist
@@ -506,7 +537,7 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
     )
   }
 
-  // --- legs: stubby pegs in the shorts' colour, a round foot on each
+  // --- legs: stubby nubs of the same gummy, a round foot on each
   for (const [th, sn, ft] of [
     [B.THIGH_L, B.SHIN_L, B.FOOT_L],
     [B.THIGH_R, B.SHIN_R, B.FOOT_R],
@@ -517,19 +548,23 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
     tube(
       s,
       [hip.clone().add(new THREE.Vector3(0, 0.12, 0)), knee, ank.clone().add(new THREE.Vector3(0, 0.1, 0))],
-      0.21, 0.19, ROLE.TRIM, blend(sn, th, knee.y, 0.1), 10,
+      0.23, 0.2, ROLE.SUIT, blend(sn, th, knee.y, 0.1), 10,
     )
     ellipsoid(
-      s, new THREE.Vector3(ank.x, 0.12, 0.07), new THREE.Vector3(0.21, 0.15, 0.28),
-      ROLE.TRIM, rigid(ft), [14, 10], undefined, 0.0,
+      s, new THREE.Vector3(ank.x, 0.12, 0.07), new THREE.Vector3(0.22, 0.16, 0.27),
+      ROLE.SUIT, rigid(ft), [14, 10], undefined, 0.0,
     )
   }
 
-  // --- the face: two dark dots, high on the bean, on their own blink bone
+  // --- the face: two big goofy eyes, white with a pupil each, set a little
+  // apart and a little off true (the pupils look slightly down and away from
+  // each other), on their own blink bone. No mouth: a jelly brawler's face is
+  // its eyes, and a smile is what made the last one cute
   const head = rigid(B.HEAD)
   const eyeY = headY + EYE_OFF
+  const eyes = rigid(B.EYES)
   for (const side of [1, -1]) {
-    const x = side * 0.17
+    const x = side * 0.19
     const z = beanZ(eyeY, x)
     // oriented to the bean's surface there
     const r = beanR(tOf(eyeY))
@@ -538,15 +573,18 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
     const sideV = new THREE.Vector3(0, 1, 0).cross(n).normalize()
     const up = new THREE.Vector3().crossVectors(n, sideV).normalize()
     const m = new THREE.Matrix4().makeBasis(sideV, up, n)
-    ellipsoid(
-      s, new THREE.Vector3(x, eyeY, z - 0.005), new THREE.Vector3(0.065, 0.09, 0.03),
-      ROLE.GLOW + H, rigid(B.EYES), [10, 8], m,
-    )
+    const c = new THREE.Vector3(x, eyeY, z - 0.012)
+    ellipsoid(s, c, new THREE.Vector3(0.105, 0.125, 0.04), ROLE.GLINT + H, eyes, [12, 10], m)
+    const pupil = c.clone()
+      .addScaledVector(sideV, side * 0.025)
+      .addScaledVector(up, -0.03)
+      .addScaledVector(n, 0.03)
+    ellipsoid(s, pupil, new THREE.Vector3(0.055, 0.068, 0.025), ROLE.GLOW + H, eyes, [10, 8], m)
   }
 
   // --- the headband: a ring round the head a little above the eyes, a knot
   // at the back, and two tails hanging off the knot on their own springy bone
-  const bandY = headY + 0.78
+  const bandY = headY + 0.66
   const ring: THREE.Vector3[] = []
   const bandR = beanR(tOf(bandY)) + 0.012
   for (let k = 0; k <= 28; k++) {

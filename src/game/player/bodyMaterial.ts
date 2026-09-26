@@ -51,6 +51,7 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
     uGlowK: { value: 1.6 },
     uHideHead: { value: 0 },
     uFaceLift: { value: 1 },
+    uGummy: { value: 0.16 },
   }
   // a gummy sheen: smooth enough to carry a highlight blob through the
   // posterize, which is most of what makes a bean read as jelly
@@ -61,6 +62,7 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
     shader.uniforms.uGlowK = uniforms.uGlowK
     shader.uniforms.uHideHead = uniforms.uHideHead
     shader.uniforms.uFaceLift = uniforms.uFaceLift
+    shader.uniforms.uGummy = uniforms.uGummy
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -83,6 +85,7 @@ uniform vec3 uPal[9];
 uniform float uGlowK;
 uniform float uHideHead;
 uniform float uFaceLift;
+uniform float uGummy;
 varying float vRole;
 varying float vHead;`,
       )
@@ -96,7 +99,7 @@ diffuseColor.rgb = uPal[role];`,
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
-float lit = role == 7 ? 0.35 : 0.0;
+float lit = role == 7 ? 0.12 : 0.0;
 totalEmissiveRadiance += uPal[role] * lit * uGlowK;
 // a soft rim on the whole body, and a floor of light under the face: at dusk
 // the scene's light falls away and a face with nothing of its own goes to a
@@ -106,11 +109,15 @@ float rim = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.
 // the face is the top of the bean: everything head-flagged but the eyes
 float face = (vHead > 0.5 && role != 4) ? 1.0 : 0.0;
 totalEmissiveRadiance += uPal[role] * uFaceLift * (face * (0.07 + 0.22 * rim) + 0.1 * rim);
+// the gummy: a little light of its own, strongest in the core and softest at
+// the rim, the way light sits inside a jelly sweet. It flattens the shading
+// ramp the posterize would otherwise cut into stacked bands
+totalEmissiveRadiance += uPal[role] * uGummy * (0.55 + 0.45 * (1.0 - rim));
 // the eyes are glossier than the gummy: a sharper highlight reads as wet
 roughnessFactor = (role == 4 || role == 5) ? 0.3 : roughnessFactor;`,
       )
   }
-  material.customProgramCacheKey = () => 'playerBody-v2'
+  material.customProgramCacheKey = () => 'playerBody-v3'
 
   return {
     material,

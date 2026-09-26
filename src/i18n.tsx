@@ -151,7 +151,7 @@ const dictionaries = {
     // (components/os/WorldIdentity.tsx), in the order look.ts packs them
     look: {
       suit: 'jelly',
-      trim: 'shorts',
+      trim: 'belly',
       accent: 'band',
       glow: 'eyes',
     },
@@ -293,7 +293,7 @@ const dictionaries = {
     },
     look: {
       suit: 'gelatina',
-      trim: 'shorts',
+      trim: 'barriga',
       accent: 'cinta',
       glow: 'ojos',
     },
