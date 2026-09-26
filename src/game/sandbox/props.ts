@@ -22,20 +22,25 @@ import { GROUPS, type PhysicsWorld, type RBody, type RCollider } from './physics
   Four things happen to every prop each slice, in this order, and they are
   the reason this module is more than a Map:
 
-  - **forces are re-laid.** Rapier's user forces persist until reset, so
+  - **forces are re-laid.** Rapier's user forces and torques persist until
+    reset (each separately: `resetForces` leaves torques alone), so
     every body that was pushed by anything last slice is reset first and the
     forces are laid again (buoyancy, the weight of a player standing on it,
     whatever a tool adds through `addForce`). A body nobody pushes pays
     nothing.
-  - **water.** Buoyancy is eight samples at the octant centres of the prop's
-    box, each carrying an eighth of `mass * g / density` scaled by how far
-    under the drawn surface (SEA_Y plus the swell the water shader draws) it
-    is. Applied at the samples rather than the centre, it rights a floating
-    crate, tips a plank flat and lets the swell rock a barrel, which is the
-    whole look of a sea full of props. Drag rises with the submerged share,
-    and it grows per kilogram with the water displaced, so a block that sinks
-    sinks slowly, a crate dropped from a height plunges, bobs and settles, and
-    a beach ball shoved under pops up rather than being fired into the sky.
+  - **water.** Buoyancy is sampled at the points of a 3x3x3 grid that fall
+    inside the prop's actual shape, each carrying its share of
+    `mass * g / density` scaled by how far under the drawn surface (SEA_Y
+    plus the swell the water shader draws, as a plane under the prop) it is,
+    so a crate at density 0.5 rides half under and a beach ball barely wets.
+    Drag is Rapier's own (implicit, so stable at any strength) linear and
+    angular damping, scaled by the water displaced per kilogram and by how
+    much is under. What made the first version's sea churn (crates swinging
+    forty degrees frame to frame, drums flipping end on) was not the model
+    but a torque that was never cleared: see the force re-lay above. Now a
+    dropped crate plunges, bobs, rolls once or twice and rides level, a block
+    sinks slowly, and a ball shoved under pops up rather than being fired
+    into the sky. The buoyancy goes to Rapier as one force and one torque.
   - **impacts.** A body whose velocity changed by more than gravity can
     explain, in one slice, hit something. That is reported once, with the
     impulse (`mass * dv`), the speed of the change, where, and what it hit,
@@ -146,6 +151,7 @@ interface Rec extends Prop {
   baseLin: number
   baseAng: number
   radius: number
+  shape: ShapeSpec
 }
 
 /** props farther than this from the focus are parked */
@@ -176,6 +182,83 @@ const volumeOf = (s: Exclude<ShapeSpec, { type: 'compound' }>) => {
     }
   }
 }
+
+/*
+  Where a body is sampled for buoyancy: a 3x3x3 grid over its box, keeping
+  only the points inside the actual shape, weighted equally. Eight octant
+  centres (the first version) put a sphere's samples in the air at its
+  corners and a drum's in the wrong places, so the ball floated on nothing
+  and a barrel's waterline kept flipping it end on. Inside the shape, the
+  samples are the shape's volume and the waterline follows from density.
+*/
+interface Samples {
+  /** local points, xyz */
+  p: Float32Array
+  /** weights, summing to 1 */
+  w: Float32Array
+  /** the vertical span over which one sample goes from dry to under */
+  t: number
+}
+const sampleCache = new WeakMap<ShapeSpec, Samples>()
+
+const inside = (s: ShapeSpec, x: number, y: number, z: number): boolean => {
+  switch (s.type) {
+    case 'box':
+    case 'hull':
+      return true
+    case 'ball':
+      return x * x + y * y + z * z <= s.r * s.r * 1.02
+    case 'cylinder':
+      return x * x + z * z <= s.r * s.r * 1.02 && Math.abs(y) <= s.hh
+    case 'cone': {
+      // the radius shrinks from r at the base (-hh) to nothing at the tip
+      const rr = s.r * (0.5 - y / (2 * s.hh))
+      return Math.abs(y) <= s.hh && x * x + z * z <= rr * rr * 1.05
+    }
+    case 'compound':
+      return s.parts.some((p) => {
+        const [ax, ay, az] = p.at ?? [0, 0, 0]
+        return inside(p.shape, x - ax, y - ay, z - az)
+      })
+  }
+}
+
+const samplesFor = (s: ShapeSpec): Samples => {
+  const hit = sampleCache.get(s)
+  if (hit) return hit
+  const e = shapeExtents(s)
+  const pts: number[] = []
+  for (const i of [-1, 0, 1]) for (const j of [-1, 0, 1]) for (const k of [-1, 0, 1]) {
+    const x = (i * 2 * e.x) / 3
+    const y = (j * 2 * e.y) / 3
+    const z = (k * 2 * e.z) / 3
+    if (inside(s, x, y, z)) pts.push(x, y, z)
+  }
+  if (pts.length < 3) pts.push(0, 0, 0)
+  const n = pts.length / 3
+  const out: Samples = {
+    p: new Float32Array(pts),
+    w: new Float32Array(n).fill(1 / n),
+    // the smallest side of a sample's cell. Fixed per shape on purpose: a
+    // force at a body point that depends only on that point's own depth is
+    // conservative, and one whose ramp changed with the body's attitude (an
+    // attempt at "how tall does this cell stand right now") was not, and
+    // pumped a floating plank up to 30 rad/s of tumbling in still water. It
+    // is also why this is the smallest side and not an average: a plank's
+    // average was its length, and a ramp that long stood it on end
+    t: Math.max(0.1, (2 * Math.min(e.x, e.y, e.z)) / 3),
+  }
+  sampleCache.set(s, out)
+  return out
+}
+
+/** how hard water drags, per second, for a prop wholly under at density 1;
+    it scales with the water displaced per kilogram. Five puts a floating
+    crate's bob at a damping ratio near 0.4: it goes in, comes up, rocks once
+    or twice and rides */
+const WATER_DRAG = 5
+/** rotation's share of it: more, for the slow nod rather than a wobble */
+const WATER_SPIN_DRAG = 1.4
 
 export interface PropsOpts {
   pw: PhysicsWorld
@@ -312,12 +395,21 @@ export const createProps = (o: PropsOpts): Props => {
     if (opts.angular) desc.setAngvel(opts.angular)
     const body = world.createRigidBody(desc)
     const colliders: RCollider[] = []
-    for (const d of colliderDescs(shape, mass)) {
+    const ballast = opts.shape ? undefined : kind.ballast
+    const carried = ballast ? mass * ballast.share : 0
+    for (const d of colliderDescs(shape, mass - carried)) {
       const c = world.createCollider(
         d.setFriction(kind.friction).setRestitution(kind.restitution).setCollisionGroups(GROUPS.prop),
         body,
       )
       colliders.push(c)
+    }
+    if (ballast && carried > 0) {
+      // a point load: Rapier folds it in with the parallel-axis theorem
+      const [bx, by, bz] = ballast.at
+      body.setAdditionalMassProperties(
+        carried, { x: bx, y: by, z: bz }, { x: 1e-4, y: 1e-4, z: 1e-4 }, { x: 0, y: 0, z: 0, w: 1 }, false,
+      )
     }
     const mesh = opts.mesh !== undefined ? opts.mesh : meshFor(kind)
     if (mesh && root) {
@@ -345,6 +437,7 @@ export const createProps = (o: PropsOpts): Props => {
       baseLin,
       baseAng,
       radius: extents.length(),
+      shape,
     }
     body.userData = r
     recs.set(id, r)
@@ -380,12 +473,10 @@ export const createProps = (o: PropsOpts): Props => {
 
   /* -------------------------------------------------------------- water -- */
 
-  const OCT = [
-    [-1, -1, -1], [1, -1, -1], [-1, 1, -1], [1, 1, -1],
-    [-1, -1, 1], [1, -1, 1], [-1, 1, 1], [1, 1, 1],
-  ]
-  const tmpF = { x: 0, y: 0, z: 0 }
+  const samplesOf = (r: Rec) => samplesFor(r.shape)
   const tmpP = { x: 0, y: 0, z: 0 }
+  const tmpF = { x: 0, y: 0, z: 0 }
+  const tmpT = { x: 0, y: 0, z: 0 }
 
   /** rotate (x, y, z) by the quaternion in c[3..6] and add c[0..2] */
   const toWorld = (c: Float64Array, x: number, y: number, z: number, out: Vec3Like) => {
@@ -407,33 +498,63 @@ export const createProps = (o: PropsOpts): Props => {
     let share = 0
     if (c[1] - r.radius < wy + 0.6 && terrainY(c[0], c[2]) < wy) {
       const g = -pw.gravity
-      const e = r.extents
-      const thick = Math.max(0.1, ((e.x + e.y + e.z) / 3) * 1.0)
-      const lift = g > 0 ? (r.mass * g) / Math.max(0.05, r.kind.density) / 8 : 0
-      for (const [sx, sy, sz] of OCT) {
-        toWorld(c, (sx * e.x) / 2, (sy * e.y) / 2, (sz * e.z) / 2, tmpP)
-        const surface = wy + (o.waveAt ? o.waveAt(tmpP.x, tmpP.z) : 0)
-        const f = Math.min(1, Math.max(0, (surface - tmpP.y) / thick + 0.5))
+      const S = samplesOf(r)
+      const n = S.w.length
+      // the water surface as a plane through three samples of the swell: a
+      // prop is small against a wavelength, and a plane still tilts a raft
+      const w0 = o.waveAt ? o.waveAt(c[0], c[2]) : 0
+      const gx = o.waveAt ? o.waveAt(c[0] + 1, c[2]) - w0 : 0
+      const gz = o.waveAt ? o.waveAt(c[0], c[2] + 1) - w0 : 0
+      // the water this body would displace fully under, in kilograms
+      const displaced = r.mass / Math.max(0.05, r.kind.density)
+      // levers are taken from the centre of mass, which is where Rapier
+      // applies the summed force and about which it applies the torque
+      const com = r.body.worldCom()
+      let fy = 0
+      let tx = 0
+      let tz = 0
+      for (let i = 0; i < n; i++) {
+        toWorld(c, S.p[i * 3], S.p[i * 3 + 1], S.p[i * 3 + 2], tmpP)
+        const surface = wy + w0 + gx * (tmpP.x - c[0]) + gz * (tmpP.z - c[2])
+        const f = Math.min(1, Math.max(0, (surface - tmpP.y) / S.t + 0.5))
         if (f <= 0) continue
-        share += f / 8
-        tmpF.x = 0
-        tmpF.y = lift * f
-        tmpF.z = 0
-        r.body.addForceAtPoint(tmpF, tmpP, true)
+        const wf = S.w[i] * f
+        share += wf
+        const rx = tmpP.x - com.x
+        const rz = tmpP.z - com.z
+        const sy = g > 0 ? g * displaced * wf : 0
+        fy += sy
+        tx += -rz * sy
+        tz += rx * sy
       }
-      if (share > 0) forced.add(r)
+      if (share > 0) {
+        // one force and one torque for the whole body rather than a call per
+        // sample: the sum is the same and the WASM boundary is not free
+        tmpF.x = 0
+        tmpF.y = fy
+        tmpF.z = 0
+        tmpT.x = tx
+        tmpT.y = 0
+        tmpT.z = tz
+        r.body.addForce(tmpF, true)
+        r.body.addTorque(tmpT, true)
+        forced.add(r)
+      }
     }
-    // drag grows with how much of it is under, and per kilogram it grows with
-    // how much water it displaces: water pushes on volume, so a beach ball
-    // (1.2 kg for a big volume) is held back hard and a concrete block barely.
-    // With one damping for everything the ball, buoyed at twelve times its
-    // weight, was fired twenty units out of the sea every time it went under.
-    // Rewritten only when the share moves
-    if (Math.abs(share - r.wet) > 0.04 || (share === 0 && r.wet !== 0)) {
+    /*
+      Drag, as Rapier's own damping rather than as a force. Damping is
+      integrated implicitly (v / (1 + h c)), which is stable at any strength;
+      an explicit drag torque is not, and summed at the samples it wound a
+      plank (tiny inertia about its long axis, long lever to its ends) up to
+      47 rad/s in still water. Its size is the water displaced per kilogram
+      of prop times how much of it is under, so a beach ball is held hard and
+      a concrete block barely. Rewritten only when the share moves.
+    */
+    if (Math.abs(share - r.wet) > 0.03 || (share === 0 && r.wet !== 0)) {
       r.wet = share
-      const perKg = Math.min(16, 1.2 / Math.max(0.05, r.kind.density))
-      r.body.setLinearDamping(r.baseLin + (0.6 + perKg) * share)
-      r.body.setAngularDamping(r.baseAng + (0.4 + perKg * 0.6) * share)
+      const perKg = share > 0 ? (share * WATER_DRAG) / Math.max(0.05, r.kind.density) : 0
+      r.body.setLinearDamping(r.baseLin + perKg)
+      r.body.setAngularDamping(r.baseAng + perKg * WATER_SPIN_DRAG)
     }
   }
 
@@ -509,7 +630,16 @@ export const createProps = (o: PropsOpts): Props => {
 
   const beforeSlice = () => {
     // re-lay forces: everything pushed last slice starts clean
-    for (const r of forced) if (recs.has(r.id)) r.body.resetForces(false)
+    // both: Rapier keeps forces and torques in separate accumulators, and
+    // resetForces leaves the torque alone. Every force laid at a point adds
+    // a torque, so until this cleared both, the buoyancy torque of every
+    // floating prop grew without bound and the sea spun crates and flipped
+    // drums end over end
+    for (const r of forced) {
+      if (!recs.has(r.id)) continue
+      r.body.resetForces(false)
+      r.body.resetTorques(false)
+    }
     forced.clear()
     awakeCount = 0
     for (const r of recs.values()) {
