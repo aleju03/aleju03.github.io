@@ -14,80 +14,28 @@ import { GLOW_ALPHA } from '../../render/pixelLook'
   which is the multiplayer half of this piece: S6 only has to supply the
   numbers.
 
-  **The curve** is GMod's: one quadratic Bezier from the muzzle to the grab
-  point, its control point half the beam's length out along the barrel. In
-  first person the gun is aimed at the beam's *target* (the spot on your
-  view ray where the held thing is being pulled; viewmodel.ts), so while
-  the thing is where the beam wants it the beam is a straight line; while
-  it lags a swing, the beam still leaves along the barrel toward where you
-  are aiming and bows smoothly over onto the prop, deeper the harder you
-  swing something heavy. In third person the gun is held lower than the aim,
-  so the beam always arcs up out of it. The departure is bounded twice, in
-  the world (MAX_BEND) and as drawn (MAX_BEND_SCREEN, bisected against the
-  camera), because a block dragged far off the aim otherwise turns the bow
-  into a hairpin, and the muzzle is so close to the first-person lens that a
-  modest bend in the world is a right angle on screen. A quadratic has no corner and no
-  inflection anywhere, which matters: the round-2 cubic ran *through* the
-  target and turned there, and a heavy block trailing a swing drew a hard
-  V at the crosshair. Sixty-four sections keep it smooth at the look's
-  resolution. There is no lateral wobble: a zigzag reads as a scribble
-  through the pixel look, not as energy.
+  **The curve** is GMod's, built in the world: one quadratic Bezier from the
+  muzzle, whose control point is the beam's *target* (the point on your
+  view ray at the hold distance, where the held thing is being pulled), to
+  the grab point. Its start tangent is the aim, so while the thing is where
+  the beam wants it the beam is a straight line out along your view, and
+  while it lags a swing the beam still leaves along the aim and bows over
+  onto the prop, deeper the harder you swing something heavy, even with the
+  prop off the edge of the screen. A quadratic has no corner and no
+  inflection anywhere and never passes through its control point, so it is
+  a bow, never a V; and it is never clamped, because every round that
+  clamped it (a bend limit in the world, then one bisected on screen)
+  turned a trailing block's beam back into a straight rod. It ends where it
+  *enters* the prop: the grab point can be on a face turned away from you,
+  and a beam drawn on through the solid to reach it read as a streak along
+  the face, so the curve is cut at the first sample inside the prop's box.
+  Sixty-four sections keep it smooth at the look's resolution. There is no
+  lateral wobble: a zigzag reads as a scribble through the pixel look, not
+  as energy.
 
-  **Colour through the look.** The look owns ACES, a chroma cap and a hue
-  pull, so an additive HDR blue saturates to white long before it reads as
-  cyan (the first cut of this beam was a thin white squiggle), and even a
-  well-chosen cyan was greyed by the grade to the sky's own pastel. So the
-  ribbon itself is opaque where it draws: three stepped tones (a hot core, a
-  cyan band, a deeper rim the look's silhouette line darkens once more),
-  depth written so the air pass hazes it by its own distance and not by the
-  sky's, and the look's glow code (`GLOW_ALPHA`) written into alpha so the
-  grade pass leaves its colour out of the baked grade. Around it, a second
-  wider copy, the blobs and the rim are premultiplied glows that light what
-  is behind them and keep the target's alpha exactly as the scene wrote it
-  (alpha ZERO / ONE), so a glow swept across the AlejOS screen's glass hole
-  does not paint the hole shut.
-
-  **Width in pixels, and only pixels.** GMod's beam is a thin bright core of
-  the same width all the way out, so this one is sized in pixels of the
-  look's internal target and nothing else: a one-pixel white-hot core, a
-  pixel of cyan either side, and a tight transparent glow a few pixels out
-  (the same ribbon drawn again, wider). The ribbon (65 sections rewritten in
-  place) is expanded toward the camera in the vertex shader by that pixel
-  width at its own depth. A world-sized width made the first cut a fat spike
-  at the muzzle, three metres from the lens, and a smear round the gun.
-
-  **The rim** is an inverted hull: each mesh of the held prop gets a
-  back-face copy pushed outward (per axis, off its own bounding box, so a
-  box grows into a box and a barrel into a barrel with no gaps at the flat
-  shading's split corners), which only shows where it sticks out past the
-  silhouette. That is GMod's cyan outline, and unlike a fresnel fill it never
-  washes the prop's own colours out. A freeze is the same outline pulsing:
-  it swells to three pixels, goes white-hot and rings twice back down over
-  half a second, with only a faint glaze of light over the prop itself, so
-  the thing you froze never stops looking like itself (the first cut
-  filled it pale blue, and for three frames it read as the prop vanishing).
-
-  **Programs.** Five: the ribbon, its glow (the same shader, blended
-  differently), the glow blob (every sprite shares it), the rim and the flash
-  fill. The per-mesh shells are clones of the last two, so they share their
-  programs. All are built at construction and put in front
-  of the camera by `stage()` for the boot cover's compile and first draw, so
-  the first grab links nothing (the film prints the count, and it is 0).
 */
 
 const SEGS = 64
-/** where the curve's control point sits toward the target, as a share of
-    the beam's length: the deeper, the bigger the bow when the prop trails */
-const BOW = 0.5
-/** the most the beam may leave the muzzle off the straight line to the grab
-    point, radians: the bow's depth, and the limit that keeps it a bow */
-const MAX_BEND = 0.5
-/** ...and the most it may leave the muzzle off that line as drawn, radians */
-const MAX_BEND_SCREEN = 0.6
-const aspectOf = (c: THREE.Camera) => {
-  const p = c as THREE.PerspectiveCamera
-  return p.isPerspectiveCamera ? 1 / p.aspect : 1
-}
 const PTS = SEGS + 1
 /** narrowest the glow may draw, in pixels of the look's internal target
     (half-width) */
@@ -101,6 +49,8 @@ const CORE = new THREE.Color(0.9, 2.2, 2.6)
 const HALO = new THREE.Color(0.05, 0.85, 1.6)
 /** the freeze: a deeper, whiter blue */
 const FLASH = new THREE.Color(0.6, 1.8, 2.6)
+/** the freeze outline: a saturated electric blue, through the glow code */
+const FREEZE = new THREE.Color(0.02, 0.55, 2.4)
 
 /* ------------------------------------------------------------ shaders -- */
 
@@ -163,14 +113,18 @@ void main() {
   float packet = pow(max(0.0, sin(along * 1.3 - uTime * 26.0)), 6.0);
   if (uWide > 1.0) {
     // the glow: a second, wider copy of the ribbon drawn round the first,
-    // tight and faint, lighting what is behind it rather than covering it,
-    // with sparks crackling in it (single hot pixels that live a few frames)
+    // the same width all the way out, *adding* cyan light to what is
+    // behind it and writing the look's glow code, so the grade leaves that
+    // light cyan instead of greying it into the sky. Two stepped bands (a
+    // bright inner and a faint outer) read as a pixel-art halo, with sparks
+    // crackling in it (single hot pixels that live a few frames)
     if (s < 1.0) discard;
-    float g = pow(max(0.0, 1.0 - s / uWide), 2.2) * (0.5 + 0.25 * n + 0.35 * packet) * uAmount * (1.0 - uMiss * 0.5);
+    float inner = step(s, 1.0 + (uWide - 1.0) * 0.45);
+    float g = mix(0.28, 0.75, inner) * (0.75 + 0.2 * n + 0.3 * packet) * uAmount * (1.0 - uMiss * 0.6);
     float cell = floor(along * 2.6 + vS * 2.0);
     float spark = step(0.93, hash(cell * 17.3 + floor(uTime * 20.0) * 3.1)) * step(s, uWide * 0.6) * uAmount;
     if (g < 0.03 && spark < 0.5) discard;
-    gl_FragColor = spark > 0.5 ? vec4(uCore * 0.9, 1.0) : vec4(uBand * 1.3 * g, g * 0.35);
+    gl_FragColor = vec4(spark > 0.5 ? uCore * 0.9 : uBand * g, uGlowA);
     return;
   }
   // the ribbon: a white-hot core a pixel wide with a pixel of cyan either
@@ -226,8 +180,11 @@ void main() {
   }
   // a white-hot disc inside a cyan glow, stepped rather than smooth so it
   // reads as a pixel-art flare, plus an optional ring (the freeze pop)
-  float glow = pow(1.0 - r, 1.6);
-  float hot = 1.0 - smoothstep(0.22, 0.34, r);
+  // the freeze pop (uRing set) is the ring alone: a white disc over the
+  // prop it froze read as the prop vanishing
+  float solo = uRing > 0.0 ? 0.0 : 1.0;
+  float glow = pow(1.0 - r, 1.6) * solo;
+  float hot = (1.0 - smoothstep(0.22, 0.34, r)) * solo;
   float ring = uRing > 0.0 ? (1.0 - smoothstep(0.0, 0.1, abs(r - uRing))) * (1.0 - uRing) : 0.0;
   vec3 col = mix(uColor, uHot, max(hot, ring));
   float a = min(1.0, max(max(glow * 0.9, hot), ring) * uAmount);
@@ -345,8 +302,8 @@ export const pixelAtUnit = (fovDeg: number, lines: number) =>
 export interface BeamFrame {
   /** where the beam leaves the gun */
   muzzle: THREE.Vector3
-  /** the barrel's forward, unit: the curve leaves along it (bounded, see
-      MAX_BEND) */
+  /** the barrel's forward, unit (the curve leaves toward the target, which
+      the first-person barrel is aimed at) */
   forward: THREE.Vector3
   /** the far end: the grab point (hold) or the surface hit (miss) */
   end: THREE.Vector3
@@ -454,9 +411,18 @@ export function createBeam(parent: THREE.Object3D): Beam {
   root.add(ribbon)
   const u = mat.uniforms
   // the glow round it: the same geometry and program, wider, transparent
-  const glowMat = over(mat.clone())
+  // additive colour, and the target's alpha replaced by the glow code
+  const glowMat = mat.clone()
+  glowMat.transparent = true
+  glowMat.depthWrite = false
+  glowMat.blending = THREE.CustomBlending
+  glowMat.blendEquation = THREE.AddEquation
+  glowMat.blendSrc = THREE.OneFactor
+  glowMat.blendDst = THREE.OneFactor
+  glowMat.blendSrcAlpha = THREE.OneFactor
+  glowMat.blendDstAlpha = THREE.ZeroFactor
   const gu = glowMat.uniforms
-  gu.uWide.value = 2.4
+  gu.uWide.value = 3.6
   const glow = new THREE.Mesh(geo, glowMat)
   glow.frustumCulled = false
   glow.renderOrder = 5
@@ -573,11 +539,12 @@ export function createBeam(parent: THREE.Object3D): Beam {
 
   /* ------------------------------------------------------ the curve -- */
   const ctrl = new THREE.Vector3()
-  const tmp2 = new THREE.Vector3()
-  const dirK = new THREE.Vector3()
-  const s0 = new THREE.Vector3()
-  const s1 = new THREE.Vector3()
-  const s2 = new THREE.Vector3()
+  /** the held prop's box, in its own frame, and the world-to-local matrix,
+      for cutting the curve where it enters */
+  const cutBox = new THREE.Box3()
+  const cutInv = new THREE.Matrix4()
+  const cutP = new THREE.Vector3()
+  const endAt = new THREE.Vector3()
   const ctrlVel = new THREE.Vector3()
   const ctrlGoal = new THREE.Vector3()
   let ctrlFresh = true
@@ -621,65 +588,14 @@ export function createBeam(parent: THREE.Object3D): Beam {
     if (live) {
       const miss = lastMode === 'miss'
       const L = Math.max(0.01, f.muzzle.distanceTo(f.end))
-      // one smooth curve, a quadratic Bezier with no corner anywhere: out of
-      // the muzzle toward a control point partway along the line to the
-      // target (the barrel is aimed at the target, so the beam leaves along
-      // the barrel), bowing over onto the grab point. On a miss the control
-      // is the chord's middle and the beam is straight. The control is
-      // sprung a little, so a fast turn whips the bow before it settles
+      // one smooth curve, built in the world: a quadratic Bezier from the
+      // muzzle, whose control point is the beam's target (the point on the
+      // view ray at the hold distance), to the grab point. So the beam
+      // always leaves along the aim and bows over onto a prop that trails
+      // it, however far, with no corner (a quadratic cannot have one) and
+      // no clamp to straighten it; on a miss it is the straight chord
       if (miss) ctrlGoal.addVectors(f.muzzle, f.end).multiplyScalar(0.5)
-      else {
-        // along the line to the target, half the beam's own length out: far
-        // enough to leave along the barrel, near enough that a prop trailing
-        // well off the aim bows the beam over rather than hooking it back
-        // the direction it leaves in: toward the target, but never more than
-        // MAX_BEND off the straight line to the grab point. A prop far off
-        // the aim (a heavy block trailing a hard turn) otherwise pulls a
-        // curve that leaves toward the crosshair into a hairpin back to the
-        // prop; clamped, it is one wide bow however far it is dragged
-        // the barrel's own forward, as GMod does it: in first person the
-        // gun is aimed at the target so this is the aim; in third person it
-        // is held lower than the aim, and the beam arcs up out of it
-        tmp.copy(f.forward).normalize()
-        tmp2.copy(f.end).sub(f.muzzle).multiplyScalar(1 / L)
-        const ang = Math.acos(Math.min(1, Math.max(-1, tmp.dot(tmp2))))
-        // and the limit is checked where it is seen: the muzzle is half a
-        // unit from the lens, so a bend that is modest in the world can
-        // still leave the gun at ninety degrees on screen. Bisect the
-        // slerp from the chord toward the aim until the on-screen
-        // departure is under MAX_BEND_SCREEN
-        f.camera.updateMatrixWorld()
-        s0.copy(f.muzzle).project(f.camera)
-        s2.copy(f.end).project(f.camera)
-        const cx = s2.x - s0.x
-        const cy = (s2.y - s0.y) * aspectOf(f.camera)
-        const cl = Math.hypot(cx, cy)
-        let lo = 0
-        let hi = Math.min(1, MAX_BEND / Math.max(ang, 1e-4))
-        const dir = (k: number) => {
-          if (ang < 1e-4) return dirK.copy(tmp2)
-          const so = Math.sin(ang)
-          return dirK.copy(tmp2).multiplyScalar(Math.sin((1 - k) * ang) / so)
-            .addScaledVector(tmp, Math.sin(k * ang) / so)
-        }
-        const bendOnScreen = (k: number) => {
-          s1.copy(f.muzzle).addScaledVector(dir(k), L * BOW).project(f.camera)
-          const dx = s1.x - s0.x
-          const dy = (s1.y - s0.y) * aspectOf(f.camera)
-          const dl = Math.hypot(dx, dy)
-          if (dl < 1e-5 || cl < 1e-5 || s1.z > 1) return 0
-          return Math.acos(Math.min(1, Math.max(-1, (dx * cx + dy * cy) / (dl * cl))))
-        }
-        if (bendOnScreen(hi) > MAX_BEND_SCREEN) {
-          for (let it = 0; it < 8; it++) {
-            const m = (lo + hi) / 2
-            if (bendOnScreen(m) > MAX_BEND_SCREEN) hi = m
-            else lo = m
-          }
-          hi = lo
-        }
-        ctrlGoal.copy(f.muzzle).addScaledVector(dir(hi), L * BOW)
-      }
+      else ctrlGoal.copy(f.target)
       if (ctrlFresh || miss) {
         ctrl.copy(ctrlGoal)
         ctrlVel.set(0, 0, 0)
@@ -693,8 +609,38 @@ export function createBeam(parent: THREE.Object3D): Beam {
       }
       const P0 = f.muzzle
       const P2 = f.end
+      // the prop's box, a hair shrunk so the grab point on its skin is not
+      // counted as inside
+      let cut = false
+      if (!miss && haloOn) {
+        const geo = (haloOn as THREE.Object3D & { geo?: THREE.BufferGeometry | null }).geo ??
+          (haloOn as THREE.Mesh).geometry
+        if (geo) {
+          if (!geo.boundingBox) geo.computeBoundingBox()
+          cutBox.copy(geo.boundingBox!).expandByScalar(-0.06)
+          haloOn.updateMatrixWorld()
+          cutInv.copy(haloOn.matrixWorld).invert()
+          cut = !cutBox.isEmpty()
+        }
+      }
+      let tEnd = 1
+      if (cut) {
+        for (let i = 1; i < PTS - 1; i++) {
+          const t = i / SEGS
+          const a = 1 - t
+          cutP.set(
+            a * a * P0.x + 2 * a * t * ctrl.x + t * t * P2.x,
+            a * a * P0.y + 2 * a * t * ctrl.y + t * t * P2.y,
+            a * a * P0.z + 2 * a * t * ctrl.z + t * t * P2.z,
+          ).applyMatrix4(cutInv)
+          if (cutBox.containsPoint(cutP)) {
+            tEnd = (i - 0.5) / SEGS
+            break
+          }
+        }
+      }
       for (let i = 0; i < PTS; i++) {
-        const t = i / SEGS
+        const t = (i / SEGS) * tEnd
         const a = 1 - t
         // quadratic Bezier and its derivative
         const b0 = a * a
@@ -720,6 +666,8 @@ export function createBeam(parent: THREE.Object3D): Beam {
       }
       posAttr.needsUpdate = true
       tanAttr.needsUpdate = true
+      // where the beam is seen to bite
+      endAt.set(pos[(PTS - 1) * 6], pos[(PTS - 1) * 6 + 1], pos[(PTS - 1) * 6 + 2])
       // a miss flickers like a beam finding nothing to take
       const flicker = miss ? 0.6 + 0.4 * Math.abs(Math.sin(time * 61) * Math.sin(time * 23)) : 1
       const k = Math.min(1, amount * flicker)
@@ -742,9 +690,9 @@ export function createBeam(parent: THREE.Object3D): Beam {
       // toward the camera: the grab point is on the collider, and a model's
       // proud slats and rims stand in front of it, which hid the whole
       // sparkle behind the prop it was meant to sit on
-      tmp.copy(f.camera.position).sub(f.end)
+      tmp.copy(f.camera.position).sub(endAt)
       const toCam = Math.min(1.8, tmp.length() * 0.3)
-      endGlow.position.copy(f.end).addScaledVector(tmp.normalize(), toCam)
+      endGlow.position.copy(endAt).addScaledVector(tmp.normalize(), toCam)
       endU.uStar.value = 1
       endU.uSpin.value = time * 3
       endU.uSize.value = 0
@@ -755,7 +703,7 @@ export function createBeam(parent: THREE.Object3D): Beam {
       muzU.uStar.value = 1
       muzU.uSpin.value = -time * 4
       muzU.uSize.value = 0
-      muzU.uPx.value = px * 7 * (1 + kickK * 0.6 + 0.1 * Math.sin(time * 53))
+      muzU.uPx.value = px * 16 * (1 + kickK * 0.6 + 0.1 * Math.sin(time * 53))
       muzU.uAmount.value = k
       // the scene's world matrices are not refreshed for us (the render
       // path updates only what it knows moves), so the two stars bring
@@ -793,14 +741,18 @@ export function createBeam(parent: THREE.Object3D): Beam {
       }
     }
 
-    /* the freeze: the outline goes white-hot, swells and rings twice back
-       down; the prop keeps its own colours under a faint glaze of light */
+    /* the freeze: a bold, saturated outline round the whole silhouette,
+       held for half a second and then faded; the prop keeps its own
+       colours under a brief glaze of light */
     if (flashOn || pop.visible) {
       flashT += dt
       const k = Math.max(0, 1 - flashT / 0.8)
       const e = k * k
-      // two rings of the outline: full, then a smaller echo
-      const ring = Math.max(0, Math.cos(flashT * 20)) * e
+      // held solid, then gone over 0.3 s (the rim's dither fades it
+      // pixel by pixel rather than washing it pale)
+      const hold = flashT < 0.5 ? 1 : Math.max(0, 1 - (flashT - 0.5) / 0.3)
+      // one swell at the moment it lands
+      const ring = Math.max(0, 1 - flashT / 0.15)
       if (flashOn) {
         const s = shellOf(flashOn)
         // a bright glaze of light for the first beat, added over the prop
@@ -815,9 +767,9 @@ export function createBeam(parent: THREE.Object3D): Beam {
         }
         // and the full-body outline: thick, white-hot, ringing down
         for (const m of shellMats(s, 'rim')) {
-          m.uniforms.uAmount.value = Math.max(flashOn === haloOn ? haloK : 0, Math.min(1, e * 4) * flashK)
-          m.uniforms.uPx.value = RIM_PX * px * (2.2 + ring * 2.8)
-          m.uniforms.uColor.value.copy(FLASH).lerp(WHITE, 0.3 + ring * 0.7)
+          m.uniforms.uAmount.value = Math.max(flashOn === haloOn ? haloK : 0, hold * flashK)
+          m.uniforms.uPx.value = RIM_PX * px * (3.2 + ring * 2)
+          m.uniforms.uColor.value.copy(FREEZE).lerp(WHITE, ring * 0.5)
         }
       }
       popU.uAmount.value = Math.min(1, e * 1.2 * flashK)

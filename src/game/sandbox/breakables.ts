@@ -86,17 +86,21 @@ const CHIP_WEAR = 0.45
     just after it lands */
 const BLAST_FUSE = 0.5
 const BLAST_FUSE_JITTER = 1.1
-/** an explosive right beside a blast goes this long after it (plus up to
-    the jitter), at about the top of the arc the blast threw it on */
-const BLAST_DELAY = 0.32
-const BLAST_DELAY_JITTER = 0.34
+/** an explosive right beside a blast and lofted by it goes this long after
+    it (plus up to the jitter), at about the top of its arc... */
+const BLAST_DELAY = 0.55
+const BLAST_DELAY_JITTER = 0.5
+/** ...or, for one the blast threw low rather than lofting (explosion.ts
+    decides), sooner, while it is still among the crates beside it */
+const LOW_DELAY = 0.25
+const LOW_DELAY_JITTER = 0.25
 /** how much health a blast takes off a breakable per multiple of its
     `breaks.speed`: a crate near a power-1 blast is left with about a third,
     which a hard landing from the top of its throw finishes */
-const BLAST_WEAR = 0.3
+const BLAST_WEAR = 0.38
 /** a wooden breakable this close to a blast (its blow over this many times
     `breaks.speed`) is smashed outright rather than thrown */
-const BLAST_SHATTER = 2.1
+const BLAST_SHATTER = 1.9
 /** and what each blast after the worst one takes */
 const BLAST_STACK = 0.08
 
@@ -308,7 +312,9 @@ export const createLife = (
       if (blast) {
         const r = amount / k.explodes.speed
         if (r >= 1) {
-          detonate(id, BLAST_DELAY + sb.random() * BLAST_DELAY_JITTER)
+          detonate(id, p.data.lofted
+            ? BLAST_DELAY + sb.random() * BLAST_DELAY_JITTER
+            : LOW_DELAY + sb.random() * LOW_DELAY_JITTER)
           return
         }
         if (r >= 0.18) {

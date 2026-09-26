@@ -10,6 +10,7 @@ import { landmarkGradedHeight } from './landmarks'
 import { GRID, OFF_X, OFF_Z, RESERVED } from './grid'
 import { BIOMES, URBAN_TINT, classify, type BiomeId } from './biomes'
 import type { StepSurface } from '../core/sfx'
+import { fieldWeight } from './groundLook'
 
 /*
   The finished ground: land.ts's planet with everything human graded into it,
@@ -282,6 +283,8 @@ export interface GroundSample {
   nr: number
   ng: number
   nb: number
+  /** how farmed this ground is, 0..1 (groundLook.ts's fieldWeight) */
+  field: number
 }
 
 const S_PATCH = 0x77aa
@@ -324,7 +327,8 @@ export const groundSample = (x: number, z: number, y: number, slope: number): Gr
     const patch = noise2(x * 0.041, z * 0.041, S_PATCH)
     gc.lerp(STRAW, patch * patch * 0.5)
   }
-  return { r: gc.r, g: gc.g, b: gc.b, paved, biome, nr, ng, nb }
+  const field = fieldWeight(biome, paved, place.district !== null)
+  return { r: gc.r, g: gc.g, b: gc.b, paved, biome, nr, ng, nb, field }
 }
 
 /** the ground vertex at lattice point (i, j): colour, pavedness, biome —

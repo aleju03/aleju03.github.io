@@ -4,7 +4,7 @@ import { CHUNK, chunkX, chunkZ, OFF_Z, originX, originZ } from './grid'
 import {
   buildChunk, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Tier,
 } from './chunk'
-import { applyGroundLook } from './groundLook'
+import { applyGroundLook, groundLookUniforms } from './groundLook'
 import { applyFadeIn, FADE_FRAG_ALPHA, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead } from './fade'
 import { registerInteriors, unregisterInteriors } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
@@ -363,12 +363,13 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
          // a long bright ramp once turned a whole ocean into a strip of milk
          float jit = (wHash2(floor(vWXZ * 4.0)).x - 0.5) * 0.7;
          float shelf = vDepth + jit;
-         float shallow = shelf < 2.2 ? 1.0 : shelf < 6.0 ? 0.55 : shelf < 13.0 ? 0.22 : 0.0;
-         gl_FragColor.rgb = mix(
-           gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.25, 1.75, 1.6) + 0.02, shallow);
-         // ...and the open sea a shelf darker again, past the drop-off,
-         // so the bands carry on out rather than stopping at the reef
-         gl_FragColor.rgb *= shelf > 22.0 ? 0.74 : 1.0;
+         // Separated by value, not by hue: the grade caps chroma, and a cyan
+         // shelf over a blue sea graded to one baby blue. Each shelf is a
+         // clear step lighter than the one outside it, leaning a little
+         // green as it shoals
+         float shallow = shelf < 1.1 ? 1.0 : shelf < 3.0 ? 0.62 : shelf < 7.0 ? 0.32 : shelf < 14.0 ? 0.1 : 0.0;
+         vec3 lift = mix(vec3(1.0), vec3(1.45, 2.05, 1.85), shallow);
+         gl_FragColor.rgb = gl_FragColor.rgb * lift * (shelf > 14.0 ? 0.7 : 1.0) + 0.02 * shallow;
          // the shore in lines, not a gradient: a solid lip of foam where the
          // water meets the sand, a line a little further out that breathes
          // in and out with the swell, and the swell's crests catching light
@@ -380,6 +381,11 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
          float foam = max(max(lip, surf * 0.85), crest * 0.5);
          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.92, 0.96, 0.97), clamp(foam, 0.0, 0.9));
          gl_FragColor.a *= smoothstep(0.0, 0.5, vDepth);
+         // Deep water is opaque. Seen at a slant from the air, the seabed
+         // under the ring's last chunks lies past the ring's edge, where no
+         // chunk and (by the far field's mask) no far tile is drawn, so the
+         // outer half-chunk of sea read as a pale seam round the ring
+         gl_FragColor.a = mix(gl_FragColor.a, 1.0, smoothstep(2.5, 6.0, vDepth));
          // a freshly streamed sea eases in with its chunk (world/fade.ts)
          ${FADE_FRAG_ALPHA}`,
       )
@@ -465,7 +471,7 @@ export const makeChunkMats = (
   }
 }
 
-const WATER_DAY = new THREE.Color('#1b4f93')
+const WATER_DAY = new THREE.Color('#0f3466')
 const WATER_NIGHT = new THREE.Color('#111d26')
 
 /** the sea's colour for a moment of the day: the streamer's day cycle, and
@@ -723,6 +729,8 @@ export function buildWorld(opts: Opts): WorldHandles {
     // on one number would otherwise rebuild the entire world every second
     // From the air the far field takes over past the flora ring as soon as
     // it has the whole view covered; until then the old wide ring stands in
+    // the fields fade into the chunk ground as the grass field fades out
+    groundLookUniforms.uFieldK.value = Math.min(1, Math.max(0, (alt - 15) / 30))
     tickSolid()
     far.update(x, z, alt, chunkSolid, solidEpoch)
     const high = far.complete ? RADIUS_FAR : RADIUS_HIGH
