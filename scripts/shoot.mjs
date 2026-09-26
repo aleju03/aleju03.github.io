@@ -55,6 +55,12 @@ targets
   landmark:<kind>      nearest lighthouse|windmill|farm|mast|ruins|watertower|
                        stones|cabin|wreck
   landmark:*           one of every landmark kind, as a contact sheet
+  body:lineup          the player character: six looks front and back, and a
+                       row of poses (wave, crouch, jump, sprint, heap, stretch)
+  body:motion          filmstrips of every action below, one row each
+  body:strip:<action>  one filmstrip: walk|run|jump|land|ragdoll|recover|idle
+  body:fp              the first-person lens looking down at your own body
+  body:seat            seated in the car, boat and helicopter seat nodes
 
 options
   --out <path>         default shots/<first-target>.png
@@ -77,6 +83,9 @@ options
                        are session state and appear in no chunk, so this is
                        the only way to photograph them
   --pick <x>,<y>       also raycast that pixel of tile 0 and print the hits
+  --pixel <n>          body targets only: render each tile at 1/n size,
+                       posterized and dithered, upscaled nearest, to judge a
+                       silhouette at the low resolution the game is moving to
   --keep               leave chrome and vite running (for repeated shots)
 `)
   process.exit(0)
@@ -96,8 +105,8 @@ if (!targets.length) {
 
 const parseTarget = (s) => {
   if (s === 'home') return { kind: 'home' }
-  const [head, arg] = s.split(':')
-  if (arg !== undefined) return { kind: head, arg }
+  const cut = s.indexOf(':')
+  if (cut !== -1) return { kind: s.slice(0, cut), arg: s.slice(cut + 1) }
   const [x, z] = s.split(',').map(Number)
   if (Number.isFinite(x) && Number.isFinite(z)) return { kind: 'at', x, z }
   throw new Error(`cannot parse target "${s}"`)
@@ -123,11 +132,17 @@ const parseProp = (s) => {
 }
 const props = argv.filter((a, i) => argv[i - 1] === '--glb').map(parseProp)
 
-const [tw, th] = String(flag('tile', '900x620')).split('x').map(Number)
+// the character's targets are their own kind of sheet: strips of small tiles
+// eight to a row, or a few wide ones
+const bodyMode = targets.every((t) => t.startsWith('body:'))
+const bodyStrips = bodyMode && targets.every((t) => /^body:(motion|strip:)/.test(t))
+const [tw, th] = String(
+  flag('tile', bodyMode ? (bodyStrips ? '300x380' : '1400x560') : '900x620'),
+).split('x').map(Number)
 const spec = {
   targets: targets.map(parseTarget),
   tile: [tw, th],
-  cols: Number(flag('cols', 3)),
+  cols: Number(flag('cols', bodyMode ? 1 : 3)),
   dist: Number(flag('dist', 52)),
   height: Number(flag('height', 22)),
   eye: has('eye'),
@@ -137,6 +152,7 @@ const spec = {
   tier: String(flag('tier', 'full')),
   props,
   life: Number(flag('life', 0)),
+  pixel: Number(flag('pixel', 1)),
 }
 const outPath = resolve(
   flag('out', `shots/${targets[0].replace(/[^a-z0-9]+/gi, '-')}.png`),
@@ -184,9 +200,10 @@ chrome = spawn('google-chrome-stable', [
   // a second and distorts every ratio you might want to measure
   '--use-angle=gl',
   '--enable-unsafe-swiftshader',
-  `--window-size=${tw * spec.cols},${th * 4}`,
+  `--window-size=${tw * (bodyStrips ? 8 : spec.cols)},${th * 4}`,
   '--no-first-run',
-  '--user-data-dir=/tmp/world-probe-chrome',
+  // a profile per debugger port, so two shoots on two ports never share one
+  `--user-data-dir=/tmp/world-probe-chrome-${CDP}`,
 ], { stdio: 'ignore' })
 
 const page = await waitFor(async () => {
@@ -237,6 +254,24 @@ await waitFor(() => evaluate('!!window.__probe?.ready'), 120, 250, 'the probe pa
 /* ----------------------------------------------------------------- shoot */
 
 const t0 = Date.now()
+if (bodyMode) {
+  const got = JSON.parse(await evaluate(`JSON.stringify(window.__probe.shootBody(${JSON.stringify(spec)}))`))
+  got.labels.forEach((l, i) => console.log(`${String(i).padStart(3)}  ${l}`))
+  const shot = await send('Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: true,
+    clip: { x: 0, y: 0, width: got.width, height: got.height, scale: 1 },
+  })
+  mkdirSync(dirname(outPath), { recursive: true })
+  writeFileSync(outPath, Buffer.from(shot.result.data, 'base64'))
+  console.log(`\n${outPath}  (${got.width}x${got.height}, ${Date.now() - t0} ms)`)
+  if (errors.length) {
+    console.log('\npage errors:')
+    for (const e of errors.slice(0, 6)) console.log('  ' + e)
+  }
+  ws.close()
+  process.exit(errors.length ? 1 : 0)
+}
 if (props.length) {
   const urls = [...new Set(props.map((p) => p.url))]
   const info = await evaluate(

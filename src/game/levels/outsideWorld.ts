@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
+import type { ImpactWatch } from '../player/impacts'
 import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { YARD } from './houseWorld'
@@ -104,6 +105,9 @@ export interface OutsideHandles {
   prime: (x: number, z: number, ms?: number) => void
   /** whether the procedural planet is loaded yet */
   hasWorld: () => boolean
+  /** let the movers an impact watch is tracking knock the town's
+      pedestrians over. A no-op until the world is attached */
+  knockPeople: (watch: ImpactWatch) => void
   /** fetch the world modules without building them; free to call early */
   preloadWorld: () => void
   /**
@@ -357,6 +361,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     },
     prime: (x, z, ms) => w?.world.prime(x, z, ms),
     hasWorld: () => w !== null,
+    knockPeople: (watch) => w?.pedestrians.knock(watch),
     preloadWorld: () => void loadMods(),
     attachWorld,
   }
