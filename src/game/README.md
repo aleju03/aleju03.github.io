@@ -643,7 +643,7 @@ await sb.whenReady                      // optional: spawns before it are queued
 sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
 
 const id = sb.spawn('crate', { x, y, z }, { yaw, quaternion, velocity, angular,
-                                            frozen, id, mesh, shape, mass, data, phase })
+                                            frozen, id, mesh, shape, mass, data, phase, scale })
 sb.remove(id); sb.clear(); sb.get(id); sb.forEach(fn); sb.count
 sb.getTransform(id, pos, quat?); sb.setTransform(id, pos, quat?)
 sb.getVelocity(id, lin, ang?); sb.setVelocity(id, lin?, ang?)
@@ -787,7 +787,11 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   slices were spaced, and Node and Chrome agree (the header of `physics.ts`
   says why and where the edge is). `sb.stateHash()` fingerprints it;
   `measure physics determinism` runs every scenario twice and once more on
-  uneven frames, and `npm run film` prints the same hash under each sheet
+  uneven frames, staged as the film stages it (the same two rings of chunks,
+  the ruins armed and destruction attached, so the demolitions really come
+  down headless; a scenario that ends with no props is reported as having
+  nothing to compare rather than as a pass on the empty hash), and
+  `npm run film` prints the same hash under each sheet
   (as long as its `--rings` cover everywhere the props go: the film only
   builds the solids of the chunks it draws, and `sandbox:chain` throws gibs
   far enough to need `--rings 4`). That is why the ground streams at the
@@ -814,20 +818,24 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   which puts their links in the first frame under the boot cover.
   `npm run film -- props:links` counts `linkProgram` through a spawn of every
   kind, a break of every breakable and a blast: it must print 0 and 0.
-- **Fire and smoke are solid.** Nothing may write alpha under the look (that
-  is a hole), and both used to dissolve through a Bayer dither on
-  `gl_FragCoord` instead: fire read as a screen door (orange balls you could
-  see the street through) and smoke as a sparse dot pattern laid over the
-  scene. Both are now opaque and depth-writing, shaded in three bands off
-  how squarely each fragment faces the lens (`fx.ts`'s `banded`), and go by
-  shrinking. Ground dust is a flat lens rather than a ball, or it reads as a
-  stone.
+- **Nothing writes alpha it does not mean.** Under the look alpha is a
+  hole, and fire and smoke that dissolved through a Bayer dither read as a
+  screen door and a sparse dot pattern. Flame balls are opaque and banded
+  (`fx.ts`'s `banded`) and shrink away. The blast's core and the smoke are
+  sprites on one program in three blends that leave the target's alpha
+  alone: the core is *added* (near white, so a barrel tumbling through the
+  fireball is still seen inside it), its inner disc writes `GLOW_ALPHA` so
+  the look skips the grade, the ink and the lamp light there, as the
+  physgun's beam does, and smoke is premultiplied *over*, translucent
+  through blending in three stepped opacities, lit by the look's ambient
+  (`uShade`, from `lightLook`) so it darkens at night. Ground dust is a
+  flattened sprite, or it reads as a stone.
 - **A bang is a light before it is a ball.** For three frames the look's
   `lights.flash` is hard and wide (1.5x the blast radius), lighting the
-  street, the fronts and the props around it and washing the air, then it
-  falls to the fireball's orange glow; under it, a burst of white-hot balls,
-  flame tongues thrown radially (`jets`) and a fireball about fourteen units
-  across for a barrel.
+  street, the fronts and the props round it by day as well as by night and
+  washing the air, then it falls to the fireball's orange glow; under it
+  the added core, flame spears thrown radially well past it (`jets`), and
+  only then a few orange flame balls.
 - **A blast throws, and it is late.** `explode` sets a velocity change (out,
   50-70 degrees up, tumbling), not an impulse, falling with the square root
   of the mass; blasts a beat apart redirect more than they add. Explosives
@@ -886,6 +894,8 @@ npm run film -- --list
 
 npm run film -- sandbox:catalogue      every prop on a town street
 npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 4    barrels going up in a row
+npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 3.3 --from -40.5,2.5,-349 --to -31,1.6,-326 --fov 64
+                                       ...the same from a walker's eye
 npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
 npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
 npm run film -- props:turntable        every model four ways round
@@ -1016,9 +1026,19 @@ they did lets everything above it go as one rigid cluster, resting on the
 walls that are left, and those give one after another from the damage
 outward over `HOLD` seconds: a charge at one corner fells the building toward
 it, charges all round drop it. Crushed walls mostly turn to dust and gravel.
-A falling lump breaks when it lands, one level at a time (cluster, storeys,
-sides, panels, Voronoi shards with capped break faces), and big rubble
-hitting what is still standing damages it. Lumps are ordinary props (kinds
+A tall building failing on one side does not sit down: the load above is
+cut into three or four bands of storeys (`sections`), each born turning
+about the foot of the far wall, the upper ones faster, so it shears apart
+and swings out in big slabs and slams down across the street in a couple of
+seconds. A low or evenly failed one crushes down storey by storey
+(`pancake`). A falling lump breaks when it lands, one level at a time
+(cluster, storeys, sides, panels, Voronoi shards with capped break faces),
+every panel leaves with its corners knocked off (`chipFrags`) and rebar or
+splinters out of the break (`breakDecor`, drawn only), and big rubble hitting
+what is still standing damages it. Crawling rubble is damped and put to
+sleep, or a heap of hulls stays one awake island for good. The dust is its
+own depthless, dithered, banded material (fx.ts's `hazeMaterial`): no
+outline, so it reads as air, and it thins out instead of shrinking. Lumps are ordinary props (kinds
 `rubble` and `rubble_wood`, the chunk's own material), undoable per event,
 grabbable, and budgeted by the tier's `gfx.rubble`.
 
@@ -1038,6 +1058,12 @@ Rules that bite:
 - **Only big rubble damages buildings, and a knock must count.** Before
   both gates one tower brought down seventeen buildings and every slab settling
   against a wall chipped it.
+- **Nothing expensive lands in one slice, and the budget is work, not
+  time.** A building is opened a few thousand triangles of cutting a slice
+  (`ruins.opening`, fracture.ts's `fractureSteps`), and a heavy prop flying
+  at one starts that ahead of it; rubble bodies and breaks are made a dozen
+  a slice. Counted in work so a destruction comes out the same on every
+  machine: a millisecond budget made the wall film depend on the CPU.
 - **Never touch a body from inside a Rapier query.** `ground.ts`'s wake after
   a box shrinks did, and destruction shrinks boxes by the hundred.
 
@@ -1045,7 +1071,7 @@ Rules that bite:
 npm run film -- sandbox:demolish-house   barrels along one side; it folds over
 npm run film -- sandbox:tower            charges along one side; it is felled
 npm run film -- sandbox:wall             a barrier thrown through a shopfront
-npm run film -- sandbox:ruin --frames 1 --start 11 --tile 1280x800   the ruin at eye height
+npm run film -- sandbox:ruin --frames 1 --start 10.9 --tile 1280x800   the ruin at eye height
 npm run film -- props:collapse-links     shader links during both (must be 0)
 npm run measure -- physics destruction   pieces, rubble, frame cost (DESTRUCTION_EXTRA=12 to watch it settle)
 npm run measure -- fracture              every building and landmark taken apart

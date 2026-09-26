@@ -866,6 +866,30 @@ export const fractureStructure = (
   detailGeo: THREE.BufferGeometry | null,
   glassGeo: THREE.BufferGeometry | null,
 ): Fractured | null => {
+  const it = fractureSteps(rec, detailGeo, glassGeo, Infinity)
+  for (;;) {
+    const r = it.next()
+    if (r.done) return r.value
+  }
+}
+
+/**
+ * The same, a slice at a time: a generator that yields whenever it has done
+ * `budget` triangles' worth of work since it was last resumed, so taking a
+ * tower apart (ten to forty milliseconds, most of it in the cutting) can be
+ * spread across a few frames instead of landing in the one the blast is
+ * drawn in. Counted in work rather than milliseconds so that where a
+ * building is in its opening on a given slice is the same on every machine,
+ * which is what keeps a destruction deterministic. Resume it with `next()`
+ * each frame; its return value is the fractured building.
+ */
+export function* fractureSteps(
+  rec: StructureRec,
+  detailGeo: THREE.BufferGeometry | null,
+  glassGeo: THREE.BufferGeometry | null,
+  budget: number,
+): Generator<void, Fractured | null, void> {
+  let work = 0
   if (!rec.det || !detailGeo) return null
   const raw = readStamps(soupOf(detailGeo), rec.det, rec.marks, false)
   if (rec.gl && glassGeo) raw.push(...readStamps(soupOf(glassGeo), rec.gl, rec.gmarks, true))
@@ -901,14 +925,20 @@ export const fractureStructure = (
 
   let frags: Frag[] = []
   const shellSet = new Set(shells)
-  raw.forEach((f, i) => {
+  for (let i = 0; i < raw.length; i++) {
+    const f = raw[i]
     if (!shellSet.has(i)) {
       frags.push(f)
-      return
+      continue
     }
     const ey = boxes[i].max.y - boxes[i].min.y
     frags.push(...hollow(f, T, Math.min(T, ey * 0.45), buriedIn(i)))
-  })
+    work += (f.p.length / 9) * 4
+    if (work > budget) {
+      yield
+      work = 0
+    }
+  }
 
   // floors at every storey line of every shell tall enough to have storeys
   const floors: Array<{ y: number; box: THREE.Box3 }> = []
@@ -938,6 +968,12 @@ export const fractureStructure = (
     }
   }
 
+  // flooring
+  work += shells.length * 20
+  if (work > budget) {
+    yield
+    work = 0
+  }
   // the grid: storey lines (paired on a tall building) and plan cells
   const top = all.max.y
   const storeys = Math.max(1, Math.round((top - rec.baseY) / H))
@@ -969,6 +1005,8 @@ export const fractureStructure = (
       const hi = pl.nx ? b.max.x : pl.ny ? b.max.y : b.max.z
       if (hi <= pl.d + EPS || lo >= pl.d - EPS) continue
       const [fa, fb2] = splitFrag(f, pl)
+      // every cut is work in proportion to what it cut
+      work += f.p.length / 9
       // a fragment still on its way through several planes is re-faced as it
       // goes once it has fragmented, or every later cut pays for every
       // sliver the earlier ones left
@@ -978,11 +1016,21 @@ export const fractureStructure = (
     }
     done.push(cut ? simplify(f) : f)
   }
-  for (const f of frags) cutBy(f, 0, false)
+  for (const f of frags) {
+    cutBy(f, 0, false)
+    if (work > budget) {
+      yield
+      work = 0
+    }
+  }
   frags = done
 
   if (DBG) DBG.push(performance.now())
   if (DBG) DBG.push(performance.now())
+  if (work > budget) {
+    yield
+    work = 0
+  }
   // pieces: one per cell and facing
   const cx0 = (body.min.x + body.max.x) / 2
   const cz0 = (body.min.z + body.max.z) / 2
@@ -1086,10 +1134,17 @@ export const fractureStructure = (
     gCount += gv
   }
 
+  work += frags.length
+  if (work > budget) {
+    yield
+    work = 0
+  }
   if (DBG) DBG.push(performance.now())
   const detail = buildGeometry(pieces, false, dCount)
   const glass = gCount ? buildGeometry(pieces, true, gCount) : null
   if (DBG) DBG.push(performance.now())
+  work += (dCount + gCount) / 3
+  if (work > budget) yield
   linkSupports(pieces)
   // whatever the graph cannot explain standing at rest (a rooftop plant
   // room bedded into a parapet the box test misses, a sign on a bracket) is
@@ -1222,7 +1277,9 @@ const linkSupports = (pieces: Piece[]) => {
 }
 
 /** how many sideways bonds a piece of each kind may hang from before it is
-    not held up at all: a wall panel spans two bays, a floor three */
+    not held up at all: a wall panel spans two bays, a floor three. Callers
+    scale it by what the building is made of (a timber shopfront's canopy
+    spans nothing once the bay under it has gone) */
 const REACH: Record<PieceKind, number> = { wall: 2, floor: 3, roof: 3, misc: 1 }
 
 /**
@@ -1233,7 +1290,7 @@ const REACH: Record<PieceKind, number> = { wall: 2, floor: 3, roof: 3, misc: 1 }
  * roof is as held as the roof). `alive` says which are still standing;
  * returns the ones that are not held.
  */
-export const unsupported = (pieces: Piece[], alive: (i: number) => boolean) => {
+export const unsupported = (pieces: Piece[], alive: (i: number) => boolean, reachK = 1) => {
   const FAR = 1 << 20
   const dist = new Int32Array(pieces.length).fill(FAR)
   const queue: number[] = []
@@ -1252,7 +1309,7 @@ export const unsupported = (pieces: Piece[], alive: (i: number) => boolean) => {
       queue.push(j)
     }
     for (const j of pieces[i].side) {
-      if (!alive(j) || dist[j] <= d + 1 || d + 1 > REACH[pieces[j].kind]) continue
+      if (!alive(j) || dist[j] <= d + 1 || d + 1 > Math.floor(REACH[pieces[j].kind] * reachK)) continue
       dist[j] = d + 1
       queue.push(j)
     }
@@ -1367,4 +1424,108 @@ export const cornerPoints = (pieces: Piece[], o: THREE.Vector3, shrink = 0.05) =
     }
   }
   return pts
+}
+
+/* ---------------------------------------------------------- the break -- */
+
+/**
+ * Knock corners off a piece: `n` planes slanted across random corners of its
+ * box, keeping the side toward its middle, each cut capped in the stamp's
+ * core colour. A panel lifted out of a building is a clean rectangle of the
+ * cell grid; chipped, its outline is a broken one. Deterministic in `seed`.
+ */
+export const chipFrags = (frags: Frag[], seed: number, n: number): Frag[] => {
+  const solid = frags.filter((f) => !f.glass)
+  if (!solid.length || n < 1) return solid
+  const box = new THREE.Box3()
+  for (const f of solid) box.union(fragBox(f, tmpBox))
+  const c = box.getCenter(new THREE.Vector3())
+  const e = box.getSize(new THREE.Vector3()).multiplyScalar(0.5)
+  const rnd = seeded(seed >>> 0)
+  let out = solid
+  const pl: Plane = { nx: 0, ny: 0, nz: 0, d: 0 }
+  for (let k = 0; k < n; k++) {
+    // a corner, and a plane across it facing out of it (jittered)
+    const sx = rnd() < 0.5 ? -1 : 1
+    const sy = rnd() < 0.5 ? -1 : 1
+    const sz = rnd() < 0.5 ? -1 : 1
+    let nx = sx / Math.max(0.2, e.x) * (0.7 + rnd() * 0.6)
+    let ny = sy / Math.max(0.2, e.y) * (0.7 + rnd() * 0.6)
+    let nz = sz / Math.max(0.2, e.z) * (0.7 + rnd() * 0.6)
+    const l = Math.hypot(nx, ny, nz)
+    nx /= l
+    ny /= l
+    nz /= l
+    // how deep into the corner: the support distance times a share
+    const reach = Math.abs(nx) * e.x + Math.abs(ny) * e.y + Math.abs(nz) * e.z
+    pl.nx = nx
+    pl.ny = ny
+    pl.nz = nz
+    pl.d = nx * c.x + ny * c.y + nz * c.z + reach * (0.45 + rnd() * 0.3)
+    const next: Frag[] = []
+    for (const f of out) {
+      const back = splitFrag(f, pl)[1]
+      if (back) next.push(back.p.length > 72 ? simplify(back) : back)
+    }
+    if (next.length) out = next
+  }
+  return out
+}
+
+const stick = (
+  x: number, y: number, z: number, dx: number, dy: number, dz: number,
+  len: number, w: number, h: number, col: [number, number, number], surf: number,
+): Frag => {
+  const g = new THREE.BoxGeometry(w, h, len).toNonIndexed()
+  const m = new THREE.Matrix4()
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(dx, dy, dz).normalize())
+  m.compose(new THREE.Vector3(x + dx * len * 0.35, y + dy * len * 0.35, z + dz * len * 0.35), q, new THREE.Vector3(1, 1, 1))
+  g.applyMatrix4(m)
+  const p = Array.from(g.getAttribute('position').array as Float32Array)
+  const nn = Array.from(g.getAttribute('normal').array as Float32Array)
+  g.dispose()
+  const c: number[] = []
+  for (let i = 0; i < p.length / 3; i++) c.push(col[0], col[1], col[2])
+  return { p, n: nn, c, surf, closed: true, core: col, face: -1, glass: false }
+}
+
+/**
+ * What sticks out of a break: bent rebar out of concrete and brick (grade 1
+ * and up), splintered joists and battens out of a timber and render house.
+ * Drawn only (the collider is the piece's own hull), a few sticks along the
+ * piece's thin edges pointing out of them, which is where it broke.
+ */
+export const breakDecor = (frags: Frag[], seed: number, grade: number, count: number): Frag[] => {
+  const box = new THREE.Box3()
+  for (const f of frags) if (!f.glass) box.union(fragBox(f, tmpBox))
+  if (box.isEmpty() || count < 1) return []
+  const size = box.getSize(new THREE.Vector3())
+  const c = box.getCenter(new THREE.Vector3())
+  const rnd = seeded(seed >>> 0)
+  // the thin axis; sticks come out of the other two
+  const thin = size.x <= size.y && size.x <= size.z ? 0 : size.y <= size.z ? 1 : 2
+  const out: Frag[] = []
+  for (let k = 0; k < count; k++) {
+    let axis = Math.floor(rnd() * 3)
+    if (axis === thin) axis = (axis + 1) % 3
+    const s = rnd() < 0.5 ? -1 : 1
+    const p = [c.x, c.y, c.z]
+    const half = [size.x / 2, size.y / 2, size.z / 2]
+    for (let a = 0; a < 3; a++) {
+      if (a === axis) p[a] += s * half[a] * 0.9
+      else p[a] += (rnd() - 0.5) * half[a] * (a === thin ? 0.4 : 1.4)
+    }
+    const d = [0, 0, 0]
+    d[axis] = s
+    // bent or snapped off at an angle
+    for (let a = 0; a < 3; a++) if (a !== axis) d[a] = (rnd() - 0.5) * 0.9
+    if (grade >= 1) {
+      const rust: [number, number, number] = [0.13 + rnd() * 0.05, 0.08, 0.06]
+      out.push(stick(p[0], p[1], p[2], d[0], d[1], d[2], 0.6 + rnd() * 1.1, 0.09, 0.09, rust, SURF.none))
+    } else {
+      const wood: [number, number, number] = [0.5 + rnd() * 0.1, 0.36, 0.2]
+      out.push(stick(p[0], p[1], p[2], d[0], d[1], d[2], 0.8 + rnd() * 1.4, 0.34, 0.12, wood, SURF.plank))
+    }
+  }
+  return out
 }

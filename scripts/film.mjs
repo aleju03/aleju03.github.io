@@ -64,9 +64,11 @@ options
   --fps <n>        video frame rate               (default 30)
   --size <WxH>     video size                     (default 960x600)
   --tod <0..1>     time of day                    (default the scenario's)
-  --duration <s>   override the scenario's length
+  --duration <s>   the time of the last still (the scenario's length by
+                   default): an end time, not a length
   --start <s>      first still's time (e.g. --start 5 --duration 7 --frames 11
-                   is 0.2 s apart from 5 to 7)
+                   is 0.2 s apart from 5 to 7); a start at or past the end
+                   is an error
 
 camera (every run prints the shot it used, so start from that)
   --from x,y,z     put the lens here...

@@ -103,6 +103,11 @@ export interface SpawnOpts {
       crate was, pressed against whatever stood on it and beside it, and
       colliding at once they shoved a whole column of crates upward */
   phase?: number
+  /** a uniform size for this one prop: its shape, its ballast and its mesh
+      (its mass goes with the cube unless `mass` says otherwise). Things
+      that are the same thing are never quite the same size, and a stack of
+      identical crates falls as one welded wall */
+  scale?: number
 }
 
 export type PropMode = 'dynamic' | 'frozen' | 'kinematic'
@@ -215,6 +220,30 @@ const MAX_RESCUES = 3
 const ZERO = { x: 0, y: 0, z: 0 }
 const hashBuf = new Float64Array(14)
 const hashBytes = new Uint8Array(hashBuf.buffer)
+
+/** a shape grown or shrunk about its origin */
+export const scaleShape = (s: ShapeSpec, k: number): ShapeSpec => {
+  switch (s.type) {
+    case 'box':
+      return { type: 'box', hx: s.hx * k, hy: s.hy * k, hz: s.hz * k }
+    case 'ball':
+      return { type: 'ball', r: s.r * k }
+    case 'cylinder':
+    case 'cone':
+      return { type: s.type, r: s.r * k, hh: s.hh * k }
+    case 'hull':
+      return { type: 'hull', points: s.points.map((v) => v * k) }
+    case 'compound':
+      return {
+        type: 'compound',
+        parts: s.parts.map((p) => ({
+          ...p,
+          shape: scaleShape(p.shape, k) as typeof p.shape,
+          at: p.at ? [p.at[0] * k, p.at[1] * k, p.at[2] * k] : undefined,
+        })),
+      }
+  }
+}
 
 const volumeOf = (s: Exclude<ShapeSpec, { type: 'compound' }>) => {
   switch (s.type) {
@@ -383,7 +412,7 @@ export const createProps = (o: PropsOpts): Props => {
   const forced = new Set<Rec>()
   const phasing = new Set<Rec>()
   /** a removal being kept quiet (see remove) */
-  let quiet: { at: number; sleepers: Rec[]; falling: Set<Rec> } | null = null
+  let quiet: { at: number; sleepers: Rec[]; falling: Set<Rec>; moved: Set<Rec> } | null = null
   const above: Rec[] = []
   const impactFns = new Set<(e: ImpactEvent) => void>()
   const splashFns = new Set<(e: SplashEvent) => void>()
@@ -454,8 +483,9 @@ export const createProps = (o: PropsOpts): Props => {
     const id = opts.id ?? nextId++
     if (id >= nextId) nextId = id + 1
     if (recs.has(id)) remove(id)
-    const shape = opts.shape ?? kind.shape
-    const mass = opts.mass ?? kind.mass
+    const k = opts.scale && opts.scale > 0 ? opts.scale : 1
+    const shape = opts.shape ?? (k === 1 ? kind.shape : scaleShape(kind.shape, k))
+    const mass = opts.mass ?? kind.mass * k * k * k
     const q = opts.quaternion ??
       (opts.yaw !== undefined
         ? { x: 0, y: Math.sin(opts.yaw / 2), z: 0, w: Math.cos(opts.yaw / 2) }
@@ -483,7 +513,9 @@ export const createProps = (o: PropsOpts): Props => {
     }
     if (ballast && carried > 0) {
       // a point load: Rapier folds it in with the parallel-axis theorem
-      const [bx, by, bz] = ballast.at
+      const bx = ballast.at[0] * k
+      const by = ballast.at[1] * k
+      const bz = ballast.at[2] * k
       body.setAdditionalMassProperties(
         carried, { x: bx, y: by, z: bz }, { x: 1e-4, y: 1e-4, z: 1e-4 }, { x: 0, y: 0, z: 0, w: 1 }, false,
       )
@@ -494,6 +526,7 @@ export const createProps = (o: PropsOpts): Props => {
       mesh.userData.propId = id
       mesh.position.set(at.x, at.y, at.z)
       mesh.quaternion.set(q.x, q.y, q.z, q.w)
+      if (k !== 1 && !opts.shape) mesh.scale.multiplyScalar(k)
       root.add(mesh)
     }
     const extents = shapeExtents(shape)
@@ -595,7 +628,7 @@ export const createProps = (o: PropsOpts): Props => {
     */
     if (r.body.isEnabled()) {
       if (!quiet) {
-        quiet = { at: pw.time, sleepers: [], falling: new Set() }
+        quiet = { at: pw.time, sleepers: [], falling: new Set(), moved: new Set() }
         for (const q of recs.values()) {
           if (q.mode === 'dynamic' && !q.parked && q.body.isSleeping()) quiet.sleepers.push(q)
         }
@@ -968,7 +1001,7 @@ export const createProps = (o: PropsOpts): Props => {
     // with whatever was only touching, not standing on, what went
     if (quiet && t > quiet.at + 1e-9) {
       for (const q of quiet.sleepers) {
-        if (!recs.has(q.id) || quiet.falling.has(q) || q.body.isSleeping()) continue
+        if (!recs.has(q.id) || quiet.falling.has(q) || quiet.moved.has(q) || q.body.isSleeping()) continue
         // with its velocity cleared: `sleep` keeps it, and the one slice of
         // gravity each wake left behind added up over a few clear-ups until
         // a whole heap woke already falling at two units a second
@@ -1055,6 +1088,16 @@ export const createProps = (o: PropsOpts): Props => {
     const r = recs.get(id)
     if (r) fn(r)
   }
+  /** someone woke or moved this prop on purpose since a quiet removal: it
+      is not one the removal woke, and must not be put back to sleep. (A
+      barrel is removed as it goes off and its blast then throws everything
+      round it, in the same call; without this every prop the blast threw
+      was stopped dead one slice later) */
+  const meant = (id: PropId, fn: (r: Rec) => void) =>
+    with_(id, (r) => {
+      quiet?.moved.add(r)
+      fn(r)
+    })
 
   const api: Props = {
     spawn,
@@ -1097,7 +1140,7 @@ export const createProps = (o: PropsOpts): Props => {
       return true
     },
     setVelocity: (id, lin, ang) =>
-      with_(id, (r) => {
+      meant(id, (r) => {
         if (lin) {
           r.body.setLinvel(lin, true)
           // a velocity someone set is not an impact
@@ -1108,7 +1151,7 @@ export const createProps = (o: PropsOpts): Props => {
         if (ang) r.body.setAngvel(ang, true)
       }),
     applyImpulse: (id, imp, at) =>
-      with_(id, (r) => {
+      meant(id, (r) => {
         if (at) r.body.applyImpulseAtPoint(imp, at, true)
         else r.body.applyImpulse(imp, true)
         r.vx += imp.x / r.mass
@@ -1116,7 +1159,7 @@ export const createProps = (o: PropsOpts): Props => {
         r.vz += imp.z / r.mass
       }),
     addForce: (id, f, at) =>
-      with_(id, (r) => {
+      meant(id, (r) => {
         if (at) r.body.addForceAtPoint(f, at, true)
         else r.body.addForce(f, true)
         forced.add(r)
@@ -1147,7 +1190,7 @@ export const createProps = (o: PropsOpts): Props => {
         r.body.setNextKinematicTranslation(pos)
         if (quat) r.body.setNextKinematicRotation(quat)
       }),
-    wake: (id) => with_(id, (r) => r.body.wakeUp()),
+    wake: (id) => meant(id, (r) => r.body.wakeUp()),
     inContact: (id) => {
       const r = recs.get(id)
       if (!r) return false

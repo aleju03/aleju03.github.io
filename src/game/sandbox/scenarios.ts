@@ -286,12 +286,43 @@ const lying = (dx: number, dz: number) => {
     meets the columns a seventh of a second apart, so they twist and come
     apart as they go over instead of falling as one wall */
 const RAM_SKEW = 0.4
-/** how fast it is swung through, u/s. Under a crate's breaking speed on
-    purpose: at 30 the base shattered and the column above dropped a floor
-    and stood there; at 18 the base is kicked out whole, dragging the
-    bottom of each column after it, and the tower goes over. Measured over
-    12, 18 and 30 u/s and three heights by `measure physics fall` */
-const RAM_SPEED = 18
+/** how fast it is swung through, u/s: under a crate's breaking speed, so
+    the crates it meets are knocked out whole rather than shattered in place */
+const RAM_SPEED = 24
+/** and where, over the bottom crate's centre: 3.6 is the seam between the
+    second and third rows, a third of the way up. Round four swung through
+    the base (0), and the twelve crates above dropped a floor together and
+    stood for half a second as one welded wall before hinging over; hit at
+    the seam, the top of the tower is knocked off its own lower half, the
+    columns shear apart and the top comes down on the base. Measured by
+    `measure physics fall` over heights 0 to 6 and speeds 18 and 24: half
+    the seams open in 1.53 s from the base, 0.2 s from here */
+const RAM_HEIGHT = 3.6
+
+/** the roll's lens, beside the drums at `along` down the slope and
+    `across` it, looking a little ahead of them */
+const rollShot = (c: ScenarioCtx, along: number, across: number): Shot => {
+  const side = c.memo.side ?? 1
+  const sx = -c.dz * side
+  const sz = c.dx * side
+  const mx = c.x + c.dx * (along + 2) - c.dz * across
+  const mz = c.z + c.dz * (along + 2) + c.dx * across
+  const gy = terrainY(mx, mz)
+  // at the bottom of the hill the town begins, and a lens standing in a
+  // house films its wall: step in closer (or out) to the first clear spot
+  let fx = mx + sx * 17 - c.dx * 3
+  let fz = mz + sz * 17 - c.dz * 3
+  for (const d of [17, 12, 22, 8]) {
+    const x = mx + sx * d - c.dx * 3
+    const z = mz + sz * d - c.dz * 3
+    if (clearOf(x, z, 1, 0, -2, 2, -2, 2)) {
+      fx = x
+      fz = z
+      break
+    }
+  }
+  return { from: [fx, Math.max(gy, terrainY(fx, fz)) + 5.5, fz], to: [mx, gy + 0.5, mz], fov: 58 }
+}
 
 const settle = (c: ScenarioCtx) => {
   // report helper: how many of the ids are asleep
@@ -305,7 +336,7 @@ const settle = (c: ScenarioCtx) => {
 
 defineScenario({
   id: 'sandbox:stack',
-  title: 'a 3x5 tower of crates, a girder rammed through its base',
+  title: 'a 3x5 tower of crates, a girder rammed through it a third of the way up',
   site: siteFlat,
   duration: 6,
   frames: 12,
@@ -325,35 +356,42 @@ defineScenario({
     const h = 2.4
     const yaw = Math.atan2(c.dx, c.dz)
     // stacked by hand, not by a grid: a few centimetres and a few degrees of
-    // slop per crate, and no two packed the same (a crate's weight varies by
-    // a third either way), which is what lets a falling tower twist and come
-    // apart the way a real one does instead of pivoting over as one perfect
-    // slab. Identical crates in a perfect grid get identical impulses, so
-    // whole rows fell as one piece
+    // slop per crate, no two packed the same (a crate's weight varies by a
+    // third either way) and no two quite the same size (each is 0.9 to 1.06
+    // of the kind, and a column stands as tall as its own crates make it).
+    // Identical crates in a perfect grid get identical impulses, so whole
+    // rows fell as one piece; and with the size slop gone too, the twelve
+    // crates above the base stood for half a second as one welded wall with
+    // no seam opening, then went over as a hinged chain. With rows that do
+    // not line up, every crate rests on one neighbour and leans on the next
+    // at a different height, and the seams open as it falls
     let seed = 11
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) - 0.5
+    const half = h / 2
+    const pitch = h * 1.06 + 0.05
+    const tops = [-1, 0, 1].map((col) => c.sb.groundY(c.x + c.dx * col * pitch, c.z + c.dz * col * pitch))
     for (let row = 0; row < 5; row++)
       for (let col = -1; col <= 1; col++) {
-        const px = c.x + c.dx * col * (h + 0.05) + rnd() * 0.16
-        const pz = c.z + c.dz * col * (h + 0.05) + rnd() * 0.16
-        const y = c.sb.restY('crate', c.x, c.z) + row * (h + 0.01)
+        const k = 0.98 + rnd() * 0.16
+        const px = c.x + c.dx * col * pitch + rnd() * 0.16
+        const pz = c.z + c.dz * col * pitch + rnd() * 0.16
+        const y = tops[col + 1] + half * k + 0.01
+        tops[col + 1] = y + half * k
         c.ids.push(c.sb.spawn('crate', { x: px, y, z: pz }, {
-          yaw: yaw + rnd() * 0.16, mass: 35 * (1 + rnd() * 0.7),
+          yaw: yaw + rnd() * 0.16, scale: k, mass: 35 * k * k * k * (1 + rnd() * 0.7),
         }))
       }
     // the ram: a steel girder held level and turned off square, swung
-    // through the *bottom* row, then let go. Leaning on the tower slowly
-    // only ever pivoted it over whole, as one slab; round two's punt through
-    // the second row left the bottom row standing; round three's plank,
-    // slanted to reach the second row at one end, was a wedge that lifted
-    // the crates it slid under, and shorter than the tower is wide, so one
-    // column was never touched; and a ram fast enough to shatter the base
-    // just dropped the tower a floor. The girder is longer than the tower,
-    // level and flat-faced, and slow enough to kick the base out whole,
-    // which drags the foot of every column after it (see RAM_SPEED)
+    // through the tower a third of the way up (RAM_HEIGHT), then let go.
+    // Leaning on the tower slowly only ever pivoted it over whole; round
+    // three's plank, slanted, was a wedge that lifted the crates it slid
+    // under, and shorter than the tower is wide, so one column was never
+    // touched; a ram that shattered the base just dropped the tower a floor;
+    // and one that kicked the base out whole dropped it as a welded wall.
+    // The girder is longer than the tower, level and flat-faced
     const nx = c.dz
     const nz = -c.dx
-    const ry = c.sb.restY('crate', c.x, c.z)
+    const ry = c.sb.restY('crate', c.x, c.z) + RAM_HEIGHT
     // local x (the girder's length) onto the tower's row, plus the skew
     const ramYaw = Math.atan2(-c.dz, c.dx) + RAM_SKEW
     const back = 7
@@ -394,48 +432,25 @@ defineScenario({
   site: siteHill,
   duration: 4.5,
   frames: 12,
-  camera: (c) => {
-    // side-on across the fall line, from the side the site found open, a
-    // little above the run so the drums read as rolling rather than as a
-    // row of red discs
-    const side = c.memo.side ?? 1
-    const sx = -c.dz * side
-    const sz = c.dx * side
-    const mx = c.x + c.dx * 16
-    const mz = c.z + c.dz * 16
-    const gy = terrainY(mx, mz)
-    const fx = mx + sx * 27 - c.dx * 4
-    const fz = mz + sz * 27 - c.dz * 4
-    return {
-      from: [fx, Math.max(gy, terrainY(fx, fz)) + 10, fz],
-      to: [mx, gy, mz],
-      fov: 60,
-    }
-  },
-  // the same side-on shot, riding along the fall line with the drums: a
-  // fixed lens lost them off the bottom of the frame by the ninth still.
-  // It follows how far down the slope the barrels are on average, never
-  // across it, so the hill stays put in the frame and only slides by
+  // side-on across the fall line, from the side the site found open,
+  // riding down the slope with the drums. The first framing stood 27 units
+  // off and ten up, and a drum was a ten-pixel speck; this one is close
+  // enough to see a drum turn over and hop, and it follows where the drums
+  // are on average both down the slope and across it, so they stay in it
+  camera: (c) => rollShot(c, 8, 0),
   lens: (c) => {
     let along = 0
+    let across = 0
     let n = 0
     for (const id of c.ids.slice(0, 4)) {
       const p = c.sb.get(id)
       if (!p) continue
       const q = p.body.translation()
       along += (q.x - c.x) * c.dx + (q.z - c.z) * c.dz
+      across += (q.x - c.x) * -c.dz + (q.z - c.z) * c.dx
       n++
     }
-    const a = Math.max(16, n ? along / n : 16)
-    const side = c.memo.side ?? 1
-    const sx = -c.dz * side
-    const sz = c.dx * side
-    const mx = c.x + c.dx * a
-    const mz = c.z + c.dz * a
-    const gy = terrainY(mx, mz)
-    const fx = mx + sx * 27 - c.dx * 4
-    const fz = mz + sz * 27 - c.dz * 4
-    return { from: [fx, Math.max(gy, terrainY(fx, fz)) + 10, fz], to: [mx, gy, mz], fov: 60 }
+    return rollShot(c, Math.max(8, n ? along / n : 8), n ? across / n : 0)
   },
   setup: (c) => {
     const sx = -c.dz
@@ -483,7 +498,10 @@ defineScenario({
   id: 'sandbox:pile',
   title: 'forty mixed props dropped on a street',
   site: siteStreet,
-  duration: 8,
+  // poured until 3.6 s, splinters still settling into the gaps until nearly
+  // 8, and the heap asleep at 8.7 (`measure physics rest`, on this street):
+  // the film ends with it at rest, not while it is still settling
+  duration: 11,
   frames: 12,
   camera: (c) => ({
     // down the street itself: anything off its axis is inside a building

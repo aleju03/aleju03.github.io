@@ -243,7 +243,7 @@ const report = (sb: Sandbox, c: ScenarioCtx) => {
     for (let i = 0; i < total; i++) alive += b.open.alive[i]
   }
   return `[w ${c.memo.w.toFixed(0)} h ${c.memo.h.toFixed(0)} open ${c.memo.open.toFixed(2)}] ${total - alive}/${total} pieces down, ${s.lumps} rubble (${s.awake} moving, ${s.frozen} welded, ${s.lost} lost), ` +
-    `open ${s.openMs.toFixed(1)} ms, clusters leaned to ${s.lean.toFixed(0)} deg`
+    `worst opening slice ${s.openMs.toFixed(1)} ms, clusters leaned to ${s.lean.toFixed(0)} deg`
 }
 
 /* ------------------------------------------------------------ the house -- */
@@ -260,11 +260,16 @@ const house = defineScenario({
     const d = c.memo.far
     // straight down the open bearing, a storey over the eaves
     const a = Math.atan2(c.dz, c.dx)
-    const dd = Math.min(d, w * 1.3 + 9)
+    // high over the garden, looking down past the trees round it, and a
+    // little toward the side it folds over into
+    const dd = Math.min(d, w * 1.2 + 10)
+    const side = c.memo.side || 1
+    const sx = -c.dz * side
+    const sz = c.dx * side
     return {
-      from: [c.x + Math.cos(a) * dd, c.memo.base + h + 5, c.z + Math.sin(a) * dd],
-      to: [c.x, c.memo.base + h * 0.3, c.z],
-      fov: 58,
+      from: [c.x + Math.cos(a) * dd - sx * w * 0.3, c.memo.base + h + 13, c.z + Math.sin(a) * dd - sz * w * 0.3],
+      to: [c.x + sx * w * 0.25, c.memo.base + h * 0.2, c.z + sz * w * 0.25],
+      fov: 60,
       clear: true,
     }
   },
@@ -360,7 +365,7 @@ defineScenario({
   site: once('tower', () => siteBuilding(['tower', 'slab'], [0, -340], (_w, h) => h * 1.3 + 10, {
     minH: 30, maxH: 90, fall: true, minOpen: 0.85,
   })),
-  duration: 12,
+  duration: 8,
   frames: 12,
   camera: (c) => {
     const h = c.memo.h
@@ -368,8 +373,8 @@ defineScenario({
     const fz = c.memo.fdz
     // square on to the fall, over the rooftops, looking at the arc it
     // sweeps: the stump on one side of the frame, the landing on the other
-    const mx = c.x + fx * h * 0.42
-    const mz = c.z + fz * h * 0.42
+    const mx = c.x + fx * h * 0.55
+    const mz = c.z + fz * h * 0.55
     const d = h * 1.0 + 10
     return {
       from: [mx + c.dx * d, c.memo.base + h * 0.72, mz + c.dz * d],
@@ -499,7 +504,7 @@ defineScenario({
     const sx = c.memo.tx * c.memo.side
     const sz = c.memo.tz * c.memo.side
     return {
-      from: [hx + c.dx * 17 + sx * 13, c.memo.base + 7.5, hz + c.dz * 17 + sz * 13],
+      from: [hx + c.dx * 13 + sx * 10, c.memo.base + 6.5, hz + c.dz * 13 + sz * 10],
       to: [hx - c.dx * 2, c.memo.base + 2.8, hz - c.dz * 2],
       fov: 56,
       clear: true,

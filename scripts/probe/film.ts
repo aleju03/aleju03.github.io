@@ -522,6 +522,13 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
   const cols = Math.min(spec.cols, spec.frames)
   const rows = Math.ceil(spec.frames / cols)
   const r = makeRenderer(tw * cols, th * rows, !!spec.raw, Math.round(th / 2))
+  // --duration is where the sheet ends, not how long it runs, so a start
+  // at or past it would photograph one frozen moment again and again
+  const end = spec.duration ?? SCENARIOS.find((x) => x.id === spec.id)?.duration ?? 0
+  if (spec.start !== undefined && spec.start >= end) {
+    throw new Error(`--start ${spec.start} is not before the end of the sheet (${end} s): ` +
+      '--duration is the time of the last still, not a length (try --duration ' + (spec.start + end) + ')')
+  }
   const st = await build(spec, tw, th)
   labels.innerHTML = ''
   const t0 = Math.max(0, Math.min(st.duration, spec.start ?? 0))

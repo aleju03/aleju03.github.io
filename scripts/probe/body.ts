@@ -235,11 +235,11 @@ const getUp = (a: Actor) => {
     drawn from look.ts's own palettes */
 const LOOKS: PlayerLook[] = [
   DEFAULT_LOOK,
-  { shell: '#e0a21a', trim: '#1c1c22', accent: '#2860c8', glow: '#1c1a22', hat: 2 },
-  { shell: '#3f9a38', trim: '#d2452f', accent: '#f0e8e0', glow: '#1c1a22', hat: 3 },
-  { shell: '#d9508f', trim: '#1c1c22', accent: '#e8b818', glow: '#2b3a55', hat: 4 },
-  { shell: '#8a4fc8', trim: '#f2eee0', accent: '#e86810', glow: '#1c1a22', hat: 7 },
-  { shell: '#d2452f', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a22', hat: 1 },
+  { shell: '#e0a21a', trim: '#8a4fc8', accent: '#2860c8', glow: '#1c1a20', hat: 2, costume: 3, build: 1 },
+  { shell: '#3f9a38', trim: '#d2452c', accent: '#f0e8e0', glow: '#1c1a20', hat: 3, costume: 2, build: 2 },
+  { shell: '#d9508f', trim: '#2f6fcc', accent: '#e8b818', glow: '#2b3a50', hat: 4, costume: 1, build: 3 },
+  { shell: '#8a4fc8', trim: '#f2eee0', accent: '#e86810', glow: '#1c1a20', hat: 7, costume: 0, build: 4 },
+  { shell: '#d2452f', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a20', hat: 1, costume: 2, build: 1 },
 ]
 
 /* -------------------------------------------------------------- the tiles -- */
@@ -317,9 +317,11 @@ const closeup = (spec: BodySpec, snap: Snap) => {
   const st = stage(spec.tod)
   const a = actor(st, LOOKS[0], st.x, st.z, 0)
   for (let f = 0; f < 90; f++) tick(a, st.env)
-  const at = new THREE.Vector3(st.x, st.gy + 2.5, st.z)
+  // framed on the chest, far enough back that the crown and the face are
+  // in every tile (it used to crop the face off the top of the front one)
+  const at = new THREE.Vector3(st.x, st.gy + 2.2, st.z)
   for (const [label, b] of [['front', Math.PI], ['three-quarter', Math.PI - 0.7], ['side', -Math.PI / 2], ['back', 0.35]] as const) {
-    snap(label, camAt(tw, th, at, b, 9, 0.6, 32))
+    snap(label, camAt(tw, th, at, b, 11, 0.9, 32))
   }
 }
 
