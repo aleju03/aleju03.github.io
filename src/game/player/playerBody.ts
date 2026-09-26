@@ -752,6 +752,15 @@ export function buildPlayerBody(
   // 12: chest look-yaw, 14: head look-yaw, 16: head look-pitch
   // 18: chest look-pitch, 20: chest jelly roll, 22: chest jelly pitch
   const sprS = new Float64Array(24)
+  /** the springs at rest: zero everywhere but the arms' spread, which
+      starts where a standing body holds them. From zero, every new body
+      spent its first frames with both arms hanging straight into its own
+      flanks */
+  const restSprings = () => {
+    sprS.fill(0)
+    sprS[2] = sprS[8] = 0.6 + (persona.girth - 1) * 0.9
+  }
+  restSprings()
   const spring = (
     i: number, target: number, K: number, C: number, force: number, dt: number,
     lo = -2.8, hi = 2.8,
@@ -2116,7 +2125,7 @@ export function buildPlayerBody(
       stillT = 0
       fidget = null
       shakeT = -1
-      sprS.fill(0)
+      restSprings()
       rag.drive(null)
       for (let i = 0; i < P_COUNT; i++) rag.pin(i, null)
       grabs = 0

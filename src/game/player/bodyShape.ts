@@ -328,23 +328,25 @@ const frameFor = (b: number): Frame => {
     const d = dir[k].set(side * Math.sin(ARM_BIND), -Math.cos(ARM_BIND), 0)
     const E = S.clone().addScaledVector(d, UARM)
     const W = E.clone().addScaledVector(d, FARM)
-    // the arm starts fat inside the flank and tapers to the wrist: no
-    // shoulder ball, no cuff
-    const upper = roundCone(S.x, S.y, S.z, E.x, E.y, E.z, 0.15, 0.118)
-    const fore = roundCone(E.x, E.y, E.z, W.x, W.y, W.z, 0.118, 0.098)
+    // one straight tapering cone from well inside the flank to the wrist:
+    // the root's round end is buried, so no shoulder pad stands proud of the
+    // body, and there is no second cone to blend at the elbow, because a
+    // smooth minimum swells wherever two parts meet and an arm of two
+    // blended cones read as a string of sausages
+    const G = S.clone().add(new THREE.Vector3(-side * 0.11, 0, 0))
+    const arm = roundCone(G.x, G.y, G.z, W.x, W.y, W.z, 0.13, 0.098)
     // the mitten: a soft paddle a little wider than the wrist, flattened
     // palm to back (the palm faces the body), part of the same surface
-    const C = W.clone().addScaledVector(d, 0.1)
+    const C = W.clone().addScaledVector(d, 0.09)
     // in the arm's plane, perpendicular to it, toward the body
     const n = new THREE.Vector3(-side * Math.cos(ARM_BIND), -Math.sin(ARM_BIND), 0)
     const wz = new THREE.Vector3(0, 0, 1)
-    const mitt = ellipsoid(C.x, C.y, C.z, 0.085, 0.15, 0.125, [n.x, n.y, n.z, d.x, d.y, d.z, wz.x, wz.y, wz.z])
-    // and a thumb nub on the front edge, grown out of the mitten
-    const T0 = W.clone().addScaledVector(d, 0.04).addScaledVector(wz, 0.07)
-    const T1 = W.clone().addScaledVector(d, 0.11).addScaledVector(wz, 0.14).addScaledVector(n, 0.02)
-    const thumb = roundCone(T0.x, T0.y, T0.z, T1.x, T1.y, T1.z, 0.05, 0.042)
-    arms.push((x, y, z) =>
-      smin(smin(smin(upper(x, y, z), fore(x, y, z), 0.06), mitt(x, y, z), 0.08), thumb(x, y, z), 0.05))
+    const mitt = ellipsoid(C.x, C.y, C.z, 0.08, 0.14, 0.115, [n.x, n.y, n.z, d.x, d.y, d.z, wz.x, wz.y, wz.z])
+    // and a small thumb nub on the front edge, grown out of the mitten
+    const T0 = W.clone().addScaledVector(d, 0.04).addScaledVector(wz, 0.06)
+    const T1 = W.clone().addScaledVector(d, 0.1).addScaledVector(wz, 0.12).addScaledVector(n, 0.02)
+    const thumb = roundCone(T0.x, T0.y, T0.z, T1.x, T1.y, T1.z, 0.042, 0.036)
+    arms.push((x, y, z) => smin(smin(arm(x, y, z), mitt(x, y, z), 0.05), thumb(x, y, z), 0.035))
     armRoot.push(S.clone())
     armTip.push(W.clone().addScaledVector(d, 0.25))
   })
