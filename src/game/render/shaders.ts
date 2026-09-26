@@ -200,7 +200,12 @@ export const GRADE_FRAG = /* glsl */ `
     ivec2 p = ivec2(gl_FragCoord.xy);
     vec4 src = texelFetch(tColor, p, 0);
     vec3 col = src.rgb;
-    float a = src.a;
+    // Clamped: the scene target is half float, and additive sprites (stars,
+    // halos, fireflies) blend alpha as src.a * src.a + dst.a, which piles up
+    // past 1 there where an 8-bit canvas would have clamped it. Written back
+    // premultiplied, an alpha of 1.3 is a pixel 30% brighter than it was
+    // drawn: every star, faded out to nothing, came back as a glowing dot
+    float a = min(src.a, 1.0);
     // A light source: alpha written as 254/255 (see GLOW_ALPHA in
     // pixelLook.ts) is solid, not a hole, takes no outline ink and no fake
     // lamp light, and skips the baked grade, whose
@@ -343,20 +348,28 @@ export const GRADE_FRAG = /* glsl */ `
       // is still there to see, both to the scene fog and to the air
       float seen = uFog.z > 0.5 ? 1.0 - smoothstep(uFog.x, uFog.y, zc) : 1.0;
       float silK = skyBehind
-        ? min(0.85, uEdge.x * 1.25) * max(fogK, 0.55 * smoothstep(0.0, 0.45, seen))
+        ? min(0.92, uEdge.x * 1.5) * max(fogK, 0.6 * smoothstep(0.0, 0.45, seen))
         : uEdge.x * fogK;
       // a light has no ink: the physgun's beam is a glow, not an object
       silK *= 1.0 - smoothstep(0.7, 0.97, air);
+      // and a rim the air has taken most of carries no line against the
+      // sky: inked, the far edge of the world read as the lip of a bowl
+      if (skyBehind) silK *= 1.0 - smoothstep(0.3, 0.7, air);
       col *= 1.0 - sil * silK * (1.0 - emits);
     } else {
       // ---- the sky, tied to the air --------------------------------------
       float toward = max(dot(dirW, uSunDir), 0.0);
-      vec3 airCol = uAirCol + uSunGlow * pow(toward, 6.0);
+      // the sky's glow toward the sun is broader than the air's: at dusk it
+      // is the warm side of the sky, and the only warm thing up there
+      vec3 airCol = uAirCol + uSunGlow * pow(toward, 3.0);
       float low = 1.0 - smoothstep(0.0, uSkyAir.y, dirW.y);
       float pull = clamp(uSkyAir.x * low + uSkyAir.z, 0.0, 1.0);
       // from the air, the sky seen under the horizon (past the world's rim)
       // is the rim's own colour: all air
-      if (uAirLift.w > 0.0) pull = max(pull, uAirLift.z * smoothstep(0.03, -0.01, dirW.y));
+      // Gradually, over the dip from the geometric horizon down to the rim:
+      // a step here drew a pale band with a ruler-straight top edge across
+      // every high view, the clouds sliced off flat along it
+      if (uAirLift.w > 0.0) pull = max(pull, uAirLift.z * smoothstep(0.16, -0.04, dirW.y));
       col = mix(col, airCol, pull);
     }
 
