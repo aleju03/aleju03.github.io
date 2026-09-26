@@ -1,11 +1,10 @@
 import * as THREE from 'three'
-import { canvasTexture } from '../core/textures'
-import { seeded } from '../core/rand'
 import type { Solid } from '../physics/collision'
 import { CHUNK, chunkX, chunkZ, OFF_Z, originX, originZ } from './grid'
 import {
   buildChunk, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Tier,
 } from './chunk'
+import { applyGroundLook } from './groundLook'
 import { applyFadeIn, FADE_FRAG_ALPHA, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead } from './fade'
 import { registerInteriors, unregisterInteriors } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
@@ -202,28 +201,6 @@ interface Opts {
   trackTexture: (t: THREE.Texture) => void
   trackDisposable: (d: { dispose: () => void }) => void
 }
-
-/** a grey speckle that the vertex colours tint. Everything outdoors shares
-    it, so ground reads as ground whether it is sand, snow or asphalt */
-const makeDetailTexture = () =>
-  canvasTexture([128, 128], (ctx, w, h) => {
-    const rand = seeded(0x6d17)
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, w, h)
-    for (let i = 0; i < 5200; i++) {
-      const v = Math.floor(190 + rand() * 65)
-      ctx.fillStyle = `rgba(${v},${v},${v},${0.35 + rand() * 0.4})`
-      ctx.fillRect(rand() * w, rand() * h, 1, 1 + (rand() < 0.3 ? 1 : 0))
-    }
-    for (let i = 0; i < 40; i++) {
-      const g = ctx.createRadialGradient(
-        rand() * w, rand() * h, 1, rand() * w, rand() * h, 8 + rand() * 22)
-      g.addColorStop(0, 'rgba(150,150,150,0.14)')
-      g.addColorStop(1, 'rgba(150,150,150,0)')
-      ctx.fillStyle = g
-      ctx.fillRect(0, 0, w, h)
-    }
-  }, [1, 1])
 
 /** how strongly the cel highlights read; the sky dims this at night so the
     sea doesn't sparkle under starlight */
@@ -432,21 +409,16 @@ export const makeChunkMats = (
   trackTexture: (t: THREE.Texture) => void,
   trackDisposable: (d: { dispose: () => void }) => void,
 ): ChunkMats => {
-  // nearest up close (render/texel.ts): the ground's grain reads as texels
-  const detailTex = texelate(makeDetailTexture())
-  detailTex.wrapS = detailTex.wrapT = THREE.RepeatWrapping
-  trackTexture(detailTex)
-  trackDisposable(detailTex)
-
+  // the ground draws its own texels (world/groundLook.ts): per-texel
+  // material choice, ragged borders, slope rock and a beach at every shore.
+  // The grey multiplier is the old speckle map's average, which is what the
+  // detail soup and the far field both match (see below)
   const groundMat = new THREE.MeshStandardMaterial({
-    map: detailTex, vertexColors: true, roughness: 1, metalness: 0,
+    color: 0xe0e0e0, vertexColors: true, roughness: 1, metalness: 0,
   })
-  // every chunk material fades its geometry in by the baked aBirth stamp
-  // (world/fade.ts): dissolve-by-dither on the opaques, alpha on the rest.
-  // The ground and glass get the standalone patcher; the detail and leaf
-  // soups carry the same GLSL through applySway (one onBeforeCompile per
-  // material), and the water carries it inside makeWaterStylized above
-  applyFadeIn(groundMat, windUniforms.uTime, 'dissolve')
+  // it carries the chunk's birth dissolve (world/fade.ts) inside the same
+  // injection, since a material only gets one onBeforeCompile
+  applyGroundLook(groundMat, windUniforms.uTime)
   // the grey is deliberate. The ground multiplies its vertex colour by a
   // detail map that averages a little under white, and props carry no map at
   // all — matched palettes therefore rendered props visibly brighter than the

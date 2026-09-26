@@ -275,6 +275,13 @@ export interface GroundSample {
   /** how paved the town has this lattice point, 0..1 (pavedAt) */
   paved: number
   biome: BiomeId
+  /** the ground's own colour before any paving is mixed in: what the
+      ground shader (groundLook.ts) draws on the unpaved side of a verge, so
+      a kerb is a crisp edge rather than four units of grey bleeding into
+      the grass */
+  nr: number
+  ng: number
+  nb: number
 }
 
 const S_PATCH = 0x77aa
@@ -300,6 +307,16 @@ export const groundSample = (x: number, z: number, y: number, slope: number): Gr
   const biome = biomeAt(x, z, y, slope)
   const place = placeAt(x, z)
   const paved = pavedAt(place, roadAt(x, z, place))
+  // the natural ground first, as if no town were here
+  const nat = BIOMES[biome].tint
+  gc2.set(nat[0]).lerp(gc.set(nat[1]), tintMix(x, z))
+  if (BIOMES[biome].surface === 'grass') {
+    const patch = noise2(x * 0.041, z * 0.041, S_PATCH)
+    gc2.lerp(STRAW, patch * patch * 0.5)
+  }
+  const nr = gc2.r
+  const ng = gc2.g
+  const nb = gc2.b
   const [a, b, t] = tintAt(x, z, biome, paved)
   gc.set(a).lerp(gc2.set(b), t)
   if (paved > 0 && paved < 1) gc.lerp(PAVED_GREY, paved * 0.5)
@@ -307,7 +324,7 @@ export const groundSample = (x: number, z: number, y: number, slope: number): Gr
     const patch = noise2(x * 0.041, z * 0.041, S_PATCH)
     gc.lerp(STRAW, patch * patch * 0.5)
   }
-  return { r: gc.r, g: gc.g, b: gc.b, paved, biome }
+  return { r: gc.r, g: gc.g, b: gc.b, paved, biome, nr, ng, nb }
 }
 
 /** the ground vertex at lattice point (i, j): colour, pavedness, biome —
