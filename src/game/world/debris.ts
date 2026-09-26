@@ -278,8 +278,9 @@ export interface Ruins {
   /** take a building apart; idempotent, null if there is nothing to take */
   open: (s: Standing) => Opened | null
   /** ...a slice at a time: resume it once a frame, and it yields whenever it
-      has spent `budgetMs`, returning what `open` would have */
-  opening: (s: Standing, budgetMs: number) => Generator<void, Opened | null, void>
+      has done `budget` triangles of work (fracture.ts's fractureSteps),
+      returning what `open` would have */
+  opening: (s: Standing, budget: number) => Generator<void, Opened | null, void>
   /** pieces leave the building: their spans collapse, their solids empty, and
       the ruin remembers them */
   lift: (o: Opened, pieces: readonly number[]) => void
@@ -413,12 +414,14 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
         if (r.done) return r.value
       }
     },
-    opening: function* (s, budgetMs) {
+    opening: function* (s, budget) {
       if (s.open) return s.open
       const dm = s.set.meshes.detail
       if (!dm) return null
       const gm = s.set.meshes.glass ?? null
-      const frac = yield* fractureSteps(s.rec, dm.geometry, gm?.geometry ?? null, budgetMs)
+      const frac = yield* fractureSteps(s.rec, dm.geometry, gm?.geometry ?? null, budget)
+      // hanging it and boxing its pieces is a slice of its own
+      if (budget < Infinity) yield
       // a chunk rebuilt or opened some other way while this was in hand
       if (s.open) return s.open
       if (!frac || !frac.detail) return null

@@ -110,6 +110,8 @@ interface Pool {
   drag: Float32Array
   /** the share of its life after which it starts to shrink away */
   fadeAt: Float32Array
+  /** a dithered pool's per-instance share of pixels drawn (the dust) */
+  fade: THREE.InstancedBufferAttribute | null
 }
 
 const pool = (geo: THREE.BufferGeometry, mat: THREE.Material, cap: number, behave: Behave): Pool => {
@@ -134,6 +136,7 @@ const pool = (geo: THREE.BufferGeometry, mat: THREE.Material, cap: number, behav
     ax: new Float32Array(cap * 3), rate: new Float32Array(cap), ang: new Float32Array(cap),
     drag: new Float32Array(cap),
     fadeAt: new Float32Array(cap),
+    fade: (geo.getAttribute('aFade') as THREE.InstancedBufferAttribute | undefined) ?? null,
   }
 }
 
@@ -191,6 +194,41 @@ const banded = <M extends THREE.Material>(m: M, key: string, bands: [number, num
       ].join('\n'))
   }
   m.customProgramCacheKey = () => key
+  return m
+}
+
+/*
+  Masonry dust is air, not stuff. It is banded like everything else here
+  (a lighter heart, a darker rim, off how squarely a billow faces the lens),
+  but it writes no depth (so the look draws no outline round it: an
+  outlined billow is a boulder) and it is only ever partly there: each
+  billow keeps a share of its pixels through a 4x4 ordered dither on
+  gl_FragCoord, which in the look's low target is a pattern of whole art
+  pixels, so a cloud thins out the way pixel-art dust is drawn and never
+  writes an alpha the look would read as a hole. The share rides in a
+  per-instance `aFade`.
+*/
+const hazeMaterial = (bands: [number, number, number]) => {
+  const m = banded(new THREE.MeshBasicMaterial({ color: 0xffffff }), 'sandbox-haze', bands)
+  const inner = m.onBeforeCompile
+  m.onBeforeCompile = (sh, r) => {
+    inner.call(m, sh, r)
+    sh.vertexShader = sh.vertexShader
+      .replace('void main() {', 'attribute float aFade;\nvarying float vFade;\nvoid main() {\n  vFade = aFade;')
+    sh.fragmentShader = sh.fragmentShader.replace('void main() {', [
+      'varying float vFade;',
+      'float fxBayer(vec2 p) {',
+      '  ivec2 q = ivec2(mod(p, 4.0));',
+      '  int i = q.x + q.y * 4;',
+      '  int b[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);',
+      '  return (float(b[i]) + 0.5) / 16.0;',
+      '}',
+      'void main() {',
+      '  if (vFade < fxBayer(gl_FragCoord.xy)) discard;',
+    ].join('\n'))
+  }
+  m.depthWrite = false
+  m.name = 'sandbox-haze'
   return m
 }
 
@@ -286,18 +324,20 @@ export const createFx = (o: FxOpts): Fx => {
   // the blast so it grows outward from it
   const tongue = new THREE.OctahedronGeometry(0.5, 0).translate(0, 0, 0.5)
   const ico2 = new THREE.IcosahedronGeometry(1, 1)
+  const hazeFade = new THREE.InstancedBufferAttribute(new Float32Array(CAP.dust).fill(0), 1)
+  hazeFade.setUsage(THREE.DynamicDrawUsage)
+  ico2.setAttribute('aFade', hazeFade)
+  const hazeMat = hazeMaterial([1.12, 1, 0.8])
 
   const bits = pool(cube, litMat, CAP.bits, 'fall')
   const puffs = pool(ico0, smokeMat, CAP.puffs, 'smoke')
   const fire = pool(ico1, fireMat, CAP.fire, 'fire')
   const sparks = pool(spark, fireMat, CAP.sparks, 'spark')
   const jets = pool(tongue, fireMat, CAP.jets, 'jet')
-  // masonry dust: the fire's banded unlit material (so no new program) in
-  // earth colours. Lit, a billow is a ball with a bright top and a dark
-  // underside, and at this resolution that reads as a boulder; banded flat
-  // off the lens, a crowd of them overlapping in two tones reads as a cloud.
-  // Like the fire, a billow shrinks away rather than thinning
-  const dust = pool(ico2, fireMat, CAP.dust, 'smoke')
+  // masonry dust: banded, depthless and dithered (see hazeMaterial). Its
+  // one program is linked with the rest, since the pool is drawn from the
+  // first frame like every other one
+  const dust = pool(ico2, hazeMat, CAP.dust, 'smoke')
   // air last: after everything solid, the fire over its own smoke
   puffs.mesh.renderOrder = 10
   fire.mesh.renderOrder = 11
@@ -579,26 +619,23 @@ export const createFx = (o: FxOpts): Fx => {
     },
 
     plume: (at, size, r0, g0, b0) => {
-      // many small billows rather than a few big ones, in two tones of the
-      // wall's own colour pulled toward a warm grey, hugging the ground and
-      // rolling outward the way a collapse pushes its dust ahead of it
-      // small and many: banded and outlined, a big billow is a boulder
-      const n = Math.min(24, 6 + Math.round(size * 1.6))
-      const sz = Math.min(0.85, 0.35 + size * 0.05)
-      // the banded material lifts a billow's middle by 1.75: kept under it
-      const r = r0 * 0.3 + 0.07
-      const g = g0 * 0.3 + 0.066
-      const b = b0 * 0.3 + 0.056
+      // billows the wall's own colour pulled toward a warm grey, rolling out
+      // along the ground the way a collapse pushes its dust ahead of it and
+      // then rising, swelling and thinning to nothing (see hazeMaterial)
+      const n = Math.min(16, 4 + Math.round(size * 1.1))
+      const sz = Math.min(1.6, 0.6 + size * 0.09)
+      const r = r0 * 0.42 + 0.1
+      const g = g0 * 0.42 + 0.095
+      const b = b0 * 0.42 + 0.08
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2
-        const out = rnd(3, 9) * Math.min(1.8, 0.6 + size * 0.08)
-        const s = rnd(0.6, 1.3) * sz
-        // a darker core low down, paler billows over it
-        const k = i % 3 === 0 ? rnd(0.62, 0.72) : rnd(0.92, 1.08)
-        emit(dust, at.x + Math.cos(a) * size * 0.25, at.y + rnd(-0.3, 0.8) + (k > 0.8 ? 0.6 : 0), at.z + Math.sin(a) * size * 0.25,
-          Math.cos(a) * out, rnd(0.2, 1.8), Math.sin(a) * out, rnd(1.6, 3.4), s, s * rnd(0.7, 1), s,
+        const out = rnd(2, 7) * Math.min(1.8, 0.6 + size * 0.08)
+        const s = rnd(0.7, 1.3) * sz
+        const k = i % 3 === 0 ? rnd(0.7, 0.8) : rnd(0.95, 1.1)
+        emit(dust, at.x + Math.cos(a) * size * 0.25, at.y + rnd(-0.2, 0.8), at.z + Math.sin(a) * size * 0.25,
+          Math.cos(a) * out, rnd(0.6, 2.4), Math.sin(a) * out, rnd(2.4, 4.4), s, s * rnd(0.75, 1), s,
           r * k, g * k, b * k,
-          { delay: rnd(0, 0.3), grow: rnd(1.6, 2.2), drag: 1.5, spin: 0.8, fadeAt: 0.12 })
+          { delay: rnd(0, 0.3), grow: rnd(2.4, 3.4), drag: 1.2, spin: 0.5, fadeAt: 0 })
       }
     },
 
@@ -672,6 +709,7 @@ export const createFx = (o: FxOpts): Fx => {
       root.removeFromParent()
       for (const P of pools) P.mesh.dispose()
       ico0.dispose(); ico1.dispose(); ico2.dispose(); cube.dispose(); spark.dispose(); tongue.dispose()
+      hazeMat.dispose()
       smokeMat.dispose()
       decalGeo.dispose()
       fireMat.dispose(); scorchMat.dispose(); splatMat.dispose()
@@ -766,7 +804,9 @@ export const createFx = (o: FxOpts): Fx => {
         // (the destruction's masonry dust, on the fire's material, holds
         // its size longer and goes late, which is its own look)
         if (P === dust) {
-          if (t > 0.55) k *= Math.max(0, 1 - (t - 0.55) / 0.45) ** 0.7
+          // it thins rather than shrinking: born two thirds there and
+          // going to nothing as it spreads
+          if (P.fade) P.fade.setX(i, 0.68 * (1 - t) ** 0.9)
         } else if (t > f0) k *= 1 - ((t - f0) / (1 - f0)) ** 1.6
       } else if (P.behave === 'fall') {
         if (t > 0.8) k = Math.max(0, 1 - (t - 0.8) / 0.2)
@@ -810,6 +850,7 @@ export const createFx = (o: FxOpts): Fx => {
     // other count links again
     P.mesh.count = Math.max(1, hi)
     P.mesh.instanceMatrix.needsUpdate = true
+    if (P.fade) P.fade.needsUpdate = true
     if (dirtyC && P.mesh.instanceColor) P.mesh.instanceColor.needsUpdate = true
   }
 

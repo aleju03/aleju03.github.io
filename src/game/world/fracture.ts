@@ -874,19 +874,22 @@ export const fractureStructure = (
 }
 
 /**
- * The same, a slice at a time: a generator that yields whenever it has spent
- * `budgetMs` since it was last resumed, so taking a tower apart (ten to
- * forty milliseconds, most of it in the cutting) can be spread across a few
- * frames instead of landing in the one the blast is drawn in. Resume it with
- * `next()` each frame; its return value is the fractured building.
+ * The same, a slice at a time: a generator that yields whenever it has done
+ * `budget` triangles' worth of work since it was last resumed, so taking a
+ * tower apart (ten to forty milliseconds, most of it in the cutting) can be
+ * spread across a few frames instead of landing in the one the blast is
+ * drawn in. Counted in work rather than milliseconds so that where a
+ * building is in its opening on a given slice is the same on every machine,
+ * which is what keeps a destruction deterministic. Resume it with `next()`
+ * each frame; its return value is the fractured building.
  */
 export function* fractureSteps(
   rec: StructureRec,
   detailGeo: THREE.BufferGeometry | null,
   glassGeo: THREE.BufferGeometry | null,
-  budgetMs: number,
+  budget: number,
 ): Generator<void, Fractured | null, void> {
-  let slice = performance.now()
+  let work = 0
   if (!rec.det || !detailGeo) return null
   const raw = readStamps(soupOf(detailGeo), rec.det, rec.marks, false)
   if (rec.gl && glassGeo) raw.push(...readStamps(soupOf(glassGeo), rec.gl, rec.gmarks, true))
@@ -959,9 +962,11 @@ export function* fractureSteps(
     }
   }
 
-  if (performance.now() - slice > budgetMs) {
+  // hollowing and flooring: about twice the stamps' own triangles
+  for (const f of raw) work += (f.p.length / 9) * 2
+  if (work > budget) {
     yield
-    slice = performance.now()
+    work = 0
   }
   // the grid: storey lines (paired on a tall building) and plan cells
   const top = all.max.y
@@ -1005,15 +1010,20 @@ export function* fractureSteps(
   }
   for (const f of frags) {
     cutBy(f, 0, false)
-    if (performance.now() - slice > budgetMs) {
+    work += f.p.length / 9
+    if (work > budget) {
       yield
-      slice = performance.now()
+      work = 0
     }
   }
   frags = done
 
   if (DBG) DBG.push(performance.now())
   if (DBG) DBG.push(performance.now())
+  if (work > budget) {
+    yield
+    work = 0
+  }
   // pieces: one per cell and facing
   const cx0 = (body.min.x + body.max.x) / 2
   const cz0 = (body.min.z + body.max.z) / 2
@@ -1117,15 +1127,17 @@ export function* fractureSteps(
     gCount += gv
   }
 
-  if (performance.now() - slice > budgetMs) {
+  work += frags.length
+  if (work > budget) {
     yield
-    slice = performance.now()
+    work = 0
   }
   if (DBG) DBG.push(performance.now())
   const detail = buildGeometry(pieces, false, dCount)
   const glass = gCount ? buildGeometry(pieces, true, gCount) : null
   if (DBG) DBG.push(performance.now())
-  if (performance.now() - slice > budgetMs) yield
+  work += (dCount + gCount) / 3
+  if (work > budget) yield
   linkSupports(pieces)
   // whatever the graph cannot explain standing at rest (a rooftop plant
   // room bedded into a parapet the box test misses, a sign on a bracket) is
@@ -1258,7 +1270,9 @@ const linkSupports = (pieces: Piece[]) => {
 }
 
 /** how many sideways bonds a piece of each kind may hang from before it is
-    not held up at all: a wall panel spans two bays, a floor three */
+    not held up at all: a wall panel spans two bays, a floor three. Callers
+    scale it by what the building is made of (a timber shopfront's canopy
+    spans nothing once the bay under it has gone) */
 const REACH: Record<PieceKind, number> = { wall: 2, floor: 3, roof: 3, misc: 1 }
 
 /**
@@ -1269,7 +1283,7 @@ const REACH: Record<PieceKind, number> = { wall: 2, floor: 3, roof: 3, misc: 1 }
  * roof is as held as the roof). `alive` says which are still standing;
  * returns the ones that are not held.
  */
-export const unsupported = (pieces: Piece[], alive: (i: number) => boolean) => {
+export const unsupported = (pieces: Piece[], alive: (i: number) => boolean, reachK = 1) => {
   const FAR = 1 << 20
   const dist = new Int32Array(pieces.length).fill(FAR)
   const queue: number[] = []
@@ -1288,7 +1302,7 @@ export const unsupported = (pieces: Piece[], alive: (i: number) => boolean) => {
       queue.push(j)
     }
     for (const j of pieces[i].side) {
-      if (!alive(j) || dist[j] <= d + 1 || d + 1 > REACH[pieces[j].kind]) continue
+      if (!alive(j) || dist[j] <= d + 1 || d + 1 > Math.floor(REACH[pieces[j].kind] * reachK)) continue
       dist[j] = d + 1
       queue.push(j)
     }

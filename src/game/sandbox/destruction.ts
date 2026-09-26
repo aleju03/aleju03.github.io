@@ -99,6 +99,9 @@ registerKind({
 const RESIST = [20, 38, 62]
 /** a storey fails when its walls carry less than this share of what they did */
 const FAIL = [0.66, 0.6, 0.55]
+/** how far each grade may bridge a hole (a share of fracture.ts's REACH):
+    render and timber sags over one missing bay, a framed tower spans two */
+const SPAN = [0.5, 1, 1]
 /** seconds over which the last walls of a failing storey give, nearest the
     damage first: the hinge a felled building turns on */
 const HOLD = [0.7, 1.3, 2.1]
@@ -116,11 +119,13 @@ const SHATTER_MIN = 2.2
 /** seconds a small shard lies about before it shrinks away */
 const SHARD_LIFE = 14
 const SHARD_VOL = 0.9
-/** milliseconds a slice may spend taking a building apart, and making
-    rubble bodies */
-const OPEN_SLICE_MS = 3
-const SPAWN_SLICE_MS = 3
-const BREAK_SLICE_MS = 3
+/** how much a slice may do of the three expensive things: taking a
+    building apart (triangles of fracture work, about 3 ms), making rubble
+    bodies and breaking landed lumps. Counted in work rather than time so a
+    destruction comes out the same on every machine */
+const OPEN_SLICE_WORK = 1200
+const SPAWNS_PER_SLICE = 14
+const BREAKS_PER_SLICE = 6
 /** a prop's impulse (kg*u/s) per unit of damage against a wall */
 const IMPULSE_PER_DAMAGE = 380
 
@@ -640,9 +645,8 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     if (ahead) flushSpawns(Infinity)
   }
 
-  const flushSpawns = (ms: number) => {
-    const t0 = performance.now()
-    while (spawns.length && performance.now() - t0 < ms) spawns.shift()!()
+  const flushSpawns = (n: number) => {
+    for (let k = 0; spawns.length && k < n; k++) spawns.shift()!()
   }
 
   /* ------------------------------------------------------ structure -- */
@@ -658,7 +662,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       break
     }
     // ...and whatever is left hanging drops, lowest first
-    const loose = unsupported(w.pieces, (i) => a[i] === 1)
+    const loose = unsupported(w.pieces, (i) => a[i] === 1, SPAN[w.grade])
     if (!loose.length) return
     ruins.lift(w.o, loose)
     noteLift(ev, w, loose)
@@ -853,7 +857,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     // is dealt when it is ready. A ram does: it is already inside the wall
     if (!s.open && !carried) {
       let job = opening.get(s)
-      if (!job) opening.set(s, (job = { it: ruins.opening(s, OPEN_SLICE_MS), then: [] }))
+      if (!job) opening.set(s, (job = { it: ruins.opening(s, OPEN_SLICE_WORK), then: [] }))
       const a2 = at.clone()
       const d2 = dir?.clone() ?? null
       job.then.push(() => void hurt(s, ev, a2, power, radius, d2, throwK, carried))
@@ -1174,33 +1178,35 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     if ((aheadClock += h) >= 0.05) {
       aheadClock = 0
       sb.forEach((p) => {
-        if (p.mode !== 'dynamic' || p.mass < 150 || lumps.has(p.id) || p.body.isSleeping()) return
+        // (a carried prop counts: the physgun and a scenario's ram hold what
+        // they throw kinematic until the moment they let go)
+        if (p.mode === 'frozen' || p.mass < 150 || lumps.has(p.id) || p.body.isSleeping()) return
         const v = p.body.linvel()
         const sp = Math.hypot(v.x, v.y, v.z)
         if (sp < 12) return
         const t = p.body.translation()
-        const hit = sb.raycast(t, v, sp * 0.6 + Math.max(p.extents.x, p.extents.z), { props: false, world: true })
+        const hit = sb.raycast(t, v, sp * 1.2 + Math.max(p.extents.x, p.extents.z), { props: false, world: true })
         const own = hit?.solid ? ruins.owner(hit.solid) : null
         if (own && !own.s.open && !opening.has(own.s)) {
-          opening.set(own.s, { it: ruins.opening(own.s, OPEN_SLICE_MS), then: [] })
+          opening.set(own.s, { it: ruins.opening(own.s, OPEN_SLICE_WORK), then: [] })
         }
       })
     }
     // buildings being opened: a few milliseconds of cutting a slice, then
     // the blows that were waiting on them
-    let spent = 0
     for (const [st, job] of opening) {
-      if (spent > OPEN_SLICE_MS) break
       const t1 = performance.now()
       const r = job.it.next()
-      spent += performance.now() - t1
       stats.openMs = Math.max(stats.openMs, performance.now() - t1)
-      if (!r.done) continue
-      opening.delete(st)
-      // the blows that waited, a slice apart: eight charges dealt in one
-      // slice is eight settles and a storey's worth of rubble at once
-      if (r.value) job.then.forEach((fn, k) => jobs.push({ t: now + k / 60, ev: null, fn }))
-      sb.solidsChanged()
+      if (r.done) {
+        opening.delete(st)
+        // the blows that waited, a slice apart: eight charges dealt in one
+        // slice is eight settles and a storey's worth of rubble at once
+        if (r.value) job.then.forEach((fn, k) => jobs.push({ t: now + k / 60, ev: null, fn }))
+        sb.solidsChanged()
+      }
+      // one building's work a slice
+      break
     }
     // prop and rubble impacts on what still stands
     while (impacts.length) {
@@ -1265,12 +1271,11 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     // lumps that landed hard, as many as the slice's budget runs to (a
     // tower landing breaks a hundred things at once, and a lump that waits a
     // slice to come apart is not a lump anyone can see waiting)
-    const breakBy = performance.now() + BREAK_SLICE_MS
-    while (breakQueue.length && performance.now() < breakBy) {
+    for (let k = 0; breakQueue.length && k < BREAKS_PER_SLICE; k++) {
       const { L, e } = breakQueue.shift()!
       breakLump(L, e)
     }
-    flushSpawns(SPAWN_SLICE_MS)
+    flushSpawns(SPAWNS_PER_SLICE)
     // the timetable
     if (jobs.length) {
       jobs.sort((a, b) => a.t - b.t)
