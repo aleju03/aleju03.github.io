@@ -463,13 +463,17 @@ export function createBeam(parent: THREE.Object3D): Beam {
     const rimMat = rimBase.clone()
     const fillMat = fillBase.clone()
     s = { rim: [], fill: [], rimMats: [], fillMats: [] }
-    const meshes: THREE.Mesh[] = []
+    // a prop drawn by the batch is a proxy that draws nothing itself but
+    // carries its shape's geometry (`batch.ts`); anything else, its meshes
+    const meshes: Array<{ at: THREE.Object3D; geo: THREE.BufferGeometry }> = []
     m.traverse((o) => {
-      const mm = o as THREE.Mesh
-      if (mm.isMesh && !mm.userData.halo) meshes.push(mm)
+      if (o.userData.halo) return
+      const px = o as THREE.Object3D & { isBatchProxy?: boolean; geo?: THREE.BufferGeometry | null }
+      if (px.isBatchProxy && px.geo) meshes.push({ at: o, geo: px.geo })
+      else if ((o as THREE.Mesh).isMesh) meshes.push({ at: o, geo: (o as THREE.Mesh).geometry })
     })
-    for (const mm of meshes) {
-      const g = hullOf(mm.geometry)
+    for (const { at: mm, geo } of meshes) {
+      const g = hullOf(geo)
       if (!g.boundingBox) g.computeBoundingBox()
       box.copy(g.boundingBox!)
       // each mesh its own box: the clone's uniforms are per shell, so a
