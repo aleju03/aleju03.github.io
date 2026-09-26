@@ -235,9 +235,9 @@ const getUp = (a: Actor) => {
     drawn from look.ts's own palettes */
 const LOOKS: PlayerLook[] = [
   DEFAULT_LOOK,
-  { shell: '#e0a21a', trim: '#1c1c20', accent: '#2860c8', glow: '#1c1a20', hat: 2, costume: 3, build: 1 },
+  { shell: '#e0a21a', trim: '#8a4fc8', accent: '#2860c8', glow: '#1c1a20', hat: 2, costume: 3, build: 1 },
   { shell: '#3f9a38', trim: '#d2452c', accent: '#f0e8e0', glow: '#1c1a20', hat: 3, costume: 2, build: 2 },
-  { shell: '#d9508f', trim: '#1c1c20', accent: '#e8b818', glow: '#2b3a50', hat: 4, costume: 1, build: 3 },
+  { shell: '#d9508f', trim: '#2f6fcc', accent: '#e8b818', glow: '#2b3a50', hat: 4, costume: 1, build: 3 },
   { shell: '#8a4fc8', trim: '#f2eee0', accent: '#e86810', glow: '#1c1a20', hat: 7, costume: 0, build: 4 },
   { shell: '#d2452f', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a20', hat: 1, costume: 2, build: 1 },
 ]

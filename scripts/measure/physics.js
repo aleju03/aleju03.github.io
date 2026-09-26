@@ -1056,7 +1056,7 @@ if (want('destruction')) {
     const spikes = []
     advanceScenario(s, c, s.duration + extra, (t, _dt, m) => {
       ms.push(m)
-      if (m > 20) spikes.push(`${f(t, 2)}s ${f(m, 0)}ms (open ${f(dmg.stats.openMs, 0)}, lumps ${dmg.stats.lumps})`)
+      if (m > 9) spikes.push(`${f(t, 2)}s ${f(m, 0)}ms (lumps ${dmg.stats.lumps}, slice ${f(dmg.stats.sliceMs, 1)})`)
       most = Math.max(most, dmg.stats.lumps)
     })
     ms.sort((a, b) => a - b)

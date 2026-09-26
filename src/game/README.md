@@ -1026,9 +1026,19 @@ they did lets everything above it go as one rigid cluster, resting on the
 walls that are left, and those give one after another from the damage
 outward over `HOLD` seconds: a charge at one corner fells the building toward
 it, charges all round drop it. Crushed walls mostly turn to dust and gravel.
-A falling lump breaks when it lands, one level at a time (cluster, storeys,
-sides, panels, Voronoi shards with capped break faces), and big rubble
-hitting what is still standing damages it. Lumps are ordinary props (kinds
+A tall building failing on one side does not sit down: the load above is
+cut into three or four bands of storeys (`sections`), each born turning
+about the foot of the far wall, the upper ones faster, so it shears apart
+and swings out in big slabs and slams down across the street in a couple of
+seconds. A low or evenly failed one crushes down storey by storey
+(`pancake`). A falling lump breaks when it lands, one level at a time
+(cluster, storeys, sides, panels, Voronoi shards with capped break faces),
+every panel leaves with its corners knocked off (`chipFrags`) and rebar or
+splinters out of the break (`breakDecor`, drawn only), and big rubble hitting
+what is still standing damages it. Crawling rubble is damped and put to
+sleep, or a heap of hulls stays one awake island for good. The dust is its
+own depthless, dithered, banded material (fx.ts's `hazeMaterial`): no
+outline, so it reads as air, and it thins out instead of shrinking. Lumps are ordinary props (kinds
 `rubble` and `rubble_wood`, the chunk's own material), undoable per event,
 grabbable, and budgeted by the tier's `gfx.rubble`.
 
@@ -1048,6 +1058,12 @@ Rules that bite:
 - **Only big rubble damages buildings, and a knock must count.** Before
   both gates one tower brought down seventeen buildings and every slab settling
   against a wall chipped it.
+- **Nothing expensive lands in one slice, and the budget is work, not
+  time.** A building is opened a few thousand triangles of cutting a slice
+  (`ruins.opening`, fracture.ts's `fractureSteps`), and a heavy prop flying
+  at one starts that ahead of it; rubble bodies and breaks are made a dozen
+  a slice. Counted in work so a destruction comes out the same on every
+  machine: a millisecond budget made the wall film depend on the CPU.
 - **Never touch a body from inside a Rapier query.** `ground.ts`'s wake after
   a box shrinks did, and destruction shrinks boxes by the hundred.
 
@@ -1055,7 +1071,7 @@ Rules that bite:
 npm run film -- sandbox:demolish-house   barrels along one side; it folds over
 npm run film -- sandbox:tower            charges along one side; it is felled
 npm run film -- sandbox:wall             a barrier thrown through a shopfront
-npm run film -- sandbox:ruin --frames 1 --start 11 --tile 1280x800   the ruin at eye height
+npm run film -- sandbox:ruin --frames 1 --start 10.9 --tile 1280x800   the ruin at eye height
 npm run film -- props:collapse-links     shader links during both (must be 0)
 npm run measure -- physics destruction   pieces, rubble, frame cost (DESTRUCTION_EXTRA=12 to watch it settle)
 npm run measure -- fracture              every building and landmark taken apart
