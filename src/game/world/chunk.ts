@@ -290,7 +290,7 @@ const buildGround = (cx: number, cz: number): Ground => {
   // what the ground shader (groundLook.ts) draws each vertex as: how paved,
   // how sandy, how snowy, how rocky, and the unpaved colour under a verge
   const kind = new Float32Array(n * 4)
-  const nat = new Float32Array(n * 3)
+  const nat = new Float32Array(n * 4)
   let wet = false
 
   for (let j = 0; j < VERTS; j++)
@@ -334,9 +334,10 @@ const buildGround = (cx: number, cz: number): Ground => {
       kind[k * 4 + 1] = w[0]
       kind[k * 4 + 2] = w[1]
       kind[k * 4 + 3] = w[2]
-      nat[k * 3] = g.nr
-      nat[k * 3 + 1] = g.ng
-      nat[k * 3 + 2] = g.nb
+      nat[k * 4] = g.nr
+      nat[k * 4 + 1] = g.ng
+      nat[k * 4 + 2] = g.nb
+      nat[k * 4 + 3] = g.field
       uv[k * 2] = wx / 9
       uv[k * 2 + 1] = wz / 9
     }
@@ -363,7 +364,7 @@ const buildGround = (cx: number, cz: number): Ground => {
   geo.setAttribute('color', new THREE.BufferAttribute(colArr, 3))
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2))
   geo.setAttribute('aGround', new THREE.BufferAttribute(kind, 4))
-  geo.setAttribute('aTint', new THREE.BufferAttribute(nat, 3))
+  geo.setAttribute('aTint', new THREE.BufferAttribute(nat, 4))
   geo.setIndex(idx)
   geo.computeBoundingSphere()
   return { geo, h, biome, wet }

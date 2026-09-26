@@ -6,6 +6,7 @@ import { blockInset, buildingHeightAt, placeAt, roadAt, type District } from './
 import { BLOCK_KIND_FOR, BLOCK_KIND_RATE, KIND_FOR, type BuildKind } from './buildings'
 import { BIOMES, type BiomeId } from './biomes'
 import { hash2 } from './noise'
+import { FIELDS_GLSL } from './groundLook'
 import { gfx } from './quality'
 
 /*
@@ -104,7 +105,7 @@ export interface FarField {
 
 const FAR_VERT_HEAD = /* glsl */ `
   attribute vec4 aFar;
-  attribute vec2 aExt;
+  attribute vec3 aExt;
   attribute vec3 aLeaf;
   uniform vec4 uRect[4];
   varying vec3 vFarW;
@@ -112,11 +113,13 @@ const FAR_VERT_HEAD = /* glsl */ `
   varying float vDepth;
   varying vec3 vLeaf;
   varying float vFarNY;
+  varying float vField;
 `
 const FAR_VERT_BODY = /* glsl */ `
   vFar = aFar;
   vFarNY = normal.y;
   vDepth = aExt.x;
+  vField = aExt.z;
   vLeaf = aLeaf;
   // a ground vertex on its own ring's committed square takes the height the
   // coarser ring draws there, so the two edges are one polyline
@@ -141,6 +144,8 @@ const FAR_FRAG_HEAD = /* glsl */ `
   varying float vDepth;
   varying vec3 vLeaf;
   varying float vFarNY;
+  varying float vField;
+  ${FIELDS_GLSL}
   float farHash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
   }
@@ -211,6 +216,22 @@ const FAR_FRAG_COLOR = /* glsl */ `
           diffuseColor.rgb *= (0.76 - 0.3 * line) * (1.0 - 0.25 * gully);
         }
         else if (h + j < 1.4) diffuseColor.rgb = diffuse * vec3(0.54, 0.45, 0.23) * (h < 0.55 ? 0.72 : 1.0);
+        if (vFar.w < -1.5 && !cliff) {
+          // snow country: bare rock breaks through on every slope and ridge,
+          // in streaks down the fall line, or a range is one white sheet
+          float streak = farNoise(vec2((vFarW.x - vFarW.z) / 11.0, vFarW.y / 40.0));
+          float bare = step(0.5, streak + (0.95 - vFarNY) * 4.0);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuse * vec3(0.16, 0.15, 0.15), bare);
+        }
+      }
+      if (vDepth <= 0.0 && vFar.z < 0.5 && vField > 0.05 && vFarNY > 0.93 && -vDepth > 1.6) {
+        // farmland (groundLook.ts's FIELDS_GLSL), the same fields the chunk
+        // ground draws, so they run on across the ring's edge
+        float hedgeK;
+        vec4 fd = fields(vFarW.xz, px, hedgeK);
+        float on = step(0.5, vField + 0.35);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuse * fd.rgb, fd.a * on);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuse * vec3(0.07, 0.13, 0.05), hedgeK * on);
       }
       float dw = fwidth(vDepth);
       float foam = 1.0 - smoothstep(0.0, dw * 1.3 + 0.02, abs(vDepth));
@@ -355,7 +376,7 @@ const makeFarMaterial = (u: FarUniforms) => {
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${FAR_FRAG_NORMAL}`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${FAR_FRAG_EMISSIVE}`)
   }
-  mat.customProgramCacheKey = () => 'far-field-1'
+  mat.customProgramCacheKey = () => 'far-field-2'
   return mat
 }
 
@@ -376,13 +397,13 @@ class Soup {
   vert(
     x: number, y: number, z: number, nx: number, ny: number, nz: number,
     c: THREE.Color, kind: number, level: number, a: number, b: number,
-    depth = 0, stitch = y, leaf?: THREE.Color,
+    depth = 0, stitch = y, leaf?: THREE.Color, field = 0,
   ) {
     this.pos.push(x, y, z)
     this.nor.push(nx, ny, nz)
     this.col.push(c.r, c.g, c.b)
     this.far.push(kind, level, a, b)
-    this.ext.push(depth, stitch)
+    this.ext.push(depth, stitch, field)
     if (leaf) this.leaf.push(leaf.r, leaf.g, leaf.b)
     else this.leaf.push(0, 0, 0)
   }
@@ -409,7 +430,7 @@ class Soup {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3))
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3))
     g.setAttribute('aFar', new THREE.Float32BufferAttribute(this.far, 4))
-    g.setAttribute('aExt', new THREE.Float32BufferAttribute(this.ext, 2))
+    g.setAttribute('aExt', new THREE.Float32BufferAttribute(this.ext, 3))
     g.setAttribute('aLeaf', new THREE.Float32BufferAttribute(this.leaf, 3))
     g.setIndex(this.count > 65535 ? new THREE.Uint32BufferAttribute(this.idx, 1)
       : new THREE.Uint16BufferAttribute(this.idx, 1))
@@ -425,6 +446,10 @@ const LEAF: Partial<Record<BiomeId, THREE.Color>> = {}
 for (const [id, b] of Object.entries(BIOMES) as Array<[BiomeId, (typeof BIOMES)[BiomeId]]>) {
   let n = 0
   for (const s of b.flora) if (TREE_KINDS.has(s.kind)) n += s.per
+  // ...and scrub counts for a little: open country with no trees at all
+  // reads from the air as a flat camouflage of its two ground tints, and a
+  // sprinkle of bushes is what makes it read as land
+  for (const s of b.flora) if (s.kind === 'bush' || s.kind === 'shrub') n += s.per * 0.35
   CANOPY[id] = Math.min(0.92, n / 64)
   LEAF[id] = new THREE.Color(b.pal.leaf).multiplyScalar(0.92)
 }
@@ -694,7 +719,7 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       // a town keeps a few garden trees; the sea none
       // (-1 is bare rock: a cliff band the shader draws in strata)
       const canopy = wet ? 0 : town ? 0.12 * (1 - g.paved)
-        : g.biome === 'rock' ? -1 : CANOPY[g.biome] ?? 0
+        : g.biome === 'rock' ? -1 : g.biome === 'snow' ? -2 : CANOPY[g.biome] ?? 0
       tileLeaf.copy(LEAF[g.biome] ?? tileCol)
       // the height this vertex has in the next ring out, where it has one:
       // an odd vertex on the tile's edge sits between two that ring shares
@@ -704,7 +729,7 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       if (edgeX && (b & 1)) stitch = (clampY(H(a, b - 1)) + clampY(H(a, b + 1))) / 2
       else if (edgeZ && (a & 1)) stitch = (clampY(H(a - 1, b)) + clampY(H(a + 1, b))) / 2
       s.vert(x, clampY(y), z, nx, ny, nz, tileCol, 0, level, town, canopy,
-        SEA_Y - y, stitch, tileLeaf)
+        SEA_Y - y, stitch, tileLeaf, g.field)
     }
     if (b % 3 === 2) yield
   }

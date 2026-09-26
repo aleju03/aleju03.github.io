@@ -128,7 +128,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'rock', per: 8, scale: [0.5, 1.2] },
     ]),
 
-  tundra: B('tundra', ['#6d7263', '#7d8070'],
+  tundra: B('tundra', ['#66694a', '#77704f'],
     { bark: '#4b4438', leaf: '#6a7355', accent: STONE }, 'grass', [
       { kind: 'shrub', per: 9, scale: [0.5, 0.9] },
     ], [

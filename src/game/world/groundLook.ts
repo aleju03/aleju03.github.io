@@ -36,11 +36,79 @@ import { TEXELS_PER_UNIT } from '../render/texel'
 
 const T = TEXELS_PER_UNIT.toFixed(1)
 
+/** how much of each biome is farmed, from the air: the patchwork of fields
+    and hedgerows that makes open country read as country rather than as a
+    camouflage of grass and straw. Chunk ground and the far field bake the
+    same weight per vertex (`fieldWeight`) and draw the same pattern
+    (`FIELDS_GLSL`), so the fields run on across the ring's edge */
+const FIELD_W: Partial<Record<string, number>> = { plains: 1, savanna: 0.55, forest: 0.2, wetland: 0.1 }
+export const fieldWeight = (biome: string, paved: number, town: boolean) =>
+  town ? 0 : (FIELD_W[biome] ?? 0) * (1 - paved)
+
+/** fades the fields into the chunk ground from the air (streamer.ts sets it
+    from the camera's height): underfoot the grass field grows from the
+    vertex colour, and a wheat field drawn under green blades reads as a
+    mistake. The far field is always past the fog on the ground anyway */
+export const groundLookUniforms = { uFieldK: { value: 0 } }
+
+/**
+ * Farmland, as a function of world position: rows of fields of hashed
+ * widths, each a crop tone (wheat with its rows, young green, ploughed
+ * furrows, hay) or left as meadow, with a one-pixel hedgerow round every
+ * one. Clustered into farming country by a slow noise, so it is a feature
+ * of places rather than a grid laid over the planet. Everything past the
+ * point a furrow is a pixel becomes its own average. Returns the field
+ * colour (before the material's grey) in rgb and how much of it applies in
+ * a; `hedge` is the hedgerow's coverage.
+ */
+export const FIELDS_GLSL = /* glsl */ `
+  float fdHash(vec2 p) {
+    return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453);
+  }
+  float fdNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(fdHash(i), fdHash(i + vec2(1.0, 0.0)), f.x),
+               mix(fdHash(i + vec2(0.0, 1.0)), fdHash(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
+  vec4 fields(vec2 w, float px, out float hedge) {
+    hedge = 0.0;
+    float farm = smoothstep(0.3, 0.4, fdNoise(w / 520.0 + 11.0));
+    if (farm <= 0.0) return vec4(0.0);
+    float rowH = 34.0;
+    float row = floor(w.y / rowH);
+    float colW = 38.0 + 46.0 * fdHash(vec2(row, 7.0));
+    float off = fdHash(vec2(row, 3.0)) * colW;
+    float col = floor((w.x + off) / colW);
+    vec2 f = vec2(fract((w.x + off) / colW) * colW, fract(w.y / rowH) * rowH);
+    float h = fdHash(vec2(col, row));
+    float edge = min(min(f.x, colW - f.x), min(f.y, rowH - f.y));
+    float hw = 0.8;
+    hedge = (1.0 - smoothstep(hw - px * 0.5, hw + px * 0.5, edge)) * farm;
+    float rows = 1.0 - smoothstep(0.4, 1.0, px / 1.6);
+    vec3 c;
+    if (h < 0.24) {
+      c = vec3(0.46, 0.37, 0.13) * (1.0 - 0.14 * rows * step(0.55, fract(f.y / 1.6)));
+    } else if (h < 0.44) {
+      c = vec3(0.19, 0.31, 0.09) * (1.0 - 0.12 * rows * step(0.5, fract(f.x / 1.4)));
+    } else if (h < 0.58) {
+      c = vec3(0.23, 0.15, 0.08) * (1.0 - 0.2 * rows * step(0.5, fract(f.y / 1.2)));
+    } else if (h < 0.72) {
+      c = vec3(0.37, 0.36, 0.17);
+    } else {
+      return vec4(0.0, 0.0, 0.0, 0.0);
+    }
+    return vec4(c, farm);
+  }
+`
+
 const VERT_HEAD = /* glsl */ `
   attribute vec4 aGround;
-  attribute vec3 aTint;
+  attribute vec4 aTint;
   varying vec4 vGK;
   varying vec3 vGT;
+  varying float vGF;
   varying vec3 vGW;
   varying vec3 vGN;
   ${FADE_VERT_HEAD}
@@ -48,7 +116,8 @@ const VERT_HEAD = /* glsl */ `
 const VERT_BODY = /* glsl */ `
   ${FADE_VERT_BODY}
   vGK = aGround;
-  vGT = aTint;
+  vGT = aTint.rgb;
+  vGF = aTint.a;
   vGW = (modelMatrix * vec4(transformed, 1.0)).xyz;
   vGN = normalize(mat3(modelMatrix) * objectNormal);
 `
@@ -56,9 +125,12 @@ const VERT_BODY = /* glsl */ `
 const FRAG_HEAD = /* glsl */ `
   varying vec4 vGK;
   varying vec3 vGT;
+  varying float vGF;
   varying vec3 vGW;
   varying vec3 vGN;
+  uniform float uFieldK;
   ${fadeFragHead()}
+  ${FIELDS_GLSL}
   float glHash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
   }
@@ -104,6 +176,15 @@ const FRAG_COLOR = /* glsl */ `
     c *= 1.0 + (n1 - 0.5) * 0.3 * near6 + (n2 - 0.5) * 0.16;
     float tuft = glHash(floor(wp * ${T} / 2.0) + 3.0);
     c *= 1.0 - step(0.88, tuft) * 0.26 * near2 + step(tuft, 0.03) * 0.2 * near2;
+    // farmland, from the air (see FIELDS_GLSL): on gentle, open soil
+    if (uFieldK > 0.0 && vGF > 0.05 && paved + rock + snow < 0.5 && ny > 0.93 && h > 1.6) {
+      float hedgeK;
+      float pxW = foot / ${T};
+      vec4 fd = fields(wp, pxW, hedgeK);
+      float k = uFieldK * step(0.5 + jit * 0.3, vGF + 0.35) * fd.a;
+      c = mix(c, diffuse * fd.rgb, k);
+      c = mix(c, diffuse * vec3(0.07, 0.13, 0.05), hedgeK * uFieldK * step(0.5, vGF + 0.35));
+    }
     if (sand > 0.5) {
       // biome sand is its own tint; a shore on a grass biome is beach sand
       vec3 sc = mix(diffuse * vec3(0.54, 0.45, 0.23), base, step(0.5, vGK.y));
@@ -163,6 +244,7 @@ const FRAG_COLOR = /* glsl */ `
 export const applyGroundLook = (mat: THREE.Material, uTime: { value: number }) => {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uTime
+    shader.uniforms.uFieldK = groundLookUniforms.uFieldK
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${VERT_HEAD}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${VERT_BODY}`)
@@ -171,6 +253,6 @@ export const applyGroundLook = (mat: THREE.Material, uTime: { value: number }) =
       .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>\n${FADE_FRAG_DISSOLVE}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\n${FRAG_COLOR}`)
   }
-  mat.customProgramCacheKey = () => 'ground-look-1'
+  mat.customProgramCacheKey = () => 'ground-look-2'
   mat.needsUpdate = true
 }

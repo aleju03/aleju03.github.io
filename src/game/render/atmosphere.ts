@@ -101,14 +101,14 @@ export const airForSky = (
   // there distance should take things over steadily until the horizon is
   // air, so the ceiling rises toward one and the curve lengthens to match
   const ground = (300 * s.day + 90 * (1 - s.day)) * woods
-  const dist = ground + (1600 * s.day + 700 * (1 - s.day) - ground) * lift
+  const dist = ground + (2600 * s.day + 900 * (1 - s.day) - ground) * lift
   air.start = 8 + 30 * lift
   air.dist = dist
   air.liftK = lift
   air.liftBase = baseY
   air.edge = lift > 0 && reach > 0 ? reach * 0.97 : 0
   const cap = 0.36 + 0.36 * dark - 0.08 * s.twilight
-  air.max = (cap + (0.95 - cap) * lift) * out
+  air.max = (cap + (0.85 - cap) * lift) * out
   air.planes = 0
   // warm hazy air by day: the sky module's fog is a cool pale blue, which
   // reads as overcast once the grade has had it; nudged toward cream it

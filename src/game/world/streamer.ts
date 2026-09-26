@@ -4,7 +4,7 @@ import { CHUNK, chunkX, chunkZ, OFF_Z, originX, originZ } from './grid'
 import {
   buildChunk, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Tier,
 } from './chunk'
-import { applyGroundLook } from './groundLook'
+import { applyGroundLook, groundLookUniforms } from './groundLook'
 import { applyFadeIn, FADE_FRAG_ALPHA, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead } from './fade'
 import { registerInteriors, unregisterInteriors } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
@@ -728,6 +728,8 @@ export function buildWorld(opts: Opts): WorldHandles {
     // on one number would otherwise rebuild the entire world every second
     // From the air the far field takes over past the flora ring as soon as
     // it has the whole view covered; until then the old wide ring stands in
+    // the fields fade into the chunk ground as the grass field fades out
+    groundLookUniforms.uFieldK.value = Math.min(1, Math.max(0, (alt - 15) / 30))
     tickSolid()
     far.update(x, z, alt, chunkSolid, solidEpoch)
     const high = far.complete ? RADIUS_FAR : RADIUS_HIGH
