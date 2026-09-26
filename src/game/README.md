@@ -643,12 +643,13 @@ await sb.whenReady                      // optional: spawns before it are queued
 sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
 
 const id = sb.spawn('crate', { x, y, z }, { yaw, quaternion, velocity, angular,
-                                            frozen, id, mesh, shape, mass, data })
+                                            frozen, id, mesh, shape, mass, data, phase })
 sb.remove(id); sb.clear(); sb.get(id); sb.forEach(fn); sb.count
 sb.getTransform(id, pos, quat?); sb.setTransform(id, pos, quat?)
 sb.getVelocity(id, lin, ang?); sb.setVelocity(id, lin?, ang?)
 sb.applyImpulse(id, impulse, at?); sb.addForce(id, force, at?)   // addForce: from onBeforeSlice
 sb.freeze(id); sb.unfreeze(id); sb.setMode(id, 'dynamic' | 'frozen' | 'kinematic')
+sb.inContact(id)                        // is any other prop touching it
 sb.moveKinematic(id, pos, quat?); sb.wake(id)
 sb.onImpact(e => ...)  // { id, prop, with: 'prop'|'ground'|'solid'|'vehicle'|'player',
                        //   other, solid, impulse, speed, x, y, z }
@@ -739,6 +740,23 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   so it drives without pumping. `measure physics float` prints heave, drift,
   turn, rock and churn from six seconds on, and flags a dead or churning
   floater.
+- **A piece born inside a crowd passes through it for a moment.** A broken
+  crate's gibs start where the crate was, pressed into whatever stood on it,
+  and spawned solid they held a whole column of crates up (round three
+  filmed the top crate *above* the tower's height for 0.4 s). Spawned with
+  `phase` (gibs use 0.1 s) a prop meets only the ground, the world's solids,
+  walkers and vehicles, and rejoins the props once it overlaps none, within
+  a second. `measure physics fall` shatters a base both ways: phased, the
+  top crate is falling 0.07 s later; solid, never.
+- **Removing a prop must not wake a heap.** Rapier wakes everything that
+  touched a removed collider, and a settled pile is one island, so clearing
+  gibs woke all forty props again. `remove` puts back to sleep, with its
+  velocity cleared (`sleep()` keeps it), everything it woke except what was
+  resting on the removed prop; and breakables leave any splinter another
+  prop touches until one of them moves. Two traps found on the way: a pair
+  that went to sleep keeps its contact normal but drops its contact points,
+  so `numContacts()` cannot say who rests on whom, and a gib that another
+  prop merely leans on is support too.
 - **Rapier has no rolling resistance.** A drum on a 2% camber rolls forever,
   and one standing on its end spins like a top: round two's pile still had a
   barrel turning in place at twenty seconds. A kind's `rolling` coefficient
