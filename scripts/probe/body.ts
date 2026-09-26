@@ -569,7 +569,7 @@ const foldOverlay = (rig: PlayerRig): THREE.Mesh => {
   return om
 }
 const FOLD_SHOTS: Array<[string, number]> = [
-  ['idle', 310], ['walk', 12], ['run', 8], ['crouch', 40], ['stretch', 54], ['ragdoll', 34], ['splay', 52], ['recover', 10 + 110],
+  ['idle', 310], ['walk', 12], ['run', 8], ['crouch', 40], ['stretch', 54], ['ragdoll', 34], ['splay', 70], ['recover', 54],
 ]
 const folds = (spec: BodySpec, snap: Snap, who = 0) => {
   const [tw, th] = spec.tile

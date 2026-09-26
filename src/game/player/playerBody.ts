@@ -355,7 +355,7 @@ const LIMB_NAMES: BodyLimb['name'][] = [
     trunk, light mittens, so a tumble leads with the head and the hands flap */
 /** the expressions a look can hash to (bodyMaterial's uFace), pills weighted */
 const FACES = [0, 0, 0, 1, 2, 0, 3, 4]
-const RADII = [0.46, 0.56, 0.42, 0.18, 0.18, 0.15, 0.15, 0.2, 0.2, 0.21, 0.21, 0.2, 0.2, 0.66, 0.44]
+const RADII = [0.55, 0.56, 0.5, 0.2, 0.2, 0.15, 0.15, 0.17, 0.17, 0.19, 0.19, 0.18, 0.18, 0.62, 0.46]
 const MASSES = [3, 2.6, 2.4, 0.9, 0.9, 0.6, 0.6, 0.45, 0.45, 0.9, 0.9, 0.8, 0.8, 1.2, 0.6]
 /** the whole body, for turning an impulse into a velocity */
 const MASS = 70
@@ -914,7 +914,7 @@ export function buildPlayerBody(
     // own axis: the head is the top of the bean, and a bean folded double
     // at the neck creased its own face
     dirTmp.copy(lp[P_HEAD]).sub(lp[P_CHEST]).normalize()
-    limitTo(dirTmp, up, 0.5)
+    limitTo(dirTmp, up, 0.38)
     zA.crossVectors(xa, dirTmp)
     if (zA.lengthSq() < 1e-8) zA.set(0, 0, 1)
     zA.normalize()
@@ -941,10 +941,14 @@ export function buildPlayerBody(
       out.copy(qSeg)
       seg.quaternion.copy(parentQ).invert().multiply(qSeg)
     }
+    // an elbow and a knee bend only so far off the bone above them: a heap
+    // folding a stub right back over itself creased the one skin across it
     fitLimb(uarmL, lp[P_SHL], lp[P_ELL], qPelv, qUpper)
-    fitLimb(farmL, lp[P_ELL], lp[P_HANDL], qUpper, qLower)
+    vPole.copy(dirTmp)
+    fitLimb(farmL, lp[P_ELL], lp[P_HANDL], qUpper, qLower, vPole, 1.7)
     fitLimb(uarmR, lp[P_SHR], lp[P_ELR], qPelv, qUpper)
-    fitLimb(farmR, lp[P_ELR], lp[P_HANDR], qUpper, qLower)
+    vPole.copy(dirTmp)
+    fitLimb(farmR, lp[P_ELR], lp[P_HANDR], qUpper, qLower, vPole, 1.7)
     handL.quaternion.identity()
     handR.quaternion.identity()
     // legs from the pelvis frame's hip sockets
@@ -953,10 +957,12 @@ export function buildPlayerBody(
     // and not far back at all: past either the skin at the hip folds (see
     // limitTo)
     fitLimb(thighL, vTmp, lp[P_KNEEL], qPelv, qUpper, vKnee, 1.2)
-    fitLimb(shinL, lp[P_KNEEL], lp[P_FOOTL], qUpper, qLower)
+    vPole.copy(dirTmp)
+    fitLimb(shinL, lp[P_KNEEL], lp[P_FOOTL], qUpper, qLower, vPole, 1.3)
     vTmp.set(-HIP_X, 0, 0).applyQuaternion(qPelv).add(lp[P_PELV])
     fitLimb(thighR, vTmp, lp[P_KNEER], qPelv, qUpper, vKnee, 1.2)
-    fitLimb(shinR, lp[P_KNEER], lp[P_FOOTR], qUpper, qLower)
+    vPole.copy(dirTmp)
+    fitLimb(shinR, lp[P_KNEER], lp[P_FOOTR], qUpper, qLower, vPole, 1.3)
     // a crumpled body's toes hang relaxed, not frozen in the last stride
     ankleL.rotation.set(0.35, 0, 0)
     ankleR.rotation.set(0.35, 0, 0)
@@ -1046,8 +1052,10 @@ export function buildPlayerBody(
     }
     // the headgear's two tails hang back and down off the knot
     swing(jPom, pom, TAILS, 0.26, 70, 3.5, 9, 0.9)
-    swing(jMitL, handL, DOWN, 0.12, 170, 8, 3, 1.1)
-    swing(jMitR, handR, DOWN, 0.12, 170, 8, 3, 1.1)
+    // a mitten nods on its wrist, it does not flop: past half a radian the
+    // skin at the wrist pinched into a knuckle
+    swing(jMitL, handL, DOWN, 0.12, 170, 8, 3, 0.45)
+    swing(jMitR, handR, DOWN, 0.12, 170, 8, 3, 0.45)
 
     // blinking: the painted eyes squash shut, now and then twice
     blinkIn -= dt
@@ -1261,7 +1269,9 @@ export function buildPlayerBody(
     // crouch, landing spring and the get-up fold all lower the hips; the leg
     // IK below folds the knees exactly enough that the feet stay planted
     // soft knees always, softer standing about: a bean never locks them
-    const drop = pose.crouchK * 0.42 + riseFold * 0.42 - springP * 0.7 + 0.06 + 0.04 * idleK
+    // (a stub leg has little to fold: the drop is what it can take, and
+    // the rest of a crouch is the squash)
+    const drop = pose.crouchK * 0.3 + riseFold * 0.3 - springP * 0.7 + 0.06 + 0.04 * idleK
     const hipH = THREE.MathUtils.clamp(HIP_Y - drop, Math.abs(THIGH - SHIN) + 0.08, HIP_Y)
 
     // pelvis: root motion. A waddle: the hips ride over the stance foot and
@@ -1415,12 +1425,14 @@ export function buildPlayerBody(
         swingTarget.y = footGround(swingTarget.x, swingTarget.z)
         const k = frac * frac * (3 - 2 * frac)
         swingFoot.lerpVectors(swingFrom, swingTarget, k)
-        // a high little knee lift: short legs have to pick their feet up
-        // running, the heel kicks up high behind in the first half of the swing
-        swingFoot.y += Math.sin(frac * Math.PI) * (0.13 + 0.08 * runK) * S * Math.min(1, speed) +
-          runK * Math.sin(Math.min(1, frac * 1.6) * Math.PI) * 0.22 * S +
+        // a little knee lift: a bean patters, quick small steps with the
+        // feet barely off the ground, and a run adds only a small heel kick.
+        // The brawler's lifts, three times these, raised a stub leg's thigh
+        // past the horizontal and folded the bottom of the bean over it
+        swingFoot.y += Math.sin(frac * Math.PI) * (0.1 + 0.04 * runK) * S * Math.min(1, speed) +
+          runK * Math.sin(Math.min(1, frac * 1.6) * Math.PI) * 0.08 * S +
           // and it is still up late in the swing, so the flight has both feet
-          runK * Math.sin(Math.pow(frac, 1.4) * Math.PI) * 0.2 * S
+          runK * Math.sin(Math.pow(frac, 1.4) * Math.PI) * 0.07 * S
       } else {
         // standing: a foot left far from its socket shuffles home; otherwise
         // feet stay put

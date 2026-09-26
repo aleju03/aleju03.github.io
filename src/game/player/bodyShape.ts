@@ -164,11 +164,11 @@ interface Build {
   zs: number
 }
 const BUILD_DEFS: Build[] = [
-  { a: 0.64, c: 1.0, b1: 0.65, b2: 1.78, n1: 2.2, n2: 2.3, zs: 0.9 }, // the bean
-  { a: 0.74, c: 1.02, b1: 0.68, b2: 1.72, n1: 2.2, n2: 2.4, zs: 0.92 }, // chubby
-  { a: 0.55, c: 1.0, b1: 0.63, b2: 1.84, n1: 2.2, n2: 2.2, zs: 0.88 }, // slim
-  { a: 0.6, c: 1.02, b1: 0.66, b2: 2.08, n1: 2.2, n2: 2.3, zs: 0.9 }, // tall
-  { a: 0.7, c: 0.98, b1: 0.62, b2: 1.62, n1: 2.3, n2: 2.5, zs: 0.92 }, // stubby
+  { a: 0.67, c: 1.0, b1: 0.65, b2: 1.78, n1: 2.2, n2: 2.6, zs: 0.9 }, // the bean
+  { a: 0.77, c: 1.02, b1: 0.68, b2: 1.72, n1: 2.2, n2: 2.7, zs: 0.92 }, // chubby
+  { a: 0.58, c: 1.0, b1: 0.63, b2: 1.84, n1: 2.2, n2: 2.5, zs: 0.88 }, // slim
+  { a: 0.63, c: 1.02, b1: 0.66, b2: 2.08, n1: 2.2, n2: 2.6, zs: 0.9 }, // tall
+  { a: 0.73, c: 0.98, b1: 0.62, b2: 1.62, n1: 2.3, n2: 2.8, zs: 0.92 }, // stubby
 ]
 export const BUILD_COUNT = BUILD_DEFS.length
 const clampBuild = (b: number) => Math.max(0, Math.min(BUILD_COUNT - 1, Math.floor(b)))
@@ -309,8 +309,8 @@ export interface FaceWindow {
   y: number
 }
 /** how far the face sits into the bean, and the soft lip round it */
-const FACE_SINK = 0.04
-const FACE_LIP = 0.02
+const FACE_SINK = 0.045
+const FACE_LIP = 0.018
 
 /**
  * The egg: the two superellipse halves meeting at the belly. The value is
@@ -377,17 +377,19 @@ const frameFor = (b: number): Frame => {
     curved with the head, and it only touches the front half.
   */
   const hr = rx(EYE_Y)
-  const face: FaceWindow = { w: 0.66 * hr, h: 0.3, y: EYE_Y - 0.02 }
+  const face: FaceWindow = { w: 0.7 * hr, h: 0.31, y: EYE_Y - 0.03 }
   const iw = 1 / face.w
   const ih = 1 / face.h
   const bean: Field = (x, y, z) => {
     const d = egg(x, y, z)
-    if (z < 0.02 || Math.abs(y - face.y) > face.h * 1.4) return d
+    if (z < 0.02 || Math.abs(y - face.y) > face.h * 1.65) return d
     const e = Math.sqrt((x * iw) ** 2 + ((y - face.y) * ih) ** 2)
-    if (e > 1.35) return d
+    if (e > 1.6) return d
     const front = smooth(0.02, 0.22, z)
-    const sink = FACE_SINK * (1 - smooth(0.8, 1.0, e))
-    const lip = FACE_LIP * Math.exp(-(((e - 1.07) / 0.09) ** 2))
+    // both several grid cells wide: a lip narrower than a cell comes out of
+    // the polygonizer as a frayed dark hem round the face
+    const sink = FACE_SINK * (1 - smooth(0.7, 1.0, e))
+    const lip = FACE_LIP * Math.exp(-(((e - 1.1) / 0.16) ** 2))
     return d + front * (sink - lip)
   }
 
@@ -408,7 +410,7 @@ const frameFor = (b: number): Frame => {
     // smooth minimum swells wherever two parts meet and an arm of two
     // blended cones read as a string of sausages
     const G = new THREE.Vector3(side * (rx(S.y) - 0.13), S.y, S.z)
-    const arm = roundCone(G.x, G.y, G.z, W.x, W.y, W.z, 0.145, 0.1)
+    const arm = roundCone(G.x, G.y, G.z, W.x, W.y, W.z, 0.16, 0.112)
     // the mitten: a soft paddle a little wider than the wrist, flattened
     // palm to back (the palm faces the body), with a thumb on its front edge
     // and three short fat fingers at its end, all of it the same surface
@@ -416,7 +418,7 @@ const frameFor = (b: number): Frame => {
     // in the arm's plane, perpendicular to it, toward the body
     const n = new THREE.Vector3(-side * Math.cos(ARM_BIND), -Math.sin(ARM_BIND), 0)
     const wz = new THREE.Vector3(0, 0, 1)
-    const mitt = ellipsoid(C.x, C.y, C.z, 0.075, 0.12, 0.125, [n.x, n.y, n.z, d.x, d.y, d.z, wz.x, wz.y, wz.z])
+    const mitt = ellipsoid(C.x, C.y, C.z, 0.085, 0.13, 0.135, [n.x, n.y, n.z, d.x, d.y, d.z, wz.x, wz.y, wz.z])
     const T0 = C.clone().addScaledVector(d, -0.02).addScaledVector(wz, 0.08)
     const T1 = C.clone().addScaledVector(d, 0.05).addScaledVector(wz, 0.16).addScaledVector(n, 0.025)
     const thumb = roundCone(T0.x, T0.y, T0.z, T1.x, T1.y, T1.z, 0.048, 0.042)
@@ -510,7 +512,7 @@ const beanChain = (fr: Frame, x: number, y: number, z: number, acc: Float32Array
     acc[k === 0 ? B.SHOULDER_L : B.SHOULDER_R] += w * tor * cS
     tor *= 1 - cS
     const hx = k === 0 ? HIP_X : -HIP_X
-    const cH = 1 - smooth(0.12, 0.4, len(x - hx, y - HIP_Y, z))
+    const cH = 1 - smooth(0.18, 0.58, len(x - hx, y - HIP_Y, z))
     acc[k === 0 ? B.HIP_L : B.HIP_R] += w * pel * cH
     pel *= 1 - cH
   }
@@ -537,7 +539,9 @@ const armChain = (fr: Frame, k: 0 | 1, x: number, y: number, z: number, acc: Flo
 
 const legChain = (k: 0 | 1, y: number, z: number, acc: Float32Array, w: number) => {
   const [th, sn, ft] = k === 0 ? [B.THIGH_L, B.SHIN_L, B.FOOT_L] : [B.THIGH_R, B.SHIN_R, B.FOOT_R]
-  const kK = smooth(HIP_Y - THIGH - 0.16, HIP_Y - THIGH + 0.16, y)
+  // the knee is spread over the whole visible stub: it sits right where
+  // the stub leaves the bean, and a knee weighted there hinged the fillet
+  const kK = smooth(0.06, 0.56, y)
   const kF = (1 - smooth(ANKLE_H - 0.02, ANKLE_H + 0.2, y)) * (0.6 + 0.4 * smooth(-0.05, 0.14, z))
   // and the top of a leg with the hip helper
   const root = 0.7 * smooth(HIP_Y - 0.34, HIP_Y - 0.06, y)
@@ -1050,15 +1054,17 @@ const hatPieces = (fr: Frame, kind: number): Piece[] => {
       // looking out of it, two cords hanging from the front
       // the hem clears the shoulders: the fillet where each arm grows out
       // bulges up under a lower one and moves about inside it
-      const yBot = HIP_Y + WAIST_OFF + SHOULDER_OFF + 0.28
+      const yBot = HIP_Y + WAIST_OFF + SHOULDER_OFF + 0.38
       const fz = fr.rx(EYE_Y) * zs
       const { w, h, y: fy } = fr.face
-      const hole = ellipsoid(0, fy, fz + 0.1, w + 0.08, h + 0.07, 0.42)
+      const hole = ellipsoid(0, fy, fz + 0.1, w + 0.13, h + 0.1, 0.42)
       const shell: Field = (x, y, z) =>
         smax(smax(fr.bean(x, y, z) - 0.055, yBot - y, 0.03), -hole(x, y, z), 0.035)
+      // the cords hang either side of the face, not across it
       const cords: Field[] = [1, -1].map((s) => {
-        const z0 = fr.rx(yBot + 0.08) * zs * 0.82
-        return roundCone(s * 0.2, yBot + 0.08, z0 + 0.06, s * 0.22, yBot - 0.26, z0 + 0.12, 0.035, 0.035)
+        const cx = w + 0.1
+        const z0 = Math.sqrt(Math.max(0, fr.rx(yBot) ** 2 - cx * cx)) * zs
+        return roundCone(s * cx, yBot + 0.04, z0 + 0.05, s * (cx + 0.02), yBot - 0.3, z0 + 0.1, 0.035, 0.035)
       })
       const [lo, hi] = box(0.18, yBot - 0.08, crown + 0.1)
       return [
