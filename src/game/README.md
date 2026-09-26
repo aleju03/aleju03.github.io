@@ -796,20 +796,24 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   which puts their links in the first frame under the boot cover.
   `npm run film -- props:links` counts `linkProgram` through a spawn of every
   kind, a break of every breakable and a blast: it must print 0 and 0.
-- **Fire and smoke are solid.** Nothing may write alpha under the look (that
-  is a hole), and both used to dissolve through a Bayer dither on
-  `gl_FragCoord` instead: fire read as a screen door (orange balls you could
-  see the street through) and smoke as a sparse dot pattern laid over the
-  scene. Both are now opaque and depth-writing, shaded in three bands off
-  how squarely each fragment faces the lens (`fx.ts`'s `banded`), and go by
-  shrinking. Ground dust is a flat lens rather than a ball, or it reads as a
-  stone.
+- **Nothing writes alpha it does not mean.** Under the look alpha is a
+  hole, and fire and smoke that dissolved through a Bayer dither read as a
+  screen door and a sparse dot pattern. Flame balls are opaque and banded
+  (`fx.ts`'s `banded`) and shrink away. The blast's core and the smoke are
+  sprites on one program in three blends that leave the target's alpha
+  alone: the core is *added* (near white, so a barrel tumbling through the
+  fireball is still seen inside it), its inner disc writes `GLOW_ALPHA` so
+  the look skips the grade, the ink and the lamp light there, as the
+  physgun's beam does, and smoke is premultiplied *over*, translucent
+  through blending in three stepped opacities, lit by the look's ambient
+  (`uShade`, from `lightLook`) so it darkens at night. Ground dust is a
+  flattened sprite, or it reads as a stone.
 - **A bang is a light before it is a ball.** For three frames the look's
   `lights.flash` is hard and wide (1.5x the blast radius), lighting the
-  street, the fronts and the props around it and washing the air, then it
-  falls to the fireball's orange glow; under it, a burst of white-hot balls,
-  flame tongues thrown radially (`jets`) and a fireball about fourteen units
-  across for a barrel.
+  street, the fronts and the props round it by day as well as by night and
+  washing the air, then it falls to the fireball's orange glow; under it
+  the added core, flame spears thrown radially well past it (`jets`), and
+  only then a few orange flame balls.
 - **A blast throws, and it is late.** `explode` sets a velocity change (out,
   50-70 degrees up, tumbling), not an impulse, falling with the square root
   of the mass; blasts a beat apart redirect more than they add. Explosives
@@ -868,6 +872,8 @@ npm run film -- --list
 
 npm run film -- sandbox:catalogue      every prop on a town street
 npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 4    barrels going up in a row
+npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 3.3 --from -40.5,2.5,-349 --to -31,1.6,-326 --fov 64
+                                       ...the same from a walker's eye
 npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
 npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
 npm run film -- props:turntable        every model four ways round

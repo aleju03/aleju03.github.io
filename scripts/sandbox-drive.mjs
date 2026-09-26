@@ -175,7 +175,11 @@ try {
       const out = await run(`tp ${where}`)
       await sleep(2500)
       const after = await evaluate('window.__sandboxCamera.position.toArray()')
-      if (Math.hypot(after[0] - before[0], after[2] - before[2]) > 20 || /\b0 u\b/.test(out.join())) {
+      // arrived: moved a long way, or (already standing there, as a second
+      // teleport to the same spot is) within a few units of a numeric target
+      const xz = where.split(/[ ,]+/).map(Number)
+      const near = xz.length === 2 && xz.every(Number.isFinite) && Math.hypot(after[0] - xz[0], after[2] - xz[1]) < 6
+      if (near || Math.hypot(after[0] - before[0], after[2] - before[2]) > 20 || /\b0 u\b/.test(out.join())) {
         console.log(`  ${out.join(' / ')}`)
         return
       }
@@ -377,10 +381,13 @@ try {
     // a first spawn of barrels and crates, a chain of bangs (flash, jets,
     // fireball, smoke, scorch), breaks, splinters and a fuse
     console.log('links')
-    await goTo(flag('at', '5654 -844').replace(',', ' '))
+    // on a town street, where the flash has walls to light and the fx the
+    // same neighbours they have in the films (--at to put it elsewhere)
+    await goTo(flag('at', '-32 -331').replace(',', ' '))
     await sleep(1500)
     await stand()
-    await look(0.6, -0.1)
+    // down the street (it runs along z there), not into a shopfront
+    await look(Number(flag('yaw', Math.PI)), -0.1)
     await evaluate(`(() => {
       window.__links = []
       for (const c of document.querySelectorAll('canvas')) {
