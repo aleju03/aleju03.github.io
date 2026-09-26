@@ -319,7 +319,12 @@ const closeup = (spec: BodySpec, snap: Snap) => {
 
 /** the actions a filmstrip can show. Each runs a scripted walker and calls
     `frame` at the instants it wants photographed */
-const ACTIONS: Record<string, { frames: number[]; run: (a: Actor, st: Stage, f: number) => void }> = {
+const ACTIONS: Record<string, {
+  frames: number[]
+  run: (a: Actor, st: Stage, f: number) => void
+  /** where the camera stands: bearing, distance, height over the chest */
+  cam?: [number, number, number]
+}> = {
   // accelerate from standing into a walk; frames through two strides
   walk: {
     frames: [0.2, 0.62, 0.72, 0.82, 0.92, 1.02, 1.12, 1.22],
@@ -350,7 +355,7 @@ const ACTIONS: Record<string, { frames: number[]; run: (a: Actor, st: Stage, f: 
   // walking along and hit side-on at the hip by something the size of a car
   // doing forty: the hit is `rig.hit`, exactly what a vehicle impact calls
   ragdoll: {
-    frames: [0.28, 0.36, 0.48, 0.64, 0.84, 1.1, 1.45, 2.0],
+    frames: [0.3, 0.4, 0.52, 0.68, 0.9, 1.3, 2.0, 3.0],
     run: (a, st, f) => {
       if (f === 18) {
         a.rig.group.updateMatrixWorld(true)
@@ -358,6 +363,20 @@ const ACTIONS: Record<string, { frames: number[]; run: (a: Actor, st: Stage, f: 
         a.rig.hit(new THREE.Vector3(0, 4, 11).multiplyScalar(a.rig.mass), hip.add(new THREE.Vector3(0, 0.3, -0.5)))
       }
       tick(a, st.env, { speed: f < 18 ? WALK : 0 })
+    },
+  },
+  // a sprinting body clipped hard by something big, seen from above so the
+  // splay of the heap it lands in can be judged: arms and legs flung out
+  splay: {
+    frames: [0.34, 0.45, 0.58, 0.72, 0.9, 1.3, 2.0, 3.0],
+    cam: [Math.PI - 0.35, 10, 8.5],
+    run: (a, st, f) => {
+      if (f === 20) {
+        a.rig.group.updateMatrixWorld(true)
+        const chest = a.rig.limbPos(1, new THREE.Vector3())
+        a.rig.hit(new THREE.Vector3(12, 9, 5).multiplyScalar(a.rig.mass), chest.add(new THREE.Vector3(-0.5, -0.3, 0.3)))
+      }
+      tick(a, st.env, { speed: f < 20 ? RUN : 0, run: true })
     },
   },
   // a heap getting up: knocked down, left to settle, then the recovery
@@ -395,9 +414,12 @@ const strip = (spec: BodySpec, name: string, snap: Snap) => {
     const t = (f + 1) / 60
     while (next < act.frames.length && t >= act.frames[next] - 1e-6) {
       if (a.rig.down) a.rig.focus(chest)
-      else chest.set(a.x, a.y + 2.4, a.z)
+      // on the ground's height, not the body's: a camera that rides up with a
+      // jump films a jump as nothing happening
+      else chest.set(a.x, terrainY(a.x, a.z) + 2.6, a.z)
       chest.y = Math.max(chest.y, a.y + 1.6)
-      snap(`${name} ${act.frames[next].toFixed(2)}s`, camAt(tw, th, chest, Math.PI - 0.5, 11, 1.6, 38))
+      const [b, d, u] = act.cam ?? [Math.PI - 0.5, 11, 1.6]
+      snap(`${name} ${act.frames[next].toFixed(2)}s`, camAt(tw, th, chest, b, d, u, 38))
       next++
     }
   }
@@ -444,7 +466,7 @@ const seats = (spec: BodySpec, snap: Snap) => {
     st.scene.add(v.root)
     for (const [seat, look] of [[v.driverSeat, LOOKS[0]], [v.passengerSeat, LOOKS[1]]] as const) {
       const rig = buildPlayerBody(EYE, GRAV, look)
-      rig.sit(CABIN_FIT)
+      rig.sit(seat.userData.fit ?? CABIN_FIT)
       seat.add(rig.group)
       rig.group.position.set(0, 0, 0)
       rig.group.rotation.set(0, Math.PI, 0)
@@ -539,6 +561,7 @@ export const shootBody = (spec: BodySpec) => {
     : null
 
   let slot = 0
+  const warmed = new WeakSet<THREE.Scene>()
   const snap = (sc: THREE.Scene) => (label: string, cam: THREE.PerspectiveCamera) => {
     const r = renderer!
     const col = slot % perRow
@@ -562,6 +585,16 @@ export const shootBody = (spec: BodySpec) => {
       }
     })
     sc.updateMatrixWorld(true)
+    // a stage's first draw compiles its programs and uploads its buffers;
+    // pay that into one pixel first, so the first tile is not the one that
+    // shows the street half-built
+    if (!warmed.has(sc)) {
+      warmed.add(sc)
+      r.setScissorTest(true)
+      r.setViewport(0, 0, 1, 1)
+      r.setScissor(0, 0, 1, 1)
+      r.render(sc, cam)
+    }
     if (rt) {
       r.setScissorTest(false)
       r.setRenderTarget(rt)

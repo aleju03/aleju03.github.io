@@ -97,7 +97,7 @@ export interface Ragdoll {
 const SUBSTEP = 1 / 120
 const RELAX = 4
 const DRAG = 0.45 // per-second velocity bleed, air and rolling both
-const FLOOR_GRIP = 0.5 // fraction of planar slide a floor touch eats
+const FLOOR_GRIP = 0.3 // fraction of planar slide a floor touch eats, per pass
 /** a floor touch keeps this much of the speed it arrived with, as long as it
     arrived fast enough for a bounce to be a bounce rather than a buzz */
 const BOUNCE = 0.28

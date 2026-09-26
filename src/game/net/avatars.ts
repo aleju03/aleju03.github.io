@@ -303,7 +303,8 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       // other way, exactly as CrtScene turns the local body round
       a.group.rotation.set(0, Math.PI, 0)
       a.rig.reset()
-      a.rig.sit(CABIN_FIT) // only the fleet's seats come through here
+      // only the fleet's seats come through here, and each says its own fit
+      a.rig.sit(seat.userData.fit ?? CABIN_FIT)
     } else {
       root.add(a.group)
       a.group.rotation.set(0, 0, 0)

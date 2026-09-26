@@ -5,7 +5,7 @@ import { DEFAULT_LOOK, type PlayerLook } from './look'
   The one material a body is drawn with, and the reason a repaint is free.
 
   `bodyShape.ts` stamps every vertex with an `aRole` code: which of eight
-  paints it wears (skin, suit, trim, accent, glow, ink, cheek, glint), plus a
+  paints it wears (skin, suit, trim, accent, glow, ink, cheek, glint, hair), plus a
   flag on everything above the neck. This is an ordinary MeshStandardMaterial
   with two small injections, so the scene's lights, fog, shadows and tone map
   reach the body exactly as they reach everything else:
@@ -26,11 +26,12 @@ import { DEFAULT_LOOK, type PlayerLook } from './look'
   pause-sheet preview link it once between them.
 */
 
-/** the paints nobody picks: the face, and the ink and blush on it */
+/** the paints nobody picks: the face, the ink and blush on it, the hair */
 const SKIN = '#f2d6bd'
 const INK = '#1c1a22'
 const CHEEK = '#ee9a8a'
 const GLINT = '#ffffff'
+const HAIR = '#5b3b2a'
 
 export interface BodyMaterial {
   material: THREE.MeshStandardMaterial
@@ -42,7 +43,7 @@ export interface BodyMaterial {
 }
 
 export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial {
-  const pal = [SKIN, look.shell, look.trim, look.accent, look.glow, INK, CHEEK, GLINT].map(
+  const pal = [SKIN, look.shell, look.trim, look.accent, look.glow, INK, CHEEK, GLINT, HAIR].map(
     (c) => new THREE.Color(c),
   )
   const uniforms = {
@@ -74,7 +75,7 @@ vRole = aRole - 16.0 * vHead;`,
       .replace(
         '#include <common>',
         `#include <common>
-uniform vec3 uPal[8];
+uniform vec3 uPal[9];
 uniform float uGlowK;
 uniform float uHideHead;
 varying float vRole;

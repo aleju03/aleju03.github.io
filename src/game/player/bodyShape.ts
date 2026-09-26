@@ -5,9 +5,13 @@ import * as THREE from 'three'
   session and shared by every body in the world.
 
   The character is a soft little person in a work suit: a pear-shaped body
-  that is mostly belly, a big round head with two ink-drop eyes and a smile,
-  a knitted beanie with a pom-pom and a headlamp, stubby rubber-hose arms
+  that is mostly belly, a rolled collar, a big round head with two ink-drop
+  eyes, a smile, blush and ears, a knitted beanie standing up in a soft dome
+  with a pom-pom and a headlamp and a fringe of hair escaping it at the back
+  (so the back of the head is somebody, not an egg), stubby rubber-hose arms
   ending in mittens, short legs in chunky boots, and a backpack on straps.
+  Where a limb meets its glove or boot, the cuff rides the limb and not the
+  hand or foot, so the only surfaces that ever cross are the same colour.
   It is drawn for the look the whole game is moving to (a low internal
   resolution, posterized, outlined), so everything that carries identity is a
   big flat block of one colour: the suit, the beanie, the dark gloves and
@@ -27,7 +31,7 @@ import * as THREE from 'three'
     seam between two boxes, and each limb is one tube blended across its
     elbow or knee, so an arm is a noodle rather than two sticks and a ball.
   - **Colour stays a uniform.** Every vertex carries a small `aRole` code
-    (skin, suit, trim, accent, glow, ink, cheek, glint), and `bodyMaterial.ts`
+    (skin, suit, trim, accent, glow, ink, cheek, glint, hair), and `bodyMaterial.ts`
     looks the colour up in a per-body palette uniform. Four `Color.set()`
     calls repaint a body and nothing can relink a shader. The same code
     carries a head flag, which is how the first-person lens stops seeing the
@@ -64,12 +68,15 @@ export const FARM = 0.3
 const HEAD_CY = 0.44
 const HEAD_CZ = 0.02
 const HEAD_R = new THREE.Vector3(0.54, 0.49, 0.5)
+/** how much taller than the skull the beanie's dome stands: a knitted hat
+    rises in a soft point, and a flat one reads as a beret or a bowl */
+const CAP_TALL = 1.3
 /** head bone up to the eyes. Just above the middle of the skull, which is
     where a round cartoon face keeps them, and where the crown stays low
     enough over the eye line to fit under a car's roof (see DESIGN_CROWN) */
 export const EYE_OFF = 0.52
 /** head bone up to the top of the pom-pom: the highest thing on the body */
-export const CROWN_OFF = 1.17
+export const CROWN_OFF = 1.28
 
 /* ------------------------------------------------------------ bones ----- */
 
@@ -116,7 +123,7 @@ export const BONE_REST: Array<{ parent: number; at: [number, number, number] }> 
   { parent: B.THIGH_R, at: [0, -THIGH, 0] },
   { parent: B.SHIN_R, at: [0, -SHIN + ANKLE_H, 0] },
   { parent: B.HEAD, at: [0, EYE_OFF, 0.42] }, // eyes (blink pivot)
-  { parent: B.HEAD, at: [0, HEAD_CY + HEAD_R.y * 1.07 - 0.04, -0.03] }, // pom-pom root
+  { parent: B.HEAD, at: [0, HEAD_CY + HEAD_R.y * CAP_TALL - 0.05, -0.04] }, // pom-pom root
   { parent: B.TORSO, at: [0, 0.42, -0.5] }, // backpack
 ]
 
@@ -149,6 +156,7 @@ export const ROLE = {
   INK: 5,
   CHEEK: 6,
   GLINT: 7,
+  HAIR: 8,
 } as const
 /** added to a role code for anything the first-person lens must not draw */
 export const HEAD_FLAG = 16
@@ -539,8 +547,7 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
     // buried in the cuff rather than poking out through the mitten
     tube(
       s, [sh, el, wr.clone().add(new THREE.Vector3(0, 0.07, 0))],
-      0.145, 0.1, ROLE.SUIT,
-      (p) => (p.y < wr.y + 0.1 ? [hb, fa, 0.5] : arm(p)), 10,
+      0.15, 0.11, ROLE.SUIT, arm, 10,
     )
     const mit = wr.clone().add(new THREE.Vector3(0, -0.1, 0.0))
     ellipsoid(s, mit, new THREE.Vector3(0.135, 0.165, 0.15), ROLE.TRIM, rigid(hb), [12, 9])
@@ -548,10 +555,12 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
       s, mit.clone().add(new THREE.Vector3(-side * 0.08, 0.04, 0.1)),
       new THREE.Vector3(0.055, 0.075, 0.055), ROLE.TRIM, rigid(hb), [8, 6],
     )
-    // a cuff where the glove meets the sleeve
+    // a glove cuff over the end of the sleeve, on the forearm like the
+    // boot's top is on the shin, so the mitten flopping at the wrist only
+    // ever crosses its own cuff
     tube(
-      s, [wr.clone().add(new THREE.Vector3(0, 0.07, 0)), wr.clone().add(new THREE.Vector3(0, 0.0, 0))],
-      0.13, 0.13, ROLE.TRIM, rigid(hb), 10,
+      s, [wr.clone().add(new THREE.Vector3(0, 0.1, 0)), wr.clone().add(new THREE.Vector3(0, 0.0, 0))],
+      0.14, 0.135, ROLE.TRIM, rigid(fa), 10,
     )
   }
 
@@ -565,19 +574,21 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
     const ank = rest(ft)
     const leg = blend(sn, th, knee.y, 0.09)
     tube(
-      s, [hip.clone().add(new THREE.Vector3(0, 0.08, 0)), knee, ank.clone().add(new THREE.Vector3(0, 0.1, 0))],
-      0.195, 0.14, ROLE.SUIT,
-      (p) => (p.y < ank.y + 0.14 ? [ft, sn, 0.5] : leg(p)), 10,
+      s, [hip.clone().add(new THREE.Vector3(0, 0.08, 0)), knee, ank.clone().add(new THREE.Vector3(0, 0.16, 0))],
+      0.215, 0.16, ROLE.SUIT, leg, 10,
     )
     // the boot: an egg with its bottom sliced flat into a sole, toe out
-    // front, and a fat rolled top the leg disappears into
+    // front, and a fat rolled top the leg disappears into. The top rides the
+    // *shin*, not the foot: the ankle turns to keep the sole flat, and a
+    // collar on the foot let the trouser poke out of it at every step. Now
+    // the only thing that crosses anything is boot into boot
     ellipsoid(
-      s, new THREE.Vector3(ank.x, 0.11, 0.07), new THREE.Vector3(0.18, 0.17, 0.27),
+      s, new THREE.Vector3(ank.x, 0.11, 0.07), new THREE.Vector3(0.19, 0.17, 0.28),
       ROLE.TRIM, rigid(ft), [14, 10], undefined, 0.0,
     )
     tube(
-      s, [ank.clone().add(new THREE.Vector3(0, 0.15, -0.01)), ank.clone().add(new THREE.Vector3(0, 0.05, -0.01))],
-      0.165, 0.165, ROLE.TRIM, rigid(ft), 10,
+      s, [ank.clone().add(new THREE.Vector3(0, 0.2, -0.01)), ank.clone().add(new THREE.Vector3(0, 0.06, -0.01))],
+      0.19, 0.18, ROLE.TRIM, rigid(sn), 10,
     )
   }
 
@@ -589,6 +600,7 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
   // the beanie: the skull grown a touch and cut on a plane that rides
   // higher at the front, so it sits pushed back off the forehead
   const BR = HEAD_R.clone().multiplyScalar(1.075)
+  BR.y = HEAD_R.y * CAP_TALL
   const cutAt = (z: number) => 0.2 + 0.07 * (z / BR.z) // above hc, per z
   const capPoint = (th: number, ph: number, out: THREE.Vector3) =>
     out.set(
@@ -662,9 +674,16 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
   const eyes = rigid(B.EYES)
   const eyeY = EYE_OFF - HEAD_CY
   for (const side of [1, -1]) {
-    onFace(side * 0.185, eyeY, new THREE.Vector3(0.068, 0.1, 0.03), ROLE.INK + H, eyes, 0.0)
-    onFace(side * 0.185 + 0.025, eyeY + 0.04, new THREE.Vector3(0.024, 0.026, 0.012), ROLE.GLINT + H, eyes, 0.028, [6, 4])
-    onFace(side * 0.3, eyeY - 0.13, new THREE.Vector3(0.075, 0.045, 0.014), ROLE.CHEEK + H, head, 0.0, [10, 6])
+    // eyes sized for a picture a few hundred pixels tall: at lineup
+    // distance a face is twenty pixels across, and these have to stay two
+    // dark blobs rather than one smudge
+    onFace(side * 0.2, eyeY, new THREE.Vector3(0.088, 0.13, 0.035), ROLE.INK + H, eyes, 0.0)
+    onFace(side * 0.2 + 0.03, eyeY + 0.05, new THREE.Vector3(0.03, 0.032, 0.014), ROLE.GLINT + H, eyes, 0.034, [6, 4])
+    onFace(side * 0.32, eyeY - 0.15, new THREE.Vector3(0.08, 0.05, 0.016), ROLE.CHEEK + H, head, 0.0, [10, 6])
+    // ears: a bump either side is what stops the back of a head being an egg
+    const ear = new THREE.Vector3(side * (HEAD_R.x - 0.01), hc.y + eyeY - 0.05, hc.z - 0.03)
+    ellipsoid(s, ear, new THREE.Vector3(0.07, 0.11, 0.08), ROLE.SKIN + H, head, [8, 6])
+    ellipsoid(s, ear.clone().add(new THREE.Vector3(side * 0.03, 0, 0.01)), new THREE.Vector3(0.035, 0.065, 0.045), ROLE.CHEEK + H, head, [6, 5])
   }
   // the smile: a short arc of ink under the eyes, lying on the skin
   const smile: THREE.Vector3[] = []
@@ -675,6 +694,31 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
     smile.push(new THREE.Vector3(x, y, nz * HEAD_R.z + 0.004).add(hc))
   }
   tube(s, smile, 0.017, 0.017, ROLE.INK + H, head, 6)
+
+  // hair: a fringe of tufts escaping the back and sides of the beanie, so a
+  // body seen from behind has a person under the hat rather than a blank
+  for (let k = 0; k < 9; k++) {
+    const th = Math.PI * (0.62 + (k / 8) * 0.76) // round the back, ear to ear
+    const x = Math.cos(th) * HEAD_R.x * 0.97
+    const z = -Math.abs(Math.sin(th)) * HEAD_R.z * 0.97
+    const y = cutAt(z) - 0.02 - (k % 2) * 0.035
+    const n = new THREE.Vector3(x / HEAD_R.x, 0, z / HEAD_R.z).normalize()
+    ellipsoid(
+      s, new THREE.Vector3(x, y, z).add(hc).addScaledVector(n, 0.02),
+      new THREE.Vector3(0.085, 0.1, 0.07), ROLE.HAIR + H, head, [7, 5],
+    )
+  }
+
+  // a rolled collar round the neck: the suit's own colour, filling the notch
+  // between a round head and a round body so the head sits on the shoulders
+  // rather than floating over them
+  const collar: THREE.Vector3[] = []
+  const collarY = BODY_Y1 - 0.13
+  for (let k = 0; k <= 24; k++) {
+    const th = (k / 24) * Math.PI * 2
+    collar.push(new THREE.Vector3(Math.cos(th) * 0.3, collarY, Math.sin(th) * 0.27 + 0.02))
+  }
+  tube(s, collar, 0.1, 0.1, ROLE.SUIT, rigid(B.TORSO), 8)
 
   // the headlamp: a dark housing on the cuff, a lit face on the housing
   const lampY = cutAt(BR.z) + 0.03

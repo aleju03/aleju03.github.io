@@ -16,6 +16,7 @@ import {
   randomLook,
   type PlayerLook,
 } from '../../game/player/look'
+import { useI18n } from '../../i18n'
 
 /*
   Who you are in the shared world, and what you look like while being it: the
@@ -333,6 +334,7 @@ export default function WorldIdentity({
   error,
   active,
 }: WorldIdentityProps) {
+  const { t } = useI18n()
   const [draft, setDraft] = useState(name)
   // the server is the authority on what our name is: when it answers — and it
   // may answer with a trimmed version of what was typed — the field follows
@@ -468,25 +470,25 @@ export default function WorldIdentity({
             </button>
           </div>
           <Swatches
-            label="suit"
+            label={t.look.suit}
             options={SHELL_SWATCHES}
             value={look.shell}
             onPick={(shell) => onLook({ ...look, shell })}
           />
           <Swatches
-            label="trim"
+            label={t.look.trim}
             options={TRIM_SWATCHES}
             value={look.trim}
             onPick={(trim) => onLook({ ...look, trim })}
           />
           <Swatches
-            label="hat"
+            label={t.look.accent}
             options={ACCENT_SWATCHES}
             value={look.accent}
             onPick={(accent) => onLook({ ...look, accent })}
           />
           <Swatches
-            label="lamp"
+            label={t.look.glow}
             options={GLOW_SWATCHES}
             value={look.glow}
             onPick={(glow) => onLook({ ...look, glow })}

@@ -1263,7 +1263,8 @@ export default function CrtScene({
           fleet.enter(v, camera, walk.yaw, walk.pitch, seat)
           walk.resetMotion()
           rig.reset()
-          rig.sit(CABIN_FIT)
+          // a machine's seat node says how far its cabin needs a body folded
+          rig.sit(seatNode(v, seat).userData.fit ?? CABIN_FIT)
           chase.drop()
           // This is the same articulated avatar used on foot, not a vehicle's
           // approximation of it. The seat owns position and vehicle attitude;
