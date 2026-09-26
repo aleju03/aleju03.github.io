@@ -4,7 +4,7 @@ import { supportY } from '../physics/collision'
 import { seeded } from '../core/rand'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
-  B, BODY_Y0, BONE_COUNT, BUILD_COUNT, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
+  B, BODY_Y0, BONE_COUNT, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
   NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, boneRestWorld,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
@@ -467,7 +467,7 @@ export function buildPlayerBody(
     everybody's client agrees on how a given player stands, with no extra
     field on the wire.
   */
-  const persona = { lean: 0, roll: 0, tilt: 0, armL: 0, armR: 0, build: 0 }
+  const persona = { lean: 0, roll: 0, tilt: 0, armL: 0, armR: 0 }
   const personaFor = (l: PlayerLook) => {
     let h = 2166136261
     for (const ch of `${l.shell}${l.trim}${l.accent}${l.glow}${l.hat ?? 0}`) {
@@ -483,7 +483,6 @@ export function buildPlayerBody(
     const leftHigh = r() < 0.5
     persona.armL = leftHigh ? hi : lo
     persona.armR = leftHigh ? lo : hi
-    persona.build = h % BUILD_COUNT
   }
   personaFor(look)
 
@@ -492,8 +491,9 @@ export function buildPlayerBody(
   // the geometry is the one for this body's headgear; a repaint that changes
   // hat swaps it (see setLook)
   let hatNow = look.hat ?? 0
-  let buildNow = persona.build
-  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow), paint.material)
+  let buildNow = look.build ?? 0
+  let costumeNow = look.costume ?? 0
+  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow, costumeNow), paint.material)
   mesh.castShadow = true
   mesh.frustumCulled = false // hugs the camera; culling would blink limbs out
   // for callers that do cull it (remote bodies): a fixed sphere round the
@@ -956,7 +956,7 @@ export function buildPlayerBody(
       bone.quaternion.copy(qSeg)
     }
     // the headgear's two tails hang back and down off the knot
-    swing(jPom, pom, TAILS, 0.26, 70, 3.5, 9, 1.4)
+    swing(jPom, pom, TAILS, 0.26, 70, 3.5, 9, 0.9)
     swing(jMitL, handL, DOWN, 0.12, 170, 8, 3, 1.1)
     swing(jMitR, handR, DOWN, 0.12, 170, 8, 3, 1.1)
 
@@ -1477,7 +1477,7 @@ export function buildPlayerBody(
     // the guard: standing about, the long arms come up to a clumsy boxing
     // guard, fists at chest height, never quite matched
     const guardK = idleK * (1 - airK) * (1 - riseFold)
-    const elbowBase = 0.35 + 0.5 * runK * gait + 0.25 * guardK
+    const elbowBase = 0.3 + 0.5 * runK * gait + 0.1 * guardK
     // held well out from the body, standing or not: a round belly and a
     // loose shoulder, never glued to the hips; a fall flings them wide
     const spread =
@@ -1493,10 +1493,12 @@ export function buildPlayerBody(
     // a brawler's goof comes from (and where a grab starts)
     // and standing about they reach, low and forward and never level, each
     // body at its own lopsided angles (see `persona`)
-    const swayLX = (Math.sin(idleT * 1.7) * 0.12 + Math.sin(idleT * 0.83 + 1.3) * 0.08) * idleK - 0.5 -
-      (0.3 + persona.armL) * guardK
-    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.12 + Math.sin(idleT * 0.94 + 2.1) * 0.08) * idleK - 0.5 -
-      (0.3 + persona.armR) * guardK
+    // standing about they hang heavy and swing a little from the shoulders,
+    // a touch forward of the body and never level with each other
+    const swayLX = (Math.sin(idleT * 1.1) * 0.1 + Math.sin(idleT * 0.53 + 1.3) * 0.07) * idleK -
+      0.15 - 0.35 * gait - persona.armL * 0.4 * guardK
+    const swayRX = (Math.sin(idleT * 0.97 + 0.7) * 0.1 + Math.sin(idleT * 0.61 + 2.1) * 0.07) * idleK -
+      0.15 - 0.35 * gait - persona.armR * 0.4 * guardK
     const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.06 * idleK
     const swayRZ = Math.sin(idleT * 1.31 + 2.6) * 0.06 * idleK
     // inertial forces on the springs
@@ -2049,10 +2051,13 @@ export function buildPlayerBody(
       personaFor(next)
       paint.setLook(next)
       const hat = next.hat ?? 0
-      if (hat !== hatNow || persona.build !== buildNow) {
+      const b = next.build ?? 0
+      const c = next.costume ?? 0
+      if (hat !== hatNow || b !== buildNow || c !== costumeNow) {
         hatNow = hat
-        buildNow = persona.build
-        mesh.geometry = bodyGeometry(hat, buildNow)
+        buildNow = b
+        costumeNow = c
+        mesh.geometry = bodyGeometry(hat, b, c)
       }
     },
     showHead,

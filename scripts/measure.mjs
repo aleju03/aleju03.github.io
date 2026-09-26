@@ -167,10 +167,20 @@ for (const [k, n] of [...tally].sort((a, b) => b[1] - a[1])) {
   body: `
 const { buildPlayerBody } = await import('${ROOT}/src/game/player/playerBody.ts')
 const { makeCollisionSet } = await import('${ROOT}/src/game/physics/collision.ts')
-const { bodyGeometry, HAT_COUNT } = await import('${ROOT}/src/game/player/bodyShape.ts')
-// every headgear variant: its vertex count, and anything non-finite in it
+const { bodyGeometry, HAT_COUNT, BUILD_COUNT, COSTUME_COUNT } = await import('${ROOT}/src/game/player/bodyShape.ts')
+// every variant (hat x build x outfit): anything non-finite, and the vertex
+// range, printed per hat
 for (let h = 0; h < HAT_COUNT; h++) {
-  const g = bodyGeometry(h)
+  let lo = Infinity, hi = 0
+  for (let b = 0; b < BUILD_COUNT; b++) for (let c = 0; c < COSTUME_COUNT; c++) {
+    const n = bodyGeometry(h, b, c).getAttribute('position').count
+    lo = Math.min(lo, n); hi = Math.max(hi, n)
+  }
+  console.log('hat ' + h + ' over ' + BUILD_COUNT + ' builds x ' + COSTUME_COUNT + ' outfits: ' + lo + '..' + hi + ' verts')
+}
+for (let key = 0; key < HAT_COUNT * BUILD_COUNT * COSTUME_COUNT; key++) {
+  const h = Math.floor(key / (BUILD_COUNT * COSTUME_COUNT))
+  const g = bodyGeometry(h, Math.floor(key / COSTUME_COUNT) % BUILD_COUNT, key % COSTUME_COUNT)
   const P = g.getAttribute('position'), Nn = g.getAttribute('normal'), R = g.getAttribute('aRole')
   let badP = 0, badN = 0
   const roles = new Set()
@@ -178,7 +188,7 @@ for (let h = 0; h < HAT_COUNT; h++) {
     if (!Number.isFinite(P.getX(i) + P.getY(i) + P.getZ(i))) { badP++; roles.add(R.getX(i)) }
     if (!Number.isFinite(Nn.getX(i) + Nn.getY(i) + Nn.getZ(i))) { badN++; roles.add(R.getX(i)) }
   }
-  console.log('hat ' + h + ': ' + P.count + ' verts' + (badP + badN ? '  NON-FINITE pos ' + badP + ' nrm ' + badN + ' roles ' + [...roles] : ''))
+  if (badP + badN) console.log('variant ' + key + ': NON-FINITE pos ' + badP + ' nrm ' + badN + ' roles ' + [...roles])
 }
 const env = { groundY: 0, collision: makeCollisionSet({ minX: -1e3, maxX: 1e3, minZ: -1e3, maxZ: 1e3 }) }
 let t0 = performance.now()

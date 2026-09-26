@@ -11,9 +11,12 @@ import * as THREE from 'three'
   (the hand is only its rounded end, not a ball on a stick) hanging to about
   the knee. The face is two small dots. One piece of headgear out of eight:
   a knotted cloth sweatband, a wrestler's mask, a bucket hat, a party hat, a
-  hard hat, a bandana, nothing, or a hood that drapes onto the shoulders; and
-  one of three builds (brawler, brute, beanpole) that change the outline
-  itself. Hat and build are both geometry variants of the one body, so it is
+  hard hat, a bandana, nothing, or a hood that drapes onto the shoulders; one
+  of five builds (brawler, round, skinny, tall, squat) that change girth and
+  how far the dome rises over the eyes; and one of four outfits (nothing, a
+  cape, a hooped vest, an animal onesie with ears and a tail) that change the
+  trunk's outline or blocking. All three are geometry variants of the one
+  body (8 x 5 x 4 of them, each built on first use and shared), so it is
   still one draw call whatever it is. The character is in the colours,
   the hat and the pose, not in the body: every hat's geometry is a variant of
   the one body, so a body is still one draw call whatever it wears.
@@ -133,15 +136,18 @@ const PROF: Array<[number, number]> = [
 /*
   The build: every body is one of three outlines, the same drawing scaled
   differently in three bands (hips, shoulders, head), so a crowd is not six
-  copies of one shape wearing different hats. Chosen per player from a hash
-  of the look (see playerBody's persona), so it needs nothing on the wire.
-  Heights never change: the eye line is what the camera agrees with.
+  copies of one shape wearing different hats. The player picks it (it rides
+  in the pupils' colour, see look.ts). The eye line never moves, because it
+  is what the camera agrees with, so height is varied where it can be: by how
+  far the dome rises over the eyes, which is most of what reads as tall.
 */
-export const BUILD_COUNT = 3
+export const BUILD_COUNT = 5
 const BUILDS = [
-  { hip: 1, mid: 1, head: 1 }, // the brawler
-  { hip: 0.92, mid: 1.15, head: 0.88 }, // the brute: all shoulders, a pea head
-  { hip: 0.96, mid: 0.86, head: 1.1 }, // the beanpole: narrow, a big round head
+  { hip: 1, mid: 1, head: 1, crown: 1, leg: 1 }, // the brawler
+  { hip: 1.32, mid: 1.3, head: 0.95, crown: 0.9, leg: 1.2 }, // round: a ball on stumps
+  { hip: 0.7, mid: 0.72, head: 0.9, crown: 1.2, leg: 0.8 }, // skinny: a stick of a thing
+  { hip: 0.88, mid: 0.88, head: 0.9, crown: 2.5, leg: 0.95 }, // tall: a long domed head
+  { hip: 1.15, mid: 1.18, head: 1.08, crown: 0.5, leg: 1.12 }, // squat: flat-topped, wide
 ]
 let build = BUILDS[0]
 const bandScale = (t: number) => {
@@ -170,7 +176,20 @@ const beanR = (t: number) => {
   const top = t > 0.85 ? Math.sqrt(Math.max(0, 1 - ((t - 0.85) / 0.15) ** 2)) : 1
   return r * bot * top * bandScale(t)
 }
-const tOf = (y: number) => (y - BODY_Y0) / (BODY_Y1 - BODY_Y0)
+/** the stretch of everything above the eyes, per build: the eyes stay put
+    and the dome rises or settles over them. Drawing code works in unstretched
+    height `t` and places with `stretch`; anything that asks the surface a
+    question at a real height goes through `tOf`, which undoes it */
+const EYE_TOP = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF + 0.04
+const stretch = (y: number) => (y <= EYE_TOP ? y : EYE_TOP + (y - EYE_TOP) * build.crown)
+const unstretch = (y: number) => (y <= EYE_TOP ? y : EYE_TOP + (y - EYE_TOP) / build.crown)
+const tOf = (y: number) => (unstretch(y) - BODY_Y0) / (BODY_Y1 - BODY_Y0)
+
+const KNOT_UP = EYE_OFF + 0.2
+const KNOT_Z = (() => {
+  const y = HIP_Y + WAIST_OFF + NECK_OFF + KNOT_UP
+  return hz(y) - beanR(THREE.MathUtils.clamp(tOf(y), 0, 1)) * BODY_ZS - 0.04
+})()
 
 /** parent slot of each bone (-1: hangs off the group) and its offset from
     that parent at rest, design units */
@@ -191,7 +210,9 @@ export const BONE_REST: Array<{ parent: number; at: [number, number, number] }> 
   { parent: B.THIGH_R, at: [0, -THIGH, 0] },
   { parent: B.SHIN_R, at: [0, -SHIN + ANKLE_H, 0] },
   { parent: B.HEAD, at: [0, EYE_OFF, 0.44] }, // eyes (blink pivot)
-  { parent: B.HEAD, at: [0, EYE_OFF + 0.16, -0.36] }, // the knot at the back, tails swing off it
+  // the knot at the back that tails swing off: on the head's own surface,
+  // or the tails pivot about a point behind their root and come adrift
+  { parent: B.HEAD, at: [0, KNOT_UP, KNOT_Z] },
   { parent: B.TORSO, at: [0, 0.02, 0.5] }, // belly
 ]
 
@@ -495,12 +516,21 @@ export const HAT_COUNT = 8
     the attributes are the same layout on the same material, so a swap is a
     buffer rebind and never a relink. Never dispose them: they are module
     state */
-const SHARED: Array<THREE.BufferGeometry | null> = new Array(HAT_COUNT * BUILD_COUNT).fill(null)
+/** the outfits, in `look.ts`'s COSTUMES order: nothing, a cape, a hooped
+    vest, and an animal onesie (ears and a tail). Each changes the trunk's
+    outline or its colour blocking, not only the head */
+export const COSTUME_COUNT = 4
+const CAPE = 1
+const STRIPES = 2
+const ONESIE = 3
+const SHARED: Array<THREE.BufferGeometry | null> =
+  new Array(HAT_COUNT * BUILD_COUNT * COSTUME_COUNT).fill(null)
 
-export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
+export const bodyGeometry = (hat = 0, buildIndex = 0, costumeIndex = 0): THREE.BufferGeometry => {
   const kind = Math.max(0, Math.min(HAT_COUNT - 1, Math.floor(hat)))
   const b = Math.max(0, Math.min(BUILD_COUNT - 1, Math.floor(buildIndex)))
-  const key = kind * BUILD_COUNT + b
+  const costume = Math.max(0, Math.min(COSTUME_COUNT - 1, Math.floor(costumeIndex)))
+  const key = (kind * BUILD_COUNT + b) * COSTUME_COUNT + costume
   const cached = SHARED[key]
   if (cached) return cached
   build = BUILDS[b]
@@ -533,7 +563,7 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
         const th = u * Math.PI * 2
         const t = t0 + (t1 - t0) * v
         const r = beanR(t)
-        const y = BODY_Y0 + (BODY_Y1 - BODY_Y0) * t
+        const y = stretch(BODY_Y0 + (BODY_Y1 - BODY_Y0) * t)
         out.set(Math.cos(th) * r, y, Math.sin(th) * r * BODY_ZS + hz(y))
       },
       24, rings, role, bean, new THREE.Vector3(0, (BODY_Y0 + BODY_Y1) / 2, 0),
@@ -544,7 +574,17 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
   // rim across the bottom of the frame with faceted forearms in front of it
   const tNeck = tOf(shoulderY - 0.25)
   const tHead = tOf(headY + 0.02)
-  slice(0, tNeck, ROLE.SUIT, 22) // the body
+  if (costume === STRIPES) {
+    // hooped like a strongman's vest: the trunk in bands of the two colours
+    const tLo = tOf(pelvisY - 0.12)
+    const bands = 7
+    slice(0, tLo, ROLE.SUIT, 6)
+    for (let k = 0; k < bands; k++) {
+      const a = tLo + ((tNeck - tLo) * k) / bands
+      const b = tLo + ((tNeck - tLo) * (k + 1)) / bands
+      slice(a, b, k % 2 ? ROLE.SUIT : ROLE.TRIM, 3)
+    }
+  } else slice(0, tNeck, ROLE.SUIT, 22) // the body
   slice(tNeck, tHead, ROLE.SUIT + H, 4) // the neck, which the lens must not see
   // the head, which is the mask when the mask is worn
   slice(tHead, 1, (kind === MASK ? ROLE.ACCENT : ROLE.SUIT) + H, 16)
@@ -606,12 +646,15 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
     }
     tube(
       s,
-      [hip.clone().add(new THREE.Vector3(0, 0.24, 0)), hip, knee, ank.clone().add(new THREE.Vector3(0, 0.1, 0))],
-      0.28, 0.17, ROLE.SUIT, legW, 10,
+      [hip.clone().add(new THREE.Vector3(0, 0.24, 0)), hip, knee, ank.clone().add(new THREE.Vector3(0, -0.02, 0.02))],
+      0.28 * build.leg, 0.17 * build.leg, ROLE.SUIT, legW, 10,
     )
+    // the foot swallows the end of the leg: a tall soft lump the stump runs
+    // down into, not a shoe with a padded collar round the ankle
     ellipsoid(
-      s, new THREE.Vector3(ank.x, 0.12, 0.07), new THREE.Vector3(0.22, 0.16, 0.27),
-      ROLE.SUIT, rigid(ft), [14, 10], undefined, 0.0,
+      s, new THREE.Vector3(ank.x, 0.13, 0.06),
+      new THREE.Vector3(0.23 * build.leg, 0.2, 0.28),
+      ROLE.SUIT, (p) => (p.y > 0.2 ? [ft, sn, 0.6] : [ft, ft, 1]), [14, 10], undefined, 0.0,
     )
   }
 
@@ -657,8 +700,9 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
     tube(s, pts, rad, rad, role, head, 8, flat)
   }
   /** a knot at the back of the head and two tails off it on the springy bone */
-  const knotAndTails = (y: number, role: number, long = 0.28, at = -Math.PI / 2) => {
-    const knot = onHead(y, at, 0.05, new THREE.Vector3())
+  const knotAndTails = (role: number, long = 0.28) => {
+    // always at the knot bone, whatever the headgear: see KNOT_Z
+    const knot = rest(B.POM)
     ellipsoid(s, knot, new THREE.Vector3(0.1, 0.085, 0.08), role, head, [8, 6])
     for (const side of [1, -1]) {
       tube(
@@ -682,7 +726,7 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
         const r = beanR(Math.min(1, t)) * k
         out.set(
           Math.cos(u * Math.PI * 2) * r,
-          BODY_Y0 + (BODY_Y1 - BODY_Y0) * t + (k - 1) * 0.3 * v,
+          stretch(BODY_Y0 + (BODY_Y1 - BODY_Y0) * t) + (k - 1) * 0.3 * v,
           Math.sin(u * Math.PI * 2) * r * BODY_ZS + hz(BODY_Y0 + (BODY_Y1 - BODY_Y0) * t),
         )
       },
@@ -701,7 +745,7 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
       },
       seg[0], seg[1], role, head, new THREE.Vector3(0, prof(0.5)[1], 0),
     )
-  const crownY = BODY_Y1
+  const crownY = stretch(BODY_Y1)
   const A = ROLE.ACCENT + H
   const T = ROLE.TRIM + H
 
@@ -712,7 +756,7 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
       // read from above as the lip of an open tin)
       // cloth, not a halo: a thick knotted band, tied off-centre at the back
       // with the tails hanging long, worn tipped low over one brow
-      const y = eyeY + 0.2
+      const y = rest(B.POM).y + 0.04
       const pts: THREE.Vector3[] = []
       for (let k = 0; k <= 32; k++) {
         const th = (k / 32) * Math.PI * 2
@@ -720,7 +764,7 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
         pts.push(onHead(yy, th, 0.03 + 0.008 * Math.sin(th * 7), new THREE.Vector3()))
       }
       tube(s, pts, 0.068, 0.068, A, head, 8, 1.1)
-      knotAndTails(y + 0.01, A, 0.42, -Math.PI / 2 + 0.55)
+      knotAndTails(A, 0.42)
       break
     }
     case 1: {
@@ -750,7 +794,7 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
         }
         tube(s, rim, 0.026, 0.026, T, head, 6, 1)
       }
-      knotAndTails(eyeY + 0.05, T, 0.34)
+      knotAndTails(T, 0.34)
       break
     }
     case 2: {
@@ -802,7 +846,7 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
       // two long tails, and a few dots
       const y0 = eyeY + 0.2
       cap(y0, 1.035, A, 8)
-      knotAndTails(y0 + 0.02, A, 0.34)
+      knotAndTails(A, 0.34)
       for (const [th, dy] of [[1.2, 0.12], [1.95, 0.1], [0.4, 0.18], [2.7, 0.2], [1.55, 0.3], [-0.5, 0.15], [3.6, 0.14]] as const) {
         const n = new THREE.Vector3()
         const p = onHead(y0 + dy, th, 0.05, new THREE.Vector3(), n)
@@ -841,6 +885,57 @@ export const bodyGeometry = (hat = 0, buildIndex = 0): THREE.BufferGeometry => {
     }
     default:
       break // bare-headed
+  }
+
+  // --- the outfit ---------------------------------------------------------
+  if (costume === CAPE) {
+    // a cape: tied at the throat, hanging off the shoulders down the back to
+    // the knees and flaring as it goes, which turns the bean into a triangle
+    // from behind and from the side
+    const yTop = shoulderY + 0.06
+    const yBot = HIP_Y * 0.42
+    const capeW = blend(B.PELVIS, B.TORSO, (pelvisY + torsoY) / 2, 0.3)
+    patch(
+      s,
+      (u, v, out) => {
+        const th = Math.PI + 0.25 + u * (Math.PI - 0.5) // across the back
+        const y = yTop + (yBot - yTop) * v
+        const r = beanR(THREE.MathUtils.clamp(tOf(Math.max(y, BODY_Y0 + 0.2)), 0, 1)) + 0.05 + 0.32 * v
+        out.set(Math.cos(th) * r, y, Math.sin(th) * r * BODY_ZS + hz(y) - 0.04 * v)
+      },
+      16, 8, ROLE.TRIM, capeW, new THREE.Vector3(0, (yTop + yBot) / 2, 0.2),
+    )
+    const tie: THREE.Vector3[] = []
+    for (let k = 0; k <= 16; k++) {
+      const th = Math.PI * 0.15 + (k / 16) * Math.PI * 0.7 // round the front of the neck
+      tie.push(onHead(yTop, th, 0.04, new THREE.Vector3()))
+    }
+    tube(s, tie, 0.055, 0.055, ROLE.TRIM, rigid(B.TORSO), 6)
+  } else if (costume === ONESIE) {
+    // an animal onesie: two round ears up top and a fat tail out the back,
+    // in the outfit colour
+    for (const side of [1, -1]) {
+      const n = new THREE.Vector3()
+      const p = onHead(crownY - 0.12, Math.PI / 2 + side * 1.2, 0.0, new THREE.Vector3(), n)
+      const up = new THREE.Vector3(side * 0.35, 1, 0.1).normalize()
+      const m = new THREE.Matrix4().makeBasis(
+        new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 0, 1)).normalize(),
+        up,
+        new THREE.Vector3(0, 0, 1),
+      )
+      ellipsoid(s, p.addScaledVector(up, 0.1), new THREE.Vector3(0.13, 0.17, 0.06), ROLE.TRIM + H, head, [10, 8], m)
+    }
+    const tailRoot = new THREE.Vector3(0, pelvisY + 0.1, -beanR(tOf(pelvisY + 0.1)) * BODY_ZS + hz(pelvisY + 0.1) + 0.06)
+    tube(
+      s,
+      [
+        tailRoot,
+        tailRoot.clone().add(new THREE.Vector3(0.05, -0.12, -0.3)),
+        tailRoot.clone().add(new THREE.Vector3(0.12, 0.05, -0.55)),
+        tailRoot.clone().add(new THREE.Vector3(0.1, 0.3, -0.62)),
+      ],
+      0.13, 0.08, ROLE.TRIM, rigid(B.PELVIS), 8,
+    )
   }
 
   const g = new THREE.BufferGeometry()

@@ -154,6 +154,8 @@ export interface Sandbox {
   setMode: (id: PropId, mode: PropMode) => void
   moveKinematic: (id: PropId, pos: Vec3Like, quat?: QuatLike) => void
   wake: (id: PropId) => void
+  /** is any other prop touching this one (a gib a crate rests on) */
+  inContact: (id: PropId) => boolean
 
   /* events and hooks; each returns its unsubscribe */
   onImpact: (fn: (e: ImpactEvent) => void) => () => void
@@ -454,6 +456,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     setMode: (id, mode) => run((l) => l.props.setMode(id, mode)),
     moveKinematic: (id, pos, quat) => live?.props.moveKinematic(id, pos, quat),
     wake: (id) => live?.props.wake(id),
+    inContact: (id) => live?.props.inContact(id) ?? false,
     onImpact: (fn) => {
       listeners.impact.add(fn)
       return () => listeners.impact.delete(fn)

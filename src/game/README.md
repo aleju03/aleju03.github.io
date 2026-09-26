@@ -643,12 +643,13 @@ await sb.whenReady                      // optional: spawns before it are queued
 sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
 
 const id = sb.spawn('crate', { x, y, z }, { yaw, quaternion, velocity, angular,
-                                            frozen, id, mesh, shape, mass, data })
+                                            frozen, id, mesh, shape, mass, data, phase })
 sb.remove(id); sb.clear(); sb.get(id); sb.forEach(fn); sb.count
 sb.getTransform(id, pos, quat?); sb.setTransform(id, pos, quat?)
 sb.getVelocity(id, lin, ang?); sb.setVelocity(id, lin?, ang?)
 sb.applyImpulse(id, impulse, at?); sb.addForce(id, force, at?)   // addForce: from onBeforeSlice
 sb.freeze(id); sb.unfreeze(id); sb.setMode(id, 'dynamic' | 'frozen' | 'kinematic')
+sb.inContact(id)                        // is any other prop touching it
 sb.moveKinematic(id, pos, quat?); sb.wake(id)
 sb.onImpact(e => ...)  // { id, prop, with: 'prop'|'ground'|'solid'|'vehicle'|'player',
                        //   other, solid, impulse, speed, x, y, z }
@@ -739,6 +740,23 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   so it drives without pumping. `measure physics float` prints heave, drift,
   turn, rock and churn from six seconds on, and flags a dead or churning
   floater.
+- **A piece born inside a crowd passes through it for a moment.** A broken
+  crate's gibs start where the crate was, pressed into whatever stood on it,
+  and spawned solid they held a whole column of crates up (round three
+  filmed the top crate *above* the tower's height for 0.4 s). Spawned with
+  `phase` (gibs use 0.1 s) a prop meets only the ground, the world's solids,
+  walkers and vehicles, and rejoins the props once it overlaps none, within
+  a second. `measure physics fall` shatters a base both ways: phased, the
+  top crate is falling 0.07 s later; solid, never.
+- **Removing a prop must not wake a heap.** Rapier wakes everything that
+  touched a removed collider, and a settled pile is one island, so clearing
+  gibs woke all forty props again. `remove` puts back to sleep, with its
+  velocity cleared (`sleep()` keeps it), everything it woke except what was
+  resting on the removed prop; and breakables leave any splinter another
+  prop touches until one of them moves. Two traps found on the way: a pair
+  that went to sleep keeps its contact normal but drops its contact points,
+  so `numContacts()` cannot say who rests on whom, and a gib that another
+  prop merely leans on is support too.
 - **Rapier has no rolling resistance.** A drum on a 2% camber rolls forever,
   and one standing on its end spins like a top: round two's pile still had a
   barrel turning in place at twenty seconds. A kind's `rolling` coefficient
@@ -796,20 +814,24 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   which puts their links in the first frame under the boot cover.
   `npm run film -- props:links` counts `linkProgram` through a spawn of every
   kind, a break of every breakable and a blast: it must print 0 and 0.
-- **Fire and smoke are solid.** Nothing may write alpha under the look (that
-  is a hole), and both used to dissolve through a Bayer dither on
-  `gl_FragCoord` instead: fire read as a screen door (orange balls you could
-  see the street through) and smoke as a sparse dot pattern laid over the
-  scene. Both are now opaque and depth-writing, shaded in three bands off
-  how squarely each fragment faces the lens (`fx.ts`'s `banded`), and go by
-  shrinking. Ground dust is a flat lens rather than a ball, or it reads as a
-  stone.
+- **Nothing writes alpha it does not mean.** Under the look alpha is a
+  hole, and fire and smoke that dissolved through a Bayer dither read as a
+  screen door and a sparse dot pattern. Flame balls are opaque and banded
+  (`fx.ts`'s `banded`) and shrink away. The blast's core and the smoke are
+  sprites on one program in three blends that leave the target's alpha
+  alone: the core is *added* (near white, so a barrel tumbling through the
+  fireball is still seen inside it), its inner disc writes `GLOW_ALPHA` so
+  the look skips the grade, the ink and the lamp light there, as the
+  physgun's beam does, and smoke is premultiplied *over*, translucent
+  through blending in three stepped opacities, lit by the look's ambient
+  (`uShade`, from `lightLook`) so it darkens at night. Ground dust is a
+  flattened sprite, or it reads as a stone.
 - **A bang is a light before it is a ball.** For three frames the look's
   `lights.flash` is hard and wide (1.5x the blast radius), lighting the
-  street, the fronts and the props around it and washing the air, then it
-  falls to the fireball's orange glow; under it, a burst of white-hot balls,
-  flame tongues thrown radially (`jets`) and a fireball about fourteen units
-  across for a barrel.
+  street, the fronts and the props round it by day as well as by night and
+  washing the air, then it falls to the fireball's orange glow; under it
+  the added core, flame spears thrown radially well past it (`jets`), and
+  only then a few orange flame balls.
 - **A blast throws, and it is late.** `explode` sets a velocity change (out,
   50-70 degrees up, tumbling), not an impulse, falling with the square root
   of the mass; blasts a beat apart redirect more than they add. Explosives
@@ -868,6 +890,8 @@ npm run film -- --list
 
 npm run film -- sandbox:catalogue      every prop on a town street
 npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 4    barrels going up in a row
+npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 3.3 --from -40.5,2.5,-349 --to -31,1.6,-326 --fov 64
+                                       ...the same from a walker's eye
 npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
 npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
 npm run film -- props:turntable        every model four ways round
@@ -1179,6 +1203,13 @@ step, so a cloud is a set of flat shapes rather than a stain); then the
 vignette. A third pass upscales nearest-neighbour to the
 canvas, integer where the screen allows (1080p is exactly 3x, 1440p 4x), and
 a fourth redraws the glass holes at full resolution.
+
+Dusk keeps its warmth in the light only (the sun, the disc, the horizon
+band and the sky's sunward side, the lamps): the air and the shadows it
+fills are a cool grey-blue, which is what keeps distant masses apart instead
+of dissolving them into one sepia plane. And the look clamps the scene's
+alpha before it writes premultiplied colour, because additive sprites pile
+alpha past 1 in the half-float target and came back as glowing dots.
 
 The sky (`levels/sky.ts`) is painted for the look and owned with it: a day
 dome painted deeper than it reads, clouds drawn as hard-rimmed shapes in

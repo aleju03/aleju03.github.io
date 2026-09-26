@@ -33,7 +33,8 @@ import type { Sandbox } from './sandbox'
   here (`gib_wood`, `gib_glass`...) so they knock and tink like what they
   came from. They carry `data.gib = true` (history and the network should
   skip them), live `GIB_LIFE` seconds, then shrink away over half a second
-  and are removed. The oldest go first if more than `MAX_GIBS` are about.
+  and are removed, unless another prop touches them (then they wait). The
+  oldest go first if more than `MAX_GIBS` are about.
 
   Every impact also makes its sound here (impactSounds.ts), because the one
   subscription already knows the surface, the blow and the mass.
@@ -121,6 +122,9 @@ const DEBRIS: Partial<Record<Surface, 'wood' | 'glass' | 'melon' | 'plastic' | '
   wood: 'wood', glass: 'glass', melon: 'melon', plastic: 'plastic', metal: 'metal', drum: 'metal', sheet: 'metal',
 }
 
+/** seconds a fresh gib passes through other props (props.ts's `phase`) */
+const GIB_PHASE = 0.1
+
 interface State {
   hp: number
   /** seconds left on a lit fuse, or -1 */
@@ -198,6 +202,10 @@ export const createLife = (
         mass: Math.max(0.1, p.mass * g.share),
         mesh,
         data: { gib: true, of: p.kind.id },
+        // born where the crate was, pressed against whatever stood on it:
+        // through other props for a moment, then solid once clear, or the
+        // pieces shove the column above upward instead of letting it fall
+        phase: GIB_PHASE,
       })
       gibs.push({ id, age: 0, mesh, scale: 1 })
       ids.push(id)
@@ -406,8 +414,19 @@ export const createLife = (
     // gibs age, shrink and go
     for (let i = gibs.length - 1; i >= 0; i--) {
       const g = gibs[i]
+      const was = g.age
       g.age += h
       if (g.age < GIB_LIFE) continue
+      // a splinter another prop is touching stays: pulling it out drops or
+      // tips whatever leans on it, and in a settled pile one prop tipping
+      // wakes the whole heap (measured: 43 of 40 props and their gibs awake
+      // again at 10 s). Only splinters lying on their own are cleared. It is
+      // asked again every half second, and a crowd past half again the cap
+      // clears regardless
+      if (was < GIB_LIFE + 1e-9 && gibs.length < MAX_GIBS * 1.5 && sb.inContact(g.id)) {
+        g.age = GIB_LIFE - 0.5
+        continue
+      }
       const k = 1 - (g.age - GIB_LIFE) / GIB_FADE
       if (k <= 0 || !sb.get(g.id)) {
         sb.remove(g.id)

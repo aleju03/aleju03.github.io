@@ -299,7 +299,7 @@ const standing = (c: ScenarioCtx) => {
   let n = 0
   for (const id of c.ids) {
     const p = c.sb.get(id)
-    if (!p || !['pallet', 'cinder', 'tyre', 'crate'].includes(p.kind.id)) continue
+    if (!p || !['pallet', 'cinder', 'tyre', 'crate', 'block'].includes(p.kind.id)) continue
     const t = p.body.translation()
     const v = p.body.linvel()
     if (t.y - c.sb.groundY(t.x, t.z) > p.extents.y * 1.5 + 0.1 && Math.hypot(v.x, v.y, v.z) < 1) n++
@@ -320,8 +320,10 @@ defineScenario({
   duration: 5,
   frames: 12,
   tod: 0.4,
+  // high and three-quarters on from the barrels' side, so the row reads
+  // in front of the crate stacks (README's film list has the eye-level shot)
   camera: (c) => {
-    const f = at(c, -15, 7)
+    const f = at(c, -15, 9)
     const t = at(c, 13, -1)
     return { from: [f.x, c.y + 12, f.z], to: [t.x, c.y + 1.5, t.z], fov: 50 }
   },
@@ -346,32 +348,34 @@ defineScenario({
       return id
     }
     const crate = 2.4
-    // six barrels zigzagging down the street, close enough that each is in
-    // the next one's killing radius
+    // six barrels down the near side of the street, close enough that each
+    // is in the next one's killing radius, and nothing between them and the
+    // lens: they are the stars, and behind a crate stack a barrel is seen
+    // only once it has gone off. The crates stand in stacks along the far
+    // side, where the blasts throw them across the street
     const barrels: PropId[] = []
-    for (let k = 0; k < 6; k++) barrels.push(put('barrel_explosive', k * 5.2, k % 2 ? 1.8 : -1.8, 0, rnd()))
+    for (let k = 0; k < 6; k++) barrels.push(put('barrel_explosive', k * 5.2, 1.6 + (k % 2) * 0.8, 0, rnd()))
     c.memo.first = barrels[0]
-    // between them, crates stacked two high and a pyramid, a pallet with
-    // melons on it, a gas can and a propane tank to finish
     for (let k = 0; k < 5; k++) {
       const a = k * 5.2 + 2.6
-      const b = k % 2 ? -2.4 : 2.4
-      put('crate', a, b - 1.25, 0.01, (rnd() - 0.5) * 0.2)
-      put('crate', a, b + 1.25, 0.01, (rnd() - 0.5) * 0.2)
+      const b = -2.8
+      put('crate', a - 1.25, b, 0.01, (rnd() - 0.5) * 0.2)
+      put('crate', a + 1.25, b, 0.01, (rnd() - 0.5) * 0.2)
       put('crate', a, b, crate + 0.02, (rnd() - 0.5) * 0.3)
     }
-    put('pallet', 9, -5.2)
-    for (const o of [-0.7, 0.7]) put('melon', 9 + o, -5.2, 0.4, rnd())
+    put('pallet', 9, -6.2)
+    for (const o of [-0.7, 0.7]) put('melon', 9 + o, -6.2, 0.4, rnd())
     put('crate_small', 14, 5, 0)
-    put('gascan', 16, 3.2)
+    put('gascan', 16, 4.2)
     put('propane', 28, 0.5)
     put('cone', 6, 5.5)
     put('cone', 20, 5.5)
     put('trashcan', 24, -6)
-    // and two stacks a dozen units off either end, far enough to rock and
-    // stand, so the street after the bangs is not all one flat heap: three
-    // pallets with a crate on them, and a staggered wall of cinder blocks
-    // with a tyre stack beside it, for thrown things to land on
+    // and stacks far enough off the row to rock and stand, so the street
+    // after the bangs is not all one flat heap: three pallets with a crate
+    // on them across from the last barrel, and a staggered wall of cinder
+    // blocks with a tyre stack beside it at the far end, for thrown things
+    // to land on
     const stack = (kind: string, a: number, b: number, n: number, yaw = 0) => {
       const e = shapeExtents(KINDS[kind].shape)
       const p = at(c, a, b)
@@ -382,8 +386,24 @@ defineScenario({
       }
       return y
     }
-    const top = stack('pallet', -12, -3, 3)
-    { const p = at(c, -12, -3); c.ids.push(c.sb.spawn('crate', { x: p.x, y: top + DIMS_CRATE + 0.02, z: p.z }, { quaternion: yawQ(facing(c.dx, c.dz)) })) }
+    const top = stack('pallet', 24, -8.4, 3)
+    { const p = at(c, 24, -8.4); c.ids.push(c.sb.spawn('crate', { x: p.x, y: top + DIMS_CRATE + 0.02, z: p.z }, { quaternion: yawQ(facing(c.dx, c.dz)) })) }
+    // and in frame from both lenses, near the first barrel: concrete
+    // blocks a blast barely rocks, two and one on top, with a crate on the
+    // top one for a blast to knock about
+    {
+      const e = shapeExtents(KINDS.block.shape)
+      const q = yawQ(facing(c.dx, c.dz))
+      for (const o of [-1, 1]) {
+        // side by side along their length, the top one across the seam
+        const p = at(c, 3, -7.4 + o * (e.x + 0.03))
+        c.ids.push(c.sb.spawn('block', { x: p.x, y: c.sb.restY('block', p.x, p.z) + 0.01, z: p.z }, { quaternion: q }))
+      }
+      const p = at(c, 3, -7.4)
+      const y = c.sb.restY('block', p.x, p.z) + 2 * e.y + 0.03
+      c.ids.push(c.sb.spawn('block', { x: p.x, y, z: p.z }, { quaternion: q }))
+      c.ids.push(c.sb.spawn('crate', { x: p.x, y: y + e.y + DIMS_CRATE + 0.03, z: p.z }, { quaternion: q }))
+    }
     for (let row = 0; row < 3; row++) for (let k = 0; k < 3 - row; k++) {
       const e = shapeExtents(KINDS.cinder.shape)
       const p = at(c, 46, -2 + (k - (2 - row) / 2) * (2 * e.x + 0.05))
@@ -409,8 +429,8 @@ defineScenario({
     }
     const s = c.sb.stats
     const heard = (bangs.get(c)?.list ?? []).map((b) => `${b.t.toFixed(2)}s@${b.up.toFixed(0)}u`).join(' ')
-    // (the two stacks' crate is the sixteenth)
-    return `${6 - barrels}/6 barrels went off, ${16 - crates}/16 crates broke, ${left} of ${c.ids.length} props left, ` +
+    // (the stacks' two crates are the sixteenth and seventeenth)
+    return `${6 - barrels}/6 barrels went off, ${17 - crates}/17 crates broke, ${left} of ${c.ids.length} props left, ` +
       `${standing(c)} props resting on others, ` +
       `bangs ${heard}; ` +
       `${s.gibs} gibs and ${s.particles} particles live at the end`

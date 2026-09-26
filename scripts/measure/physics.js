@@ -11,6 +11,7 @@
     tunnel     fast things do not pass through thin things or the ground
     walker     the walk pushes a crate, is stopped by a block, stands on a
                stack and rides a moving plank
+    fall       the crate tower: from the base breaking to the top falling
     rest       the forty-prop pile: when its last prop falls asleep
     determinism  every scenario twice, and on uneven frames: same hash?
     float      each kind dropped on the drawn swell: waterline, attitude,
@@ -466,6 +467,95 @@ if (want('sites')) {
   }
 }
 
+/* --------------------------------------------------------------- fall -- */
+if (want('fall')) {
+  // sandbox:stack, watched for how it comes down: when the first crate of
+  // the base breaks, and for each column's top crate how long after that it
+  // starts to descend, how far it first rose above where it stood (round
+  // three's gibs, born inside the column, shoved it up for 0.4 s), and how
+  // many of the fifteen are still standing in their row at the end
+  const s = SCENARIOS.find((o) => o.id === 'sandbox:stack')
+  const { sb } = newSandbox(true, false)
+  await sb.whenReady
+  const c = stageScenario(s, sb)
+  const ids = c.ids.slice(0, 15)
+  const y0 = ids.map((id) => sb.get(id).body.translation().y)
+  const x0 = ids.map((id) => sb.get(id).body.translation().x)
+  const z0 = ids.map((id) => sb.get(id).body.translation().z)
+  let baseAt = null
+  const rise = [0, 0, 0]
+  const fellAt = [null, null, null]
+  advanceScenario(s, c, s.duration, (t) => {
+    // the base is gone when a bottom crate breaks or is knocked a unit out
+    if (baseAt === null && ids.slice(0, 3).some((id, i) => {
+      const p = sb.get(id)
+      if (!p) return true
+      const q = p.body.translation()
+      return Math.hypot(q.x - x0[i], q.z - z0[i]) > 1
+    })) baseAt = t
+    for (let k = 0; k < 3; k++) {
+      const p = sb.get(ids[12 + k])
+      if (!p) continue
+      const y = p.body.translation().y
+      rise[k] = Math.max(rise[k], y - y0[12 + k])
+      if (baseAt !== null && fellAt[k] === null && y < y0[12 + k] - 0.05) fellAt[k] = t
+    }
+  })
+  let standing = 0
+  ids.forEach((id, i) => {
+    const p = sb.get(id)
+    if (p && Math.abs(p.body.translation().y - y0[i]) < 0.3) standing++
+  })
+  const low = ids.slice(12).filter((id, k) => {
+    const p = sb.get(id)
+    return !p || p.body.translation().y < y0[12 + k] - 4.7
+  }).length
+  const delays = fellAt.map((t) => (t === null || baseAt === null ? 'never' : `${f(Math.max(0, t - baseAt), 2)} s`))
+  const worst = Math.max(...fellAt.map((t) => (t === null || baseAt === null ? 99 : t - baseAt)))
+  console.log(`fall     stack: base broke at ${baseAt === null ? 'never' : f(baseAt, 2) + ' s'}, top crates began to fall ` +
+    `${delays.join(' / ')} after, rose at most ${rise.map((r) => f(r, 2)).join(' / ')} first, ` +
+    `${standing}/15 still standing where they were and ${low}/3 top crates down two rows or more at ${s.duration} s ` +
+    (worst <= 0.1 && low === 3 ? '(comes down)' : worst > 0.1 ? '<-- HANGS' : '<-- TIMID'))
+  sb.dispose()
+  // and the case round three hung on: the base *shattered* under the tower
+  // (every bottom crate broken at once, its gibs born where it stood), with
+  // gibs passing through props for their first moment and without
+  for (const phased of [true, false]) {
+    const { sb } = newSandbox(true, false)
+    await sb.whenReady
+    const site = s.site()
+    const ids = []
+    const base = sb.restY('crate', site.x, site.z)
+    for (let row = 0; row < 5; row++) for (let col = -1; col <= 1; col++) {
+      ids.push(sb.spawn('crate', { x: site.x + site.dx * col * 2.45, y: base + row * 2.41, z: site.z + site.dz * col * 2.45 }))
+    }
+    const focus = { x: site.x, y: base, z: site.z }
+    for (let i = 0; i < 60; i++) sb.tick({ dt: 1 / 60, active: true, focus })
+    const y0 = ids.map((id) => sb.get(id).body.translation().y)
+    // gibs spawned solid, by clearing the phase the moment they appear
+    const unphase = phased ? null : sb.onSpawn((p) => {
+      if (!p.data.gib) return
+      for (const c of p.colliders) c.setCollisionGroups(0x0002000f)
+    })
+    for (const id of ids.slice(0, 3)) sb.shatter(id)
+    unphase?.()
+    let first = null
+    let rise = 0
+    for (let i = 1; i <= 90; i++) {
+      sb.tick({ dt: 1 / 60, active: true, focus })
+      const p = sb.get(ids[13])
+      if (!p) continue
+      const dy = p.body.translation().y - y0[13]
+      rise = Math.max(rise, dy)
+      if (first === null && dy < -0.05) first = i / 60
+    }
+    console.log(`fall     base shattered, gibs ${phased ? 'phased 0.1 s' : 'solid at birth'}: the top crate began to fall ` +
+      `${first === null ? 'never' : f(first, 3) + ' s'} after, rising ${f(rise, 2)} first ` +
+      (phased ? (first !== null && first <= 0.1 && rise < 0.02 ? '(falls)' : '<-- HANGS') : '(round three)'))
+    sb.dispose()
+  }
+}
+
 /* --------------------------------------------------------------- rest -- */
 if (want('rest')) {
   // the pile, run long: when does the last prop fall asleep? Round two's
@@ -478,6 +568,7 @@ if (want('rest')) {
   const c = stageScenario(s, sb)
   const lastOf = {}
   let allAt = null
+  let rewoke = 0
   let quietAt = null
   const awakeAt = {}
   advanceScenario(s, c, 30, (t) => {
@@ -493,7 +584,8 @@ if (want('rest')) {
     // cleared a few seconds later, and the pile shifts into the gaps they
     // leave and sleeps again; that is catalogue housekeeping, not a prop
     // that would not settle)
-    if (awake === 0 && allAt === null) allAt = t
+    if (awake === 0 && allAt === null && t > 3) allAt = t
+    if (allAt !== null && awake > 0) rewoke = Math.max(rewoke, awake)
   })
   const rows = []
   sb.forEach((p) => {
@@ -505,7 +597,8 @@ if (want('rest')) {
   console.log(`rest     pile of 40: awake at 5/10/15/20 s ${[5, 10, 15, 20].map((k) => awakeAt[k]).join('/')}, ` +
     `2 or fewer awake from ${quietAt === null ? 'never' : f(quietAt, 2) + ' s'}, ` +
     `all asleep at ${allAt === null ? 'never <-- ' + rows.join('; ') : f(allAt, 2) + ' s'}` +
-    (rows.length ? `, awake at 30 s <-- ${rows.join('; ')}` : ', all asleep at 30 s'))
+    (rows.length ? `, awake at 30 s <-- ${rows.join('; ')}` : ', all asleep at 30 s') +
+    `, woken again after that: ${rewoke ? rewoke + ' at most <--' : 'none'}`)
   console.log(`         last awake by kind, gib clear-up included: ${Object.entries(lastOf).sort((a, b) => b[1] - a[1]).map(([k, t]) => `${k} ${f(t, 1)} s`).join(', ')}`)
   sb.dispose()
 }

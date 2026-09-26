@@ -282,8 +282,16 @@ const lying = (dx: number, dz: number) => {
   return { x: (kx / l) * s, y: 0, z: (kz / l) * s, w: s }
 }
 
-/** how far the stack's ram is tilted end to end, radians */
-const RAM_SLANT = 0.3
+/** how far the stack's ram is turned off square to the tower, radians: it
+    meets the columns a seventh of a second apart, so they twist and come
+    apart as they go over instead of falling as one wall */
+const RAM_SKEW = 0.4
+/** how fast it is swung through, u/s. Under a crate's breaking speed on
+    purpose: at 30 the base shattered and the column above dropped a floor
+    and stood there; at 18 the base is kicked out whole, dragging the
+    bottom of each column after it, and the tower goes over. Measured over
+    12, 18 and 30 u/s and three heights by `measure physics fall` */
+const RAM_SPEED = 18
 
 const settle = (c: ScenarioCtx) => {
   // report helper: how many of the ids are asleep
@@ -297,7 +305,7 @@ const settle = (c: ScenarioCtx) => {
 
 defineScenario({
   id: 'sandbox:stack',
-  title: 'a 3x5 tower of crates, a slanted plank rammed through its base',
+  title: 'a 3x5 tower of crates, a girder rammed through its base',
   site: siteFlat,
   duration: 6,
   frames: 12,
@@ -333,25 +341,24 @@ defineScenario({
           yaw: yaw + rnd() * 0.16, mass: 35 * (1 + rnd() * 0.7),
         }))
       }
-    // the ram: a plank held level, a little askew so it meets one end of the
-    // tower first, swung through the *bottom* row at the speed a physgun
-    // throw leaves the hand, then let go. Leaning on the tower slowly only
-    // ever pivoted it over whole, as one slab (which is what a real stack of
-    // boxes does when pushed slowly, and not what anyone films), and round
-    // two's punt through the second row at 16 u/s left the bottom row
-    // standing and dropped the top three as one block. Knocking the base out
-    // hard is what makes everything above come down in pieces
+    // the ram: a steel girder held level and turned off square, swung
+    // through the *bottom* row, then let go. Leaning on the tower slowly
+    // only ever pivoted it over whole, as one slab; round two's punt through
+    // the second row left the bottom row standing; round three's plank,
+    // slanted to reach the second row at one end, was a wedge that lifted
+    // the crates it slid under, and shorter than the tower is wide, so one
+    // column was never touched; and a ram fast enough to shatter the base
+    // just dropped the tower a floor. The girder is longer than the tower,
+    // level and flat-faced, and slow enough to kick the base out whole,
+    // which drags the foot of every column after it (see RAM_SPEED)
     const nx = c.dz
     const nz = -c.dx
-    // and slanted: one end low through the bottom row, the other through
-    // the second, so the three columns are each hit at a different height
-    // and moment and nothing above gets an even shove to fall as one
-    const ry = c.sb.restY('crate', c.x, c.z) + 0.45 * h
-    const ramYaw = yaw + 0.3
+    const ry = c.sb.restY('crate', c.x, c.z)
+    // local x (the girder's length) onto the tower's row, plus the skew
+    const ramYaw = Math.atan2(-c.dz, c.dx) + RAM_SKEW
     const back = 7
-    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(nx, 0, nz), RAM_SLANT)
-      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ramYaw))
-    const ram = c.sb.spawn('plank', { x: c.x - nx * back, y: ry, z: c.z - nz * back }, {
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ramYaw)
+    const ram = c.sb.spawn('girder', { x: c.x - nx * back, y: ry, z: c.z - nz * back }, {
       quaternion: { x: q.x, y: q.y, z: q.z, w: q.w },
     })
     c.sb.setMode(ram, 'kinematic')
@@ -359,9 +366,9 @@ defineScenario({
     const off = c.sb.onBeforeSlice((dt) => {
       t += dt
       if (!c.sb.get(ram)) return off()
-      const d = back - Math.max(0, Math.min(t - 1.0, 0.5)) * 30
+      const d = back - Math.max(0, Math.min(t - 1.0, 15 / RAM_SPEED)) * RAM_SPEED
       c.sb.moveKinematic(ram, { x: c.x - nx * d, y: ry, z: c.z - nz * d }, q)
-      if (t > 1.5) {
+      if (t > 1 + 15 / RAM_SPEED) {
         c.sb.setMode(ram, 'dynamic')
         off()
       }
@@ -404,6 +411,31 @@ defineScenario({
       to: [mx, gy, mz],
       fov: 60,
     }
+  },
+  // the same side-on shot, riding along the fall line with the drums: a
+  // fixed lens lost them off the bottom of the frame by the ninth still.
+  // It follows how far down the slope the barrels are on average, never
+  // across it, so the hill stays put in the frame and only slides by
+  lens: (c) => {
+    let along = 0
+    let n = 0
+    for (const id of c.ids.slice(0, 4)) {
+      const p = c.sb.get(id)
+      if (!p) continue
+      const q = p.body.translation()
+      along += (q.x - c.x) * c.dx + (q.z - c.z) * c.dz
+      n++
+    }
+    const a = Math.max(16, n ? along / n : 16)
+    const side = c.memo.side ?? 1
+    const sx = -c.dz * side
+    const sz = c.dx * side
+    const mx = c.x + c.dx * a
+    const mz = c.z + c.dz * a
+    const gy = terrainY(mx, mz)
+    const fx = mx + sx * 27 - c.dx * 4
+    const fz = mz + sz * 27 - c.dz * 4
+    return { from: [fx, Math.max(gy, terrainY(fx, fz)) + 10, fz], to: [mx, gy, mz], fov: 60 }
   },
   setup: (c) => {
     const sx = -c.dz

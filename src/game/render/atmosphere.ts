@@ -115,12 +115,14 @@ export const airForSky = (
     (1 - 0.08 * warm) * (1 + 4.8 * moon))
   air.sunDir.copy(sunDir)
   // the air glows warm toward a low sun, and hardly at all toward a high one
-  const glow = (0.12 + 0.55 * s.twilight) * s.day * out
+  // ...and toward a set one: at dusk the warmth is in the light and in the
+  // sky's sunward side, while the air itself stays cool
+  const glow = (0.12 * s.day + 0.5 * s.twilight) * out
   air.sunGlow.copy(sunColor).multiplyScalar(glow)
   // by day the sky keeps its own blue down to near the skyline; the pull
   // into the air is for dusk and night, when the two should be one
   air.skyHorizon = (0.8 - 0.55 * warm) * out
-  air.skyReach = 0.14 + 0.1 * (1 - warm) + 0.12 * s.twilight
+  air.skyReach = 0.14 + 0.1 * (1 - warm) + 0.12 * s.twilight + 0.1 * lift
   air.skyAll = (0.04 + 0.22 * dark) * out
 }
 
