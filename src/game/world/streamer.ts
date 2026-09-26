@@ -14,6 +14,7 @@ import { applySway, tickWind, updateTrample, windUniforms } from './wind'
 import { buildGrass, type GrassHandles } from './grass'
 import { makeLeafTexture } from './treeMesh'
 import { texelate } from '../render/texel'
+import { nearestLamps } from '../render/atmosphere'
 
 /*
   The ring of chunks around the player, and the budget that keeps building it
@@ -158,6 +159,11 @@ export interface WorldHandles {
   /** the collision boxes of a loaded chunk, live set or not (the sandbox's
       props can roll out of the nine chunks the walker collides with) */
   solidsIn: (cx: number, cz: number) => readonly Solid[] | null
+  /** the nearest `max` light fixtures to (x, z) in the loaded chunks, as
+      world xyz triples into `out`; returns how many. For the look's lamp
+      pools. Walks a 5x5 of chunks, so ask when the walker has moved rather
+      than every frame */
+  nearLamps: (x: number, z: number, out: Float32Array, max: number) => number
 }
 
 interface Opts {
@@ -778,6 +784,28 @@ export function buildWorld(opts: Opts): WorldHandles {
     if (ms > 0) drain(ms, false)
   }
 
+  const LAMP_SCRATCH = 512
+  const lampScratch = new Float32Array(LAMP_SCRATCH * 3)
+  const lampD2 = new Float32Array(64)
+  const nearLamps = (x: number, z: number, out: Float32Array, max: number) => {
+    const pcx = chunkX(x)
+    const pcz = chunkZ(z)
+    let m = 0
+    for (let dz = -2; dz <= 2; dz++)
+      for (let dx = -2; dx <= 2; dx++) {
+        const c = chunks.get(key(pcx + dx, pcz + dz))
+        if (!c) continue
+        for (const l of c.lamps) {
+          if (m >= LAMP_SCRATCH) break
+          lampScratch[m * 3] = l.x
+          lampScratch[m * 3 + 1] = l.y
+          lampScratch[m * 3 + 2] = l.z
+          m++
+        }
+      }
+    return nearestLamps(x, z, lampScratch, m, out, Math.min(max, lampD2.length), lampD2)
+  }
+
   const WATER_DAY = new THREE.Color('#2a6fc0')
   const WATER_NIGHT = new THREE.Color('#111d26')
 
@@ -790,6 +818,7 @@ export function buildWorld(opts: Opts): WorldHandles {
       return queue.length
     },
     solidsIn: (cx, cz) => chunks.get(key(cx, cz))?.boxes ?? null,
+    nearLamps,
     setNight: (night) => {
       glassMat.opacity = night
     },
