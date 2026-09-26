@@ -859,6 +859,13 @@ vignette. A third pass upscales nearest-neighbour to the
 canvas, integer where the screen allows (1080p is exactly 3x, 1440p 4x), and
 a fourth redraws the glass holes at full resolution.
 
+The sky (`levels/sky.ts`) is painted for the look and owned with it: a day
+dome painted deeper than it reads, clouds drawn as hard-rimmed shapes in
+three flat tones so the posterize keeps them clean, a twilight band that
+peaks at the skyline, stars that wait for the twilight to finish, and a day
+curve under which 0.74 is golden hour and 0.78 the afterglow rather than
+night.
+
 `render/atmosphere.ts` turns a moment of the sky into the air's density and
 the night's lights, and CrtScene and the harness both use it: the haze is
 open at noon and closes in through dusk, thicker over woods and wetland,
@@ -910,7 +917,8 @@ every one of them has a failure you can see in a harness shot.
   Detail finer than a texel does not survive: it becomes dither noise.
 - **Silhouettes and creases are what get outlined, so build with them.**
   A pixel loses `outline` (0.62) of its light where a neighbour lies more
-  than `0.25 + 4.5%` of the depth behind it, and a fold between two faces
+  than `0.25 + 4.5%` of the depth behind it (inked after the air, and harder
+  and further out against the sky, so a roofline keeps its line), and a fold between two faces
   meeting at more than about 30 degrees gets a line of ink (lifted instead
   where the fold faces the eye) out to 90 units. Chunky, flat-shaded
   shapes with real depth separation read; a smooth-shaded gentle curve, a
