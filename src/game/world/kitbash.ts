@@ -4,6 +4,7 @@ import type { Solid } from '../physics/collision'
 import type { InteriorRect } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
 import type { Smashable } from './debris'
+import type { StructureRec } from './fracture'
 import { SURF, type SurfaceId } from './surface'
 
 /*
@@ -51,6 +52,10 @@ export interface BuildOut {
       makes goes in here, a shopfront is not something you drive through, but
       the park trees a block plants instead of housing do */
   smash: Smashable[]
+  /** every building and landmark stamped, recorded so destruction can find
+      it in the soup again (world/fracture.ts). The chunk fills this in around
+      each kit; a kit never touches it */
+  structures?: StructureRec[]
   /**
    * false on the outer ring, where a building is a silhouette on the skyline
    * and nothing more. Window grids are the single most expensive thing the

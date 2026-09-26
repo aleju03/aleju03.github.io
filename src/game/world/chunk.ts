@@ -27,6 +27,7 @@ import { bakeBirth, PREBORN } from './fade'
 import type { InteriorRect } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
 import type { SmashLayer, Smashable, SmashSet, Span } from './debris'
+import { GRADE, STOREY, type StructureRec } from './fracture'
 
 /*
   One 64-unit block of world, built from nothing but its own coordinates.
@@ -93,6 +94,50 @@ export interface Chunk {
   /** the props a vehicle can knock out of this chunk, and where their
       vertices sit in its merged meshes (world/debris.ts) */
   smash: SmashSet
+  /** every building and landmark in it, recorded for destruction
+      (world/fracture.ts, sandbox/destruction.ts) */
+  structures: StructureRec[]
+}
+
+/**
+ * Stamp one building with the recorder running: its spans in both soups, the
+ * start of every stamp inside them, and the boxes it registered. Two counter
+ * reads either side and one push per stamp, which is the whole build-time
+ * cost of making every building out here destructible.
+ */
+const recordStructure = (
+  out: BuildOut, id: string, kind: string, baseY: number, stamp: () => void,
+) => {
+  const list = out.structures
+  if (!list) {
+    stamp()
+    return
+  }
+  const dv = out.solid.count
+  const di = out.solid.indexCount
+  const gv = out.glass.count
+  const gi = out.glass.indexCount
+  const bn = out.boxes.length
+  const md: number[] = []
+  const mg: number[] = []
+  out.solid.marks = md
+  out.glass.marks = mg
+  try {
+    stamp()
+  } finally {
+    out.solid.marks = null
+    out.glass.marks = null
+  }
+  list.push({
+    id, kind, baseY,
+    storeyH: STOREY[kind] ?? 5,
+    grade: GRADE[kind] ?? 1,
+    det: spanFrom(out.solid, dv, di) ?? null,
+    gl: spanFrom(out.glass, gv, gi) ?? null,
+    marks: Int32Array.from(md),
+    gmarks: Int32Array.from(mg),
+    boxes: out.boxes.slice(bn),
+  })
 }
 
 /**
@@ -803,7 +848,13 @@ const buildBlock = (
     !(bx - w / 2 < RESERVED.maxX + 4 && bx + w / 2 > RESERVED.minX - 4 &&
       bz - d / 2 < RESERVED.maxZ + 4 && bz + d / 2 > RESERVED.minZ - 4)
 
-  const raise = (kind: BuildKind, lot: Lot) => {
+  // ids are the lot's own centre on a half-unit grid: a pure function of the
+  // chunk, and not of how many lots before it happened to build
+  const raise = (kind: BuildKind, lot: Lot) => recordStructure(
+    out, `${cx},${cz}:B${Math.round(lot.x * 2)},${Math.round(lot.z * 2)}`, kind, lot.baseY,
+    () => raiseKit(kind, lot),
+  )
+  const raiseKit = (kind: BuildKind, lot: Lot) => {
     switch (kind) {
       case 'tower': tower(out, lot); break
       case 'slab': slabTower(out, lot); break
@@ -895,7 +946,8 @@ const buildBlock = (
 const buildLandmarks = (cx: number, cz: number, out: BuildOut) => {
   const lm = landmarkIn(cx, cz)
   if (!lm || inReserved(lm.x, lm.z, 40)) return null
-  buildLandmark(out, lm, terrainY(lm.x, lm.z))
+  const y = terrainY(lm.x, lm.z)
+  recordStructure(out, `${cx},${cz}:L`, lm.kind, y, () => buildLandmark(out, lm, y))
   return lm
 }
 
@@ -1063,8 +1115,9 @@ export const buildChunk = (
   const interiors: InteriorRect[] = []
   const doors: ShopDoorSpec[] = []
   const props: Smashable[] = []
+  const structures: StructureRec[] = []
   const out: BuildOut = {
-    solid: detail, glass, boxes, lamps, interiors, doors, smash: props,
+    solid: detail, glass, boxes, lamps, interiors, doors, smash: props, structures,
     detailed: tier !== 'bare',
   }
 
@@ -1160,7 +1213,7 @@ export const buildChunk = (
   doors.forEach((d, i) => {
     d.id = `${cx},${cz}:${i}`
   })
-  return { cx, cz, tier, group, geos, boxes, lamps, interiors, doors, smash }
+  return { cx, cz, tier, group, geos, boxes, lamps, interiors, doors, smash, structures }
 }
 
 /**

@@ -7,7 +7,10 @@
     node scripts/measure.mjs landmarks     site density and the kind mix
     node scripts/measure.mjs smoke         build a few thousand chunks, catch throws
     node scripts/measure.mjs physics       the sandbox: ground, cost, stacks,
-                                           tunnelling, the walker, scenarios
+                                           tunnelling, the walker, scenarios,
+                                           destruction
+    node scripts/measure.mjs fracture      every building in a few town blocks
+                                           taken apart: pieces, cost, support
     node scripts/measure.mjs eval <file>   run your own probe with the world imported
 
   `src/game/` is renderer-free by design, so all of it runs here: fields, chunk
@@ -138,8 +141,8 @@ const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
 // the sandbox's report lives in its own file (it is long, and it imports the
 // sandbox, which nothing else here needs); `physics <section>` runs one part
-if (what === 'physics') {
-  body = readFileSync(join(ROOT, 'scripts', 'measure', 'physics.js'), 'utf8')
+if (what === 'physics' || what === 'fracture') {
+  body = readFileSync(join(ROOT, 'scripts', 'measure', `${what}.js`), 'utf8')
     .replace(/'\.\.\/\.\.\/src\//g, `'${ROOT}/src/`)
 }
 if (what === 'eval') {
@@ -171,6 +174,6 @@ const build = spawnSync('npx', [
   `--outfile=${out}`, '--log-level=error',
 ], { stdio: 'inherit', cwd: ROOT })
 if (build.status !== 0) process.exit(build.status ?? 1)
-const run = spawnSync(process.execPath, [out, ...(what === 'physics' && arg ? [arg] : [])], { stdio: 'inherit' })
+const run = spawnSync(process.execPath, [out, ...((what === 'physics' || what === 'fracture') && arg ? [arg] : [])], { stdio: 'inherit' })
 rmSync(stage, { recursive: true, force: true })
 process.exit(run.status ?? 0)
