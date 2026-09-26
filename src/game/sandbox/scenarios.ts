@@ -68,6 +68,18 @@ export interface Scenario {
   events?: Array<[number, (c: ScenarioCtx) => void]>
   /** one line of numbers about how it went */
   report?: (c: ScenarioCtx) => string
+  /** a moving camera: where the lens is at simulated time t. Overrides
+      `camera` frame by frame (a first-person physgun film) */
+  lens?: (c: ScenarioCtx, t: number) => Shot
+  /** the render side of a scenario: things drawn in the scene that are not
+      props (a viewmodel, a beam, a body). Called once by the film with the
+      scene and camera; `frame` runs before every drawn frame, and `warmed`
+      once the film has compiled and first-drawn the scene, so staged
+      warm-up objects can be put away. Never called headless */
+  present?: (c: ScenarioCtx, scene: import('three').Scene, cam: import('three').PerspectiveCamera) => {
+    frame: (t: number, dt: number, lines: number) => void
+    warmed?: () => void
+  }
   /** people standing about (world x/z and a heading), for scenarios about
       what happens to them: the film stands a `buildPlayerBody()` rig on each
       and lets the sandbox's blasts knock it flat. Headless runs ignore it */

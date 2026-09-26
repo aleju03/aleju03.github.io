@@ -236,10 +236,10 @@ const getUp = (a: Actor) => {
 const LOOKS: PlayerLook[] = [
   DEFAULT_LOOK,
   { shell: '#e0a21a', trim: '#1c1c22', accent: '#2860c8', glow: '#1c1a22', hat: 2 },
-  { shell: '#2f6fcf', trim: '#d2452f', accent: '#f0e8e0', glow: '#1c1a22', hat: 3 },
+  { shell: '#3f9a38', trim: '#d2452f', accent: '#f0e8e0', glow: '#1c1a22', hat: 3 },
   { shell: '#d9508f', trim: '#1c1c22', accent: '#e8b818', glow: '#2b3a55', hat: 4 },
   { shell: '#8a4fc8', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a22', hat: 5 },
-  { shell: '#d2452f', trim: '#e0a21a', accent: '#f0e8e0', glow: '#4a2e22', hat: 0 },
+  { shell: '#d2452f', trim: '#f2eee0', accent: '#1c1c20', glow: '#1c1a22', hat: 1 },
 ]
 
 /* -------------------------------------------------------------- the tiles -- */
@@ -533,7 +533,7 @@ export const shootBody = (spec: BodySpec) => {
     look.knobs.lines = spec.lines || Math.round(th / Math.max(2, spec.pixel || 2))
   }
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.shadowMap.type = THREE.PCFShadowMap
 
   let slot = 0
   const warmed = new WeakSet<THREE.Scene>()

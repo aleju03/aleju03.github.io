@@ -64,7 +64,17 @@ export const BINDINGS = {
   slot1: ['Digit1'],
   slot2: ['Digit2'],
   slot3: ['Digit3'],
-  /** the physgun's unfreeze; E held is its rotate, sharing `use` */
+  /** the physgun (S3). The mouse buttons are codes too: the input service
+      puts `Mouse0`/`Mouse2` in the key set while the pointer is locked.
+      The wheel is not a key: `RoamInput.takeWheel()` is the physgun's
+      push/pull while it holds something and cycles the slots when not */
+  grab: ['Mouse0'],
+  freeze: ['Mouse2'],
+  /** held with the mouse: turns the held prop. Shares `use`, which is why
+      E does not open doors while the beam holds something */
+  rotate: ['KeyE'],
+  /** held while rotating: snap to the 45-degree grid */
+  snap: ['ShiftLeft', 'ShiftRight'],
   unfreeze: ['KeyR'],
 
   /* --- the shared walk ------------------------------------------------- */
@@ -150,6 +160,8 @@ export const keyLabel = (action: Action, lang: 'en' | 'es' = 'en'): string => {
   const code: string = BINDINGS[action][0]
   if (code.startsWith('Key')) return code.slice(3).toLowerCase()
   if (code.startsWith('Digit')) return code.slice(5)
+  if (code === 'Mouse0') return lang === 'es' ? 'clic izq' : 'lmb'
+  if (code === 'Mouse2') return lang === 'es' ? 'clic der' : 'rmb'
   if (code === 'Slash') return '/'
   if (code === 'Space') return lang === 'es' ? 'espacio' : 'space'
   if (code.startsWith('Shift')) return 'shift'

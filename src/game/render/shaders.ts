@@ -198,6 +198,13 @@ export const GRADE_FRAG = /* glsl */ `
     vec4 src = texelFetch(tColor, p, 0);
     vec3 col = src.rgb;
     float a = src.a;
+    // A light source: alpha written as 254/255 (see GLOW_ALPHA in
+    // pixelLook.ts) is solid, not a hole, and skips the baked grade, whose
+    // chroma cap and hue pull would otherwise turn an energy beam into the
+    // same murky pastel as the sky behind it. It still takes ACES and the
+    // posterize, so it bands and dithers like everything else
+    float emits = a >= 0.99 && a < 0.9985 ? 1.0 : 0.0;
+    if (emits > 0.5) a = 1.0;
     float depth = texelFetch(tDepth, p, 0).x;
     bool sky = depth >= 0.999999;
     vec3 ray = viewRay(p);
@@ -353,7 +360,7 @@ export const GRADE_FRAG = /* glsl */ `
     vec3 disp = toSrgb(aces(col));
     vec3 lutUv = disp * ((uLutSize - 1.0) / uLutSize) + 0.5 / uLutSize;
     vec3 graded = mix(texture(tLutA, lutUv).rgb, texture(tLutB, lutUv).rgb, uMood);
-    disp = mix(disp, graded, uGrade);
+    disp = mix(disp, graded, uGrade * (1.0 - emits));
 
 
     // ---- banded posterize, in OKLab ------------------------------------

@@ -77,6 +77,15 @@ import {
   of this is ever constructed; `grade.ts` alone runs headless.
 */
 
+/**
+ * The alpha a light source writes into the scene target: solid (anything at
+ * or over 0.99 is), but a code the grade pass reads as "leave my colour out
+ * of the baked grade". 254/255 survives an 8-bit target exactly. A material
+ * writes it with custom blending that keeps colour as usual and replaces
+ * the target's alpha with its own (see `sandbox/tools/beam.ts`)
+ */
+export const GLOW_ALPHA = 254 / 255
+
 /** The dials. All of them are uniforms or a target size, so any may move on
     any frame; none of them may ever become a #define */
 export interface LookKnobs {

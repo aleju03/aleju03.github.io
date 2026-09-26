@@ -53,9 +53,9 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
     uFaceLift: { value: 1 },
     uGummy: { value: 0.16 },
   }
-  // a gummy sheen: smooth enough to carry a highlight blob through the
-  // posterize, which is most of what makes a bean read as jelly
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0 })
+  // dough, not vinyl: a soft broad sheen rather than a glossy highlight blob,
+  // which on a smooth capsule read as a plastic toy
+  const material = new THREE.MeshStandardMaterial({ roughness: 0.74, metalness: 0 })
   material.name = 'playerBody'
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uPal = uniforms.uPal

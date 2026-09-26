@@ -567,6 +567,20 @@ sandbox/
   spawnlist.ts  the spawn menu's reading of catalogue.ts (the one list of
                 what can be spawned) and thumbnails.ts, plus each plate's
                 small print
+  tools/        the tool belt and the physgun:
+    types.ts      ToolInput (one frame of intent, filled by the keyboard or a
+                  script) and HoldRecord (a hold as plain numbers, for the wire)
+    physgun.ts    the hold: an implicit damped spring on the exact grab point
+                  through Rapier impulses, orientation kept against the
+                  heading, wheel, E-rotate with a 45-degree snap, throw,
+                  freeze, thaw, rigs by the nearest limb. Headless
+    beam.ts       the curved beam, the glows, the rim on the held prop and
+                  the freeze flash; draws from numbers (frameFromRecord)
+    viewmodel.ts  the gun, first person (depth-squeezed, never in a wall)
+                  and in the body's hand
+    sfx.ts        the hum pitched by strain, the grab and freeze one-shots
+    toolbelt.ts   slots 1/2/3, and the one object CrtScene talks to
+    scenarios.ts  the films: swing, rotate, heavy, throw, ragdoll, each -3p
 ```
 
 ### The contract
@@ -753,6 +767,29 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   collected and dealt in `life.step`; removing a body while Rapier is handing
   out contact pairs is how you get a panic. A blast is hotter than a knock:
   it sets an explosive off at half the blow and lights it at a fifth.
+- **The physgun's hold pays the weight outside its budget.** Every slice the
+  grab point is pulled toward the target on the view ray by a spring solved
+  implicitly (stable at any stiffness, dead still when held still), fed half
+  the target's own velocity (all of it overshoots by 13%), delivered as an
+  impulse capped at an acceleration budget that falls with mass, with the
+  prop's weight paid on top. So the beam always holds a thing up, and what
+  mass costs you is how fast it can be *moved*: a ball snaps onto a flick, a
+  900 kg block trails a swing by five units and sails past where you
+  stopped. `tune()` is the whole feel; `measure physics physgun` prints
+  settle time, overshoot, jitter held still and throw speed per kind.
+- **A throw leaves along the swing's tangent.** Letting go hands the prop
+  most of the gap between the beam's speed and its own, so it flies the way
+  it was being swung, not where you are looking. The throw film lets go a
+  quarter turn early for exactly that reason.
+- **The first grab links nothing.** Every program the belt draws (the gun's
+  two, the ribbon, the glow blobs, the two rim shells) is staged in front of
+  `warmForRoam`'s camera for the covered compile and one-pixel draw, and the
+  per-prop shells are clones of the staged materials, so they share their
+  programs. The films print `programs linked after warm-up`, and it is 0.
+  Chasing that 0 found a boot-wide bug: `PCFSoftShadowMap` is deprecated and
+  three swaps in PCF on the first shadow pass, so every program linked before
+  that pass had been keyed on the soft type and linked a second time on first
+  use. CrtScene uses `PCFShadowMap` now.
 
 ### Looking at it
 
@@ -776,8 +813,10 @@ npm run film -- props:thumbs           the spawn menu's icons
 npm run film -- props:sounds           every prop sound's peak, next to a footstep
 npm run film -- props:links            shader links on first spawn/break/blast
 
+npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
+
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
-                                       rest determinism float catalogue breaks blast scenarios
+                                       rest determinism float catalogue breaks blast physgun scenarios
 npm run measure -- physics walker      one section
 ```
 
@@ -1068,6 +1107,13 @@ every one of them has a failure you can see in a harness shot.
 - **Draw visible frames with `look.render`, never `renderer.render`.** A
   warm-up or a shadow bake may call the renderer directly (the programs are
   identical); a frame someone sees may not.
+- **A light writes the glow code.** Alpha 254/255 (`GLOW_ALPHA`) is solid,
+  not a hole, and the grade pass leaves that pixel out of the baked grade,
+  whose chroma cap and hue pull otherwise grey an energy beam down to the
+  sky's own pastel (the physgun's beam was a pale ribbon until it did this).
+  It still takes ACES and the posterize. Only for things that *are* light and
+  opaque where they draw (the beam's ribbon, the gun's glowing core): a
+  soft glow writing it would lift the scene behind it out of the grade too.
 - **A hole is a registered mesh, not an alpha.** The CSS3D glass (the AlejOS
   screen, the house TV) writes a near-zero alpha into the chunky target, and
   the grade pass fills those pixels from their solid neighbours; the hole is

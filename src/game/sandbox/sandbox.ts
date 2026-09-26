@@ -166,6 +166,10 @@ export interface Sandbox {
   /** the first prop, solid or ground along a ray (props and world only;
       never the walker or a vehicle) */
   raycast: (origin: Vec3Like, dir: Vec3Like, maxDist: number, opts?: { props?: boolean; world?: boolean }) => RayHit | null
+  /** the prop a Rapier collider belongs to (for a tool casting its own ray) */
+  propOf: (c: unknown) => Prop | null
+  /** the prop the walker is standing on, if any (a physgun must not lift it) */
+  readonly standing: Prop | null
   /** every prop overlapping a ball */
   queryBall: (center: Vec3Like, r: number, fn: (p: Prop) => void) => void
   /** the drawn ground height */
@@ -489,6 +493,10 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
         solid: l.ground.solidOf(c) ?? null,
         ground: l.ground.isGround(c),
       }
+    },
+    propOf: (c) => (live ? live.props.ofCollider(c as RCollider) ?? null : null),
+    get standing() {
+      return live?.walker?.standing ?? null
     },
     queryBall: (center, r, fn) => {
       const l = live
