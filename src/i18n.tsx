@@ -147,6 +147,14 @@ const dictionaries = {
       back: 'Back to overview',
       otherVersion: 'See the other version',
     },
+    // the four colour knobs on the pause sheet's character page
+    // (components/os/WorldIdentity.tsx), in the order look.ts packs them
+    look: {
+      suit: 'suit',
+      trim: 'boots',
+      accent: 'hat',
+      glow: 'lamp',
+    },
   },
   es: {
     localTime: 'Hora local en Costa Rica',
@@ -282,6 +290,12 @@ const dictionaries = {
       live: 'En vivo',
       back: 'Volver al inicio',
       otherVersion: 'Ver la otra versión',
+    },
+    look: {
+      suit: 'traje',
+      trim: 'botas',
+      accent: 'gorro',
+      glow: 'lámpara',
     },
   },
 }

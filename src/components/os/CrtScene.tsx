@@ -13,10 +13,11 @@ import { createLevelSystem } from '../../game/levels/levelSystem'
 import type { Level, LevelLightRig } from '../../game/levels/types'
 import { buildPaperPlane } from '../../game/props/paperPlane'
 import type { HouseModels } from '../../game/levels/houseWorld'
-import { buildPlayerBody, type PlayerPose } from '../../game/player/playerBody'
+import { CABIN_FIT, buildPlayerBody, type PlayerPose } from '../../game/player/playerBody'
 import { packLook, sanitizeLook, unpackLook, type PlayerLook } from '../../game/player/look'
 import type { RagdollEnv } from '../../game/player/ragdoll'
 import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
+import { createImpactWatch, type Impact } from '../../game/player/impacts'
 import { createWalkController } from '../../game/player/walkController'
 import { createSeating } from '../../game/player/seating'
 import { facingOf } from '../../game/levels/fittings'
@@ -984,6 +985,19 @@ export default function CrtScene({
         scene.add(body)
         const chase = createChaseCam()
         /*
+          Getting hit. The fleet moves (somebody else's car on foot, your own
+          at the wheel) and the watch turns where each machine was last frame
+          into how fast it is going, then asks whether it is on top of a body
+          and closing. The local walker and the town's pedestrians both ask,
+          so a car driven into a queue at a bus stop bowls it over.
+        */
+        const impacts = createImpactWatch()
+        const impact: Impact = { impulse: new THREE.Vector3(), point: new THREE.Vector3() }
+        const feetPt = new THREE.Vector3()
+        /** a touchdown faster than this (a fall of about ten units) is not a
+            landing, it is a heap. The hop lands at ~12 */
+        const FALL_FLOP = 26
+        /*
           Sitting down on the furniture.
 
           Deliberately *not* a second tick the way driving is. A sofa does not
@@ -998,7 +1012,11 @@ export default function CrtScene({
         const seatEye = new THREE.Vector3()
         /** the living-room set, once its model has landed */
         let tv: TvHandles | null = null
-        const BODY_BACK = 0.49 // eye sits ahead of the spine; keeps the chest out of frame
+        // the eye sits ahead of the spine; keeps the chest out of frame. The
+        // round body carries its belly further forward than the robot did, so
+        // the trail is longer (checked with `npm run shoot -- body:fp`, which
+        // places the body with this same number)
+        const BODY_BACK = 0.62
         const poseBody = () => {
           // the trailing offset fades with the real boom length, not the mode:
           // a wall that crushes the boom flat leaves a first-person body.
@@ -1280,7 +1298,8 @@ export default function CrtScene({
           fleet.enter(v, camera, walk.yaw, walk.pitch, seat)
           walk.resetMotion()
           rig.reset()
-          rig.sit()
+          // a machine's seat node says how far its cabin needs a body folded
+          rig.sit(seatNode(v, seat).userData.fit ?? CABIN_FIT)
           chase.drop()
           // This is the same articulated avatar used on foot, not a vehicle's
           // approximation of it. The seat owns position and vehicle attitude;
@@ -2125,6 +2144,9 @@ export default function CrtScene({
             playerPos: v.root.position,
             outdoors: level.id === 'overworld',
           })
+          // whatever this machine is driven into goes over
+          impacts.track(fleet.all, pausedNow ? 0 : dt)
+          if (level.id === 'overworld') outside.knockPeople(impacts)
           // v swaps the boom for the cockpit. It is not the walk's saved
           // third-person preference — a car has two views and neither is the
           // one the pause menu's toggle means
@@ -2358,6 +2380,11 @@ export default function CrtScene({
             collision: level.collision,
             fovBase: prefsRef.current.fov,
           })
+          // a fall that is too far to land lands you flat instead, carried on
+          // with whatever speed you came in with
+          if (step.landing > FALL_FLOP && !rig.down && !sitting) {
+            rig.flop(step.vx, Math.min(6, step.landing * 0.15), step.vz)
+          }
           if (sitting) {
             // the walk wrote the standing eye over the cushion; put it back
             // at the height of somebody sitting on it, and hold the head
@@ -2500,6 +2527,9 @@ export default function CrtScene({
           // they never need the whole heightfield, only the local plane
           const localFloor = floorOf(level, camera.position.x, camera.position.z)
           rigEnv.groundY = localFloor
+          // a body tumbling down a hillside needs the hill under each limb,
+          // not the plane under where it started
+          rigEnv.groundAt = level.groundYAt
           rigEnv.ceilingY = level.ceilingY
           rigEnv.collision = level.collision
           if (!sitting) rig.update(rigPose, rigEnv)
@@ -2625,6 +2655,17 @@ export default function CrtScene({
             playerPos: camera.position,
             outdoors: level.id === 'overworld',
           })
+          // somebody else's car coming down the street at you: the watch
+          // knows how fast it is going, and a seat or a level cut is immune
+          impacts.track(fleet.all, pausedNow ? 0 : dt)
+          feetPt.set(camera.position.x, walk.feetY, camera.position.z)
+          if (
+            !sitting && !levels.frozen &&
+            impacts.strike(rig, feetPt, EYE * 1.15, rig.mass, impact)
+          ) {
+            rig.hit(impact.impulse, impact.point)
+          }
+          if (level.id === 'overworld') outside.knockPeople(impacts)
           // ...and its prompt is the lowest-priority one: the machine and a
           // door both win, because both are things you are standing right at
           const atVehicle =

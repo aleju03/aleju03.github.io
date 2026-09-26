@@ -35,12 +35,22 @@ player/
   walkController.ts  createWalkController(): the FPS movement sim (velocity,
                      gravity/jump/crouch, step-up and ledge falls over an
                      absolute feetY, footstep bob, sprint fov)
-  playerBody.ts      buildPlayerBody() is the articulated robot: kinetic stance
-                     (accel lean, turn bank, landing spring), world-planted
-                     stepping feet solved with two-bone IK, and the ragdoll
-                     fit/recovery over the same skeleton
-  ragdoll.ts         createRagdoll(): verlet particles + constraints against
-                     the level's floor and collision boxes
+  playerBody.ts      buildPlayerBody() is the character: a soft little person
+                     in a work suit and beanie. Kinetic stance (waddle, lean,
+                     turn bank, squash-and-stretch landing spring), world-
+                     planted stepping feet solved with two-bone IK, sprung
+                     arms, jiggling head/pom-pom/backpack/mittens, idle
+                     fidgets, the ragdoll, and a muscle-driven get-up. Also
+                     the sandbox hooks: hit(), grab(), limbs, limbPos()
+  bodyShape.ts       the drawing: one skinned mesh, shared by every body,
+                     each vertex tagged with the paint it wears
+  bodyMaterial.ts    the one material: palette uniform + first-person head
+                     discard injected into a MeshStandardMaterial
+  ragdoll.ts         createRagdoll(): massed verlet particles + constraints
+                     against the ground and collision boxes, with kick/pin/
+                     drive (impulses, grabs, muscles) for anything outside
+  impacts.ts         createImpactWatch(): turns where the fleet was last frame
+                     into speeds and asks whether one is running a body over
   chaseCam.ts        createChaseCam(): the third-person boom (v), collision-
                      clamped, which also frames a downed body
   seating.ts         createSeating(): sitting on the furniture. A seat is a
@@ -320,10 +330,11 @@ world/
                   each one is re-cut onto. The only downloaded models out
                   here, loaded after the planet attaches and never awaited
   pedestrians.ts  ...and the same idea in a town. Each is a buildPlayerBody()
-                  rig — the robot the player and every remote player wear —
-                  walking the sidewalk slab by sampling roadAt().walk rather
-                  than following a navmesh, and crossing the road where the
-                  pavement runs out at a junction
+                  rig (the character the player and every remote player
+                  wear) walking the sidewalk slab by sampling roadAt().walk
+                  rather than following a navmesh, and crossing the road
+                  where the pavement runs out at a junction. A car driven
+                  into one knocks it flat; it lies there, then gets up
   quality.ts      the graphics tier: every density and budget knob, read at
                   build time, plus the GPU sniff that picks between them. New
                   knobs go in the record, not beside it. The visitor can
