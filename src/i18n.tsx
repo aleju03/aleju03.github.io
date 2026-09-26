@@ -199,9 +199,12 @@ const dictionaries = {
     // (components/os/WorldIdentity.tsx), in the order look.ts packs them
     look: {
       suit: 'jelly',
-      trim: 'belly',
-      accent: 'band',
+      trim: 'detail',
+      accent: 'hat',
       glow: 'eyes',
+      hat: 'wear',
+      // in look.ts's HATS order
+      hats: ['sweatband', 'mask', 'bucket hat', 'party hat', 'hard hat', 'bandana', 'nothing'],
     },
   },
   es: {
@@ -386,9 +389,11 @@ const dictionaries = {
     },
     look: {
       suit: 'gelatina',
-      trim: 'barriga',
-      accent: 'cinta',
+      trim: 'detalle',
+      accent: 'gorro',
       glow: 'ojos',
+      hat: 'lleva',
+      hats: ['muñequera', 'máscara', 'pescador', 'de fiesta', 'casco', 'pañuelo', 'nada'],
     },
   },
 }

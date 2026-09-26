@@ -1336,7 +1336,7 @@ export default function CrtScene({
           walk.resetMotion()
           rig.reset()
           // a machine's seat node says how far its cabin needs a body folded
-          rig.sit(seatNode(v, seat).userData.fit ?? CABIN_FIT)
+          rig.sit(seatNode(v, seat).userData.fit ?? CABIN_FIT, seat !== SEAT_DRIVER)
           chase.drop()
           // This is the same articulated avatar used on foot, not a vehicle's
           // approximation of it. The seat owns position and vehicle attitude;
@@ -2269,6 +2269,15 @@ export default function CrtScene({
             head.pos.copy(camera.position)
             camera.getWorldDirection(head.dir)
           }
+          // a blast's flash and a burning fuse's flicker are fake lights too
+          // (the sandbox's fx owns them); outside the overworld, nothing
+          if (sandbox && overworld) sandbox.fx.lightLook(look.lights)
+          else look.lights.flash.radius = 0
+          // and prop sounds are placed and panned against this lens
+          if (sandbox) {
+            const m = camera.matrixWorld.elements
+            sandbox.ear(camera.position.x, camera.position.y, camera.position.z, m[0], m[2])
+          }
         }
 
         const render = () => {
@@ -2435,6 +2444,8 @@ export default function CrtScene({
         const gaugeNow = { speed: -1, load: 0, altitude: -1, gear: -1 }
 
         const driveTick = (now: number, dt: number) => {
+          // the seated body slumps, lolls and jiggles with the machine
+          rig.seatedTick(dt)
           const v = fleet.riding
           if (!v) return
           const driver = fleet.seat === SEAT_DRIVER
@@ -2714,6 +2725,7 @@ export default function CrtScene({
             walk.pitch = held.pitch
             camera.rotation.set(held.pitch, held.yaw, 0)
             poseSeated(sitting)
+            rig.seatedTick(dt)
             // a/d works the set from the sofa, the way a remote does: a dark
             // tube wakes rather than skipping a channel it is not showing.
             // Only from a seat that faces it: the keys are free on every
@@ -3160,6 +3172,20 @@ export default function CrtScene({
                 kind: (id) => kinds.KINDS[id],
                 note: list.kindNote,
               })
+            })
+            // a blast knocks down whoever it reaches: the walker (not from a
+            // seat, not mid-cut) through the same rig.hit a car uses, and the
+            // town's pedestrians through the same seam. The maths is the
+            // sandbox's (explosion.ts), so the film harness agrees with this
+            sandbox.onExplosion((e) => {
+              if (levels.current.id !== 'overworld') return
+              if (!seating.current && !levels.frozen && !fleet.driving) {
+                feetPt.set(camera.position.x, walk.feetY, camera.position.z)
+                if (sandboxMod.blastImpact(e, feetPt, EYE * 1.15, rig.mass, impact)) {
+                  rig.hit(impact.impulse, impact.point)
+                }
+              }
+              outside.knockPeople(sandboxMod.blastWatch(e))
             })
             // dev only: the harnesses (and a console) reach the sandbox and
             // the lens it is being watched through from here, and can type
