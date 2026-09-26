@@ -196,7 +196,7 @@ const FRAG_COLOR = /* glsl */ `
       float crest = step(rip, 0.22);
       float trough = step(0.22, rip) * step(rip, 0.4);
       float peb = step(0.985, glHash(floor(wp * ${T} / 2.0)));
-      sc *= 1.0 + (crest * 0.07 - trough * 0.09) * near2 - peb * 0.4 * near2 + (n1 - 0.5) * 0.12 * near6;
+      sc *= 1.0 + (crest * 0.13 - trough * 0.16) * near2 - peb * 0.4 * near2 + (n1 - 0.5) * 0.12 * near6;
       // wet at the water's edge, a clean darker band
       sc *= 1.0 - 0.28 * step(h + jit * 0.5, 0.55);
       c = sc;
@@ -210,19 +210,24 @@ const FRAG_COLOR = /* glsl */ `
     }
     if (rock > 0.5) {
       // a rock biome keeps its own grey; a cliff in grass country is stone
-      vec3 rc = mix(diffuse * vec3(0.147, 0.133, 0.116), base, step(0.5, vGK.w));
+      vec3 rc = mix(diffuse * vec3(0.13, 0.128, 0.122), base, step(0.5, vGK.w));
       // stone in courses: blocks of rock split by one-texel cracks, each
       // block its own tone, which is how a cliff reads as rock and not as
       // grey paint
       float bv = vGW.y / 1.5 + n2 * 1.7 + n1 * 0.35;
       float bl = 2.4 + 1.8 * glHash(vec2(floor(bv), 3.0));
-      float bu = (tp.x + tp.y) / bl + glHash(vec2(floor(bv), 9.0));
+      // along the contour of the face, whichever way it looks: on a face
+      // turned along the diagonal, x + y was constant and every block
+      // stretched into one big square of its tone, a checkerboard
+      vec2 nh = normalize(vGN.xz + vec2(1e-4, 0.0));
+      float along = dot(tp, vec2(-nh.y, nh.x));
+      float bu = along / bl + glHash(vec2(floor(bv), 9.0));
       vec2 bd = vec2(abs(fract(bu) - 0.5) * bl, abs(fract(bv) - 0.5) * 1.5);
       float crack = step(0.5 * bl - 2.0 / ${T}, bd.x) + step(0.5 * 1.5 - 2.0 / ${T}, bd.y);
       // each course catches the light along its top edge: a ledge
       float ledge = step(0.78, fract(bv)) * (1.0 - step(0.5 * 1.5 - 2.0 / ${T}, bd.y));
       float tone = glHash(vec2(floor(bu), floor(bv)));
-      rc *= 1.0 + (tone - 0.5) * 0.3 * near6 + (n1 - 0.5) * 0.1 * near6
+      rc *= 1.0 + (tone - 0.5) * 0.16 * near6 + (n1 - 0.5) * 0.1 * near6
         + ledge * 0.16 * near2 - min(crack, 1.0) * 0.5 * near2;
       c = rc;
     }

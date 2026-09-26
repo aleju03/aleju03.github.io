@@ -190,9 +190,8 @@ const FAR_FRAG_COLOR = /* glsl */ `
         // the same shelves the near sea draws (streamer.ts), out to the
         // horizon: reef, shelf, slope, and the open sea past the drop-off
         float jd = vDepth + (farHash(floor(vFarW.xz * 0.25)) - 0.5) * 1.2;
-        float shelf = jd < 2.2 ? 0.0 : jd < 6.0 ? 0.45 : jd < 13.0 ? 0.78 : 1.0;
-        vec3 shallow = uWater * vec3(1.25, 1.75, 1.6) + 0.02;
-        diffuseColor.rgb = mix(shallow, uWater, shelf) * (jd > 22.0 ? 0.74 : 1.0);
+        float sh = jd < 1.1 ? 1.0 : jd < 3.0 ? 0.62 : jd < 7.0 ? 0.32 : jd < 14.0 ? 0.1 : 0.0;
+        diffuseColor.rgb = uWater * mix(vec3(1.0), vec3(1.45, 2.05, 1.85), sh) * (jd > 14.0 ? 0.7 : 1.0) + 0.02 * sh;
       }
       if (vDepth <= 0.0 && vFar.z < 0.5) {
         // what the chunk ground (groundLook.ts) draws by geometry alone, so
@@ -201,7 +200,7 @@ const FAR_FRAG_COLOR = /* glsl */ `
         float h = -vDepth;
         float j = (farHash(floor(vFarW.xz * 0.5)) - 0.5) * 0.3;
         bool cliff = vFarNY < 0.8 + j * 0.1;
-        if (cliff) diffuseColor.rgb = diffuse * vec3(0.11, 0.09, 0.07);
+        if (cliff) diffuseColor.rgb = diffuse * vec3(0.12, 0.115, 0.108);
         if (cliff || vFar.w < -0.5) {
           // stone reads as stone from a kilometre off by its strata: dark
           // courses a few units apart, fading to their tone past a pixel,

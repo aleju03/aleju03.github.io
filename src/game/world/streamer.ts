@@ -363,12 +363,13 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
          // a long bright ramp once turned a whole ocean into a strip of milk
          float jit = (wHash2(floor(vWXZ * 4.0)).x - 0.5) * 0.7;
          float shelf = vDepth + jit;
-         float shallow = shelf < 2.2 ? 1.0 : shelf < 6.0 ? 0.55 : shelf < 13.0 ? 0.22 : 0.0;
-         gl_FragColor.rgb = mix(
-           gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.25, 1.75, 1.6) + 0.02, shallow);
-         // ...and the open sea a shelf darker again, past the drop-off,
-         // so the bands carry on out rather than stopping at the reef
-         gl_FragColor.rgb *= shelf > 22.0 ? 0.74 : 1.0;
+         // Separated by value, not by hue: the grade caps chroma, and a cyan
+         // shelf over a blue sea graded to one baby blue. Each shelf is a
+         // clear step lighter than the one outside it, leaning a little
+         // green as it shoals
+         float shallow = shelf < 1.1 ? 1.0 : shelf < 3.0 ? 0.62 : shelf < 7.0 ? 0.32 : shelf < 14.0 ? 0.1 : 0.0;
+         vec3 lift = mix(vec3(1.0), vec3(1.45, 2.05, 1.85), shallow);
+         gl_FragColor.rgb = gl_FragColor.rgb * lift * (shelf > 14.0 ? 0.7 : 1.0) + 0.02 * shallow;
          // the shore in lines, not a gradient: a solid lip of foam where the
          // water meets the sand, a line a little further out that breathes
          // in and out with the swell, and the swell's crests catching light
@@ -470,7 +471,7 @@ export const makeChunkMats = (
   }
 }
 
-const WATER_DAY = new THREE.Color('#1b4f93')
+const WATER_DAY = new THREE.Color('#0f3466')
 const WATER_NIGHT = new THREE.Color('#111d26')
 
 /** the sea's colour for a moment of the day: the streamer's day cycle, and
