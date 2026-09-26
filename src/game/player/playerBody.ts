@@ -4,7 +4,7 @@ import { supportY } from '../physics/collision'
 import { seeded } from '../core/rand'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
-  B, BODY_Y0, BONE_COUNT, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
+  B, BODY_Y0, BONE_COUNT, FACE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
   NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, boneRestWorld,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
@@ -451,7 +451,7 @@ export function buildPlayerBody(
     parent.add(o)
     return o
   }
-  const skullC = anchor(head, 0, 0.34, 0.16) // the head sits forward on the hunch
+  const skullC = anchor(head, 0, 0.34, 0)
   const mittL = anchor(handL, 0, -0.1, 0)
   const mittR = anchor(handR, 0, -0.1, 0)
   const soleL = anchor(shinL, 0, -SHIN, 0)
@@ -467,7 +467,7 @@ export function buildPlayerBody(
     everybody's client agrees on how a given player stands, with no extra
     field on the wire.
   */
-  const persona = { lean: 0, roll: 0, tilt: 0, armL: 0, armR: 0 }
+  const persona = { lean: 0, roll: 0, tilt: 0, armL: 0, armR: 0, face: 0, girth: 1 }
   const personaFor = (l: PlayerLook) => {
     let h = 2166136261
     for (const ch of `${l.shell}${l.trim}${l.accent}${l.glow}${l.hat ?? 0}`) {
@@ -483,6 +483,9 @@ export function buildPlayerBody(
     const leftHigh = r() < 0.5
     persona.armL = leftHigh ? hi : lo
     persona.armR = leftHigh ? lo : hi
+    // the face is hashed from the look too, so it costs no field on the wire
+    persona.face = h % FACE_COUNT
+    persona.girth = buildGirth(l.build ?? 0)
   }
   personaFor(look)
 
@@ -493,7 +496,8 @@ export function buildPlayerBody(
   let hatNow = look.hat ?? 0
   let buildNow = look.build ?? 0
   let costumeNow = look.costume ?? 0
-  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow, costumeNow), paint.material)
+  let faceNow = persona.face
+  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow, costumeNow, faceNow), paint.material)
   mesh.castShadow = true
   mesh.frustumCulled = false // hugs the camera; culling would blink limbs out
   // for callers that do cull it (remote bodies): a fixed sphere round the
@@ -1480,8 +1484,10 @@ export function buildPlayerBody(
     const elbowBase = 0.3 + 0.5 * runK * gait + 0.1 * guardK
     // held well out from the body, standing or not: a round belly and a
     // loose shoulder, never glued to the hips; a fall flings them wide
+    // held clear of the body at rest, with a gap of air down each side: a
+    // wider build holds them wider
     const spread =
-      0.28 - 0.12 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
+      0.34 + (persona.girth - 1) * 0.9 - 0.08 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
@@ -1883,7 +1889,10 @@ export function buildPlayerBody(
       showHead(true)
       pelvis.position.set(-SEAT_EYE_VEC.x, -SEAT_EYE_VEC.y, -SEAT_EYE_VEC.z).multiplyScalar(fit)
       pelvis.rotation.set(0, 0, 0)
-      pelvis.scale.set(SIT_SPREAD * fit, SIT_SQUASH * fit, SIT_SPREAD * fit)
+      // squeezed in sideways too, more for a wide build, so two people on
+      // one bench sit side by side rather than one inside the other
+      const squeeze = 0.82 / Math.sqrt(persona.girth)
+      pelvis.scale.set(SIT_SPREAD * fit * squeeze, SIT_SQUASH * fit, SIT_SPREAD * fit)
       torso.position.set(0, SIT_WAIST, 0)
       torso.rotation.set(-SIT_SLOUCH, 0, 0)
       torso.scale.set(1, 1, 1)
@@ -2053,11 +2062,12 @@ export function buildPlayerBody(
       const hat = next.hat ?? 0
       const b = next.build ?? 0
       const c = next.costume ?? 0
-      if (hat !== hatNow || b !== buildNow || c !== costumeNow) {
+      if (hat !== hatNow || b !== buildNow || c !== costumeNow || persona.face !== faceNow) {
         hatNow = hat
         buildNow = b
         costumeNow = c
-        mesh.geometry = bodyGeometry(hat, b, c)
+        faceNow = persona.face
+        mesh.geometry = bodyGeometry(hat, b, c, faceNow)
       }
     },
     showHead,
