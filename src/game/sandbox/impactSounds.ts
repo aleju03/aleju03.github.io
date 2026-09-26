@@ -23,10 +23,13 @@ import type { Surface } from './kinds'
   dumpster bongs an octave under a trash can) and how much there is of it.
   Distance to the ear attenuates, pans, delays (sound is slow: 800 units a
   second, so a barrel going off across the street is seen before it is
-  heard) and muffles the booms. The levels were peak-matched against the
-  footsteps (0.03 to 0.08 peak) by rendering offline in headless Chrome: an
-  ordinary crate knock peaks around 0.06, a hard clang or a dropped fridge
-  near 0.2, a barrel going off at arm's length about 0.6, and nothing clips.
+  heard) and muffles the booms. The levels are peak-matched against a grass
+  footstep (0.033 peak) by rendering offline in headless Chrome (`npm run
+  film -- props:sounds` prints the table): a light knock of anything lands
+  at 0.01 to 0.05, level with a footstep; a crate hitting at full strength
+  0.2, a drum 0.25, glass 0.07, a mattress 0.06; a break about 0.2; a barrel
+  going off four units away about 0.6, before the bus's limiter, which is
+  what keeps a chain of them from clipping.
 
   Pile-ups are rate-limited, because a collapsing stack reports forty impacts
   in a second and forty knocks on one frame is a burst of white noise: at most
@@ -243,9 +246,9 @@ const LEVEL: Record<Surface, number> = {
   metal: 0.13,
   drum: 0.22,
   sheet: 0.1,
-  plastic: 0.16,
+  plastic: 0.22,
   rubber: 0.2,
-  glass: 0.09,
+  glass: 0.17,
   melon: 0.2,
   concrete: 0.24,
   soft: 0.18,
@@ -354,7 +357,7 @@ export const boom = (power: number, x: number, y: number, z: number) => {
   const now = a.currentTime
   if ((lastBy.get('boom') ?? -1) > now - 0.04) return
   lastBy.set('boom', now)
-  const pl = place(a, x, y, z, 0.62 * Math.sqrt(k), 60)
+  const pl = place(a, x, y, z, 0.31 * Math.sqrt(k), 45)
   if (!pl) return
   // the further away, the less of the crack and the more of the rumble
   const lp = a.createBiquadFilter()

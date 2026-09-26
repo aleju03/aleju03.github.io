@@ -89,6 +89,9 @@ export const GRADE_FRAG = /* glsl */ `
   uniform vec3 uHeadDir;
   uniform vec3 uHeadCol;
   uniform vec4 uHeadK;
+  /** a flash (an explosion): world xyz and radius (0 off), colour*gain */
+  uniform vec4 uFlash;
+  uniform vec3 uFlashCol;
 
   out vec4 outColor;
 
@@ -243,6 +246,12 @@ export const GRADE_FRAG = /* glsl */ `
         float fall = 1.0 / (1.0 + (r / uHeadK.x) * (r / uHeadK.x) * 4.0);
         lit += uHeadCol * cone * fall;
       }
+      if (uFlash.w > 0.0) {
+        // a blast lights everything round it, above and below, by day too
+        vec3 d = wp - uFlash.xyz;
+        float k = clamp(1.0 - dot(d, d) / (uFlash.w * uFlash.w), 0.0, 1.0);
+        lit += uFlashCol * (k * k);
+      }
       col += albedo * lit;
 
       // ---- outlines, from depth alone -----------------------------------
@@ -311,6 +320,15 @@ export const GRADE_FRAG = /* glsl */ `
         glow += exp(-dot(off, off) / (uHalo.y * uHalo.y));
       }
       col += uPoolCol * glow * uHalo.x;
+    }
+    // ...and the flash's, a ball of lit air a third of its radius across
+    if (uFlash.w > 0.0) {
+      float reach = sky ? 1e6 : range;
+      vec3 toL = uFlash.xyz - uCamPos;
+      float t = clamp(dot(toL, dirW), 0.0, reach);
+      vec3 off = toL - dirW * t;
+      float r = uFlash.w * 0.3;
+      col += uFlashCol * 0.18 * exp(-dot(off, off) / (r * r));
     }
 
     // ---- tone and grade -------------------------------------------------

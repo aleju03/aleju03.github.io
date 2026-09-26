@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { batchable } from './batch'
 import { breakSound, igniteSound, impactSound } from './impactSounds'
 import { KINDS, registerKind, type PropKind, type Surface } from './kinds'
 import { GIBS } from './models'
@@ -51,8 +52,9 @@ export interface BreakEvent {
 }
 
 export interface PropLife {
-  /** deal a blow of `amount` (u/s of velocity change) to a prop */
-  damage: (id: PropId, amount: number, from?: Vec3Like) => void
+  /** deal a blow of `amount` (u/s of velocity change) to a prop; `blast`
+      when it came from an explosion, which is hotter than a knock */
+  damage: (id: PropId, amount: number, from?: Vec3Like, blast?: boolean) => void
   /** break a breakable at once (false when it does not break) */
   shatter: (id: PropId, from?: Vec3Like) => boolean
   /** light an explosive's fuse */
@@ -165,7 +167,7 @@ export const createLife = (
       if (from) v.add(new THREE.Vector3(pos.x - from.x, 0, pos.z - from.z).normalize().multiplyScalar(2))
       tq.copy(quat)
       if (g.rot) tq.multiply(new THREE.Quaternion().setFromEuler(te.set(g.rot[0], g.rot[1], g.rot[2])))
-      const mesh = g.mesh()
+      const mesh = batchable(g.mesh())
       const id = sb.spawn(kindId, tmp, {
         quaternion: { x: tq.x, y: tq.y, z: tq.z, w: tq.w },
         velocity: v,
@@ -246,21 +248,25 @@ export const createLife = (
     s.boom = s.boom >= 0 ? Math.min(s.boom, delay) : delay
   }
 
-  const damage = (id: PropId, amount: number, from?: Vec3Like) => {
+  const damage = (id: PropId, amount: number, from?: Vec3Like, blast = false) => {
     const p = sb.get(id)
     if (!p || amount <= 0) return
     const k = p.kind
     if (k.explodes) {
       const s = stateOf(id)
       if (s.boom >= 0) return
-      if (amount >= k.explodes.speed) {
+      // a blast is fire as well as a shove: it sets off at half the blow a
+      // knock needs, and lights a fuse at a fifth
+      const hot = blast ? 2 : 1
+      const lights = blast ? 0.2 : 0.5
+      if (amount * hot >= k.explodes.speed) {
         // a blast chains with a beat between links, which is what makes a row
         // of barrels read as a chain rather than as one bang
-        detonate(id, from ? 0.1 + Math.random() * 0.16 : 0)
+        detonate(id, blast ? 0.1 + Math.random() * 0.16 : 0)
         return
       }
-      if (amount >= k.explodes.speed * 0.5) {
-        s.hp -= amount / k.explodes.speed
+      if (amount >= k.explodes.speed * lights) {
+        s.hp -= (amount * hot) / k.explodes.speed
         if (s.hp <= 0) detonate(id, 0.05)
         else ignite(id)
       }

@@ -177,12 +177,16 @@ if (want('tunnel')) {
   const { sb } = newSandbox()
   await sb.whenReady
   const focus = { x: flat.x, y: fy, z: flat.z }
+  // a crate or a plank that hits hard enough comes apart (breakables.ts):
+  // that is the wall holding, and where the gibs ended up says so
+  const broke = new Map()
+  sb.onBreak((e) => broke.set(e.id, e))
   const run = (label, setup, ok) => {
     sb.clear()
     const c = setup()
     for (let i = 0; i < 90; i++) sb.tick({ dt: 1 / 60, active: true, focus })
     const pass = ok(c)
-    console.log(`tunnel   ${pad(label, 52)} ${pass ? 'held' : '<-- TUNNELLED'}`)
+    console.log(`tunnel   ${pad(label, 52)} ${pass ? (broke.has(c) ? 'held (broke on it)' : 'held') : '<-- TUNNELLED'}`)
   }
   // a plank frozen upright as a 0.18-thick wall
   const wall = () => sb.spawn('plank', { x: flat.x + 10, y: fy + 3, z: flat.z }, {
@@ -195,7 +199,8 @@ if (want('tunnel')) {
       return sb.spawn(kind, { x: flat.x - 10, y: fy + 3, z: flat.z }, { velocity: { x: speed, y: 0, z: 0 }, quaternion: q })
     }, (id) => {
       const p = sb.get(id)
-      return p && p.body.translation().x < flat.x + 10
+      if (!p) return !!broke.get(id) && broke.get(id).x < flat.x + 10
+      return p.body.translation().x < flat.x + 10
     })
   }
   for (const kind of ['crate', 'ball', 'plank']) {
@@ -203,7 +208,8 @@ if (want('tunnel')) {
       sb.spawn(kind, { x: flat.x, y: fy + 30, z: flat.z }, { velocity: { x: 0, y: -250, z: 0 } }),
     (id) => {
       const p = sb.get(id)
-      return p && p.body.translation().y > fy - 0.5
+      if (!p) return !!broke.get(id) && broke.get(id).y > fy - 0.5
+      return p.body.translation().y > fy - 0.5
     })
   }
   sb.dispose()

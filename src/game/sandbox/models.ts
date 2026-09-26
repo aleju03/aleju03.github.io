@@ -274,18 +274,20 @@ cell('melon', {
   h: 24,
   rough: 0.5,
   paint: (p) => {
-    p.fill('#355a26')
-    // the pale jagged stripes run pole to pole
+    p.fill('#86b35a')
+    // eight dark jagged stripes running pole to pole, bold enough to
+    // survive being a dozen pixels wide
     for (let i = 0; i < 8; i++) {
-      const x0 = i * 6 + 1
+      const x0 = i * 6 + 2
       for (let y = 0; y < p.h; y++) {
-        const wob = Math.round(Math.sin(y * 1.3 + i * 2) * 1.1)
-        p.rect(x0 + wob, y, 2 + ((y + i) % 3 === 0 ? 1 : 0), 1, '#6f9a45')
+        const wob = Math.round(Math.sin(y * 0.9 + i * 2.1) * 0.8)
+        const wide = 3 + ((y * 7 + i * 3) % 5 === 0 ? 1 : 0)
+        p.rect(x0 + wob, y, wide, 1, '#2d4f20')
       }
     }
-    p.speckle('#2a4a1e', 0.08, 31)
-    // the pale ground spot where it lay in the field
-    p.rect(20, 10, 7, 4, '#9aa55a')
+    // the poles are dark all round
+    p.rect(0, 0, p.w, 2, '#2d4f20')
+    p.rect(0, p.h - 2, p.w, 2, '#2d4f20')
   },
 })
 cell('melon_flesh', {
@@ -1008,7 +1010,7 @@ const melon = () => {
   const { rx, ry, rz } = DIMS.melon
   const m = model()
   // the sphere's poles lie along z, which is the way the stripes run
-  m.ball([0, 0, 0], [rx, rz, ry], { cell: 'melon' }, { w: 12, h: 9, rot: [Math.PI / 2, 0, 0] })
+  m.ball([0, 0, 0], [rx, rz, ry], { cell: 'melon' }, { w: 16, h: 10, rot: [Math.PI / 2, 0, 0] })
   m.cyl([0, 0, rz + 0.02], 0.05, 0.08, flat('#6a5a30'), { seg: 5, rot: [Math.PI / 2, 0, 0] })
   return m.mesh()
 }

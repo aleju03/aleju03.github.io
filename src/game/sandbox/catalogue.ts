@@ -1,3 +1,4 @@
+import { batchable } from './batch'
 import { registerKind, type PropKind, type ShapeSpec } from './kinds'
 import { BARRIER_PROFILE, DIMS, MODELS } from './models'
 
@@ -64,7 +65,9 @@ type Def = Omit<PropKind, 'id' | 'label' | 'mesh'> & { category: Category; name:
 
 const def = (id: string, d: Def) => {
   const { category, name, ...k } = d
-  registerKind({ id, label: name.en.toLowerCase(), mesh: MODELS[id], ...k })
+  const draw = MODELS[id]
+  // each prop is a proxy into its kind's instanced batch (batch.ts)
+  registerKind({ id, label: name.en.toLowerCase(), mesh: draw ? () => batchable(draw()) : undefined, ...k })
   CATALOGUE.push({ id, category, name })
 }
 
@@ -596,7 +599,7 @@ def('barrel_explosive', {
   density: 0.3,
   angularDamping: 0.25,
   surface: 'drum',
-  explodes: { power: 1, radius: 16, speed: 30 },
+  explodes: { power: 1, radius: 16, speed: 56 },
 })
 def('gascan', {
   category: 'explosive',
@@ -607,7 +610,7 @@ def('gascan', {
   restitution: 0.2,
   density: 0.5,
   surface: 'sheet',
-  explodes: { power: 0.6, radius: 11, speed: 30 },
+  explodes: { power: 0.6, radius: 11, speed: 50 },
 })
 def('propane', {
   category: 'explosive',
@@ -619,7 +622,7 @@ def('propane', {
   density: 0.4,
   angularDamping: 0.2,
   surface: 'metal',
-  explodes: { power: 1.35, radius: 19, speed: 36 },
+  explodes: { power: 1.35, radius: 19, speed: 64 },
 })
 
 /* ---------------------------------------------------------------- big -- */

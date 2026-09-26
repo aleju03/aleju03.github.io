@@ -72,7 +72,9 @@ export interface ExplodeSpec {
   power: number
   /** units */
   radius: number
-  /** a blow that sets it off at once; half this lights it instead */
+  /** a blow (u/s of velocity change) that sets it off at once; half this
+      lights its fuse instead. A blast is hotter than a knock: from another
+      explosion, half this sets it off and a fifth of it lights it */
   speed: number
 }
 
