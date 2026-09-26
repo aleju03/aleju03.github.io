@@ -876,24 +876,13 @@ if (want('destruction')) {
     for (const c of chunks.values()) debris.arm(c.smash)
     debris.ruins.onSolids = () => sb.solidsChanged()
     const dmg = attachDestruction(sb, debris.ruins)
-    if (process.env.DBG_IMPACT) sb.onImpact((e) => {
-      if (e.prop.kind.id !== 'barrier') return
-      const b = e.solid
-      console.log('impact', e.with, f(e.speed, 1), b ? `${f(b.min.x,1)},${f(b.min.y,1)},${f(b.min.z,1)} .. ${f(b.max.x,1)},${f(b.max.y,1)},${f(b.max.z,1)} owner ${debris.ruins.owner(b)?.s.rec.kind}` : '')
-    })
     const c = stageScenario(s, sb)
     const ms = []
     let most = 0
     // DESTRUCTION_EXTRA=<s> runs on past the film's end, to watch it settle
     const extra = Number(process.env.DESTRUCTION_EXTRA ?? 0)
     const spikes = []
-    const bv = new THREE.Vector3()
-    const bp = new THREE.Vector3()
     advanceScenario(s, c, s.duration + extra, (t, _dt, m) => {
-      if (process.env.DBG_IMPACT && id === 'sandbox:wall' && t > 0.9 && t < 1.4 && c.ids[0] && sb.getTransform(c.ids[0], bp)) {
-        sb.getVelocity(c.ids[0], bv)
-        console.log('barrier', f(t, 3), f(bp.x, 2), f(bp.z, 2), 'v', f(bv.x, 1), f(bv.z, 1))
-      }
       ms.push(m)
       if (m > 20) spikes.push(`${f(t, 2)}s ${f(m, 0)}ms (open ${f(dmg.stats.openMs, 0)}, lumps ${dmg.stats.lumps})`)
       most = Math.max(most, dmg.stats.lumps)

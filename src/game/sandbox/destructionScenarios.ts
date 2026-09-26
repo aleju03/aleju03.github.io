@@ -360,7 +360,7 @@ defineScenario({
   site: once('tower', () => siteBuilding(['tower', 'slab'], [0, -340], (_w, h) => h * 1.3 + 10, {
     minH: 30, maxH: 90, fall: true, minOpen: 0.85,
   })),
-  duration: 9,
+  duration: 12,
   frames: 12,
   camera: (c) => {
     const h = c.memo.h

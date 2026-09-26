@@ -652,18 +652,26 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     const cx = (frac.min.x + frac.max.x) / 2
     const cz = (frac.min.z + frac.max.z) / 2
     const width = Math.max(frac.max.x - frac.min.x, frac.max.z - frac.min.z)
-    // the load comes off as rigid clusters, resting on what is left below
-    if (above.length) {
-      ruins.lift(w.o, above)
-      noteLift(ev, w, above)
-      for (const comp of components(w, above)) spawnLump(w, ev, levelOf(w, comp), comp, null, null, null, 0)
-    }
-    // the rest of the storey buckles, nearest the damage first. A failure
-    // with no side to it (a command, or charges all round) is a drop
     const dx = from.x - cx
     const dz = from.z - cz
     const off = Math.hypot(dx, dz)
     const lean = off > width * 0.12
+    // the load comes off as rigid clusters, resting on what is left below.
+    // A failure on one side has already let that side sag by the time the
+    // rest of the storey knows about it, so the cluster is born turning into
+    // the hole (the top moving toward the damage, about the far walls): a
+    // felled building goes over rather than sitting down on its own rubble
+    if (above.length) {
+      ruins.lift(w.o, above)
+      noteLift(ev, w, above)
+      const tip = lean ? new THREE.Vector3(dz / off, 0, -dx / off).multiplyScalar(0.35) : null
+      for (const comp of components(w, above)) {
+        const id = spawnLump(w, ev, levelOf(w, comp), comp, null, null, null, 0)
+        if (id !== null && tip) sb.setVelocity(id, undefined, tip)
+      }
+    }
+    // the rest of the storey buckles, nearest the damage first. A failure
+    // with no side to it (a command, or charges all round) is a drop
     const hold = HOLD[w.grade] * (0.6 + 0.4 * Math.min(1, (frac.max.y - frac.min.y) / 40))
     let maxD = 1e-3
     const dist = rest.map((i) => {
@@ -673,7 +681,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       return d
     })
     rest.forEach((i, k) => {
-      const t = lean ? 0.12 + hold * (dist[k] / maxD) ** 1.3 : 0.1 + rnd() * 0.25
+      const t = lean ? 0.12 + hold * 1.5 * (dist[k] / maxD) ** 1.6 : 0.1 + rnd() * 0.25
       later(t, ev, () => crush(w, ev, i))
     })
     // dust out of the base all round, and the groan of it going
@@ -779,6 +787,16 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       // what a ram broke is born clear of it: the ram is already some way
       // into the wall, and a piece born inside it is shoved back into its
       // face by the solver, which stops a tonne of concrete dead
+      // Most of what a ram goes through is gravel by the time it is through:
+      // a wall's worth of slabs flung ahead of it into a shallow shop comes
+      // straight back off the shelving into its face, and a tonne of
+      // concrete stops against a heap it made itself
+      if (carried && rnd() < 0.7) {
+        tintOf([pc], tint)
+        sb.fx.rubble(pc.center, v, Math.min(5, Math.cbrt(pc.vol) * 1.6), tint[0], tint[1], tint[2])
+        if (pc.g) sb.fx.debris('glass', pc.center, v, 2.5)
+        continue
+      }
       throwPieces(w, ev, [i], v, over, carried && dir ? tmpA.copy(dir).setLength(1.4) : null)
     }
     tintOf(broke.map((i) => w.pieces[i]), tint)
@@ -852,6 +870,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     const w = L.w
     let groups: number[][] | null = null
     let childLevel: Level = 4
+    if (L.level === 0 && pancake(L, pose, e)) return
     if (L.level === 0) {
       // storeys
       const by = new Map<number, number[]>()
@@ -882,7 +901,15 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       if (!makeRoom(groups.length)) return
       for (const g of groups) {
         const lv = childLevel === 1 || childLevel === 2 ? (g.length === 1 ? 3 : levelOf(w, g)) : childLevel
-        spawnLump(w, L.ev, lv as Level, g, null, pose, null, 0.8, L.id)
+        const id = spawnLump(w, L.ev, lv as Level, g, null, pose, null, 0.8, L.id)
+        // a part still moving hard after the whole has been stopped (the top
+        // of a falling tower, which swept the widest arc) is stopped in its
+        // turn by the same ground on the same slice, and breaks again
+        const child = id !== null ? lumps.get(id) : undefined
+        if (child && child.level < 4 && sb.getVelocity(child.id, vIn) && vIn.length() > BREAK_DV[child.level] * 1.2) {
+          breakQueue.push({ L: child, e: { ...e, speed: vIn.length() } })
+          child.born = -1
+        }
       }
     } else if (L.level <= 2 && groups && groups.length === 1) {
       // one group only: skip straight down a level next time
@@ -903,6 +930,71 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     sb.fx.rubble(at, pose.vel, Math.min(5, size), tint[0], tint[1], tint[2])
     if (L.level <= 1) rumble(Math.min(1, L.vol / 600), e.x, e.y, e.z)
     removeLump(L)
+  }
+
+  /**
+   * A cluster that lands still standing more or less upright does not burst
+   * into storeys (a stack of storey boxes is as stable as the building was):
+   * its lowest storey is crushed to dust and gravel under the rest, which
+   * carries on as one cluster, drops that storey's height and lands again.
+   * That is the progressive collapse, storey by storey, each with its own
+   * burst of dust, until one storey is left or the thing has leaned too far
+   * to be standing on anything, when it breaks up the ordinary way.
+   */
+  const pancake = (L: Lump, pose: Pose, e: ImpactEvent) => {
+    tmpA.set(0, 1, 0).applyQuaternion(pose.quat)
+    if (tmpA.y < Math.cos((28 * Math.PI) / 180)) return false
+    const w = L.w
+    let lo = Infinity
+    let hi = -Infinity
+    for (const i of L.pieces) {
+      lo = Math.min(lo, w.pieces[i].iy)
+      hi = Math.max(hi, w.pieces[i].iy)
+    }
+    if (hi <= lo) return false
+    const crushed: number[] = []
+    const rest: number[] = []
+    for (const i of L.pieces) (w.pieces[i].iy === lo ? crushed : rest).push(i)
+    // the rest carries on, having spent some of its fall on what it crushed,
+    // and a lean it has picked up grows: the crushed storey gave first on
+    // the side it was leaning toward
+    pose.vel.multiplyScalar(0.35)
+    const lean = Math.acos(Math.min(1, tmpA.y))
+    if (lean > 0.1) {
+      const axis = new THREE.Vector3(tmpA.z, 0, -tmpA.x).normalize()
+      pose.ang.addScaledVector(axis, 0.25 + lean * 0.6)
+    }
+    const next = spawnLump(w, L.ev, 0, rest, null, pose, null, 0, L.id)
+    if (next !== null) {
+      // and keeps leaning the way it was going
+      sb.setVelocity(next, undefined, pose.ang)
+    }
+    // the storey it landed on: mostly dust and gravel, a few slabs thrown out
+    tintOf(crushed.slice(0, 8).map((i) => w.pieces[i]), tint)
+    const out = new THREE.Vector3()
+    const at = new THREE.Vector3()
+    for (const i of crushed) {
+      const pc = w.pieces[i]
+      at.copy(pc.center).sub(L.rc).applyQuaternion(pose.quat).add(pose.pos)
+      out.set(at.x - pose.pos.x, 0, at.z - pose.pos.z).setLength(6)
+      out.y = 2
+      if (pc.kind === 'wall' && rnd() < 0.3 && makeRoom(1)) {
+        spawnLump(w, L.ev, 3, [i], null, pose, out, 1.5, L.id)
+      } else {
+        sb.fx.rubble(at, out, Math.min(4, Math.cbrt(pc.vol) * 1.4), tint[0], tint[1], tint[2])
+      }
+    }
+    const f = w.o.frac
+    const width = Math.max(f.max.x - f.min.x, f.max.z - f.min.z)
+    const ring = Math.max(4, Math.round(width / 4))
+    for (let k = 0; k < ring; k++) {
+      const a = (k / ring) * Math.PI * 2
+      sb.fx.plume({ x: e.x + Math.cos(a) * width * 0.5, y: e.y + 0.5, z: e.z + Math.sin(a) * width * 0.5 },
+        width * 0.4, tint[0], tint[1], tint[2])
+    }
+    rumble(Math.min(1, L.vol / 500), e.x, e.y, e.z)
+    removeLump(L)
+    return true
   }
 
   const removeLump = (L: Lump) => {
@@ -936,6 +1028,8 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     }
   })
   const impacts: Array<{ s: Standing; e: ImpactEvent; dmg: number }> = []
+  /** props that have just broken through a wall and are still going */
+  const rams = new Map<PropId, { s: Standing; dmg: number; r: number; until: number; speed: number; dir: THREE.Vector3 }>()
 
   const offBlast = sb.onExplosion((e) => {
     damageAt(e, 70 * e.power, e.radius * 0.8, 'blast')
@@ -953,6 +1047,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   const vIn = new THREE.Vector3()
   const tmpA = new THREE.Vector3()
   const tmpQ = new THREE.Quaternion()
+  const tmpB = new THREE.Vector3()
   const vPre = new THREE.Vector3()
   const offSlice = sb.onAfterSlice((h) => {
     const t0 = performance.now()
@@ -980,7 +1075,39 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       vPre.set(vIn.x + nx * e.speed, vIn.y, vIn.z + nz * e.speed)
       const broke = hurt(s, ev, tmpV.set(e.x, e.y, e.z), dmg, r, vPre.lengthSq() > 1 ? vPre.clone() : null, 1, true)
       // a prop that went *through* keeps most of its way: what it hit gave
-      if (broke && !lumps.has(e.id)) sb.setVelocity(e.id, vPre.multiplyScalar(0.72))
+      if (broke && !lumps.has(e.id)) {
+        sb.setVelocity(e.id, vPre.multiplyScalar(0.72))
+        rams.set(e.id, { s, dmg, r, until: now + 0.6, speed: vPre.length(), dir: vPre.clone().normalize() })
+      }
+    }
+    // ...and goes on through: whatever of the building is in front of it
+    // this slice is hit too, without waiting for an impact the prop layer
+    // rate-limits to one in ninety milliseconds (a shop's back room of
+    // shelving otherwise stops a tonne of concrete on the second thing it
+    // meets)
+    for (const [id, ram] of rams) {
+      const p = sb.get(id)
+      if (!p || now > ram.until || !ram.s.open || !sb.getTransform(id, tmpA)) {
+        rams.delete(id)
+        continue
+      }
+      sb.getVelocity(id, vIn)
+      const along = vIn.dot(ram.dir)
+      tmpA.addScaledVector(ram.dir, Math.max(p.extents.x, p.extents.z) * 0.8)
+      const ev = newEvent({
+        building: ram.s.rec.id, how: 'impact', x: tmpA.x, y: tmpA.y, z: tmpA.z, power: ram.dmg, radius: ram.r,
+        dx: ram.dir.x, dy: ram.dir.y, dz: ram.dir.z, seed: (rnd() * 0x7fffffff) | 0,
+      })
+      const broke = hurt(ram.s, ev, tmpA.clone(), ram.dmg, ram.r, ram.dir.clone().multiplyScalar(ram.speed), 1, true)
+      if (broke) {
+        ram.speed *= 0.85
+        ram.dmg *= 0.85
+        if (along < ram.speed) sb.setVelocity(id, vIn.addScaledVector(ram.dir, ram.speed - along))
+      } else {
+        log.pop()
+        seq--
+        if (along < ram.speed * 0.3) rams.delete(id)
+      }
     }
     // lumps that landed hard
     while (breakQueue.length) {
@@ -997,10 +1124,17 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       if (due.length) sb.solidsChanged()
     }
     // small shards age out, and anything the budget let go shrinks away
+    let stalled: Lump | null = null
     for (const L of lumps.values()) {
       if (L.level === 0 && sb.getTransform(L.id, tmpA, tmpQ)) {
         const up = tmpA.set(0, 1, 0).applyQuaternion(tmpQ).y
-        stats.lean = Math.max(stats.lean, (Math.acos(Math.min(1, up)) * 180) / Math.PI)
+        const deg = (Math.acos(Math.min(1, up)) * 180) / Math.PI
+        stats.lean = Math.max(stats.lean, deg)
+        // a cluster that has come to rest leaning is not at rest: it is
+        // standing on the heap of its own crushed storey, which gives next
+        if (deg > 6 && now - L.born > 0.6 && sb.getVelocity(L.id, vIn, tmpB) && vIn.length() < 1.5 && tmpB.length() < 0.25) {
+          stalled = L
+        }
       }
       // a piece born brushing a box it could not be carved out of is shoved
       // out by the solver; nothing that young has a reason to be that fast
@@ -1014,6 +1148,15 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       const k = 1 - L.going / 0.6
       if (L.mesh) L.mesh.scale.setScalar(Math.max(0.01, k))
       if (k <= 0) removeLump(L)
+    }
+    if (stalled) {
+      const pose = poseOfLump(stalled)
+      if (pose) {
+        const low = pose.pos.clone()
+        low.y = sb.groundY(low.x, low.z) + 0.5
+        const e = { x: low.x, y: low.y, z: low.z, speed: 0 } as ImpactEvent
+        if (!pancake(stalled, pose, e)) breakLump(stalled, e)
+      }
     }
     stats.sliceMs = performance.now() - t0
   })
