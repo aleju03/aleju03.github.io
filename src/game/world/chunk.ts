@@ -1174,7 +1174,7 @@ export const buildChunk = (
     g.setAttribute('aBirth', new THREE.BufferAttribute(a, 1))
   }
 
-  const smash: SmashSet = { key: `${cx},${cz}`, meshes: {}, props }
+  const smash: SmashSet = { key: `${cx},${cz}`, meshes: {}, props, structures, boxes, geos }
   const dg = detail.build()
   if (dg) {
     geos.push(dg)

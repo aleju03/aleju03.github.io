@@ -20,10 +20,16 @@
     blast      a row of red barrels set off at one end: how many go, how
                far a crate beside them flies, and that one out of reach sleeps
     scenarios  every registered scenario, run to its end, with its report
+    destruction  the three demolitions (house, tower, wall) in the real
+               chunks with their ruins armed: pieces down, rubble, and
+               what a frame of the collapse costs (median, p95, worst)
 */
 import { createSandbox } from '../../src/game/sandbox/sandbox.ts'
 import { SCENARIOS, stageScenario, advanceScenario } from '../../src/game/sandbox/scenarios.ts'
 import '../../src/game/sandbox/propScenarios.ts'
+import '../../src/game/sandbox/destructionScenarios.ts'
+import { attachDestruction } from '../../src/game/sandbox/destruction.ts'
+import { buildDebris } from '../../src/game/world/debris.ts'
 import { CATALOGUE } from '../../src/game/sandbox/catalogue.ts'
 import { KINDS } from '../../src/game/sandbox/kinds.ts'
 import { makeCollisionSet } from '../../src/game/physics/collision.ts'
@@ -53,6 +59,7 @@ const flat = SCENARIOS.find((s) => s.id === 'sandbox:stack').site()
 const fy = terrainY(flat.x, flat.z)
 console.log(`flat site ${Math.round(flat.x)},${Math.round(flat.z)}, slope ${slopeAt(flat.x, flat.z).toFixed(4)}`)
 const pad = (s, n) => String(s).padEnd(n)
+const DESTRUCTION = ['sandbox:demolish-house', 'sandbox:tower', 'sandbox:wall']
 const f = (n, d = 3) => n.toFixed(d)
 
 /* ------------------------------------------------------------- ground -- */
@@ -492,6 +499,7 @@ if (want('float')) {
 /* ---------------------------------------------------------- scenarios -- */
 if (want('scenarios')) {
   for (const s of SCENARIOS) {
+    if (DESTRUCTION.includes(s.id)) continue
     const { sb } = newSandbox()
     await sb.whenReady
     const c = stageScenario(s, sb)
@@ -502,6 +510,47 @@ if (want('scenarios')) {
     ms.sort((a, b) => a - b)
     console.log(`scenario ${pad(s.id, 16)} at ${Math.round(c.x)},${Math.round(c.z)}  ${s.report ? s.report(c) : ''}  ` +
       `(${f(ms[Math.floor(ms.length / 2)], 2)} ms/frame median)`)
+    sb.dispose()
+  }
+}
+
+/* -------------------------------------------------------- destruction -- */
+if (want('destruction')) {
+  for (const id of DESTRUCTION) {
+    const s = SCENARIOS.find((o) => o.id === id)
+    const site = s.site()
+    // the neighbourhood, built for real and kept: the ruins read the merged
+    // geometry to take a building apart
+    const cx0 = Math.floor((site.x - originX(0)) / CHUNK)
+    const cz0 = Math.floor((site.z - originZ(0)) / CHUNK)
+    const chunks = new Map()
+    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+      const c = buildChunk(cx0 + dx, cz0 + dz, 'full', MATS)
+      chunks.set((cx0 + dx) + ',' + (cz0 + dz), c)
+    }
+    const collision = makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, [])
+    const sb = createSandbox({
+      collision, waterY: () => SEA_Y,
+      chunkSolids: (cx, cz) => chunks.get(cx + ',' + cz)?.boxes ?? chunkSolids(cx, cz),
+    })
+    await sb.whenReady
+    const debris = buildDebris({ parent: new THREE.Group(), obstacles: [], groundAt: terrainY, trackDisposable: () => {} })
+    for (const c of chunks.values()) debris.arm(c.smash)
+    debris.ruins.onSolids = () => sb.solidsChanged()
+    const dmg = attachDestruction(sb, debris.ruins)
+    const c = stageScenario(s, sb)
+    const ms = []
+    let most = 0
+    advanceScenario(s, c, s.duration, (_t, _dt, m) => {
+      ms.push(m)
+      most = Math.max(most, dmg.stats.lumps)
+    })
+    ms.sort((a, b) => a - b)
+    const q = (k) => ms[Math.min(ms.length - 1, Math.floor(ms.length * k))]
+    console.log(`destruction ${pad(id, 22)} at ${Math.round(c.x)},${Math.round(c.z)}  ${s.report ? s.report(c) : ''}`)
+    console.log(`            frame ms: median ${f(q(0.5), 2)}, p95 ${f(q(0.95), 2)}, worst ${f(ms[ms.length - 1], 2)}; ` +
+      `most rubble at once ${most}; ${dmg.log.length} damage events`)
+    dmg.dispose()
     sb.dispose()
   }
 }

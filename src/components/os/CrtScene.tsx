@@ -3101,6 +3101,10 @@ export default function CrtScene({
             sandbox.timescale = rules.timescale
             history = historyOf(sandbox)
             history.me = remote.you ?? LOCAL
+            // the buildings come apart: blasts, rubble, the car and the
+            // console all reach them through the world's ruins
+            const ruins = outside.ruins()
+            if (ruins) sandboxMod.attachDestruction(sandbox, ruins)
             const h = history
             h.onChange(() =>
               setOrders(h.entries(h.me).map((e) => ({ seq: e.seq, label: e.label, kind: e.kind }))))

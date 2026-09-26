@@ -3,6 +3,7 @@ import type { Solid } from '../physics/collision'
 import type { Span } from './debris'
 import { PREBORN } from './fade'
 import { SURF } from './surface'
+import { seeded } from '../core/rand'
 
 /*
   How a building comes apart: the geometry half of destruction, and all of it
@@ -1254,4 +1255,111 @@ export const unsupported = (pieces: Piece[], alive: (i: number) => boolean) => {
   const out: number[] = []
   for (let i = 0; i < pieces.length; i++) if (alive(i) && dist[i] === FAR) out.push(i)
   return out
+}
+
+/* ------------------------------------------------------------ shatter -- */
+
+/** volume, centre of mass and bounds of a set of fragments (glass ignored);
+    open surfaces weigh a little, as a piece of them does */
+export const massOf = (frags: Frag[]) => {
+  const box = new THREE.Box3()
+  const center = new THREE.Vector3()
+  const c = new THREE.Vector3()
+  let vol = 0
+  for (const f of frags) {
+    if (f.glass) continue
+    box.union(fragBox(f, tmpBox))
+    if (!f.closed) continue
+    const v = fragVolume(f, c)
+    vol += v
+    center.addScaledVector(c, v)
+  }
+  if (vol > 1e-6) center.multiplyScalar(1 / vol)
+  else if (!box.isEmpty()) box.getCenter(center)
+  if (!box.isEmpty()) {
+    const e = box.getSize(c)
+    vol = Math.max(vol, 0.05 * (e.x + e.y + e.z))
+  }
+  return { vol, center, box }
+}
+
+/**
+ * Break one piece's fragments into `n` chunks along Voronoi cells: `n` seed
+ * points scattered through it, and every cell cut out by the bisecting planes
+ * to the other seeds. Closed fragments are capped at every cut with the
+ * stamp's core colour and its surface code, which is what makes a broken
+ * brick wall show brick in the break. A thin panel's seeds sit on its middle
+ * plane with only a little lean, so the cuts run *through* the panel, the way
+ * a wall breaks, rather than peeling it into skins. Glass is not cut: a pane
+ * leaves as shards (the sandbox's fx). Deterministic in `seed`.
+ */
+export const shatterFrags = (frags: Frag[], seed: number, n: number): Frag[][] => {
+  const solid = frags.filter((f) => !f.glass)
+  if (n < 2 || !solid.length) return [solid]
+  const box = new THREE.Box3()
+  for (const f of solid) box.union(fragBox(f, tmpBox))
+  const size = box.getSize(new THREE.Vector3())
+  const mid = box.getCenter(new THREE.Vector3())
+  const rnd = seeded(seed >>> 0)
+  // which axis is thin: that coordinate stays near the middle
+  const thin = size.x <= size.y && size.x <= size.z ? 0 : size.y <= size.z ? 1 : 2
+  const seeds: THREE.Vector3[] = []
+  for (let i = 0; i < n; i++) {
+    const p = new THREE.Vector3(
+      box.min.x + size.x * (0.12 + 0.76 * rnd()),
+      box.min.y + size.y * (0.12 + 0.76 * rnd()),
+      box.min.z + size.z * (0.12 + 0.76 * rnd()),
+    )
+    const k = 0.15 * (rnd() - 0.5)
+    if (thin === 0) p.x = mid.x + size.x * k
+    else if (thin === 1) p.y = mid.y + size.y * k
+    else p.z = mid.z + size.z * k
+    seeds.push(p)
+  }
+  const out: Frag[][] = []
+  const pl: Plane = { nx: 0, ny: 0, nz: 0, d: 0 }
+  for (let i = 0; i < n; i++) {
+    let cell = solid
+    for (let j = 0; j < n && cell.length; j++) {
+      if (j === i) continue
+      const a = seeds[i]
+      const b = seeds[j]
+      let nx = b.x - a.x
+      let ny = b.y - a.y
+      let nz = b.z - a.z
+      const l = Math.hypot(nx, ny, nz)
+      if (l < 1e-4) continue
+      nx /= l
+      ny /= l
+      nz /= l
+      pl.nx = nx
+      pl.ny = ny
+      pl.nz = nz
+      pl.d = (nx * (a.x + b.x) + ny * (a.y + b.y) + nz * (a.z + b.z)) / 2
+      const next: Frag[] = []
+      for (const f of cell) {
+        const back = splitFrag(f, pl)[1]
+        if (back) next.push(back)
+      }
+      cell = next
+    }
+    if (cell.length) out.push(cell.map((f) => (f.p.length > 72 ? simplify(f) : f)))
+  }
+  return out.length ? out : [solid]
+}
+
+/** the corners of a set of pieces' boxes relative to `o`: a cheap, honest
+    convex collider for a cluster of them falling as one */
+export const cornerPoints = (pieces: Piece[], o: THREE.Vector3, shrink = 0.05) => {
+  const pts: number[] = []
+  for (const pc of pieces) {
+    for (let k = 0; k < 8; k++) {
+      pts.push(
+        (k & 1 ? pc.max.x - shrink : pc.min.x + shrink) - o.x,
+        (k & 2 ? pc.max.y - shrink : pc.min.y + shrink) - o.y,
+        (k & 4 ? pc.max.z - shrink : pc.min.z + shrink) - o.z,
+      )
+    }
+  }
+  return pts
 }

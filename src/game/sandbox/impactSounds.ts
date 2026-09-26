@@ -378,6 +378,54 @@ export const boom = (power: number, x: number, y: number, z: number) => {
   }
 }
 
+/**
+ * A building letting go (sandbox/destruction.ts): `size` 0..1 from a wall
+ * panel cracking out to a whole block coming down. It is the boom with the
+ * crack taken off and the tail stretched: a low groan of filtered noise that
+ * swells rather than hits, two sub modes sagging in pitch (the load going),
+ * a grinding band over the top, and masonry clattering down through it for
+ * as long as the rumble lasts. Peak-matched below the barrel's boom, which
+ * is usually what started it.
+ */
+export const rumble = (size: number, x: number, y: number, z: number) => {
+  const a = context()
+  if (!a || !bus) return
+  const k = Math.min(1, Math.max(0.1, size))
+  const now = a.currentTime
+  // one per quarter second: a collapse announces every storey, and twelve
+  // rumbles stacked on one frame is a roar with no shape to it
+  if ((lastBy.get('rumble') ?? -1) > now - 0.25) return
+  lastBy.set('rumble', now)
+  const pl = place(a, x, y, z, 0.3 * Math.sqrt(k), 60)
+  if (!pl) return
+  const lp = a.createBiquadFilter()
+  lp.type = 'lowpass'
+  lp.frequency.value = Math.max(500, 9000 / (1 + pl.d / 40))
+  lp.Q.value = 0.5
+  pl.head.connect(lp).connect(bus)
+  const o: Out = { a, node: pl.out, at: now + pl.d / 800 }
+  const len = 0.9 + 2.6 * k
+  // the groan swells in over a tenth of a second
+  const sw = a.createGain()
+  sw.gain.setValueAtTime(0.25, o.at)
+  sw.gain.linearRampToValueAtTime(1, o.at + 0.12)
+  sw.connect(pl.out)
+  const inner: Out = { a, node: sw, at: o.at }
+  burst(inner, 'lowpass', 420, 0.8, 1, len, 0, 90)
+  burst(inner, 'bandpass', 240 * jit(0.1), 1.1, 0.55, len * 0.8, 0.03)
+  mode(inner, 52 * jit(0.08), 0.9, len * 0.9, 0.02, 0.62)
+  mode(inner, 33 * jit(0.08), 0.8, len, 0.08, 0.7)
+  // grinding: a narrow band dragged down as it goes
+  burst(o, 'bandpass', 900, 3, 0.18 * k, len * 0.6, 0.05, 380)
+  // and the clatter of it landing, spread through the tail
+  const n = Math.round(4 + 10 * k)
+  for (let i = 0; i < n; i++) {
+    const t = 0.1 + Math.random() * len * 0.85
+    burst(o, 'bandpass', 500 + Math.random() * 1400, 1.3, 0.12 + 0.1 * Math.random(), 0.05, t)
+    mode(o, 90 + Math.random() * 150, 0.18, 0.09, t, 0.8)
+  }
+}
+
 /** a fuse catching: a whoosh of gas lighting */
 export const igniteSound = (x: number, y: number, z: number) => {
   const a = context()

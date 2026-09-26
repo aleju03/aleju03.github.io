@@ -46,6 +46,13 @@ export interface Fx {
   burn: (at: Vec3Like, k: number) => void
   /** a puff of dust where something heavy landed */
   dust: (at: Vec3Like, size: number) => void
+  /** masonry dust from a building coming down: big slow billows the
+      colour of what broke (linear rgb), rolling out along the ground and
+      hanging in the air for seconds. `size` is about a storey's width */
+  plume: (at: Vec3Like, size: number, r: number, g: number, b: number) => void
+  /** chunky bits of a wall knocked loose, in its own colour, thrown with
+      `vel` and scattered over `size` */
+  rubble: (at: Vec3Like, vel: Vec3Like, size: number, r: number, g: number, b: number) => void
   /** write the current flash (a blast, a burning fuse) into the pixel
       look's fake lights; once a frame, after the look is dressed */
   lightLook: (lights: FakeLights) => void
@@ -61,6 +68,8 @@ const NOOP_FX: Fx = {
   debris: () => {},
   burn: () => {},
   dust: () => {},
+  plume: () => {},
+  rubble: () => {},
   lightLook: () => {},
   step: () => {},
   live: 0,
@@ -504,6 +513,36 @@ export const createFx = (o: FxOpts): Fx => {
         const s = rnd(0.22, 0.42) * Math.min(2.5, size)
         emit(puffs, at.x + d3[0] * size * 0.5, at.y, at.z + d3[2] * size * 0.5, d3[0] * 3, rnd(0.6, 1.6), d3[2] * 3,
           rnd(0.5, 0.8), s, s, s, 0.4, 0.36, 0.3, { grow: 1.8, drag: 2.5, spin: 1.5, fadeAt: 0.05 })
+      }
+    },
+
+    plume: (at, size, r, g, b) => {
+      // lighter and warmer than smoke: pulverised render and brick, so a
+      // collapse reads as a dust storm and not as a fire
+      const n = Math.min(14, 3 + Math.round(size * 0.9))
+      const sz = Math.min(3.2, 0.7 + size * 0.14)
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2
+        const out = rnd(2, 7) * Math.min(2.2, 0.6 + size * 0.1)
+        const s = rnd(0.7, 1.3) * sz
+        const k = rnd(0.85, 1.15)
+        emit(puffs, at.x + Math.cos(a) * size * 0.3, at.y + rnd(-0.3, 1.2), at.z + Math.sin(a) * size * 0.3,
+          Math.cos(a) * out, rnd(0.4, 2.6), Math.sin(a) * out, rnd(2.8, 5.2), s, s, s,
+          r * k, g * k, b * k,
+          { delay: rnd(0, 0.35), grow: rnd(2.2, 3.2), drag: 0.9, spin: 0.6, fadeAt: 0.3 })
+      }
+    },
+
+    rubble: (at, vel, size, r, g, b) => {
+      const n = Math.min(18, 5 + Math.round(size * 2))
+      for (let i = 0; i < n; i++) {
+        dir(0.15, d3)
+        const sp = rnd(1, 6)
+        const s = rnd(0.14, 0.42) * Math.min(1.6, 0.6 + size * 0.2)
+        const k = rnd(0.75, 1.2)
+        emit(bits, at.x + (Math.random() - 0.5) * size, at.y + (Math.random() - 0.5) * size * 0.5, at.z + (Math.random() - 0.5) * size,
+          vel.x * 0.7 + d3[0] * sp, vel.y * 0.5 + d3[1] * sp + 1.5, vel.z * 0.7 + d3[2] * sp,
+          rnd(1.6, 3), s, s * rnd(0.6, 1), s, r * k, g * k, b * k, { spin: 9 })
       }
     },
 

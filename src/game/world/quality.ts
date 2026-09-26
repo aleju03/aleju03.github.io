@@ -74,6 +74,11 @@ export interface Gfx {
       the bands and the outlines read as drawn. A cold iGPU gets a hair less,
       which only matters on odd screen sizes */
   pixelLines: number
+  /** rubble a collapsing building may keep moving at once
+      (sandbox/destruction.ts). Each lump is a Rapier hull and its own draw,
+      so it is a real budget: past it the oldest settled ones are welded
+      where they lie and breaking up stops a level coarser */
+  rubble: number
 }
 
 // The two lattices are deliberately the same size on each tier, which puts
@@ -82,11 +87,11 @@ export interface Gfx {
 // that all of it was being spent at distances where none of it could be seen.
 const MEDIUM: Gfx = {
   grassSide: 144, grassNearSide: 144, flowerSide: 44, shadowMap: 1024, canopyK: 1,
-  birds: 26, fauna: 8, pedestrians: 5, richSky: false, pixelLines: 340,
+  birds: 26, fauna: 8, pedestrians: 5, richSky: false, pixelLines: 340, rubble: 110,
 }
 const HIGH: Gfx = {
   grassSide: 224, grassNearSide: 224, flowerSide: 60, shadowMap: 2048, canopyK: 1.45,
-  birds: 54, fauna: 14, pedestrians: 9, richSky: true, pixelLines: 360,
+  birds: 54, fauna: 14, pedestrians: 9, richSky: true, pixelLines: 360, rubble: 220,
 }
 
 export const gfx: Gfx = { ...MEDIUM }

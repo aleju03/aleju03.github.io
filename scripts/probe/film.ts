@@ -2,10 +2,11 @@ import * as THREE from 'three'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
 import { makeChunkMats, waveHeightAt } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
-import { SEA_Y } from '../../src/game/world/terrain'
+import { SEA_Y, terrainY } from '../../src/game/world/terrain'
+import { buildDebris } from '../../src/game/world/debris'
 import { tickWind } from '../../src/game/world/wind'
 import { makeCollisionSet, type Solid } from '../../src/game/physics/collision'
-import { createSandbox, type Sandbox } from '../../src/game/sandbox/sandbox'
+import { attachDestruction, createSandbox, type Sandbox } from '../../src/game/sandbox/sandbox'
 import {
   SCENARIOS, advanceScenario, scenarioById, stageScenario, type Scenario, type ScenarioCtx,
 } from '../../src/game/sandbox/scenarios'
@@ -48,6 +49,7 @@ setPropSounds(false)
 /** modules that register scenarios when imported; one line per new file */
 const SCENARIO_MODULES: Array<() => Promise<unknown>> = [
   () => import('../../src/game/sandbox/propScenarios'),
+  () => import('../../src/game/sandbox/destructionScenarios'),
 ]
 
 export interface FilmSpec {
@@ -187,6 +189,12 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
     walker: false,
   })
   await sb.whenReady
+  // the buildings, as the game has them: the world's ruins over these chunks
+  // and destruction attached to the sandbox, so a scenario can knock one down
+  const debris = buildDebris({ parent: scene, obstacles: boxes, groundAt: terrainY, trackDisposable: () => {} })
+  for (const ch of chunks) debris.arm(ch.smash)
+  debris.ruins.onSolids = () => sb.solidsChanged()
+  attachDestruction(sb, debris.ruins)
   const c = stageScenario(s, sb)
   const sky = lightFor(scene, tod, new THREE.Vector3(c.x, c.y, c.z))
   const shot = s.camera(c)
