@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../../i18n'
 import type { PropKind } from '../../game/sandbox/kinds'
 import type { SpawnCategory, SpawnEntry } from '../../game/sandbox/spawnlist'
@@ -79,6 +79,11 @@ export interface SpawnMenuProps {
 }
 
 const ALL = '*'
+/** plates across a page, and one plate's height (picture, number, a name
+    that may take two lines, the small print) */
+const COLS = 4
+const PLATE_H = 158
+const ROW_GAP = 6
 
 /** a pencil ring, drawn rather than bordered: two passes that do not meet */
 function Ring() {
@@ -118,6 +123,22 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
     }
   }, [open, source, pics])
   const findRef = useRef<HTMLInputElement>(null)
+  /** which page of the current section is open, and how many rows of plates
+      the page has room for (measured, so a short window gets shorter pages
+      rather than plates spilling under the footer) */
+  const [leaf, setLeaf] = useState(0)
+  const [rows, setRows] = useState(3)
+  const gridRef = useRef<HTMLDivElement>(null)
+  const wheelAt = useRef(0)
+  useLayoutEffect(() => {
+    const el = gridRef.current
+    if (!el) return
+    const fit = () => setRows(Math.max(1, Math.floor((el.clientHeight + ROW_GAP) / (PLATE_H + ROW_GAP))))
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [open, source])
   const pageStock = useMemo(
     () => stockTexture({ base: PAGE, seed: 0xca7a1, grain: 0.7, flecks: 50, fleck: '90,80,60' }),
     [],
@@ -143,8 +164,26 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
           .some((w) => w.toLowerCase().includes(q)))
     : current === ALL ? entries : entries.filter((e) => e.category === current)
   const title = q ? `${s.find} "${query.trim()}"` : current === ALL ? s.everything : catName(catOf(current)!)
-  // page numbers: the contents is page 1, every category a page after it
-  const pageOf = (id: string) => (id === ALL ? 2 : 3 + cats.findIndex((c) => c.id === id))
+  // the book is paginated like a printed one: the contents is page 1, "all
+  // of it" runs over as many pages as it needs, and each category follows
+  // on its own pages. A search result is laid out on the "all of it" pages
+  const perPage = COLS * rows
+  const leaves = (n: number) => Math.max(1, Math.ceil(n / perPage))
+  const sectionStart = (id: string) => {
+    let p = 2
+    if (id === ALL) return p
+    p += leaves(entries.length)
+    for (const c of cats) {
+      if (c.id === id) return p
+      p += leaves(entries.filter((e) => e.category === c.id).length)
+    }
+    return p
+  }
+  const pageOf = (id: string) => sectionStart(id)
+  const pages = leaves(shown.length)
+  const at = Math.min(leaf, pages - 1)
+  const onPage = shown.slice(at * perPage, (at + 1) * perPage)
+  const turn = (d: number) => setLeaf(Math.max(0, Math.min(pages - 1, at + d)))
 
   return (
     <div
@@ -212,6 +251,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                     onClick={() => {
                       setCat(c.id)
                       setQuery('')
+                      setLeaf(0)
                     }}
                     className="group relative flex w-full items-baseline gap-1.5 py-[2px] text-left"
                   >
@@ -239,7 +279,10 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
             <input
               ref={findRef}
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setLeaf(0)
+              }}
               onFocus={() => {
                 setFinding(true)
                 onPin(true)
@@ -325,21 +368,29 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
           }}
         >
           {/* the curl: the corner turned up towards you, its pale underside
-              over the next sheet down, which is a shade darker */}
-          <span
-            aria-hidden
-            className="pointer-events-none absolute right-0 bottom-0 size-[34px]"
+              over the next sheet down, which is a shade darker. With more
+              pages to come it is the way to them: lift it and the page turns */}
+          <button
+            type="button"
+            data-turn="next"
+            aria-label={s.next}
+            disabled={at >= pages - 1}
+            onMouseDown={(ev) => ev.preventDefault()}
+            onClick={() => turn(1)}
+            className="absolute right-0 bottom-0 z-10 size-[34px] enabled:cursor-pointer"
             style={{
               background:
                 'linear-gradient(135deg, rgba(0,0,0,0) 49%, rgba(40,25,10,0.28) 50%, rgba(0,0,0,0) 56%), ' +
                 'linear-gradient(315deg, #ddd2bb 0 49%, rgba(0,0,0,0) 50%), ' +
                 'linear-gradient(135deg, #d6c9ae, #ece3cf 26%, #f7f1e4 49%, rgba(0,0,0,0) 50%)',
+              transform: at < pages - 1 ? 'scale(1.35)' : undefined,
+              transformOrigin: '100% 100%',
             }}
           />
           <div className="flex items-baseline gap-3">
             <h3 className="font-display text-[26px] leading-none font-semibold">{title}</h3>
             <span className="font-mono text-[11px]" style={{ color: INK_SOFT }}>
-              {shown.length}
+              {pages > 1 ? `${at * perPage + 1}-${at * perPage + onPage.length} / ${shown.length}` : shown.length}
             </span>
           </div>
           <div aria-hidden className="mt-2 border-t" style={{ borderColor: INK }} />
@@ -348,13 +399,22 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
               {s.loading}
             </p>
           ) : (
+            <div ref={gridRef} className="mt-3 min-h-0 flex-1">
             <div
-              key={q ? `?${q}` : current}
-              className="-mx-2 mt-3 grid flex-1 content-start gap-x-3 gap-y-2 overflow-y-auto px-2 pb-2"
+              key={`${q ? `?${q}` : current}:${at}`}
+              className="-mx-2 grid h-full content-start gap-x-3 overflow-hidden px-2"
               style={{
-                gridTemplateColumns: 'repeat(auto-fill, minmax(112px, 1fr))',
+                gridTemplateColumns: `repeat(${COLS}, minmax(0, 1fr))`,
+                gridAutoRows: PLATE_H,
+                rowGap: ROW_GAP,
                 animation: 'cat-page 160ms ease-out',
-                scrollbarWidth: 'none',
+              }}
+              // a wheel over the page leafs through it, one page a notch
+              onWheel={(ev) => {
+                const now = performance.now()
+                if (now - wheelAt.current < 220 || Math.abs(ev.deltaY) < 4) return
+                wheelAt.current = now
+                turn(ev.deltaY > 0 ? 1 : -1)
               }}
             >
               {shown.length === 0 && (
@@ -362,7 +422,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                   {s.noMatch}
                 </p>
               )}
-              {shown.map((e) => {
+              {onPage.map((e) => {
                 const k = source.kind(e.id)
                 const n = entries.indexOf(e) + 1
                 const pic = pics?.get(e.id)
@@ -380,7 +440,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                     onMouseDown={(ev) => ev.preventDefault()}
                     onPointerEnter={() => setRinged(e.id)}
                     onPointerLeave={() => setRinged((r) => (r === e.id ? null : r))}
-                    className="group relative flex flex-col items-center px-1 pt-1.5 pb-2 text-center"
+                    className="group relative flex h-full flex-col items-center px-1 pt-1.5 pb-1 text-center"
                   >
                     {ringed === e.id && <Ring />}
                     {pic ? (
@@ -397,15 +457,17 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                     <span className="font-mono text-[10px] tabular-nums" style={{ color: RED }}>
                       {s.no} {String(n).padStart(2, '0')}
                     </span>
-                    <span className="font-display text-[14px] leading-tight font-semibold">{name}</span>
+                    <span className="font-display line-clamp-2 text-[14px] leading-tight font-semibold">{name}</span>
                     <span className="font-mono text-[10.5px]" style={{ color: INK_SOFT }}>{note}</span>
                     {stamped?.id === e.id && (
                       <span
                         key={stamped.n}
                         aria-hidden
-                        // in the plate's top corner, clear of the picture and
-                        // the words, the way a clerk stamps the margin
-                        className="font-display pointer-events-none absolute -top-1 -right-1 rounded-[3px] border-2 px-1 text-[10px] leading-[1.35] font-bold tracking-[0.1em] whitespace-nowrap uppercase"
+                        // inside the plate's top corner, clear of the words,
+                        // the way a clerk stamps the margin, and gone once
+                        // it has faded rather than left hanging in the gap
+                        onAnimationEnd={() => setStamped(null)}
+                        className="font-display pointer-events-none absolute top-1 right-0 rounded-[3px] border-2 px-1 text-[10px] leading-[1.35] font-bold tracking-[0.1em] whitespace-nowrap uppercase"
                         style={{ color: RED, borderColor: RED, animation: 'cat-stamp 1100ms ease-out forwards', mixBlendMode: 'multiply' }}
                       >
                         {s.sent}
@@ -415,11 +477,25 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                 )
               })}
             </div>
+            </div>
           )}
-          <div className="mt-1 flex items-baseline justify-between pr-9 font-mono text-[10px]" style={{ color: INK_SOFT }}>
+          <div className="mt-1 flex items-baseline gap-3 pr-10 font-mono text-[10px]" style={{ color: INK_SOFT }}>
             <span>{finding ? s.closeFinding : keyHint(s.close, language)}</span>
-            <span>
-              {s.page} {pageOf(q ? ALL : current)}
+            {at > 0 && (
+              <button
+                type="button"
+                data-turn="back"
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => turn(-1)}
+                className="underline decoration-dotted underline-offset-2"
+                style={{ color: RED }}
+              >
+                {s.back}
+              </button>
+            )}
+            <span className="ml-auto">
+              {at < pages - 1 && <span className="mr-2 italic">{s.turn}</span>}
+              {s.page} {pageOf(q ? ALL : current) + at}
             </span>
           </div>
         </section>

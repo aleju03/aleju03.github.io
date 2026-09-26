@@ -26,7 +26,7 @@
   pointer lock that mouse-look needs.
 
   Writes shots/sandbox/: console, console-tab, console-closed (the receipt
-  over what it spawned, at the crosshair), menu, menu-category, menu-find,
+  over what it spawned, at the crosshair), menu, menu-page2, menu-category, menu-find,
   menu-after (the catalogue, then the orders standing in front of you), and
   noclip-first / noclip-third (labelled eight-frame strips). Ports come from PROBE_PORT / PROBE_CDP like the other
   harnesses, and it kills only what it spawned (scripts/probe/cdp.mjs).
@@ -247,21 +247,32 @@ try {
     await look(null, -0.26)
     await down('KeyQ')
     // the icons are drawn the first time the book opens
-    await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 20`), 60, 250, 'the catalogue icons')
-    console.log(`  ${await evaluate(`document.querySelectorAll('[data-kind]').length`)} plates`)
-    // order three things (each lands on the last, at the crosshair), then
-    // leave the pencil on a fourth
-    // aiming a little left, centre and right for each, the way you would
+    await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 4`), 60, 250, 'the catalogue icons')
+    // order three things from their own sections, aiming a little left,
+    // centre and right for each, the way you would
     const yaw0 = Number(flag('yaw', 0.6))
-    for (const [id, dy] of [['crate', 0.2], ['barrel_explosive', 0], ['melon', -0.2]]) {
+    for (const [id, cat, dy] of [['crate', 'wood', 0.2], ['barrel_explosive', 'explosive', 0], ['melon', 'food', -0.2]]) {
+      await clickOn(`[data-category="${cat}"]`)
+      await sleep(250)
       await look(yaw0 + dy, -0.26)
       await clickOn(`[data-kind="${id}"]`)
       await sleep(260)
     }
     await look(yaw0, -0.26)
-    await hover('[data-kind="couch"]')
+    // then the front of the book: all of it, page one, with a cone just
+    // ordered (its stamp still wet) and the pencil on the ball
+    await clickOn('[data-category="*"]')
     await sleep(300)
+    await look(yaw0 + 0.4, -0.26)
+    await clickOn('[data-kind="cone"]')
+    await hover('[data-kind="ball"]')
+    await sleep(220)
     await shot('menu')
+    console.log(`  ${await evaluate(`document.querySelectorAll('[data-kind]').length`)} plates on a page`)
+    // lift the corner: the next page of all of it
+    await clickOn('[data-turn="next"]')
+    await sleep(300)
+    await shot('menu-page2')
     // one category page
     await clickOn('[data-category="furniture"]')
     await sleep(350)
