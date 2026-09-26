@@ -275,6 +275,13 @@ export interface GroundSample {
   /** how paved the town has this lattice point, 0..1 (pavedAt) */
   paved: number
   biome: BiomeId
+  /** the ground's own colour before any paving is mixed in: what the
+      ground shader (groundLook.ts) draws on the unpaved side of a verge, so
+      a kerb is a crisp edge rather than four units of grey bleeding into
+      the grass */
+  nr: number
+  ng: number
+  nb: number
 }
 
 const S_PATCH = 0x77aa
@@ -287,6 +294,38 @@ const groundCache = new Map<number, GroundSample>()
 /** twice the 43,681-point RADIUS_HIGH ring, so the set the streamer is
     actively walking over never evicts itself; see trimCache above */
 const GROUND_CACHE_CAP = 90000
+
+/**
+ * The ground at a point given its height and slope: colour, pavedness and
+ * biome, uncached. latticeGround is this, memoised at the lattice; the far
+ * field (farfield.ts) calls it straight, at its own coarser vertices, so a
+ * mountain four kilometres off is coloured by the same rules as the one
+ * under your feet without flooding the lattice cache with points nobody
+ * will ever stand on.
+ */
+export const groundSample = (x: number, z: number, y: number, slope: number): GroundSample => {
+  const biome = biomeAt(x, z, y, slope)
+  const place = placeAt(x, z)
+  const paved = pavedAt(place, roadAt(x, z, place))
+  // the natural ground first, as if no town were here
+  const nat = BIOMES[biome].tint
+  gc2.set(nat[0]).lerp(gc.set(nat[1]), tintMix(x, z))
+  if (BIOMES[biome].surface === 'grass') {
+    const patch = noise2(x * 0.041, z * 0.041, S_PATCH)
+    gc2.lerp(STRAW, patch * patch * 0.5)
+  }
+  const nr = gc2.r
+  const ng = gc2.g
+  const nb = gc2.b
+  const [a, b, t] = tintAt(x, z, biome, paved)
+  gc.set(a).lerp(gc2.set(b), t)
+  if (paved > 0 && paved < 1) gc.lerp(PAVED_GREY, paved * 0.5)
+  if (paved <= 0 && BIOMES[biome].surface === 'grass') {
+    const patch = noise2(x * 0.041, z * 0.041, S_PATCH)
+    gc.lerp(STRAW, patch * patch * 0.5)
+  }
+  return { r: gc.r, g: gc.g, b: gc.b, paved, biome, nr, ng, nb }
+}
 
 /** the ground vertex at lattice point (i, j): colour, pavedness, biome —
     exactly what the chunk mesh bakes there, cached like latticeHeight */
@@ -301,17 +340,7 @@ export const latticeGround = (i: number, j: number): GroundSample => {
     (latticeHeight(i + 1, j) - latticeHeight(i - 1, j)) / (2 * GRID),
     (latticeHeight(i, j + 1) - latticeHeight(i, j - 1)) / (2 * GRID),
   )
-  const biome = biomeAt(x, z, y, slope)
-  const place = placeAt(x, z)
-  const paved = pavedAt(place, roadAt(x, z, place))
-  const [a, b, t] = tintAt(x, z, biome, paved)
-  gc.set(a).lerp(gc2.set(b), t)
-  if (paved > 0 && paved < 1) gc.lerp(PAVED_GREY, paved * 0.5)
-  if (paved <= 0 && BIOMES[biome].surface === 'grass') {
-    const patch = noise2(x * 0.041, z * 0.041, S_PATCH)
-    gc.lerp(STRAW, patch * patch * 0.5)
-  }
-  const out: GroundSample = { r: gc.r, g: gc.g, b: gc.b, paved, biome }
+  const out = groundSample(x, z, y, slope)
   trimCache(groundCache, GROUND_CACHE_CAP)
   groundCache.set(key, out)
   return out

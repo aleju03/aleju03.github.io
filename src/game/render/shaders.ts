@@ -74,6 +74,9 @@ export const GRADE_FRAG = /* glsl */ `
   /** how far the sky at the horizon is pulled into the air, how far up that
       reaches, and how much of the whole sky goes with it */
   uniform vec3 uSkyAir;
+  /** the air's height layer: base y, thickness, how much it applies (0 off,
+      the walker's air), and the range at which the world ends (0 none) */
+  uniform vec4 uAirLift;
 
   /** lamp pools: world xyz and radius; their count, colour*gain */
   uniform vec4 uPools[${MAX_POOLS}];
@@ -229,6 +232,9 @@ export const GRADE_FRAG = /* glsl */ `
     float zc = dist(p);
     vec3 vp = ray * zc;
     float range = length(vp);
+    // how much of this pixel the air has, all told; the posterize bands a
+    // pixel that is nothing but air the way it bands the sky
+    float airAll = 0.0;
 
     if (!sky) {
       vec3 wp = uCamPos + uCamRot * vp;
@@ -304,9 +310,23 @@ export const GRADE_FRAG = /* glsl */ `
       // colour, the middle distance flattens toward the air, the far one is
       // a silhouette in it. Quantized with the same banded dither as the
       // colour, so the planes step rather than smear
-      float air = 1.0 - exp(-max(0.0, range - uAir.x) / uAir.y);
+      // From the air, a ray looking down crosses the thin top of the haze
+      // and a ray along the ground crosses all of it: the optical depth of
+      // an exponential layer between the two heights, per unit of range
+      float optical = range;
+      if (uAirLift.z > 0.0) {
+        float hc = max(uCamPos.y - uAirLift.x, 0.0) / uAirLift.y;
+        float hp = max(wp.y - uAirLift.x, 0.0) / uAirLift.y;
+        float dh = hc - hp;
+        float f = abs(dh) < 1e-3 ? exp(-hc) : (exp(-hp) - exp(-hc)) / dh;
+        optical = range * mix(1.0, f, uAirLift.z);
+      }
+      float air = 1.0 - exp(-max(0.0, optical - uAir.x) / uAir.y);
       if (uAir.w > 0.5) air = band(air, uAir.w, bayer(p + ivec2(1, 3)), 0.25);
       air *= uAir.z;
+      // ...and where the world ends, the air has all of it
+      if (uAirLift.w > 0.0) air = max(air, smoothstep(uAirLift.w * 0.45, uAirLift.w, range));
+      airAll = air;
       float toward = max(dot(dirW, uSunDir), 0.0);
       vec3 airCol = uAirCol + uSunGlow * pow(toward, 6.0);
       col = mix(col, airCol, air);
@@ -317,17 +337,27 @@ export const GRADE_FRAG = /* glsl */ `
       // that edge is the shape, and it is the one Lethal's ink carries
       float farZ = uClip.y * 0.98;
       bool skyBehind = max(max(zl, zr), max(zu, zd)) > farZ;
+      // The floor on that fade is only for things the fog has not eaten: a
+      // roofline the fog has fully swallowed kept 55% of its ink and drew a
+      // ghost skyline on the empty haze. It follows how much of the thing
+      // is still there to see, both to the scene fog and to the air
+      float seen = uFog.z > 0.5 ? 1.0 - smoothstep(uFog.x, uFog.y, zc) : 1.0;
       float silK = skyBehind
-        ? min(0.85, uEdge.x * 1.25) * max(fogK, 0.55)
+        ? min(0.85, uEdge.x * 1.25) * max(fogK, 0.55 * smoothstep(0.0, 0.45, seen))
         : uEdge.x * fogK;
       // a light has no ink: the physgun's beam is a glow, not an object
+      silK *= 1.0 - smoothstep(0.7, 0.97, air);
       col *= 1.0 - sil * silK * (1.0 - emits);
     } else {
       // ---- the sky, tied to the air --------------------------------------
       float toward = max(dot(dirW, uSunDir), 0.0);
       vec3 airCol = uAirCol + uSunGlow * pow(toward, 6.0);
       float low = 1.0 - smoothstep(0.0, uSkyAir.y, dirW.y);
-      col = mix(col, airCol, clamp(uSkyAir.x * low + uSkyAir.z, 0.0, 1.0));
+      float pull = clamp(uSkyAir.x * low + uSkyAir.z, 0.0, 1.0);
+      // from the air, the sky seen under the horizon (past the world's rim)
+      // is the rim's own colour: all air
+      if (uAirLift.w > 0.0) pull = max(pull, uAirLift.z * smoothstep(0.03, -0.01, dirW.y));
+      col = mix(col, airCol, pull);
     }
 
     // ---- lamp halos: the air lit around each lamp ----------------------
@@ -371,7 +401,9 @@ export const GRADE_FRAG = /* glsl */ `
     // it lives on the band edges (where a real posterized image flickers)
     // rather than as noise over flat colour
     vec3 lab = oklab(toLinear(disp));
-    if (sky) {
+    if (sky || airAll > 0.985) {
+      // (a pixel that is nothing but air bands with it, or the rim of the
+      // world is a seam of dithered checker against the sky beside it)
       // The sky bands clean: more steps, no dithered seam, no grain and its
       // own chroma untouched. A cloud is a soft gradient over a large area,
       // and the ground's treatment turned every one into a blotch with a

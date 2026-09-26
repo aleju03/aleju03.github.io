@@ -1,11 +1,10 @@
 import * as THREE from 'three'
-import { canvasTexture } from '../core/textures'
-import { seeded } from '../core/rand'
 import type { Solid } from '../physics/collision'
 import { CHUNK, chunkX, chunkZ, OFF_Z, originX, originZ } from './grid'
 import {
   buildChunk, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Tier,
 } from './chunk'
+import { applyGroundLook } from './groundLook'
 import { applyFadeIn, FADE_FRAG_ALPHA, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead } from './fade'
 import { registerInteriors, unregisterInteriors } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
@@ -15,6 +14,8 @@ import { buildGrass, type GrassHandles } from './grass'
 import { makeLeafTexture } from './treeMesh'
 import { texelate } from '../render/texel'
 import { nearestLamps } from '../render/atmosphere'
+import { buildFarField } from './farfield'
+import { FADE_S } from './fade'
 
 /*
   The ring of chunks around the player, and the budget that keeps building it
@@ -60,6 +61,17 @@ const RADIUS = 4
     at 384, which is what a widened fog needs in front of it. It costs forty
     more chunks, almost all of them the cheap 'bare' tier at that range */
 const RADIUS_HIGH = 6
+/** ...unless the far field (world/farfield.ts) has the view past the ring
+    covered, in which case the ring from the air shrinks to the chunks that
+    carry trees and the far field draws everything beyond: its terrain,
+    canopy and town impostors cost a fraction of forty 'bare' chunks and
+    reach ten times as far */
+const RADIUS_FAR = 3
+/** milliseconds a frame the far field may build in: plenty from the air,
+    where it is what the player is looking at, and a trickle on the ground,
+    only when the chunk queue is empty, so it is ready before anyone flies */
+const FAR_MS_AIR = 2.5
+const FAR_MS_GROUND = 0.6
 /** chunks whose boxes are live in the collision set, as a Chebyshev radius */
 const SOLID_RADIUS = 1
 /** how much `prime` always builds, however little time it is given. Two rings
@@ -159,6 +171,14 @@ export interface WorldHandles {
   /** the collision boxes of a loaded chunk, live set or not (the sandbox's
       props can roll out of the nine chunks the walker collides with) */
   solidsIn: (cx: number, cz: number) => readonly Solid[] | null
+  /** how far past (x, z) the far field reaches without a gap, 0 until its
+      rings exist: the fog and the camera's far plane open to this */
+  farReach: (x: number, z: number) => number
+  /** build the far field around a point now, up to `ms` milliseconds: the
+      harness, which has no frames to spread it over */
+  primeFar: (x: number, z: number, alt: number, ms: number) => void
+  /** what the far field is drawing, for the harness */
+  farStats: () => { tiles: number; verts: number; tris: number; pending: number }
   /** a chunk's solids changed shape or number since it was built (a
       building taken apart into pieces): re-shelve the collision set */
   resolid: () => void
@@ -184,28 +204,6 @@ interface Opts {
   trackTexture: (t: THREE.Texture) => void
   trackDisposable: (d: { dispose: () => void }) => void
 }
-
-/** a grey speckle that the vertex colours tint. Everything outdoors shares
-    it, so ground reads as ground whether it is sand, snow or asphalt */
-const makeDetailTexture = () =>
-  canvasTexture([128, 128], (ctx, w, h) => {
-    const rand = seeded(0x6d17)
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, w, h)
-    for (let i = 0; i < 5200; i++) {
-      const v = Math.floor(190 + rand() * 65)
-      ctx.fillStyle = `rgba(${v},${v},${v},${0.35 + rand() * 0.4})`
-      ctx.fillRect(rand() * w, rand() * h, 1, 1 + (rand() < 0.3 ? 1 : 0))
-    }
-    for (let i = 0; i < 40; i++) {
-      const g = ctx.createRadialGradient(
-        rand() * w, rand() * h, 1, rand() * w, rand() * h, 8 + rand() * 22)
-      g.addColorStop(0, 'rgba(150,150,150,0.14)')
-      g.addColorStop(1, 'rgba(150,150,150,0)')
-      ctx.fillStyle = g
-      ctx.fillRect(0, 0, w, h)
-    }
-  }, [1, 1])
 
 /** how strongly the cel highlights read; the sky dims this at night so the
     sea doesn't sparkle under starlight */
@@ -237,12 +235,12 @@ export const splashAt = pushSplash
  *
  * - the surface rolls on two crossed sine waves, which is enough motion to
  *   stop a lake reading as glass laid on the ground
- * - a cel-shaded highlight web rides the surface: Voronoi F1 − SmoothF1,
- *   thresholded hard, over a slowly flowing and noise-distorted UV. That
- *   subtraction is zero in cell interiors and positive along the boundaries,
- *   which is exactly the bright caustic web anime water draws by hand. The
- *   technique (a Blender node-graph trick rebuilt in GLSL) is adapted from
- *   cortiz2894/stylized-components' WaterFloor (MIT © Christian Ortiz), as
+ * - sunlight glints on the surface. The highlight began as the anime caustic
+ *   web, Voronoi F1 - SmoothF1 thresholded into hand-drawn lines, adapted from
+ *   cortiz2894/stylized-components' WaterFloor (MIT © Christian Ortiz), and
+ *   at the pixel look's resolution that read as tiles on a pool floor. The
+ *   light on the water is now short one-pixel glints on a drifting grid,
+ *   each swelling and fading on its own clock. Still from that repo
  *   are the splash rings below: their *analytic* ripples — hard-edged rings
  *   replayed from a tiny event list, expanding and exponentially fading —
  *   not their GPU wave simulation, whose three render-target passes are a
@@ -251,8 +249,10 @@ export const splashAt = pushSplash
  *   distance tests that early-out once the ripple has died.
  * - `aDepth` (baked per vertex by the chunk builder) drives opacity, so the
  *   water thins to nothing at the shoreline instead of ending on a hard line
- * - a foam band rides the last unit of that depth, brightened where the waves
- *   are cresting, which is what makes a beach look like a beach
+ * - the depth is drawn in three shelves with ragged pixel contours, and the
+ *   shore in lines: a lip of foam where water meets sand, a surf line that
+ *   breathes with the swell, and crests catching the light, which is what
+ *   makes a beach look like a beach in pixel art
  */
 const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
   mat.onBeforeCompile = (shader) => {
@@ -301,10 +301,6 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
            p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
            return fract(sin(p) * 43758.5453);
          }
-         float wSmin(float a, float b, float k) {
-           float h = max(k - abs(a - b), 0.0) / k;
-           return min(a, b) - h * h * h * k / 6.0;
-         }
          float wNoise(vec2 p) {
            vec2 i = floor(p);
            vec2 f = fract(p);
@@ -314,45 +310,26 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
            float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
            float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-         }
-         // F1 and SmoothF1 in one pass over the 3x3 neighbourhood; the same
-         // cell offsets feed both, or their difference stops meaning "edge".
-         // The wide smin radius is what makes the boundary ridge broad enough
-         // to threshold into a thick hand-drawn line rather than a hairline
-         vec2 wVoro(vec2 p) {
-           vec2 i = floor(p), f = fract(p);
-           float f1 = 8.0, sf = 8.0;
-           for (int y = -1; y <= 1; y++)
-             for (int x = -1; x <= 1; x++) {
-               vec2 n = vec2(float(x), float(y));
-               float d = length(n + wHash2(i + n) - f);
-               f1 = min(f1, d);
-               sf = wSmin(sf, d, 0.5);
-             }
-           return vec2(f1, sf);
          }`,
       )
       .replace(
         '#include <dithering_fragment>',
         `#include <dithering_fragment>
-         // the cel highlight web, drifting with the wind and warped by a slow
-         // noise so the cells never read as a stationary grid. Thresholded
-         // through fwidth so the line keeps a constant screen-space softness:
-         // a fixed-width smoothstep aliased into structured moiré at grazing
-         // angles, which is most of what a standing player sees of the sea
          {
-           vec2 flow = vWXZ * 0.085 + vec2(uTime * 0.035, uTime * 0.022);
-           flow += (wNoise(vWXZ * 0.045 + uTime * 0.03) - 0.5) * 0.9;
-           vec2 vv = wVoro(flow);
-           float e = vv.x - vv.y;
-           float w = fwidth(e);
-           // the ridge tops out near k/6 = 0.083 between two sites; cutting
-           // this close to the top keeps the lines bold but not dominant,
-           // and lets the smin junctions swell into hand-drawn blobs
-           float cel = smoothstep(0.066 - w, 0.078 + w, e);
-           // once a pixel spans a good part of the ridge the web is only
-           // noise; hand the far field to the fog as flat colour instead
-           cel *= 1.0 - smoothstep(0.025, 0.075, w);
+           // glints: short one-pixel dashes of sunlight on a drifting,
+           // jittered grid, each one swelling and fading on its own clock.
+           // (the Voronoi web that used to be here read as the cracks in a
+           // pool floor at this resolution)
+           vec2 g = vWXZ * vec2(0.34, 0.95) + vec2(uTime * 0.12, uTime * 0.05);
+           g += (vec2(wNoise(vWXZ * 0.045 + uTime * 0.03), wNoise(vWXZ * 0.05 - uTime * 0.02)) - 0.5) * 0.8;
+           vec2 gi = floor(g);
+           vec2 hh = wHash2(gi);
+           vec2 d = fract(g) - 0.5 - (hh - 0.5) * 0.45;
+           float life = max(0.0, sin(uTime * 1.3 + hh.x * 6.2831));
+           float fy = max(fwidth(g.y), 1e-4);
+           float cel = step(abs(d.y), max(0.06, fy * 0.5)) * step(abs(d.x), 0.34 * life) * step(0.5, hh.y);
+           // once a dash is thinner than a pixel it is only noise
+           cel *= 1.0 - smoothstep(0.12, 0.3, fy);
            // fade the web out in the last stretch of shallows so it never
            // draws over the foam band
            cel *= smoothstep(0.5, 2.2, vDepth);
@@ -379,15 +356,26 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
              gl_FragColor.rgb, vec3(0.9, 0.97, 0.97), clamp(ripple, 0.0, 1.0) * 0.6);
          }
          // deep water is darker and more opaque; the shallows go clear.
-         // The ramp is long and the lift modest on purpose — at 1.9 over
-         // seven units the whole visible sea from a beach was inside the
-         // bright end of it, and an ocean came out as a pale strip of milk
-         float shallow = 1.0 - clamp(vDepth / 16.0, 0.0, 1.0);
-         // the lift leans cyan so the shelf reads tropical against the deep blue
+         // Drawn as three shelves with ragged one-pixel contours between
+         // them rather than a smooth ramp, the way a pixel artist paints a
+         // coast: the reef, the shelf, the deep. The lift leans cyan so the
+         // shelf reads tropical against the deep blue, and it stays modest:
+         // a long bright ramp once turned a whole ocean into a strip of milk
+         float jit = (wHash2(floor(vWXZ * 4.0)).x - 0.5) * 0.7;
+         float shelf = vDepth + jit;
+         float shallow = shelf < 1.6 ? 1.0 : shelf < 4.5 ? 0.62 : shelf < 10.0 ? 0.3 : 0.0;
          gl_FragColor.rgb = mix(
            gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.16, 1.42, 1.38) + 0.02, shallow * 0.75);
-         float foam = smoothstep(1.2, 0.12, vDepth) * (0.55 + 0.45 * vWave);
-         gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.92, 0.96, 0.97), clamp(foam, 0.0, 0.85));
+         // the shore in lines, not a gradient: a solid lip of foam where the
+         // water meets the sand, a line a little further out that breathes
+         // in and out with the swell, and the swell's crests catching light
+         float dw = max(fwidth(vDepth), 1e-3);
+         float lip = 1.0 - smoothstep(0.22, 0.22 + dw * 1.2, vDepth);
+         float surfAt = 0.95 + 0.35 * sin(uTime * 1.25 + vWXZ.x * 0.05 + vWXZ.y * 0.04);
+         float surf = 1.0 - smoothstep(0.0, dw * 1.3, abs(vDepth - surfAt));
+         float crest = step(0.86, vWave) * (1.0 - smoothstep(1.4, 3.0, vDepth));
+         float foam = max(max(lip, surf * 0.85), crest * 0.5);
+         gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.92, 0.96, 0.97), clamp(foam, 0.0, 0.9));
          gl_FragColor.a *= smoothstep(0.0, 0.5, vDepth);
          // a freshly streamed sea eases in with its chunk (world/fade.ts)
          ${FADE_FRAG_ALPHA}`,
@@ -414,21 +402,16 @@ export const makeChunkMats = (
   trackTexture: (t: THREE.Texture) => void,
   trackDisposable: (d: { dispose: () => void }) => void,
 ): ChunkMats => {
-  // nearest up close (render/texel.ts): the ground's grain reads as texels
-  const detailTex = texelate(makeDetailTexture())
-  detailTex.wrapS = detailTex.wrapT = THREE.RepeatWrapping
-  trackTexture(detailTex)
-  trackDisposable(detailTex)
-
+  // the ground draws its own texels (world/groundLook.ts): per-texel
+  // material choice, ragged borders, slope rock and a beach at every shore.
+  // The grey multiplier is the old speckle map's average, which is what the
+  // detail soup and the far field both match (see below)
   const groundMat = new THREE.MeshStandardMaterial({
-    map: detailTex, vertexColors: true, roughness: 1, metalness: 0,
+    color: 0xe0e0e0, vertexColors: true, roughness: 1, metalness: 0,
   })
-  // every chunk material fades its geometry in by the baked aBirth stamp
-  // (world/fade.ts): dissolve-by-dither on the opaques, alpha on the rest.
-  // The ground and glass get the standalone patcher; the detail and leaf
-  // soups carry the same GLSL through applySway (one onBeforeCompile per
-  // material), and the water carries it inside makeWaterStylized above
-  applyFadeIn(groundMat, windUniforms.uTime, 'dissolve')
+  // it carries the chunk's birth dissolve (world/fade.ts) inside the same
+  // injection, since a material only gets one onBeforeCompile
+  applyGroundLook(groundMat, windUniforms.uTime)
   // the grey is deliberate. The ground multiplies its vertex colour by a
   // detail map that averages a little under white, and props carry no map at
   // all — matched palettes therefore rendered props visibly brighter than the
@@ -496,6 +479,25 @@ export function buildWorld(opts: Opts): WorldHandles {
   const waterMat = mats.water as THREE.MeshStandardMaterial
 
   const chunks = new Map<string, Chunk>()
+  /** when each chunk's ground is solid (its birth fade over), on the wind
+      clock; the far field is discarded under a chunk only from then */
+  const solidAt = new Map<string, number>()
+  const far = buildFarField({ parent: root, water: waterMat.color, trackDisposable })
+  /** bumped whenever the set of solid chunks changes, so the far field's
+      mask is rebuilt only then; `pendingSolid` is the next fade to finish */
+  let solidEpoch = 0
+  let pendingSolid = Number.POSITIVE_INFINITY
+  const tickSolid = () => {
+    const now = windUniforms.uTime.value
+    if (now < pendingSolid) return
+    solidEpoch++
+    pendingSolid = Number.POSITIVE_INFINITY
+    for (const t of solidAt.values()) if (t > now && t < pendingSolid) pendingSolid = t
+  }
+  const chunkSolid = (cx: number, cz: number) => {
+    const t = solidAt.get(key(cx, cz))
+    return t !== undefined && windUniforms.uTime.value >= t
+  }
   const queue: Array<{ cx: number; cz: number; tier: Tier; d: number; retier: boolean }> = []
   let curX = Number.POSITIVE_INFINITY
   let curZ = Number.POSITIVE_INFINITY
@@ -546,6 +548,8 @@ export function buildWorld(opts: Opts): WorldHandles {
     root.remove(c.group)
     for (const g of c.geos) freeing.push(g)
     chunks.delete(key(c.cx, c.cz))
+    solidAt.delete(key(c.cx, c.cz))
+    solidEpoch++
     unregisterInteriors(key(c.cx, c.cz))
   }
 
@@ -553,6 +557,10 @@ export function buildWorld(opts: Opts): WorldHandles {
     const c = buildChunk(cx, cz, tier, mats, fade)
     root.add(c.group)
     chunks.set(key(cx, cz), c)
+    const solid = fade && fade.from === undefined ? fade.at + FADE_S : -Infinity
+    solidAt.set(key(cx, cz), solid)
+    solidEpoch++
+    if (solid < pendingSolid && solid > windUniforms.uTime.value) pendingSolid = solid
     registerInteriors(key(cx, cz), c.interiors)
     // before anything can see it: a chunk rebuilt over ground the player has
     // already cleared must arrive already cleared
@@ -695,7 +703,12 @@ export function buildWorld(opts: Opts): WorldHandles {
     // the ring widens with height, in step with the fog (see RADIUS_HIGH).
     // The two thresholds are apart on purpose: a helicopter hovering exactly
     // on one number would otherwise rebuild the entire world every second
-    const wantRadius = radius === RADIUS ? (alt > 46 ? RADIUS_HIGH : RADIUS) : alt < 32 ? RADIUS : RADIUS_HIGH
+    // From the air the far field takes over past the flora ring as soon as
+    // it has the whole view covered; until then the old wide ring stands in
+    tickSolid()
+    far.update(x, z, alt, chunkSolid, solidEpoch)
+    const high = far.complete ? RADIUS_FAR : RADIUS_HIGH
+    const wantRadius = radius === RADIUS ? (alt > 46 ? high : RADIUS) : alt < 32 ? RADIUS : high
     const pcx = chunkX(x)
     const pcz = chunkZ(z)
     if (wantRadius !== radius) {
@@ -709,11 +722,25 @@ export function buildWorld(opts: Opts): WorldHandles {
       restream(pcx, pcz, 0)
     }
     freeSome()
-    if (!queue.length) return
-    // the budget rides the player's speed, and the drain stops when the *next*
-    // chunk would not fit rather than when the last one already didn't
-    const budget = BUDGET_MS + (BUDGET_MAX - BUDGET_MS) * Math.min(1, speed / BUDGET_SPEED)
-    drain(budget)
+    let drained = 0
+    if (queue.length) {
+      // the budget rides the player's speed, and the drain stops when the
+      // *next* chunk would not fit rather than when the last one already didn't
+      const budget = BUDGET_MS + (BUDGET_MAX - BUDGET_MS) * Math.min(1, speed / BUDGET_SPEED)
+      const d0 = performance.now()
+      drain(budget)
+      drained = performance.now() - d0
+    }
+    // again, now the ring has had its say: a ring that just shrank dropped
+    // chunks this frame, and the far field must be under them this frame
+    tickSolid()
+    far.update(x, z, alt, chunkSolid, solidEpoch)
+    // off the ground the far field is what is being looked at, so it builds
+    // whether or not it is showing yet, but inside what the chunk drain
+    // left of the stretched budget, never on top of it
+    far.work(alt > 12
+      ? Math.max(FAR_MS_GROUND, Math.min(FAR_MS_AIR, BUDGET_MAX - drained))
+      : queue.length ? 0 : FAR_MS_GROUND)
   }
 
   const TIER_RANK: Record<Tier, number> = { bare: 0, flora: 1, full: 2 }
@@ -823,12 +850,23 @@ export function buildWorld(opts: Opts): WorldHandles {
       return queue.length
     },
     solidsIn: (cx, cz) => chunks.get(key(cx, cz))?.boxes ?? null,
+    farReach: (x, z) => (far.visible ? far.reach(x, z) : 0),
+    primeFar: (x, z, alt, ms) => {
+      far.update(x, z, alt, chunkSolid, solidEpoch)
+      const t0 = performance.now()
+      while (far.pending && performance.now() - t0 < ms) {
+        far.work(ms)
+        far.update(x, z, alt, chunkSolid, solidEpoch)
+      }
+    },
+    farStats: () => ({ ...far.stats(), pending: far.pending }),
     resolid: () => {
       if (Number.isFinite(curX)) refreshSolids(curX, curZ)
     },
     nearLamps,
     setNight: (night) => {
       glassMat.opacity = night
+      far.setNight(night)
     },
     setWaterTint: (sky, sun) => {
       waterMat.color.lerpColors(WATER_NIGHT, WATER_DAY, sun)

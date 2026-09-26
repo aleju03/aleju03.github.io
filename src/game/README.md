@@ -320,6 +320,22 @@ world/
                   bay), plus the support graph and Voronoi shattering.
                   Pure, so `measure fracture` runs it on every building
   streamer.ts     the ring, the build budget, the collision shelf
+  farfield.ts     everything past the ring, for a camera in the air: nested
+                  square rings of coarse terrain tiles (8, 16, 32, 64-unit
+                  cells, gfx.farLevels of them) out to 2-4 km, the sea held
+                  flat with its depth banded and a one-pixel foam line,
+                  streets, a lit canopy and town impostors (the first lot of
+                  every block drawn off buildBlock's own seeded draws) in one
+                  program and one draw a tile. It discards what a finer ring
+                  or a solid chunk already draws, stitches its ring edges to
+                  the next ring's polyline, swaps a ring in whole, and builds
+                  in resumable slices inside the streamer's budget. From the
+                  air the ring shrinks to the flora chunks (RADIUS_FAR) and
+                  this draws the rest
+  groundLook.ts   the chunk ground's shader: a material per texel (paved,
+                  sand, snow, rock, soil) with ragged pixel borders, cliffs
+                  and beaches decided by geometry, and each material painted
+                  on the texel grid (render/texel.ts)
   grass.ts        the grass, as two scrolling lattices: a dense near field
                   whose blades actually touch (which is the whole difference
                   between turf and scattered tufts) and a sparse far one
@@ -369,6 +385,18 @@ npm run shoot -- town:midrise --life 25     25s of animals and pedestrians,
 npm run shoot -- biome:plains --glb /os/models/animals/fox.glb@5,-4:Walk~0.4
                                             a candidate model in real light
 
+npm run shoot -- town:downtown biome:forest biome:beach --alt 10,40,120,300
+                                            noclip/helicopter views through the
+                                            real streamer: a row per target
+npm run shoot -- town:suburb --alt 20,80,300 --climb 0
+                                            the same, flown at 60 Hz under the
+                                            frame budget (0 s on the ground: the
+                                            far field not yet built)
+npm run shoot -- town:downtown --alt 120 --far 0
+                                            without the far field, for a before
+
+npm run measure -- far         far-field build cost per slice and per tile, and
+                               the chunk ring it replaces from the air
 npm run measure -- kits        every prop kit: verts, cards, bounding box
 npm run measure -- chunks      build cost and vertex budget, by tier and zone
 npm run measure -- landmarks   site density and the kind mix
@@ -443,6 +471,17 @@ scattered, and no screenshot was ever going to say otherwise.
   walked against 0.7 u/s of progress) unless a turn just taken is allowed to
   finish; and both systems together cost 0.01 ms/frame in open country and
   0.15 ms in the busiest town, against 2520 solids.
+- **From the air, the far field draws the planet and the sky must let it.**
+  `levels/altitude.ts` is the one place that says how the view opens with
+  height, and the game and the harness both call it: the fog opens to the far
+  field's reach, the lens's far plane grows past its rim, and the sky dome
+  (`SkyHandles.setScale`) grows with the lens, because the domes are drawn in
+  the transparent pass with the depth test on and at their built 430 units
+  they hid every tile past them (a sphere centred on the eye projects the
+  same at any radius, so scaling it changes only depth). The look's air takes
+  the same altitude (`airForSky`'s `alt`/`reach`): a height layer so a ray
+  looking down crosses only the top of the haze, and an `edge` where the air
+  takes everything, so the world's rim draws no line.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs
@@ -1139,6 +1178,14 @@ thinner over open country and down a street (`BIOME_AIR`, fed by
 `outsideWorld.biomeAt`); at night the lamps come from every chunk's `lamps`
 list (the streamer's `nearLamps`, the nearest sixteen) and the headlamp rides
 the walker's eye while they are on foot in the overworld.
+
+From the air the air is height-aware (`Air.liftK`, `liftBase`,
+`liftScale`: the optical depth of an exponential haze layer between the eye
+and the surface, rather than plain range) and has an `edge` at the far
+field's rim where it takes everything; a pixel that is nothing but air bands
+with the sky, so the rim is not a dithered seam against it. The silhouette
+ink against the sky fades with what the fog and the air have left of the
+thing, which is what used to draw a ghost skyline on empty haze.
 
 The knobs are `LookKnobs`, `Air` and `FakeLights` (`pixelLook.ts`) and `Grade`
 (`grade.ts`), and all of them are uniforms or a target size, so any of them

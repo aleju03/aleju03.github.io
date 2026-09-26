@@ -162,6 +162,22 @@ export interface Air {
   skyHorizon: number
   skyReach: number
   skyAll: number
+  /**
+   * Height in the air, for a camera off the ground (world/farfield.ts and
+   * levels/altitude.ts own the far view this serves). Real haze lives near
+   * the ground and thins upward, so the air a ray crosses depends on the
+   * heights it runs between, not only its length: `liftK` (0 off .. 1)
+   * blends from plain range to the optical depth of an exponential layer
+   * `liftScale` units thick above `liftBase`. Looking down from a helicopter
+   * the town below stays crisp while the valleys past it still layer.
+   * `edge` (0 off) is where the world ends: the air takes everything by that
+   * range, and the sky under the horizon goes to the same colour, so the
+   * far field's rim and the ring before it never draw a line on the sky
+   */
+  liftBase: number
+  liftScale: number
+  liftK: number
+  edge: number
 }
 
 export const AIR_DEFAULTS = (): Air => ({
@@ -177,6 +193,10 @@ export const AIR_DEFAULTS = (): Air => ({
   skyHorizon: 0.85,
   skyReach: 0.3,
   skyAll: 0.2,
+  liftBase: 0,
+  liftScale: 140,
+  liftK: 0,
+  edge: 0,
 })
 
 /** Light the look shades without any material knowing */
@@ -344,6 +364,7 @@ export const createPixelLook = (
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunGlow: { value: new THREE.Color() },
     uSkyAir: { value: new THREE.Vector3() },
+    uAirLift: { value: new THREE.Vector4() },
     uPools: { value: Array.from({ length: MAX_POOLS }, () => new THREE.Vector4()) },
     uPoolCount: { value: 0 },
     uPoolCol: { value: new THREE.Color() },
@@ -474,6 +495,7 @@ export const createPixelLook = (
     U.uSunDir.value.copy(air.sunDir)
     U.uSunGlow.value.copy(air.sunGlow)
     U.uSkyAir.value.set(air.skyHorizon, Math.max(0.01, air.skyReach), air.skyAll)
+    U.uAirLift.value.set(air.liftBase, Math.max(1, air.liftScale), air.liftK, air.edge)
 
     const n = Math.min(MAX_POOLS, lights.count)
     for (let i = 0; i < n; i++) {

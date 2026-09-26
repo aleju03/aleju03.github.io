@@ -259,6 +259,15 @@ interface Ground {
   wet: boolean
 }
 
+/** sand, snow, rock weights per biome for the ground shader; everything
+    else is soil and grass. The seabed is sand, seen through the water */
+const GROUND_KIND: Record<BiomeId, [number, number, number]> = {
+  ocean: [0.8, 0, 0], beach: [1, 0, 0], desert: [1, 0, 0],
+  snow: [0, 1, 0], rock: [0, 0, 1],
+  plains: [0, 0, 0], forest: [0, 0, 0], taiga: [0, 0, 0], tundra: [0, 0, 0.3],
+  savanna: [0, 0, 0], jungle: [0, 0, 0], wetland: [0, 0, 0],
+}
+
 /**
  * The terrain mesh. Vertices come from terrain.ts's shared lattice, so the
  * edge a chunk shares with its neighbour is computed from the same cached
@@ -278,6 +287,10 @@ const buildGround = (cx: number, cz: number): Ground => {
   const nor = new Float32Array(n * 3)
   const colArr = new Float32Array(n * 3)
   const uv = new Float32Array(n * 2)
+  // what the ground shader (groundLook.ts) draws each vertex as: how paved,
+  // how sandy, how snowy, how rocky, and the unpaved colour under a verge
+  const kind = new Float32Array(n * 4)
+  const nat = new Float32Array(n * 3)
   let wet = false
 
   for (let j = 0; j < VERTS; j++)
@@ -316,6 +329,14 @@ const buildGround = (cx: number, cz: number): Ground => {
       colArr[k * 3] = g.r
       colArr[k * 3 + 1] = g.g
       colArr[k * 3 + 2] = g.b
+      const w = GROUND_KIND[g.biome]
+      kind[k * 4] = g.paved
+      kind[k * 4 + 1] = w[0]
+      kind[k * 4 + 2] = w[1]
+      kind[k * 4 + 3] = w[2]
+      nat[k * 3] = g.nr
+      nat[k * 3 + 1] = g.ng
+      nat[k * 3 + 2] = g.nb
       uv[k * 2] = wx / 9
       uv[k * 2 + 1] = wz / 9
     }
@@ -341,6 +362,8 @@ const buildGround = (cx: number, cz: number): Ground => {
   geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3))
   geo.setAttribute('color', new THREE.BufferAttribute(colArr, 3))
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2))
+  geo.setAttribute('aGround', new THREE.BufferAttribute(kind, 4))
+  geo.setAttribute('aTint', new THREE.BufferAttribute(nat, 3))
   geo.setIndex(idx)
   geo.computeBoundingSphere()
   return { geo, h, biome, wet }
