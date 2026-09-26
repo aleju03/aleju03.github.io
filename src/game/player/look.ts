@@ -62,13 +62,14 @@ export interface PlayerLook {
 export const HATS = ['band', 'mask', 'bucket', 'party', 'hardhat', 'bandana', 'none'] as const
 export type HatKind = (typeof HATS)[number]
 
-/** a saturated green brawler in a red wrestler's mask */
+/** a saturated blue brawler in a black sweatband. (It was green in a red
+    wrestler's mask, which read as the Android logo in a luchador cap) */
 export const DEFAULT_LOOK: PlayerLook = {
-  shell: '#3f9a38',
+  shell: '#2f6fcf',
   trim: '#f2eee0',
-  accent: '#c84028',
+  accent: '#1c1c20',
   glow: '#1c1a22',
-  hat: 1,
+  hat: 0,
 }
 
 /** jellies are painted saturated on purpose: the game is rendered at a low

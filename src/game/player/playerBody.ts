@@ -61,6 +61,13 @@ import { makeBodyMaterial } from './bodyMaterial'
   read as soft: start, stop, turn or land and every one of them answers late.
   The trunk squashes on a landing and stretches on the rise.
 
+  **The stance.** A brawler never stands neutral: the body is always pitched
+  forward on soft knees, and standing about it brings its long arms up into
+  a clumsy, mismatched boxing guard and weaves, twisting and leaning, so no
+  two idle frames are symmetrical. A walking arm swings big and out to the
+  side but is capped below the face; only a reach, a stretch, a wave, a jump
+  or a get-up takes an arm higher.
+
   **The personality.** Standing still is not parked: the body breathes,
   shifts its weight from foot to foot, blinks, glances about, and after a
   while does something (stretches, bounces, waves). All of it is procedural
@@ -1085,8 +1092,8 @@ export function buildPlayerBody(
     // asked for), so the push-off is drawn in the first frames of the air:
     // the hips start low, squashed, and spring out through a stretch
     if (takeoff) {
-      springP = -0.36
-      springV = 4.2
+      springP = -0.2
+      springV = 2.0
     }
     if (pose.landing > 0) springV -= Math.min(pose.landing, 22) * 0.14
     // soft and bouncy: a landing squashes, overshoots into a stretch and
@@ -1128,7 +1135,8 @@ export function buildPlayerBody(
 
     // crouch, landing spring and the get-up fold all lower the hips; the leg
     // IK below folds the knees exactly enough that the feet stay planted
-    const drop = pose.crouchK * 0.42 + riseFold * 0.42 - springP * 0.7
+    // soft knees always, softer standing about: a brawler never locks them
+    const drop = pose.crouchK * 0.42 + riseFold * 0.42 - springP * 0.7 + 0.06 + 0.04 * idleK
     const hipH = THREE.MathUtils.clamp(HIP_Y - drop, Math.abs(THIGH - SHIN) + 0.08, HIP_Y)
 
     // pelvis: root motion. A waddle: the hips ride over the stance foot and
@@ -1152,7 +1160,7 @@ export function buildPlayerBody(
     // action, not flair, and the lens is off the head for the whole of it
     const lean =
       (THREE.MathUtils.clamp(fwdS * 0.03 + accF * 0.035, -0.4, 0.55) + pose.crouchK * 0.28 +
-        runK * gait * 0.5) * show +
+        runK * gait * 0.5 + 0.2 + 0.12 * idleK) * show +
       riseFold * 0.55 - stretchK * 0.12
     // centripetal lean: bank into a turn only as fast as the feet are
     // actually carrying the body
@@ -1174,9 +1182,15 @@ export function buildPlayerBody(
     )
     torso.position.copy(REST[B.TORSO])
     torso.rotation.set(
-      lean * 0.5 + airK * 0.12 * fallK + spineLook + jellyPitch * show,
-      chestLook - strafeYaw * 0.55 + stepS * 0.14 * gait,
-      bank * 0.55 + jellyRoll,
+      lean * 0.5 + airK * 0.12 * fallK + spineLook + jellyPitch * show +
+        // in the air the body lags its own flight: rising it tips back,
+        // falling it pitches over, rather than stretching into a tube
+        airK * THREE.MathUtils.clamp(-pose.vy * 0.03, -0.4, 0.4),
+      // standing in the guard the trunk weaves: a slow twist and a lean to
+      // one side, so no two frames of an idle are symmetrical
+      chestLook - strafeYaw * 0.55 + stepS * 0.14 * gait +
+        Math.sin(idleT * 0.9 + 0.4) * 0.14 * idleK * show,
+      bank * 0.55 + jellyRoll + (0.05 + Math.sin(idleT * 0.61) * 0.05) * idleK * show,
     )
     // squash on a landing, stretch on the way up, breathe standing still
     // the jelly wobble: the trunk's volume on its own spring, kicked by every
@@ -1185,14 +1199,15 @@ export function buildPlayerBody(
     wobV += (-240 * wobP - 3.5 * wobV + Math.abs(accF) * 0.35 + Math.abs(yawRateS) * 0.6 * gait) * dt
     wobP = THREE.MathUtils.clamp(wobP + wobV * dt, -0.25, 0.25)
     const squash = THREE.MathUtils.clamp(
-      1 + springP * 2.6 + airK * (1 - fallK) * 0.14 + breathe * 0.014 + stretchK * 0.07 +
+      1 + springP * 2.2 + airK * (1 - fallK) * 0.03 + breathe * 0.014 + stretchK * 0.07 +
         Math.abs(stepS) * 0.03 * gait + wobP,
-      0.64, 1.25,
+      // never squashed so far that the small head disappears into the body
+      0.8, 1.12,
     )
     const bulge = Math.pow(squash, -0.8)
     // and the trunk sinks into the hips as it squashes, so the belly (which
     // is weighted to the pelvis) compresses too, not just the chest
-    torso.position.y -= (1 - Math.min(1, squash)) * 0.25
+    torso.position.y -= (1 - Math.min(1, squash)) * 0.1
     torso.scale.set(bulge, squash, bulge)
     // the arms hang off the torso and must not take its squash with them
     // (see armUnsquash below)
@@ -1409,21 +1424,25 @@ export function buildPlayerBody(
     // arms trail the stride the way a loose shoulder does, and it swings out
     // sideways as well as fore and aft, which is what makes it visible from
     // the side as well as from the front
-    const ampW = (1.55 + 0.3 * runK) * gait
+    const ampW = (1.2 + 0.35 * runK) * gait
     const swingAt = (lag: number) => Math.sin(Math.PI * (stepT - lag)) * ampW
     const swingAmt = swingAt(0.12)
     const swingF = swingAmt * mCos
     const swingS = swingAmt * mSin * 0.7
-    const swingOut = Math.abs(swingAmt) * 0.32
+    // a swagger: the swing goes out as much as forward, below the face
+    const swingOut = Math.abs(swingAmt) * 0.5
     // the forearm follows the upper arm later still, so it is bent coming
     // forward and trails open going back
     const lagEl = swingAt(0.32) * mCos
     // a loose bend at rest: an arm hanging dead straight reads as a mannequin
-    const elbowBase = 0.35 + 0.5 * runK * gait
+    // the guard: standing about, the long arms come up to a clumsy boxing
+    // guard, fists at chest height, never quite matched
+    const guardK = idleK * (1 - airK) * (1 - riseFold)
+    const elbowBase = 0.35 + 0.5 * runK * gait + 1.2 * guardK
     // held well out from the body, standing or not: a round belly and a
     // loose shoulder, never glued to the hips; a fall flings them wide
     const spread =
-      0.28 + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
+      0.28 - 0.12 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
@@ -1431,8 +1450,8 @@ export function buildPlayerBody(
       airK * (1.5 + fallK * 0.6) * (1 - flyK) + flyK * (0.3 + Math.sin(idleT * 1.05 + 0.8) * 0.12)
     // at rest the long arms hang forward like a sleepwalker's, which is where
     // a brawler's goof comes from (and where a grab starts)
-    const swayLX = (Math.sin(idleT * 1.7) * 0.07 + Math.sin(idleT * 0.83 + 1.3) * 0.05) * idleK - 0.5
-    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.07 + Math.sin(idleT * 0.94 + 2.1) * 0.05) * idleK - 0.5
+    const swayLX = (Math.sin(idleT * 1.7) * 0.12 + Math.sin(idleT * 0.83 + 1.3) * 0.08) * idleK - 0.5 - 0.75 * guardK
+    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.12 + Math.sin(idleT * 0.94 + 2.1) * 0.08) * idleK - 0.5 - 0.55 * guardK
     const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.06 * idleK
     const swayRZ = Math.sin(idleT * 1.31 + 2.6) * 0.06 * idleK
     // inertial forces on the springs
@@ -1487,7 +1506,10 @@ export function buildPlayerBody(
     // forearms pump with the upper arms when running, lag them walking
     const pumpL = -Math.max(0, -lagEl) * (0.75 + 0.35 * runK)
     const pumpR = -Math.max(0, lagEl * 0.93) * (0.75 + 0.35 * runK)
-    const clampX = (v: number) => THREE.MathUtils.clamp(v, SH_X_LO, SH_X_HI)
+    // a walking swing never comes past the face; only a reach, a stretch, a
+    // wave, a jump or a get-up may take an arm higher than that
+    const swingCap = -1.45 - 1.6 * Math.max(stretchK, waveK, airK, riseFold, lookK, push)
+    const clampX = (v: number) => THREE.MathUtils.clamp(v, Math.max(SH_X_LO, swingCap), SH_X_HI)
     const shLX = clampX(
       spring(0, -airX + swayLX - push - upL - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) + swingF,
     )
