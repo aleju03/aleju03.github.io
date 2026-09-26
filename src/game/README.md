@@ -961,8 +961,9 @@ npm run film -- sandbox:bump           the walker leaning on, charging, landing 
 npm run measure -- bodies              the same run headless, a 400-approach sweep for
                                        the closest two bodies ever get, the contact
                                        pass's cost, and a shove between two players
-npm run film -- sandbox:bump --start 3 --duration 4.2 --frames 12 --yaw 0 --dist 17 --height 4
-                                       the charge side-on: on a moving lens --yaw/--dist/
+npm run film -- sandbox:bump-side      the same run side on, from above the far half of the street
+npm run film -- sandbox:bump --yaw 0 --dist 12 --height 6
+                                       any other angle: on a moving lens --yaw/--dist/
                                        --height orbit the walker, --from/--to pin the lens
 
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
@@ -1122,6 +1123,18 @@ Rules that bite:
   at one starts that ahead of it; rubble bodies and breaks are made a dozen
   a slice. Counted in work so a destruction comes out the same on every
   machine: a millisecond budget made the wall film depend on the CPU.
+- **Rubble comes to rest and stays there.** A piece that touches down gets
+  thicker air at once and more two seconds on; one that crawls is put to
+  sleep; one put to sleep that is still awake a second and a half later is
+  jammed and is frozen where it lies (the physgun and any blast let it go
+  again); one pressed into the street is pinned in it, never teleported back
+  out (a teleported piece is born inside the heap and throws its neighbours
+  over the rooftops); and nothing put to rest is let move faster than
+  `SETTLED_CAP` unless a blast or a player moves it (the physgun marks what it
+  grabs `data.handled`, and destruction leaves those alone). Anything standing
+  taller than a storey and a bit breaks on its landing. `measure physics
+  destruction` reports what is still moving at +4 s and +8 s and the fastest
+  a settled piece was caught at.
 - **Never touch a body from inside a Rapier query.** `ground.ts`'s wake after
   a box shrinks did, and destruction shrinks boxes by the hundred.
 

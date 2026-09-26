@@ -128,7 +128,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'rock', per: 8, scale: [0.5, 1.2] },
     ]),
 
-  tundra: B('tundra', ['#6d7263', '#7d8070'],
+  tundra: B('tundra', ['#66694a', '#77704f'],
     { bark: '#4b4438', leaf: '#6a7355', accent: STONE }, 'grass', [
       { kind: 'shrub', per: 9, scale: [0.5, 0.9] },
     ], [
@@ -180,7 +180,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
       { kind: 'tuft', per: 56, scale: [0.7, 1.3] },
     ]),
 
-  rock: B('rock', ['#5d5246', '#6b5f50'],
+  rock: B('rock', ['#615e57', '#6e6a62'],
     { bark: '#544e46', leaf: '#5f6b52', accent: STONE }, 'stone', [], [
       { kind: 'boulder', per: 13, scale: [0.7, 1.9] },
       { kind: 'rock', per: 22, scale: [0.5, 1.5] },
@@ -204,7 +204,11 @@ export const classify = (
   if (depth < 0) return 'ocean'
   // a shoreline only where the ground is gentle: a cliff into the sea is rock
   if (depth < 2.6 && slope < 0.5) return temp < 0.2 ? 'snow' : 'beach'
-  if (slope > 0.62) return 'rock'
+  // Rock is for real crags. At 0.62 (32 degrees) every hillside ringing a
+  // town came out as bare stone, and from the air that ring read as a grey
+  // band of haze across the middle distance; a wooded slope at 35 degrees is
+  // what hills actually look like
+  if (slope > 0.88) return 'rock'
   if (temp < 0.14) return 'snow'
   if (temp < 0.3) return moist > 0.44 ? 'taiga' : 'tundra'
   if (temp < 0.58) return moist < 0.32 ? 'plains' : moist < 0.68 ? 'forest' : 'wetland'
