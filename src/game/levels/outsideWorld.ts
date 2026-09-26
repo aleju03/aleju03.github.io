@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
+import type { ImpactWatch } from '../player/impacts'
 import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { YARD } from './houseWorld'
@@ -108,6 +109,16 @@ export interface OutsideHandles {
       near it; null for a chunk not built (or no world yet). The sandbox's
       props read the world's solids through this */
   chunkSolids: (cx: number, cz: number) => readonly Solid[] | null
+  /** let the movers an impact watch is tracking knock the town's
+      pedestrians over. A no-op until the world is attached */
+  knockPeople: (watch: ImpactWatch) => void
+  /** the nearest light fixtures out here, as xyz triples into `out`; 0 until
+      the world is attached. For the look's lamp pools (render/atmosphere.ts) */
+  nearLamps: (x: number, z: number, out: Float32Array, max: number) => number
+  /** the biome under a point ('town' inside a settlement), or null in the
+      room tier. The look thickens its air over woods and wetland and thins
+      it over open country and down a street */
+  biomeAt: (x: number, z: number) => string | null
   /** fetch the world modules without building them; free to call early */
   preloadWorld: () => void
   /**
@@ -362,6 +373,13 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     prime: (x, z, ms) => w?.world.prime(x, z, ms),
     hasWorld: () => w !== null,
     chunkSolids: (cx, cz) => (w ? w.world.solidsIn(cx, cz) : null),
+    knockPeople: (watch) => w?.pedestrians.knock(watch),
+    nearLamps: (x, z, out, max) => (w ? w.world.nearLamps(x, z, out, max) : 0),
+    biomeAt: (x, z) => {
+      if (!w) return null
+      const s = w.mods.terrain.sampleAt(x, z)
+      return s.place.district ? 'town' : s.biome
+    },
     preloadWorld: () => void loadMods(),
     attachWorld,
   }

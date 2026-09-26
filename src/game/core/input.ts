@@ -12,41 +12,17 @@
   shell's own window-level Esc handler never sees it — which is also why the
   keydown listener rides the capture phase.
 */
+import { BOUND_CODES, SWALLOWED_CODES } from '../sandbox/bindings'
 
-const MOVE_KEYS = new Set([
-  'KeyW',
-  'KeyA',
-  'KeyS',
-  'KeyD',
-  'ArrowUp',
-  'ArrowDown',
-  'ArrowLeft',
-  'ArrowRight',
-  'Space', // jump; preventDefault also keeps the page from scrolling
-])
-// sprint and crouch modifiers; c is a crouch alias for anyone wary of
-// the browser eating ctrl chords. v and x ride along so the scene can
-// edge-detect the camera toggle and the ragdoll flop off the same set, and
-// so do the multiplayer keys: t opens the chat line, m arms the microphone,
-// n swaps open-mic for push-to-talk, and b is the push-to-talk key itself —
-// the only one of them the scene reads as a held state rather than an edge.
-// F9 is the collision wireframe (collisionDebug.ts); it lives here rather than
-// behind a build flag because the thing it diagnoses — a solid that disagrees
-// with the geometry it stands for — only ever shows up in a real walk
-const MOD_KEYS = new Set([
-  'ShiftLeft',
-  'ShiftRight',
-  'ControlLeft',
-  'ControlRight',
-  'KeyC',
-  'KeyV',
-  'KeyX',
-  'KeyT',
-  'KeyM',
-  'KeyN',
-  'KeyB',
-  'F9',
-])
+// which keys are tracked, and which have their browser default swallowed,
+// both come from the one key table (sandbox/bindings.ts): movement, sprint and
+// crouch, the flop, the camera, noclip, the console and spawn menu keys, the
+// multiplayer keys (m arms the microphone, n swaps the talk mode, b is the
+// push-to-talk key, the one the scene reads as a held state), and F9, the
+// collision wireframe (collisionDebug.ts), which lives here rather than
+// behind a build flag because the thing it diagnoses (a solid that disagrees
+// with the geometry it stands for) only ever shows up in a real walk. The
+// scene edge-detects the toggles off the same set.
 
 export interface RoamInputOpts {
   /** the WebGL canvas: lock target, pointer events, cursor */
@@ -115,15 +91,18 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
     }
     if (isPaused()) return // the world ignores the keyboard under the menu
     if (isTyping()) return // every key belongs to the chat line while it is up
-    // movement keys register during the stand-up glide too, so a held W
-    // starts the walk the very frame the controls go live
-    if (MOVE_KEYS.has(e.code)) {
+    // E is the interact key first: it goes to onUse and is also tracked, so
+    // a tool can read it as a held modifier (the physgun's rotate)
+    if (e.code === 'KeyE') {
       keys.add(e.code)
-      e.preventDefault()
-    } else if (MOD_KEYS.has(e.code)) {
+      if (isLive() && onUse()) e.preventDefault()
+      return
+    }
+    // everything else in the key table registers during the stand-up glide
+    // too, so a held W starts the walk the very frame the controls go live
+    if (BOUND_CODES.has(e.code)) {
       keys.add(e.code)
-    } else if (e.code === 'KeyE' && isLive()) {
-      if (onUse()) e.preventDefault()
+      if (SWALLOWED_CODES.has(e.code)) e.preventDefault()
     }
   }
   const onKeyUp = (e: KeyboardEvent) => keys.delete(e.code)

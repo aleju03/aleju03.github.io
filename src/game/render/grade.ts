@@ -64,42 +64,50 @@ export interface Grade {
 }
 
 /**
-  Daylight: moody but friendly. The anchors are the families the world is
-  actually built from (brick and roof tile, sand and straw, moss and leaf,
-  sea and shade, sky and slate, dusk) so the pull tidies rather than recolours.
+  Daylight: friendly, and in full colour. Every object keeps its own hue at
+  close to its own saturation (the Content Warning farmhouse keeps its red
+  barn red under heavy stylisation, and that is the bar); the style comes
+  from the bands, the dither and the lines, not from draining the palette.
+  What the grade does by day is tidy: a gentle pull of the hues toward the
+  families the world is built from (brick and roof tile, sand and straw,
+  olive and leaf, sea and shade, sky and slate, dusk), a soft cap well above
+  anything a painted surface reaches, and a faint cool in the shadows. The
+  murk belongs to dusk and night, which is what the second table is for.
 */
 export const GRADE_DAY: Grade = {
-  floor: 0.05,
+  floor: 0.045,
   ceiling: 0.96,
-  contrast: 0.45,
+  contrast: 0.32,
   gamma: 1.02,
-  sat: 1.05,
-  shadowSat: 0.8,
-  chromaCap: 0.17,
-  shadowTint: [245, 0.03],
-  highlightTint: [78, 0.01],
-  anchors: [32, 72, 122, 175, 238, 312],
-  pull: 0.38,
+  sat: 1.06,
+  shadowSat: 0.86,
+  chromaCap: 0.3,
+  shadowTint: [245, 0.012],
+  highlightTint: [80, 0.006],
+  anchors: [34, 74, 118, 168, 240, 314],
+  pull: 0.15,
 }
 
 /**
-  Night: the Purkinje shift. Under starlight the eye loses colour before it
-  loses shape and what is left leans blue, so the night table drains chroma
-  and pushes the darks toward slate rather than simply being darker (the
-  lights already are).
+  Night: the Purkinje shift, and real darks. Under starlight the eye loses
+  colour before it loses shape and what is left leans blue, so the night
+  table drains chroma and pushes the darks toward slate; and it crushes the
+  middle (gamma well over 1, a floor near black), so the moonlit ground is a
+  deep dark and the things that are *lit* (lamp pools, windows, a headlamp)
+  are the islands the eye goes to.
 */
 export const GRADE_NIGHT: Grade = {
-  floor: 0.1,
-  ceiling: 0.94,
-  contrast: 0.2,
-  gamma: 0.92,
-  sat: 0.62,
+  floor: 0.06,
+  ceiling: 0.95,
+  contrast: 0.26,
+  gamma: 1.0,
+  sat: 0.66,
   shadowSat: 0.5,
-  chromaCap: 0.11,
-  shadowTint: [258, 0.045],
-  highlightTint: [70, 0.028],
-  anchors: [32, 72, 122, 175, 238, 312],
-  pull: 0.45,
+  chromaCap: 0.12,
+  shadowTint: [255, 0.035],
+  highlightTint: [68, 0.03],
+  anchors: [34, 74, 118, 168, 240, 314],
+  pull: 0.4,
 }
 
 /* --------------------------------------------------------------- oklab -- */

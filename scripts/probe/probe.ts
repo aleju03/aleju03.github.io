@@ -15,6 +15,10 @@ import { buildSky } from '../../src/game/levels/sky'
 import { buildHouse } from '../../src/game/levels/houseWorld'
 import { buildGrass } from '../../src/game/world/grass'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
+import {
+  BIOME_AIR, airForSky, lightsForSky, nearestLamps,
+} from '../../src/game/render/atmosphere'
+import type { SkyState } from '../../src/game/levels/sky'
 
 /*
   The world, rendered off to one side so it can be photographed.
@@ -222,6 +226,48 @@ export const lightFor = (scene: THREE.Scene, tod: Tod, cam: THREE.Vector3) => {
   return st
 }
 
+/** what the air thickens by under a point: 'town' in a settlement, the
+    biome elsewhere, as outsideWorld's biomeAt answers it for the game */
+const airGround = (x: number, z: number) => {
+  const s = sampleAt(x, z)
+  return s.place.district ? 'town' : s.biome
+}
+
+/**
+ * Dress the look for a still frame the way CrtScene dresses it for a live
+ * one: the grade's mood, the air's density for this moment and this ground,
+ * the sun's glow, and the night's lamp pools and headlamp. `lamps` is a flat
+ * xyz list of the fixtures in the tile (a chunk's `lamps`), nearest first
+ * or not; the headlamp rides the camera, as the walker's own would.
+ */
+const lampPick = new Float32Array(16 * 3)
+const lampD2 = new Float32Array(16)
+const sunDir = new THREE.Vector3()
+export const dressLook = (
+  look: PixelLook, scene: THREE.Scene, st: SkyState, cam: THREE.Camera,
+  biome: string | null, lamps: number[] = [], headlamp = true,
+) => {
+  look.setMood(st.night * (1 - st.twilight))
+  let sun: THREE.DirectionalLight | null = null
+  let hemi: THREE.HemisphereLight | null = null
+  scene.traverse((o) => {
+    if ((o as THREE.DirectionalLight).isDirectionalLight && !sun) sun = o as THREE.DirectionalLight
+    if ((o as THREE.HemisphereLight).isHemisphereLight && !hemi) hemi = o as THREE.HemisphereLight
+  })
+  const s = sun as THREE.DirectionalLight | null
+  if (s) sunDir.subVectors(s.position, s.target.position).normalize()
+  airForSky(look.air, st, BIOME_AIR[biome ?? ''] ?? 1, sunDir, s ? s.color : new THREE.Color())
+  cam.updateMatrixWorld()
+  const cp = cam.getWorldPosition(new THREE.Vector3())
+  const n = nearestLamps(cp.x, cp.z, lamps, lamps.length / 3, lampPick, 16, lampD2)
+  const h = hemi as THREE.HemisphereLight | null
+  const amb = h ? h.color.clone().multiplyScalar(h.intensity) : new THREE.Color(0.1, 0.1, 0.1)
+  lightsForSky(look.lights, st, lampPick, n, amb)
+  if (!headlamp) look.lights.head.on = false
+  look.lights.head.pos.copy(cp)
+  cam.getWorldDirection(look.lights.head.dir)
+}
+
 /* ----------------------------------------------------------------- props -- */
 
 /*
@@ -412,22 +458,6 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     const { x, z, label } = list[i]
     const scene = new THREE.Scene()
     const gy = terrainY(x, z)
-    const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.2, 900)
-    if (spec.eye) {
-      cam.position.set(x, gy + 3.55, z)
-      cam.lookAt(x + Math.sin(spec.yaw) * 20, gy + 2.0, z + Math.cos(spec.yaw) * 20)
-    } else {
-      cam.position.set(
-        x + Math.cos(spec.yaw) * spec.dist, gy + spec.height,
-        z + Math.sin(spec.yaw) * spec.dist)
-      cam.lookAt(x, gy + spec.height * 0.32, z)
-    }
-    const sky = lightFor(scene, spec.tod, cam.position)
-    look?.setMood(sky.night * (1 - sky.twilight))
-    // the lattice is pinned under whatever it is updated at: the target, so
-    // an orbit shot has turf where it is looking rather than under the lens
-    buildGrass({ parent: scene, trackDisposable: noop }).update(x, z)
-
     const c0 = chunkX(x)
     const d0 = chunkZ(z)
     const chunks: Chunk[] = []
@@ -447,6 +477,51 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
         scene.add(c.group)
         for (const g of c.geos) verts += g.getAttribute('position').count
       }
+
+    // The camera, placed after the chunks so it can see their solids. A
+    // bearing whose lens lands inside a building, or whose view of the
+    // target runs through one, is swapped for the nearest one that does not
+    // (a suburb orbit used to photograph the inside of a wall). The yaw asked
+    // for wins whenever it is clear, so a shot stays reproducible
+    const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.2, 900)
+    const aim = new THREE.Vector3()
+    const place = (yaw: number) => {
+      if (spec.eye) {
+        cam.position.set(x, gy + 3.55, z)
+        aim.set(x + Math.sin(yaw) * 20, gy + 2.0, z + Math.cos(yaw) * 20)
+      } else {
+        cam.position.set(
+          x + Math.cos(yaw) * spec.dist, gy + spec.height, z + Math.sin(yaw) * spec.dist)
+        aim.set(x, gy + spec.height * 0.32, z)
+      }
+    }
+    const blocked = () => {
+      const ray = new THREE.Ray(cam.position.clone(), aim.clone().sub(cam.position).normalize())
+      // the eye line only needs its first stretch clear; an orbit needs the
+      // whole way in to the target
+      const reach = spec.eye ? 7 : cam.position.distanceTo(aim) - 4
+      const hit = new THREE.Vector3()
+      let n = 0
+      for (const b of boxes) {
+        if (b.containsPoint(cam.position)) n += 10
+        else if (ray.intersectBox(b, hit) && hit.distanceTo(cam.position) < reach) n++
+      }
+      return n
+    }
+    let bestYaw = spec.yaw
+    let best = Number.POSITIVE_INFINITY
+    for (const off of [0, 1.05, -1.05, 2.1, -2.1, Math.PI]) {
+      place(spec.yaw + off)
+      const n = blocked()
+      if (n < best) { best = n; bestYaw = spec.yaw + off }
+      if (n === 0) break
+    }
+    place(bestYaw)
+    cam.lookAt(aim)
+    const sky = lightFor(scene, spec.tod, cam.position)
+    // the lattice is pinned under whatever it is updated at: the target, so
+    // an orbit shot has turf where it is looking rather than under the lens
+    buildGrass({ parent: scene, trackDisposable: noop }).update(x, z)
 
     // the property is a hole in the generated world (grid.ts's RESERVED), so
     // the house has to be stood in it or `home` photographs the fog through
@@ -471,6 +546,13 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
         const m = o as THREE.Mesh
         if (m.isMesh) { m.castShadow = true; m.receiveShadow = true }
       })
+    }
+
+    if (look) {
+      const lamps: number[] = []
+      for (const c of chunks) for (const l of c.lamps) lamps.push(l.x, l.y, l.z)
+      // the headlamp is the walker's, so only an eye-line shot carries one
+      dressLook(look, scene, sky, cam, airGround(cam.position.x, cam.position.z), lamps, spec.eye)
     }
 
     if (spec.props?.length) addProps(scene, x, z, spec.props)

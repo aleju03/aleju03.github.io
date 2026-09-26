@@ -884,7 +884,8 @@ const W_CROUCH = 4;
 const W_SWIM = 8;
 const W_SPEAKING = 16;
 const W_DOWN = 32;
-const W_FLAGS = W_GROUNDED | W_RUN | W_CROUCH | W_SWIM | W_SPEAKING | W_DOWN;
+const W_FLY = 64; // noclip
+const W_FLAGS = W_GROUNDED | W_RUN | W_CROUCH | W_SWIM | W_SPEAKING | W_DOWN | W_FLY;
 
 function allowWorld(map, ws, max, windowMs) {
   const now = Date.now();

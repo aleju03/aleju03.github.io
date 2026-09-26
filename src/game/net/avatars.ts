@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import {
-  DESIGN_CROWN, DESIGN_EYE, buildPlayerBody, type PlayerPose, type PlayerRig,
+  CABIN_FIT, DESIGN_CROWN, DESIGN_EYE, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../player/playerBody'
 import { unpackLook } from '../player/look'
 import type { RagdollEnv } from '../player/ragdoll'
@@ -113,7 +113,7 @@ const BUBBLE_UP = BADGE_UP + 0.36
     hangs the body from its eye so the origin is the face. Everything floating
     over the head moves with it or a driver's name ends up on the ceiling */
 const STAND_TOP = DESIGN_CROWN
-const SEAT_TOP = DESIGN_CROWN - DESIGN_EYE
+const SEAT_TOP = (DESIGN_CROWN - DESIGN_EYE) * CABIN_FIT
 
 /** one speaker glyph, shared by every badge in the world: a cone and two
     arcs, drawn once. Sprite materials still get their own instance so each
@@ -303,7 +303,8 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       // other way, exactly as CrtScene turns the local body round
       a.group.rotation.set(0, Math.PI, 0)
       a.rig.reset()
-      a.rig.sit()
+      // only the fleet's seats come through here, and each says its own fit
+      a.rig.sit(seat.userData.fit ?? CABIN_FIT, seat.name === 'passengerSeat')
     } else {
       root.add(a.group)
       a.group.rotation.set(0, 0, 0)
@@ -379,6 +380,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
           const seatVisible = seatWorld.distanceToSquared(worldEnv.eyePos) < CULL_DIST_SQ
           a.group.visible = seatVisible
           if (!seatVisible) continue
+          a.rig.seatedTick(dt)
           const to = player.speaking ? 1 : 0
           a.badgeK += (to - a.badgeK) * (1 - Math.exp(-14 * dt))
           const lit = a.badgeK > 0.02
@@ -432,7 +434,10 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
         pose.vz = player.vz
         pose.vy = player.vy
         pose.landing = player.landing
+        pose.fly = player.flying ? 1 : 0
         env.groundY = worldEnv.groundAt(player.x, player.z)
+        // a tumble follows the ground under each limb, like the local one
+        env.groundAt = worldEnv.groundAt
         a.rig.update(pose, env)
 
         // --- the badge -----------------------------------------------------

@@ -11,10 +11,21 @@
     tunnel     fast things do not pass through thin things or the ground
     walker     the walk pushes a crate, is stopped by a block, stands on a
                stack and rides a moving plank
+    float      each kind dropped into still water: waterline, attitude, and
+               how long it takes to stop rolling
+    catalogue  every catalogue kind set down upright on flat ground: does it
+               stay upright, how fast it sleeps, where its mass sits
+    breaks     each breakable dropped from rising heights: the lowest fall
+               that breaks it, and what it leaves
+    blast      a row of red barrels set off at one end: how many go, how
+               far a crate beside them flies, and that one out of reach sleeps
     scenarios  every registered scenario, run to its end, with its report
 */
 import { createSandbox } from '../../src/game/sandbox/sandbox.ts'
 import { SCENARIOS, stageScenario, advanceScenario } from '../../src/game/sandbox/scenarios.ts'
+import '../../src/game/sandbox/propScenarios.ts'
+import { CATALOGUE } from '../../src/game/sandbox/catalogue.ts'
+import { KINDS } from '../../src/game/sandbox/kinds.ts'
 import { makeCollisionSet } from '../../src/game/physics/collision.ts'
 import { createWalkController } from '../../src/game/player/walkController.ts'
 
@@ -77,6 +88,16 @@ if (want('ground')) {
 
 /* --------------------------------------------------------------- cost -- */
 if (want('cost')) {
+  // the solids under the field, built before anything is timed: in the game
+  // they come from chunks the streamer built long ago, and here the first
+  // touch of each one is a full buildChunk (5-20 ms) that would otherwise
+  // land inside a "physics" frame. (The 50 ms first frame the first round
+  // reported was something else, and real: V8 compiling Rapier's WASM on
+  // its first step. physics.ts's warmUp pays it at load now; this frame 0
+  // is the number that keeps it honest)
+  for (let dz = -3; dz <= 3; dz++) for (let dx = -3; dx <= 3; dx++) {
+    chunkSolids(chunkX(flat.x) + dx, chunkZ(flat.z) + dz)
+  }
   for (const count of [50, 200, 500]) {
     const { sb } = newSandbox()
     await sb.whenReady
@@ -117,8 +138,9 @@ if (want('cost')) {
     const hold = held.reduce((a, b) => a + b, 0) / held.length
     const stepShare = stepMs / (frames.length + held.length)
     const peak = Math.max(...frames, ...held)
+    const at = [...frames, ...held].indexOf(peak)
     console.log(`cost     ${pad(count + ' props', 10)} piling ${f(pile, 2)} ms/frame, held awake ${f(hold, 2)} ms/frame, ` +
-      `worst frame ${f(peak, 2)}, Rapier's step ${f(stepShare, 2)} of it (awake after 2 s: ${awakeAfter})`)
+      `worst frame ${f(peak, 2)} (frame ${at}), Rapier's step ${f(stepShare, 2)} of it (awake after 2 s: ${awakeAfter})`)
     sb.dispose()
   }
 }
@@ -164,12 +186,16 @@ if (want('tunnel')) {
   const { sb } = newSandbox()
   await sb.whenReady
   const focus = { x: flat.x, y: fy, z: flat.z }
+  // a crate or a plank that hits hard enough comes apart (breakables.ts):
+  // that is the wall holding, and where the gibs ended up says so
+  const broke = new Map()
+  sb.onBreak((e) => broke.set(e.id, e))
   const run = (label, setup, ok) => {
     sb.clear()
     const c = setup()
     for (let i = 0; i < 90; i++) sb.tick({ dt: 1 / 60, active: true, focus })
     const pass = ok(c)
-    console.log(`tunnel   ${pad(label, 52)} ${pass ? 'held' : '<-- TUNNELLED'}`)
+    console.log(`tunnel   ${pad(label, 52)} ${pass ? (broke.has(c) ? 'held (broke on it)' : 'held') : '<-- TUNNELLED'}`)
   }
   // a plank frozen upright as a 0.18-thick wall
   const wall = () => sb.spawn('plank', { x: flat.x + 10, y: fy + 3, z: flat.z }, {
@@ -182,7 +208,8 @@ if (want('tunnel')) {
       return sb.spawn(kind, { x: flat.x - 10, y: fy + 3, z: flat.z }, { velocity: { x: speed, y: 0, z: 0 }, quaternion: q })
     }, (id) => {
       const p = sb.get(id)
-      return p && p.body.translation().x < flat.x + 10
+      if (!p) return !!broke.get(id) && broke.get(id).x < flat.x + 10
+      return p.body.translation().x < flat.x + 10
     })
   }
   for (const kind of ['crate', 'ball', 'plank']) {
@@ -190,9 +217,116 @@ if (want('tunnel')) {
       sb.spawn(kind, { x: flat.x, y: fy + 30, z: flat.z }, { velocity: { x: 0, y: -250, z: 0 } }),
     (id) => {
       const p = sb.get(id)
-      return p && p.body.translation().y > fy - 0.5
+      if (!p) return !!broke.get(id) && broke.get(id).y > fy - 0.5
+      return p.body.translation().y > fy - 0.5
     })
   }
+  sb.dispose()
+}
+
+/* ---------------------------------------------------------- catalogue -- */
+if (want('catalogue')) {
+  // each kind stood upright a hair over flat ground and watched for four
+  // seconds: a well-made kind lands, stays the way up it was drawn, and sleeps
+  const { sb } = newSandbox()
+  await sb.whenReady
+  const focus = { x: flat.x, y: fy, z: flat.z }
+  const up = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const bad = []
+  for (const e of CATALOGUE) {
+    sb.clear()
+    const y = sb.restY(e.id, flat.x, flat.z)
+    const id = sb.spawn(e.id, { x: flat.x, y: y + 0.05, z: flat.z })
+    const p = sb.get(id)
+    let sleptAt = -1
+    for (let i = 0; i < 240; i++) {
+      sb.tick({ dt: 1 / 60, active: true, focus })
+      if (sleptAt < 0 && p.body.isSleeping()) sleptAt = (i + 1) / 60
+    }
+    const r = p.body.rotation()
+    q.set(r.x, r.y, r.z, r.w)
+    up.set(0, 1, 0).applyQuaternion(q)
+    const tilt = Math.acos(Math.min(1, up.y)) * 180 / Math.PI
+    const t = p.body.translation()
+    const com = p.body.localCom()
+    const k = KINDS[e.id]
+    // round things lying down turn about their own axis as they settle;
+    // for those, "upright" is only whether they came to rest
+    const round = e.id === 'pipe' || e.id === 'ball'
+    const note = tilt > 5 && !round ? '  <-- FELL OVER'
+      : sleptAt < 0 && round ? '  (still rolling down the site\'s slope)'
+        : sleptAt < 0 ? '  <-- NEVER SLEPT' : ''
+    if (note.startsWith('  (')) {
+      console.log(`catalogue ${pad(e.id, 17)} ${pad(k.mass + ' kg', 8)} rolling at ${f(Math.hypot(p.body.linvel().x, p.body.linvel().z), 2)} u/s${note}`)
+      continue
+    }
+    if (note) bad.push(e.id)
+    console.log(`catalogue ${pad(e.id, 17)} ${pad(k.mass + ' kg', 8)} com y ${f(com.y, 2).padStart(5)}  ` +
+      `tilt ${f(tilt, 1).padStart(4)} deg  sank ${f(y - t.y, 3)}  asleep at ${sleptAt < 0 ? '-' : f(sleptAt, 2)} s` +
+      `  ${k.surface ?? 'wood'}${k.breaks ? ' breaks@' + k.breaks.speed : ''}${k.explodes ? ' explodes@' + k.explodes.speed : ''}${note}`)
+  }
+  console.log(`catalogue ${CATALOGUE.length} kinds, ${bad.length ? bad.join(', ') + ' misbehaved' : 'every one upright and asleep'}`)
+  sb.dispose()
+}
+
+/* -------------------------------------------------------------- breaks -- */
+if (want('breaks')) {
+  const { sb } = newSandbox()
+  await sb.whenReady
+  const focus = { x: flat.x, y: fy, z: flat.z }
+  let gibs = 0
+  sb.onBreak((e) => (gibs = e.gibs.length))
+  for (const e of CATALOGUE.filter((c) => KINDS[c.id].breaks)) {
+    let at = -1
+    let left = 0
+    for (const h of [0.5, 1, 2, 3, 4, 6, 8, 10, 13, 16, 20, 25, 30, 40]) {
+      sb.clear()
+      gibs = 0
+      const id = sb.spawn(e.id, { x: flat.x, y: sb.restY(e.id, flat.x, flat.z) + h, z: flat.z })
+      for (let i = 0; i < 120; i++) sb.tick({ dt: 1 / 60, active: true, focus })
+      if (!sb.get(id)) {
+        at = h
+        left = gibs
+        break
+      }
+    }
+    console.log(`breaks   ${pad(e.id, 12)} breaks at ${KINDS[e.id].breaks.speed} u/s: dropped from ${at < 0 ? 'over 40' : at} units it comes apart into ${left} pieces`)
+  }
+  sb.dispose()
+}
+
+/* --------------------------------------------------------------- blast -- */
+if (want('blast')) {
+  const { sb } = newSandbox()
+  await sb.whenReady
+  const focus = { x: flat.x, y: fy, z: flat.z }
+  const barrels = []
+  for (let k = 0; k < 6; k++) {
+    const x = flat.x + k * 5.2
+    barrels.push(sb.spawn('barrel_explosive', { x, y: sb.restY('barrel_explosive', x, flat.z), z: flat.z }))
+  }
+  const near = sb.spawn('crate', { x: flat.x + 2.6, y: sb.restY('crate', flat.x + 2.6, flat.z + 3.5), z: flat.z + 3.5 })
+  const far = sb.spawn('crate', { x: flat.x - 30, y: sb.restY('crate', flat.x - 30, flat.z), z: flat.z })
+  for (let i = 0; i < 60; i++) sb.tick({ dt: 1 / 60, active: true, focus })
+  const booms = []
+  let t = 0
+  sb.onExplosion((e) => booms.push({ t, x: e.x, pushed: e.pushed }))
+  let nearTop = 0
+  sb.damage(barrels[0], 1000)
+  const ms = []
+  for (let i = 0; i < 240; i++) {
+    t = (i + 1) / 60
+    ms.push(sb.tick({ dt: 1 / 60, active: true, focus }).ms)
+    const p = sb.get(near)
+    if (p) nearTop = Math.max(nearTop, p.body.translation().y - fy)
+  }
+  const farP = sb.get(far)
+  ms.sort((a, b) => a - b)
+  console.log(`blast    ${booms.length}/6 barrels went off in ${f(booms.length ? booms[booms.length - 1].t : 0, 2)} s ` +
+    `(${booms.map((b) => f(b.t, 2)).join(' ')}); the crate beside the first ${sb.get(near) ? 'survived' : 'broke'}, ` +
+    `peak ${f(nearTop, 1)} units up; the one 30 units away ${farP && farP.body.isSleeping() ? 'slept through it' : 'moved'}; ` +
+    `${sb.stats.gibs} gibs; worst tick ${f(ms[ms.length - 1], 2)} ms, median ${f(ms[ms.length >> 1], 2)}`)
   sb.dispose()
 }
 
@@ -289,6 +423,70 @@ if (want('walker')) {
   console.log(`walker   rode a plank dragged 6 units: walker moved ${f(cam.position.x - rideStart.x, 2)}, ` +
     `plank moved ${f(plEnd.x - pt.x, 2)}, feet ${f(walk.feetY - (plEnd.y + 0.09), 3)} over it`)
   sb.dispose()
+}
+
+/* -------------------------------------------------------------- sites -- */
+if (want('sites')) {
+  // where each scenario stages itself, and how long finding it took
+  for (const s of SCENARIOS) {
+    const t0 = performance.now()
+    const site = s.site()
+    console.log(`site     ${pad(s.id, 16)} ${Math.round(site.x)},${Math.round(site.z)}  facing ${f(site.dx, 2)},${f(site.dz, 2)}` +
+      `  ${site.memo ? JSON.stringify(site.memo) : ''}  (${Math.round(performance.now() - t0)} ms)`)
+  }
+}
+
+/* -------------------------------------------------------------- float -- */
+if (want('float')) {
+  // each kind dropped tilted into still open water, one at a time, and
+  // watched for ten seconds: where it rides, how it lies, when it stops
+  // rolling. "flat" is the angle from the nearest face-on orientation, so 0
+  // is a crate riding level and 45 is one floating on an edge
+  const sea = SCENARIOS.find((s) => s.id === 'sandbox:float').site()
+  for (const kind of ['crate', 'barrel', 'ball', 'plank', 'cone', 'block']) {
+    const { sb } = newSandbox(false)
+    await sb.whenReady
+    const focus = { x: sea.x, y: SEA_Y, z: sea.z }
+    const id = sb.spawn(kind, { x: sea.x, y: SEA_Y + 4, z: sea.z }, {
+      quaternion: new THREE.Quaternion().setFromEuler(new THREE.Euler(0.5, 0.3, 0.35)),
+      angular: { x: 0.8, y: 0.4, z: -0.6 },
+    })
+    const p = sb.get(id)
+    let settled = 0
+    let lateSpin = 0
+    let lateBob = 0
+    let lastY = null
+    for (let i = 0; i < 600; i++) {
+      sb.tick({ dt: 1 / 60, active: true, focus })
+      const w = p.body.angvel()
+      const spin = Math.hypot(w.x, w.y, w.z)
+      if (spin > 0.35) settled = (i + 1) / 60
+      const y = p.body.translation().y
+      if (process.env.DEBUG_FLOAT === kind && i % 20 === 0) {
+        const v = p.body.linvel()
+        const tt = p.body.translation()
+        console.log(i, 'y', f(tt.y - SEA_Y, 2), 'w', f(w.x, 2), f(w.y, 2), f(w.z, 2), 'v', f(v.x, 2), f(v.y, 2), f(v.z, 2), 'damp', f(p.body.linearDamping(), 2), f(p.body.angularDamping(), 2), 'sleep', p.body.isSleeping())
+      }
+      if (i >= 360) {
+        lateSpin = Math.max(lateSpin, spin)
+        if (lastY !== null) lateBob = Math.max(lateBob, Math.abs(y - lastY) * 60)
+      }
+      lastY = y
+    }
+    const q = p.body.rotation()
+    const quat = new THREE.Quaternion(q.x, q.y, q.z, q.w)
+    let flat = 90
+    for (const ax of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)]) {
+      const d = Math.abs(ax.applyQuaternion(quat).y)
+      flat = Math.min(flat, Math.acos(Math.min(1, d)) * 180 / Math.PI)
+    }
+    const t = p.body.translation()
+    const e = p.extents
+    console.log(`float    ${pad(kind, 7)} centre ${f(t.y - SEA_Y, 2).padStart(6)} over the water ` +
+      `(half-height ${f(e.y, 2)}), ${f(flat, 0).padStart(2)} deg off a face, stopped rolling at ${f(settled, 1)} s, ` +
+      `after 6 s spin <= ${f(lateSpin, 2)} rad/s, bob <= ${f(lateBob, 2)} u/s`)
+    sb.dispose()
+  }
 }
 
 /* ---------------------------------------------------------- scenarios -- */

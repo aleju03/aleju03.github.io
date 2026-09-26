@@ -56,9 +56,51 @@ export const loadRapier = (): Promise<Rapier> => {
   rapierP ??= import('@dimforge/rapier3d-compat').then(async (m) => {
     const R = (m as unknown as { default?: Rapier }).default ?? (m as unknown as Rapier)
     await R.init()
+    warmUp(R)
     return R
   })
   return rapierP
+}
+
+/*
+  The first step any world takes costs ~50 ms, whatever is in it: V8
+  compiles WebAssembly functions lazily, on first call, and a step touches
+  most of the engine. Left alone that lands on the first physics frame after
+  the sandbox wakes up, which is a hitch in the middle of a walk (measured:
+  frame 0 at 54 ms against a 0.4 ms steady state). So pay it here, once, on a
+  throwaway world holding one of everything the sandbox uses, right after
+  init: that moment is the planet attaching, under the boot cover.
+*/
+const warmUp = (R: Rapier) => {
+  const w = new R.World({ x: 0, y: -GRAVITY, z: 0 })
+  w.numSolverIterations = SOLVER_ITERATIONS
+  const hf = new Float32Array(9)
+  w.createCollider(R.ColliderDesc.heightfield(2, 2, hf, { x: 8, y: 1, z: 8 }, R.HeightFieldFlags.FIX_INTERNAL_EDGES))
+  w.createCollider(R.ColliderDesc.cuboid(1, 1, 1).setTranslation(3, 1, 0))
+  const shapes = [
+    R.ColliderDesc.cuboid(0.5, 0.5, 0.5), R.ColliderDesc.ball(0.5), R.ColliderDesc.cylinder(0.5, 0.4),
+    R.ColliderDesc.cone(0.5, 0.4), R.ColliderDesc.convexHull(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])),
+  ]
+  shapes.forEach((d, i) => {
+    const b = w.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(i - 2, 1.5 + i * 0.3, 0).setCcdEnabled(true))
+    if (d) w.createCollider(d.setMass(10), b)
+  })
+  const k = w.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(0, 3, 2))
+  w.createCollider(R.ColliderDesc.capsule(1, 0.4), k)
+  const q = new R.EventQueue(true)
+  for (let i = 0; i < 3; i++) {
+    k.setNextKinematicTranslation({ x: 0, y: 3, z: 2 - i * 0.1 })
+    w.step(q)
+  }
+  w.castRay(new R.Ray({ x: 0, y: 5, z: 0 }, { x: 0, y: -1, z: 0 }), 10, true)
+  w.intersectionsWithRay(new R.Ray({ x: 0, y: 5, z: 0 }, { x: 0, y: -1, z: 0 }), 10, true, () => true)
+  const cyl = new R.Cylinder(1, 0.5)
+  w.intersectionsWithShape({ x: 0, y: 1, z: 0 }, { x: 0, y: 0, z: 0, w: 1 }, cyl, (c) => {
+    c.contactShape(cyl, { x: 0, y: 1, z: 0 }, { x: 0, y: 0, z: 0, w: 1 }, 0)
+    return true
+  })
+  q.free()
+  w.free()
 }
 
 /** the fixed slice, seconds */

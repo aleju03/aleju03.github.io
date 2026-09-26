@@ -114,6 +114,9 @@ export interface TvHandles {
   silence: () => void
   readonly on: boolean
   readonly channel: Channel
+  /** the mesh that punches the set's glass through the canvas, so the pixel
+      look can redraw its edge at full resolution (render/pixelLook.ts) */
+  readonly hole: THREE.Mesh
   dispose: () => void
 }
 
@@ -324,6 +327,7 @@ export function buildHouseTv({ scene, cssScene, screen, trackDisposable }: Opts)
   }
 
   return {
+    hole,
     update,
     prompt,
     use,

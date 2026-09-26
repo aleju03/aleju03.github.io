@@ -85,7 +85,8 @@ export interface Chunk {
   geos: THREE.BufferGeometry[]
   /** solids, whether or not they are currently in the live collision set */
   boxes: Solid[]
-  /** interior lamp spots the streamer may choose to light */
+  /** every light fixture in the chunk (street lamps, belfries, shop and
+      cabin lamps): where the look pools light at night */
   lamps: Array<{ x: number; y: number; z: number }>
   /** walk-in footprints for the interiors registry (see world/interiors.ts) */
   interiors: InteriorRect[]
@@ -370,7 +371,7 @@ const rq3 = new THREE.Vector3()
  */
 const buildRoads = (
   cx: number, cz: number, out: MeshBuilder, glass: MeshBuilder, detailed: boolean,
-  smash: Smashable[],
+  smash: Smashable[], lamps: Array<{ x: number; y: number; z: number }>,
 ): Solid[] => {
   const ox = originX(cx)
   const oz = originZ(cz)
@@ -686,6 +687,9 @@ const buildRoads = (
         const gv = glass.count
         const gi = glass.indexCount
         streetLamp(out, glass, poleC, bulbC, lx, y, lz, yaw)
+        // where the lens hangs, so the look can pool light under it at night
+        // (render/pixelLook.ts): the arm's reach along the lamp's own +x
+        lamps.push({ x: lx + Math.cos(yaw) * 2.2, y: y + LAMP_H + 0.3, z: lz - Math.sin(yaw) * 2.2 })
         // 0.4 is the plinth (0.23) plus the shoulder margin every solid
         // registered through addBoxFrom() gets and this one, built by hand,
         // was going without: at the plinth's own width a walker stops with
@@ -1121,7 +1125,7 @@ export const buildChunk = (
     detailed: tier !== 'bare',
   }
 
-  const poles = buildRoads(cx, cz, detail, glass, out.detailed, props)
+  const poles = buildRoads(cx, cz, detail, glass, out.detailed, props, lamps)
   buildBlock(cx, cz, out, ground, leaves)
   const landmark = buildLandmarks(cx, cz, out)
   // everything in `boxes` at this point is a building — the roads register
