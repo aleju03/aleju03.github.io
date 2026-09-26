@@ -39,9 +39,11 @@ import type RAPIER_NS from '@dimforge/rapier3d-compat'
 
   Determinism. The simulation is a pure function of what happens at each
   slice, never of how slices fall into frames: the slice length is fixed,
-  nothing in the simulation (this file, props, ground, walker) reads the
-  wall clock or Math.random (a console command that scatters a spawn does,
-  and that spawn is then an input like any other; the few things
+  nothing in the simulation (this file, props, ground, walker, breakables,
+  explosions) reads the wall clock or Math.random: what needs chance draws
+  the facade's seeded `random()` (a console command that scatters a spawn
+  does use Math.random, and that spawn is then an input like any other;
+  sparks and sounds do too, and never touch a body; the few things
   that wander, like a floater's drift, read `time` and the prop's id), and
   props, ground and listeners are all kept in insertion-ordered maps and
   sets. So the same spawns, the same per-slice pokes and the same sea give

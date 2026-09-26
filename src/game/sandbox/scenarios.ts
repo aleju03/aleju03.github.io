@@ -68,6 +68,10 @@ export interface Scenario {
   events?: Array<[number, (c: ScenarioCtx) => void]>
   /** one line of numbers about how it went */
   report?: (c: ScenarioCtx) => string
+  /** people standing about (world x/z and a heading), for scenarios about
+      what happens to them: the film stands a `buildPlayerBody()` rig on each
+      and lets the sandbox's blasts knock it flat. Headless runs ignore it */
+  bodies?: (c: ScenarioCtx) => Array<{ x: number; z: number; yaw: number }>
 }
 
 export const SCENARIOS: Scenario[] = []
@@ -121,7 +125,7 @@ export const siteFlat = () => {
 */
 const solidCache = new Map<string, Solid[]>()
 let standIn: ChunkMats | null = null
-const solidsIn = (cx: number, cz: number) => {
+export const solidsIn = (cx: number, cz: number) => {
   const k = `${cx},${cz}`
   let boxes = solidCache.get(k)
   if (!boxes) {

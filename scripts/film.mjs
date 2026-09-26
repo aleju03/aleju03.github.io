@@ -7,6 +7,10 @@
     npm run film -- sandbox:roll --video          ...and an MP4 of it
     npm run film -- sandbox:float --gif --frames 16
     npm run film -- --list
+    npm run film -- props:turntable               every catalogue model, four ways round
+    npm run film -- props:thumbs                  the spawn menu's icons on one sheet
+    npm run film -- props:sounds                  every prop sound's peak, beside a footstep
+    npm run film -- props:links                   shader links on first spawn (must be 0)
 
   Each scenario (src/game/sandbox/scenarios.ts) is staged in the real world
   through the real sandbox and the game's own chunk materials, simulated at
@@ -35,7 +39,7 @@ const flag = (name, fallback) => {
 const has = (name) => argv.includes(`--${name}`)
 const VALUED = new Set([
   'frames', 'tile', 'cols', 'fps', 'size', 'tod', 'duration', 'rings', 'out',
-  'start', 'from', 'to', 'yaw', 'dist', 'height', 'fov', 'labels',
+  'start', 'from', 'to', 'yaw', 'dist', 'height', 'fov', 'angles', 'icon', 'labels',
 ])
 const targets = argv.filter((a, i) => !a.startsWith('--') && !(argv[i - 1]?.startsWith('--') && VALUED.has(argv[i - 1].slice(2))))
 
@@ -46,6 +50,7 @@ usage: npm run film -- <scenario...> [options]
 scenarios
   sandbox:stack  sandbox:roll  sandbox:pile  sandbox:float  (--list for all)
   sandbox:*      every registered scenario, one sheet each
+  props:turntable  props:thumbs  props:sounds  props:links   (the catalogue)
 
 options
   --frames <n>     stills on the sheet            (default 12)
@@ -69,6 +74,9 @@ camera (every run prints the shot it used, so start from that)
   --fov <deg>      lens
   --rings <n>      chunk rings built around the site (default 2)
   --labels off     no time stamps or title on the stills (judge blind)
+  --nobatch        draw every prop as its own mesh (to measure the batching)
+  --angles <n>     props:turntable bearings per model  (default 4)
+  --icon <px>      props:thumbs icon size             (default 96)
   --out <dir>      default shots/film
   --keep           leave chrome and vite running
 `)
@@ -95,6 +103,42 @@ const probe = await openProbe({
   keep: has('keep'),
 })
 
+/* the catalogue's own views (film.ts's turntable, thumbs, sounds, links) */
+const propTargets = targets.filter((t) => t.startsWith('props:'))
+if (propTargets.length) mkdirSync(outDir, { recursive: true })
+for (const t of propTargets) {
+  const what = t.slice(6)
+  const t0 = Date.now()
+  try {
+    if (what === 'turntable') {
+      const [w, h] = String(flag('tile', '280x220')).split('x').map(Number)
+      const c = Number(flag('cols', 8))
+      const r = await probe.evaluate(`window.__film.turntable(${JSON.stringify({ angles: Number(flag('angles', 4)), tile: [w, h], cols: c, ...(flag('tod', null) !== null ? { tod: Number(flag('tod')) } : {}) })})`)
+      const out = join(outDir, 'props-turntable.png')
+      writeFileSync(out, await probe.screenshot(r.width, r.height))
+      console.log(`props:turntable  ${r.models} models, ${r.tiles} tiles  ${out}  (${Date.now() - t0} ms)`)
+    } else if (what === 'thumbs') {
+      const size = Number(flag('icon', 96))
+      const r = await probe.evaluate(`window.__film.thumbs(${size}, ${Number(flag('cols', 9))})`)
+      const out = join(outDir, 'props-thumbs.png')
+      writeFileSync(out, await probe.screenshot(r.width, r.height))
+      console.log(`props:thumbs     ${r.icons} icons drawn in ${r.ms} ms  ${out}`)
+    } else if (what === 'sounds') {
+      const rows = await probe.evaluate('window.__film.sounds()')
+      for (const r of rows) console.log(`props:sounds     ${r.what.padEnd(34)} peak ${r.peak.toFixed(3)}  rms ${r.rms.toFixed(4)}`)
+    } else if (what === 'links') {
+      const r = await probe.evaluate('window.__film.links()')
+      console.log(`props:links      linkProgram calls: ${r.atBoot} compiling the scene under the "cover", ` +
+        `${r.afterSpawn} spawning all ${''}kinds, ${r.afterBreakAndBlast} breaking them and a blast (${r.programs} programs)`)
+      for (const f of r.fresh) console.log(`                 linked late: ${f}`)
+    } else {
+      console.log(`${t}: unknown (turntable, thumbs, sounds, links)`)
+    }
+  } catch (e) {
+    console.log(`${t}: ${e.message}`)
+  }
+}
+
 const known = await probe.evaluate('window.__film.list()')
 if (has('list')) {
   for (const s of known) console.log(`${s.id.padEnd(22)} ${s.title}`)
@@ -103,7 +147,7 @@ if (has('list')) {
     process.exit(0)
   }
 }
-const ids = targets.flatMap((t) =>
+const ids = targets.filter((t) => !t.startsWith('props:')).flatMap((t) =>
   t.endsWith('*') ? known.filter((s) => s.id.startsWith(t.slice(0, -1))).map((s) => s.id) : [t])
 
 mkdirSync(outDir, { recursive: true })
@@ -117,6 +161,7 @@ for (const id of ids) {
     rings: Number(flag('rings', 2)),
     raw: argv.includes('--raw'),
     labels: flag('labels', 'on') !== 'off',
+    nobatch: argv.includes('--nobatch'),
     ...(flag('tod', null) !== null ? { tod: Number(flag('tod')) } : {}),
     ...(flag('duration', null) !== null ? { duration: Number(flag('duration')) } : {}),
     ...(flag('start', null) !== null ? { start: Number(flag('start')) } : {}),
@@ -145,6 +190,8 @@ for (const id of ids) {
   console.log(`${''.padEnd(16)} ${res.msPerFrame.toFixed(2)} ms/frame of sandbox tick (median)  ` +
     `${sheetPath}  (${Date.now() - t0} ms)`)
   console.log(`${''.padEnd(16)} state hash ${res.hash}`)
+  console.log(`${''.padEnd(16)} last still: ${res.calls} draw calls, ${res.triangles} triangles, ` +
+    `${res.drawMs.toFixed(2)} ms to draw through the look (median of 5, finished)`)
   console.log(`${''.padEnd(16)} shot: --from ${res.from.join(',')} --to ${res.to.join(',')} --fov ${res.fov}`)
 
   if (video) {

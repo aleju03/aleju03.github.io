@@ -60,8 +60,16 @@ export interface Ground {
   need: (cx: number, cz: number) => boolean
   /** has this chunk got its ground */
   has: (cx: number, cz: number) => boolean
-  /** retire what nobody needed and re-read the solids; once a frame, before
-      the slices */
+  /** retire what nobody needed and re-read the solids. Once a *slice*, not
+      a frame: which colliders exist, and in what order they were made,
+      is part of the simulation's state, and a frame-paced stream made two
+      runs of the same breakage differ with the frame rate. `tick` false
+      builds what is missing without counting a slice (nothing retires):
+      the sandbox's pass for a frame that takes no slice */
+  stream: (tick?: boolean) => void
+  /** aim the fleet's mirrors for this frame's slices; once a frame */
+  vehicles: () => void
+  /** both, for a caller that has no slices to hand */
   sync: () => void
   /** move the fleet's mirrors toward their hulls: slice k of n this frame */
   slice: (k: number, n: number) => void
@@ -74,9 +82,9 @@ export interface Ground {
 }
 
 const key = (cx: number, cz: number) => (cx + 32768) * 65536 + (cz + 32768)
-/** frames a chunk survives without being asked for */
+/** slices a chunk survives without being asked for (four seconds) */
 const KEEP_FRAMES = 240
-/** past this many solids per sync, the rest wait for the next frame */
+/** past this many solids per stream, the rest wait for the next slice */
 const SOLIDS_PER_FRAME = 700
 
 export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground => {
@@ -135,6 +143,7 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
   const byHandle = new Map<number, Solid>()
   let solidsDirty = true
   let lastLen = -1
+  let lastSweep = -1
   const wanted = new Set<Solid>()
 
   const chunkOfPoint = (x: number, z: number) =>
@@ -218,7 +227,10 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
       lastLen = collision.boxes.length
       solidsDirty = true
     }
-    if (frame % 60 === 0) solidsDirty = true
+    if (frame % 60 === 0 && frame !== lastSweep) {
+      lastSweep = frame
+      solidsDirty = true
+    }
     if (solidsDirty) {
       solidsDirty = false
       collectWanted()
@@ -356,23 +368,29 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
 
   const stats = { chunks: 0, solids: 0, vehicles: 0 }
 
+  const stream = (tick = true) => {
+    if (tick) frame++
+    if (tick) for (const [k, c] of chunks) {
+      if (frame - c.seen <= KEEP_FRAMES) continue
+      groundHandles.delete(c.col.handle)
+      world.removeCollider(c.col, true)
+      chunks.delete(k)
+      solidsDirty = true
+    }
+    syncSolids()
+    stats.chunks = chunks.size
+    stats.solids = mirrors.size
+    stats.vehicles = rigs.size
+  }
+
   return {
     need,
     has: (cx, cz) => chunks.has(key(cx, cz)),
+    stream,
+    vehicles: () => syncVehicles(),
     sync: () => {
-      frame++
-      for (const [k, c] of chunks) {
-        if (frame - c.seen <= KEEP_FRAMES) continue
-        groundHandles.delete(c.col.handle)
-        world.removeCollider(c.col, true)
-        chunks.delete(k)
-        solidsDirty = true
-      }
-      syncSolids()
+      stream()
       syncVehicles()
-      stats.chunks = chunks.size
-      stats.solids = mirrors.size
-      stats.vehicles = rigs.size
     },
     slice,
     solidOf: (c) => byHandle.get(c.handle),

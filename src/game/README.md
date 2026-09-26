@@ -526,8 +526,23 @@ sandbox/
                 diagonal matches the mesh's), a fixed cuboid per world Solid
                 tracked by identity, and a kinematic convex hull per vehicle.
                 Streamed around the walker and around every unparked prop
-  kinds.ts      the kind table: shape, mass, friction, bounce, density, mesh.
-                Six placeholders (crate, barrel, ball, plank, cone, block)
+  kinds.ts      the kind table: shape, mass, friction, bounce, density, mesh,
+                and what it sounds like (surface), breaks into or goes off as
+  catalogue.ts  the forty-one kinds that ship, their physics, and `CATALOGUE`
+                / `CATEGORIES` (ids, nine categories, en/es names): the menu
+  models.ts     what each of them looks like, their atlas cells, and `GIBS`
+                (the pieces a breakable comes apart into)
+  art.ts        the one atlas, the one material, and `model()`, the builder
+                every prop is stamped with
+  batch.ts      props drawn as instances: each prop's mesh is a proxy, one
+                InstancedMesh per shape draws them all
+  breakables.ts damage, gibs, fuses, and the impact sounds' subscription
+  explosion.ts  explode(point, power, radius), onExplosion, and the maths that
+                knocks bodies flat (blastImpact, blastWatch)
+  fx.ts         the particles, the scorch and splat decals, and the flash
+  impactSounds.ts  modal synthesis per surface, breaks, booms; rate-limited
+  thumbnails.ts renderThumbnails(): spawn-menu icons, in a context of its own
+  propScenarios.ts  catalogue, chain, smash, crowd (and the turntable's lot)
   props.ts      the registry and the per-slice work: forces re-laid,
                 buoyancy on the drawn swell, the moving sea, splashes,
                 impacts from the change in velocity, rolling resistance,
@@ -577,8 +592,25 @@ sb.queryBall(center, r, p => ...)
 sb.groundY(x, z); sb.restY(kind, x, z); sb.focus
 sb.gravity = -34; sb.timescale = 1
 sb.stateHash()                                          // '9f3c01ab@6.0000': every pose and velocity, to the bit
+sb.random()                                             // the simulation's seeded chance, 0..1
 sb.rapier; sb.physics                                   // the raw world, for joints
-registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, rolling?, mesh? })
+registerKind({ id, label, shape, mass, friction, restitution, density, ballast?, rolling?, mesh?,
+               surface?, breaks?: { speed }, explodes?: { power, radius, speed } })
+
+sb.explode(at, power = 1, radius = 16)  // impulse, damage (chains), fx, boom
+sb.onExplosion(e => ...)   // { x, y, z, power, radius, source, pushed }
+sb.onBreak(e => ...)       // { id, kind, x, y, z, how: 'break'|'explode', gibs }
+sb.damage(id, dv, from?); sb.shatter(id); sb.ignite(id)
+sb.fx                      // explosion, debris, burn, dust, lightLook(look.lights)
+sb.ear(x, y, z, rightX, rightZ)          // the listener, once a frame
+
+// what the spawn menu reads (re-exported by sandbox.ts)
+CATALOGUE: { id, category, name: { en, es } }[]   CATEGORIES: { id, name }[]
+catalogueEntry(id); inCategory(category)
+await renderThumbnails(ids?, size = 96)  // [{ id, canvas }], pixel-art icons
+// spawn: sb.spawn(entry.id, { x, y: sb.restY(entry.id, x, z), z }, { yaw })
+// knock people over: blastImpact(e, feet, height, mass, out) -> rig.hit(...)
+//                    outside.knockPeople(blastWatch(e))
 ```
 
 A `Prop` carries `id`, `kind`, `body` (the Rapier body), `colliders`, `mesh`,
@@ -669,13 +701,44 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   slices were spaced, and Node and Chrome agree (the header of `physics.ts`
   says why and where the edge is). `sb.stateHash()` fingerprints it;
   `measure physics determinism` runs every scenario twice and once more on
-  uneven frames, and `npm run film` prints the same hash under each sheet.
+  uneven frames, and `npm run film` prints the same hash under each sheet
+  (as long as its `--rings` cover everywhere the props go: the film only
+  builds the solids of the chunks it draws, and `sandbox:chain` throws gibs
+  far enough to need `--rings 4`). That is why the ground streams at the
+  head of every slice rather than every frame: which colliders exist, and
+  the order they were made in, is simulation state.
   The swell is the one input the sandbox reads rather than owns: the
   harnesses pin the water's clock to the slice clock, and a replay or a
   shared world must too. Anything wandering (a floater's drift) reads
-  `physics.time` and the prop id, never `Math.random` or the wall clock.
+  `physics.time` and the prop id, and anything left to chance in the
+  simulation (a gib's kick, a fuse) draws `sb.random()`, the facade's seeded
+  generator, never `Math.random` or the wall clock. Sparks and sounds may.
 - **Queries see what was stepped.** Rapier's broad phase updates in `step`, so
   a collider added this frame is invisible to a raycast until the next slice.
+- **One material, one atlas, one draw per shape.** Every prop, gib and bit of
+  debris is painted on `art.ts`'s atlas with `propMaterial()`, and a prop's
+  `mesh` is a `BatchProxy` that `batch.ts` writes into one InstancedMesh per
+  geometry after the draw. Move, scale, hide or tint (`proxy.tint`) the proxy;
+  never swap its material, which would be a new program mid-walk. 300 props on
+  a street draw in 122 calls through the look against 453 as meshes.
+- **Warm what you draw, by drawing it.** `compileAsync` links against the
+  lights as they are at the call, and a pass that draws with any other light
+  count links again. So the warm batch, every particle pool and one decal of
+  each material are drawn every frame (collapsed to nothing, never culled),
+  which puts their links in the first frame under the boot cover.
+  `npm run film -- props:links` counts `linkProgram` through a spawn of every
+  kind, a break of every breakable and a blast: it must print 0 and 0.
+- **Air is not solid.** Fire and smoke must not write alpha under one (that is
+  a hole) and must not write depth (the look outlines depth edges, and an
+  outlined puff is a boulder). They dissolve through a Bayer dither on
+  `gl_FragCoord` instead, which in the look's target is whole art pixels.
+- **A blast is a fake light.** A PointLight per explosion would relink every
+  lit program; `fx.lightLook` writes the flash into the pixel look's
+  `lights.flash` instead, and CrtScene calls it after dressing the look.
+- **A breakable is broken after the slice, never inside it.** Impacts are
+  collected and dealt in `life.step`; removing a body while Rapier is handing
+  out contact pairs is how you get a panic. A blast is hotter than a knock:
+  it sets an explosive off at half the blow and lights it at a fifth.
 
 ### Looking at it
 
@@ -690,8 +753,17 @@ npm run film -- sandbox:stack --raw    the bare frame, without the pixel look
 npm run film -- sandbox:stack --labels off    no time stamps or title, to judge blind
 npm run film -- --list
 
+npm run film -- sandbox:catalogue      every prop on a town street
+npm run film -- sandbox:chain --start 0.3 --duration 2.6    barrels going up in a row
+npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
+npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
+npm run film -- props:turntable        every model four ways round
+npm run film -- props:thumbs           the spawn menu's icons
+npm run film -- props:sounds           every prop sound's peak, next to a footstep
+npm run film -- props:links            shader links on first spawn/break/blast
+
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
-                                       rest determinism float scenarios
+                                       rest determinism float catalogue breaks blast scenarios
 npm run measure -- physics walker      one section
 ```
 
@@ -704,8 +776,10 @@ spawned.
 
 ### How to add things
 
-- **A prop kind**: one entry in `kinds.ts`'s `KINDS` (or `registerKind()` from
-  your own module): a `ShapeSpec` (box, ball, cylinder, cone, hull, or a
+- **A prop kind**: a model in `models.ts` (built with `model()` on atlas
+  cells, centred on the body's origin, its numbers in `DIMS`) and a `def()`
+  in `catalogue.ts`, which registers the kind and lists it for the menu (or
+  `registerKind()` from your own module for something off the menu): a `ShapeSpec` (box, ball, cylinder, cone, hull, or a
   compound of them), mass in kg, friction, restitution, density relative to
   water, an optional `ballast` (a share of the mass as a point load, which
   lowers the centre of mass: a crate's contents), and a `mesh()` drawn around

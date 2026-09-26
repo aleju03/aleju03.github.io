@@ -13,6 +13,17 @@ import {
 } from './props'
 import { createWalker, type Walker, type WalkerState } from './walker'
 import { createWake } from './wake'
+import './catalogue'
+import { createBatcher, warmBatch, type Batcher } from './batch'
+import { createFx, type Fx } from './fx'
+import { createLife, type BreakEvent, type PropLife } from './breakables'
+import { createExplosions, type ExplosionEvent, type Explosions } from './explosion'
+// the scene reaches these through its dynamic import of this module, so
+// knocking the walker and the town flat costs the room boot nothing
+export { blastImpact, blastWatch } from './explosion'
+export { CATALOGUE, CATEGORIES, catalogueEntry, inCategory, type CatalogueEntry, type Category } from './catalogue'
+export { renderThumbnails } from './thumbnails'
+import { setEar, setEarFallback } from './impactSounds'
 
 /*
   The sandbox: one facade over the physics world, the ground it stands on,
@@ -42,10 +53,19 @@ import { createWake } from './wake'
 
   It is renderer-free: with no `parent` it builds no meshes and runs in Node,
   which is what `npm run measure -- physics` and the film harness drive.
+
+  Importing it imports the catalogue (catalogue.ts registers the forty-one
+  kinds), and the facade carries the three things that make props more than
+  rigid bodies: breakables.ts (impact sounds, damage, gibs, fuses),
+  explosion.ts (`explode` and `onExplosion`) and fx.ts (the particles, stepped
+  in sim time after every slice). Prop meshes are batch proxies (batch.ts),
+  written into one InstancedMesh per shape after the draw, so a street of
+  three hundred props costs a draw per kind in view.
 */
 
 export type {
-  ImpactEvent, Prop, PropId, PropKind, PropMode, QuatLike, SpawnOpts, SplashEvent, Vec3Like, WalkerState,
+  BreakEvent, ExplosionEvent, ImpactEvent, Prop, PropId, PropKind, PropMode, QuatLike, SpawnOpts, SplashEvent,
+  Vec3Like, WalkerState,
 }
 export { KINDS, registerKind }
 
@@ -156,6 +176,26 @@ export interface Sandbox {
   /** where the last tick was centred: the walker's eye, or its `focus` */
   readonly focus: THREE.Vector3
 
+  /* what props do besides move (breakables.ts, explosion.ts) */
+  /** a blast: radial impulse, damage (chains other explosives), fx, boom */
+  explode: (at: Vec3Like, power?: number, radius?: number) => ExplosionEvent
+  /** every blast, after it has pushed the props: knock people flat, crack
+      buildings (explosion.ts's blastImpact/blastWatch do the maths) */
+  onExplosion: (fn: (e: ExplosionEvent) => void) => () => void
+  /** a prop broke into gibs or went off */
+  onBreak: (fn: (e: BreakEvent) => void) => () => void
+  /** deal a blow (u/s of velocity change) to a breakable or an explosive */
+  damage: (id: PropId, amount: number, from?: Vec3Like) => void
+  /** break a breakable now; false when it does not break */
+  shatter: (id: PropId) => boolean
+  /** light an explosive's fuse */
+  ignite: (id: PropId) => void
+  /** the particles, for anything else that wants dust or sparks */
+  readonly fx: Fx
+  /** where the listener is (the camera) and which way is right, once a
+      frame; impact sounds are placed and panned against it */
+  ear: (x: number, y: number, z: number, rightX?: number, rightZ?: number) => void
+
   /* the console's knobs */
   gravity: number
   timescale: number
@@ -165,6 +205,12 @@ export interface Sandbox {
       to the bit, and the simulated clock): equal inputs give equal hashes,
       which is what a replay or a desync check compares. '' before Rapier */
   stateHash: () => string
+  /** the simulation's own random numbers, 0..1: seeded per sandbox and
+      drawn only by the simulation (a gib's kick, a fuse's length, where a
+      blast lands on a crate), so a replay draws the same ones. Anything
+      that is only drawn or heard (sparks, a clatter's pitch) keeps
+      Math.random and stays out of the hash */
+  random: () => number
 
   readonly rapier: Rapier | null
   readonly physics: PhysicsWorld | null
@@ -175,6 +221,12 @@ export interface Sandbox {
     solids: number
     vehicles: number
     time: number
+    gibs: number
+    burning: number
+    particles: number
+    /** instanced draws the props took last frame, and how many instances */
+    batches: number
+    instances: number
   }
   dispose: () => void
 }
@@ -199,6 +251,12 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
   warm.receiveShadow = true
   warm.frustumCulled = true
   if (opts.parent) root.add(warm)
+  // ...and the instanced variant, which the props and the particles draw
+  // with, drawn (as nothing) in every pass so shadows link it too
+  const warmI = warmBatch()
+  if (opts.parent) root.add(warmI)
+  const batcher: Batcher | null = opts.parent ? createBatcher(root) : null
+  const effects: Fx = createFx({ parent: opts.parent ? root : null, groundY: terrainY })
 
   // the waterline cue: foam collars and splashes, drawn only with a parent
   const wake = createWake(opts.parent ? root : null)
@@ -207,6 +265,15 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
 
   let live: Live | null = null
   let lastWorldSplash = -1
+  // mulberry32: small, fast, and the same sequence in Node and a browser
+  let seed = 0x5eed1
+  const random = () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = seed
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
   let disposed = false
   let gravity = -34
   let timescale = 1
@@ -280,17 +347,29 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     const fx = w ? w.eye.x : (t.focus?.x ?? 0)
     const fz = w ? w.eye.z : (t.focus?.z ?? 0)
     focusAt.set(fx, w ? w.eye.y : (t.focus?.y ?? 0), fz)
-    // the ground under the focus, so a spawn at arm's length has a floor
+    // the ground under the focus (so a spawn at arm's length has a floor) and
+    // under every prop, parking and streaming: at the head of every slice,
+    // not of every frame, because which colliders exist and the order they
+    // were made in is simulation state, and streamed per frame it made the
+    // same breakage come out differently at 144 Hz than at 60. Once more up
+    // front for a frame that takes no slice (a paused world still wants the
+    // floor under a spawn); with nothing moved in between, the slice's own
+    // pass then finds nothing new to make
     const cx = chunkX(fx)
     const cz = chunkZ(fz)
-    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) l.ground.need(cx + dx, cz + dz)
-    l.props.frame(fx, fz)
-    l.ground.sync()
+    const stream = (tick = true) => {
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) l.ground.need(cx + dx, cz + dz)
+      l.props.frame(fx, fz)
+      l.ground.stream(tick)
+    }
+    stream(false)
+    l.ground.vehicles()
     l.walker?.frame(t.active ? w : null, t.dt)
     if (t.active) {
       frameOut.steps = l.pw.advance(
         t.dt,
         (h, k, n) => {
+          stream()
           l.props.beforeSlice(h)
           l.walker?.beforeSlice(k, n)
           l.ground.slice(k, n)
@@ -298,6 +377,8 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
         },
         (h) => {
           l.props.afterSlice(h)
+          life.step(h)
+          effects.step(h)
           for (const fn of afterFns) fn(h)
         },
       )
@@ -306,6 +387,8 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       wake.draw(l.pw.time - STEP * (1 - l.pw.alpha), l.props.forEach, surfaceAt)
       l.walker?.carry(w)
     }
+    batcher?.sync()
+    setEarFallback(focusAt.x, focusAt.y, focusAt.z)
     frameOut.awake = l.props.awake
     if (frameOut.awake) {
       l.props.forEach((p) => {
@@ -323,6 +406,9 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     else queued.push(op)
   }
   const tmpDir = new THREE.Vector3()
+  // filled in once the facade exists: both subscribe through it
+  let life: PropLife = null as unknown as PropLife
+  let explosions: Explosions = null as unknown as Explosions
 
   const sb: Sandbox = {
     get ready() {
@@ -451,7 +537,16 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       timescale = Math.max(0, Math.min(4, k))
       if (live) live.pw.timescale = timescale
     },
+    random,
     stateHash: () => (live ? `${live.props.stateHash()}@${live.pw.time.toFixed(4)}` : ''),
+    explode: (at, power = 1, radius = 16) => explosions.explode(at, power, radius, null),
+    onExplosion: (fn) => explosions.onExplosion(fn),
+    onBreak: (fn) => life.onBreak(fn),
+    damage: (id, amount, from) => life.damage(id, amount, from),
+    shatter: (id) => life.shatter(id),
+    ignite: (id) => life.ignite(id),
+    fx: effects,
+    ear: (x, y, z, rx = 0, rz = 0) => setEar(x, y, z, rx, rz),
     get rapier() {
       return live?.pw.R ?? null
     },
@@ -467,6 +562,11 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
         solids: l?.ground.stats.solids ?? 0,
         vehicles: l?.ground.stats.vehicles ?? 0,
         time: l?.pw.time ?? 0,
+        gibs: life.gibs,
+        burning: life.burning,
+        particles: effects.live,
+        batches: batcher?.stats.batches ?? 0,
+        instances: batcher?.stats.instances ?? 0,
       }
     },
     dispose: () => {
@@ -477,6 +577,10 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       root.removeFromParent()
       warm.geometry.dispose()
       wake.dispose()
+      warmI.geometry.dispose()
+      warmI.dispose()
+      batcher?.dispose()
+      effects.dispose()
       if (live) {
         live.props.clear()
         live.ground.dispose()
@@ -485,6 +589,8 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       }
     },
   }
+  life = createLife(sb, effects, (at, power, radius, source) => void explosions.explode(at, power, radius, source))
+  explosions = createExplosions(sb, effects, life.damage)
   return sb
 }
 
