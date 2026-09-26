@@ -27,6 +27,10 @@ export interface ChaseEnv {
   pitch: number
   /** while the body is down: orbit and watch this point instead of the head */
   focus: THREE.Vector3 | null
+  /** over-the-shoulder: how far to the lens's right the boom is offset
+      (world units, eased). Flying uses it, because straight behind a body
+      that faces where you look puts its back exactly under the crosshair */
+  shoulder?: number
 }
 
 export interface ChaseCam {
@@ -64,6 +68,8 @@ export function createChaseCam(): ChaseCam {
   const probe = new THREE.Vector3()
   const lookM = new THREE.Matrix4()
   const lookQ = new THREE.Quaternion()
+  const right = new THREE.Vector3()
+  let side = 0 // the eased shoulder offset in use
 
   const blocked = (p: THREE.Vector3, env: ChaseEnv) => {
     // the floor under the probe, not the level's: standing on the sofa, a
@@ -120,6 +126,7 @@ export function createChaseCam(): ChaseCam {
       held = false
       k = 0
       dist = 0
+      side = 0
     },
     apply: (cam, dt, env) => {
       headPos.copy(cam.position)
@@ -156,6 +163,19 @@ export function createChaseCam(): ChaseCam {
       cam.getWorldDirection(fwd)
       want.copy(headPos)
       want.y -= DROP * k
+      // the shoulder: shift the anchor to the right, level, and pull it back
+      // in if that would put the lens inside something
+      side += ((env.shoulder ?? 0) - side) * (1 - Math.exp(-5 * dt))
+      if (Math.abs(side) > 1e-3) {
+        right.set(-fwd.z, 0, fwd.x).normalize()
+        let s = side * k
+        for (let i = 0; i < 4 && s > 0.05; i++) {
+          probe.copy(want).addScaledVector(right, s)
+          if (!blocked(probe, env)) break
+          s *= 0.5
+        }
+        want.addScaledVector(right, s)
+      }
       const free = clampRay(want, BOOM * k, env)
       dist = free < dist ? free : dist + (free - dist) * (1 - Math.exp(-10 * dt))
       cam.position.copy(want).addScaledVector(fwd, -dist)

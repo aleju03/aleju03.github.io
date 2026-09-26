@@ -1301,6 +1301,8 @@ export default function CrtScene({
         const POP_S = 0.24
         /** how far the crosshair notices a prop: the console's own reach */
         const AIM_REACH = 120
+        /** the chase boom's offset to the right while flying, world units */
+        const NOCLIP_SHOULDER = 2.2
 
         // prompt bookkeeping mirrored into React state only on change
         let nearNow = false
@@ -3279,6 +3281,10 @@ export default function CrtScene({
           chaseEnv.yaw = walk.yaw
           chaseEnv.pitch = walk.pitch
           chaseEnv.focus = rig.ragdolling ? rig.focus(focusPt) : null
+          // flying, the boom goes over the right shoulder: a body that faces
+          // where you look, straight in front of the lens, would sit exactly
+          // under the crosshair for the whole flight
+          chaseEnv.shoulder = walk.noclip ? NOCLIP_SHOULDER : 0
           chase.apply(camera, dt, chaseEnv)
           // the crosshair marks where the head's gaze lands. In first person
           // that is the middle of the screen; with the boom out the middle is
@@ -4284,7 +4290,9 @@ export default function CrtScene({
       {/* the receipt printer: the console line, its answers and the shared
           walk's chat on one strip, plus who is here and what the microphone is
           doing on the printer's own little display. See SandboxConsole.tsx */}
-      {roam && walking && !paused && (
+      {/* (put away while the catalogue is up: the book is held over the
+          same corner, and a receipt half under its cover reads as a bug) */}
+      {roam && walking && !paused && !menuOpen && (
         <SandboxConsole
           open={typing}
           lines={feed}

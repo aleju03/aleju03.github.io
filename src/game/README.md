@@ -1036,8 +1036,12 @@ up with q; its find line pins it open) and `components/os/Crosshair.tsx`
 (a 15-cell pixel crosshair with a one-cell ink ring, tinted by what it is
 on; the physgun reads the same `CrosshairAim`; in third person the scene
 projects the gaze's hit through the boom and hides the mark while your own
-body covers it). The catalogue is paginated like a printed one, three rows
-of four to a page as the window allows, and the curled corner turns it. Both overlays free the pointer, CrtScene's `onLock` knows
+body covers it). The catalogue is a two-page spread of plates, five across
+and as many rows as the window allows (all 41 props fit on one spread at
+1280x800), with index tabs on the top edge for the sections, a find line,
+the curled corner or the wheel for the next spread, and the order slip
+clipped to the bottom edge. Flying, the chase boom sits over the right
+shoulder (`ChaseEnv.shoulder`) so the body is not under the crosshair. Both overlays free the pointer, CrtScene's `onLock` knows
 an unlock they asked for is not esc, and an esc close waits for the key to
 come up before taking the pointer back, or Chrome spends the release on
 unlocking again. A spawn lands at the crosshair's hit, never within the
