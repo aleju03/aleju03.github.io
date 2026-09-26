@@ -49,17 +49,20 @@ interface Leg {
   run?: boolean
   /** press jump when the two centres are this close */
   jumpAt?: number
+  /** the beat before it, if not REST: after a stomp the bounce is left to
+      carry the walker clear before anybody steers */
+  rest?: number
 }
 
 /** the choreography: one leg after another, a beat apart */
 const LEGS: Leg[] = [
-  { who: 0, max: 2.1 },
+  { who: 0, max: 1.5 },
   { who: 1, max: 2, run: true },
   // up onto the crates, then off them onto a head: from flat ground a hop's
   // apex (2.08) never gets the soles over anybody's shoulders
-  { who: -2, max: 2, jumpAt: 2.3 },
+  { who: -2, max: 2, jumpAt: 3.1 },
   { who: 2, max: 2, jumpAt: 6.3 },
-  { who: 3, max: 2, jumpAt: 3.2 },
+  { who: 3, max: 2, jumpAt: 3.2, rest: 0.9 },
   { who: -1, max: 1.6 },
 ]
 /** the crates' half size: the catalogue's small crate */
@@ -97,7 +100,7 @@ const pose: PlayerPose = {
   yaw: 0, pitch: 0, vx: 0, vz: 0, vy: 0, landing: 0, show: 1,
 }
 
-defineScenario({
+const BUMP = defineScenario({
   id: 'sandbox:bump',
   title: 'walking into, charging, landing on and hopping into the town\'s pedestrians',
   site: siteAvenue,
@@ -131,7 +134,7 @@ defineScenario({
     const at = (u: number, l: number) => ({ x: c.x + F[0] * u + R[0] * l, z: c.z + F[1] * u + R[1] * l })
     // everyone faces back up the street, toward where the walker starts
     const back = Math.atan2(F[0], F[1])
-    const spots = [at(7, 0), at(14, 7), at(26.5, 2), at(24, -6)]
+    const spots = [at(6, -4), at(14, 7), at(26.5, 2), at(24, -6)]
     // two small crates end to end along the street, frozen: something to
     // jump off. The walk meets them as one box, like any solid out here
     const crateAt = at(19, 2)
@@ -213,6 +216,9 @@ defineScenario({
       me: run.me, push: walk.push, collision, stepUp: 0, sets: [watched], now: 0,
     }
 
+    const limbBuf = new Float32Array(MAX_POINTS * 4)
+    const landAt = new THREE.Vector3()
+    const limbPrev = spots.map(() => ({ n: 0, p: new Float32Array(MAX_POINTS * 4) }))
     c.sb.onBeforeSlice((h) => {
       run.t += h
       const t = run.t
@@ -223,26 +229,27 @@ defineScenario({
       const leg = LEGS[legNo] as Leg | undefined
       const since = t - (run.memo.legAt ?? 0)
       const onCrate = run.step?.grounded && walk.feetY > crateY + CRATE
+      const rest = leg?.rest ?? REST
       const done = leg && (
-        since > REST + leg.max ||
+        since > rest + leg.max ||
         (leg.who >= 0 && run.how[leg.who]) ||
-        (leg.who === -2 && onCrate && since > REST + 0.3)
+        (leg.who === -2 && onCrate && since > rest + 0.3)
       )
       if (done) {
         run.memo.leg = legNo + 1
         run.memo.legAt = t
       }
-      if (leg && !done && since > REST) {
+      if (leg && !done && since > rest) {
         // a trample walks straight on through: the heading is taken once,
         // at the body, and held past it
-        const held = leg.who < 0 && run.memo.through !== undefined
+        const held = leg.who === -1 && run.memo.through !== undefined
         const to = held ? target : aim(leg.who)
         if (to) {
           const dx = to.x - cam.position.x
           const dz = to.z - cam.position.z
           if (held) walk.yaw = run.memo.through
           else walk.yaw = Math.atan2(-dx, -dz)
-          if (leg.who < 0) run.memo.through = walk.yaw
+          if (leg.who === -1) run.memo.through = walk.yaw
           keys.add('KeyW')
           if (leg.run) keys.add('ShiftLeft')
           if (leg.jumpAt && Math.hypot(dx, dz) < leg.jumpAt && run.step?.grounded && !run.memo[`j${leg.who}`]) {
@@ -251,8 +258,14 @@ defineScenario({
           }
         }
       }
+      // the hit-stop, as the game plays it: three slices near-frozen after a
+      // knock for the walker, the crowd and the bodies (the props and the
+      // dust carry on at full speed, as they do in the game)
+      const stopped = (run.memo.stop ?? 0) > 0
+      if (stopped) run.memo.stop--
+      const hs = stopped ? h * 0.08 : h
       const step = walk.update({
-        dt: h, keys, frozen: body.down, groundY: c.y, groundAt: terrainY, collision, fovBase: 60,
+        dt: hs, keys, frozen: body.down, groundY: c.y, groundAt: terrainY, collision, fovBase: 60,
       })
       run.step = step
       // the contact pass, exactly as CrtScene runs it
@@ -296,12 +309,18 @@ defineScenario({
         run.memo.bounce = Math.max(run.memo.bounce, walk.feetY - terrainY(cam.position.x, cam.position.z))
       }
       if (rep.knocks) run.memo[`knock@${t.toFixed(2)}`] = rep.knocks
+      // the impact's marks, exactly as CrtScene makes them
+      if (rep.knocks + rep.stomps > 0) {
+        if (!Number.isNaN(rep.hitX)) c.sb.fx.dust({ x: rep.hitX, y: rep.hitY, z: rep.hitZ }, rep.stomps ? 1.3 : 1)
+        run.memo.squash = rep.stomps ? 12 : 9
+        run.memo.stop = 3
+      }
 
       // the crowd's own tick, around the walker
-      peds.update(cam.position, h)
+      peds.update(cam.position, hs)
       // and the walker's body, standing where the walk put it
       body.group.position.set(cam.position.x, walk.feetY, cam.position.z)
-      pose.dt = h
+      pose.dt = hs
       pose.gait = step.gait
       pose.grounded = step.grounded
       pose.run = step.run
@@ -309,7 +328,8 @@ defineScenario({
       pose.vx = step.vx
       pose.vz = step.vz
       pose.vy = step.vy
-      pose.landing = step.landing
+      pose.landing = step.landing + (run.memo.squash ?? 0)
+      run.memo.squash = 0
       env.groundY = terrainY(cam.position.x, cam.position.z)
       body.update(pose, env)
       body.group.rotation.y = body.facing + Math.PI
@@ -322,14 +342,56 @@ defineScenario({
       for (let i = 0; i < spots.length; i++) {
         const at = run.memo[`hitAt${i}`]
         if (at === undefined || run.memo[`pop${i}`] !== undefined) continue
-        if (!peds.lying(i, target)) continue
+        if (!peds.lying(i, landAt)) continue
         if (run.memo[`hx${i}`] === undefined) {
-          run.memo[`hx${i}`] = target.x
-          run.memo[`hy${i}`] = target.y
-          run.memo[`hz${i}`] = target.z
+          run.memo[`hx${i}`] = landAt.x
+          run.memo[`hy${i}`] = landAt.y
+          run.memo[`hz${i}`] = landAt.z
         } else if (t - at >= 0.1) {
           run.memo[`pop${i}`] = Math.hypot(
-            target.x - run.memo[`hx${i}`], target.y - run.memo[`hy${i}`], target.z - run.memo[`hz${i}`])
+            landAt.x - run.memo[`hx${i}`], landAt.y - run.memo[`hy${i}`], landAt.z - run.memo[`hz${i}`])
+        }
+      }
+      // the landing: where each victim's chest first comes down, how far it
+      // travels over the second and a half after (a heap sliding frozen
+      // across the road is the bug this watches), and how much its limbs
+      // move relative to it meanwhile (a heap that never moves is a statue)
+      for (let i = 0; i < spots.length; i++) {
+        if (run.memo[`hitAt${i}`] === undefined || !peds.lying(i, landAt)) continue
+        const down = run.memo[`tdAt${i}`]
+        const h = landAt.y - terrainY(landAt.x, landAt.z)
+        if (down === undefined) {
+          if (h < 1.4 && t - run.memo[`hitAt${i}`] > 0.1) {
+            run.memo[`tdAt${i}`] = t
+            run.memo[`tdx${i}`] = landAt.x
+            run.memo[`tdz${i}`] = landAt.z
+            run.memo[`slide${i}`] = 0
+            run.memo[`flop${i}`] = 0
+          }
+          continue
+        }
+        if (t - down > 1.5) continue
+        const slide = Math.hypot(landAt.x - run.memo[`tdx${i}`], landAt.z - run.memo[`tdz${i}`])
+        if (slide > run.memo[`slide${i}`]) run.memo[`slide${i}`] = slide
+        // limb motion: the mittens and boots against the chest, per second
+        const n = peds.bumpable.points?.(i, limbBuf) ?? 0
+        const prev = limbPrev[i]
+        if (n && prev.n === n) {
+          let m = 0
+          for (const k of [7, 8, 11, 12]) {
+            const b = k * 4
+            m += Math.hypot(
+              limbBuf[b] - landAt.x - prev.p[b],
+              limbBuf[b + 1] - landAt.y - prev.p[b + 1],
+              limbBuf[b + 2] - landAt.z - prev.p[b + 2])
+          }
+          run.memo[`flop${i}`] += m / 4
+        }
+        prev.n = n
+        for (let b = 0; b < n * 4; b += 4) {
+          prev.p[b] = limbBuf[b] - landAt.x
+          prev.p[b + 1] = limbBuf[b + 1] - landAt.y
+          prev.p[b + 2] = limbBuf[b + 2] - landAt.z
         }
       }
       const sunk = meshSunk(run)
@@ -350,7 +412,11 @@ defineScenario({
     const moved = peerAt(r, 0, p0) ? Math.hypot(p0.x - r.spots[0].x, p0.z - r.spots[0].z) : NaN
     const how = r.spots.map((_, i) => {
       const pop = r.memo[`pop${i}`]
-      return `#${i} ${r.how[i] ?? 'stood'}${pop !== undefined ? ` (torso ${pop.toFixed(2)} in 0.1 s)` : ''}`
+      const slide = r.memo[`slide${i}`]
+      const land = slide !== undefined
+        ? `, slid ${slide.toFixed(2)} after landing, limbs moved ${r.memo[`flop${i}`].toFixed(1)} against the chest`
+        : ''
+      return `#${i} ${r.how[i] ?? 'stood'}${pop !== undefined ? ` (torso ${pop.toFixed(2)} in 0.1 s${land})` : ''}`
     }).join(', ')
     return `trunks ${r.memo.gap.toFixed(3)} apart at the closest, posed limbs at most ${r.memo.sunk.toFixed(2)} ` +
       `into a trunk, drawn mesh at most ${r.memo.mesh.toFixed(2)} into a trunk (at ${r.memo.meshAt.toFixed(2)} s); ${how}; ` +
@@ -359,6 +425,30 @@ defineScenario({
       `${r.peds.knocks} knocked flat (${r.memo.stomps} by a stomp, whose bounce peaked ${r.memo.bounce.toFixed(1)} over the road), ` +
       `${r.memo.trampled} trampled, ${r.peds.downed} still down; ` +
       `contact pass ${(med * 1000).toFixed(1)} us median, ${(worst * 1000).toFixed(0)} us worst`
+  },
+})
+
+/*
+  The same run, side on: a lens standing on the far half of the carriageway,
+  riding along above head height with the walker, never past the clear width
+  (siteAvenue measures how far from the centreline nothing bigger than a lamp
+  post stands), so no building comes between it and the contact. An orbit
+  with --yaw/--dist on the chase lens can put the camera inside a wall when
+  the walker is near the kerb; this cannot.
+*/
+defineScenario({
+  ...BUMP,
+  id: 'sandbox:bump-side',
+  title: BUMP.title + ' (side on)',
+  lens: (c): Shot => {
+    const r = runs.get(c)
+    const u = r ? (r.cam.position.x - c.x) * c.dx + (r.cam.position.z - c.z) * c.dz : 0
+    const rx = -c.dz
+    const rz = c.dx
+    const across = -Math.max(4, (c.memo.half ?? 7) - 1)
+    const along = (k: number, l: number, y: number): [number, number, number] =>
+      [c.x + c.dx * k + rx * l, c.y + y, c.z + c.dz * k + rz * l]
+    return { from: along(u - 4, across, 9.5), to: along(u + 1.5, 2, 1.2), fov: 60 }
   },
 })
 
