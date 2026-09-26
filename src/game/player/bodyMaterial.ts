@@ -101,7 +101,7 @@ totalEmissiveRadiance += uPal[role] * lit * uGlowK;
 // black disc under the hat, which is the one part of this body that has to
 // read. uFaceLift scales both; it is a uniform, so tuning it relinks nothing
 float rim = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.5);
-float face = (role == 0 || role == 6) ? 1.0 : 0.0;
+float face = (role == 0 || role == 6 || role == 8) ? 1.0 : 0.0; // skin, blush, hair
 totalEmissiveRadiance += uPal[role] * uFaceLift * (face * (0.07 + 0.22 * rim) + 0.1 * rim);
 // the face's ink and the eyes' glints are glossier than cloth: a sharper
 // highlight is what makes an eye read as wet rather than painted on
