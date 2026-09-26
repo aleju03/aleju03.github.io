@@ -19,13 +19,18 @@ import { terrainY } from '../world/terrain'
   One walker, the game's own walk controller and tune, driven by a script of
   keys down a town street where four of the town's real pedestrians
   (`world/pedestrians.ts`, staged with `stage()`) are standing about. It
-  walks into the first and leans on it, sprints into the second, jumps and
-  comes down on the third, hops into the fourth, and then walks back through
-  whoever is lying in the road. Every contact goes through the same
-  `player/bodyContact.ts` pass the game runs, one call per 60 Hz slice, and
-  the report says what it came to: the smallest gap between two bodies
-  while they were in contact (negative would be one inside the other), who
-  went down and how, and what the pass cost.
+  walks into the first and bumps it, sprints into the second, jumps off two
+  frozen crates onto the third (a hop from flat ground never gets the soles
+  over a head), hops into the fourth, and then walks through whoever is
+  lying in the road. Every contact goes through the same
+  `player/bodyContact.ts` pass the game runs, one call per 60 Hz slice, with
+  the marks the game makes (a puff of dust, the attacker's squash, three
+  slices of hit-stop), and the report says what it came to: how close two
+  trunks got and how deep any posed limb or drawn vertex got into one, who
+  went down and how, how far each victim slid after it landed and how much
+  its limbs moved against its chest while down, and what the pass cost.
+  `sandbox:bump-side` is the same run through a lens above the far half of
+  the carriageway.
 
   The walker is steered like a player would be: face whoever the current leg
   is about, hold W (and shift, for the charge), press space at a distance.
