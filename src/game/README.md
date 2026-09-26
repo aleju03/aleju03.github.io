@@ -1123,6 +1123,18 @@ Rules that bite:
   at one starts that ahead of it; rubble bodies and breaks are made a dozen
   a slice. Counted in work so a destruction comes out the same on every
   machine: a millisecond budget made the wall film depend on the CPU.
+- **Rubble comes to rest and stays there.** A piece that touches down gets
+  thicker air at once and more two seconds on; one that crawls is put to
+  sleep; one put to sleep that is still awake a second and a half later is
+  jammed and is frozen where it lies (the physgun and any blast let it go
+  again); one pressed into the street is pinned in it, never teleported back
+  out (a teleported piece is born inside the heap and throws its neighbours
+  over the rooftops); and nothing put to rest is let move faster than
+  `SETTLED_CAP` unless a blast or a player moves it (the physgun marks what it
+  grabs `data.handled`, and destruction leaves those alone). Anything standing
+  taller than a storey and a bit breaks on its landing. `measure physics
+  destruction` reports what is still moving at +4 s and +8 s and the fastest
+  a settled piece was caught at.
 - **Never touch a body from inside a Rapier query.** `ground.ts`'s wake after
   a box shrinks did, and destruction shrinks boxes by the hundred.
 

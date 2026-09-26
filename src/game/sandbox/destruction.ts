@@ -117,7 +117,14 @@ const DENSITY = [70, 150, 170]
     the whole building over a failed storey, and it is tough on purpose: it
     must survive its own corner hitting the street while it leans, or a
     felled tower pancakes where it stood instead of going over */
-const BREAK_DV = [13, 7, 8, 11]
+const BREAK_DV = [13, 3, 8, 11]
+/** rubble put to rest once moves no faster than this again unless a blast
+    or a player moves it: what re-launched shards over the rooftops seconds
+    after a collapse was the solver resolving overlaps inside the heap */
+const SETTLED_CAP = 3
+/** anything standing taller than this is a slab on its edge, and a slab on
+    its edge in a heap falls over and breaks: a storey and a bit */
+const TALL = 6
 /** a piece smaller than this is not shattered further (cubic units) */
 const SHATTER_MIN = 2.2
 /** seconds a small shard lies about before it shrinks away */
@@ -179,6 +186,9 @@ export interface Destruction {
     lost: number
     /** the furthest any whole cluster has leaned from upright, degrees */
     lean: number
+    /** the fastest anything already put to rest was found moving (and was
+        caught), u/s */
+    settledMax: number
   }
   readonly ruins: Ruins
   dispose: () => void
@@ -224,6 +234,12 @@ interface Lump {
   slow: number
   /** given the late-heap damping (see the settle pass) */
   damped?: boolean
+  /** sim time it first touched the ground or the heap, or -1 */
+  landed: number
+  /** put to rest once: from then on it may not be flung (see SETTLED_CAP) */
+  settled?: boolean
+  /** when it was first put to rest */
+  restAt?: number
   mesh: THREE.Object3D | null
 }
 
@@ -329,7 +345,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   const log: DamageRecord[] = []
   let now = 0
   let seq = 1
-  const stats = { lumps: 0, awake: 0, frozen: 0, buildings: 0, openMs: 0, sliceMs: 0, lost: 0, lean: 0 }
+  const stats = { lumps: 0, awake: 0, frozen: 0, buildings: 0, openMs: 0, sliceMs: 0, lost: 0, lean: 0, settledMax: 0 }
   const breakQueue: Array<{ L: Lump; e: ImpactEvent; at?: number }> = []
   const nearList: Standing[] = []
   const tint: [number, number, number] = [0.5, 0.48, 0.44]
@@ -548,7 +564,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     })
     made++
     const L: Lump = {
-      id, w, level, pieces: list, frags, rc: rc.clone(), vol: m.vol, born: now, ev, going: -1, mesh, slow: 0,
+      id, w, level, pieces: list, frags, rc: rc.clone(), vol: m.vol, born: now, ev, going: -1, mesh, slow: 0, landed: -1,
     }
     lumps.set(id, L)
     own(ev, id)
@@ -632,6 +648,18 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     return moving + n <= cap * 1.15
   }
 
+  /** how tall a lump stands right now: its local box turned by its pose */
+  const standing = (L: Lump) => {
+    const p = sb.get(L.id)
+    if (!p || !sb.getTransform(L.id, tmpS, tmpSQ)) return 0
+    const e = p.extents
+    const m = tmpSM.makeRotationFromQuaternion(tmpSQ).elements
+    return 2 * (Math.abs(m[1]) * e.x + Math.abs(m[5]) * e.y + Math.abs(m[9]) * e.z)
+  }
+  const tmpS = new THREE.Vector3()
+  const tmpSQ = new THREE.Quaternion()
+  const tmpSM = new THREE.Matrix4()
+
   /** damped hard and put to sleep: a neighbour still creeping wakes it, and a
       heavily damped body stops again at once, which is what lets a whole
       heap's island go quiet */
@@ -639,6 +667,11 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     body.setLinearDamping(2)
     body.setAngularDamping(3)
     body.sleep()
+    const L = lumps.get((body.userData as Prop).id)
+    if (L && !L.settled) {
+      L.settled = true
+      L.restAt = now
+    }
   }
 
   /** a piece or a shard of it leaves the building */
@@ -665,7 +698,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     const off = ahead ? ahead.clone() : null
     for (const i of list) {
       const pc = w.pieces[i]
-      const big = pc.vol >= SHATTER_MIN * (ramY !== undefined ? 0.5 : 1) && energy > 1.4 && makeRoom(3)
+      const big = pc.vol >= SHATTER_MIN * (ramY !== undefined ? 0.5 : 1) && energy > (w.grade === 0 && ramY === undefined ? 2.5 : 1.4) && makeRoom(3)
       tintOf([pc], tint)
       const seed = (pc.key * 2654435761 + ev.rec.seed) >>> 0
       // every choice is drawn now, in order, so the stream stays the same
@@ -1000,7 +1033,10 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       })
       const speed = d ? d.length() : 0
       if (d && speed > 1e-3) d.multiplyScalar(1 / speed)
-      n += hurt(s, ev, p, power, radius, d, how === 'blast' ? 9 : Math.max(4, speed * 0.55))
+      // render and timber is pushed over by a blast rather than fired across
+      // the lot as confetti
+      const blastK = s.rec.grade === 0 ? 5 : 9
+      n += hurt(s, ev, p, power, radius, d, how === 'blast' ? blastK : Math.max(4, speed * 0.55))
     }
     return n
   }
@@ -1189,6 +1225,22 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
 
   const offImpact = sb.onImpact((e) => {
     const L = lumps.get(e.id)
+    if (L && L.landed < 0 && (e.with === 'ground' || e.with === 'prop' || e.with === 'solid')) {
+      // first contact: the air thickens for it from here on, so it gives up
+      // its energy in the heap instead of bouncing round it
+      L.landed = now
+      const p = e.prop
+      if (!p.data.handled) {
+        p.body.setLinearDamping(0.5)
+        p.body.setAngularDamping(1.2)
+      }
+    }
+    // a slab on its edge breaks on any real landing, a whole storey too
+    if (L && L.level < 4 && !breakQueue.some((q) => q.L === L) && e.speed > 2.5 && now - L.born > 0.08 &&
+      now - L.born < 8 && (L.level === 1 || standing(L) > TALL)) {
+      breakQueue.push({ L, e, at: now })
+      return
+    }
     if (L) {
       // a collapse is over some seconds after it began: from then on only a
       // real blow breaks rubble, not the heap shuffling itself
@@ -1236,9 +1288,57 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       on each */
   const opening = new Map<Standing, { it: Generator<void, Opened | null, void>; then: Array<() => void> }>()
   /** props that have just broken through a wall and are still going */
+  /** heavy things flying at a building, and their velocity each slice */
+  const watch = new Set<PropId>()
+  const flying = new Map<PropId, THREE.Vector3>()
+  const offWatch = sb.onBeforeSlice(() => {
+    for (const id of watch) {
+      const p = sb.get(id)
+      if (!p) {
+        watch.delete(id)
+        flying.delete(id)
+        continue
+      }
+      const v = p.body.linvel()
+      if (Math.hypot(v.x, v.y, v.z) < 4) {
+        watch.delete(id)
+        flying.delete(id)
+        continue
+      }
+      let f = flying.get(id)
+      if (!f) flying.set(id, (f = new THREE.Vector3()))
+      f.set(v.x, v.y, v.z)
+    }
+  })
   const rams = new Map<PropId, { s: Standing; dmg: number; r: number; until: number; speed: number; dir: THREE.Vector3 }>()
 
   const offBlast = sb.onExplosion((e) => {
+    // a blast may move settled rubble again: what it pushes is not the heap
+    // arguing with itself
+    for (const L of lumps.values()) {
+      if (!L.settled || !sb.getTransform(L.id, tmpA)) continue
+      const d = tmpA.distanceTo(tmpB.set(e.x, e.y, e.z))
+      if (d >= e.radius) continue
+      L.settled = false
+      L.restAt = undefined
+      L.landed = -1
+      L.damped = false
+      const p = sb.get(L.id)
+      if (!p || p.data.handled) continue
+      // rubble held where it lay is let go and thrown like any prop (the
+      // blast itself skipped it, being frozen when it went off)
+      p.body.setLinearDamping(0.12)
+      p.body.setAngularDamping(0.6)
+      if (p.mode === 'frozen') {
+        sb.unfreeze(L.id)
+        const k = 26 * Math.min(1.6, e.power) * falloff(d, e.radius)
+        tmpA.sub(tmpB)
+        tmpA.y = Math.max(tmpA.y, 0) + tmpA.length() * 0.5
+        tmpA.setLength(k)
+        sb.setVelocity(L.id, tmpA, { x: (rnd() - 0.5) * 6, y: (rnd() - 0.5) * 6, z: (rnd() - 0.5) * 6 })
+      }
+      sb.wake(L.id)
+    }
     damageAt(e, 70 * e.power, e.radius * 0.8, 'blast')
   })
 
@@ -1277,6 +1377,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         const t = p.body.translation()
         const hit = sb.raycast(t, v, sp * 1.2 + Math.max(p.extents.x, p.extents.z), { props: false, world: true })
         const own = hit?.solid ? ruins.owner(hit.solid) : null
+        if (own) watch.add(p.id)
         if (own && !own.s.open && !opening.has(own.s)) {
           opening.set(own.s, { it: ruins.opening(own.s, OPEN_SLICE_WORK), then: [] })
         }
@@ -1319,6 +1420,10 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         ? -Math.sign(e.x - cx) : 0
       const nz = nx === 0 ? -Math.sign(e.z - cz) : 0
       vPre.set(vIn.x + nx * e.speed, vIn.y, vIn.z + nz * e.speed)
+      // better than the guess from the face: what it was doing the slice
+      // before it hit, when it was one of the fast heavy things watched
+      const before = flying.get(e.id)
+      if (before) vPre.copy(before)
       // rubble landing on a building waits for it to be opened like a blast
       // does; a thrown prop is a ram and cannot (see `ahead` below)
       const ram = !lumps.has(e.id)
@@ -1385,6 +1490,28 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     // small shards age out, and anything the budget let go shrinks away
     let stalled: Lump | null = null
     for (const L of lumps.values()) {
+      // settled rubble stays down
+      if (L.settled && sb.getVelocity(L.id, vIn, tmpB)) {
+        const sp = vIn.length()
+        if (sp > SETTLED_CAP || tmpB.length() > 2) {
+          const p = sb.get(L.id)
+          if (p && !p.data.handled && p.mode === 'dynamic') {
+            stats.settledMax = Math.max(stats.settledMax, sp)
+            if (sp > SETTLED_CAP) vIn.setLength(SETTLED_CAP)
+            if (tmpB.length() > 2) tmpB.setLength(2)
+            sb.setVelocity(L.id, vIn, tmpB)
+          }
+        }
+      }
+      if (L.landed >= 0 && !L.damped && now - L.landed > 2) {
+        // two seconds after it first touched down it is in the heap for good
+        const p = sb.get(L.id)
+        if (p && !p.data.handled && p.mode === 'dynamic') {
+          L.damped = true
+          p.body.setLinearDamping(1.2)
+          p.body.setAngularDamping(2.5)
+        }
+      }
       if (L.level === 0 && sb.getTransform(L.id, tmpA, tmpQ)) {
         const up = tmpA.set(0, 1, 0).applyQuaternion(tmpQ).y
         const deg = (Math.acos(Math.min(1, up)) * 180) / Math.PI
@@ -1399,8 +1526,8 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       // a building that has come to rest on the rubble goes to pieces under
       // its own weight (a five-storey box sitting on the heap with its
       // window grid unmarked is the one thing a collapse never leaves)
-      if (!stalled && L.level <= 1 && (L.section || L.level === 1) && L.vol > 60 && now - L.born > 1 &&
-        now - L.ev.rec.t < 7 &&
+      if (!stalled && L.level <= 3 && ((L.level <= 2 && L.vol > 40) || standing(L) > TALL) &&
+        now - L.born > 1 && now - L.born < 6 && !sb.get(L.id)?.data.handled &&
         sb.getVelocity(L.id, vIn, tmpB) && vIn.length() < 2.5 && tmpB.length() < 0.6) {
         stalled = L
       }
@@ -1427,8 +1554,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     // lies there. Anything that has crawled for most of a second is done
     if ((settleClock += h) >= 0.25) {
       settleClock = 0
-      // A piece the heap has pressed into the street is put back on it and
-      // pinned there. A heightfield has no
+      // A piece the heap has pressed into the street is pinned there. A heightfield has no
       // thickness, so under a pile of slabs a shard is squeezed through it,
       // and lifted back out it is only squeezed through again, for ever (or
       // until the props' rescue gives up and deletes it). The physgun can
@@ -1441,11 +1567,15 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         // (its middle under the street by more than half its thickness:
         // one merely lying bedded in the rubble's own dust is left alone)
         if (tmpA.y + Math.min(p.extents.x, p.extents.y, p.extents.z) * 0.5 < g - 0.1) {
-          // back up to lie on it, and pinned there
-          tmpA.y = g + Math.min(p.extents.x, p.extents.y, p.extents.z)
-          sb.setTransform(L.id, tmpA)
+          // pinned where it is, half in the dirt. Never moved back up: a
+          // piece teleported onto the heap is born inside its neighbours,
+          // and that is what threw shards over the rooftops seconds after
+          // the tower came down. One wholly under the street is gone
           sb.setVelocity(L.id, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 })
-          sb.freeze(L.id)
+          if (tmpA.y + Math.max(p.extents.x, p.extents.y, p.extents.z) < g) {
+            if (L.going < 0) L.going = 0
+          } else sb.freeze(L.id)
+          L.settled = true
         }
       }
       for (const L of lumps.values()) {
@@ -1454,8 +1584,22 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         sb.getVelocity(L.id, vIn, tmpB)
         if (vIn.lengthSq() < 2 * 2 && tmpB.lengthSq() < 1.2 * 1.2) L.slow++
         else L.slow = 0
-        if (L.slow >= 2 || (now - L.born > 7 && vIn.lengthSq() < 6 * 6)) rest(p.body)
-        else if (now - L.born > 5 && !L.damped) {
+        if (p.data.handled) continue
+        // Put to rest a second and a half ago and still awake: it is jammed
+        // (against a wall still standing, under a slab, in a knot of shards
+        // the solver keeps prising apart at a fraction of a unit a second).
+        // It is held where it lies, as the rubble of a real ruin would be;
+        // the physgun can still pick it up
+        if (L.settled && L.restAt !== undefined && now - L.restAt > 1.5 && vIn.lengthSq() < 3 * 3) {
+          sb.setVelocity(L.id, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 })
+          sb.freeze(L.id)
+          continue
+        }
+        // three seconds in the heap is long enough for anything to have
+        // found where it lies
+        const inHeap = L.landed >= 0 && now - L.landed > 3
+        if (L.slow >= 2 || ((now - L.born > 7 || inHeap) && vIn.lengthSq() < 6 * 6)) rest(p.body)
+        else if (now - L.born > 5 && !L.damped && !p.data.handled) {
           // Five seconds on, a collapse is over and what is still moving is
           // the solver arguing inside the heap (a shard pinched between a
           // slab and the street is fired off at thirty units a second, lands
@@ -1473,7 +1617,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
         const low = pose.pos.clone()
         low.y = sb.groundY(low.x, low.z) + 0.5
         const e = { x: low.x, y: low.y, z: low.z, speed: 0 } as ImpactEvent
-        if (stalled.section || stalled.level === 1 || !pancake(stalled, pose, e)) breakLump(stalled, e)
+        if (stalled.level !== 0 || stalled.section || !pancake(stalled, pose, e)) breakLump(stalled, e)
       }
     }
     stats.sliceMs = performance.now() - t0
@@ -1510,6 +1654,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       offBlast()
       offRemove()
       offSlice()
+      offWatch()
       ruins.onHit = null
       rearm()
       attached.delete(sb)
