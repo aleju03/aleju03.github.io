@@ -46,7 +46,7 @@ const RUBBER = '#1e2128'
 // the glow, linear and HDR: the look's ACES takes the hot one to a pale
 // cyan and leaves the idle one a clear blue
 const CORE_IDLE = new THREE.Color(0.02, 0.4, 1.6)
-const CORE_HOT = new THREE.Color(0.08, 0.95, 2.7)
+const CORE_HOT = new THREE.Color(0.2, 1.7, 3.8)
 
 /** where the gun sits in the camera's frame, first person, and its size
     there: the bottom-right corner, a quarter of the frame, the claw about
@@ -60,9 +60,9 @@ const FP_SCALE = 0.34
 const FP_REF_TAN = Math.tan(THREE.MathUtils.degToRad(74) / 2)
 /** the gun in the body's hand, world units per model unit: a body is ~4.5
     tall and its forearm short, so the gun is drawn big enough to read */
-const TP_SCALE = 2.0
+const TP_SCALE = 3.2
 /** how far under the aim the body's gun points, radians */
-const TP_HIP = 0.32
+const TP_HIP = 0.12
 /** the first-person gun's own turn in the frame (pitch, yaw, roll): yawed
     in so its flank shows and the claw points at the crosshair */
 const FP_TURN = new THREE.Euler(0.03, 0.3, -0.3, 'YXZ')

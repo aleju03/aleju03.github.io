@@ -24,7 +24,8 @@ import { emptyInput, type RigEntry, type ToolInput } from './types'
 
     npm run film -- sandbox:physgun-swing       lift a crate and swing it round in an arc, freeze it mid-air
     npm run film -- sandbox:physgun-rotate      E + mouse turns it, Shift snaps it to 45 degrees, freeze, R drops it
-    npm run film -- sandbox:physgun-heavy       the 900 kg block lagging a swing and sailing past
+    npm run film -- sandbox:physgun-heavy       a four-tonne block dragging behind a swing and sailing past
+    npm run film -- sandbox:physgun-throw-heavy the same throw into a wall of 35 kg crates
     npm run film -- sandbox:physgun-throw       a barrel flung off the beam into a tower of small crates
     npm run film -- sandbox:physgun-ragdoll     a body picked up by the head, pinned in the air, let down
     ...each with a -3p twin; `--video` for an MP4, `--dense` for 10 fps sheets
@@ -372,19 +373,26 @@ gunScenario({
 
 gunScenario({
   name: 'heavy',
-  title: 'the 900 kg concrete block on the beam: it lags the swing and sails past',
+  title: 'a four-tonne concrete block on the beam: it drags behind the swing and sails past',
   duration: 6,
   tp: { back: 12, side: 7, up: 3.2, ahead: 6, lift: 0.8, fov: 62 },
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
-    const D = 13
+    const D = 15
     const bx = c.x + c.dx * D
     const bz = c.z + c.dz * D
-    const by = c.sb.restY('block', bx, bz)
-    const id = c.sb.spawn('block', { x: bx, y: by, z: bz }, { yaw: y0 + Math.PI / 2 })
+    // the catalogue's block at 1.7 times the size: five units long, a head
+    // taller than the walker's eye when it stands on end, and (mass going
+    // with the cube) about four and a half tonnes. The 900 kg one read as a
+    // cooler held at arm's length
+    const K = 1.7
+    const by = c.sb.restY('block', bx, bz) + 0.7 * (K - 1)
+    const id = c.sb.spawn('block', { x: bx, y: by, z: bz }, { yaw: y0 + Math.PI / 2, scale: K })
     c.ids.push(id)
     const eye = new THREE.Vector3(c.x, c.y + EYE, c.z)
-    const p0 = pitchTo(eye, bx, by + 0.4, bz)
+    // taken high on its end, well clear of the yellow hazard band painted
+    // along its sides, so the beam never seems to end in a smear of paint
+    const p0 = pitchTo(eye, bx, by + 0.85, bz)
     const r = begin(c, {
       look: (t) => {
         // a quick turn left, a hold, a quick turn right: the block trails
@@ -402,33 +410,42 @@ gunScenario({
   },
   report: (c) => {
     const r = runs.get(c)!
-    return `the block trailed the beam by up to ${(r.memo.lag ?? 0).toFixed(1)} units`
+    const p = c.sb.get(c.ids[0])
+    return `the ${Math.round(p?.mass ?? 0)} kg block trailed the beam by up to ${(r.memo.lag ?? 0).toFixed(1)} units`
   },
 })
 
 /* ------------------------------------------------------------ throw -- */
 
-/** where the throw film stacked its crates */
-const homes: Array<[number, number, number]> = []
-// the stack: a tower of small crates two wide and six high, sixteen units
-// out and four to the right. Light crates stacked tall is what makes a
-// thrown barrel a payoff: a wall of 35 kg crates just caught it
-const STACK = 'crate_small'
-const ROWS = 6
-const COLS = 2
+/** where each throw film stacked its crates */
+const homesOf = new WeakMap<ScenarioCtx, Array<[number, number, number]>>()
+/** the stack, sixteen units out and four to the right */
 const TD = 16
 const TX = 4
-/** the throw's sweep starts here, and the trigger lets go this far into it */
+/** the throw's sweep starts here */
 const T0 = 1.9
-// tuned headless (`npm run measure -- physics physgun`): the sweep's
-// length, how far into it the trigger is let go, and how much it rises
-const REL = 0.205
+// tuned headless (`npm run measure -- physics physgun`): the sweep's length
+// and how much it rises
 const SWEEP = 0.35
 const LOFT = 0.3
 
-gunScenario({
-  name: 'throw',
-  title: 'a barrel swung round on the beam and let go: it flies into a tower of crates',
+const THROW_REL = 0.205
+const THROW_HEAVY_REL = 0.205
+
+interface ThrowAt {
+  name: string
+  title: string
+  /** what the stack is built of, and how */
+  stack: string
+  rows: number
+  cols: number
+  /** how far into the sweep the trigger lets go, tuned headless per stack */
+  rel: number
+}
+
+const throwScenario = (o: ThrowAt) => gunScenario({
+  name: o.name,
+  title: o.title,
   // the camera holds on the tower until it has come down and settled
   duration: 7,
   tp: { back: 7, side: -7, up: 4.5, ahead: 11, lift: -1.5, across: 3, fov: 62 },
@@ -436,8 +453,9 @@ gunScenario({
     const y0 = yawOf(c.dx, c.dz)
     const nx = -c.dz
     const nz = c.dx
-    // the stack (STACK, ROWS x COLS), well ahead and a little right, where
-    // the barrel's arc lets go toward it
+    // the stack, well ahead and a little right, where the barrel's arc lets
+    // go toward it
+    const { stack: STACK, rows: ROWS, cols: COLS, rel: REL } = o
     const ext = shapeExtents(KINDS[STACK].shape, new THREE.Vector3())
     const h = ext.y * 2 + 0.02
     const w = Math.max(ext.x, ext.z) * 2 + 0.04
@@ -445,7 +463,8 @@ gunScenario({
     const wx = c.x + c.dx * D + nx * TX
     const wz = c.z + c.dz * D + nz * TX
     const base = c.sb.restY(STACK, wx, wz)
-    homes.length = 0
+    const homes: Array<[number, number, number]> = []
+    homesOf.set(c, homes)
     for (let row = 0; row < ROWS; row++)
       for (let k = 0; k < COLS; k++) {
         const col = k - (COLS - 1) / 2
@@ -508,6 +527,7 @@ gunScenario({
     // where it was stacked
     let moved = 0
     const n = c.ids.length
+    const homes = homesOf.get(c)!
     for (let i = 0; i < n; i++) {
       const p = c.sb.get(c.ids[i])
       if (!p) continue
@@ -520,6 +540,21 @@ gunScenario({
       `${(r.memo.nearY ?? 0).toFixed(1)} up), ` +
       `${moved}/${n} crates knocked off the stack`
   },
+})
+
+// the payoff: small crates (12 kg) stacked tall, which a thrown barrel
+// brings down; a wall of full crates mostly just catches it
+throwScenario({
+  name: 'throw',
+  title: 'a barrel swung round on the beam and let go: it flies into a tower of small crates',
+  stack: 'crate_small', rows: 6, cols: 2, rel: THROW_REL,
+})
+// the honest test: the same throw into a wall of 35 kg crates, as heavy as
+// the barrel itself
+throwScenario({
+  name: 'throw-heavy',
+  title: 'the same throw into a wall of full-size 35 kg crates, as heavy as the barrel',
+  stack: 'crate', rows: 3, cols: 2, rel: THROW_HEAVY_REL,
 })
 
 /* ---------------------------------------------------------- ragdoll -- */
@@ -570,6 +605,9 @@ gunScenario({
       fire: (t) => between(t, 0.4, 4.6),
       alt: (t) => between(t, 4.45, 4.55),
       reload: (t) => between(t, 5.8, 5.9),
+      // pushed out a couple of notches once lifted, so the body swings at
+      // arm's length and, let down, lands out in front rather than in the lens
+      wheel: (t0, t1) => [1.1, 1.2, 1.3, 1.4, 1.5].reduce((n, at) => n + (at > t0 && at <= t1 ? 1 : 0), 0),
     }, () => [{ key: 'ped', rig }])
     r.rig = rig
     r.rigEnv = env
