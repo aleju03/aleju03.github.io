@@ -72,6 +72,8 @@ export const BLAST_DV = 33
 const LAUNCH_MASS = 30
 /** no blast changes a prop's velocity by more than this, u/s */
 const MAX_DV = 46
+/** how much harder an explosive is thrown than anything else its mass */
+const LOFT = 1.35
 /** end-over-end spin at the centre of a power-1 blast, rad/s, for a prop
     thrown at the full `BLAST_DV` (scaled with the throw) */
 const BLAST_SPIN = 9
@@ -115,7 +117,7 @@ export const createExplosions = (
     compound shape's inertia that was a lottery between a lazy wobble and a
     top.
   */
-  const push = (id: PropId, mass: number, len: number, f: number, power: number) => {
+  const push = (id: PropId, mass: number, len: number, f: number, power: number, loft: boolean) => {
     if (len < 1e-3) dir.set(0, 1, 0)
     else dir.multiplyScalar(1 / len)
     const h = Math.hypot(dir.x, dir.z)
@@ -127,11 +129,14 @@ export const createExplosions = (
       dir.x = Math.cos(a)
       dir.z = Math.sin(a)
     }
-    // elevation between 50 and 70 degrees, a little each way
-    const up = 1.2 + Math.max(0, dir.y) + (sb.random() - 0.5) * 0.5
+    // elevation between 50 and 70 degrees, a little each way; an explosive
+    // is thrown steeper and harder still, about 70 to 80 degrees, because a
+    // barrel sailing up over the rooftops and going off at the top of its
+    // arc is the shot Garry's Mod is remembered for
+    const up = (loft ? 3.2 : 1.2) + Math.max(0, dir.y) + (sb.random() - 0.5) * 0.5
     dir.y = up
     dir.normalize()
-    const dv = blastThrow(mass, power, f)
+    const dv = blastThrow(mass, power, f) * (loft ? LOFT : 1)
     if (!sb.getVelocity(id, lin, ang)) return
     // blasts a beat apart do not stack into a rocket: what is already
     // flying is redirected more than it is sped up, so the second barrel
@@ -185,7 +190,14 @@ export const createExplosions = (
       // pushed first and damaged after, so a crate the blast breaks hands
       // the blast's velocity on to its pieces
       if (h.f >= 0 && p.mode === 'dynamic') {
-        push(h.id, p.mass, len, f, power)
+        // (every other one, near enough: a whole row of barrels sailing off
+        // leaves the crates it was meant to wreck standing, so about half
+        // go off where they are and half go up)
+        const loft = !!p.kind.explodes && sb.random() < 0.5
+        // (breakables.ts reads it: a lofted barrel waits for the top of its
+        // arc, one left low goes off beside what it was standing among)
+        if (p.kind.explodes) p.data.lofted = loft
+        push(h.id, p.mass, len, f, power, loft)
         pushed++
       }
       damage(h.id, BLAST_DAMAGE * power * f, c, true)

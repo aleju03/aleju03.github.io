@@ -853,10 +853,12 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   *added* (near white, so a barrel tumbling through the fireball is still
   seen inside it), its inner disc writes `GLOW_ALPHA` so
   the look skips the grade, the ink and the lamp light there, as the
-  physgun's beam does; the fireball's flames are opaque sprites with a
-  torn edge that also write `GLOW_ALPHA`, because the look inks depth edges
-  and a ball of fire drawn as balls got a rim on every ball (and, drawn
-  without depth, the outlines of what stood behind it); and smoke is
+  physgun's beam does; the fireball's flames are opaque teardrop sprites
+  with a noise-torn edge that also write `GLOW_ALPHA` (the look inks depth
+  edges, and a ball of fire drawn as balls got a rim on every ball) and
+  write depth, so they sort with each other and with whatever flies
+  through them; the hot ones are drawn a little forward so the white-yellow
+  heart shows through the orange rind, the way additive fire would; and smoke is
   premultiplied *over*, translucent
   through blending in three stepped opacities, lit by the look's ambient
   (`uShade`, from `lightLook`) so it darkens at night. Ground dust is a
@@ -867,7 +869,16 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   washing the air, then it falls to the fireball's orange glow; under it
   the added core, flame spears thrown radially well past it (`jets`), and
   then the ragged fireball of flame sprites, white-yellow in the middle and
-  orange at the tips, with dark soot at its crown.
+  orange at the tips, rising on its own buoyancy and shrinking, with soft
+  soot smoke at its crown. No sprite may cover more than a fifth (glow) or
+  a third (fire) of the view's height at its distance, and the flash is
+  held under what whites out the frame, so a body in a blast beside the
+  lens is still there to see.
+- **About half the barrels a blast reaches are lofted** (steeper and a
+  third harder, `LOFT`) and go off at the top of their arc, 15-35 units up;
+  the rest go off low, a quarter second after, among the crates they stood
+  by. A row of lofted barrels leaves its crates standing, so it is a coin
+  per barrel, from the sandbox's own seeded random.
 - **A blast throws, and it is late.** `explode` sets a velocity change (out,
   50-70 degrees up, tumbling), not an impulse, falling with the square root
   of the mass; blasts a beat apart redirect more than they add. Explosives
