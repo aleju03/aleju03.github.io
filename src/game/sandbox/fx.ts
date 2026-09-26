@@ -52,6 +52,13 @@ export interface Fx {
   burn: (at: Vec3Like, k: number) => void
   /** a puff of dust where something heavy landed */
   dust: (at: Vec3Like, size: number) => void
+  /** masonry dust from a building coming down: big slow billows the
+      colour of what broke (linear rgb), rolling out along the ground and
+      hanging in the air for seconds. `size` is about a storey's width */
+  plume: (at: Vec3Like, size: number, r: number, g: number, b: number) => void
+  /** chunky bits of a wall knocked loose, in its own colour, thrown with
+      `vel` and scattered over `size` */
+  rubble: (at: Vec3Like, vel: Vec3Like, size: number, r: number, g: number, b: number) => void
   /** write the current flash (a blast, a burning fuse) into the pixel
       look's fake lights; once a frame, after the look is dressed */
   lightLook: (lights: FakeLights) => void
@@ -67,6 +74,8 @@ const NOOP_FX: Fx = {
   debris: () => {},
   burn: () => {},
   dust: () => {},
+  plume: () => {},
+  rubble: () => {},
   lightLook: () => {},
   step: () => {},
   live: 0,
@@ -268,7 +277,7 @@ export const createFx = (o: FxOpts): Fx => {
   const smokeMat = banded(new THREE.MeshLambertMaterial({ color: 0xffffff }), 'sandbox-smoke', [1.14, 1, 0.72])
   smokeMat.name = 'sandbox-smoke'
 
-  const CAP = { bits: 700, puffs: 480, fire: 360, sparks: 260, jets: 96 }
+  const CAP = { bits: 700, puffs: 480, fire: 360, sparks: 260, jets: 96, dust: 520 }
   const ico0 = new THREE.IcosahedronGeometry(1, 1)
   const ico1 = new THREE.IcosahedronGeometry(1, 2)
   const cube = pinnedUV(new THREE.BoxGeometry(1, 1, 1), whiteUV[0], whiteUV[1])
@@ -276,18 +285,26 @@ export const createFx = (o: FxOpts): Fx => {
   // a flame tongue: a diamond drawn out along z, its base at the centre of
   // the blast so it grows outward from it
   const tongue = new THREE.OctahedronGeometry(0.5, 0).translate(0, 0, 0.5)
+  const ico2 = new THREE.IcosahedronGeometry(1, 1)
 
   const bits = pool(cube, litMat, CAP.bits, 'fall')
   const puffs = pool(ico0, smokeMat, CAP.puffs, 'smoke')
   const fire = pool(ico1, fireMat, CAP.fire, 'fire')
   const sparks = pool(spark, fireMat, CAP.sparks, 'spark')
   const jets = pool(tongue, fireMat, CAP.jets, 'jet')
+  // masonry dust: the fire's banded unlit material (so no new program) in
+  // earth colours. Lit, a billow is a ball with a bright top and a dark
+  // underside, and at this resolution that reads as a boulder; banded flat
+  // off the lens, a crowd of them overlapping in two tones reads as a cloud.
+  // Like the fire, a billow shrinks away rather than thinning
+  const dust = pool(ico2, fireMat, CAP.dust, 'smoke')
   // air last: after everything solid, the fire over its own smoke
   puffs.mesh.renderOrder = 10
   fire.mesh.renderOrder = 11
   sparks.mesh.renderOrder = 11
   jets.mesh.renderOrder = 11
-  const pools = [bits, puffs, fire, sparks, jets]
+  dust.mesh.renderOrder = 10
+  const pools = [bits, puffs, fire, sparks, jets, dust]
   for (const p of pools) root.add(p.mesh)
 
   /* decals: a small ring of flat quads, two materials, one program */
@@ -561,6 +578,43 @@ export const createFx = (o: FxOpts): Fx => {
       }
     },
 
+    plume: (at, size, r0, g0, b0) => {
+      // many small billows rather than a few big ones, in two tones of the
+      // wall's own colour pulled toward a warm grey, hugging the ground and
+      // rolling outward the way a collapse pushes its dust ahead of it
+      // small and many: banded and outlined, a big billow is a boulder
+      const n = Math.min(24, 6 + Math.round(size * 1.6))
+      const sz = Math.min(0.85, 0.35 + size * 0.05)
+      // the banded material lifts a billow's middle by 1.75: kept under it
+      const r = r0 * 0.3 + 0.07
+      const g = g0 * 0.3 + 0.066
+      const b = b0 * 0.3 + 0.056
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2
+        const out = rnd(3, 9) * Math.min(1.8, 0.6 + size * 0.08)
+        const s = rnd(0.6, 1.3) * sz
+        // a darker core low down, paler billows over it
+        const k = i % 3 === 0 ? rnd(0.62, 0.72) : rnd(0.92, 1.08)
+        emit(dust, at.x + Math.cos(a) * size * 0.25, at.y + rnd(-0.3, 0.8) + (k > 0.8 ? 0.6 : 0), at.z + Math.sin(a) * size * 0.25,
+          Math.cos(a) * out, rnd(0.2, 1.8), Math.sin(a) * out, rnd(1.6, 3.4), s, s * rnd(0.7, 1), s,
+          r * k, g * k, b * k,
+          { delay: rnd(0, 0.3), grow: rnd(1.6, 2.2), drag: 1.5, spin: 0.8, fadeAt: 0.12 })
+      }
+    },
+
+    rubble: (at, vel, size, r, g, b) => {
+      const n = Math.min(18, 5 + Math.round(size * 2))
+      for (let i = 0; i < n; i++) {
+        dir(0.15, d3)
+        const sp = rnd(1, 6)
+        const s = rnd(0.14, 0.42) * Math.min(1.6, 0.6 + size * 0.2)
+        const k = rnd(0.75, 1.2)
+        emit(bits, at.x + (Math.random() - 0.5) * size, at.y + (Math.random() - 0.5) * size * 0.5, at.z + (Math.random() - 0.5) * size,
+          vel.x * 0.7 + d3[0] * sp, vel.y * 0.5 + d3[1] * sp + 1.5, vel.z * 0.7 + d3[2] * sp,
+          rnd(1.6, 3), s, s * rnd(0.6, 1), s, r * k, g * k, b * k, { spin: 9 })
+      }
+    },
+
     lightLook: (lights) => {
       const f = lights.flash
       if (flash.t < 1.4) {
@@ -617,7 +671,7 @@ export const createFx = (o: FxOpts): Fx => {
     dispose: () => {
       root.removeFromParent()
       for (const P of pools) P.mesh.dispose()
-      ico0.dispose(); ico1.dispose(); cube.dispose(); spark.dispose(); tongue.dispose()
+      ico0.dispose(); ico1.dispose(); ico2.dispose(); cube.dispose(); spark.dispose(); tongue.dispose()
       smokeMat.dispose()
       decalGeo.dispose()
       fireMat.dispose(); scorchMat.dispose(); splatMat.dispose()
@@ -709,7 +763,11 @@ export const createFx = (o: FxOpts): Fx => {
         k = 1 + (g - 1) * (1 - (1 - t) ** 2)
         if (age < 0.1) k *= 0.4 + 0.6 * (age / 0.1)
         const f0 = P.fadeAt[i]
-        if (t > f0) k *= 1 - ((t - f0) / (1 - f0)) ** 1.6
+        // (the destruction's masonry dust, on the fire's material, holds
+        // its size longer and goes late, which is its own look)
+        if (P === dust) {
+          if (t > 0.55) k *= Math.max(0, 1 - (t - 0.55) / 0.45) ** 0.7
+        } else if (t > f0) k *= 1 - ((t - f0) / (1 - f0)) ** 1.6
       } else if (P.behave === 'fall') {
         if (t > 0.8) k = Math.max(0, 1 - (t - 0.8) / 0.2)
       } else if (P.behave === 'spark') {

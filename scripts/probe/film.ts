@@ -2,10 +2,11 @@ import * as THREE from 'three'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
 import { makeChunkMats, splashAt, waveHeightAt } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
-import { SEA_Y } from '../../src/game/world/terrain'
+import { SEA_Y, terrainY } from '../../src/game/world/terrain'
+import { buildDebris } from '../../src/game/world/debris'
 import { tickWind, windUniforms } from '../../src/game/world/wind'
 import { makeCollisionSet, type Solid } from '../../src/game/physics/collision'
-import { createSandbox, type Sandbox } from '../../src/game/sandbox/sandbox'
+import { attachDestruction, createSandbox, type Sandbox } from '../../src/game/sandbox/sandbox'
 import {
   SCENARIOS, advanceScenario, scenarioById, stageScenario, type Scenario, type ScenarioCtx,
 } from '../../src/game/sandbox/scenarios'
@@ -49,6 +50,7 @@ setPropSounds(false)
 const SCENARIO_MODULES: Array<() => Promise<unknown>> = [
   () => import('../../src/game/sandbox/tools/scenarios'),
   () => import('../../src/game/sandbox/propScenarios'),
+  () => import('../../src/game/sandbox/destructionScenarios'),
 ]
 
 export interface FilmSpec {
@@ -222,6 +224,12 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
     walker: false,
   })
   await sb.whenReady
+  // the buildings, as the game has them: the world's ruins over these chunks
+  // and destruction attached to the sandbox, so a scenario can knock one down
+  const debris = buildDebris({ parent: scene, obstacles: boxes, groundAt: terrainY, trackDisposable: () => {} })
+  for (const ch of chunks) debris.arm(ch.smash)
+  debris.ruins.onSolids = () => sb.solidsChanged()
+  attachDestruction(sb, debris.ruins)
   const c = stageScenario(s, sb)
   const sky = lightFor(scene, tod, new THREE.Vector3(c.x, c.y, c.z))
   const shot = s.camera(c)
@@ -236,6 +244,7 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
     const height = spec.height ?? shot.from[1] - to[1]
     from = [to[0] + Math.cos(yaw) * dist, to[1] + height, to[2] + Math.sin(yaw) * dist]
   }
+  if (shot.clear && !spec.from && spec.yaw === undefined) from = clearLens(chunks, from, to)
   const fov = spec.fov ?? shot.fov ?? 50
   const cam = new THREE.PerspectiveCamera(fov, w / h, 0.2, 900)
   cam.position.set(...from)
@@ -302,6 +311,64 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
   linked = []
   warmPrograms = new Set(renderer?.info.programs ?? [])
   return stage
+}
+
+/**
+ * Swing a lens round its target, keeping its distance and height, to the
+ * nearest bearing from which five rays at the target (its middle, either
+ * side, above and below) reach it without meeting chunk geometry. Leaf cards
+ * count as blocking, holes and all, which errs the right way.
+ */
+const clearLens = (chunks: Chunk[], from: number[], to: number[]): [number, number, number] => {
+  const meshes: THREE.Mesh[] = []
+  for (const c of chunks) {
+    for (const m of [c.smash.meshes.detail, c.smash.meshes.leaf]) if (m) meshes.push(m)
+  }
+  const T = new THREE.Vector3(...(to as [number, number, number]))
+  const dx = from[0] - to[0]
+  const dz = from[2] - to[2]
+  const dist = Math.hypot(dx, dz)
+  const yaw0 = Math.atan2(dz, dx)
+  const ray = new THREE.Raycaster()
+  const lens = new THREE.Vector3()
+  const side = new THREE.Vector3()
+  const aim = new THREE.Vector3()
+  const score = (yaw: number, y: number) => {
+    lens.set(to[0] + Math.cos(yaw) * dist, y, to[2] + Math.sin(yaw) * dist)
+    side.set(-Math.sin(yaw), 0, Math.cos(yaw)).multiplyScalar(dist * 0.12)
+    let n = 0
+    for (const [sx, sy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -0.6], [0, -9], [1.5, -9], [-1.5, -9]]) {
+      aim.copy(T).addScaledVector(side, sx)
+      aim.y += sy * dist * 0.1
+      // the three low rays are the ground under the target, a little up
+      if (sy < -5) aim.y = terrainY(aim.x, aim.z) + 1
+      const d = aim.clone().sub(lens)
+      const far = d.length() - 3
+      ray.set(lens, d.normalize())
+      ray.far = far
+      if (ray.intersectObjects(meshes, false).length) n++
+    }
+    return n
+  }
+  // bearings nearest the asked-for one first, then the same again higher up
+  // (over the rooftops), so a clear shot at the asked-for height wins
+  let best = yaw0
+  let bestY = from[1]
+  let bestN = Infinity
+  const rise = Math.max(8, from[1] - to[1])
+  search: for (const up of [0, 0.5, 1]) {
+    for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.75, -1.75, 2.1, -2.1, 2.5, -2.5, Math.PI]) {
+      const y = from[1] + rise * up
+      const n = score(yaw0 + off, y) + up * 1.5
+      if (n < bestN) {
+        bestN = n
+        best = yaw0 + off
+        bestY = y
+      }
+      if (n === 0) break search
+    }
+  }
+  return [to[0] + Math.cos(best) * dist, bestY, to[2] + Math.sin(best) * dist]
 }
 
 const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
@@ -749,4 +816,48 @@ export const links = async () => {
       return `${p.name}: ${diff.join('  ')}`
     })
   return { atBoot, afterSpawn, afterBreakAndBlast: n, programs: r.info.programs?.length ?? -1, fresh }
+}
+
+/**
+ * The same rule for destruction: stage the house and tower demolitions the
+ * way the game would have them (everything compiled and drawn once under the
+ * cover), then run both through their collapse drawing every frame, and
+ * count what links. Rubble draws with the chunk's own material and the dust
+ * with the fire's, so this must print 0.
+ */
+export const collapseLinks = async () => {
+  const r = makeRenderer(640, 400, false, 200)
+  const gl = r.getContext() as WebGL2RenderingContext
+  let n = 0
+  const real = gl.linkProgram.bind(gl)
+  gl.linkProgram = (p: WebGLProgram) => {
+    n++
+    real(p)
+  }
+  type Prog = { name: string; cacheKey: string }
+  let atBoot = 0
+  let during = 0
+  let frames = 0
+  let lumps = 0
+  const fresh: string[] = []
+  for (const id of ['sandbox:demolish-house', 'sandbox:tower']) {
+    n = 0
+    const st = await build({ id, frames: 1, tile: [640, 400], cols: 1, rings: 1 }, 640, 400)
+    for (let i = 0; i < 2; i++) {
+      st.sb.tick({ dt: 1 / 60, active: true, focus: { x: st.c.x, y: st.c.y, z: st.c.z } })
+      draw(r, st)
+    }
+    atBoot += n
+    n = 0
+    const before = new Set(((r.info.programs ?? []) as unknown as Prog[]).map((p) => p.cacheKey))
+    for (let t = 0; t < st.duration; t += 1 / 15) {
+      advance(st, t)
+      draw(r, st)
+      frames++
+    }
+    during += n
+    lumps += st.sb.stats.props
+    for (const p of (r.info.programs ?? []) as unknown as Prog[]) if (!before.has(p.cacheKey)) fresh.push(`${id}: ${p.name}`)
+  }
+  return { atBoot, during, frames, lumps, fresh }
 }

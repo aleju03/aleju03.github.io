@@ -48,6 +48,11 @@ export interface Shot {
   from: [number, number, number]
   to: [number, number, number]
   fov?: number
+  /** the film may swing the lens round the target (same distance and
+      height) to the nearest bearing whose view of it no building or crown
+      blocks: for sites picked out of a town, where a fixed bearing is a
+      photograph of the neighbour's roof */
+  clear?: boolean
 }
 
 export interface Scenario {

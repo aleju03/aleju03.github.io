@@ -11,6 +11,7 @@
     npm run film -- props:thumbs                  the spawn menu's icons on one sheet
     npm run film -- props:sounds                  every prop sound's peak, beside a footstep
     npm run film -- props:links                   shader links on first spawn (must be 0)
+    npm run film -- props:collapse-links          ...and while buildings come down (must be 0)
 
   Each scenario (src/game/sandbox/scenarios.ts) is staged in the real world
   through the real sandbox and the game's own chunk materials, simulated at
@@ -131,8 +132,13 @@ for (const t of propTargets) {
       console.log(`props:links      linkProgram calls: ${r.atBoot} compiling the scene under the "cover", ` +
         `${r.afterSpawn} spawning all ${''}kinds, ${r.afterBreakAndBlast} breaking them and a blast (${r.programs} programs)`)
       for (const f of r.fresh) console.log(`                 linked late: ${f}`)
+    } else if (what === 'collapse-links') {
+      const r = await probe.evaluate('window.__film.collapseLinks()')
+      console.log(`props:collapse-links  linkProgram calls: ${r.atBoot} compiling the street under the "cover", ` +
+        `${r.during} while a house and a tower come down and break up (${r.frames} frames drawn, ${r.lumps} rubble)`)
+      for (const f of r.fresh) console.log(`                 linked late: ${f}`)
     } else {
-      console.log(`${t}: unknown (turntable, thumbs, sounds, links)`)
+      console.log(`${t}: unknown (turntable, thumbs, sounds, links, collapse-links)`)
     }
   } catch (e) {
     console.log(`${t}: ${e.message}`)

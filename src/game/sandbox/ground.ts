@@ -71,6 +71,10 @@ export interface Ground {
   vehicles: () => void
   /** both, for a caller that has no slices to hand */
   sync: () => void
+  /** the world's solids changed in number (a building taken apart into
+      pieces): gather them again on the next sync rather than within the
+      minute-long fallback */
+  markDirty: () => void
   /** move the fleet's mirrors toward their hulls: slice k of n this frame */
   slice: (k: number, n: number) => void
   /** the world solid behind a collider, if it is one */
@@ -191,12 +195,19 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
       { x: (m.maxX + m.minX) / 2, y: (m.maxY + m.minY) / 2, z: (m.maxZ + m.minZ) / 2 },
       NO_ROT, probe,
       (c) => {
-        c.parent()?.wakeUp()
+        const b = c.parent()
+        if (b) toWake.push(b)
         return true
       },
       undefined, GROUPS.queryProps,
     )
+    // woken after the query, never inside it: the query holds the world
+    // borrowed, and a body touched from its callback leaves it borrowed for
+    // good (the next dispose dies). Destruction empties boxes by the dozen
+    for (const b of toWake) b.wakeUp()
+    toWake.length = 0
   }
+  const toWake: RBody[] = []
 
   const addMirror = (b: Solid) => {
     const col = world.createCollider(
@@ -393,6 +404,9 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
       syncVehicles()
     },
     slice,
+    markDirty: () => {
+      solidsDirty = true
+    },
     solidOf: (c) => byHandle.get(c.handle),
     isGround: (c) => groundHandles.has(c.handle),
     isVehicle: (c) => vehicleHandles.has(c.handle),
