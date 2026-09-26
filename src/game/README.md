@@ -1255,9 +1255,12 @@ vignette. A third pass upscales nearest-neighbour to the
 canvas, integer where the screen allows (1080p is exactly 3x, 1440p 4x), and
 a fourth redraws the glass holes at full resolution.
 
-Dusk keeps its warmth in the light only (the sun, the disc, the horizon
-band and the sky's sunward side, the lamps): the air and the shadows it
-fills are a cool grey-blue, which is what keeps distant masses apart instead
+Dusk keeps its warmth in the light only (the sun, the disc, an amber
+afterglow band along the skyline that the look draws over the cool air, the
+sky's sunward side, the lamps): the air and the shadows it fills are a cool
+grey-blue, a shade darker on things than on the sky so towers silhouette,
+and anything that shines (a lit window, a lamp's pool) keeps its light
+through the haze, which is what keeps distant masses apart instead
 of dissolving them into one sepia plane. And the look clamps the scene's
 alpha before it writes premultiplied colour, because additive sprites pile
 alpha past 1 in the half-float target and came back as glowing dots.
@@ -1368,6 +1371,10 @@ every one of them has a failure you can see in a harness shot.
   A new window onto live DOM must be registered there or it will render as a
   bezel-coloured blank. Anything else translucent must blend rather than
   write alpha.
+- **Lamp pools lie on the ground.** A pool lights only up-facing surfaces
+  five to eight units under its lens, cut into four flat bands with a
+  dithered seam; a fixture whose lens is not about six units over the ground
+  it lights needs its own height in the pool test.
 - **Light that comes and goes belongs in the look, not in the scene.** A
   PointLight appearing mid-walk changes `NUM_POINT_LIGHTS` and relinks every
   lit program. Lamps are pools (`lights.pools`, xyz and radius) and the

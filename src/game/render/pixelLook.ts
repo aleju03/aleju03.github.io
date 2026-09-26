@@ -172,6 +172,10 @@ export interface Air {
    * haze that was tried and inverted aerial perspective (see the grade
    * shader); nothing reads them
    */
+  /** the warm afterglow along the skyline (colour times strength) */
+  duskBand: THREE.Color
+  /** how bright the air is on a thing relative to on the sky (1 the same) */
+  dim: number
   liftBase: number
   liftScale: number
   liftK: number
@@ -191,6 +195,8 @@ export const AIR_DEFAULTS = (): Air => ({
   skyHorizon: 0.85,
   skyReach: 0.3,
   skyAll: 0.2,
+  duskBand: new THREE.Color(0, 0, 0),
+  dim: 1,
   liftBase: 0,
   liftScale: 140,
   liftK: 0,
@@ -361,6 +367,8 @@ export const createPixelLook = (
     uAirCol: { value: new THREE.Color() },
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunGlow: { value: new THREE.Color() },
+    uDuskBand: { value: new THREE.Color() },
+    uAirDim: { value: 1 },
     uSkyAir: { value: new THREE.Vector3() },
     uAirLift: { value: new THREE.Vector4() },
     uPools: { value: Array.from({ length: MAX_POOLS }, () => new THREE.Vector4()) },
@@ -492,6 +500,8 @@ export const createPixelLook = (
     U.uAirCol.value.copy(air.color)
     U.uSunDir.value.copy(air.sunDir)
     U.uSunGlow.value.copy(air.sunGlow)
+    U.uDuskBand.value.copy(air.duskBand)
+    U.uAirDim.value = air.dim
     U.uSkyAir.value.set(air.skyHorizon, Math.max(0.01, air.skyReach), air.skyAll)
     U.uAirLift.value.set(air.liftBase, Math.max(1, air.liftScale), air.liftK, air.edge)
 
