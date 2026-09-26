@@ -510,8 +510,8 @@ gunScenario({
   tp: { back: 10, side: 7, up: 3, ahead: 6, lift: 1, fov: 62 },
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
-    const px = c.x + c.dx * 8
-    const pz = c.z + c.dz * 8
+    const px = c.x + c.dx * 11
+    const pz = c.z + c.dz * 11
     const rig = buildPlayerBody(EYE, 34)
     const gy = terrainY(px, pz)
     rig.group.position.set(px, gy, pz)

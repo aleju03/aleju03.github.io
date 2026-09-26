@@ -604,7 +604,7 @@ export function createBeam(parent: THREE.Object3D): Beam {
       u.uMiss.value = miss ? 1 : 0
       u.uPx.value = px
       u.uMinPx.value = (miss ? MIN_PX * 0.6 : MIN_PX) * (1 + kickK * 0.5)
-      u.uW0.value = 0.075 * pulse
+      u.uW0.value = 0.045 * pulse
       u.uW1.value = (miss ? 0.035 : 0.055) * pulse
       u.uCore.value.copy(CORE).multiplyScalar(1 + kickK * 0.6)
       // the glow copies every number but its width

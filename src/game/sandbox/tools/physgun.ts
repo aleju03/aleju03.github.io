@@ -32,10 +32,10 @@ import {
   fast it can be *moved*. The stiffness, the damping ratio and the budget all
   fall with mass (`tune`), which is where the feel lives:
 
-  - a ball or a cone is critically damped at ~20 rad/s: it snaps onto the
-    beam and follows a flick exactly, so letting go mid-flick throws it hard;
+  - a ball or a cone is critically damped at ~16 rad/s: it snaps onto the
+    beam and follows a flick closely, so letting go mid-flick throws it hard;
   - a crate is a beat behind a fast turn, with no overshoot;
-  - a 900 kg block is underdamped at ~7 rad/s on a small budget: it lags a
+  - a 900 kg block is underdamped at ~5 rad/s on a small budget: it lags a
     swing, sails past where you stopped, and comes back, which is the swing
     of something heavy on the end of a rope that the reference strip shows.
 
@@ -116,8 +116,10 @@ export interface Tune {
  */
 export const tune = (mass: number, out: Tune = { w: 0, z: 0, a: 0, wr: 0 }): Tune => {
   const s = Math.sqrt(Math.max(0.1, mass) / 200)
-  out.w = 22 / (1 + s)
-  out.wr = 16 / (1 + s)
+  // soft enough that a crate trails a quick swing by a unit or so, which is
+  // what bows the beam; a ball still snaps onto a flick
+  out.w = 17 / (1 + 0.75 * s)
+  out.wr = 14 / (1 + s)
   // critical up to a crate, easing to 0.55 at a concrete block
   const heavy = Math.min(1, Math.max(0, Math.log10(Math.max(1, mass) / 30) / Math.log10(30)))
   out.z = 1 - 0.45 * heavy
