@@ -789,7 +789,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       throwPieces(w, ev, [i], v, over, carried && dir ? tmpA.copy(dir).setLength(1.4) : null)
     }
     tintOf(broke.map((i) => w.pieces[i]), tint)
-    sb.fx.plume(at, Math.min(10, 2 + broke.length), tint[0] * 1.15, tint[1] * 1.12, tint[2] * 1.08)
+    sb.fx.plume(at, Math.min(6, 2 + broke.length * 0.5), tint[0] * 1.15, tint[1] * 1.12, tint[2] * 1.08)
     if (broke.length > 2) rumble(Math.min(1, broke.length / 14), at.x, at.y, at.z)
     settle(w, ev, at)
     sb.solidsChanged()

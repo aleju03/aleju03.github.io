@@ -594,8 +594,9 @@ export const createFx = (o: FxOpts): Fx => {
       // many small billows rather than a few big ones, in two tones of the
       // wall's own colour pulled toward a warm grey, hugging the ground and
       // rolling outward the way a collapse pushes its dust ahead of it
-      const n = Math.min(18, 5 + Math.round(size * 1.2))
-      const sz = Math.min(1.3, 0.5 + size * 0.07)
+      // small and many: banded and outlined, a big billow is a boulder
+      const n = Math.min(24, 6 + Math.round(size * 1.6))
+      const sz = Math.min(0.85, 0.35 + size * 0.05)
       // the banded material lifts a billow's middle by 1.75: kept under it
       const r = r0 * 0.3 + 0.07
       const g = g0 * 0.3 + 0.066
@@ -609,7 +610,7 @@ export const createFx = (o: FxOpts): Fx => {
         emit(dust, at.x + Math.cos(a) * size * 0.25, at.y + rnd(-0.3, 0.8) + (k > 0.8 ? 0.6 : 0), at.z + Math.sin(a) * size * 0.25,
           Math.cos(a) * out, rnd(0.2, 1.8), Math.sin(a) * out, rnd(1.6, 3.4), s, s * rnd(0.7, 1), s,
           r * k, g * k, b * k,
-          { delay: rnd(0, 0.3), grow: rnd(1.8, 2.6), drag: 1.5, spin: 0.8, fadeAt: 0.12 })
+          { delay: rnd(0, 0.3), grow: rnd(1.6, 2.2), drag: 1.5, spin: 0.8, fadeAt: 0.12 })
       }
     },
 
