@@ -106,7 +106,7 @@ const FRAG_COLOR = /* glsl */ `
     c *= 1.0 - step(0.88, tuft) * 0.26 * near2 + step(tuft, 0.03) * 0.2 * near2;
     if (sand > 0.5) {
       // biome sand is its own tint; a shore on a grass biome is beach sand
-      vec3 sc = mix(vec3(0.49, 0.41, 0.24), base, step(0.5, vGK.y));
+      vec3 sc = mix(diffuse * vec3(0.54, 0.45, 0.23), base, step(0.5, vGK.y));
       // wind ripples: one-texel lines on a wavy course, and a pebble here
       // and there
       float rc0 = (tp.x * 0.83 + tp.y * 0.49) + (n2 - 0.5) * 3.0 + (n1 - 0.5) * 0.9;
@@ -126,7 +126,7 @@ const FRAG_COLOR = /* glsl */ `
     }
     if (rock > 0.5) {
       // a rock biome keeps its own grey; a cliff in grass country is stone
-      vec3 rc = mix(vec3(0.15, 0.14, 0.12), base, step(0.5, vGK.w));
+      vec3 rc = mix(diffuse * vec3(0.147, 0.133, 0.116), base, step(0.5, vGK.w));
       // stone in courses: blocks of rock split by one-texel cracks, each
       // block its own tone, which is how a cliff reads as rock and not as
       // grey paint

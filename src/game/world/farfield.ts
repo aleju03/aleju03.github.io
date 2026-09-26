@@ -80,7 +80,9 @@ export interface FarField {
    * Recentre the rings on the camera and refresh the chunk mask. `ready`
    * answers whether a chunk's own ground is built and fully faded in there
    */
-  update: (x: number, z: number, alt: number, ready: (cx: number, cz: number) => boolean) => void
+  update: (
+    x: number, z: number, alt: number, ready: (cx: number, cz: number) => boolean, epoch: number,
+  ) => void
   /** build queued tile slices for up to `ms` milliseconds; returns the time spent */
   work: (ms: number) => number
   /** how far from (x, z) the committed rings reach without a gap, or 0 */
@@ -107,9 +109,11 @@ const FAR_VERT_HEAD = /* glsl */ `
   varying vec4 vFar;
   varying float vDepth;
   varying vec3 vLeaf;
+  varying float vFarNY;
 `
 const FAR_VERT_BODY = /* glsl */ `
   vFar = aFar;
+  vFarNY = normal.y;
   vDepth = aExt.x;
   vLeaf = aLeaf;
   // a ground vertex on its own ring's committed square takes the height the
@@ -134,6 +138,7 @@ const FAR_FRAG_HEAD = /* glsl */ `
   varying vec4 vFar;
   varying float vDepth;
   varying vec3 vLeaf;
+  varying float vFarNY;
   float farHash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
   }
@@ -178,6 +183,15 @@ const FAR_FRAG_COLOR = /* glsl */ `
         float shelf = vDepth < 2.5 ? 0.0 : vDepth < 8.0 ? 0.45 : vDepth < 18.0 ? 0.75 : 1.0;
         vec3 shallow = uWater * vec3(1.16, 1.42, 1.38) + 0.02;
         diffuseColor.rgb = mix(shallow, uWater, shelf);
+      }
+      if (vDepth <= 0.0 && vFar.z < 0.5) {
+        // what the chunk ground (groundLook.ts) draws by geometry alone, so
+        // the ring and the far field agree from the air: cliffs are stone,
+        // and every gentle shore has a beach
+        float h = -vDepth;
+        float j = (farHash(floor(vFarW.xz * 0.5)) - 0.5) * 0.3;
+        if (vFarNY < 0.8 + j * 0.1) diffuseColor.rgb = diffuse * vec3(0.147, 0.133, 0.116);
+        else if (h + j < 1.4) diffuseColor.rgb = diffuse * vec3(0.54, 0.45, 0.23) * (h < 0.55 ? 0.72 : 1.0);
       }
       float dw = fwidth(vDepth);
       float foam = 1.0 - smoothstep(0.0, dw * 1.3 + 0.02, abs(vDepth));
@@ -772,12 +786,14 @@ export const buildFarField = (opts: {
     pushUniforms()
   }
 
-  const update: FarField['update'] = (x, z, alt, ready) => {
+  let maskEpoch = Number.NaN
+  const update: FarField['update'] = (x, z, alt, ready, epoch) => {
     for (const r of rings) {
       const ci = Math.floor((x - OFF_X) / r.S)
       const cj = Math.floor((z - OFF_Z) / r.S)
-      const target = r.next ?? (committed(r) ? { ci: r.ci, cj: r.cj } : null)
-      if (!target || target.ci !== ci || target.cj !== cj) {
+      const tci = r.next ? r.next.ci : r.ci
+      const tcj = r.next ? r.next.cj : r.cj
+      if (tci !== ci || tcj !== cj) {
         if (committed(r) && r.ci === ci && r.cj === cj) {
           // back where the committed square already is: stop building away
           for (let k = jobs.length - 1; k >= 0; k--) if (jobs[k].ring === r) jobs.splice(k, 1)
@@ -799,6 +815,10 @@ export const buildFarField = (opts: {
     const ox = pcx - MASK / 2
     const oz = pcz - MASK / 2
     let changed = U.uMaskO.value.x !== ox || U.uMaskO.value.y !== oz
+    // the mask only moves when the streamer's set of solid chunks does
+    // (`epoch`) or the camera changes chunk: no per-frame lookups otherwise
+    if (!changed && epoch === maskEpoch) return
+    maskEpoch = epoch
     for (let j = 0; j < MASK; j++)
       for (let i = 0; i < MASK; i++) {
         const v = ready(ox + i, oz + j) ? 255 : 0

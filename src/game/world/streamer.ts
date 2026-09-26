@@ -480,6 +480,17 @@ export function buildWorld(opts: Opts): WorldHandles {
       clock; the far field is discarded under a chunk only from then */
   const solidAt = new Map<string, number>()
   const far = buildFarField({ parent: root, water: waterMat.color, trackDisposable })
+  /** bumped whenever the set of solid chunks changes, so the far field's
+      mask is rebuilt only then; `pendingSolid` is the next fade to finish */
+  let solidEpoch = 0
+  let pendingSolid = Number.POSITIVE_INFINITY
+  const tickSolid = () => {
+    const now = windUniforms.uTime.value
+    if (now < pendingSolid) return
+    solidEpoch++
+    pendingSolid = Number.POSITIVE_INFINITY
+    for (const t of solidAt.values()) if (t > now && t < pendingSolid) pendingSolid = t
+  }
   const chunkSolid = (cx: number, cz: number) => {
     const t = solidAt.get(key(cx, cz))
     return t !== undefined && windUniforms.uTime.value >= t
@@ -535,6 +546,7 @@ export function buildWorld(opts: Opts): WorldHandles {
     for (const g of c.geos) freeing.push(g)
     chunks.delete(key(c.cx, c.cz))
     solidAt.delete(key(c.cx, c.cz))
+    solidEpoch++
     unregisterInteriors(key(c.cx, c.cz))
   }
 
@@ -542,7 +554,10 @@ export function buildWorld(opts: Opts): WorldHandles {
     const c = buildChunk(cx, cz, tier, mats, fade)
     root.add(c.group)
     chunks.set(key(cx, cz), c)
-    solidAt.set(key(cx, cz), fade && fade.from === undefined ? fade.at + FADE_S : -Infinity)
+    const solid = fade && fade.from === undefined ? fade.at + FADE_S : -Infinity
+    solidAt.set(key(cx, cz), solid)
+    solidEpoch++
+    if (solid < pendingSolid && solid > windUniforms.uTime.value) pendingSolid = solid
     registerInteriors(key(cx, cz), c.interiors)
     // before anything can see it: a chunk rebuilt over ground the player has
     // already cleared must arrive already cleared
@@ -687,7 +702,8 @@ export function buildWorld(opts: Opts): WorldHandles {
     // on one number would otherwise rebuild the entire world every second
     // From the air the far field takes over past the flora ring as soon as
     // it has the whole view covered; until then the old wide ring stands in
-    far.update(x, z, alt, chunkSolid)
+    tickSolid()
+    far.update(x, z, alt, chunkSolid, solidEpoch)
     const high = far.complete ? RADIUS_FAR : RADIUS_HIGH
     const wantRadius = radius === RADIUS ? (alt > 46 ? high : RADIUS) : alt < 32 ? RADIUS : high
     const pcx = chunkX(x)
@@ -703,16 +719,25 @@ export function buildWorld(opts: Opts): WorldHandles {
       restream(pcx, pcz, 0)
     }
     freeSome()
+    let drained = 0
     if (queue.length) {
       // the budget rides the player's speed, and the drain stops when the
       // *next* chunk would not fit rather than when the last one already didn't
       const budget = BUDGET_MS + (BUDGET_MAX - BUDGET_MS) * Math.min(1, speed / BUDGET_SPEED)
+      const d0 = performance.now()
       drain(budget)
+      drained = performance.now() - d0
     }
     // again, now the ring has had its say: a ring that just shrank dropped
     // chunks this frame, and the far field must be under them this frame
-    far.update(x, z, alt, chunkSolid)
-    far.work(far.visible ? FAR_MS_AIR : queue.length ? 0 : FAR_MS_GROUND)
+    tickSolid()
+    far.update(x, z, alt, chunkSolid, solidEpoch)
+    // off the ground the far field is what is being looked at, so it builds
+    // whether or not it is showing yet, but inside what the chunk drain
+    // left of the stretched budget, never on top of it
+    far.work(alt > 12
+      ? Math.max(FAR_MS_GROUND, Math.min(FAR_MS_AIR, BUDGET_MAX - drained))
+      : queue.length ? 0 : FAR_MS_GROUND)
   }
 
   const TIER_RANK: Record<Tier, number> = { bare: 0, flora: 1, full: 2 }
@@ -824,11 +849,11 @@ export function buildWorld(opts: Opts): WorldHandles {
     solidsIn: (cx, cz) => chunks.get(key(cx, cz))?.boxes ?? null,
     farReach: (x, z) => (far.visible ? far.reach(x, z) : 0),
     primeFar: (x, z, alt, ms) => {
-      far.update(x, z, alt, chunkSolid)
+      far.update(x, z, alt, chunkSolid, solidEpoch)
       const t0 = performance.now()
       while (far.pending && performance.now() - t0 < ms) {
         far.work(ms)
-        far.update(x, z, alt, chunkSolid)
+        far.update(x, z, alt, chunkSolid, solidEpoch)
       }
     },
     farStats: () => ({ ...far.stats(), pending: far.pending }),

@@ -108,12 +108,12 @@ for (const tier of ['medium', 'high']) {
   setGfxTier(tier)
   for (const [label, x, z] of spots) {
     const far = buildFarField({ parent: new THREE.Group(), water: new THREE.Color(), trackDisposable: () => {} })
-    far.update(x, z, 200, () => false)
+    far.update(x, z, 200, () => false, 0)
     let total = 0, slices = 0, worst = 0
     while (far.pending) {
       const ms = far.work(0.001)
       total += ms; slices++; worst = Math.max(worst, ms)
-      far.update(x, z, 200, () => false)
+      far.update(x, z, 200, () => false, 0)
     }
     const st = far.stats()
     console.log(tier.padEnd(7) + label.padEnd(10) + String(st.tiles).padStart(4) + ' tiles ' +
