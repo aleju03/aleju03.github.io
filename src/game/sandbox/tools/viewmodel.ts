@@ -61,6 +61,8 @@ const FP_REF_TAN = Math.tan(THREE.MathUtils.degToRad(74) / 2)
 /** the gun in the body's hand, world units per model unit: a body is ~4.5
     tall and its forearm short, so the gun is drawn big enough to read */
 const TP_SCALE = 2.0
+/** how far under the aim the body's gun points, radians */
+const TP_HIP = 0.32
 /** the first-person gun's own turn in the frame (pitch, yaw, roll): yawed
     in so its flank shows and the claw points at the crosshair */
 const FP_TURN = new THREE.Euler(0.03, 0.3, -0.3, 'YXZ')
@@ -339,6 +341,7 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   const tmp = new THREE.Vector3()
   const m4 = new THREE.Matrix4()
   const aimQ = new THREE.Quaternion()
+  const xAxis = new THREE.Vector3(1, 0, 0)
   const camUp = new THREE.Vector3()
   const tmp2 = new THREE.Vector3()
   let aimed = false
@@ -444,6 +447,10 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       if (f.aimAt) m4.lookAt(f.hand, f.aimAt, up)
       else m4.lookAt(tmp.set(0, 0, 0), f.aim ?? tmp2.set(0, 0, -1).applyQuaternion(cam.quaternion), up)
       tp.quaternion.setFromRotationMatrix(m4)
+      // held from the hip, a little under the aim: the beam leaves the
+      // barrel low and arcs up to what it holds, which is what reads as a
+      // beam and not a rod from over the shoulder
+      tp.quaternion.multiply(q.setFromAxisAngle(xAxis, -TP_HIP))
     }
   }
 

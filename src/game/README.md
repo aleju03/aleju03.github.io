@@ -654,7 +654,7 @@ await sb.whenReady                      // optional: spawns before it are queued
 sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
 
 const id = sb.spawn('crate', { x, y, z }, { yaw, quaternion, velocity, angular,
-                                            frozen, id, mesh, shape, mass, data, phase })
+                                            frozen, id, mesh, shape, mass, data, phase, scale })
 sb.remove(id); sb.clear(); sb.get(id); sb.forEach(fn); sb.count
 sb.getTransform(id, pos, quat?); sb.setTransform(id, pos, quat?)
 sb.getVelocity(id, lin, ang?); sb.setVelocity(id, lin?, ang?)
@@ -798,7 +798,11 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   slices were spaced, and Node and Chrome agree (the header of `physics.ts`
   says why and where the edge is). `sb.stateHash()` fingerprints it;
   `measure physics determinism` runs every scenario twice and once more on
-  uneven frames, and `npm run film` prints the same hash under each sheet
+  uneven frames, staged as the film stages it (the same two rings of chunks,
+  the ruins armed and destruction attached, so the demolitions really come
+  down headless; a scenario that ends with no props is reported as having
+  nothing to compare rather than as a pass on the empty hash), and
+  `npm run film` prints the same hash under each sheet
   (as long as its `--rings` cover everywhere the props go: the film only
   builds the solids of the chunks it draws, and `sandbox:chain` throws gibs
   far enough to need `--rings 4`). That is why the ground streams at the
@@ -827,13 +831,16 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   kind, a break of every breakable and a blast: it must print 0 and 0.
 - **Nothing writes alpha it does not mean.** Under the look alpha is a
   hole, and fire and smoke that dissolved through a Bayer dither read as a
-  screen door and a sparse dot pattern. Flame balls are opaque and banded
-  (`fx.ts`'s `banded`) and shrink away. The blast's core and the smoke are
-  sprites on one program in three blends that leave the target's alpha
-  alone: the core is *added* (near white, so a barrel tumbling through the
-  fireball is still seen inside it), its inner disc writes `GLOW_ALPHA` so
+  screen door and a sparse dot pattern. The blast's core, the flames and
+  the smoke are sprites on one program in three blends: the core is
+  *added* (near white, so a barrel tumbling through the fireball is still
+  seen inside it), its inner disc writes `GLOW_ALPHA` so
   the look skips the grade, the ink and the lamp light there, as the
-  physgun's beam does, and smoke is premultiplied *over*, translucent
+  physgun's beam does; the fireball's flames are opaque sprites with a
+  torn edge that also write `GLOW_ALPHA`, because the look inks depth edges
+  and a ball of fire drawn as balls got a rim on every ball (and, drawn
+  without depth, the outlines of what stood behind it); and smoke is
+  premultiplied *over*, translucent
   through blending in three stepped opacities, lit by the look's ambient
   (`uShade`, from `lightLook`) so it darkens at night. Ground dust is a
   flattened sprite, or it reads as a stone.
@@ -842,7 +849,8 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   street, the fronts and the props round it by day as well as by night and
   washing the air, then it falls to the fireball's orange glow; under it
   the added core, flame spears thrown radially well past it (`jets`), and
-  only then a few orange flame balls.
+  then the ragged fireball of flame sprites, white-yellow in the middle and
+  orange at the tips, with dark soot at its crown.
 - **A blast throws, and it is late.** `explode` sets a velocity change (out,
   50-70 degrees up, tumbling), not an impulse, falling with the square root
   of the mass; blasts a beat apart redirect more than they add. Explosives
@@ -912,7 +920,7 @@ npm run film -- props:links            shader links on first spawn/break/blast
 npm run drive -- links                 the same count in the real /world: first
                                        spawn, a break, a fuse and a chain (0)
 
-npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
+npm run film -- 'sandbox:physgun-*' --dense   the physgun films, 1p and 3p, + 10 fps sheets
 npm run film -- sandbox:bump           the walker leaning on, charging, landing on and
                                        hopping into four of the town's pedestrians
 npm run measure -- bodies              the same run headless, a 400-approach sweep for

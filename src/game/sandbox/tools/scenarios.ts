@@ -3,6 +3,7 @@ import { makeCollisionSet } from '../../physics/collision'
 import { buildPlayerBody, type PlayerPose, type PlayerRig } from '../../player/playerBody'
 import type { RagdollEnv } from '../../player/ragdoll'
 import { terrainY } from '../../world/terrain'
+import { KINDS, shapeExtents } from '../kinds'
 import { defineScenario, siteFlat, type ScenarioCtx, type Shot } from '../scenarios'
 import { createToolbelt, type Toolbelt } from './toolbelt'
 import { emptyInput, type RigEntry, type ToolInput } from './types'
@@ -24,9 +25,9 @@ import { emptyInput, type RigEntry, type ToolInput } from './types'
     npm run film -- sandbox:physgun-swing       lift a crate and swing it round in an arc, freeze it mid-air
     npm run film -- sandbox:physgun-rotate      E + mouse turns it, Shift snaps it to 45 degrees, freeze, R drops it
     npm run film -- sandbox:physgun-heavy       the 900 kg block lagging a swing and sailing past
-    npm run film -- sandbox:physgun-throw       a barrel flung off the beam into a stack of crates
+    npm run film -- sandbox:physgun-throw       a barrel flung off the beam into a tower of small crates
     npm run film -- sandbox:physgun-ragdoll     a body picked up by the head, pinned in the air, let down
-    ...each with a -3p twin, and `--video` for an MP4
+    ...each with a -3p twin; `--video` for an MP4, `--dense` for 10 fps sheets
 */
 
 const EYE = 3.84
@@ -409,39 +410,49 @@ gunScenario({
 
 /** where the throw film stacked its crates */
 const homes: Array<[number, number, number]> = []
-const ROWS = 4
+// the stack: a tower of small crates two wide and six high, sixteen units
+// out and four to the right. Light crates stacked tall is what makes a
+// thrown barrel a payoff: a wall of 35 kg crates just caught it
+const STACK = 'crate_small'
+const ROWS = 6
+const COLS = 2
+const TD = 16
+const TX = 4
 /** the throw's sweep starts here, and the trigger lets go this far into it */
 const T0 = 1.9
 // tuned headless (`npm run measure -- physics physgun`): the sweep's
 // length, how far into it the trigger is let go, and how much it rises
-const REL = 0.19
+const REL = 0.205
 const SWEEP = 0.35
 const LOFT = 0.3
 
 gunScenario({
   name: 'throw',
-  title: 'a barrel swung round on the beam and let go: it flies into a stack of crates',
-  duration: 5,
-  tp: { back: 13, side: -5, up: 6.5, ahead: 9, lift: -1, across: 3, fov: 68 },
+  title: 'a barrel swung round on the beam and let go: it flies into a tower of crates',
+  // the camera holds on the tower until it has come down and settled
+  duration: 7,
+  tp: { back: 7, side: -7, up: 4.5, ahead: 11, lift: -1.5, across: 3, fov: 62 },
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
     const nx = -c.dz
     const nz = c.dx
-    // the stack, a tower of crates two wide and four high, well ahead and a
-    // little right, where the barrel's arc lets go toward it
-    const h = 2.42
-    const D = 16
-    const wx = c.x + c.dx * D + nx * 4
-    const wz = c.z + c.dz * D + nz * 4
-    const base = c.sb.restY('crate', wx, wz)
+    // the stack (STACK, ROWS x COLS), well ahead and a little right, where
+    // the barrel's arc lets go toward it
+    const ext = shapeExtents(KINDS[STACK].shape, new THREE.Vector3())
+    const h = ext.y * 2 + 0.02
+    const w = Math.max(ext.x, ext.z) * 2 + 0.04
+    const D = TD
+    const wx = c.x + c.dx * D + nx * TX
+    const wz = c.z + c.dz * D + nz * TX
+    const base = c.sb.restY(STACK, wx, wz)
     homes.length = 0
     for (let row = 0; row < ROWS; row++)
-      for (let k = 0; k < 2; k++) {
-        const col = k - 0.5
-        const x = wx + nx * col * (h + 0.04)
-        const z = wz + nz * col * (h + 0.04)
+      for (let k = 0; k < COLS; k++) {
+        const col = k - (COLS - 1) / 2
+        const x = wx + nx * col * w
+        const z = wz + nz * col * w
         const y = base + row * (h + 0.01)
-        c.ids.push(c.sb.spawn('crate', { x, y, z }, { yaw: y0 }))
+        c.ids.push(c.sb.spawn(STACK, { x, y, z }, { yaw: y0 }))
         homes.push([x, y, z])
       }
     c.memo.wx = wx
