@@ -13,6 +13,7 @@ import { SEA_Y, terrainY } from './terrain'
 import { applySway, tickWind, updateTrample, windUniforms } from './wind'
 import { buildGrass, type GrassHandles } from './grass'
 import { makeLeafTexture } from './treeMesh'
+import { texelate } from '../render/texel'
 
 /*
   The ring of chunks around the player, and the budget that keeps building it
@@ -399,7 +400,8 @@ export const makeChunkMats = (
   trackTexture: (t: THREE.Texture) => void,
   trackDisposable: (d: { dispose: () => void }) => void,
 ): ChunkMats => {
-  const detailTex = makeDetailTexture()
+  // nearest up close (render/texel.ts): the ground's grain reads as texels
+  const detailTex = texelate(makeDetailTexture())
   detailTex.wrapS = detailTex.wrapT = THREE.RepeatWrapping
   trackTexture(detailTex)
   trackDisposable(detailTex)
@@ -436,7 +438,7 @@ export const makeChunkMats = (
 
   // foliage cards: alpha-tested so they need no sorting, a strong rim so a
   // backlit crown glows at its edge the way thin leaves do
-  const leafTex = makeLeafTexture()
+  const leafTex = texelate(makeLeafTexture())
   trackTexture(leafTex)
   trackDisposable(leafTex)
   const leafMat = new THREE.MeshStandardMaterial({

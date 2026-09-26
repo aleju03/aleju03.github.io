@@ -76,6 +76,17 @@ options
                        every tile before the shutter opens (try 20). Both
                        are session state and appear in no chunk, so this is
                        the only way to photograph them
+  --raw                skip the pixel look (render/pixelLook.ts): ACES straight
+                       to an antialiased canvas, for a before and after
+  --lines <n>          internal lines per tile for the look (default half the
+                       tile height, an exact 2x). The game draws ~540 on a
+                       1080p screen; --tile 1920x1080 --cols 1 is 1:1 with it
+  --look <json>        override the look's knobs for this shot, e.g.
+                       '{"outline":0.7,"levels":14,"day":{"floor":0.05}}'
+                       (knobs: render/pixelLook.ts, grade: render/grade.ts)
+  --bench <n>          redraw the first tile n times, each forced to finish,
+                       and print the median ms per frame (pair with --raw and
+                       a --tile the size of a real screen to measure fill)
   --pick <x>,<y>       also raycast that pixel of tile 0 and print the hits
   --keep               leave chrome and vite running (for repeated shots)
 `)
@@ -137,6 +148,9 @@ const spec = {
   tier: String(flag('tier', 'full')),
   props,
   life: Number(flag('life', 0)),
+  raw: has('raw'),
+  lines: Number(flag('lines', 0)),
+  look: JSON.parse(flag('look', '{}')),
 }
 const outPath = resolve(
   flag('out', `shots/${targets[0].replace(/[^a-z0-9]+/gi, '-')}.png`),
@@ -182,11 +196,16 @@ chrome = spawn('google-chrome-stable', [
   `--remote-debugging-port=${CDP}`,
   // the real GPU, not swiftshader: swiftshader renders this at under a frame
   // a second and distorts every ratio you might want to measure
-  '--use-angle=gl',
+  // PROBE_ANGLE=swiftshader rasterizes on the CPU instead, which is a
+  // crude but honest stand-in for a fill-bound iGPU when --bench is asking
+  // what a pass costs per pixel
+  `--use-angle=${process.env.PROBE_ANGLE ?? 'gl'}`,
   '--enable-unsafe-swiftshader',
   `--window-size=${tw * spec.cols},${th * 4}`,
   '--no-first-run',
-  '--user-data-dir=/tmp/world-probe-chrome',
+  // one profile per debugging port: two probes sharing a profile directory
+  // is one chrome, and the second launch hands itself to the first and exits
+  `--user-data-dir=/tmp/world-probe-chrome-${CDP}`,
 ], { stdio: 'ignore' })
 
 const page = await waitFor(async () => {
@@ -207,6 +226,11 @@ ws.onmessage = (e) => {
     // the probe page has no favicon and never will; its 404 is not news
     const e = m.params.entry
     if (!/favicon/.test(`${e.url ?? ''} ${e.text}`)) errors.push(e.text)
+  }
+  // three reports a shader that failed to compile through console.error,
+  // not as an exception, and that failure draws nothing at all
+  if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
+    errors.push(m.params.args.map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 600))
   }
   if (m.method === 'Runtime.exceptionThrown') {
     const d = m.params.exceptionDetails
@@ -263,6 +287,9 @@ for (const r of rows) {
   )
 }
 
+const glErr = await evaluate('window.__probe.glError()')
+if (glErr) errors.push(`GL error ${glErr}: a draw failed validation and drew nothing`)
+
 const cols = Math.min(spec.cols, rows.length)
 const rowsN = Math.ceil(rows.length / cols)
 const shot = await send('Page.captureScreenshot', {
@@ -273,6 +300,12 @@ const shot = await send('Page.captureScreenshot', {
 mkdirSync(dirname(outPath), { recursive: true })
 writeFileSync(outPath, Buffer.from(shot.result.data, 'base64'))
 console.log(`\n${outPath}  (${tw * cols}x${th * rowsN}, ${Date.now() - t0} ms)`)
+
+const benchN = Number(flag('bench', 0))
+if (benchN) {
+  const b = JSON.parse(await evaluate(`JSON.stringify(window.__probe.bench(${benchN}))`))
+  console.log(`\nbench: ${b.median} ms median, ${b.p90} ms p90, drawn at ${b.internal}`)
+}
 
 const pixel = flag('pick', null)
 if (pixel) {

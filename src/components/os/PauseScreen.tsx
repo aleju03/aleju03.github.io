@@ -4,7 +4,7 @@ import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
 import {
-  DETAILS, FPS_CAPS, SCALE_MAX, SCALE_MIN, VOL_MAX, VOL_MIN,
+  DETAILS, FPS_CAPS, PIXEL_SIZES, SCALE_MAX, SCALE_MIN, VOL_MAX, VOL_MIN,
   detailTier, fpsCapLabel, type RoamPrefs,
 } from './roamPrefs'
 import type { GfxTier } from '../../game/world/quality'
@@ -60,6 +60,7 @@ const CAMERAS = [
 /** the detail tiers, in the order they are written on the sheet, and the word
     for what a tier actually is once it is running */
 const DETAIL_WORDS = DETAILS.map((id) => ({ id, label: id }))
+const PIXEL_WORDS = PIXEL_SIZES.map((id) => ({ id, label: id }))
 const tierWord = (t: GfxTier) => (t === 'high' ? 'full' : 'lean')
 
 /** a volume, in the sheet's own voice: a dial at the bottom of its travel is
@@ -539,9 +540,18 @@ export default function PauseScreen({
                     value={prefs.detail}
                     onPick={(detail) => onPrefs((p) => ({ ...p, detail }))}
                   />
-                  {/* ...and how many pixels to draw it into. The opposite kind
-                      of knob: one number on the renderer, live on the next
-                      frame, and the ceiling the adaptive governor sheds from */}
+                  {/* how big a pixel of the pixel art is: taste, not cost,
+                      and live, since it is only the size of a target */}
+                  <Choice
+                    label="pixels"
+                    options={PIXEL_WORDS}
+                    value={prefs.pixels}
+                    onPick={(pixels) => onPrefs((p) => ({ ...p, pixels }))}
+                  />
+                  {/* ...and how much of that resolution to actually draw. The
+                      opposite kind of knob from detail: one target size, live
+                      on the next frame, and the ceiling the adaptive
+                      governor sheds from */}
                   <Dial
                     label="render scale"
                     value={prefs.scale}

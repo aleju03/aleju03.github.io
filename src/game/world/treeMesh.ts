@@ -5,6 +5,7 @@ import { createMeshBuilder } from '../core/geometry'
 import type { PropKind } from './biomes'
 import { VARIANTS, kitsFor, stampKit, type Palette } from './props'
 import { applySway } from './wind'
+import { texelate } from '../render/texel'
 
 /*
   A standalone tree, outside the chunk system: the same kits props.ts stamps
@@ -114,7 +115,7 @@ let mats: {
 
 const materials = () => {
   if (mats) return mats
-  const tex = makeLeafTexture()
+  const tex = texelate(makeLeafTexture())
   const solid = new THREE.MeshStandardMaterial({
     color: 0xe0e0e0, vertexColors: true, roughness: 0.92, metalness: 0,
   })
