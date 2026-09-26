@@ -488,7 +488,7 @@ export function buildSky(opts: BuildOpts): SkyHandles {
              // the weather: banks and open blue, on their own slow drift
              float bank = cNoise(flat3 * 1.1 + vec3(uCloudTime * 0.004, 0.0, 0.0));
              float cover = uCover - (bank - 0.5) * 0.24
-               + (1.0 - smoothstep(0.0, 0.14, dir.y)) * 0.3;
+               + pow(1.0 - smoothstep(0.0, 0.22, dir.y), 1.5) * 0.7;
              float f = cFbm(p);
              // A near-hard rim and three flat tones (shadow, mid, lit): the
              // look posterizes whatever arrives here, and a soft gradient
@@ -521,7 +521,11 @@ export function buildSky(opts: BuildOpts): SkyHandles {
                float wisp = cNoise(q) * 0.66 + cNoise(q * 2.4) * 0.34;
                // hard-edged and sparse: a soft half-alpha veil over the blue
                // posterized into a camouflage of pale patches across the deck
-               float aw = smoothstep(0.7, 0.72, wisp) * 0.8 * (1.0 - cov);
+               // and, like the deck, thinning out toward the skyline rather
+               // than running into it: from the air the wisps were the
+               // pillars of cloud cut flat along the horizon
+               float aw = smoothstep(0.7 + 0.25 * (1.0 - smoothstep(0.02, 0.25, dir.y)), 0.72
+                 + 0.25 * (1.0 - smoothstep(0.02, 0.25, dir.y)), wisp) * 0.8 * (1.0 - cov);
                a = cov + aw;
                col = mix(mix(uCloudShade, uCloudLit, 0.9), col, cov / max(a, 0.001));
              #endif

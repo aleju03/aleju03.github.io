@@ -204,7 +204,11 @@ const FAR_FRAG_COLOR = /* glsl */ `
           float sy = fract(vFarW.y / 5.0 + farHash(floor(vFarW.xz / 24.0)) * 0.6);
           float sw = clamp(fwidth(vFarW.y) / 5.0, 0.01, 0.5);
           float line = smoothstep(0.42 - sw, 0.42 + sw, abs(sy - 0.5));
-          diffuseColor.rgb *= 0.78 - 0.3 * line;
+          // ...and gullies down the face, a few units wide, which survive
+          // the distance the strata do not: a cliff band a kilometre off
+          // read as a pale stripe of haze until it had them
+          float gully = step(0.56, farNoise(vec2((vFarW.x + vFarW.z) / 7.0, vFarW.y / 30.0)));
+          diffuseColor.rgb *= (0.76 - 0.3 * line) * (1.0 - 0.25 * gully);
         }
         else if (h + j < 1.4) diffuseColor.rgb = diffuse * vec3(0.54, 0.45, 0.23) * (h < 0.55 ? 0.72 : 1.0);
       }

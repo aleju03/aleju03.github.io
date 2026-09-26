@@ -337,9 +337,13 @@ world/
                   program and one draw a tile. It discards what a finer ring
                   or a solid chunk already draws, stitches its ring edges to
                   the next ring's polyline, swaps a ring in whole, and builds
-                  in resumable slices inside the streamer's budget. From the
-                  air the ring shrinks to the flora chunks (RADIUS_FAR) and
-                  this draws the rest
+                  in resumable slices inside the streamer's budget. Past the
+                  impostor rings the ground shader paints each block's lots
+                  as roofs, country roads are strips off roadAt, forests keep
+                  stands and gaps, and rock bands carry strata and gullies,
+                  so a town and its roads reach the horizon. From the air the
+                  ring shrinks to the flora chunks (RADIUS_FAR) and this
+                  draws the rest
   groundLook.ts   the chunk ground's shader: a material per texel (paved,
                   sand, snow, rock, soil) with ragged pixel borders, cliffs
                   and beaches decided by geometry, and each material painted
@@ -1263,13 +1267,18 @@ thinner over open country and down a street (`BIOME_AIR`, fed by
 list (the streamer's `nearLamps`, the nearest sixteen) and the headlamp rides
 the walker's eye while they are on foot in the overworld.
 
-From the air the air is height-aware (`Air.liftK`, `liftBase`,
-`liftScale`: the optical depth of an exponential haze layer between the eye
-and the surface, rather than plain range) and has an `edge` at the far
-field's rim where it takes everything; a pixel that is nothing but air bands
-with the sky, so the rim is not a dithered seam against it. The silhouette
-ink against the sky fades with what the fog and the air have left of the
-thing, which is what used to draw a ghost skyline on empty haze.
+From the air the scene fog steps aside (`levels/altitude.ts` pushes it past
+the far field's rim) and the look's air does all of the aerial perspective on
+one curve that only rises with range: it lengthens with altitude (`Air.liftK`)
+and, toward `edge` (the far field's reach), takes the rest of the colour, so
+the rim dissolves into the horizon's air and the sky under the horizon is the
+same air. It is deliberately *not* height-layered: weighing the haze by the
+heights a ray ran between made a low valley at a kilometre greyer than a ridge
+at three, which from the air read as a haze band with clearer land beyond it.
+Ink fades with that air too, and the cloud deck and the cirrus thin toward the
+skyline rather than being cut, so nothing draws a line along the horizon. A
+pixel that is nothing but air bands with the sky, so the rim is not a
+dithered seam against it.
 
 The knobs are `LookKnobs`, `Air` and `FakeLights` (`pixelLook.ts`) and `Grade`
 (`grade.ts`), and all of them are uniforms or a target size, so any of them
