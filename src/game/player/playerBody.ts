@@ -4,8 +4,8 @@ import { supportY } from '../physics/collision'
 import { seeded } from '../core/rand'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
-  B, BODY_Y0, BONE_COUNT, FACE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
-  NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, boneRestWorld,
+  B, BODY_Y0, BONE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HIP_X, HIP_Y,
+  NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, bindMatrixWorld,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
 
@@ -347,6 +347,8 @@ const LIMB_NAMES: BodyLimb['name'][] = [
 ]
 /** design-unit radii per particle, and relative masses: a heavy head and
     trunk, light fists, so a tumble leads with the head and the hands flap */
+/** the expressions a look can hash to (bodyMaterial's uFace), pills weighted */
+const FACES = [0, 0, 0, 1, 2, 0, 3, 4]
 const RADII = [0.46, 0.56, 0.42, 0.18, 0.18, 0.15, 0.15, 0.2, 0.2, 0.21, 0.21, 0.2, 0.2, 0.66, 0.44]
 const MASSES = [3, 2.6, 2.4, 0.9, 0.9, 0.6, 0.6, 0.45, 0.45, 0.9, 0.9, 0.8, 0.8, 1.2, 0.6]
 /** the whole body, for turning an impulse into a velocity */
@@ -370,15 +372,14 @@ const ramp = (a: number, b: number, t: number) => SMOOTH(THREE.MathUtils.clamp((
 /** rigs are seeded apart so a crowd does not blink and fidget in unison */
 let rigSerial = 0
 
-/** the inverse bind matrices: the bind pose is the rest pose with every
-    rotation identity, so each is just the bone's rest position negated.
-    Shared, since every body is the same drawing */
+/** the inverse bind matrices. The bind pose is the rest pose except for the
+    upper arms, which the surface was drawn holding out (see bodyShape's
+    ARM_BIND), so a rig whose rotations are all identity hangs its arms
+    straight down and nothing that poses it has to know. Shared, since every
+    body is the same drawing */
 let BIND: THREE.Matrix4[] | null = null
 const bindInverses = () =>
-  (BIND ??= Array.from({ length: BONE_COUNT }, (_, i) => {
-    const p = boneRestWorld(i, new THREE.Vector3())
-    return new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z)
-  }))
+  (BIND ??= Array.from({ length: BONE_COUNT }, (_, i) => bindMatrixWorld(i, new THREE.Matrix4()).invert()))
 
 export function buildPlayerBody(
   eye: number,
@@ -413,7 +414,6 @@ export function buildPlayerBody(
   const thighR = bones[B.THIGH_R]
   const shinR = bones[B.SHIN_R]
   const ankleR = bones[B.FOOT_R]
-  const eyes = bones[B.EYES]
   const pom = bones[B.POM]
   const pack = bones[B.PACK]
   const REST = BONE_REST.map(({ at }) => new THREE.Vector3(at[0], at[1], at[2]))
@@ -474,7 +474,7 @@ export function buildPlayerBody(
       h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0
     }
     const r = seeded(h)
-    persona.lean = r() * 0.16
+    persona.lean = r() * 0.06
     persona.roll = (r() - 0.5) * 0.24
     persona.tilt = (r() - 0.5) * 0.4
     // one arm always reaches further than the other
@@ -484,7 +484,9 @@ export function buildPlayerBody(
     persona.armL = leftHigh ? hi : lo
     persona.armR = leftHigh ? lo : hi
     // the face is hashed from the look too, so it costs no field on the wire
-    persona.face = h % FACE_COUNT
+    // mostly the plain pill eyes a bean is recognised by, now and then one
+    // of the other four
+    persona.face = FACES[h % FACES.length]
     persona.girth = buildGirth(l.build ?? 0)
   }
   personaFor(look)
@@ -495,9 +497,8 @@ export function buildPlayerBody(
   // hat swaps it (see setLook)
   let hatNow = look.hat ?? 0
   let buildNow = look.build ?? 0
-  let costumeNow = look.costume ?? 0
-  let faceNow = persona.face
-  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow, costumeNow, faceNow), paint.material)
+  paint.setFace(persona.face)
+  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow), paint.material)
   mesh.castShadow = true
   mesh.frustumCulled = false // hugs the camera; culling would blink limbs out
   // for callers that do cull it (remote bodies): a fixed sphere round the
@@ -776,9 +777,11 @@ export function buildPlayerBody(
   interface Jiggle {
     p: THREE.Vector3
     v: THREE.Vector3
+    /** where the rest point was last frame, for its velocity */
+    r: THREE.Vector3
     fresh: boolean
   }
-  const jig = (): Jiggle => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), fresh: true })
+  const jig = (): Jiggle => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), r: new THREE.Vector3(), fresh: true })
   const jHead = jig()
   const jPom = jig()
   const jPack = jig()
@@ -786,22 +789,31 @@ export function buildPlayerBody(
   const jMitR = jig()
   const JIGGLES = [jHead, jPom, jPack, jMitL, jMitR]
   let jiggleEnergy = 0
+  const restV = new THREE.Vector3()
   /** step a particle toward `rest` (world), with gravity `g` (world units/s^2
-      down) and a cap on how far it may stray, and report the offset */
+      down) and a cap on how far it may stray, and report the offset.
+      The damping acts on the particle's speed *relative to its rest point*:
+      damped against the world instead, a body moving at a steady speed
+      dragged every particle a constant distance behind it (v C / K), and a
+      bean running at full tilt carried its head a third of a unit behind
+      its own neck, which read as leaning back */
   const stepJiggle = (
     j: Jiggle, rest: THREE.Vector3, K: number, C: number, g: number, reach: number, dt: number,
   ) => {
     if (j.fresh || j.p.distanceToSquared(rest) > (4 * S) * (4 * S)) {
       j.p.copy(rest)
+      j.r.copy(rest)
       j.v.set(0, 0, 0)
       j.fresh = false
     }
+    restV.subVectors(rest, j.r).multiplyScalar(1 / Math.max(dt, 1e-4))
+    j.r.copy(rest)
     // two half steps: a stiff spring at 30 fps must not explode
     const h = Math.min(dt, 1 / 20) / 2
     for (let k = 0; k < 2; k++) {
       vTmp.subVectors(rest, j.p).multiplyScalar(K)
       vTmp.y -= g
-      vTmp.addScaledVector(j.v, -C)
+      vTmp.addScaledVector(j.v, -C).addScaledVector(restV, C)
       j.v.addScaledVector(vTmp, h)
       j.p.addScaledVector(j.v, h)
     }
@@ -810,10 +822,10 @@ export function buildPlayerBody(
     if (d > reach) {
       j.p.copy(rest).addScaledVector(vTmp, reach / d)
       // the part of the velocity pushing past the stop is spent
-      const along = j.v.dot(vTmp) / d
+      const along = (j.v.dot(vTmp) - restV.dot(vTmp)) / d
       if (along > 0) j.v.addScaledVector(vTmp, -along / d)
     }
-    jiggleEnergy += j.v.lengthSq()
+    jiggleEnergy += vTmp.subVectors(j.v, restV).lengthSq()
   }
 
   const basisQuat = (q: THREE.Quaternion, x: THREE.Vector3, y: THREE.Vector3, z: THREE.Vector3) => {
@@ -964,7 +976,7 @@ export function buildPlayerBody(
     swing(jMitL, handL, DOWN, 0.12, 170, 8, 3, 1.1)
     swing(jMitR, handR, DOWN, 0.12, 170, 8, 3, 1.1)
 
-    // blinking: a quick squash of the eyes bone, now and then twice
+    // blinking: the painted eyes squash shut, now and then twice
     blinkIn -= dt
     if (blinkIn <= 0 && blinkT < 0) {
       blinkT = 0
@@ -984,7 +996,7 @@ export function buildPlayerBody(
         } else blinkT = -1
       }
     }
-    eyes.scale.set(1, lid, 1)
+    paint.setLid(lid)
     void show
   }
 
@@ -1198,9 +1210,14 @@ export function buildPlayerBody(
     const waddleRoll = stepS * (0.17 - 0.06 * runK) * moveK + shift * 1.2
     // the get-up hunch is not gated by pose.show: it is the shape of the
     // action, not flair, and the lens is off the head for the whole of it
+    // A bean runs nearly upright: the lean is a hint of the speed and a
+    // lurch on a start or a stop, not a sprinter's pitch. The brawler before
+    // it leaned 55 degrees at a full run and read as falling over its own
+    // feet; `npm run measure -- body` prints the pitch, and a run should stay
+    // around ten degrees
     const lean =
-      (THREE.MathUtils.clamp(fwdS * 0.03 + accF * 0.035, -0.4, 0.55) + pose.crouchK * 0.28 +
-        runK * gait * 0.5 + 0.2 + (0.12 + persona.lean) * idleK) * show +
+      (THREE.MathUtils.clamp(fwdS * 0.009 + accF * 0.012, -0.12, 0.14) + pose.crouchK * 0.2 +
+        runK * gait * 0.05 + 0.02 + persona.lean * idleK) * show +
       riseFold * 0.55 - stretchK * 0.12
     // centripetal lean: bank into a turn only as fast as the feet are
     // actually carrying the body
@@ -1227,7 +1244,7 @@ export function buildPlayerBody(
         // falling it pitches over, rather than stretching into a tube
         // a lunge, not a hop: in the air the body pitches into its travel
         // (and forward even from a standing jump), limbs trailing behind
-        airK * (0.3 + THREE.MathUtils.clamp(fwdS * 0.05, -0.2, 0.35) +
+        airK * (0.12 + THREE.MathUtils.clamp(fwdS * 0.025, -0.12, 0.2) +
           THREE.MathUtils.clamp(-pose.vy * 0.012, -0.15, 0.15)) * (1 - flyK),
       // standing in the guard the trunk weaves: a slow twist and a lean to
       // one side, so no two frames of an idle are symmetrical
@@ -1473,7 +1490,9 @@ export function buildPlayerBody(
     const swingF = swingAmt * mCos
     const swingS = swingAmt * mSin * 0.7
     // a swagger: the swing goes out as much as forward, below the face
-    const swingOut = Math.abs(swingAmt) * 0.5
+    // and a run flails: the arms thrown out wide as well as pumped, the way
+    // a bean runs with nothing to do with its hands
+    const swingOut = Math.abs(swingAmt) * (0.5 + 0.35 * runK)
     // the forearm follows the upper arm later still, so it is bent coming
     // forward and trails open going back
     const lagEl = swingAt(0.32) * mCos
@@ -1487,7 +1506,7 @@ export function buildPlayerBody(
     // held clear of the body at rest, with a gap of air down each side: a
     // wider build holds them wider
     const spread =
-      0.34 + (persona.girth - 1) * 0.9 - 0.08 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.15 + swingOut
+      0.58 + (persona.girth - 1) * 0.9 - 0.04 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.35 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
@@ -1900,7 +1919,7 @@ export function buildPlayerBody(
       head.position.set(0, SIT_NECK, 0)
       head.rotation.set(SIT_SLOUCH, 0, 0)
       head.scale.set(1 / SIT_SPREAD, 1 / SIT_SQUASH, 1 / SIT_SPREAD)
-      eyes.scale.set(1, 1, 1)
+      paint.setLid(1)
       // the pom-pom lies back along the beanie rather than standing up
       // through a roof
       pom.quaternion.identity()
@@ -2044,7 +2063,7 @@ export function buildPlayerBody(
       torso.scale.set(1, 1, 1)
       armInv.set(1, 1, 1)
       head.scale.set(1, 1, 1)
-      eyes.scale.set(1, 1, 1)
+      paint.setLid(1)
       head.position.copy(REST[B.HEAD])
       torso.position.copy(REST[B.TORSO])
       pack.position.copy(REST[B.PACK])
@@ -2058,16 +2077,16 @@ export function buildPlayerBody(
     },
     setLook: (next) => {
       personaFor(next)
+      // the outfit, the face and the colours are uniforms; only the
+      // headgear and the build are geometry
       paint.setLook(next)
+      paint.setFace(persona.face)
       const hat = next.hat ?? 0
       const b = next.build ?? 0
-      const c = next.costume ?? 0
-      if (hat !== hatNow || b !== buildNow || c !== costumeNow || persona.face !== faceNow) {
+      if (hat !== hatNow || b !== buildNow) {
         hatNow = hat
         buildNow = b
-        costumeNow = c
-        faceNow = persona.face
-        mesh.geometry = bodyGeometry(hat, b, c, faceNow)
+        mesh.geometry = bodyGeometry(hat, b)
       }
     },
     showHead,
