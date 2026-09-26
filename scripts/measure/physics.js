@@ -932,13 +932,15 @@ if (want('float')) {
 if (want('physgun')) {
   const H = 1 / 60
   const onlyScn = process.env.SCN
-  for (const kind of ['ball', 'cone', 'plank', 'barrel', 'crate', 'block']) {
+  // [kind, scale]: the last is the heavy film's block, the catalogue's at
+  // 1.7 times the size, so the film's tonnage and this table agree
+  for (const [kind, scale] of [['ball', 1], ['cone', 1], ['plank', 1], ['barrel', 1], ['crate', 1], ['block', 1], ['block', 1.7]]) {
     const { sb } = newSandbox()
     await sb.whenReady
     const x0 = flat.x
     const z0 = flat.z
     const focus = { x: x0, y: fy, z: z0 }
-    const id = sb.spawn(kind, { x: x0, y: sb.restY(kind, x0, z0), z: z0 })
+    const id = sb.spawn(kind, { x: x0, y: sb.restY(kind, x0, z0) + 0.7 * (scale - 1), z: z0 }, { scale })
     for (let i = 0; i < 30; i++) sb.tick({ dt: H, active: true, focus })
     // the holder stands ten units south, looking north at the prop
     const eye = new THREE.Vector3(x0, fy + 3.84, z0 + 10)
@@ -1021,7 +1023,7 @@ if (want('physgun')) {
     frame()
     off()
     const tn = tune(sb.get(id).mass)
-    console.log(`physgun  ${pad(kind, 7)} ${pad(sb.get(id).mass + ' kg', 7)} w ${f(tn.w, 1)} z ${f(tn.z, 2)}: ` +
+    console.log(`physgun  ${pad(scale === 1 ? kind : `${kind}x${scale}`, 9)} ${pad(+sb.get(id).mass.toFixed(sb.get(id).mass < 10 ? 1 : 0) + ' kg', 7)} w ${f(tn.w, 1)} z ${f(tn.z, 2)}: ` +
       `${f(stepLen, 1)}-unit step settles (2 cm) in ${settled < 0 ? 'NEVER' : Math.round((settled + 1) * H * 1000) + ' ms'}, ` +
       `overshoot ${f((100 * over) / stepLen, 1)}%; held still 3 s: grab point wanders ${f(jitter * 1000, 3)} mu; ` +
       `flick throws at ${f(speed, 1)} u/s`)

@@ -17,7 +17,9 @@ import { GLOW_ALPHA } from '../../render/pixelLook'
   **The curve** is GMod's, built in the world: one quadratic Bezier from the
   muzzle, whose control point is the beam's *target* (the point on your
   view ray at the hold distance, where the held thing is being pulled), to
-  the grab point. Its start tangent is the aim, so while the thing is where
+  the grab point, pulled back along the aim so it is never further out
+  than the prop itself (a control point past a prop swung wide drew the beam
+  out beyond it and back in a J). Its start tangent is the aim, so while the thing is where
   the beam wants it the beam is a straight line out along your view, and
   while it lags a swing the beam still leaves along the aim and bows over
   onto the prop, deeper the harder you swing something heavy, even with the
@@ -49,8 +51,11 @@ const CORE = new THREE.Color(0.9, 2.2, 2.6)
 const HALO = new THREE.Color(0.05, 0.85, 1.6)
 /** the freeze: a deeper, whiter blue */
 const FLASH = new THREE.Color(0.6, 1.8, 2.6)
-/** the freeze outline: a saturated electric blue, through the glow code */
-const FREEZE = new THREE.Color(0.02, 0.55, 2.4)
+/** the freeze outline: a hard warm yellow, through the glow code, so a
+    frozen prop never reads as a held one (the hold is cyan). Garry's Mod's
+    own freeze flash is the same colour */
+const FREEZE = new THREE.Color(2.6, 1.7, 0.05)
+const FREEZE_POP = new THREE.Color(2.2, 1.6, 0.3)
 
 /* ------------------------------------------------------------ shaders -- */
 
@@ -443,7 +448,7 @@ export function createBeam(parent: THREE.Object3D): Beam {
   const WHITE = new THREE.Color(1.6, 2.6, 3.2)
   const endGlow = blob(HALO, WHITE)
   const muzzleGlow = blob(HALO, WHITE, 7)
-  const pop = blob(FLASH, WHITE, 7)
+  const pop = blob(FREEZE_POP, WHITE, 7)
   const endU = (endGlow.material as THREE.ShaderMaterial).uniforms
   const muzU = (muzzleGlow.material as THREE.ShaderMaterial).uniforms
   // the muzzle star sits on the first-person gun, whose depth is squeezed
@@ -595,7 +600,28 @@ export function createBeam(parent: THREE.Object3D): Beam {
       // it, however far, with no corner (a quadratic cannot have one) and
       // no clamp to straighten it; on a miss it is the straight chord
       if (miss) ctrlGoal.addVectors(f.muzzle, f.end).multiplyScalar(0.5)
-      else ctrlGoal.copy(f.target)
+      else {
+        // out along the aim toward the target, but never further than the
+        // prop's own distance along it: a prop swung wide and trailing sits
+        // nearer the gun along the aim than the target does, and a control
+        // point past it drew the beam out beyond the prop and back in a J
+        tmp.subVectors(f.target, f.muzzle)
+        const tl = tmp.length()
+        if (tl > 1e-4) {
+          tmp.multiplyScalar(1 / tl)
+          const along = cutP.subVectors(f.end, f.muzzle).dot(tmp)
+          const dist = Math.min(tl, Math.max(L * 0.15, along * 0.8))
+          // a prop dragged more than about twenty degrees off the aim would
+          // hook the beam round into a tight J; past that the start
+          // direction is eased toward the chord (in the world, never on
+          // screen), up to half way at sixty, so it stays one wide bow
+          cutP.multiplyScalar(1 / L)
+          const cosA = THREE.MathUtils.clamp(tmp.dot(cutP), -1, 1)
+          const k = 0.5 * THREE.MathUtils.smoothstep(Math.acos(cosA), 0.3, 1.1)
+          tmp.lerp(cutP, k).normalize()
+          ctrlGoal.copy(f.muzzle).addScaledVector(tmp, dist)
+        } else ctrlGoal.copy(f.target)
+      }
       if (ctrlFresh || miss) {
         ctrl.copy(ctrlGoal)
         ctrlVel.set(0, 0, 0)
@@ -763,13 +789,13 @@ export function createBeam(parent: THREE.Object3D): Beam {
           m.uniforms.uCover.value = 0
           m.uniforms.uPx.value = 0
           m.uniforms.uGrow.value = 0.006
-          m.uniforms.uColor.value.copy(FLASH)
+          m.uniforms.uColor.value.copy(FREEZE)
         }
         // and the full-body outline: thick, white-hot, ringing down
         for (const m of shellMats(s, 'rim')) {
           m.uniforms.uAmount.value = Math.max(flashOn === haloOn ? haloK : 0, hold * flashK)
           m.uniforms.uPx.value = RIM_PX * px * (3.2 + ring * 2)
-          m.uniforms.uColor.value.copy(FREEZE).lerp(WHITE, ring * 0.5)
+          m.uniforms.uColor.value.copy(FREEZE).lerp(WHITE, ring * 0.35)
         }
       }
       popU.uAmount.value = Math.min(1, e * 1.2 * flashK)

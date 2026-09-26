@@ -26,6 +26,7 @@ import { emptyInput, type RigEntry, type ToolInput } from './types'
     npm run film -- sandbox:physgun-rotate      E + mouse turns it, Shift snaps it to 45 degrees, freeze, R drops it
     npm run film -- sandbox:physgun-heavy       a four-tonne block dragging behind a swing and sailing past
     npm run film -- sandbox:physgun-throw-heavy the same throw into a wall of 35 kg crates
+    npm run film -- sandbox:physgun-swing-side  side on: how the body holds the gun (also heavy-side)
     npm run film -- sandbox:physgun-throw       a barrel flung off the beam into a tower of small crates
     npm run film -- sandbox:physgun-ragdoll     a body picked up by the head, pinned in the air, let down
     ...each with a -3p twin; `--video` for an MP4, `--dense` for 10 fps sheets
@@ -167,6 +168,8 @@ const presentFor = (third: boolean) => (c: ScenarioCtx, scene: THREE.Scene, cam:
   const r = runs.get(c)!
   let body: PlayerRig | null = null
   let handIdx = -1
+  let handLIdx = -1
+  const handL = new THREE.Vector3()
   const hand = new THREE.Vector3()
   const pose = standPose()
   const env: RagdollEnv = { groundY: c.y, groundAt: terrainY, collision: makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }) }
@@ -174,6 +177,7 @@ const presentFor = (third: boolean) => (c: ScenarioCtx, scene: THREE.Scene, cam:
     body = buildPlayerBody(EYE, 34)
     scene.add(body.group)
     handIdx = body.limbs.findIndex((l) => l.name === 'handR')
+    handLIdx = body.limbs.findIndex((l) => l.name === 'handL')
     const [yaw] = r.script.look(0)
     body.face(yaw)
   }
@@ -198,14 +202,16 @@ const presentFor = (third: boolean) => (c: ScenarioCtx, scene: THREE.Scene, cam:
         pose.yaw = yaw
         pose.pitch = pitch
         pose.aim = 1
+        pose.aimLoad = r.tb.physgun.holding ? r.tb.physgun.view.strain : 0
         body.update(pose, env)
         body.group.rotation.y = body.facing + Math.PI
         body.group.updateMatrixWorld(true)
         if (handIdx >= 0) body.limbPos(handIdx, hand)
+        if (handLIdx >= 0) body.limbPos(handLIdx, handL)
       }
       r.tb.present({
         camera: cam, dt, gait: 0, grounded: true, firstPerson: !third,
-        hand: body ? hand : null, active: true, lines,
+        hand: body ? hand : null, handL: body ? handL : null, active: true, lines,
       })
     },
     warmed: () => r.tb.unstage(),
@@ -221,6 +227,9 @@ interface GunScenario {
   report?: (c: ScenarioCtx) => string
   /** the third-person twin's camera */
   tp?: Partial<TpFrame>
+  /** also a side-on third-person angle (`-side`): the body square to the
+      lens, so how it holds the gun can be judged */
+  side?: Partial<TpFrame>
 }
 
 const gunScenario = (g: GunScenario) => {
@@ -236,6 +245,20 @@ const gunScenario = (g: GunScenario) => {
       setup: g.setup,
       report: g.report,
       present: presentFor(third),
+    })
+  }
+  if (g.side) {
+    defineScenario({
+      id: `sandbox:physgun-${g.name}-side`,
+      title: g.title + ' (side on)',
+      site: siteFlat,
+      duration: g.duration,
+      frames: g.frames ?? 12,
+      camera: (c) => ({ from: [c.x, c.y + EYE, c.z], to: [c.x + c.dx, c.y + EYE, c.z + c.dz], fov: 74 }),
+      lens: tpLens({ ...TP_DEFAULT, ...g.side }),
+      setup: g.setup,
+      report: g.report,
+      present: presentFor(true),
     })
   }
 }
@@ -256,6 +279,7 @@ gunScenario({
   title: 'lift a crate on the beam, swing it round in an arc, freeze it mid-air',
   duration: 6,
   tp: { back: 10, side: 6, up: 3, ahead: 7, lift: 1.4, fov: 60 },
+  side: { back: 1.5, side: 9, up: -0.3, ahead: 3, lift: -0.4, fov: 55 },
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
     const D = 15
@@ -373,9 +397,10 @@ gunScenario({
 
 gunScenario({
   name: 'heavy',
-  title: 'a four-tonne concrete block on the beam: it drags behind the swing and sails past',
+  title: 'the concrete block at 1.7x its size (4.4 t) on the beam: it drags behind the swing and sails past',
   duration: 6,
   tp: { back: 12, side: 7, up: 3.2, ahead: 6, lift: 0.8, fov: 62 },
+  side: { back: 1.5, side: 9, up: -0.3, ahead: 3, lift: -0.4, fov: 55 },
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
     const D = 15
@@ -387,7 +412,14 @@ gunScenario({
     // cooler held at arm's length
     const K = 1.7
     const by = c.sb.restY('block', bx, bz) + 0.7 * (K - 1)
-    const id = c.sb.spawn('block', { x: bx, y: by, z: bz }, { yaw: y0 + Math.PI / 2, scale: K })
+    // rolled a quarter turn about its long axis (the section is square, so
+    // the collider is the same): the yellow hazard band painted along its
+    // two long sides then runs along its top and bottom, out of the way of
+    // the beam, which bit into it at the height it is painted and read as a
+    // smear at the beam's end
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), y0 + Math.PI / 2)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2))
+    const id = c.sb.spawn('block', { x: bx, y: by, z: bz }, { quaternion: { x: q.x, y: q.y, z: q.z, w: q.w }, scale: K })
     c.ids.push(id)
     const eye = new THREE.Vector3(c.x, c.y + EYE, c.z)
     // taken high on its end, well clear of the yellow hazard band painted
@@ -411,7 +443,7 @@ gunScenario({
   report: (c) => {
     const r = runs.get(c)!
     const p = c.sb.get(c.ids[0])
-    return `the ${Math.round(p?.mass ?? 0)} kg block trailed the beam by up to ${(r.memo.lag ?? 0).toFixed(1)} units`
+    return `the ${Math.round(p?.mass ?? 0)} kg block (the catalogue's 900 kg one at 1.7x) trailed the beam by up to ${(r.memo.lag ?? 0).toFixed(1)} units`
   },
 })
 
