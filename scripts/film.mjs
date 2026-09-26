@@ -141,7 +141,7 @@ for (const id of ids) {
   writeFileSync(sheetPath, png)
   console.log(`${id.padEnd(16)} at ${res.x},${res.z}  ${res.report}`)
   console.log(`${''.padEnd(16)} ${res.msPerFrame.toFixed(2)} ms/frame of sandbox tick (median), ` +
-    `${res.links} programs linked after warm-up  ` +
+    `${res.links} programs linked after warm-up${res.links ? ` (${res.linked})` : ''}  ` +
     `${sheetPath}  (${Date.now() - t0} ms)`)
   console.log(`${''.padEnd(16)} shot: --from ${res.from.join(',')} --to ${res.to.join(',')} --fov ${res.fov}`)
 

@@ -46,6 +46,13 @@ const MOD_KEYS = new Set([
   'KeyN',
   'KeyB',
   'F9',
+  // the tool belt: 1 hands, 2 physgun, 3 toolgun; R thaws what the
+  // physgun looks at. E is held as well as used (E + mouse turns a held
+  // prop), and the mouse buttons ride the same set as Mouse0 and Mouse2
+  'Digit1',
+  'Digit2',
+  'Digit3',
+  'KeyR',
 ])
 
 export interface RoamInputOpts {
@@ -72,8 +79,12 @@ export interface RoamInputOpts {
 }
 
 export interface RoamInput {
-  /** codes currently held; the walk controller reads this every tick */
+  /** codes currently held; the walk controller reads this every tick.
+      While the pointer is locked the mouse buttons are here too, as
+      `Mouse0` (left) and `Mouse2` (right) */
   keys: ReadonlySet<string>
+  /** wheel notches since the last call, positive rolled away from you */
+  takeWheel: () => number
   readonly locked: boolean
   /** grab the mouse like a game; a browser refusal is fine, clicking locks */
   tryLock: () => void
@@ -88,6 +99,7 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
   const { dom, isActive, isLive, isPaused, isTyping, onTurn, onUse, onEscResume, onLock } = opts
   const keys = new Set<string>()
   let locked = false
+  let wheel = 0
   let downPt: { moved: number } | null = null
 
   const setCursor = (c: string) => {
@@ -123,6 +135,7 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
     } else if (MOD_KEYS.has(e.code)) {
       keys.add(e.code)
     } else if (e.code === 'KeyE' && isLive()) {
+      keys.add('KeyE')
       if (onUse()) e.preventDefault()
     }
   }
@@ -158,6 +171,24 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
     }
   }
 
+  // the buttons are mousedown/mouseup rather than pointer events: a second
+  // button pressed while the first is held (RMB to freeze while LMB holds)
+  // is a pointermove, not a pointerdown. Only while locked, where a click is
+  // a trigger; unlocked, a click is the grab of the mouse itself
+  const onMouseDown = (e: MouseEvent) => {
+    if (!locked || !isActive() || !isLive() || isPaused() || isTyping()) return
+    keys.add(`Mouse${e.button}`)
+  }
+  const onMouseUp = (e: MouseEvent) => keys.delete(`Mouse${e.button}`)
+  const onWheel = (e: WheelEvent) => {
+    if (!locked || !isActive() || !isLive() || isPaused()) return
+    e.preventDefault()
+    if (e.deltaY) wheel += e.deltaY < 0 ? 1 : -1
+  }
+  const onContext = (e: Event) => {
+    if (locked) e.preventDefault()
+  }
+
   // capture phase: the pause menu's esc must win over the OS shell's
   // window-level esc handler regardless of registration order
   window.addEventListener('keydown', onKeyDown, true)
@@ -167,9 +198,18 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
   dom.addEventListener('pointerdown', onPtrDown)
   dom.addEventListener('pointermove', onPtrMove)
   dom.addEventListener('pointerup', onPtrUp)
+  document.addEventListener('mousedown', onMouseDown)
+  document.addEventListener('mouseup', onMouseUp)
+  document.addEventListener('wheel', onWheel, { passive: false })
+  document.addEventListener('contextmenu', onContext)
 
   return {
     keys,
+    takeWheel: () => {
+      const n = wheel
+      wheel = 0
+      return n
+    },
     get locked() {
       return locked
     },
@@ -187,6 +227,10 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
       dom.removeEventListener('pointerdown', onPtrDown)
       dom.removeEventListener('pointermove', onPtrMove)
       dom.removeEventListener('pointerup', onPtrUp)
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('wheel', onWheel)
+      document.removeEventListener('contextmenu', onContext)
     },
   }
 }

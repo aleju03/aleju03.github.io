@@ -50,8 +50,13 @@ const CORE_HOT = new THREE.Color(0.08, 0.95, 2.7)
 /** where the gun sits in the camera's frame, first person, and its size
     there: the bottom-right corner, a quarter of the frame, the claw about
     two thirds of the way across */
-const FP_OFFSET = new THREE.Vector3(0.29, -0.2, -0.5)
-const FP_SCALE = 0.55
+const FP_OFFSET = new THREE.Vector3(0.3, -0.22, -0.52)
+const FP_SCALE = 0.44
+/** the lens those two were laid out through. A different fov scales the
+    gun's size and its sideways offset (never its depth) by the ratio of the
+    half-angle tangents, so it fills the same corner of the frame at any
+    fov the pause sheet allows */
+const FP_REF_TAN = Math.tan(THREE.MathUtils.degToRad(74) / 2)
 /** the gun in the body's hand, world units per model unit: a body is ~4.5
     tall and its forearm short, so the gun is drawn big enough to read */
 const TP_SCALE = 1.35
@@ -221,8 +226,9 @@ const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
     mitt.rotation.x = -0.28
     const thumb = add(g.box(0.05, 0.05, 0.1), mats.hand, -0.06, -0.02, 0.02, hand)
     thumb.rotation.x = -0.3
-    const sleeve = add(g.drum(0.085, 0.5, 8), mats.hand, 0.03, -0.22, 0.34, hand)
-    sleeve.rotation.x = 0.5
+    // a short, fat, soft forearm: this body's arms are stubby
+    const sleeve = add(g.drum(0.12, 0.36, 8, 0.1), mats.hand, 0.02, -0.2, 0.3, hand)
+    sleeve.rotation.x = 0.55
   }
   return { root, mats, prongs, spinner, muzzle, hand }
 }
@@ -376,7 +382,12 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
 
     if (fp.visible) {
       // camera frame, then the offset, then the springs
-      fp.position.copy(FP_OFFSET).add(off).applyMatrix4(cam.matrixWorld)
+      const k = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2) / FP_REF_TAN
+      fp.scale.setScalar(FP_SCALE * k)
+      fp.position.copy(FP_OFFSET).add(off)
+      fp.position.x *= k
+      fp.position.y *= k
+      fp.position.applyMatrix4(cam.matrixWorld)
       fp.quaternion.copy(cam.quaternion)
       // aimed inward, so the beam's line meets the crosshair
       eul.set(FP_TURN.x + rot.x, FP_TURN.y + rot.y, FP_TURN.z + rot.z, 'YXZ')

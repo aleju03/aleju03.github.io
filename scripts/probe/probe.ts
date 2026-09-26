@@ -441,7 +441,7 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     look.setGrade(day, night)
   }
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.shadowMap.type = THREE.PCFShadowMap
   renderer.setScissorTest(true)
 
   disposeTiles()

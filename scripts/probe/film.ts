@@ -79,6 +79,8 @@ export interface FilmResult {
   /** programs linked after the scene's warm-up: a tool whose first use
       links a shader shows up here, and it should be zero */
   links: number
+  /** their names */
+  linked: string
   frames: number
   /** the shot actually used, so a reframe can start from it */
   from: number[]
@@ -89,6 +91,8 @@ export interface FilmResult {
 let renderer: THREE.WebGLRenderer | null = null
 /** programs linked since the last build's warm-up */
 let links = 0
+/** ...and what they were, by three's SHADER_NAME, so a stray link can be found */
+let linked: string[] = []
 /** the look's internal lines, for anything sized in pixels */
 let lookLines = 540
 /** the game's own post pass, so a film is judged through the real look */
@@ -201,6 +205,7 @@ const build = async (spec: FilmSpec, w: number, h: number) => {
     pres.warmed?.()
   }
   links = 0
+  linked = []
   return stage
 }
 
@@ -220,6 +225,11 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
   gl.linkProgram = (p: WebGLProgram) => {
     links++
     link(p)
+    // three's SHADER_NAME, or else the uniforms the program declares
+    const src = (gl.getAttachedShaders(p) ?? []).map((sh) => gl.getShaderSource(sh) ?? '').join('\n')
+    const name = /#define SHADER_NAME ([^\s]+)/.exec(src)?.[1] ??
+      [...src.matchAll(/uniform \S+ (u[A-Z]\w*)/g)].map((m) => m[1]).slice(0, 6).join(' ')
+    linked.push(name)
   }
   renderer.setPixelRatio(1)
   renderer.setSize(w, h, false)
@@ -232,7 +242,7 @@ const makeRenderer = (w: number, h: number, raw = false, lines = 0) => {
     look.knobs.lines = lines
   }
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.shadowMap.type = THREE.PCFShadowMap
   renderer.setScissorTest(true)
   return renderer
 }
@@ -334,6 +344,7 @@ export const sheet = async (spec: FilmSpec): Promise<FilmResult> => {
     msPerFrame: median(st.ticks),
     frames: spec.frames,
     links,
+    linked: linked.join(', '),
     from: st.cam.userData.shot.from.map((n: number) => Math.round(n * 10) / 10),
     to: st.cam.userData.shot.to.map((n: number) => Math.round(n * 10) / 10),
     fov: st.cam.userData.shot.fov,

@@ -33,6 +33,8 @@ import { footstep, landThump } from '../../game/core/sfx'
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { Sandbox } from '../../game/sandbox/sandbox'
+import type { Toolbelt } from '../../game/sandbox/tools/toolbelt'
+import type { ToolInput } from '../../game/sandbox/tools/types'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/quality'
 import { createPixelLook, type PixelLook } from '../../game/render/pixelLook'
@@ -528,9 +530,14 @@ export default function CrtScene({
         webgl.setPixelRatio(PR_BASE)
         webgl.setSize(W, H)
         webgl.shadowMap.enabled = true
-        // PCFSoft is less prone to the blotchy VSM halos that show up around
-        // thin desk legs and chair casters on the dark floor.
-        webgl.shadowMap.type = THREE.PCFSoftShadowMap
+        // PCF is less prone to the blotchy VSM halos that show up around thin
+        // desk legs and chair casters on the dark floor. Not PCFSoft: three
+        // deprecated it and swaps in PCF on the first shadow pass, and every
+        // program linked before that pass was keyed on the soft type (which
+        // it compiles as BASIC), so the whole covered warm-up linked a second
+        // time the first time anything was drawn after it. Found as the
+        // physgun's first grab linking its rim shells mid-walk
+        webgl.shadowMap.type = THREE.PCFShadowMap
         // the scene is static except the player body, so every light's map is
         // baked once (light.shadow.autoUpdate = false) and re-rendered only
         // for the light near the player on frames where a caster moved
@@ -699,8 +706,23 @@ export default function CrtScene({
         // the sandbox (src/game/sandbox/): Rapier and the props, loaded with the
         // world and never before it. Null until then; every call site guards
         let sandbox: Sandbox | null = null
+        // the tool belt (src/game/sandbox/tools/): hands and the physgun, built
+        // with the sandbox. 1 and 2 pick the slot; the belt starts on hands,
+        // so a walk that never presses 2 is the walk it always was
+        let tools: Toolbelt | null = null
+        /** mouse movement the belt has taken from the view (E turning a prop) */
+        const toolLook = { x: 0, y: 0 }
+        const toolAim = { eye: new THREE.Vector3(), dir: new THREE.Vector3(), yaw: 0 }
+        const toolIn: ToolInput = {
+          aim: toolAim, dt: 0, fire: false, alt: false, rotate: false, snap: false,
+          reload: false, wheel: 0, lookX: 0, lookY: 0,
+        }
+        const toolHand = new THREE.Vector3()
+        let toolsLive = false
+        let slotHeld = 0
         disposeFleet = () => {
           fleet.dispose()
+          tools?.dispose()
           sandbox?.dispose()
         }
         // F9: outline whatever the live level is testing the walk against.
@@ -988,6 +1010,8 @@ export default function CrtScene({
         body.visible = false
         scene.add(body)
         const chase = createChaseCam()
+        /** the right hand, where the body carries the physgun in third person */
+        const handR = rig.limbs.findIndex((l) => l.name === 'handR')
         /*
           Getting hit. The fleet moves (somebody else's car on foot, your own
           at the wheel) and the watch turns where each machine was last frame
@@ -1503,6 +1527,7 @@ export default function CrtScene({
         // out of the world there is no round trip to wait on
         applyLookRef.current = (next) => {
           rig.setLook(next)
+          tools?.setHandColor(next.shell)
           net?.look(packLook(next))
         }
         let chatKey = 0
@@ -1790,13 +1815,22 @@ export default function CrtScene({
           // at the wheel the mouse belongs to the drive camera. Left wired to
           // walk.turn it would silently spin the suspended walker's heading
           // and stand you down facing somewhere you never looked
-          onTurn: (dx, dy, sign) =>
-            fleet.riding
-              ? fleet.turn(dx, dy, sign, prefsRef.current.sens)
-              : walk.turn(dx, dy, sign, prefsRef.current.sens),
+          onTurn: (dx, dy, sign) => {
+            // E held on a prop in the beam: the mouse turns the prop, and
+            // the view holds still while it does
+            if (tools?.capturesLook && !fleet.riding) {
+              toolLook.x += dx
+              toolLook.y += dy
+              return
+            }
+            if (fleet.riding) fleet.turn(dx, dy, sign, prefsRef.current.sens)
+            else walk.turn(dx, dy, sign, prefsRef.current.sens)
+          },
           // E: get out of whatever you are in, else the machine's prompt, else
           // a door's, else climb into whatever is parked in front of you
           onUse: () => {
+            // while the beam holds something E is its rotate modifier
+            if (tools?.capturesUse && !fleet.riding) return true
             if (fleet.riding) {
               leaveVehicle()
               return true
@@ -2402,6 +2436,10 @@ export default function CrtScene({
             threading a `driving` flag through two hundred lines of walk code.
           */
           if (fleet.riding) {
+            if (toolsLive) {
+              tools?.holster()
+              toolsLive = false
+            }
             driveTick(now, dt)
             return
           }
@@ -2460,6 +2498,31 @@ export default function CrtScene({
             chHeld = chNow !== 0
           } else {
             chHeld = false
+          }
+          // the tool belt decides what the beam pulls toward before the props
+          // step, so this frame's slices already pull. Only on foot, out in
+          // the world, standing: a seat, a heap on the floor and the pause
+          // sheet all holster it
+          toolsLive = !!tools && level.id === 'overworld' && !sitting && !rig.down && fps
+          if (tools && !pausedNow) {
+            const k = input.keys
+            const slotNow = k.has('Digit1') ? 1 : k.has('Digit2') ? 2 : k.has('Digit3') ? 3 : 0
+            if (slotNow && slotNow !== slotHeld) tools.select(slotNow - 1)
+            slotHeld = slotNow
+            toolAim.eye.copy(camera.position)
+            camera.getWorldDirection(toolAim.dir)
+            toolAim.yaw = walk.yaw
+            toolIn.dt = dt
+            toolIn.fire = k.has('Mouse0')
+            toolIn.alt = k.has('Mouse2')
+            toolIn.rotate = k.has('KeyE')
+            toolIn.snap = k.has('ShiftLeft') || k.has('ShiftRight')
+            toolIn.reload = k.has('KeyR')
+            toolIn.wheel = input.takeWheel()
+            toolIn.lookX = toolLook.x
+            toolIn.lookY = toolLook.y
+            toolLook.x = toolLook.y = 0
+            tools.update(toolIn, toolsLive)
           }
           // the props: one fixed-step physics frame, the walker's shoves and
           // weight in, a ride carried out (it moves camera x/z, so it runs
@@ -2575,6 +2638,8 @@ export default function CrtScene({
           // same factor as poseBody's trailing offset: a crushed boom means
           // the lens is back on the head, so the flair fades out with it
           rigPose.show = Math.min(1, chase.dist / 1.2)
+          // the physgun out: the right arm comes up and carries it
+          rigPose.aim = toolsLive && tools?.tool === 'physgun' ? 1 : 0
           // the ragdoll and the boom both work in a few units around the
           // body, so one terrain sample under it is the floor for both —
           // they never need the whole heightfield, only the local plane
@@ -2755,6 +2820,17 @@ export default function CrtScene({
           chaseEnv.pitch = walk.pitch
           chaseEnv.focus = rig.ragdolling ? rig.focus(focusPt) : null
           chase.apply(camera, dt, chaseEnv)
+          // the gun and the beam go where the lens ended up: in the hand of
+          // the body when the boom is out, in front of the lens when it is not
+          if (tools) {
+            const third = chase.dist > 1.2
+            if (third && handR >= 0) rig.limbPos(handR, toolHand)
+            tools.present({
+              camera, dt, gait: step.gait, grounded: step.grounded,
+              firstPerson: !third, hand: third ? toolHand : null,
+              active: toolsLive && !pausedNow, lines: look.knobs.lines,
+            })
+          }
           debugTick(level, camera.position.x, walk.feetY, camera.position.z)
           render()
           raf = requestAnimationFrame(walkTick)
@@ -2819,10 +2895,11 @@ export default function CrtScene({
         let worldReady: Promise<void> | null = null
         const ensureWorld = () => {
           worldReady ??= (async () => {
-            const [, registry, sandboxMod] = await Promise.all([
+            const [, registry, sandboxMod, toolsMod] = await Promise.all([
               outside.attachWorld(),
               import('../../game/vehicles/registry'),
               import('../../game/sandbox/sandbox'),
+              import('../../game/sandbox/tools/toolbelt'),
             ])
             if (disposed || !scene) return
             // synchronous and cheap: Rapier itself downloads behind it and
@@ -2836,10 +2913,20 @@ export default function CrtScene({
               waveAt: outside.waveAt,
               chunkSolids: outside.chunkSolids,
             })
+            // the belt's gun, beam and halo materials are in the scene from
+            // here; warmForRoam stages them in front of its camera so the
+            // covered compile and first draw pay for them, and the first grab
+            // of a walk links nothing
+            tools = toolsMod.createToolbelt({
+              sb: sandbox,
+              parent: scene,
+              rigs: () => outside.people(),
+            })
+            tools.setHandColor(lookRef.current.shell)
             // dev only: the harnesses (and a console) reach the sandbox and
             // the lens it is being watched through from here
             if (import.meta.env.DEV) {
-              Object.assign(window, { __sandbox: sandbox, __sandboxCamera: camera })
+              Object.assign(window, { __sandbox: sandbox, __sandboxCamera: camera, __tools: tools })
             }
             fleet = registry.buildFleet({
               scene,
@@ -2926,6 +3013,9 @@ export default function CrtScene({
           // cycle at the warm camera. That also anchors the hand-managed sun
           // map here, letting the first real doorway frame reuse it.
           applyLight(warmCam.position)
+          // the tool belt's gun, beam, glows and rim shells, in front of the
+          // warm camera for the compile and the one-pixel draw below
+          tools?.stage(warmCam)
           try {
             // The initial compile ran before the streamed chunks existed.
             // Compile their live outdoor lighting variant now; the promise
@@ -2951,6 +3041,7 @@ export default function CrtScene({
               fleet.setLightWarmup(false)
             }
           } finally {
+            tools?.unstage()
             if (webgl) {
               webgl.setScissorTest(false)
               webgl.setViewport(0, 0, warmSize.x, warmSize.y)

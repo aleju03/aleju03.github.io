@@ -313,6 +313,8 @@ export interface Beam {
   flash: (mesh: THREE.Object3D | null, at: THREE.Vector3, k?: number) => void
   /** a grab or release crackle at both ends: a brief brightening */
   kick: (k: number) => void
+  /** every rim and flash off at once, with no fade (a holster) */
+  clear: () => void
   /** put every part in front of a camera for a covered compile and draw */
   stage: (camera: THREE.Camera) => void
   /** ...and back to normal */
@@ -512,6 +514,7 @@ export function createBeam(parent: THREE.Object3D): Beam {
   let haloK = 0
   let haloOffK = 0
   let flashOn: THREE.Object3D | null = null
+  const popAt = new THREE.Vector3()
   let flashT = 1
   let flashK = 1
 
@@ -662,6 +665,9 @@ export function createBeam(parent: THREE.Object3D): Beam {
       popU.uRing.value = 0.25 + (1 - k) * 0.7
       popU.uSize.value = 1.4 + (1 - k) * 3
       popU.uPx.value = px * 30
+      // in front of the surface it is on, or the prop's own face cuts it
+      tmp.copy(f.camera.position).sub(popAt)
+      pop.position.copy(popAt).addScaledVector(tmp.normalize(), Math.min(1.6, f.camera.position.distanceTo(popAt) * 0.3))
       if (k <= 0) {
         if (flashOn && flashOn !== haloOn) {
           setShell(flashOn, 'fill', false)
@@ -677,9 +683,13 @@ export function createBeam(parent: THREE.Object3D): Beam {
     if (mesh === haloOn) return
     if (haloOn) {
       if (haloOff && haloOff !== flashOn) setShell(haloOff, 'rim', false)
-      haloOff = haloOn
-      haloOffK = haloK
-      setShell(haloOn, 'fill', false)
+      // a freeze lets go and flashes the same prop on the same frame: the
+      // flash owns its shells from here
+      if (haloOn !== flashOn) {
+        haloOff = haloOn
+        haloOffK = haloK
+        setShell(haloOn, 'fill', false)
+      }
     }
     haloOn = mesh
     haloK = 0
@@ -702,7 +712,7 @@ export function createBeam(parent: THREE.Object3D): Beam {
       setShell(mesh, 'rim', true)
     }
     flashT = 0
-    pop.position.copy(point)
+    popAt.copy(point)
     pop.visible = true
   }
 
@@ -761,6 +771,15 @@ export function createBeam(parent: THREE.Object3D): Beam {
     },
     stage,
     unstage,
+    clear: () => {
+      for (const m of [haloOn, haloOff, flashOn]) {
+        setShell(m, 'rim', false)
+        setShell(m, 'fill', false)
+      }
+      haloOn = haloOff = flashOn = null
+      haloK = haloOffK = 0
+      pop.visible = false
+    },
     dispose: () => {
       root.removeFromParent()
       geo.dispose()

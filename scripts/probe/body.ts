@@ -533,7 +533,7 @@ export const shootBody = (spec: BodySpec) => {
     look.knobs.lines = spec.lines || Math.round(th / Math.max(2, spec.pixel || 2))
   }
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.shadowMap.type = THREE.PCFShadowMap
 
   let slot = 0
   const warmed = new WeakSet<THREE.Scene>()

@@ -125,7 +125,8 @@ const fpLens = (c: ScenarioCtx, t: number): Shot => {
   return {
     from: [r.eye.x, r.eye.y, r.eye.z],
     to: [r.eye.x + d.x * 10, r.eye.y + d.y * 10, r.eye.z + d.z * 10],
-    fov: 74,
+    // the walk's own default lens (roamPrefs)
+    fov: 60,
   }
 }
 
@@ -303,7 +304,7 @@ gunScenario({
 
 gunScenario({
   name: 'rotate',
-  title: 'E + mouse turns the held crate, Shift snaps it square, freeze, R lets it fall',
+  title: 'E + mouse turns the held crate, Shift snaps it to the 45-degree grid, freeze, R lets it fall',
   duration: 7,
   tp: { back: 7, side: 7.5, up: 1.8, ahead: 5, lift: 0.6, across: 1, fov: 58 },
   setup: (c) => {
@@ -411,7 +412,7 @@ gunScenario({
   name: 'throw',
   title: 'a barrel swung round on the beam and let go: it flies into a stack of crates',
   duration: 5,
-  tp: { back: 8, side: -9, up: 5, ahead: 10, lift: -0.5, across: 1, fov: 64 },
+  tp: { back: 13, side: -5, up: 6.5, ahead: 9, lift: -1, across: 3, fov: 68 },
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
     const nx = -c.dz

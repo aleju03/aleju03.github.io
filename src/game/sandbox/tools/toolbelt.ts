@@ -76,6 +76,10 @@ export interface Toolbelt {
   update: (input: ToolInput, active: boolean) => void
   /** after the camera is final */
   present: (f: ToolFrame) => void
+  /** put everything away at once, for a frame loop that stops presenting
+      (climbing into a vehicle): drop what is held, hide the gun and beam,
+      silence the hum. The next `present` brings them back */
+  holster: () => void
   /** mouse-look belongs to the tool (E is turning a held prop) */
   readonly capturesLook: boolean
   /** E belongs to the tool (something is held), not to doors and seats */
@@ -172,6 +176,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   }
 
   const present = (f: ToolFrame) => {
+    if (vm) vm.root.visible = true
+    if (beam) beam.root.visible = true
     physgun.sync()
     const shown = f.active && SLOTS[slot] === 'physgun'
     if (vm) {
@@ -208,6 +214,16 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     physgun,
     update,
     present,
+    holster: () => {
+      if (physgun.holding) physgun.release(false)
+      if (vm) vm.root.visible = false
+      if (beam) {
+        beam.clear()
+        beam.root.visible = false
+      }
+      sfx?.hum(false, 0)
+      lastActive = false
+    },
     get capturesLook() {
       return physgun.capturesLook
     },

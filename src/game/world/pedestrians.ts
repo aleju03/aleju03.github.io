@@ -64,6 +64,17 @@ export interface PedestrianHandles {
   /** let anything the watch is tracking (a car, mostly) bowl people over.
       Call after the watch has been told where the movers are this frame */
   knock: (watch: ImpactWatch) => void
+  /** everyone out on the pavement, as bodies a grab beam can take by a
+      limb. Taking one knocks them flat the way a car does, so the crowd's
+      own tick hands the body to the ragdoll and stands it up afterwards */
+  grabbable: () => Iterable<{ key: string; rig: GrabHandle }>
+}
+
+/** the part of a rig a grab beam needs (the physgun's `GrabRig`) */
+export interface GrabHandle {
+  readonly limbs: readonly { radius: number }[]
+  limbPos: (i: number, out: THREE.Vector3) => THREE.Vector3
+  grab: (i: number, target: THREE.Vector3 | null, k?: number) => void
 }
 
 interface BuildOpts {
@@ -438,6 +449,32 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       (b) => b.max.x > x - R && b.min.x < x + R && b.max.z > z - R && b.min.z < z + R,
     )
   }
+  const downEnv = (p: Person): RagdollEnv => {
+    const y = groundAt(p.x, p.z)
+    return {
+      groundY: y,
+      groundAt,
+      collision: makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }, nearSolids(p.x, p.z)),
+    }
+  }
+  // one handle per body, made once: a grab knocks them down first, so the
+  // crowd's tick stops walking a body the ragdoll now owns
+  const handles = crowd.map((p, i) => ({
+    key: `ped${i}`,
+    rig: {
+      limbs: p.rig.limbs,
+      limbPos: (k: number, out: THREE.Vector3) => p.rig.limbPos(k, out),
+      grab: (k: number, target: THREE.Vector3 | null, stiff?: number) => {
+        if (target && !p.down) p.down = downEnv(p)
+        p.downFor = 0
+        p.rig.grab(k, target, stiff)
+      },
+    },
+  }))
+  function* grabbable() {
+    for (let i = 0; i < crowd.length; i++) if (crowd[i].live) yield handles[i]
+  }
+
   const knock = (watch: ImpactWatch) => {
     for (const p of crowd) {
       if (!p.live) continue
@@ -464,5 +501,5 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     },
   })
 
-  return { update, knock }
+  return { update, knock, grabbable }
 }
