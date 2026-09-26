@@ -744,14 +744,20 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   which puts their links in the first frame under the boot cover.
   `npm run film -- props:links` counts `linkProgram` through a spawn of every
   kind, a break of every breakable and a blast: it must print 0 and 0.
-- **Air is not solid, and fire is.** Smoke must not write alpha under one
-  (that is a hole) and must not write depth (the look outlines depth edges,
-  and an outlined puff is a boulder). It dissolves through a Bayer dither on
-  `gl_FragCoord` instead, which in the look's target is whole art pixels.
-  Fire tried the same and read as a screen door: orange balls you could see
-  the street through, their hot heart and edge lost to the pattern. Flame is
-  opaque and depth-writing, shaded in three bands off how squarely it faces
-  the lens (`fx.ts`'s `bandedFire`), and shrinks away instead of thinning.
+- **Fire and smoke are solid.** Nothing may write alpha under the look (that
+  is a hole), and both used to dissolve through a Bayer dither on
+  `gl_FragCoord` instead: fire read as a screen door (orange balls you could
+  see the street through) and smoke as a sparse dot pattern laid over the
+  scene. Both are now opaque and depth-writing, shaded in three bands off
+  how squarely each fragment faces the lens (`fx.ts`'s `banded`), and go by
+  shrinking. Ground dust is a flat lens rather than a ball, or it reads as a
+  stone.
+- **A bang is a light before it is a ball.** For three frames the look's
+  `lights.flash` is hard and wide (1.5x the blast radius), lighting the
+  street, the fronts and the props around it and washing the air, then it
+  falls to the fireball's orange glow; under it, a burst of white-hot balls,
+  flame tongues thrown radially (`jets`) and a fireball about fourteen units
+  across for a barrel.
 - **A blast throws, and it is late.** `explode` sets a velocity change (out,
   50-70 degrees up, tumbling), not an impulse, falling with the square root
   of the mass; blasts a beat apart redirect more than they add. Explosives
@@ -812,6 +818,8 @@ npm run film -- props:turntable        every model four ways round
 npm run film -- props:thumbs           the spawn menu's icons
 npm run film -- props:sounds           every prop sound's peak, next to a footstep
 npm run film -- props:links            shader links on first spawn/break/blast
+npm run drive -- links                 the same count in the real /world: first
+                                       spawn, a break, a fuse and a chain (0)
 
 npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
 

@@ -186,51 +186,71 @@ const at = (c: ScenarioCtx, a: number, b: number) => ({
 
 defineScenario({
   id: 'sandbox:catalogue',
-  title: 'every prop in the catalogue, dropped onto a town street',
+  title: 'every prop in the catalogue, set out down a town street',
   site: siteAvenue,
-  duration: 3,
-  frames: 4,
+  duration: 5,
+  frames: 8,
   tod: 0.4,
   camera: (c) => {
-    const f = at(c, -7.5, -2.5)
-    const t = at(c, 9, 0.2)
-    return { from: [f.x, c.y + 6, f.z], to: [t.x, c.y + 0.4, t.z], fov: 64 }
+    const f = at(c, -9, 0)
+    const t = at(c, c.memo.length * 0.45, 0)
+    return { from: [f.x, c.y + 16, f.z], to: [t.x, c.y, t.z], fov: 58 }
+  },
+  // the first still is the whole lot from above; the rest walk down the
+  // street over it at head height and a little more, so each row fills the
+  // frame in turn: the can and the bottle are a can and a bottle, not two
+  // pixels in a wall of colour
+  lens: (c, t) => {
+    if (t < 0.9) {
+      const f = at(c, -9, 0)
+      const q = at(c, c.memo.length * 0.45, 0)
+      return { from: [f.x, c.y + 16, f.z], to: [q.x, c.y, q.z], fov: 58 }
+    }
+    const k = Math.min(1, (t - 0.9) / 3.9)
+    const a = -5 + k * (c.memo.length - 22)
+    const f = at(c, a, 0)
+    const q = at(c, a + 9, 0)
+    return { from: [f.x, c.y + 5.5, f.z], to: [q.x, c.y + 0.6, q.z], fov: 60 }
   },
   setup: (c) => {
     seed = 3
-    // rows across the street, smallest nearest the lens, and the shipping
-    // container laid across the far end as the backdrop
+    // rows across the street, smallest nearest, each prop with a clear
+    // margin all round (the first layout packed them edge to edge and it
+    // read as one wall), and the container laid across the far end
     const size = (id: string) => {
       const e = shapeExtents(KINDS[id].shape)
       return Math.max(e.x, e.y, e.z) + e.x * e.z * 0.05
     }
     const ids = CATALOGUE.map((e) => e.id).filter((id) => id !== 'container').sort((p, q) => size(p) - size(q))
     const front = facing(-c.dx, -c.dz)
-    const PER_ROW = [6, 6, 5, 5, 5, 4, 4, 3]
     const HALF = c.memo.half - 1
+    const GAP = 2.2
     let a = 0
     let i = 0
-    let row = 0
     while (i < ids.length) {
-      const take = ids.slice(i, i + (PER_ROW[row] ?? 4))
-      i += take.length
-      let depth = 0
+      // as many as fit across with a gap each side
+      const take: string[] = []
       let width = 0
+      while (i < ids.length) {
+        const e = shapeExtents(KINDS[ids[i]].shape)
+        const w = 2 * Math.max(e.x, e.z) + GAP
+        if (take.length && width + w > 2 * HALF + GAP) break
+        take.push(ids[i++])
+        width += w
+      }
+      let depth = 0
       for (const id of take) {
         const e = shapeExtents(KINDS[id].shape)
-        depth = Math.max(depth, e.z)
-        width += 2 * e.x
+        depth = Math.max(depth, Math.max(e.x, e.z))
       }
       a += depth + 0.2
-      // spread the row evenly across the street, gaps shared out
-      const gap = Math.max(0.3, (2 * HALF - width) / Math.max(1, take.length - 1))
-      let b = -HALF
-      for (const id of take) {
+      const slot = (2 * HALF) / take.length
+      take.forEach((id, k) => {
         const e = shapeExtents(KINDS[id].shape)
-        b += e.x
+        const b = -HALF + slot * (k + 0.5)
         // step off a lamp post rather than dropping onto it
-        let bb = b
         let aa = a
+        let bb = b
         for (const [oa, ob] of [[0, 0], [0.9, 0], [-0.9, 0], [0, 0.6], [0, -0.6], [1.8, 0]]) {
           const q = at(c, a + oa, b + ob)
           if (!solidNear(q.x, q.z, Math.max(e.x, e.z) * 0.8 + 0.25)) {
@@ -241,15 +261,12 @@ defineScenario({
         }
         const p = at(c, aa, -bb)
         // low enough that a bottle survives the landing
-        const y = c.sb.restY(id, p.x, p.z) + 0.2 + rnd() * 0.5 + (KINDS[id].breaks ? 0 : rnd() * 1.2)
+        const y = c.sb.restY(id, p.x, p.z) + 0.2 + rnd() * 0.4
         c.ids.push(c.sb.spawn(id, { x: p.x, y, z: p.z }, {
-          quaternion: yawQ(front + (rnd() - 0.5) * 0.45),
-          angular: { x: (rnd() - 0.5) * 0.6, y: (rnd() - 0.5) * 0.6, z: (rnd() - 0.5) * 0.6 },
+          quaternion: yawQ(front + 0.5 + (rnd() - 0.5) * 0.4),
         }))
-        b += e.x + gap
-      }
-      a += depth + 1.5
-      row++
+      })
+      a += depth + 3
     }
     const e = shapeExtents(KINDS.container.shape)
     a += e.z + 0.8
@@ -276,14 +293,31 @@ defineScenario({
 
 /* ------------------------------------------------------------- chain -- */
 
+/** how many pallets, cinder blocks, tyres and crates are resting on
+    something rather than on the street: well off the ground and still */
+const standing = (c: ScenarioCtx) => {
+  let n = 0
+  for (const id of c.ids) {
+    const p = c.sb.get(id)
+    if (!p || !['pallet', 'cinder', 'tyre', 'crate'].includes(p.kind.id)) continue
+    const t = p.body.translation()
+    const v = p.body.linvel()
+    if (t.y - c.sb.groundY(t.x, t.z) > p.extents.y * 1.5 + 0.1 && Math.hypot(v.x, v.y, v.z) < 1) n++
+  }
+  return n
+}
+
 /** what the chain heard: each bang's moment and height over the street */
+/** a crate's half-size, for setting one on a stack */
+const DIMS_CRATE = shapeExtents(KINDS.crate.shape).y
+
 const bangs = new WeakMap<ScenarioCtx, { t: number; list: Array<{ t: number; up: number }> }>()
 
 defineScenario({
   id: 'sandbox:chain',
   title: 'red barrels chain-detonating through stacks of crates',
   site: siteAvenue,
-  duration: 4.4,
+  duration: 5,
   frames: 12,
   tod: 0.4,
   camera: (c) => {
@@ -334,6 +368,29 @@ defineScenario({
     put('cone', 6, 5.5)
     put('cone', 20, 5.5)
     put('trashcan', 24, -6)
+    // and two stacks a dozen units off either end, far enough to rock and
+    // stand, so the street after the bangs is not all one flat heap: three
+    // pallets with a crate on them, and a staggered wall of cinder blocks
+    // with a tyre stack beside it, for thrown things to land on
+    const stack = (kind: string, a: number, b: number, n: number, yaw = 0) => {
+      const e = shapeExtents(KINDS[kind].shape)
+      const p = at(c, a, b)
+      let y = c.sb.restY(kind, p.x, p.z)
+      for (let i = 0; i < n; i++) {
+        c.ids.push(c.sb.spawn(kind, { x: p.x, y: y + 0.01, z: p.z }, { quaternion: yawQ(facing(c.dx, c.dz) + yaw) }))
+        y += 2 * e.y + 0.02
+      }
+      return y
+    }
+    const top = stack('pallet', -12, -3, 3)
+    { const p = at(c, -12, -3); c.ids.push(c.sb.spawn('crate', { x: p.x, y: top + DIMS_CRATE + 0.02, z: p.z }, { quaternion: yawQ(facing(c.dx, c.dz)) })) }
+    for (let row = 0; row < 3; row++) for (let k = 0; k < 3 - row; k++) {
+      const e = shapeExtents(KINDS.cinder.shape)
+      const p = at(c, 46, -2 + (k - (2 - row) / 2) * (2 * e.x + 0.05))
+      c.ids.push(c.sb.spawn('cinder', { x: p.x, y: c.sb.restY('cinder', p.x, p.z) + row * (2 * e.y + 0.01) + 0.01, z: p.z },
+        { quaternion: yawQ(facing(-c.dz, c.dx)) }))
+    }
+    stack('tyre', 46, 2.5, 4)
   },
   events: [
     [0.4, (c) => c.sb.damage(c.memo.first, 1000)],
@@ -352,7 +409,9 @@ defineScenario({
     }
     const s = c.sb.stats
     const heard = (bangs.get(c)?.list ?? []).map((b) => `${b.t.toFixed(2)}s@${b.up.toFixed(0)}u`).join(' ')
-    return `${6 - barrels}/6 barrels went off, ${15 - crates}/15 crates broke, ${left} of ${c.ids.length} props left, ` +
+    // (the two stacks' crate is the sixteenth)
+    return `${6 - barrels}/6 barrels went off, ${16 - crates}/16 crates broke, ${left} of ${c.ids.length} props left, ` +
+      `${standing(c)} props resting on others, ` +
       `bangs ${heard}; ` +
       `${s.gibs} gibs and ${s.particles} particles live at the end`
   },

@@ -10,20 +10,23 @@ import type { FakeLights } from '../render/pixelLook'
   It is built for the pixel look rather than against it. There are no soft
   sprites, no additive haze and no lights. A fireball is a cluster of chunky
   balls, solid and depth-writing, each shaded in three flat bands off how
-  squarely it faces the lens (`bandedFire`), whose colour runs white-hot,
+  squarely it faces the lens (`banded`), whose colour runs white-hot,
   yellow, orange and blood red in HDR, so the look's ACES and posterize turn
   it into flat shapes of flame with a hot heart and a deep rind, and it
-  shrinks away rather than thinning; smoke is the same balls, lit, in grey,
-  swelling and rising and dissolving through a dither; sparks are thin boxes
-  stretched along their velocity. The flash is a light in the look's fake
-  light pass plus a few small white-hot balls at the heart, not a sphere of
-  light the size of a room. All of it is opaque, which is also what keeps
+  shrinks away rather than thinning; flame tongues (stretched diamonds on
+  the same material) are thrown out radially for a fifth of a second; smoke
+  is the same balls, lit and banded in grey, swelling, rising and shrinking
+  away; sparks are thin boxes stretched along their velocity. The flash is
+  the look's fake light, hard and wide for three frames (it lights the
+  street and the fronts across it, and washes the air) and then the
+  fireball's orange glow, over a burst of white-hot balls three or four
+  times the size of a barrel. All of it is opaque, which is also what keeps
   the look's alpha-is-a-hole rule happy.
 
-  Cost. Four instanced meshes (bits and puffs share the props' own atlas
-  material, fire and sparks share one unlit `MeshBasicMaterial`) and a small
-  pool of decal meshes (two materials, one program between them). That is
-  three new programs for every effect in the sandbox, all created with the
+  Cost. Five instanced meshes (bits share the props' own atlas material,
+  fire, jets and sparks one unlit `MeshBasicMaterial`, puffs one Lambert)
+  and a small pool of decal meshes (two materials, one program between
+  them). That is three new programs for every effect in the sandbox, all created with the
   sandbox and compiled under the boot cover with it, because they hang in the
   scene from the start with nothing to draw. No particle ever allocates: each
   pool is a fixed ring of slots in typed arrays, written straight into the
@@ -72,7 +75,7 @@ const NOOP_FX: Fx = {
 
 /* ---------------------------------------------------------- the pools -- */
 
-type Behave = 'fall' | 'fire' | 'smoke' | 'spark'
+type Behave = 'fall' | 'fire' | 'smoke' | 'spark' | 'jet'
 
 interface Pool {
   mesh: THREE.InstancedMesh
@@ -96,11 +99,8 @@ interface Pool {
   rate: Float32Array
   ang: Float32Array
   drag: Float32Array
-  /** the share of its life after which it starts to dissolve */
+  /** the share of its life after which it starts to shrink away */
   fadeAt: Float32Array
-  /** how much of it is drawn, 0..1, dissolved by an ordered dither in the
-      material (fire and smoke); null for pools that only shrink */
-  fade: THREE.InstancedBufferAttribute | null
 }
 
 const pool = (geo: THREE.BufferGeometry, mat: THREE.Material, cap: number, behave: Behave): Pool => {
@@ -116,10 +116,8 @@ const pool = (geo: THREE.BufferGeometry, mat: THREE.Material, cap: number, behav
   mesh.castShadow = false
   mesh.receiveShadow = false
   mesh.userData.dynamic = true
-  const fade = geo.getAttribute('aFade') as THREE.InstancedBufferAttribute | undefined
-  if (fade) fade.setUsage(THREE.DynamicDrawUsage)
   return {
-    mesh, cap, behave, next: 0, hi: 0, live: 0, fade: fade ?? null,
+    mesh, cap, behave, next: 0, hi: 0, live: 0,
     p: new Float32Array(cap * 3), v: new Float32Array(cap * 3),
     age: new Float32Array(cap), life: new Float32Array(cap),
     s: new Float32Array(cap * 3), grow: new Float32Array(cap),
@@ -140,46 +138,8 @@ const pinnedUV = (g: THREE.BufferGeometry, u: number, v: number) => {
   return g
 }
 
-/** give a pool geometry a per-instance dissolve, all drawn */
-const withFade = (g: THREE.BufferGeometry, cap: number) => {
-  g.setAttribute('aFade', new THREE.InstancedBufferAttribute(new Float32Array(cap).fill(1), 1))
-  return g
-}
-
 /*
-  Smoke dissolves rather than fades. Nothing here may be translucent
-  (the look reads alpha under one as a hole in the canvas), so a puff thins
-  out through a 4x4 ordered dither on gl_FragCoord: in the look's low-res
-  target that is a pattern of whole art pixels, the same Bayer grain the
-  posterize uses, so smoke comes apart the way pixel-art smoke is drawn.
-  It also leaves the depth buffer alone and draws after everything opaque:
-  the look outlines whatever depth says is in front, and an outlined puff is
-  a boulder, while an unoutlined one is air. (Fire used to dissolve the same
-  way; see `bandedFire` for why it stopped.)
-*/
-const ditherFade = <M extends THREE.Material>(m: M, key: string): M => {
-  m.onBeforeCompile = (sh) => {
-    sh.vertexShader = sh.vertexShader
-      .replace('void main() {', 'attribute float aFade;\nvarying float vFade;\nvoid main() {\n  vFade = aFade;')
-    sh.fragmentShader = sh.fragmentShader.replace('void main() {', [
-      'varying float vFade;',
-      'float fxBayer(vec2 p) {',
-      '  ivec2 q = ivec2(mod(p, 4.0));',
-      '  int i = q.x + q.y * 4;',
-      '  int b[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);',
-      '  return (float(b[i]) + 0.5) / 16.0;',
-      '}',
-      'void main() {',
-      '  if (vFade < fxBayer(gl_FragCoord.xy)) discard;',
-    ].join('\n'))
-  }
-  m.customProgramCacheKey = () => key
-  m.depthWrite = false
-  return m
-}
-
-/*
-  Fire is opaque and banded. The first version dissolved its fireballs
+  Fire and smoke are opaque and banded. The first version dissolved its fireballs
   through the same dither as the smoke, and through the look's posterize
   that read as a screen door: orange spheres you could see the street
   through, their hot middle and their edge both lost to the pattern, going
@@ -191,8 +151,16 @@ const ditherFade = <M extends THREE.Material>(m: M, key: string): M => {
   body, and a deeper rind at the limb. Those are banded before the grade
   sees them, so the posterize has hard edges to keep rather than a gradient
   to dither.
+
+  Smoke went the same way a round later, for the same reason: a puff
+  thinned through a Bayer dither on gl_FragCoord read as a sparse dot
+  pattern laid over the street, not as smoke. It is now a solid lit ball
+  with the same three bands (a paler face and a darker limb, so a cluster of
+  puffs keeps its shape), outlined like anything solid, and it goes by
+  shrinking. `bands` is the three multipliers: face, body, limb.
 */
-const bandedFire = <M extends THREE.Material>(m: M, key: string): M => {
+const banded = <M extends THREE.Material>(m: M, key: string, bands: [number, number, number]): M => {
+  const f = (n: number) => n.toFixed(3)
   m.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
       .replace('void main() {', 'varying vec3 vFxN;\nvarying vec3 vFxV;\nvoid main() {')
@@ -209,7 +177,7 @@ const bandedFire = <M extends THREE.Material>(m: M, key: string): M => {
       .replace('void main() {', 'varying vec3 vFxN;\nvarying vec3 vFxV;\nvoid main() {')
       .replace('#include <opaque_fragment>', [
         'float fxF = abs(dot(normalize(vFxN), normalize(vFxV)));',
-        'outgoingLight *= fxF > 0.8 ? 1.75 : (fxF > 0.45 ? 1.0 : 0.62);',
+        `outgoingLight *= fxF > 0.8 ? ${f(bands[0])} : (fxF > 0.45 ? ${f(bands[1])} : ${f(bands[2])});`,
         '#include <opaque_fragment>',
       ].join('\n'))
   }
@@ -295,26 +263,31 @@ export const createFx = (o: FxOpts): Fx => {
   // the same instanced program the props' batches already use
   const litMat = propMaterial()
   const whiteUV = cellCenter('white')
-  const fireMat = bandedFire(new THREE.MeshBasicMaterial({ color: 0xffffff }), 'sandbox-fire')
+  const fireMat = banded(new THREE.MeshBasicMaterial({ color: 0xffffff }), 'sandbox-fire', [1.75, 1, 0.62])
   fireMat.name = 'sandbox-fire'
-  const smokeMat = ditherFade(new THREE.MeshLambertMaterial({ color: 0xffffff }), 'sandbox-smoke')
+  const smokeMat = banded(new THREE.MeshLambertMaterial({ color: 0xffffff }), 'sandbox-smoke', [1.14, 1, 0.72])
   smokeMat.name = 'sandbox-smoke'
 
-  const CAP = { bits: 700, puffs: 480, fire: 300, sparks: 260 }
-  const ico0 = withFade(new THREE.IcosahedronGeometry(1, 1), CAP.puffs)
+  const CAP = { bits: 700, puffs: 480, fire: 360, sparks: 260, jets: 96 }
+  const ico0 = new THREE.IcosahedronGeometry(1, 1)
   const ico1 = new THREE.IcosahedronGeometry(1, 2)
   const cube = pinnedUV(new THREE.BoxGeometry(1, 1, 1), whiteUV[0], whiteUV[1])
   const spark = new THREE.BoxGeometry(1, 1, 1)
+  // a flame tongue: a diamond drawn out along z, its base at the centre of
+  // the blast so it grows outward from it
+  const tongue = new THREE.OctahedronGeometry(0.5, 0).translate(0, 0, 0.5)
 
   const bits = pool(cube, litMat, CAP.bits, 'fall')
   const puffs = pool(ico0, smokeMat, CAP.puffs, 'smoke')
   const fire = pool(ico1, fireMat, CAP.fire, 'fire')
   const sparks = pool(spark, fireMat, CAP.sparks, 'spark')
+  const jets = pool(tongue, fireMat, CAP.jets, 'jet')
   // air last: after everything solid, the fire over its own smoke
   puffs.mesh.renderOrder = 10
   fire.mesh.renderOrder = 11
   sparks.mesh.renderOrder = 11
-  const pools = [bits, puffs, fire, sparks]
+  jets.mesh.renderOrder = 11
+  const pools = [bits, puffs, fire, sparks, jets]
   for (const p of pools) root.add(p.mesh)
 
   /* decals: a small ring of flat quads, two materials, one program */
@@ -391,7 +364,6 @@ export const createFx = (o: FxOpts): Fx => {
     P.ang[i] = Math.random() * 6.28
     P.drag[i] = opts.drag ?? 0
     P.fadeAt[i] = opts.fadeAt ?? (P.behave === 'fire' ? 0.5 : 0.3)
-    if (P.fade) P.fade.setX(i, 1)
   }
 
   const rnd = (a: number, b: number) => a + Math.random() * (b - a)
@@ -423,29 +395,42 @@ export const createFx = (o: FxOpts): Fx => {
       flash.r = R * 0.95
       flash.power = k
       flash.t = 0
-      // the heart: a few white-hot balls at the centre that swell for a
-      // tenth of a second and are gone. (It was one ball a fifth of the
-      // radius across at flash brightness, which through the look was a flat
-      // cream disc over half the frame: a flash reads from the light it
-      // throws on the street, not from a sphere of it)
-      for (let i = 0; i < 3; i++) {
-        dir(0.2, d3)
-        const s = rnd(0.9, 1.3) * k
-        emit(fire, at.x + d3[0] * 0.4, at.y + 0.7 + d3[1] * 0.4, at.z + d3[2] * 0.4, d3[0] * 3, d3[1] * 3 + 2, d3[2] * 3,
-          rnd(0.18, 0.26), s, s, s, 1.5, 1.45, 1.4, { grow: 2.4, drag: 6 })
+      // the first frames: a burst of white-hot balls three or four times
+      // the size of a barrel cluster, gone in a tenth of a second, while the
+      // look's flash light (below, `lightLook`) throws it over the street.
+      // Several banded balls, never one disc: a single sphere of flash
+      // brightness read through the look as a flat cream plate
+      for (let i = 0; i < 8; i++) {
+        dir(0.1, d3)
+        const s = rnd(1.6, 2.6) * k
+        const o = i === 0 ? 0 : R * rnd(0.08, 0.18)
+        emit(fire, at.x + d3[0] * o, at.y + 1 + d3[1] * o * 0.7, at.z + d3[2] * o, d3[0] * 6, d3[1] * 6 + 3, d3[2] * 6,
+          rnd(0.1, 0.16), s, s, s, 1.6, 1.5, 1.4, { grow: 1.5, drag: 8 })
       }
-      // the fireball: a cluster of blobs thrown out and dragged to a stop
-      const blobs = Math.round(14 + 7 * k)
+      // tongues of flame thrown out radially, mostly upward, for a fifth of
+      // a second: the spiky silhouette that says blast and not bonfire
+      const tongues = Math.round(12 + 6 * k)
+      for (let i = 0; i < tongues; i++) {
+        dir(0.12, d3)
+        const sp = rnd(22, 40) * k
+        const len = rnd(3.5, 7) * k
+        const w = rnd(0.7, 1.2) * k
+        emit(jets, at.x, at.y + 0.8, at.z, d3[0] * sp, d3[1] * sp, d3[2] * sp, rnd(0.16, 0.3), w, w, len,
+          1.25, 1.1, 1.0, { drag: 7, fadeAt: 0.35 })
+      }
+      // the fireball: a cluster of blobs thrown out and dragged to a stop,
+      // about fourteen units across for a barrel
+      const blobs = Math.round(16 + 8 * k)
       for (let i = 0; i < blobs; i++) {
         dir(0.05, d3)
-        const sp = rnd(5, 14) * k
-        const s = rnd(0.8, 1.5) * k
+        const sp = rnd(8, 20) * k
+        const s = rnd(1.3, 2.2) * k
         // the outer blobs run cooler than the core: an orange rind round a
         // white-hot heart is what makes a fireball read as a ball
-        const hot = i < 6 ? 1.05 : rnd(0.6, 0.85)
-        emit(fire, at.x + d3[0] * 0.6, at.y + 0.6 + d3[1] * 0.6, at.z + d3[2] * 0.6,
-          d3[0] * sp, d3[1] * sp + rnd(3, 7), d3[2] * sp, rnd(0.45, 0.85), s, s, s, hot, hot * 0.92, hot * 0.85,
-          { grow: rnd(1.5, 2.0), drag: 4.5, delay: i < 5 ? 0 : rnd(0, 0.07) })
+        const hot = i < 7 ? 1.05 : rnd(0.6, 0.85)
+        emit(fire, at.x + d3[0] * 0.8, at.y + 0.9 + d3[1] * 0.8, at.z + d3[2] * 0.8,
+          d3[0] * sp, d3[1] * sp + rnd(3, 8), d3[2] * sp, rnd(0.55, 1.0), s, s, s, hot, hot * 0.92, hot * 0.85,
+          { grow: rnd(1.6, 2.1), drag: 4, delay: i < 6 ? 0.02 : rnd(0.02, 0.09) })
       }
       // sparks: streaks flung far and falling
       const n = Math.round(26 + 14 * k)
@@ -464,10 +449,10 @@ export const createFx = (o: FxOpts): Fx => {
         emit(bits, at.x, at.y + 0.3, at.z, d3[0] * sp, d3[1] * sp, d3[2] * sp, rnd(1.6, 2.8), s, s, s, g, g * 0.9, g * 0.8, { spin: 14 })
       }
       // smoke rolling up out of the fire as it dies
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 12; i++) {
         dir(0.5, d3)
-        const s = rnd(0.8, 1.4) * k
-        const g = rnd(0.09, 0.18)
+        const s = rnd(1.0, 1.7) * k
+        const g = rnd(0.16, 0.27)
         emit(puffs, at.x + d3[0] * R * 0.12, at.y + 0.8 + d3[1] * 1.5, at.z + d3[2] * R * 0.12,
           d3[0] * 3, rnd(3, 7), d3[2] * 3, rnd(1.6, 2.6), s, s, s, g, g * 0.94, g * 0.88,
           { delay: rnd(0.12, 0.45), grow: rnd(1.5, 1.9), drag: 0.9, spin: 1.2 })
@@ -475,12 +460,15 @@ export const createFx = (o: FxOpts): Fx => {
       // a dust ring racing out along the ground
       const gy = ground(at.x, at.z)
       if (at.y - gy < 3) {
-        for (let i = 0; i < 16; i++) {
-          const a = (i / 16) * Math.PI * 2 + rnd(-0.1, 0.1)
+        // (flat, wide lenses of dust rather than balls, low and never
+        // spinning: now that puffs are solid, a round grey one sitting on
+        // the grass read as a stone)
+        for (let i = 0; i < 22; i++) {
+          const a = (i / 22) * Math.PI * 2 + rnd(-0.1, 0.1)
           const sp = rnd(16, 24) * k
-          const s = rnd(0.5, 0.85)
-          emit(puffs, at.x + Math.cos(a), gy + 0.4, at.z + Math.sin(a), Math.cos(a) * sp, rnd(0.5, 2), Math.sin(a) * sp,
-            rnd(0.6, 0.9), s, s, s, 0.36, 0.32, 0.26, { grow: 1.9, drag: 3.2, spin: 2, fadeAt: 0.05 })
+          const s = rnd(0.8, 1.2)
+          emit(puffs, at.x + Math.cos(a), gy + 0.25, at.z + Math.sin(a), Math.cos(a) * sp, rnd(0.3, 1.2), Math.sin(a) * sp,
+            rnd(0.5, 0.75), s, s * 0.45, s, 0.4, 0.34, 0.26, { grow: 2.2, drag: 3.2, spin: 0, fadeAt: 0.2 })
         }
         decal(at.x, at.z, R * 0.32 * k, false)
       }
@@ -532,7 +520,7 @@ export const createFx = (o: FxOpts): Fx => {
           dir(0.1, d3)
           const s = rnd(0.35, 0.6) * Math.min(1.6, size)
           emit(puffs, at.x + d3[0] * size * 0.8, Math.max(gy + 0.4, at.y + rnd(-0.3, 0.6)), at.z + d3[2] * size * 0.8,
-            d3[0] * 1.2, rnd(-1.4, -0.4), d3[2] * 1.2, rnd(1.6, 2.4), s, s, s, 0.34, 0.29, 0.22,
+            d3[0] * 1.2, rnd(-1.4, -0.4), d3[2] * 1.2, rnd(1.6, 2.4), s, s * 0.55, s, 0.4, 0.31, 0.2,
             { delay: rnd(0.05, 0.25), grow: 1.9, drag: 1.6, spin: 0.6, fadeAt: 0.25 })
         }
       }
@@ -576,17 +564,18 @@ export const createFx = (o: FxOpts): Fx => {
     lightLook: (lights) => {
       const f = lights.flash
       if (flash.t < 1.4) {
-        // a blink of white-hot, then the fireball's orange, falling away
+        // for the first three frames a hard white flash wide enough to light
+        // the street, the fronts across it and everything standing near
+        // (and the look draws a third of its radius as lit air, which is
+        // the frame washing out for an instant), then the fireball's orange
+        // glow falling away over most of a second
         const t = flash.t
-        const blink = Math.max(0, 1 - t / 0.09)
+        const blink = t < 0.05 ? 1 : Math.max(0, 1 - (t - 0.05) / 0.06)
         const glow = Math.exp(-t * 2.6) * (0.85 + 0.15 * Math.sin(t * 60))
-        // (by day the street is already lit, so this is a warm lift on what
-        // is round the blast, not a white-out; the look also draws a third
-        // of the radius as lit air, which at the old gain was the frame)
-        const g = flash.power * (1.3 * blink + 1.05 * glow)
+        const g = flash.power * (3.6 * blink + 2 * glow)
         f.pos.set(flash.x, flash.y, flash.z)
-        f.radius = flash.r * (0.75 + 0.25 * Math.min(1, t * 8))
-        f.color.setRGB(g * 1.0, g * (0.5 + 0.3 * blink), g * (0.16 + 0.4 * blink))
+        f.radius = flash.r * (1 + 0.55 * blink)
+        f.color.setRGB(g * 1.0, g * (0.52 + 0.4 * blink), g * (0.18 + 0.62 * blink))
       } else if (flash.burn > 0.01) {
         const g = flash.burn * (0.9 + 0.3 * Math.sin(flash.t * 31) * Math.sin(flash.t * 17))
         f.pos.set(flash.bx, flash.by, flash.bz)
@@ -628,7 +617,7 @@ export const createFx = (o: FxOpts): Fx => {
     dispose: () => {
       root.removeFromParent()
       for (const P of pools) P.mesh.dispose()
-      ico0.dispose(); ico1.dispose(); cube.dispose(); spark.dispose()
+      ico0.dispose(); ico1.dispose(); cube.dispose(); spark.dispose(); tongue.dispose()
       smokeMat.dispose()
       decalGeo.dispose()
       fireMat.dispose(); scorchMat.dispose(); splatMat.dispose()
@@ -680,7 +669,7 @@ export const createFx = (o: FxOpts): Fx => {
       P.v[i3] *= drag
       P.v[i3 + 2] *= drag
       if (P.behave === 'fall' || P.behave === 'spark') P.v[i3 + 1] -= G * h
-      else P.v[i3 + 1] = P.v[i3 + 1] * drag + (P.behave === 'fire' ? 1.5 : 0.6) * h
+      else P.v[i3 + 1] = P.v[i3 + 1] * drag + (P.behave === 'fire' || P.behave === 'jet' ? 1.5 : 0.6) * h
       P.p[i3] += P.v[i3] * h
       P.p[i3 + 1] += P.v[i3 + 1] * h
       P.p[i3 + 2] += P.v[i3 + 2] * h
@@ -699,26 +688,28 @@ export const createFx = (o: FxOpts): Fx => {
       pos.set(P.p[i3], P.p[i3 + 1], P.p[i3 + 2])
       // shape over life
       let k = 1
-      let fade = 1
-      if (P.behave === 'fire') {
+      if (P.behave === 'fire' || P.behave === 'jet') {
         // swell fast and hold while it cools, then shrink away solid (never
-        // thinned: see bandedFire), going out at a deep red rather than
+        // thinned: see `banded`), going out at a deep red rather than
         // cooling all the way to soot, which is the smoke's job
         const g = P.grow[i]
         k = 1 + (g - 1) * (1 - (1 - Math.min(1, t * 3)) ** 3)
         const f0 = P.fadeAt[i]
+        if (P.behave === 'jet') k = Math.min(1, t * 6)
         if (t > f0) k *= 1 - ((t - f0) / (1 - f0)) ** 2
         ramp(t * 0.62, cbuf, 0)
         col.setRGB(cbuf[0] * P.c[i3], cbuf[1] * P.c[i3 + 1], cbuf[2] * P.c[i3 + 2])
         P.mesh.setColorAt(i, col)
         dirtyC = true
       } else if (P.behave === 'smoke') {
-        // billow out, and thin from the moment it stops growing
+        // billow out, and go by shrinking once it has done growing: solid
+        // to the last pixel (see `banded`), each puff on its own clock so a
+        // cloud breaks up into lumps rather than dwindling as one
         const g = P.grow[i]
         k = 1 + (g - 1) * (1 - (1 - t) ** 2)
         if (age < 0.1) k *= 0.4 + 0.6 * (age / 0.1)
         const f0 = P.fadeAt[i]
-        fade = t < f0 ? 1 : Math.max(0, 1 - (t - f0) / (1 - f0)) ** 0.8
+        if (t > f0) k *= 1 - ((t - f0) / (1 - f0)) ** 1.6
       } else if (P.behave === 'fall') {
         if (t > 0.8) k = Math.max(0, 1 - (t - 0.8) / 0.2)
       } else if (P.behave === 'spark') {
@@ -729,7 +720,13 @@ export const createFx = (o: FxOpts): Fx => {
         P.mesh.setColorAt(i, col)
         dirtyC = true
       }
-      if (P.behave === 'spark') {
+      if (P.behave === 'jet') {
+        // a tongue of flame pointed along its flight, as long as it was born
+        vdir.set(P.v[i3], P.v[i3 + 1], P.v[i3 + 2])
+        const sp = vdir.length()
+        if (sp > 1e-3) q.setFromUnitVectors(zAxis, vdir.multiplyScalar(1 / sp))
+        scl.set(P.s[i3] * k, P.s[i3 + 1] * k, P.s[i3 + 2] * (0.4 + 0.6 * k))
+      } else if (P.behave === 'spark') {
         // stretched along the velocity, a streak of light
         vdir.set(P.v[i3], P.v[i3 + 1], P.v[i3 + 2])
         const sp = vdir.length()
@@ -743,7 +740,6 @@ export const createFx = (o: FxOpts): Fx => {
       }
       m4.compose(pos, q, scl)
       P.mesh.setMatrixAt(i, m4)
-      if (P.fade) P.fade.setX(i, fade)
     }
     P.hi = hi
     P.live = live
@@ -756,7 +752,6 @@ export const createFx = (o: FxOpts): Fx => {
     // other count links again
     P.mesh.count = Math.max(1, hi)
     P.mesh.instanceMatrix.needsUpdate = true
-    if (P.fade) P.fade.needsUpdate = true
     if (dirtyC && P.mesh.instanceColor) P.mesh.instanceColor.needsUpdate = true
   }
 
