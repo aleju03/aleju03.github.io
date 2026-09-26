@@ -519,6 +519,18 @@ export default function WorldIdentity({
             value={look.hat}
             onPick={(hat) => onLook({ ...look, hat })}
           />
+          <Hats
+            label={t.look.shape}
+            names={t.look.builds}
+            value={look.build}
+            onPick={(build) => onLook({ ...look, build })}
+          />
+          <Hats
+            label={t.look.outfit}
+            names={t.look.costumes}
+            value={look.costume}
+            onPick={(costume) => onLook({ ...look, costume })}
+          />
           <Swatches
             label={t.look.suit}
             options={SHELL_SWATCHES}

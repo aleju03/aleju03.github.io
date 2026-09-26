@@ -1188,6 +1188,13 @@ vignette. A third pass upscales nearest-neighbour to the
 canvas, integer where the screen allows (1080p is exactly 3x, 1440p 4x), and
 a fourth redraws the glass holes at full resolution.
 
+Dusk keeps its warmth in the light only (the sun, the disc, the horizon
+band and the sky's sunward side, the lamps): the air and the shadows it
+fills are a cool grey-blue, which is what keeps distant masses apart instead
+of dissolving them into one sepia plane. And the look clamps the scene's
+alpha before it writes premultiplied colour, because additive sprites pile
+alpha past 1 in the half-float target and came back as glowing dots.
+
 The sky (`levels/sky.ts`) is painted for the look and owned with it: a day
 dome painted deeper than it reads, clouds drawn as hard-rimmed shapes in
 three flat tones so the posterize keeps them clean, a twilight band that

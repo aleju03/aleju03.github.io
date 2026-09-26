@@ -13,7 +13,7 @@
   needs no field of its own. That is the whole of the costume on purpose: a jelly brawler is
   its colours and its hat.
 
-  **The hat rides in the colours.** The wire carries 24 hex characters and
+  **The hat, the outfit and the shape ride in the colours.** The wire carries 24 hex characters and
   the server checks them with one regex, so a fifth field would break every
   server and every old client at once. Instead the hat is the low three bits
   of the headgear colour's blue byte: every headgear swatch has those bits
@@ -22,7 +22,10 @@
   reading a new pack sees a headgear colour off by at most 7/255 in blue,
   which nobody can see; a new client reading an old pack gets a hat derived
   deterministically from whatever the colour's low bits were, so everyone
-  still agrees on what everyone is wearing.
+  still agrees on what everyone is wearing. The outfit (none, cape, hooped
+  vest, onesie) is the low two bits of the outfit colour (`trim`) and the body
+  shape (brawler, round, skinny, tall, squat) the low three bits of the pupil
+  colour (`glow`), by exactly the same trick.
 
   The four field names are older than this body (they were a robot's shell,
   trim, accent joints and eye glow) and they stay, because they are the wire
@@ -57,12 +60,20 @@ export interface PlayerLook {
   glow: string
   /** which headgear, an index into HATS */
   hat: number
+  /** which outfit, an index into COSTUMES */
+  costume: number
+  /** which body shape, an index into BUILDS */
+  build: number
 }
 
 /** the headgear, in wire order (see the header: the index rides in the low
     bits of `accent`). No beanies */
 export const HATS = ['band', 'mask', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood'] as const
 export type HatKind = (typeof HATS)[number]
+/** the outfits, in wire order: they ride in the low two bits of `trim` */
+export const COSTUMES = ['none', 'cape', 'stripes', 'onesie'] as const
+/** the body shapes, in wire order: they ride in the low three bits of `glow` */
+export const BUILDS = ['brawler', 'round', 'skinny', 'tall', 'squat'] as const
 
 /** a saturated blue brawler in a red sweatband. (It was green in a red
     wrestler's mask, which read as the Android logo in a luchador cap) */
@@ -70,8 +81,10 @@ export const DEFAULT_LOOK: PlayerLook = {
   shell: '#2f6fcf',
   trim: '#f2eee0',
   accent: '#c84028',
-  glow: '#1c1a22',
+  glow: '#1c1a20',
   hat: 0,
+  costume: 0,
+  build: 0,
 }
 
 /** jellies are painted saturated on purpose: the game is rendered at a low
@@ -84,9 +97,11 @@ export const SHELL_SWATCHES = [
   '#8a4fc8', '#d9508f', '#1f9a8a', '#e8e2d2',
 ] as const
 
+/** every outfit colour has the low two bits of its blue byte clear: that is
+    where the outfit index goes */
 export const TRIM_SWATCHES = [
-  '#f2eee0', '#1c1c22', '#e0a21a', '#d2452f',
-  '#2f6fcf', '#3f9a38', '#8a4fc8', '#e06a1a',
+  '#f2eee0', '#1c1c20', '#e0a218', '#d2452c',
+  '#2f6fcc', '#3f9a38', '#8a4fc8', '#e06a18',
 ] as const
 
 /** every headgear colour has the low three bits of its blue byte clear: that
@@ -96,9 +111,11 @@ export const ACCENT_SWATCHES = [
   '#1c1c20', '#38a038', '#e86810', '#9048c8',
 ] as const
 
+/** every pupil colour has the low three bits of its blue byte clear: that
+    is where the body shape goes */
 export const GLOW_SWATCHES = [
-  '#1c1a22', '#2b3a55', '#4a2e22', '#1f4a3a',
-  '#5a1e2e', '#3a2a5a', '#f4f1e6', '#6a6f76',
+  '#1c1a20', '#2b3a50', '#4a2e20', '#1f4a38',
+  '#5a1e28', '#3a2a58', '#f4f1e0', '#6a6f70',
 ] as const
 
 /** the colour field order the pack format freezes; changing it changes the wire */
@@ -117,18 +134,27 @@ const hex6 = (value: unknown): string | null => {
 const clampHat = (h: unknown) =>
   typeof h === 'number' && Number.isFinite(h) ? Math.max(0, Math.min(HATS.length - 1, Math.floor(h))) : null
 /** a colour with the low three bits of its blue byte replaced */
-const withLowBlue = (hex: string, bits: number) => {
-  const b = (parseInt(hex.slice(4, 6), 16) & ~7) | (bits & 7)
+const withLowBlue = (hex: string, bits: number, width = 3) => {
+  const mask = (1 << width) - 1
+  const b = (parseInt(hex.slice(4, 6), 16) & ~mask) | (bits & mask)
   return hex.slice(0, 4) + b.toString(16).padStart(2, '0')
 }
+const lowBlue = (hex: string, width: number) => parseInt(hex.slice(-2), 16) & ((1 << width) - 1)
+const clampIdx = (v: unknown, n: number) =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(n - 1, Math.floor(v))) : null
 
 /** 24 hex characters, no separators and no leading hash: four colours, with
     the hat folded into the headgear colour's blue low bits */
 export function packLook(look: PlayerLook): string {
   const hat = clampHat(look.hat) ?? DEFAULT_LOOK.hat
+  const costume = clampIdx(look.costume, COSTUMES.length) ?? 0
+  const build = clampIdx(look.build, BUILDS.length) ?? 0
   return FIELDS.map((f) => {
     const hex = hex6(look[f]) ?? hex6(DEFAULT_LOOK[f])!
-    return f === 'accent' ? withLowBlue(hex, hat) : hex
+    if (f === 'accent') return withLowBlue(hex, hat)
+    if (f === 'trim') return withLowBlue(hex, costume, 2)
+    if (f === 'glow') return withLowBlue(hex, build)
+    return hex
   }).join('')
 }
 
@@ -145,6 +171,10 @@ export function unpackLook(packed: unknown): PlayerLook {
   const bits = parseInt(out.accent.slice(5, 7), 16) & 7
   out.hat = Math.min(bits, HATS.length - 1)
   out.accent = `#${withLowBlue(out.accent.slice(1), 0)}`
+  out.costume = lowBlue(out.trim, 2) % COSTUMES.length
+  out.trim = `#${withLowBlue(out.trim.slice(1), 0, 2)}`
+  out.build = lowBlue(out.glow, 3) % BUILDS.length
+  out.glow = `#${withLowBlue(out.glow.slice(1), 0)}`
   return out
 }
 
@@ -157,12 +187,19 @@ export function sanitizeLook(raw: unknown): PlayerLook {
     out[f] = hex ? `#${hex}` : DEFAULT_LOOK[f]
   }
   out.accent = `#${withLowBlue(out.accent.slice(1), 0)}`
+  out.trim = `#${withLowBlue(out.trim.slice(1), 0, 2)}`
+  out.glow = `#${withLowBlue(out.glow.slice(1), 0)}`
   out.hat = clampHat(src.hat) ?? DEFAULT_LOOK.hat
+  out.costume = clampIdx(src.costume, COSTUMES.length) ?? 0
+  out.build = clampIdx(src.build, BUILDS.length) ?? 0
   return out
 }
 
 export function looksEqual(a: PlayerLook, b: PlayerLook): boolean {
-  return FIELDS.every((f) => a[f].toLowerCase() === b[f].toLowerCase()) && a.hat === b.hat
+  return (
+    FIELDS.every((f) => a[f].toLowerCase() === b[f].toLowerCase()) &&
+    a.hat === b.hat && a.costume === b.costume && a.build === b.build
+  )
 }
 
 /** one from each row, and a hat. The "surprise me" button, and the reason the
@@ -176,5 +213,7 @@ export function randomLook(rnd: () => number = Math.random): PlayerLook {
     accent: pick(ACCENT_SWATCHES),
     glow: pick(GLOW_SWATCHES),
     hat: Math.floor(rnd() * HATS.length) % HATS.length,
+    costume: Math.floor(rnd() * COSTUMES.length) % COSTUMES.length,
+    build: Math.floor(rnd() * BUILDS.length) % BUILDS.length,
   }
 }

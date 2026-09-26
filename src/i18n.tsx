@@ -208,6 +208,10 @@ const dictionaries = {
       hat: 'wear',
       // in look.ts's HATS order
       hats: ['sweatband', 'mask', 'bucket hat', 'party hat', 'hard hat', 'bandana', 'nothing', 'hood'],
+      shape: 'shape',
+      builds: ['brawler', 'round', 'skinny', 'tall', 'squat'],
+      outfit: 'outfit',
+      costumes: ['none', 'cape', 'stripes', 'onesie'],
     },
   },
   es: {
@@ -400,6 +404,10 @@ const dictionaries = {
       glow: 'ojos',
       hat: 'lleva',
       hats: ['muñequera', 'máscara', 'pescador', 'de fiesta', 'casco', 'pañuelo', 'nada', 'capucha'],
+      shape: 'forma',
+      builds: ['peleón', 'redondo', 'flaco', 'alto', 'bajito'],
+      outfit: 'traje',
+      costumes: ['nada', 'capa', 'rayas', 'pijama'],
     },
   },
 }
