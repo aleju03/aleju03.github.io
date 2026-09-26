@@ -248,7 +248,7 @@ const report = (sb: Sandbox, c: ScenarioCtx) => {
 
 /* ------------------------------------------------------------ the house -- */
 
-defineScenario({
+const house = defineScenario({
   id: 'sandbox:demolish-house',
   title: 'red barrels along one side of a house go off, and the house folds over',
   site: once('house', () => siteBuilding(['house'], [0, -300], (w) => w * 1.6 + 14, { minH: 6, side: true })),
@@ -301,6 +301,55 @@ defineScenario({
     }],
   ],
   report: (c) => report(c.sb, c),
+})
+
+/* ------------------------------------------------------------- the ruin -- */
+
+/*
+  The same demolition, run on until it has settled and looked at from where
+  a player would stand: a walker's eye (3.84 up) out past the charges, just
+  clear of the rubble, looking into the footprint. The report counts what
+  is still standing as solids over the footprint (what the walk collides
+  with) and the rubble lying in it (what it climbs over).
+*/
+defineScenario({
+  ...house,
+  id: 'sandbox:ruin',
+  title: 'the house after it came down, from a walker\'s eye',
+  duration: 11,
+  frames: 1,
+  camera: (c) => {
+    const fx = c.memo.fx
+    const fz = c.memo.fz
+    // back from the charges, away from the house
+    let ox = fx - c.x
+    let oz = fz - c.z
+    const l = Math.hypot(ox, oz) || 1
+    ox /= l
+    oz /= l
+    const ex = fx + ox * 7 + -oz * 3
+    const ez = fz + oz * 7 + ox * 3
+    return {
+      from: [ex, c.sb.groundY(ex, ez) + 3.84, ez],
+      to: [c.x, c.memo.base + 1.8, c.z],
+      fov: 70,
+    }
+  },
+  report: (c) => {
+    const d = destructionOf(c.sb)
+    const b = building(c)
+    if (!d || !b?.open) return 'nothing came down'
+    let standing = 0
+    for (const sol of b.open.solids) if (sol && !sol.isEmpty()) standing++
+    let lying = 0
+    const box = b.box
+    c.sb.forEach((p) => {
+      if (!p.data.rubble) return
+      const t = p.body.translation()
+      if (t.x > box.min.x - 4 && t.x < box.max.x + 4 && t.z > box.min.z - 4 && t.z < box.max.z + 4) lying++
+    })
+    return `${standing} of the house's solids still standing, ${lying} pieces of rubble in and round the footprint`
+  },
 })
 
 /* ------------------------------------------------------------ the tower -- */

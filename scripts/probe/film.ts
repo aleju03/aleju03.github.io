@@ -685,3 +685,47 @@ export const links = async () => {
     })
   return { atBoot, afterSpawn, afterBreakAndBlast: n, programs: r.info.programs?.length ?? -1, fresh }
 }
+
+/**
+ * The same rule for destruction: stage the house and tower demolitions the
+ * way the game would have them (everything compiled and drawn once under the
+ * cover), then run both through their collapse drawing every frame, and
+ * count what links. Rubble draws with the chunk's own material and the dust
+ * with the fire's, so this must print 0.
+ */
+export const collapseLinks = async () => {
+  const r = makeRenderer(640, 400, false, 200)
+  const gl = r.getContext() as WebGL2RenderingContext
+  let n = 0
+  const real = gl.linkProgram.bind(gl)
+  gl.linkProgram = (p: WebGLProgram) => {
+    n++
+    real(p)
+  }
+  type Prog = { name: string; cacheKey: string }
+  let atBoot = 0
+  let during = 0
+  let frames = 0
+  let lumps = 0
+  const fresh: string[] = []
+  for (const id of ['sandbox:demolish-house', 'sandbox:tower']) {
+    n = 0
+    const st = await build({ id, frames: 1, tile: [640, 400], cols: 1, rings: 1 }, 640, 400)
+    for (let i = 0; i < 2; i++) {
+      st.sb.tick({ dt: 1 / 60, active: true, focus: { x: st.c.x, y: st.c.y, z: st.c.z } })
+      draw(r, st)
+    }
+    atBoot += n
+    n = 0
+    const before = new Set(((r.info.programs ?? []) as unknown as Prog[]).map((p) => p.cacheKey))
+    for (let t = 0; t < st.duration; t += 1 / 15) {
+      advance(st, t)
+      draw(r, st)
+      frames++
+    }
+    during += n
+    lumps += st.sb.stats.props
+    for (const p of (r.info.programs ?? []) as unknown as Prog[]) if (!before.has(p.cacheKey)) fresh.push(`${id}: ${p.name}`)
+  }
+  return { atBoot, during, frames, lumps, fresh }
+}
