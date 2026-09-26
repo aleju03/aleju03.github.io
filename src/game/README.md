@@ -51,6 +51,10 @@ player/
                      drive (impulses, grabs, muscles) for anything outside
   impacts.ts         createImpactWatch(): turns where the fleet was last frame
                      into speeds and asks whether one is running a body over
+  bodyContact.ts     bodies meeting bodies: the walker against pedestrians and
+                     other players as upright cylinders measured off each
+                     rig's own mesh. Lean (push apart), charge, tackle, stomp,
+                     trample, through one indexed `Bumpable` interface
   chaseCam.ts        createChaseCam(): the third-person boom (v), collision-
                      clamped, which also frames a downed body
   seating.ts         createSeating(): sitting on the furniture. A seat is a
@@ -80,6 +84,10 @@ net/                 the shared walk, see "Multiplayer" below
   avatars.ts         createRemoteAvatars(): one buildPlayerBody() per
                      player, plus the name plate, speaker badge and chat
                      bubble that ride over each head
+  shove.ts           createRemoteBumps(): other players as bodies the walker
+                     cannot move, whose hard bumps go out as world-shove;
+                     createShoveTaker(): the victim's own client deciding
+                     stumble, flop or nothing
   spawn.ts           scatterSpawn(): the sunflower offset that keeps two
                      simultaneous arrivals out of each other's ribcage
 vehicles/            three driveable machines, see "The fleet" below
@@ -362,7 +370,10 @@ world/
                   wear) walking the sidewalk slab by sampling roadAt().walk
                   rather than following a navmesh, and crossing the road
                   where the pavement runs out at a junction. A car driven
-                  into one knocks it flat; it lies there, then gets up
+                  into one knocks it flat; it lies there, then gets up. So
+                  does a player sprinting, hopping or landing on one (it is a
+                  Bumpable, player/bodyContact.ts); walked into, it is pushed
+                  aside and staggers, and lying down it is trampled
   quality.ts      the graphics tier: every density and budget knob, read at
                   build time, plus the GPU sniff that picks between them. New
                   knobs go in the record, not beside it. The visitor can
@@ -902,6 +913,11 @@ npm run drive -- links                 the same count in the real /world: first
                                        spawn, a break, a fuse and a chain (0)
 
 npm run film -- 'sandbox:physgun-*'    the physgun films, first and third person
+npm run film -- sandbox:bump           the walker leaning on, charging, landing on and
+                                       hopping into four of the town's pedestrians
+npm run measure -- bodies              the same run headless, a 400-approach sweep for
+                                       the closest two bodies ever get, the contact
+                                       pass's cost, and a shove between two players
 
 npm run measure -- physics             all of: ground cost stack tunnel walker sites
                                        rest determinism float catalogue breaks blast physgun scenarios
@@ -1156,6 +1172,19 @@ be recomputed are where the other people are, and where they left the car.
   is modelled facing +Z, and the scene's `facing + Math.PI` converts a compass
   yaw where 0 means -Z. Copy that π into a preview and you are looking at the
   back of your own head.
+- **Bumping into somebody moves only yourself.** `player/bodyContact.ts`
+  resolves the local walker out of every remote body's cylinder and never the
+  other way round, so two players walking into each other stop chest to chest
+  on both screens. Anything harder than a stroll travels: `net/shove.ts` sends
+  a `world-shove` (a velocity, throttled to one lean every 0.3 s and one knock
+  every 0.7 s), the server forwards it to the victim alone when their last
+  poses are within 12 units, both on foot and neither flying, and the
+  victim's own client decides: past 6 u/s planar (or pushed down, a stomp) it
+  flops through the same `rig.hit` a car uses, under that it stumbles through
+  `walk.push`, and for three seconds after a flop every shove is a stumble, so
+  nobody can be pinned to the floor. The fall reaches everyone else through
+  the ordinary `down` pose bit. `npm run measure -- bodies net` drives the
+  real snapshot store at 15 Hz against a sprint and a lean.
 - **Distance is done in WebAudio.** Each peer's stream lands on its own
   `PannerNode` with the listener riding the camera. Peers open at 55 units and
   drop at 80; the gap is what stops someone pacing the boundary from

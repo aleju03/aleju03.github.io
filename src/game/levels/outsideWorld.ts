@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
 import type { ImpactWatch } from '../player/impacts'
+import type { Bumpable } from '../player/bodyContact'
 import type { GrabHandle } from '../world/pedestrians'
 import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
@@ -123,6 +124,10 @@ export interface OutsideHandles {
   /** the town's pedestrians as bodies a grab beam can take by a limb
       (the physgun); empty until the world is attached */
   people: () => Iterable<{ key: string; rig: GrabHandle }>
+  /** the town's pedestrians as bodies the walker bumps into
+      (player/bodyContact.ts). One stable object, empty until the world is
+      attached, so the walk frame can hold it from the first frame */
+  crowd: Bumpable
   /** the nearest light fixtures out here, as xyz triples into `out`; 0 until
       the world is attached. For the look's lamp pools (render/atmosphere.ts) */
   nearLamps: (x: number, z: number, out: Float32Array, max: number) => number
@@ -408,6 +413,15 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     ruins: () => w?.debris.ruins ?? null,
     knockPeople: (watch) => w?.pedestrians.knock(watch),
     people: () => (w ? w.pedestrians.grabbable() : []),
+    crowd: {
+      get size() {
+        return w ? w.pedestrians.bumpable.size : 0
+      },
+      peer: (i, out) => (w ? w.pedestrians.bumpable.peer(i, out) : false),
+      nudge: (i, dx, dz) => (w ? w.pedestrians.bumpable.nudge(i, dx, dz) : false),
+      hit: (i, b) => w?.pedestrians.bumpable.hit(i, b),
+      trample: (x, z, y, vx, vz, r) => w?.pedestrians.bumpable.trample?.(x, z, y, vx, vz, r) ?? 0,
+    },
     nearLamps: (x, z, out, max) => (w ? w.world.nearLamps(x, z, out, max) : 0),
     biomeAt: (x, z) => {
       if (!w) return null
