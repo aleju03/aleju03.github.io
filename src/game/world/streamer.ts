@@ -232,12 +232,12 @@ export const splashAt = pushSplash
  *
  * - the surface rolls on two crossed sine waves, which is enough motion to
  *   stop a lake reading as glass laid on the ground
- * - a cel-shaded highlight web rides the surface: Voronoi F1 − SmoothF1,
- *   thresholded hard, over a slowly flowing and noise-distorted UV. That
- *   subtraction is zero in cell interiors and positive along the boundaries,
- *   which is exactly the bright caustic web anime water draws by hand. The
- *   technique (a Blender node-graph trick rebuilt in GLSL) is adapted from
- *   cortiz2894/stylized-components' WaterFloor (MIT © Christian Ortiz), as
+ * - sunlight glints on the surface. The highlight began as the anime caustic
+ *   web, Voronoi F1 - SmoothF1 thresholded into hand-drawn lines, adapted from
+ *   cortiz2894/stylized-components' WaterFloor (MIT © Christian Ortiz), and
+ *   at the pixel look's resolution that read as tiles on a pool floor. The
+ *   light on the water is now short one-pixel glints on a drifting grid,
+ *   each swelling and fading on its own clock. Still from that repo
  *   are the splash rings below: their *analytic* ripples — hard-edged rings
  *   replayed from a tiny event list, expanding and exponentially fading —
  *   not their GPU wave simulation, whose three render-target passes are a
@@ -246,8 +246,10 @@ export const splashAt = pushSplash
  *   distance tests that early-out once the ripple has died.
  * - `aDepth` (baked per vertex by the chunk builder) drives opacity, so the
  *   water thins to nothing at the shoreline instead of ending on a hard line
- * - a foam band rides the last unit of that depth, brightened where the waves
- *   are cresting, which is what makes a beach look like a beach
+ * - the depth is drawn in three shelves with ragged pixel contours, and the
+ *   shore in lines: a lip of foam where water meets sand, a surf line that
+ *   breathes with the swell, and crests catching the light, which is what
+ *   makes a beach look like a beach in pixel art
  */
 const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
   mat.onBeforeCompile = (shader) => {
@@ -296,10 +298,6 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
            p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
            return fract(sin(p) * 43758.5453);
          }
-         float wSmin(float a, float b, float k) {
-           float h = max(k - abs(a - b), 0.0) / k;
-           return min(a, b) - h * h * h * k / 6.0;
-         }
          float wNoise(vec2 p) {
            vec2 i = floor(p);
            vec2 f = fract(p);
@@ -309,45 +307,26 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
            float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
            float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-         }
-         // F1 and SmoothF1 in one pass over the 3x3 neighbourhood; the same
-         // cell offsets feed both, or their difference stops meaning "edge".
-         // The wide smin radius is what makes the boundary ridge broad enough
-         // to threshold into a thick hand-drawn line rather than a hairline
-         vec2 wVoro(vec2 p) {
-           vec2 i = floor(p), f = fract(p);
-           float f1 = 8.0, sf = 8.0;
-           for (int y = -1; y <= 1; y++)
-             for (int x = -1; x <= 1; x++) {
-               vec2 n = vec2(float(x), float(y));
-               float d = length(n + wHash2(i + n) - f);
-               f1 = min(f1, d);
-               sf = wSmin(sf, d, 0.5);
-             }
-           return vec2(f1, sf);
          }`,
       )
       .replace(
         '#include <dithering_fragment>',
         `#include <dithering_fragment>
-         // the cel highlight web, drifting with the wind and warped by a slow
-         // noise so the cells never read as a stationary grid. Thresholded
-         // through fwidth so the line keeps a constant screen-space softness:
-         // a fixed-width smoothstep aliased into structured moiré at grazing
-         // angles, which is most of what a standing player sees of the sea
          {
-           vec2 flow = vWXZ * 0.085 + vec2(uTime * 0.035, uTime * 0.022);
-           flow += (wNoise(vWXZ * 0.045 + uTime * 0.03) - 0.5) * 0.9;
-           vec2 vv = wVoro(flow);
-           float e = vv.x - vv.y;
-           float w = fwidth(e);
-           // the ridge tops out near k/6 = 0.083 between two sites; cutting
-           // this close to the top keeps the lines bold but not dominant,
-           // and lets the smin junctions swell into hand-drawn blobs
-           float cel = smoothstep(0.066 - w, 0.078 + w, e);
-           // once a pixel spans a good part of the ridge the web is only
-           // noise; hand the far field to the fog as flat colour instead
-           cel *= 1.0 - smoothstep(0.025, 0.075, w);
+           // glints: short one-pixel dashes of sunlight on a drifting,
+           // jittered grid, each one swelling and fading on its own clock.
+           // (the Voronoi web that used to be here read as the cracks in a
+           // pool floor at this resolution)
+           vec2 g = vWXZ * vec2(0.34, 0.95) + vec2(uTime * 0.12, uTime * 0.05);
+           g += (vec2(wNoise(vWXZ * 0.045 + uTime * 0.03), wNoise(vWXZ * 0.05 - uTime * 0.02)) - 0.5) * 0.8;
+           vec2 gi = floor(g);
+           vec2 hh = wHash2(gi);
+           vec2 d = fract(g) - 0.5 - (hh - 0.5) * 0.45;
+           float life = max(0.0, sin(uTime * 1.3 + hh.x * 6.2831));
+           float fy = max(fwidth(g.y), 1e-4);
+           float cel = step(abs(d.y), max(0.06, fy * 0.5)) * step(abs(d.x), 0.34 * life) * step(0.5, hh.y);
+           // once a dash is thinner than a pixel it is only noise
+           cel *= 1.0 - smoothstep(0.12, 0.3, fy);
            // fade the web out in the last stretch of shallows so it never
            // draws over the foam band
            cel *= smoothstep(0.5, 2.2, vDepth);
@@ -374,15 +353,26 @@ const makeWaterStylized = (mat: THREE.MeshStandardMaterial) => {
              gl_FragColor.rgb, vec3(0.9, 0.97, 0.97), clamp(ripple, 0.0, 1.0) * 0.6);
          }
          // deep water is darker and more opaque; the shallows go clear.
-         // The ramp is long and the lift modest on purpose — at 1.9 over
-         // seven units the whole visible sea from a beach was inside the
-         // bright end of it, and an ocean came out as a pale strip of milk
-         float shallow = 1.0 - clamp(vDepth / 16.0, 0.0, 1.0);
-         // the lift leans cyan so the shelf reads tropical against the deep blue
+         // Drawn as three shelves with ragged one-pixel contours between
+         // them rather than a smooth ramp, the way a pixel artist paints a
+         // coast: the reef, the shelf, the deep. The lift leans cyan so the
+         // shelf reads tropical against the deep blue, and it stays modest:
+         // a long bright ramp once turned a whole ocean into a strip of milk
+         float jit = (wHash2(floor(vWXZ * 4.0)).x - 0.5) * 0.7;
+         float shelf = vDepth + jit;
+         float shallow = shelf < 1.6 ? 1.0 : shelf < 4.5 ? 0.62 : shelf < 10.0 ? 0.3 : 0.0;
          gl_FragColor.rgb = mix(
            gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.16, 1.42, 1.38) + 0.02, shallow * 0.75);
-         float foam = smoothstep(1.2, 0.12, vDepth) * (0.55 + 0.45 * vWave);
-         gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.92, 0.96, 0.97), clamp(foam, 0.0, 0.85));
+         // the shore in lines, not a gradient: a solid lip of foam where the
+         // water meets the sand, a line a little further out that breathes
+         // in and out with the swell, and the swell's crests catching light
+         float dw = max(fwidth(vDepth), 1e-3);
+         float lip = 1.0 - smoothstep(0.22, 0.22 + dw * 1.2, vDepth);
+         float surfAt = 0.95 + 0.35 * sin(uTime * 1.25 + vWXZ.x * 0.05 + vWXZ.y * 0.04);
+         float surf = 1.0 - smoothstep(0.0, dw * 1.3, abs(vDepth - surfAt));
+         float crest = step(0.86, vWave) * (1.0 - smoothstep(1.4, 3.0, vDepth));
+         float foam = max(max(lip, surf * 0.85), crest * 0.5);
+         gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.92, 0.96, 0.97), clamp(foam, 0.0, 0.9));
          gl_FragColor.a *= smoothstep(0.0, 0.5, vDepth);
          // a freshly streamed sea eases in with its chunk (world/fade.ts)
          ${FADE_FRAG_ALPHA}`,
