@@ -32,12 +32,18 @@ import type { PropId, Sandbox } from './sandbox'
 /** the owner offline, and the owner of anything recorded before a welcome */
 export const LOCAL = 0
 
+/** what an entry is called: one string, or the same thing in both languages
+    (the shape `commands.ts` calls a Msg), since the undo line and the spawn
+    menu's order slip print it in whichever the visitor reads */
+export type Label = string | { en: string; es: string }
+export const labelIn = (l: Label, lang: 'en' | 'es') => (typeof l === 'string' ? l : l[lang])
+
 export interface HistoryEntry {
   /** increasing, never reused */
   readonly seq: number
   readonly owner: number
   /** what the undo line says: "wooden crate", "10 wooden crates", "weld" */
-  label: string
+  label: Label
   /** the kind, when the entry is a spawn; the spawn menu draws its thumbnail */
   kind?: string
   /** props this entry brought into the world, still in it */
@@ -50,7 +56,7 @@ export interface HistoryEntry {
 
 export interface RecordOpts {
   owner?: number
-  label: string
+  label: Label
   kind?: string
   props?: Iterable<PropId> | PropId
   undo?: () => void

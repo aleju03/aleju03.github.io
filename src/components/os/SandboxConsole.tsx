@@ -270,7 +270,7 @@ function Composer({
 export default function SandboxConsole({
   open, lines, online, status, onSubmit, onClose, complete,
 }: SandboxConsoleProps) {
-  const { language } = useI18n()
+  const { language, t } = useI18n()
   const say: Say = (m) => (m === undefined ? '' : typeof m === 'string' ? m : m[language])
   const scrollRef = useRef<HTMLDivElement>(null)
   const stock = useMemo(
@@ -414,34 +414,75 @@ export default function SandboxConsole({
           </div>
         </div>
       )}
-      {/* the printer: the paper comes out of the slot along its top edge */}
+      {/* the printer: a cream plastic till printer, the paper coming out of
+          the slot along its top edge past a serrated tear bar, with a feed
+          button, a status lamp, a little lcd for the presence line and a
+          strip of masking tape somebody wrote its job on */}
       <div
-        className="relative flex h-[30px] items-center gap-2 rounded-[7px] px-3"
+        className="relative flex h-[38px] items-center gap-2.5 px-3 pt-[9px]"
         style={{
           width: WIDTH + 24,
-          background: 'linear-gradient(#3a3935, #252421 60%, #1c1b19)',
-          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), inset 0 -2px 0 rgba(0,0,0,0.35)',
+          borderRadius: '9px 9px 12px 12px',
+          background: 'linear-gradient(#e4ddcd, #d3cab6 55%, #bdb39c)',
+          boxShadow:
+            'inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -3px 0 rgba(90,74,52,0.35), 0 2px 0 rgba(40,32,20,0.35)',
           animation: online && status ? undefined : paperFade,
         }}
       >
+        {/* the slot, and the tear bar's teeth along its lip */}
         <span
           aria-hidden
-          className="absolute top-[5px] right-5 left-5 h-[3px] rounded-full"
-          style={{ background: '#0c0c0b', boxShadow: '0 1px 0 rgba(255,255,255,0.07)' }}
+          className="absolute top-[4px] right-4 left-4 h-[4px] rounded-full"
+          style={{ background: '#2a2620', boxShadow: '0 1px 0 rgba(255,255,255,0.5)' }}
         />
+        <svg aria-hidden className="absolute top-[1px] left-5" width={WIDTH - 16} height="5" viewBox={`0 0 ${WIDTH - 16} 5`}>
+          <path
+            d={`M0 5 ${Array.from({ length: Math.floor((WIDTH - 16) / 4) }, (_, i) => `L${i * 4 + 2} 1 L${i * 4 + 4} 5`).join(' ')}`}
+            fill="#a8a59c"
+            stroke="#77736a"
+            strokeWidth="0.6"
+          />
+        </svg>
+        {/* the tape */}
         <span
           aria-hidden
-          className="mt-2 size-[6px] rounded-full"
+          className="absolute -top-2 -right-3 rotate-[7deg] px-2 py-[1px] font-mono text-[10px] italic"
           style={{
-            background: online ? '#6fd37a' : '#d9a441',
-            boxShadow: `0 0 6px ${online ? '#6fd37a' : '#d9a441'}`,
+            background: 'linear-gradient(90deg, rgba(247,236,205,0.92), rgba(238,224,190,0.95))',
+            color: '#5a4a36',
+            boxShadow: '0 1px 2px rgba(60,44,26,0.3)',
+            clipPath: 'polygon(2% 8%, 98% 0, 100% 92%, 0 100%)',
+          }}
+        >
+          {t.sandbox.console.tape}
+        </span>
+        <span
+          aria-hidden
+          className="size-[7px] shrink-0 rounded-full"
+          style={{
+            background: online ? '#58c46a' : '#e0a236',
+            boxShadow: `0 0 5px ${online ? '#58c46a' : '#e0a236'}, inset 0 -1px 1px rgba(0,0,0,0.3)`,
             animation: isOpen ? 'receipt-blink 1.1s steps(1) infinite' : undefined,
           }}
         />
-        <span className="mt-2 text-[8.5px] font-semibold tracking-[0.2em] text-stone-500 uppercase">
+        <span
+          aria-hidden
+          className="shrink-0 rounded-[3px] px-1.5 py-[1px] text-[7.5px] font-bold tracking-[0.12em] uppercase"
+          style={{ background: '#8f877a', color: '#ece6d8', boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.35)' }}
+        >
+          {t.sandbox.console.feed}
+        </span>
+        <span className="shrink-0 text-[8px] font-semibold tracking-[0.22em] uppercase" style={{ color: '#8a8070' }}>
           thermo 80
         </span>
-        <span className="mt-2 ml-auto truncate text-[10px] text-[#9fc4a0]">{status}</span>
+        {status && (
+          <span
+            className="ml-auto truncate rounded-[3px] px-1.5 py-[1px] text-[10px]"
+            style={{ background: '#a9b89c', color: '#27301f', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.35)' }}
+          >
+            {status}
+          </span>
+        )}
       </div>
     </div>
   )

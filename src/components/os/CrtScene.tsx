@@ -37,7 +37,7 @@ import { createEdges, held, keyHint } from '../../game/sandbox/bindings'
 import {
   createConsole, msg as bilingual, say as sayIn, type Console, type Msg, type SandboxHost,
 } from '../../game/sandbox/commands'
-import { historyOf, LOCAL, type History } from '../../game/sandbox/history'
+import { historyOf, labelIn, LOCAL, type History } from '../../game/sandbox/history'
 import { createWorldRules } from '../../game/sandbox/rules'
 import { GRAVITY } from '../../game/sandbox/physics'
 import SandboxConsole, { type FeedLine } from './SandboxConsole'
@@ -432,6 +432,8 @@ export default function CrtScene({
   const sayRef = useRef<((text: string) => void) | null>(null)
   const consoleRef = useRef<Console | null>(null)
   const spawnRef = useRef<((kind: string) => void) | null>(null)
+  const pinMenuRef = useRef<((on: boolean) => void) | null>(null)
+  const closeMenuRef = useRef<(() => void) | null>(null)
   const sessionRef = useRef(session)
   const outroRef = useRef<(() => void) | null>(null)
   const roamRef = useRef<((on: boolean) => void) | null>(null)
@@ -1767,7 +1769,10 @@ export default function CrtScene({
           input.releaseLock()
         }
         let menuNow = false
+        /** the catalogue's find line has the keyboard (see SpawnMenu.tsx) */
+        let menuPinned = false
         const setMenu = (on: boolean) => {
+          if (!on) menuPinned = false
           if (menuNow === on) return
           menuNow = on
           setMenuOpen(on)
@@ -1778,6 +1783,14 @@ export default function CrtScene({
           if (roaming && fps && !pausedNow && !typingRef.current && !menuNow) input.tryLock()
         }
         relockRef.current = relock
+        pinMenuRef.current = (on) => {
+          if (!menuNow) return
+          menuPinned = on
+          if (on) input.clearKeys()
+          // letting go of the find line with q already up closes the book
+          else if (!held(input.keys, 'spawnMenu')) setMenu(false)
+        }
+        closeMenuRef.current = () => setMenu(false)
 
         const setPauseNow = (on: boolean) => {
           if (pausedNow === on) return
@@ -1842,7 +1855,7 @@ export default function CrtScene({
           isActive: () => roaming,
           isLive: () => fps,
           isPaused: () => pausedNow,
-          isTyping: () => typingRef.current,
+          isTyping: () => typingRef.current || menuPinned,
           // at the wheel the mouse belongs to the drive camera. Left wired to
           // walk.turn it would silently spin the suspended walker's heading
           // and stand you down facing somewhere you never looked
@@ -2049,7 +2062,7 @@ export default function CrtScene({
           if (!history || !sandbox) return
           const e = history.undo()
           pushFeed(e
-            ? { tone: 'ok', text: bilingual(`undone: ${e.label}`, `deshecho: ${e.label}`) }
+            ? { tone: 'ok', text: bilingual(`undone: ${labelIn(e.label, 'en')}`, `deshecho: ${labelIn(e.label, 'es')}`) }
             : { tone: 'err', text: bilingual('nothing left to undo', 'no queda nada que deshacer') })
         }
 
@@ -2757,7 +2770,7 @@ export default function CrtScene({
             if (edges.pressed('spawnMenu') && !sitting) setMenu(true)
             if (edges.pressed('undo')) undoLast()
           }
-          if (menuNow && !held(input.keys, 'spawnMenu')) setMenu(false)
+          if (menuNow && !menuPinned && !held(input.keys, 'spawnMenu')) setMenu(false)
           // m arms the microphone, n swaps the talk mode, and b is held to
           // push to talk
           if (edges.pressed('mic') && voice?.available) {
@@ -3899,6 +3912,8 @@ export default function CrtScene({
           source={catalogue}
           orders={orders}
           onSpawn={(kind) => spawnRef.current?.(kind)}
+          onPin={(on) => pinMenuRef.current?.(on)}
+          onClose={() => closeMenuRef.current?.()}
         />
       )}
       {roam && walking && locked && (

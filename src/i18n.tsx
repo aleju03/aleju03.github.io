@@ -165,6 +165,8 @@ const dictionaries = {
         micOffer: '{mic} for voice',
         undone: 'undone',
         nothingToUndo: 'nothing left to undo',
+        tape: 'console',
+        feed: 'feed',
       },
       menu: {
         title: 'Catalogue',
@@ -179,6 +181,10 @@ const dictionaries = {
         page: 'p.',
         no: 'no.',
         close: 'let go of {spawnMenu} to close',
+        closeFinding: 'esc closes',
+        find: 'find',
+        findHint: 'type a name, enter orders it',
+        noMatch: 'nothing by that name in here',
       },
       hud: {
         walk: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {spawnMenu} props · {chat} chat · {command} commands',
@@ -347,6 +353,8 @@ const dictionaries = {
         micOffer: '{mic} para hablar',
         undone: 'deshecho',
         nothingToUndo: 'no queda nada que deshacer',
+        tape: 'consola',
+        feed: 'avance',
       },
       menu: {
         title: 'Catálogo',
@@ -361,6 +369,10 @@ const dictionaries = {
         page: 'pág.',
         no: 'n.º',
         close: 'suelta la {spawnMenu} para cerrar',
+        closeFinding: 'esc cierra',
+        find: 'buscar',
+        findHint: 'escribe un nombre, enter lo pide',
+        noMatch: 'aquí no hay nada con ese nombre',
       },
       hud: {
         walk: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} caer · {spawnMenu} objetos · {chat} chat · {command} comandos',

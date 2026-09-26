@@ -181,7 +181,24 @@ try {
     }
     await sleep(250)
     await shot('menu')
-    await up('KeyQ')
+    // the find line pins the book open: click it, let go of q, type
+    const find = await evaluate(`(() => { const r = document.querySelector('input[placeholder]:not([type])')
+      ?.getBoundingClientRect(); return r && r.top > 0 ? [r.x + 20, r.y + r.height / 2] : null })()`)
+    if (find) {
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: find[0], y: find[1], button: 'left', clickCount: 1 })
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: find[0], y: find[1], button: 'left', clickCount: 1 })
+      await sleep(150)
+      await up('KeyQ')
+      await sleep(300)
+      await type(lang === 'es' ? 'barr' : 'dru')
+      await sleep(300)
+      await shot('menu-find')
+      await tap('Enter')
+      await sleep(200)
+      await tap('Escape')
+    } else {
+      await up('KeyQ')
+    }
     await sleep(900)
     await shot('menu-after')
     await run('cleanup')

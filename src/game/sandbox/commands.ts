@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { History } from './history'
+import { labelIn, type History } from './history'
 import type { PropKind } from './kinds'
 import type { WorldRules } from './rules'
 import type { Prop, PropId, Sandbox } from './sandbox'
@@ -485,8 +485,15 @@ const mineOrAll = (host: SandboxHost, sb: Sandbox) => {
 }
 
 const plural = (n: number, label: string) => (n === 1 ? label : `${label}s`)
-const pluralEs = (n: number, label: string) =>
-  n === 1 ? label : /[aeiouáéó]$/.test(label) ? `${label}s` : `${label}es`
+/** Spanish plurals go on the noun, which leads: "cajas de madera",
+    "barriles de aceite", "tablones" (the accent goes with the new syllable) */
+const pluralEs = (n: number, label: string) => {
+  if (n === 1) return label
+  const [head, ...rest] = label.split(' ')
+  const unaccent = (w: string) => w.replace(/ó(n)$/, 'o$1').replace(/á(n)$/, 'a$1').replace(/é(n)$/, 'e$1')
+  const p = /[aeiou]$/.test(head) ? `${head}s` : /[áéó]$/.test(head) ? `${head}s` : `${unaccent(head)}es`
+  return [p, ...rest].join(' ')
+}
 
 /** a kind's name in the language asked for, via the spawnlist fallback */
 const kindLabel = (k: PropKind, lang: Lang) =>
@@ -586,7 +593,9 @@ const spawnBatch = async (ctx: CommandCtx, kindId: string, n: number, how: 'aim'
   }
   const h = ctx.host.history()
   h?.record({
-    label: count === 1 ? k.label : `${count} ${plural(count, k.label)}`,
+    label: count === 1
+      ? msg(k.label, kindLabel(k, 'es'))
+      : msg(`${count} ${plural(count, k.label)}`, `${count} ${pluralEs(count, kindLabel(k, 'es'))}`),
     kind: k.id,
     props: ids,
   })
@@ -710,7 +719,7 @@ registerCommand({
     ctx.needSandbox()
     const e = ctx.host.history()?.undo()
     if (!e) ctx.fail(msg('nothing left to undo', 'no queda nada que deshacer'))
-    ctx.ok(msg(`undone: ${e!.label}`, `deshecho: ${e!.label}`))
+    ctx.ok(msg(`undone: ${labelIn(e!.label, 'en')}`, `deshecho: ${labelIn(e!.label, 'es')}`))
   },
 })
 
