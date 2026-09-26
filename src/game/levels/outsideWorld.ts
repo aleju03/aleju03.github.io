@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
 import type { ImpactWatch } from '../player/impacts'
+import type { GrabHandle } from '../world/pedestrians'
 import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { YARD } from './houseWorld'
@@ -115,6 +116,9 @@ export interface OutsideHandles {
   /** let the movers an impact watch is tracking knock the town's
       pedestrians over. A no-op until the world is attached */
   knockPeople: (watch: ImpactWatch) => void
+  /** the town's pedestrians as bodies a grab beam can take by a limb
+      (the physgun); empty until the world is attached */
+  people: () => Iterable<{ key: string; rig: GrabHandle }>
   /** the nearest light fixtures out here, as xyz triples into `out`; 0 until
       the world is attached. For the look's lamp pools (render/atmosphere.ts) */
   nearLamps: (x: number, z: number, out: Float32Array, max: number) => number
@@ -378,6 +382,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     hasWorld: () => w !== null,
     chunkSolids: (cx, cz) => (w ? w.world.solidsIn(cx, cz) : null),
     knockPeople: (watch) => w?.pedestrians.knock(watch),
+    people: () => (w ? w.pedestrians.grabbable() : []),
     nearLamps: (x, z, out, max) => (w ? w.world.nearLamps(x, z, out, max) : 0),
     biomeAt: (x, z) => {
       if (!w) return null

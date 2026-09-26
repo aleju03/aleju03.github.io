@@ -147,6 +147,9 @@ export interface PlayerPose {
   vy: number
   /** downward speed absorbed by a touchdown this tick, else 0 */
   landing: number
+  /** 0..1: the right arm held out along the view, carrying a tool (the
+      physgun). Eased in and out by the body; omitted is 0 */
+  aim?: number
   /** 0 under the first-person lens .. 1 watched from outside. Scales the
       cinematic layer (speed lean, gaze-follow, glances, fidgets), which
       reads great from a chase camera or another player but, with the lens
@@ -624,6 +627,7 @@ export function buildPlayerBody(
   let needReplant = true
   let wasGrounded = true
   let mCos = 1 // smoothed travel direction in the body frame (arm swing)
+  let aimK = 0 // the right arm raised for a tool, eased
   let mSin = 0
   // the body faces where it last committed, not the camera: standing, the
   // gaze wanders freely and only past ~40 degrees do the feet pivot after it
@@ -1536,11 +1540,18 @@ export function buildPlayerBody(
         (1 - stretchK * 0.8) - waveK * 0.9 + wag + pumpR,
       KE, CE, -sprS[7] * 6, dt, EL_LO, EL_HI,
     )
+    // a tool in the right hand: the arm comes up along the view and the
+    // elbow nearly straightens, over whatever the swing was doing
+    aimK += ((pose.aim ?? 0) - aimK) * (1 - Math.exp(-dt * 12))
+    const aimX = clampX(-(1.5 + pose.pitch * 0.85))
+    const rX = shRX + (aimX - shRX) * aimK
+    const rZ = shRZ + (0.12 - shRZ) * aimK
+    const eR = elR + (-0.2 - elR) * aimK
     // shoulder z: positive spreads each arm outward, whichever side it is on
     uarmL.rotation.set(shLX, 0, shLZ)
     farmL.rotation.set(elL, 0, 0)
-    uarmR.rotation.set(shRX, 0, -shRZ)
-    farmR.rotation.set(elR, 0, 0)
+    uarmR.rotation.set(rX, 0, -rZ)
+    farmR.rotation.set(eR, 0, 0)
   }
 
   /** the seated trunk and head for this moment: a slump forward over the
