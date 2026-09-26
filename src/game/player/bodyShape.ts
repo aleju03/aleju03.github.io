@@ -695,19 +695,30 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
   }
   tube(s, smile, 0.017, 0.017, ROLE.INK + H, head, 6)
 
-  // hair: a fringe of tufts escaping the back and sides of the beanie, so a
-  // body seen from behind has a person under the hat rather than a blank
-  for (let k = 0; k < 9; k++) {
-    const th = Math.PI * (0.62 + (k / 8) * 0.76) // round the back, ear to ear
-    const x = Math.cos(th) * HEAD_R.x * 0.97
-    const z = -Math.abs(Math.sin(th)) * HEAD_R.z * 0.97
-    const y = cutAt(z) - 0.02 - (k % 2) * 0.035
-    const n = new THREE.Vector3(x / HEAD_R.x, 0, z / HEAD_R.z).normalize()
-    ellipsoid(
-      s, new THREE.Vector3(x, y, z).add(hc).addScaledVector(n, 0.02),
-      new THREE.Vector3(0.085, 0.1, 0.07), ROLE.HAIR + H, head, [7, 5],
-    )
+  // hair: one smooth mass at the back of the head under the cuff, the skull
+  // grown a hair and cut to a band from ear to ear. It was a row of tufts,
+  // and from behind at any distance a row of dark blobs under a hat reads
+  // as eyes or a moustache; a single shape reads as a haircut
+  const HR = HEAD_R.clone().multiplyScalar(1.035)
+  const hairPoint = (th: number, drop: number, out: THREE.Vector3) => {
+    // bearing th round the back, from just under the rim down `drop`
+    const x = Math.cos(th)
+    const z = Math.sin(th)
+    const top = cutAt(z * HR.z) + 0.02
+    const y = top - drop
+    const k = Math.sqrt(Math.max(0, 1 - (y / HR.y) ** 2))
+    return out.set(x * HR.x * k, y, z * HR.z * k)
   }
+  patch(
+    s,
+    (u, v, out) => {
+      const th = Math.PI * (1.08 + u * 0.84) // ear to ear round the back (-z)
+      // deepest at the nape, tapering to nothing at the ears
+      const depth = 0.24 * Math.pow(Math.sin(u * Math.PI), 0.7)
+      hairPoint(th, v * depth, out).add(hc)
+    },
+    16, 3, ROLE.HAIR + H, head, hc,
+  )
 
   // a rolled collar round the neck: the suit's own colour, filling the notch
   // between a round head and a round body so the head sits on the shoulders
@@ -720,10 +731,12 @@ export const bodyGeometry = (): THREE.BufferGeometry => {
   }
   tube(s, collar, 0.1, 0.1, ROLE.SUIT, rigid(B.TORSO), 8)
 
-  // the headlamp: a dark housing on the cuff, a lit face on the housing
-  const lampY = cutAt(BR.z) + 0.03
-  onFace(0, lampY, new THREE.Vector3(0.1, 0.075, 0.07), ROLE.TRIM + H, head, 0.06, [10, 8], true)
-  onFace(0, lampY, new THREE.Vector3(0.068, 0.052, 0.03), ROLE.GLOW + H, head, 0.115, [10, 6], true)
+  // the headlamp: a small lit lens set into the middle of the cuff, with a
+  // thin rim of trim round it. It had a dark housing, and at a distance a
+  // dark lump with a bright spot just above the eyes read as an eyepatch
+  const lampY = cutAt(BR.z) + 0.05
+  onFace(0, lampY, new THREE.Vector3(0.062, 0.05, 0.03), ROLE.TRIM + H, head, 0.055, [10, 6], true)
+  onFace(0, lampY, new THREE.Vector3(0.05, 0.04, 0.03), ROLE.GLOW + H, head, 0.07, [10, 6], true)
 
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(s.pos, 3))

@@ -1147,10 +1147,12 @@ export interface CarOpts {
 }
 
 /** the seated face in either front seat, and how far `sit()` folds a body
-    smaller about it (playerBody's CABIN_FIT). Lower than the robot's 2.05:
-    the character's beanie stood up through the headliner there */
-const SEAT_EYE_Y = 1.9
-const SEAT_FIT = 0.8
+    smaller about it (playerBody's CABIN_FIT). The face is in the side
+    window, where somebody outside can see who is driving; the fold is what
+    keeps the beanie under the roof skin and the seat of the pants above the
+    floor at that height */
+const SEAT_EYE_Y = 2.12
+const SEAT_FIT = 0.68
 
 export function buildCar(opts: CarOpts): Vehicle {
   const { mats } = opts

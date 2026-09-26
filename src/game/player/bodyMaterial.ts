@@ -31,7 +31,7 @@ const SKIN = '#f2d6bd'
 const INK = '#1c1a22'
 const CHEEK = '#ee9a8a'
 const GLINT = '#ffffff'
-const HAIR = '#5b3b2a'
+const HAIR = '#7a4e33'
 
 export interface BodyMaterial {
   material: THREE.MeshStandardMaterial

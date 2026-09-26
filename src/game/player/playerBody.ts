@@ -32,6 +32,15 @@ import { makeBodyMaterial } from './bodyMaterial'
   with a flight between them, the trunk pitched well forward, elbows bent
   and pumping, heels kicking up behind.
 
+  In the air the body is never a stick: a jump leaves out of a squashed
+  crouch that springs into a stretch (the walker has no wind-up, so the
+  push-off is drawn in the first frames of flight), the legs split with one
+  knee up and the other trailing, the arms trail and then go up and out as
+  the body drops away under them, and a landing squashes all of it, head
+  included, then bounces back through a stretch. Standing, the arms hang
+  loose and well off the belly with a bend at the elbow, and every forearm
+  lags its upper arm.
+
   **The springs.** Each arm joint rides an underdamped spring fed the body's
   own accelerations, so the arms lag, overshoot and flop. The gait swing
   itself goes straight onto the joint with the spring on top of it, because a
@@ -795,13 +804,13 @@ export function buildPlayerBody(
     head.position.copy(REST[B.HEAD])
     head.updateMatrixWorld()
     head.getWorldPosition(vRest)
-    stepJiggle(jHead, vRest, 260, 13, 0, 0.13 * s, dt)
+    stepJiggle(jHead, vRest, 150, 7, 0, 0.2 * s, dt)
     vTmp2.subVectors(jHead.p, vRest)
     torso.getWorldQuaternion(qW)
     vTmp2.applyQuaternion(qW.invert()).multiplyScalar(1 / s)
     head.position.add(vTmp2)
-    head.rotation.x += vTmp2.z * 2.2
-    head.rotation.z -= vTmp2.x * 2.2
+    head.rotation.x += vTmp2.z * 3.2
+    head.rotation.z -= vTmp2.x * 3.2
 
     // the backpack bounces on its straps
     pack.position.copy(REST[B.PACK])
@@ -1003,9 +1012,17 @@ export function buildPlayerBody(
     // a takeoff pops the other way: the hips shoot up and the trunk
     // stretches, and the arms fling (see the jolts below)
     const takeoff = wasGrounded && !pose.grounded && pose.vy > 2
-    if (takeoff) springV += 1.4
+    // the walker has no wind-up to show (a jump leaves on the frame it is
+    // asked for), so the push-off is drawn in the first frames of the air:
+    // the hips start low, squashed, and spring out through a stretch
+    if (takeoff) {
+      springP = -0.3
+      springV = 3.2
+    }
     if (pose.landing > 0) springV -= Math.min(pose.landing, 22) * 0.1
-    springV += (-110 * springP - 10 * springV) * dt
+    // soft and bouncy: a landing squashes, overshoots into a stretch and
+    // wobbles back, rather than dipping once and stopping
+    springV += (-75 * springP - 7 * springV) * dt
     springP = Math.max(-0.58, springP + springV * dt)
 
     airK += ((pose.grounded ? 0 : 1) - airK) * ease(pose.grounded ? 14 : 9)
@@ -1099,7 +1116,9 @@ export function buildPlayerBody(
       -bank * 0.3 - jellyRoll * 0.5,
     )
     // counter the trunk's squash so the face stays round
-    head.scale.set(1 / bulge, 1 / squash, 1 / bulge)
+    // the head keeps half of the squash: a landing flattens the whole body,
+    // but a face squashed as hard as a belly stops reading as a face
+    head.scale.set(1 / Math.sqrt(bulge), 1 / Math.sqrt(squash), 1 / Math.sqrt(bulge))
 
     // --- feet: world-planted, distance-triggered, solved with 2-bone IK ----
     qGroupInv.copy(group.quaternion).invert()
@@ -1188,8 +1207,15 @@ export function buildPlayerBody(
 
     // two-bone IK per leg in the pelvis frame; airborne it crossfades to a
     // tuck on the rise and a reach on the fall
-    const tuckThigh = -0.9 + fallK * 0.65
-    const tuckShin = 1.35 - fallK * 1.0
+    // the legs split in the air: a lead knee comes up, the other leg trails
+    // behind, and on the way down both reach apart for the ground. Which one
+    // leads alternates with the stride, so a run of hops does not repeat
+    const lead = Math.floor(stepT) % 2 === 0 ? 1 : -1
+    const leadThigh = -1.3 + fallK * 0.9
+    const leadShin = 1.55 - fallK * 1.1
+    const trailThigh = 0.4 - fallK * 0.2
+    const trailShin = 1.15 - fallK * 0.55
+    const airSplay = 0.1 + fallK * 0.22
     qInv.copy(pelvis.quaternion).invert()
     const solveLeg = (
       thigh: THREE.Bone,
@@ -1220,7 +1246,7 @@ export function buildPlayerBody(
       vKnee.copy(vHip).addScaledVector(dirTmp, THIGH * cosHip).addScaledVector(vPole, THIGH * sinHip)
       vTmp.subVectors(vKnee, vHip).normalize()
       limbQuat(qIK, vTmp, refX.set(1, 0, 0))
-      qAir.setFromEuler(eTmp.set(airThighX, 0, side * 0.08))
+      qAir.setFromEuler(eTmp.set(airThighX, 0, side * airSplay))
       thigh.quaternion.copy(qIK).slerp(qAir, airK)
       // shin: from the knee toward the (possibly clamped) foot
       vTmp.copy(vHip).addScaledVector(dirTmp, L).sub(vKnee).normalize()
@@ -1235,8 +1261,8 @@ export function buildPlayerBody(
       ankle.position.copy(REST[side === 1 ? B.FOOT_L : B.FOOT_R])
       ankle.rotation.set(tilt * 0.9 * (1 - airK) + 0.5 * airK, 0, 0)
     }
-    solveLeg(thighL, shinL, ankleL, plantedL, 1, tuckThigh, tuckShin)
-    solveLeg(thighR, shinR, ankleR, plantedR, -1, tuckThigh * 0.8, tuckShin)
+    solveLeg(thighL, shinL, ankleL, plantedL, 1, lead > 0 ? leadThigh : trailThigh, lead > 0 ? leadShin : trailShin)
+    solveLeg(thighR, shinR, ankleR, plantedR, -1, lead < 0 ? leadThigh : trailThigh, lead < 0 ? leadShin : trailShin)
     wasGrounded = pose.grounded
 
     // arms: the targets say where the arms WANT to be (counter-swing along
@@ -1258,18 +1284,23 @@ export function buildPlayerBody(
     // one, so a swing fed through them arrived at a seventh of its size and
     // the arms hung at the hips. The springs ride on top of it, for the lag,
     // the flop and everything the body's accelerations do to them
-    const swingAmt = stepS * (0.7 + 0.6 * runK) * gait
+    const swingAmt = stepS * (0.9 + 0.45 * runK) * gait
     const swingF = swingAmt * mCos
     const swingS = swingAmt * mSin * 0.7
-    const elbowBase = 0.3 + 1.05 * runK * gait
+    // a loose bend at rest: an arm hanging dead straight reads as a mannequin
+    const elbowBase = 0.45 + 0.9 * runK * gait
     // a round belly holds the arms off the body; a fall flings them wide
-    const spread = 0.3 + breathe * 0.03 + airK * (0.45 + fallK * 0.75) + runK * gait * 0.18
+    // held well out from the body, standing or not: a round belly and a
+    // loose shoulder, never glued to the hips
+    const spread = 0.5 + breathe * 0.05 + airK * (0.5 + fallK * 0.9) + runK * gait * 0.15
     // rising the arms go up with the jump; falling they stay up and out
-    const airX = airK * (1.5 - fallK * 0.55)
-    const swayLX = (Math.sin(idleT * 1.7) * 0.03 + Math.sin(idleT * 0.83 + 1.3) * 0.02) * idleK
-    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.03 + Math.sin(idleT * 0.94 + 2.1) * 0.02) * idleK
-    const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.025 * idleK
-    const swayRZ = Math.sin(idleT * 1.31 + 2.6) * 0.025 * idleK
+    // airborne: flung up by the takeoff, then trailing, then up and out as
+    // the body drops away under them
+    const airX = airK * (0.6 + fallK * 1.4)
+    const swayLX = (Math.sin(idleT * 1.7) * 0.07 + Math.sin(idleT * 0.83 + 1.3) * 0.05) * idleK - 0.12
+    const swayRX = (Math.sin(idleT * 1.52 + 0.7) * 0.07 + Math.sin(idleT * 0.94 + 2.1) * 0.05) * idleK - 0.12
+    const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.06 * idleK
+    const swayRZ = Math.sin(idleT * 1.31 + 2.6) * 0.06 * idleK
     // inertial forces on the springs
     const throwX = accF * 0.08
     const slingZ = -yawRateS * 0.45 - accS * 0.06
@@ -1292,8 +1323,8 @@ export function buildPlayerBody(
       sprS[19] += jolt * 0.3 // and the chest folds a little under it
       sprS[21] += (rnd() - 0.5) * jolt * 1.2 // and lurches to one side
     }
-    const KS = 55
-    const CS = 6 // underdamped on purpose: the overshoot is the liveliness
+    const KS = 42
+    const CS = 4.5 // underdamped on purpose: the overshoot is the liveliness
     const KE = 45
     const CE = 6
     // the get-up plants both hands out front and pushes off them
@@ -1310,8 +1341,8 @@ export function buildPlayerBody(
     const pumpR = -Math.max(0, swingF * 0.93) * (0.35 + 0.5 * runK)
     const clampX = (v: number) => THREE.MathUtils.clamp(v, SH_X_LO, SH_X_HI)
     const shLX = clampX(
-      spring(0, swingF * 0.3 - airX + swayLX - push - upL - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) +
-        swingF * 0.75,
+      spring(0, swingF * 0.5 - airX + swayLX - push - upL - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) +
+        swingF * 0.6,
     )
     const shLZ = spring(
       2, spread + swingS + swayLZ + riseFold * 0.1 + stretchK * 0.25, KS, CS, slingZ + rock, dt,
@@ -1319,11 +1350,13 @@ export function buildPlayerBody(
     )
     const elL = spring(
       4, -(elbowBase + airK * 0.4 + riseFold * 0.4 + look * 1.3) * (1 - stretchK * 0.8) + pumpL,
-      KE, CE, 0, dt, EL_LO, EL_HI,
+      // the forearm lags its upper arm: swing the shoulder forward and the
+      // elbow is thrown open, then folds after it, which is the follow-through
+      KE, CE, -sprS[1] * 3.5, dt, EL_LO, EL_HI,
     )
     const shRX = clampX(
-      spring(6, -swingF * 0.28 - airX + swayRX - push - upR - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) -
-        swingF * 0.7,
+      spring(6, -swingF * 0.47 - airX + swayRX - push - upR - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) -
+        swingF * 0.56,
     )
     const shRZ = spring(
       8, spread - swingS + swayRZ + riseFold * 0.1 + stretchK * 0.25 + waveZ, KS, CS, -slingZ - rock, dt,
@@ -1333,7 +1366,7 @@ export function buildPlayerBody(
       10,
       -(elbowBase + 0.03 + airK * 0.4 + riseFold * 0.4 + look * 1.3) *
         (1 - stretchK * 0.8) - waveK * 0.9 + wag + pumpR,
-      KE, CE, 0, dt, EL_LO, EL_HI,
+      KE, CE, -sprS[7] * 3.5, dt, EL_LO, EL_HI,
     )
     // shoulder z: positive spreads each arm outward, whichever side it is on
     uarmL.rotation.set(shLX, 0, shLZ)
