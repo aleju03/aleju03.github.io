@@ -13,12 +13,19 @@
                stack and rides a moving plank
     float      each kind dropped into still water: waterline, attitude, and
                how long it takes to stop rolling
+    physgun    the beam's controller, per kind: settle time and overshoot
+               after a sideways step, jitter held still, a flick's throw
+               speed, a freeze that holds and a thaw that falls
     scenarios  every registered scenario, run to its end, with its report
 */
 import { createSandbox } from '../../src/game/sandbox/sandbox.ts'
 import { SCENARIOS, stageScenario, advanceScenario } from '../../src/game/sandbox/scenarios.ts'
 import { makeCollisionSet } from '../../src/game/physics/collision.ts'
 import { createWalkController } from '../../src/game/player/walkController.ts'
+import { createPhysgun, tune } from '../../src/game/sandbox/tools/physgun.ts'
+import { emptyInput } from '../../src/game/sandbox/tools/types.ts'
+// the physgun's films register themselves as scenarios too
+import '../../src/game/sandbox/tools/scenarios.ts'
 
 const only = process.argv[2]
 const want = (s) => !only || only === s
@@ -369,6 +376,172 @@ if (want('float')) {
 }
 
 /* ---------------------------------------------------------- scenarios -- */
+/* ------------------------------------------------------------ physgun -- */
+if (want('physgun')) {
+  const H = 1 / 60
+  const onlyScn = process.env.SCN
+  for (const kind of ['ball', 'cone', 'plank', 'barrel', 'crate', 'block']) {
+    const { sb } = newSandbox()
+    await sb.whenReady
+    const x0 = flat.x
+    const z0 = flat.z
+    const focus = { x: x0, y: fy, z: z0 }
+    const id = sb.spawn(kind, { x: x0, y: sb.restY(kind, x0, z0), z: z0 })
+    for (let i = 0; i < 30; i++) sb.tick({ dt: H, active: true, focus })
+    // the holder stands ten units south, looking north at the prop
+    const eye = new THREE.Vector3(x0, fy + 3.84, z0 + 10)
+    const dir = new THREE.Vector3()
+    const aim = { eye, dir, yaw: 0 }
+    const gun = createPhysgun({ sb })
+    const inp = emptyInput(aim)
+    inp.dt = H
+    inp.fire = true
+    let yaw = 0
+    let pitch = 0
+    const look = () => dir.set(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch))
+    const frame = () => {
+      aim.yaw = yaw
+      look()
+      gun.update(inp)
+      sb.tick({ dt: H, active: true, focus })
+      gun.sync()
+    }
+    const t0 = sb.get(id).body.translation()
+    pitch = Math.atan2(t0.y - eye.y, 10)
+    frame()
+    if (!gun.holding) {
+      const rh = sb.raycast(eye, dir, 100)
+      console.log(`physgun  ${pad(kind, 7)} NOT GRABBED (view ${gun.view.mode}, facade ray ${rh ? f(rh.distance, 2) + (rh.prop ? ' prop' : ' not a prop') : 'none'})`)
+      sb.dispose()
+      continue
+    }
+    // lift to eye height and let it settle
+    for (let i = 0; i < 90; i++) {
+      pitch += (0 - pitch) * 0.1
+      frame()
+    }
+    for (let i = 0; i < 90; i++) frame()
+    // the step: the aim swings six units sideways in a tenth of a second,
+    // a quick hand rather than a teleport (a teleported target has an
+    // infinite speed, and the feed-forward is for a hand's speed)
+    const end = gun.view.end
+    const start = end.clone()
+    const yawTo = Math.atan2(6, gun.hold.dist)
+    for (let i = 1; i <= 6; i++) {
+      yaw = (yawTo * i) / 6
+      frame()
+    }
+    const T = new THREE.Vector3(...gun.hold.target)
+    const stepDir = T.clone().sub(start).setY(0).normalize()
+    const stepLen = T.distanceTo(start)
+    let settled = -1
+    let over = 0
+    for (let i = 0; i < 360; i++) {
+      frame()
+      const e = end.distanceTo(T)
+      const past = end.clone().sub(T).dot(stepDir)
+      over = Math.max(over, past)
+      if (e < 0.05) {
+        if (settled < 0) settled = i
+      } else settled = -1
+    }
+    // held still: how much does it move
+    const mean = new THREE.Vector3()
+    const pts = []
+    for (let i = 0; i < 180; i++) {
+      frame()
+      pts.push(end.clone())
+      mean.add(end)
+    }
+    mean.divideScalar(pts.length)
+    const jitter = Math.max(...pts.map((p) => p.distanceTo(mean)))
+    // a flick: the view swings back at six radians a second for a fifth of a
+    // second and the trigger lets go at the end of it
+    let speed = 0
+    const off = gun.on((e) => {
+      if (e.type === 'release') speed = e.speed
+    })
+    for (let i = 0; i < 12; i++) {
+      yaw -= 6 * H
+      frame()
+    }
+    inp.fire = false
+    frame()
+    off()
+    const tn = tune(sb.get(id).mass)
+    console.log(`physgun  ${pad(kind, 7)} ${pad(sb.get(id).mass + ' kg', 7)} w ${f(tn.w, 1)} z ${f(tn.z, 2)}: ` +
+      `${f(stepLen, 1)}-unit step settles (2 cm) in ${settled < 0 ? 'NEVER' : Math.round((settled + 1) * H * 1000) + ' ms'}, ` +
+      `overshoot ${f((100 * over) / stepLen, 1)}%; held still 3 s: grab point wanders ${f(jitter * 1000, 3)} mu; ` +
+      `flick throws at ${f(speed, 1)} u/s`)
+    sb.dispose()
+  }
+  // freeze and thaw
+  {
+    const { sb } = newSandbox()
+    await sb.whenReady
+    const x0 = flat.x
+    const z0 = flat.z
+    const focus = { x: x0, y: fy, z: z0 }
+    const id = sb.spawn('crate', { x: x0, y: sb.restY('crate', x0, z0), z: z0 })
+    for (let i = 0; i < 30; i++) sb.tick({ dt: H, active: true, focus })
+    const eye = new THREE.Vector3(x0, fy + 3.84, z0 + 10)
+    const dir = new THREE.Vector3()
+    const aim = { eye, dir, yaw: 0 }
+    const gun = createPhysgun({ sb })
+    const inp = emptyInput(aim)
+    inp.dt = H
+    inp.fire = true
+    let pitch = Math.atan2(sb.get(id).body.translation().y - eye.y, 10)
+    const frame = () => {
+      dir.set(0, Math.sin(pitch), -Math.cos(pitch))
+      gun.update(inp)
+      sb.tick({ dt: H, active: true, focus })
+      gun.sync()
+    }
+    frame()
+    for (let i = 0; i < 90; i++) {
+      pitch += (0.25 - pitch) * 0.1
+      frame()
+    }
+    inp.alt = true
+    frame()
+    inp.alt = false
+    inp.fire = false
+    frame()
+    const a = sb.get(id).body.translation()
+    const y0 = a.y
+    for (let i = 0; i < 120; i++) frame()
+    const b = sb.get(id).body.translation()
+    const drift = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z)
+    inp.reload = true
+    frame()
+    inp.reload = false
+    for (let i = 0; i < 90; i++) frame()
+    const c2 = sb.get(id).body.translation()
+    console.log(`physgun  freeze: ${sb.get(id).mode === 'dynamic' ? 'thawed' : 'STILL FROZEN'} after reload; ` +
+      `frozen ${f(y0 - fy, 1)} over the ground, drifted ${f(drift, 5)} in 2 s, fell ${f(y0 - c2.y, 1)} after the thaw`)
+    sb.dispose()
+  }
+  // the films, headless, with their reports
+  for (const s of SCENARIOS) {
+    if (!s.id.startsWith('sandbox:physgun') || s.id.endsWith('-3p')) continue
+    if (onlyScn && s.id !== onlyScn) continue
+    const { sb } = newSandbox()
+    await sb.whenReady
+    const c = stageScenario(s, sb)
+    if (onlyScn) {
+      for (let t = 0.25; t <= s.duration; t += 0.25) {
+        advanceScenario(s, c, t)
+        const p = sb.get(process.env.PROP ? Number(process.env.PROP) : c.ids[0])
+        const tr = p ? p.body.translation() : { x: 0, y: 0, z: 0 }
+        console.log(`  t ${f(t, 2)} prop0 ${f(tr.x - c.x, 2)} ${f(tr.y - c.y, 2)} ${f(tr.z - c.z, 2)} ${p?.mode}`)
+      }
+    } else advanceScenario(s, c, s.duration)
+    console.log(`film     ${pad(s.id, 24)} ${s.report ? s.report(c) : ''}`)
+    sb.dispose()
+  }
+}
+
 if (want('scenarios')) {
   for (const s of SCENARIOS) {
     const { sb } = newSandbox()

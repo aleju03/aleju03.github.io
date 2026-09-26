@@ -90,6 +90,11 @@ const RIG_K = 0.5
 const TEAR = 60
 /** fastest target velocity fed forward, u/s; a teleport is not a flick */
 const MAX_TARGET_SPEED = 260
+/** share of the gap between the beam's speed and the prop's handed over on
+    release (see `release`) */
+const THROW_SHARE = 0.7
+/** share of the target's velocity fed forward (see the slice hook) */
+const FEED = 0.5
 /** angular speed cap, rad/s */
 const MAX_SPIN = 40
 
@@ -206,6 +211,9 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
   let fireWas = false
   let altWas = false
   let reloadWas = false
+  /** a freeze spends the trigger: nothing is taken again until it is let go,
+      or the beam would thaw what it just froze on the same frame */
+  let spent = false
 
   // limbs pinned by a freeze: posed ragdolls, thawed by reload or a regrab
   const pins: Array<{ key: string; rig: GrabRig; limb: number; at: THREE.Vector3 }> = []
@@ -302,6 +310,10 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     anchor.copy(point).sub(va).applyQuaternion(qb.copy(qa).invert())
     dist = distGoal = Math.max(MIN_DIST, point.distanceTo(aim.eye))
     yaw = yawPrev = aim.yaw
+    // the slices of this very frame already pull: toward where it was touched
+    target.copy(aim.dir).multiplyScalar(dist).add(aim.eye)
+    targetPrev.copy(target)
+    targetVel.set(0, 0, 0)
     relFree.copy(yawQuat(aim.yaw, qy).invert()).multiply(qa)
     rel.copy(relFree)
     hold.kind = 'prop'
@@ -325,6 +337,9 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     r.limbPos(i, rigTarget)
     dist = distGoal = Math.max(MIN_DIST, rigTarget.distanceTo(aim.eye))
     yaw = yawPrev = aim.yaw
+    target.copy(rigTarget)
+    targetPrev.copy(target)
+    targetVel.set(0, 0, 0)
     r.grab(i, rigTarget, RIG_K)
     hold.kind = 'rig'
     hold.rig = key
@@ -352,6 +367,17 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
       const p = prop
       sb.getVelocity(p.id, va)
       if (!thrown) sb.setVelocity(p.id, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 })
+      else if (targetVel.lengthSq() > va.lengthSq()) {
+        // the beam's momentum: a prop trailing a flick is going slower than
+        // the flick, and letting go hands it most of the difference, as much
+        // as fifty milliseconds of its budget can buy. This is what makes a
+        // flick throw hard rather than lob what the lag left behind
+        vb.subVectors(targetVel, va).multiplyScalar(THROW_SHARE)
+        const cap = tune(p.body.mass(), tn).a * 0.05
+        if (vb.length() > cap) vb.setLength(cap)
+        va.add(vb)
+        sb.setVelocity(p.id, va)
+      }
       emit('release', view.end.x, view.end.y, view.end.z, thrown ? va.length() : 0)
     } else if (rig) {
       rig.grab(limb, null)
@@ -456,6 +482,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     fireWas = inp.fire
     altWas = inp.alt
     reloadWas = inp.reload
+    if (!inp.fire) spent = false
 
     // a prop that vanished under the hold (removed, parked, undone)
     if (prop && (!sb.get(prop.id) || prop.parked)) clearHold()
@@ -467,6 +494,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
         release(true)
       } else if (altDown) {
         freeze()
+        spent = true
       }
     }
 
@@ -507,7 +535,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
       }
       va.subVectors(target, targetPrev).divideScalar(dt)
       if (va.lengthSq() > MAX_TARGET_SPEED * MAX_TARGET_SPEED) va.setLength(MAX_TARGET_SPEED)
-      targetVel.lerp(va, 1 - Math.exp(-dt * 30))
+      targetVel.lerp(va, 1 - Math.exp(-dt * 120))
       targetPrev.copy(target)
       let dy = aim.yaw - yawPrev
       dy = Math.atan2(Math.sin(dy), Math.cos(dy))
@@ -520,13 +548,13 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
       // holding the trigger sweeps: the beam takes the first thing it
       // touches, the way GMod's does, rather than only what was under the
       // crosshair on the frame the button went down
-      if (inp.fire && !tryGrab(aim)) {
+      if (inp.fire && !spent && !tryGrab(aim)) {
         view.mode = 'miss'
         if (fireDown) emit('miss', view.end.x, view.end.y, view.end.z)
       }
       if (reloadDown) unfreezeAt(aim)
     }
-    if (!(prop || rig) && !inp.fire) view.mode = 'off'
+    if (!(prop || rig) && (!inp.fire || spent)) view.mode = 'off'
   }
 
   /* ------------------------------------------------ the slice hook -- */
@@ -560,9 +588,14 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     const w2h = tn.w * tn.w * h
     const c = 2 * tn.z * tn.w * h
     const den = 1 + c + w2h * h
-    let dvx = (lv.x + w2h * ex + c * targetVel.x) / den - lv.x
-    let dvy = (lv.y + w2h * ey + c * targetVel.y) / den - lv.y
-    let dvz = (lv.z + w2h * ez + c * targetVel.z) / den - lv.z
+    // half the target's velocity is fed forward: all of it puts a zero in
+    // the response and a critically damped hold overshoots by 13%; half is
+    // the most that cannot overshoot, and it leaves a moving prop trailing
+    // the beam by v/w, which is the curve in the beam during a swing
+    const cf = c * FEED
+    let dvx = (lv.x + w2h * ex + cf * targetVel.x) / den - lv.x
+    let dvy = (lv.y + w2h * ey + cf * targetVel.y) / den - lv.y
+    let dvz = (lv.z + w2h * ez + cf * targetVel.z) / den - lv.z
     const dv = Math.hypot(dvx, dvy, dvz)
     const cap = tn.a * h
     const saturated = dv > cap

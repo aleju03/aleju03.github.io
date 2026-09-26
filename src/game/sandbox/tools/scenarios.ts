@@ -315,39 +315,45 @@ gunScenario({
 
 gunScenario({
   name: 'throw',
-  title: 'a barrel pushed off the end of the beam into a wall of crates',
+  title: 'a barrel shoved off the end of the beam into a pyramid of crates',
   duration: 5,
   third: true,
   setup: (c) => {
     const y0 = yawOf(c.dx, c.dz)
     const nx = c.dz
     const nz = -c.dx
-    // the wall: three wide, three high, thirty units out
+    // the pyramid: three, two, one, twenty-four units out
     const h = 2.4
+    const D = 24
+    const wx = c.x + c.dx * D
+    const wz = c.z + c.dz * D
+    const base = c.sb.restY('crate', wx, wz)
     for (let row = 0; row < 3; row++)
-      for (let col = -1; col <= 1; col++) {
-        const x = c.x + c.dx * 30 + nx * col * (h + 0.05)
-        const z = c.z + c.dz * 30 + nz * col * (h + 0.05)
-        c.ids.push(c.sb.spawn('crate', { x, y: c.sb.restY('crate', c.x + c.dx * 30, c.z + c.dz * 30) + row * (h + 0.01), z }, { yaw: y0 }))
+      for (let k = 0; k < 3 - row; k++) {
+        const col = k - (2 - row) / 2
+        const x = wx + nx * col * (h + 0.05)
+        const z = wz + nz * col * (h + 0.05)
+        c.ids.push(c.sb.spawn('crate', { x, y: base + row * (h + 0.01), z }, { yaw: y0 }))
       }
     const bx = c.x + c.dx * 6 + nx * 1.5
     const bz = c.z + c.dz * 6 + nz * 1.5
     const barrel = c.sb.spawn('barrel', { x: bx, y: c.sb.restY('barrel', bx, bz), z: bz }, { yaw: y0 })
-    c.memo.barrel = barrel
     const eye = new THREE.Vector3(c.x, c.y + EYE, c.z)
-    const ty = c.sb.restY('crate', c.x + c.dx * 30, c.z + c.dz * 30) + 2.4
-    const pAim = pitchTo(eye, c.x + c.dx * 30, ty, c.z + c.dz * 30)
+    // aimed at the middle row, a touch high for the drop
+    const pAim = pitchTo(eye, wx, base + h * 1.1, wz) + 0.02
     const yB = Math.atan2(-(bx - c.x), -(bz - c.z))
     const pB = pitchTo(eye, bx, c.sb.restY('barrel', bx, bz) + 0.5, bz)
     const r = begin(c, {
       look: (t) => {
         const k = ease(t, 0.35, 1.2)
-        return [yB + (y0 - yB) * k, pB + (pAim + 0.03 - pB) * k]
+        return [yB + (y0 - yB) * k, pB + (pAim - pB) * k]
       },
-      fire: (t) => between(t, 0.3, 1.62),
+      fire: (t) => between(t, 0.3, 1.66),
       // pulled in close, then shoved out hard: the scroll-throw
-      wheel: (t0, t1) => notchesAt([0.9, 1.0], -1)(t0, t1) + notchesAt([1.42, 1.45, 1.48, 1.51, 1.54, 1.57])(t0, t1),
+      wheel: (t0, t1) =>
+        notchesAt([0.9, 1.0], -1)(t0, t1) + notchesAt([1.45, 1.47, 1.49, 1.51, 1.53, 1.55, 1.57, 1.59])(t0, t1),
     })
+    c.memo.barrel = barrel
     c.sb.onAfterSlice(() => {
       const p = c.sb.get(barrel)
       if (!p) return
@@ -358,14 +364,15 @@ gunScenario({
   report: (c) => {
     const r = runs.get(c)!
     let moved = 0
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < c.ids.length; i++) {
       const p = c.sb.get(c.ids[i])
       if (!p) continue
+      const row = i < 3 ? 0 : i < 5 ? 1 : 2
       const t = p.body.translation()
-      const row = Math.floor(i / 3)
-      if (t.y < c.sb.restY('crate', t.x, t.z) + row * 2.4 - 0.6 || Math.hypot(t.x - (c.x + c.dx * 30), t.z - (c.z + c.dz * 30)) > 4.5) moved++
+      const home = c.sb.restY('crate', t.x, t.z) + row * 2.4
+      if (t.y < home - 0.6 || Math.hypot(t.x - (c.x + c.dx * 24), t.z - (c.z + c.dz * 24)) > 4.5) moved++
     }
-    return `barrel left the beam at ${(r.memo.top ?? 0).toFixed(0)} u/s, ${moved}/9 crates knocked out of the wall`
+    return `barrel left the beam at ${(r.memo.top ?? 0).toFixed(0)} u/s, ${moved}/${c.ids.length} crates knocked off the pyramid`
   },
 })
 
