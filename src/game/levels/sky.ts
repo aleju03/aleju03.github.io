@@ -473,9 +473,12 @@ export function buildSky(opts: BuildOpts): SkyHandles {
            // front of it there, and uHaze below puts it in the same air. The
            // fade is only the last degree or so, where the dome's own far side
            // would otherwise show through under the fog line
-           // faded over the lowest few degrees rather than cut: from any
-           // height the deck used to end on a ruler-straight line
-           float horizon = smoothstep(0.0, 0.09, dir.y);
+           // Toward the skyline the deck thins rather than fades: the cover
+           // threshold rises over the lowest degrees, so the last clouds end
+           // on their own hard rims. An alpha fade there (and a cut before
+           // it) posterized into a ruler-straight edge across every view
+           // from the air, the clouds sliced flat along it
+           float horizon = smoothstep(0.0, 0.012, dir.y);
            if (horizon < 0.004) {
              gl_FragColor.a = 0.0;
            } else {
@@ -484,7 +487,8 @@ export function buildSky(opts: BuildOpts): SkyHandles {
              p.xz += vec2(0.82, 0.57) * (uCloudTime * 0.011);
              // the weather: banks and open blue, on their own slow drift
              float bank = cNoise(flat3 * 1.1 + vec3(uCloudTime * 0.004, 0.0, 0.0));
-             float cover = uCover - (bank - 0.5) * 0.24;
+             float cover = uCover - (bank - 0.5) * 0.24
+               + (1.0 - smoothstep(0.0, 0.14, dir.y)) * 0.3;
              float f = cFbm(p);
              // A near-hard rim and three flat tones (shadow, mid, lit): the
              // look posterizes whatever arrives here, and a soft gradient

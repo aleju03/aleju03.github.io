@@ -190,7 +190,17 @@ const FAR_FRAG_COLOR = /* glsl */ `
         // and every gentle shore has a beach
         float h = -vDepth;
         float j = (farHash(floor(vFarW.xz * 0.5)) - 0.5) * 0.3;
-        if (vFarNY < 0.8 + j * 0.1) diffuseColor.rgb = diffuse * vec3(0.147, 0.133, 0.116);
+        bool cliff = vFarNY < 0.8 + j * 0.1;
+        if (cliff) diffuseColor.rgb = diffuse * vec3(0.11, 0.09, 0.07);
+        if (cliff || vFar.w < -0.5) {
+          // stone reads as stone from a kilometre off by its strata: dark
+          // courses a few units apart, fading to their tone past a pixel,
+          // or a cliff band is a grey stripe the eye takes for haze
+          float sy = fract(vFarW.y / 5.0 + farHash(floor(vFarW.xz / 24.0)) * 0.6);
+          float sw = clamp(fwidth(vFarW.y) / 5.0, 0.01, 0.5);
+          float line = smoothstep(0.42 - sw, 0.42 + sw, abs(sy - 0.5));
+          diffuseColor.rgb *= 0.78 - 0.3 * line;
+        }
         else if (h + j < 1.4) diffuseColor.rgb = diffuse * vec3(0.54, 0.45, 0.23) * (h < 0.55 ? 0.72 : 1.0);
       }
       float dw = fwidth(vDepth);
@@ -545,7 +555,7 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
   const h = new Float32Array(W * W)
   for (let b = 0; b < W; b++) {
     for (let a = 0; a < W; a++) h[b * W + a] = heightAt(x0 + (a - 1) * cell, z0 + (b - 1) * cell)
-    if ((b & 3) === 3) yield
+    if (b & 1) yield
   }
   const H = (a: number, b: number) => h[(b + 1) * W + (a + 1)]
   const s = new Soup()
@@ -569,7 +579,9 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       tileCol.setRGB(g.r, g.g, g.b)
       const town = placeAt(x, z).district ? 1 : 0
       // a town keeps a few garden trees; the sea none
-      const canopy = wet ? 0 : town ? 0.12 * (1 - g.paved) : CANOPY[g.biome] ?? 0
+      // (-1 is bare rock: a cliff band the shader draws in strata)
+      const canopy = wet ? 0 : town ? 0.12 * (1 - g.paved)
+        : g.biome === 'rock' ? -1 : CANOPY[g.biome] ?? 0
       tileLeaf.copy(LEAF[g.biome] ?? tileCol)
       // the height this vertex has in the next ring out, where it has one:
       // an odd vertex on the tile's edge sits between two that ring shares
@@ -581,7 +593,7 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       s.vert(x, clampY(y), z, nx, ny, nz, tileCol, 0, level, town, canopy,
         SEA_Y - y, stitch, tileLeaf)
     }
-    if ((b & 7) === 7) yield
+    if (b % 3 === 2) yield
   }
   for (let b = 0; b < N; b++)
     for (let a = 0; a < N; a++) {
@@ -603,7 +615,10 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
     const d0 = chunkZ(z0 + 1)
     const per = S / CHUNK
     for (let dz = 0; dz < per; dz++) {
-      for (let dx = 0; dx < per; dx++) blockImpostors(s, level, c0 + dx, d0 + dz, ground)
+      for (let dx = 0; dx < per; dx++) {
+        blockImpostors(s, level, c0 + dx, d0 + dz, ground)
+        if ((dx & 3) === 3) yield
+      }
       yield
     }
   }

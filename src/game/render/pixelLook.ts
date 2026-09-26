@@ -163,16 +163,14 @@ export interface Air {
   skyReach: number
   skyAll: number
   /**
-   * Height in the air, for a camera off the ground (world/farfield.ts and
-   * levels/altitude.ts own the far view this serves). Real haze lives near
-   * the ground and thins upward, so the air a ray crosses depends on the
-   * heights it runs between, not only its length: `liftK` (0 off .. 1)
-   * blends from plain range to the optical depth of an exponential layer
-   * `liftScale` units thick above `liftBase`. Looking down from a helicopter
-   * the town below stays crisp while the valleys past it still layer.
-   * `edge` (0 off) is where the world ends: the air takes everything by that
-   * range, and the sky under the horizon goes to the same colour, so the
-   * far field's rim and the ring before it never draw a line on the sky
+   * The air from the air, for a camera off the ground (world/farfield.ts
+   * and levels/altitude.ts own the far view this serves). `liftK` (0 on the
+   * ground .. 1) is how far the view has opened; `edge` (0 off) is where the
+   * world ends: the air takes everything by that range, and the sky under
+   * the horizon goes to the same colour, so the far field's rim draws no
+   * line on the sky. `liftBase` and `liftScale` are kept for a height-layered
+   * haze that was tried and inverted aerial perspective (see the grade
+   * shader); nothing reads them
    */
   liftBase: number
   liftScale: number

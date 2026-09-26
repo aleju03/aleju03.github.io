@@ -82,22 +82,23 @@ export const airForSky = (
   const dark = s.night * (1 - s.twilight)
   // the woods thicken the air mostly once the light goes: at noon a forest
   // should still read as green all the way into the trees
-  const woods = 1 + (biome - 1) * (1 - 0.6 * s.day)
+  const lift = Math.min(1, Math.max(0, (alt - 15) / 110))
+  // ...and not from the air, where the frame is a whole landscape and the
+  // wood under the camera is a speck of it
+  const woods = 1 + (biome - 1) * (1 - 0.6 * s.day) * (1 - lift)
   // the twilight no longer thickens it: from a height, a dusk that did
   // turned everything past thirty metres into one mauve plane
   // From the air (levels/altitude.ts, world/farfield.ts): the camera is
-  // above most of the haze, so the air thins (a longer e-folding distance)
-  // and takes its height into account (liftK: a ray looking down crosses
-  // only the top of it), and where the far field ends the air takes all of
-  // it. `alt` is the camera's height over the ground under it, `reach` how
-  // far the far field goes, `baseY` where the haze layer sits (the sea)
-  const lift = Math.min(1, Math.max(0, (alt - 15) / 110))
+  // above most of the haze, so the air thins (a longer e-folding distance),
+  // and toward where the far field ends it takes all of the rest (the grade
+  // shader's rim), on one curve that only ever rises with range. `alt` is
+  // the camera's height over the ground under it, `reach` how far the far
+  // field goes; `baseY` is kept for the signature and unused
   const dist = (300 * s.day + 90 * (1 - s.day)) * woods * (1 + 1.6 * lift)
   air.start = 8 + 30 * lift
   air.dist = dist
   air.liftK = lift
   air.liftBase = baseY
-  air.liftScale = 150
   air.edge = lift > 0 && reach > 0 ? reach * 0.97 : 0
   air.max = (0.36 + 0.36 * dark - 0.08 * s.twilight) * out
   air.planes = 0
@@ -122,7 +123,7 @@ export const airForSky = (
   // by day the sky keeps its own blue down to near the skyline; the pull
   // into the air is for dusk and night, when the two should be one
   air.skyHorizon = (0.8 - 0.55 * warm) * out
-  air.skyReach = 0.14 + 0.1 * (1 - warm) + 0.12 * s.twilight + 0.1 * lift
+  air.skyReach = 0.14 + 0.1 * (1 - warm) + 0.12 * s.twilight + 0.03 * lift
   air.skyAll = (0.04 + 0.22 * dark) * out
 }
 

@@ -74,8 +74,8 @@ export const GRADE_FRAG = /* glsl */ `
   /** how far the sky at the horizon is pulled into the air, how far up that
       reaches, and how much of the whole sky goes with it */
   uniform vec3 uSkyAir;
-  /** the air's height layer: base y, thickness, how much it applies (0 off,
-      the walker's air), and the range at which the world ends (0 none) */
+  /** the air from altitude: (unused, unused, how far off the ground the
+      camera is 0..1, and the range at which the world ends, 0 none) */
   uniform vec4 uAirLift;
 
   /** lamp pools: world xyz and radius; their count, colour*gain */
@@ -307,30 +307,36 @@ export const GRADE_FRAG = /* glsl */ `
         float lap = ((1.0 / zl + 1.0 / zr) + (1.0 / zu + 1.0 / zd) - 4.0 * ic) / ic;
         convex = smoothstep(uEdgeK.w, uEdgeK.w * 2.5, -lap);
       }
-      col *= 1.0 - fold * (1.0 - convex) * uEdge.y * fogK;
-      col *= 1.0 + convex * uEdge.z * fogK;
+      // From the air the scene fog steps aside (levels/altitude.ts) and
+      // the look's air is the only thing distance does, so the ink fades
+      // with the air there instead: with nothing fading it, every ridge in
+      // the far field wore a dark line
+      float inkK = fogK * mix(1.0, 1.0 - smoothstep(0.08, 0.3, 1.0 - exp(-max(0.0, range - uAir.x) / uAir.y)), uAirLift.z);
+      col *= 1.0 - fold * (1.0 - convex) * uEdge.y * inkK;
+      col *= 1.0 + convex * uEdge.z * inkK;
 
       // ---- the air ------------------------------------------------------
       // aerial perspective as a few readable planes: near things keep their
       // colour, the middle distance flattens toward the air, the far one is
       // a silhouette in it. Quantized with the same banded dither as the
       // colour, so the planes step rather than smear
-      // From the air, a ray looking down crosses the thin top of the haze
-      // and a ray along the ground crosses all of it: the optical depth of
-      // an exponential layer between the two heights, per unit of range
-      float optical = range;
-      if (uAirLift.z > 0.0) {
-        float hc = max(uCamPos.y - uAirLift.x, 0.0) / uAirLift.y;
-        float hp = max(wp.y - uAirLift.x, 0.0) / uAirLift.y;
-        float dh = hc - hp;
-        float f = abs(dh) < 1e-3 ? exp(-hc) : (exp(-hp) - exp(-hc)) / dh;
-        optical = range * mix(1.0, f, uAirLift.z);
-      }
-      float air = 1.0 - exp(-max(0.0, optical - uAir.x) / uAir.y);
+      // One curve, rising with range and nothing else. An earlier cut
+      // weighed the air by the heights a ray ran between (the haze as a
+      // layer near the ground), and from the air that inverted aerial
+      // perspective: a low valley at a kilometre came out greyer than a
+      // ridge at three, so the frame read as a haze band with sharper,
+      // greener land beyond it. Height only lengthens the curve now
+      // (atmosphere.ts), so farther is always hazier
+      float air = 1.0 - exp(-max(0.0, range - uAir.x) / uAir.y);
       if (uAir.w > 0.5) air = band(air, uAir.w, bayer(p + ivec2(1, 3)), 0.25);
       air *= uAir.z;
-      // ...and where the world ends, the air has all of it
-      if (uAirLift.w > 0.0) air = max(air, smoothstep(uAirLift.w * 0.45, uAirLift.w, range));
+      // ...and toward where the world ends, the air takes the rest of it
+      // on the same curve's tail, so the rim of the far field dissolves
+      // into the horizon's air instead of standing against the sky
+      if (uAirLift.w > 0.0) {
+        float rim = smoothstep(uAirLift.w * 0.3, uAirLift.w, range);
+        air += (1.0 - air) * rim * rim;
+      }
       airAll = air;
       float toward = max(dot(dirW, uSunDir), 0.0);
       vec3 airCol = uAirCol + uSunGlow * pow(toward, 6.0);
@@ -349,7 +355,7 @@ export const GRADE_FRAG = /* glsl */ `
       float seen = uFog.z > 0.5 ? 1.0 - smoothstep(uFog.x, uFog.y, zc) : 1.0;
       float silK = skyBehind
         ? min(0.92, uEdge.x * 1.5) * max(fogK, 0.6 * smoothstep(0.0, 0.45, seen))
-        : uEdge.x * fogK;
+        : uEdge.x * inkK;
       // a light has no ink: the physgun's beam is a glow, not an object
       silK *= 1.0 - smoothstep(0.7, 0.97, air);
       // and a rim the air has taken most of carries no line against the
@@ -371,7 +377,7 @@ export const GRADE_FRAG = /* glsl */ `
       // Gradually, over the dip from the geometric horizon down to the rim:
       // a step here drew a pale band with a ruler-straight top edge across
       // every high view, the clouds sliced off flat along it
-      if (uAirLift.w > 0.0) pull = max(pull, uAirLift.z * smoothstep(0.16, -0.04, dirW.y));
+      if (uAirLift.w > 0.0) pull = max(pull, uAirLift.z * smoothstep(0.05, -0.05, dirW.y));
       col = mix(col, airCol, pull);
     }
 
