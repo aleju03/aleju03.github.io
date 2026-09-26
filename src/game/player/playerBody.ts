@@ -1847,6 +1847,31 @@ export function buildPlayerBody(
     [P_FOOTL, 0, 0.75, -1.2], [P_FOOTR, 0, -0.75, -1.2],
     [P_KNEEL, 0, 0.5, -0.65], [P_KNEER, 0, -0.5, -0.65],
   ]
+  /** the sprawl's targets are laid out from the body's own chest and pelvis,
+      so every pull toward them drags the heap after its own limbs: a motor
+      that walked a knocked pedestrian across the road at 1.5 u/s for the two
+      seconds it ran. Shifting every target by the pull's mass-weighted mean
+      leaves the shaping (limbs out, shoulders level) and takes the walk out */
+  const balanceSprawl = () => {
+    let sx = 0
+    let sz = 0
+    let w = 0
+    for (let i = 0; i < P_COUNT; i++) {
+      const k = sprawlK[i] * MASSES[i]
+      if (k === 0) continue
+      sx += (sprawlTo[i].x - rag.pts[i].x) * k
+      sz += (sprawlTo[i].z - rag.pts[i].z) * k
+      w += k
+    }
+    if (w === 0) return
+    sx /= w
+    sz /= w
+    for (let i = 0; i < P_COUNT; i++) {
+      if (sprawlK[i] === 0) continue
+      sprawlTo[i].x -= sx
+      sprawlTo[i].z -= sz
+    }
+  }
   const sprawl = () => {
     const spine = dirTmp.subVectors(rag.pts[P_CHEST], rag.pts[P_PELV])
     spine.y = 0
@@ -1895,6 +1920,7 @@ export function buildPlayerBody(
         xA.subVectors(rag.pts[i], c)
         rag.kick(i, zA.crossVectors(axis, xA).multiplyScalar(alpha))
       }
+      balanceSprawl()
       rag.drive(sprawlTo, sprawlK)
       return
     }
@@ -1907,7 +1933,42 @@ export function buildPlayerBody(
       sprawlTo[i].y = mid
       sprawlK[i] = k * 1.5
     }
+    balanceSprawl()
     rag.drive(sprawlTo, sprawlK)
+  }
+
+  /*
+    Friction on the heap as a whole. A body lying on the ground is not
+    stopped by its particles' own floor grip alone: the face-down roll above
+    is an angular kick the ground turns into rolling, and a round bean
+    rolling reads as a statue skating across the road (measured: a knocked
+    pedestrian drifted 3.5 units at 2.5 u/s for a second and a half after it
+    landed). So once three or more particles are on the floor, the heap's
+    mass-weighted planar velocity is bled away at HEAP_GRIP a second. Only
+    the common motion goes: the roll still turns the body over about its own
+    middle, and the limbs keep flopping and settling relative to it
+  */
+  const HEAP_GRIP = 14
+  const brakeHeap = (dt: number, env: RagdollEnv) => {
+    let touching = 0
+    for (let i = 0; i < P_COUNT; i++) {
+      const p = rag.pts[i]
+      const floor = env.groundAt ? env.groundAt(p.x, p.z) : env.groundY
+      if (p.y < floor + radii[i] + 0.12 * S) touching++
+    }
+    if (touching < 3) return
+    let mx = 0
+    let mz = 0
+    let m = 0
+    for (let i = 0; i < P_COUNT; i++) {
+      rag.velocity(i, velTmp)
+      mx += velTmp.x * MASSES[i]
+      mz += velTmp.z * MASSES[i]
+      m += MASSES[i]
+    }
+    const k = (1 - Math.exp(-HEAP_GRIP * dt)) / m
+    velTmp.set(-mx * k, 0, -mz * k)
+    for (let i = 0; i < P_COUNT; i++) rag.kick(i, velTmp)
   }
 
   const limbPos = (i: number, out: THREE.Vector3) => {
@@ -2207,6 +2268,7 @@ export function buildPlayerBody(
         flail(pose.dt, env)
         sprawl()
         rag.step(pose.dt, env)
+        if (grabs === 0) brakeHeap(pose.dt, env)
         fitFromParticles()
         // the gummy keeps wobbling while it tumbles: every hit the heap takes
         // (its average speed falling away in a frame) kicks the trunk's
