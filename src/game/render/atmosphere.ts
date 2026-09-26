@@ -94,13 +94,21 @@ export const airForSky = (
   // shader's rim), on one curve that only ever rises with range. `alt` is
   // the camera's height over the ground under it, `reach` how far the far
   // field goes; `baseY` is kept for the signature and unused
-  const dist = (300 * s.day + 90 * (1 - s.day)) * woods * (1 + 1.6 * lift)
+  // From the air the curve is also allowed to finish: on the ground the air
+  // is capped (max below) so a friendly day keeps its colour, and from a
+  // hundred units up that cap left the hills a kilometre off as green and
+  // sharp as the town below, ending on a hard line against the sky. Up
+  // there distance should take things over steadily until the horizon is
+  // air, so the ceiling rises toward one and the curve lengthens to match
+  const ground = (300 * s.day + 90 * (1 - s.day)) * woods
+  const dist = ground + (1600 * s.day + 700 * (1 - s.day) - ground) * lift
   air.start = 8 + 30 * lift
   air.dist = dist
   air.liftK = lift
   air.liftBase = baseY
   air.edge = lift > 0 && reach > 0 ? reach * 0.97 : 0
-  air.max = (0.36 + 0.36 * dark - 0.08 * s.twilight) * out
+  const cap = 0.36 + 0.36 * dark - 0.08 * s.twilight
+  air.max = (cap + (0.95 - cap) * lift) * out
   air.planes = 0
   // warm hazy air by day: the sky module's fog is a cool pale blue, which
   // reads as overcast once the grade has had it; nudged toward cream it
@@ -124,7 +132,9 @@ export const airForSky = (
   air.sunGlow.copy(sunColor).multiplyScalar(glow)
   // by day the sky keeps its own blue down to near the skyline; the pull
   // into the air is for dusk and night, when the two should be one
-  air.skyHorizon = (0.8 - 0.55 * warm) * out
+  // ...and from the air, where hills stand against the low sky, the low sky
+  // is the same air the hills are going into, or every ridge ends on a line
+  air.skyHorizon = (0.8 - 0.55 * warm + 0.55 * warm * lift) * out
   // the afterglow and the silhouettes against it: warm along the skyline
   // while the twilight lasts, and the air on things a shade darker than the
   // sky from dusk on, so a tower reads as a shape against the glow
@@ -132,7 +142,7 @@ export const airForSky = (
   // rose that the night grade pulled toward lavender
   air.duskBand.setRGB(1.0, 0.5, 0.2).multiplyScalar(1.3 * s.twilight * out)
   air.dim = 1 - 0.3 * (1 - s.day) * out
-  air.skyReach = 0.14 + 0.1 * (1 - warm) + 0.12 * s.twilight + 0.03 * lift
+  air.skyReach = 0.14 + 0.1 * (1 - warm) + 0.12 * s.twilight + 0.1 * lift
   air.skyAll = (0.04 + 0.22 * dark) * out
 }
 

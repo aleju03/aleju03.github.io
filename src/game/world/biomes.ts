@@ -204,7 +204,11 @@ export const classify = (
   if (depth < 0) return 'ocean'
   // a shoreline only where the ground is gentle: a cliff into the sea is rock
   if (depth < 2.6 && slope < 0.5) return temp < 0.2 ? 'snow' : 'beach'
-  if (slope > 0.62) return 'rock'
+  // Rock is for real crags. At 0.62 (32 degrees) every hillside ringing a
+  // town came out as bare stone, and from the air that ring read as a grey
+  // band of haze across the middle distance; a wooded slope at 35 degrees is
+  // what hills actually look like
+  if (slope > 0.88) return 'rock'
   if (temp < 0.14) return 'snow'
   if (temp < 0.3) return moist > 0.44 ? 'taiga' : 'tundra'
   if (temp < 0.58) return moist < 0.32 ? 'plains' : moist < 0.68 ? 'forest' : 'wetland'
