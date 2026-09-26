@@ -1595,6 +1595,13 @@ export default function CrtScene({
           now: () => performance.now() / 1000,
         })
         const shoveTaker = createShoveTaker()
+        /** seconds of hit-stop left, and how slow time runs in it */
+        let hitStop = 0
+        const HIT_STOP = 0.05
+        const HIT_STOP_K = 0.08
+        /** the attacker's squash: a landing's worth of fold fed to the body
+            rig on the frame after a knock, so the body gives with the blow */
+        let hitSquash = 0
         const shoveV = new THREE.Vector3()
         const bumpSets: (Bumpable | null)[] = [null, null]
         const myExtent: BodyExtent = { radius: 1, height: EYE }
@@ -2726,7 +2733,12 @@ export default function CrtScene({
             if (nextFrame < now) nextFrame = now + interval
           }
           const rawMs = now - lastT
-          const dt = Math.min(0.05, rawMs / 1000)
+          // a hit-stop: the few frames after the player lands a knock run
+          // near-frozen, which is what makes a hit read as a hit. Time only,
+          // local only: nothing about it travels
+          const dtWall = Math.min(0.05, rawMs / 1000)
+          const dt = hitStop > 0 ? dtWall * HIT_STOP_K : dtWall
+          if (hitStop > 0) hitStop -= dtWall
           lastT = now
           edges.update(input.keys)
           // frame-time governor: a smoothed frame cost over ~22ms means the
@@ -2936,9 +2948,16 @@ export default function CrtScene({
             contactIn.stepUp = step.grounded ? EYE * 0.12 : 0
             contactIn.now = now / 1000
             const cr = contact.step(contactIn)
-            // a knock or a stomp lands with a thump off whoever it hit
+            // a knock or a stomp lands with a thump off whoever it hit, a
+            // puff of dust where it landed, the attacker's body folding with
+            // the blow and a beat of hit-stop
             if (cr.knocks + cr.stomps > 0 && !pausedNow) {
               landThump('grass', cr.stomps ? 0.8 : 0.55)
+              if (!Number.isNaN(cr.hitX)) {
+                sandbox?.fx.dust({ x: cr.hitX, y: cr.hitY, z: cr.hitZ }, cr.stomps ? 1.3 : 1)
+              }
+              hitSquash = cr.stomps ? 12 : 9
+              hitStop = HIT_STOP
             }
           }
           if (sandbox) {
@@ -3052,7 +3071,8 @@ export default function CrtScene({
           rigPose.vx = step.vx
           rigPose.vz = step.vz
           rigPose.vy = step.vy
-          rigPose.landing = step.landing
+          rigPose.landing = step.landing + hitSquash
+          hitSquash = 0
           rigPose.fly = step.flying ? 1 : 0
           // same factor as poseBody's trailing offset: a crushed boom means
           // the lens is back on the head, so the flair fades out with it

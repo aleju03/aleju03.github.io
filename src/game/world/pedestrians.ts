@@ -134,6 +134,14 @@ const IDLE_CHECK = 0.75
 
 /** how tall a body the wall test asks about */
 const BODY_H = 4.2
+/** leaned into on the first frame of a bump: the step out of the walker's
+    way, units/s, on top of the stagger back */
+const SIDESTEP = 3
+/** the touchdown slap: a knocked body lands limbs first and they bounce,
+    one diagonal pair and then the other. Upward speed, units/s, given to
+    the limb (the rest of the heap gets a quarter of it through rig.hit) */
+const SLAP = 3.2
+const SLAP_GAP = 0.14
 /** how fast a stagger bleeds away, per second */
 const STAGGER_GRIP = 4.5
 /** a trample: the share of the walker's velocity a body lying underfoot is
@@ -193,6 +201,10 @@ interface Person {
   pts: Float32Array
   npts: number
   ptsAt: number
+  /** knocked into the air and not yet come down, and seconds until the
+      second half of the touchdown's limb slap */
+  airborne: boolean
+  slapIn: number
 }
 
 const swatch = <T,>(list: readonly T[], r: number) => list[Math.floor(r * list.length) % list.length]
@@ -387,6 +399,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       gait: 0, settle: 0, pause: 0, live: false, down: null, downFor: 0,
       y: 0, vx: 0, vz: 0, sx: 0, sz: 0, ext: { radius: 1, height: BODY_H }, kicked: 0,
       pts: new Float32Array(MAX_POINTS * 4), npts: 0, ptsAt: -1,
+      airborne: false, slapIn: -1,
     })
   }
 
@@ -425,6 +438,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       // the ragdoll owns the body until it has settled a while, then they
       // stand up where they lie and carry on down the pavement from there
       if (p.down) {
+        touchdown(p, dt)
         p.vx = p.vz = 0
         p.sx = p.sz = 0
         p.kicked = Math.max(0, p.kicked - dt)
@@ -565,8 +579,40 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     if (!p.down) {
       p.down = downEnv(p)
       knocks++
+      // thrown: its limbs slap the ground when it comes down
+      p.airborne = true
     }
     p.downFor = 0
+  }
+
+  /** one diagonal pair of limbs bounced up off the ground */
+  const limbAt = new THREE.Vector3()
+  const slapped = [
+    [limbIndex('handL'), limbIndex('footR')],
+    [limbIndex('handR'), limbIndex('footL')],
+  ]
+  function limbIndex(name: string) {
+    return crowd.length ? Math.max(0, crowd[0].rig.limbs.findIndex((l) => l.name === name)) : 0
+  }
+  const slap = (p: Person, pair: number) => {
+    for (const i of slapped[pair]) {
+      p.rig.limbPos(i, limbAt)
+      hit.impulse.set((rnd() - 0.5) * 1.5, SLAP, (rnd() - 0.5) * 1.5).multiplyScalar(p.rig.mass * 0.55)
+      p.rig.hit(hit.impulse, limbAt)
+    }
+  }
+  /** a knocked body coming down: its limbs slap the ground and bounce */
+  const touchdown = (p: Person, dt: number) => {
+    if (p.slapIn >= 0) {
+      p.slapIn -= dt
+      if (p.slapIn < 0) slap(p, 1)
+    }
+    if (!p.airborne || !p.rig.ragdolling) return
+    p.rig.focus(chest)
+    if (chest.y - groundAt(chest.x, chest.z) > p.ext.height * 0.3) return
+    p.airborne = false
+    slap(p, 0)
+    p.slapIn = SLAP_GAP
   }
 
   const knock = (watch: ImpactWatch) => {
@@ -638,6 +684,31 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
           p.sx = b.vx
           p.sz = b.vz
         }
+        // bumped: and a step out of the walker's line, to whichever side of
+        // it they already are, so the two part instead of clinging
+        if (b.fresh) {
+          const w = Math.hypot(b.wvx, b.wvz)
+          if (w > 0.1) {
+            const ux = b.wvx / w
+            const uz = b.wvz / w
+            // their offset from the walker, less its share along the walk
+            let ox = -b.nx
+            let oz = -b.nz
+            const along = ox * ux + oz * uz
+            ox -= ux * along
+            oz -= uz * along
+            const o = Math.hypot(ox, oz)
+            if (o > 1e-3) {
+              ox /= o
+              oz /= o
+            } else {
+              ox = -uz
+              oz = ux
+            }
+            p.sx += ox * SIDESTEP
+            p.sz += oz * SIDESTEP
+          }
+        }
         if (p.pause <= 0) {
           p.pause = 0.4 + rnd() * 0.5
           const side = fwdX(p.yaw) * -b.nz + fwdZ(p.yaw) * b.nx >= 0 ? 1 : -1
@@ -650,6 +721,16 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       hit.impulse.set(b.vx, b.vy, b.vz).multiplyScalar(p.rig.mass)
       hit.point.set(b.px, b.py, b.pz)
       p.rig.hit(hit.impulse, hit.point)
+      p.airborne = b.kind !== 'stomp'
+      if (b.kind === 'stomp') {
+        // squashed: the hips driven down as well as the head, so the body
+        // folds in place instead of tipping over backwards
+        hit.impulse.set(0, b.vy * 0.8, 0).multiplyScalar(p.rig.mass)
+        hit.point.set(p.x, p.y + p.ext.height * 0.35, p.z)
+        p.rig.hit(hit.impulse, hit.point)
+        slap(p, 0)
+        p.slapIn = SLAP_GAP
+      }
     },
     // walked through while lying there: a kick at the chest, along the walk
     trample: (x, z, feetY, vx, vz, radius) => {

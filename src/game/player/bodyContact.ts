@@ -95,6 +95,12 @@ export interface Bump {
   ry: number
   rz: number
   stun: number
+  /** the first frame of this contact: a lean that has only just begun is a
+      bump, and bounces the two apart rather than letting them cling */
+  fresh: boolean
+  /** the walker's own planar velocity, for a body stepping out of its way */
+  wvx: number
+  wvz: number
 }
 
 export interface Bumpable {
@@ -149,6 +155,11 @@ export interface ContactReport {
   /** the deepest any posed limb (either body's) still sits inside the other
       body's cylinder after the pass, side by side; 0 when nothing does */
   sunk: number
+  /** where the frame's knock or stomp landed on its victim, for a puff of
+      dust; NaN on a frame without one */
+  hitX: number
+  hitY: number
+  hitZ: number
 }
 
 /* ------------------------------------------------------------- tuning -- */
@@ -175,7 +186,7 @@ const STOMP_OVER = 0.3
 const STOMP_BOUNCE = 10
 /** ...and carried off the side of them, so the walker lands beside the heap
     and not lying across it */
-const STOMP_OFF = 3.5
+const STOMP_OFF = 8
 /** the stomp drives the head down this fast: a squash, not a push */
 const STOMP_DOWN = -11
 /** the walker's rebound off a knock: this share of the approach back along
@@ -193,6 +204,14 @@ const THROW = 1.4
 const THROW_UP = 3
 const THROW_UP_K = 0.3
 const THROW_AT = 0.72
+/** the bump at the start of a lean: the walker bounces back this share of
+    its approach (capped), and the body it walked into staggers back this
+    fast. Without it a walk-in was a hug: the two stood wrapped together for
+    as long as the key was held */
+const BUMP_BACK = 0.45
+const BUMP_BACK_MAX = 3.2
+const BUMP_THEM = 0.7
+const BUMP_THEM_MAX = 5
 /** how far out of its cylinder a posed limb can reach, for the broad phase */
 const LIMB_REACH = 2.6
 
@@ -358,6 +377,9 @@ export const touch = (
   out.approach = -(me.vx * nx + me.vz * nz)
   const speed = Math.hypot(me.vx, me.vz)
   out.stun = 0
+  out.fresh = false
+  out.wvx = me.vx
+  out.wvz = me.vz
 
   // coming down on them: soles over the lower part of the body, past the top
   // of the arc. The head takes it straight down, and the walker is thrown
@@ -365,18 +387,19 @@ export const touch = (
   const falling = !me.grounded && me.vy < STOMP_VY
   if (falling && me.feetY > o.feetY + o.height * STOMP_OVER) {
     out.kind = 'stomp'
-    out.vx = me.vx * 0.3
+    out.vx = me.vx * 0.12
     out.vy = STOMP_DOWN
-    out.vz = me.vz * 0.3
+    out.vz = me.vz * 0.12
     out.px = o.x
     out.py = o.feetY + o.height * 0.9
     out.pz = o.z
-    // carried on the way the walker was going, so a stomp on the run goes
-    // over them rather than bouncing back into them
+    // carried on the way the walker was going, the run's own speed kept on
+    // top, so a stomp goes over and clear of them rather than dropping the
+    // walker straight back into the heap it made
     const s = speed > 0.5 ? 1 / speed : 0
-    out.rx = (s ? me.vx * s : nx) * STOMP_OFF
+    out.rx = (s ? me.vx * s : nx) * STOMP_OFF + me.vx * 0.6
     out.ry = STOMP_BOUNCE
-    out.rz = (s ? me.vz * s : nz) * STOMP_OFF
+    out.rz = (s ? me.vz * s : nz) * STOMP_OFF + me.vz * 0.6
     return 'stomp'
   }
   // the point of contact: on their surface toward us, high on the chest
@@ -443,18 +466,30 @@ export function createBodyContact(): BodyContact {
   const bump: Bump = {
     kind: 'none', nx: 0, nz: 0, depth: 0, approach: 0,
     vx: 0, vy: 0, vz: 0, px: 0, py: 0, pz: 0, rx: 0, ry: 0, rz: 0, stun: 0,
+    fresh: false, wvx: 0, wvz: 0,
   }
-  const report: ContactReport = { leans: 0, knocks: 0, stomps: 0, trampled: 0, gap: Infinity, sunk: 0 }
+  const report: ContactReport = {
+    leans: 0, knocks: 0, stomps: 0, trampled: 0, gap: Infinity, sunk: 0, hitX: NaN, hitY: NaN, hitZ: NaN,
+  }
   const pts = new Float32Array(MAX_POINTS * 4)
-  /** when each body may next be knocked, per set; grown, never shrunk */
-  const cool = new Map<Bumpable, Float64Array>()
-  const coolOf = (set: Bumpable) => {
-    let c = cool.get(set)
-    if (!c || c.length < set.size) {
-      const next = new Float64Array(Math.max(8, set.size * 2)).fill(-Infinity)
-      if (c) next.set(c)
+  /** per set: when each body may next be knocked, and whether it was in
+      contact last frame and this one (a lean that begins is a bump). Grown,
+      never shrunk */
+  interface SetState { cool: Float64Array; was: Uint8Array; now: Uint8Array }
+  const state = new Map<Bumpable, SetState>()
+  const stateOf = (set: Bumpable) => {
+    let c = state.get(set)
+    if (!c || c.cool.length < set.size) {
+      const n = Math.max(8, set.size * 2)
+      const next: SetState = {
+        cool: new Float64Array(n).fill(-Infinity), was: new Uint8Array(n), now: new Uint8Array(n),
+      }
+      if (c) {
+        next.cool.set(c.cool)
+        next.was.set(c.was)
+      }
       c = next
-      cool.set(set, c)
+      state.set(set, c)
     }
     return c
   }
@@ -470,13 +505,19 @@ export function createBodyContact(): BodyContact {
       report.trampled = 0
       report.gap = Infinity
       report.sunk = 0
+      report.hitX = report.hitY = report.hitZ = NaN
       let bounced = false
+      for (let si = 0; si < sets.length; si++) {
+        const set = sets[si]
+        if (set) stateOf(set).now.fill(0)
+      }
       for (let it = 0; it < ITER; it++) {
         let touched = false
         for (let si = 0; si < sets.length; si++) {
           const set = sets[si]
           if (!set) continue
-          const c = coolOf(set)
+          const st = stateOf(set)
+          const c = st.cool
           for (let i = 0; i < set.size; i++) {
             if (!set.peer(i, peer)) continue
             // broad phase: a box round both, limbs and all, before any
@@ -493,9 +534,27 @@ export function createBodyContact(): BodyContact {
               bump.stun = 0
             }
             touched = true
+            st.now[i] = 1
+            // a lean that has only just begun is a bump: they bounce apart
+            if (it === 0 && kind === 'lean' && !st.was[i] && bump.approach > 1.5) {
+              bump.fresh = true
+              const k = Math.min(BUMP_THEM_MAX, bump.approach * BUMP_THEM)
+              bump.vx = -bump.nx * k
+              bump.vz = -bump.nz * k
+              if (!bounced) {
+                const back = Math.min(BUMP_BACK_MAX, bump.approach * BUMP_BACK)
+                o.push(bump.nx * back, 0, bump.nz * back, 0.12)
+                bounced = true
+              }
+            }
             // what happens to them happens once a frame, on the first pass
             if (it === 0) {
-              if (kind !== 'lean') c[i] = o.now + KNOCK_COOLDOWN
+              if (kind !== 'lean') {
+                c[i] = o.now + KNOCK_COOLDOWN
+                report.hitX = bump.px
+                report.hitY = bump.py
+                report.hitZ = bump.pz
+              }
               if (kind === 'stomp') {
                 report.stomps++
                 set.hit(i, bump)
@@ -525,6 +584,12 @@ export function createBodyContact(): BodyContact {
         if (!touched) break
         // a body shoved into a wall stays out of the wall
         resolveXZ(me.eye, o.collision, me.feetY, me.feetY + me.height, o.stepUp)
+      }
+      for (let si = 0; si < sets.length; si++) {
+        const set = sets[si]
+        if (!set) continue
+        const st = stateOf(set)
+        st.was.set(st.now)
       }
       // the measurement: after everything, how close is the walker to
       // anybody it stands beside, trunk to trunk and limb to trunk
