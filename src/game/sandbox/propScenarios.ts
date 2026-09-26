@@ -439,6 +439,9 @@ defineScenario({
 
 /* ------------------------------------------------------------- smash -- */
 
+/** the stack by the wall and the two late crates, per staging */
+const smashStack = new WeakMap<ScenarioCtx, PropId[]>()
+
 /** the things thrown, in order, a third of a second apart */
 const THROWN = [
   'crate', 'melon', 'bottle', 'crate_small', 'melon', 'pallet', 'melon', 'chair',
@@ -449,7 +452,7 @@ defineScenario({
   id: 'sandbox:smash',
   title: 'crates, melons and bottles thrown into a shopfront',
   site: siteWall,
-  duration: 6.5,
+  duration: 7,
   frames: 12,
   tod: 0.42,
   camera: (c) => {
@@ -493,8 +496,23 @@ defineScenario({
         break
       }
     }
+    // a stack against the wall beside the lane, two crates and a small one
+    // on top, for the splinters to rattle against: the end of the film is
+    // not all one flat carpet of planks
+    const W = c.memo.wall
+    const e = shapeExtents(KINDS.crate.shape)
+    const es = shapeExtents(KINDS.crate_small.shape)
+    const q = yawQ(facing(c.dx, c.dz))
+    const kept: PropId[] = []
+    for (const o of [-1, 1]) {
+      const p = at(c, W - e.z - 0.15, c.memo.lane + 5 + o * (e.x + 0.03))
+      kept.push(c.sb.spawn('crate', { x: p.x, y: c.sb.restY('crate', p.x, p.z) + 0.01, z: p.z }, { quaternion: q }))
+    }
+    const p = at(c, W - e.z - 0.15, c.memo.lane + 5)
+    kept.push(c.sb.spawn('crate_small', { x: p.x, y: c.sb.restY('crate', p.x, p.z) + e.y + es.y + 0.03, z: p.z }, { quaternion: q }))
+    smashStack.set(c, kept)
   },
-  events: THROWN.map((kind, i): [number, (c: ScenarioCtx) => void] => [0.25 + i * 0.36, (c) => {
+  events: [...THROWN.map((kind, i): [number, (c: ScenarioCtx) => void] => [0.25 + i * 0.36, (c) => {
     const W = c.memo.wall
     const b0 = c.memo.lane + (rnd() - 0.5) * 3
     const s = at(c, 0.5, b0)
@@ -513,14 +531,28 @@ defineScenario({
     }))
     c.memo.thrown++
   }]),
+  // and two last crates tossed gently onto the heap, which land whole on
+  // top of the splinters and roll off them
+  ...[[5.4, 0.2], [5.8, -1.6]].map(([t, o]): [number, (c: ScenarioCtx) => void] => [t, (c) => {
+    const p = at(c, c.memo.wall - 3.5, c.memo.lane + o)
+    const kind = o > 0 ? 'crate' : 'crate_small'
+    const id = c.sb.spawn(kind, { x: p.x, y: c.sb.restY(kind, p.x, p.z) + 3.2, z: p.z }, {
+      quaternion: yawQ(rnd() * 3),
+      velocity: { x: c.dx * 3, y: 0, z: c.dz * 3 },
+      angular: { x: (rnd() - 0.5) * 3, y: (rnd() - 0.5) * 3, z: (rnd() - 0.5) * 3 },
+    })
+    smashStack.get(c)?.push(id)
+  }])],
   report: (c) => {
     const whole: string[] = []
     for (const id of c.ids) {
       const p = c.sb.get(id)
       if (p) whole.push(p.kind.id)
     }
+    const kept = (smashStack.get(c) ?? []).filter((id) => c.sb.get(id)).length
     return `${c.memo.thrown - whole.length}/${c.memo.thrown} broke on the wall (${c.memo.wall.toFixed(1)} units off)` +
-      `${whole.length ? ' (whole: ' + whole.join(', ') + ')' : ''}, ${c.sb.stats.gibs} gibs lying about`
+      `${whole.length ? ' (whole: ' + whole.join(', ') + ')' : ''}, ${c.sb.stats.gibs} gibs lying about, ` +
+      `${kept} of the stack and the two late crates whole`
   },
 })
 

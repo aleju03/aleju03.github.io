@@ -820,13 +820,16 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   kind, a break of every breakable and a blast: it must print 0 and 0.
 - **Nothing writes alpha it does not mean.** Under the look alpha is a
   hole, and fire and smoke that dissolved through a Bayer dither read as a
-  screen door and a sparse dot pattern. Flame balls are opaque and banded
-  (`fx.ts`'s `banded`) and shrink away. The blast's core and the smoke are
-  sprites on one program in three blends that leave the target's alpha
-  alone: the core is *added* (near white, so a barrel tumbling through the
-  fireball is still seen inside it), its inner disc writes `GLOW_ALPHA` so
+  screen door and a sparse dot pattern. The blast's core, the flames and
+  the smoke are sprites on one program in three blends: the core is
+  *added* (near white, so a barrel tumbling through the fireball is still
+  seen inside it), its inner disc writes `GLOW_ALPHA` so
   the look skips the grade, the ink and the lamp light there, as the
-  physgun's beam does, and smoke is premultiplied *over*, translucent
+  physgun's beam does; the fireball's flames are opaque sprites with a
+  torn edge that also write `GLOW_ALPHA`, because the look inks depth edges
+  and a ball of fire drawn as balls got a rim on every ball (and, drawn
+  without depth, the outlines of what stood behind it); and smoke is
+  premultiplied *over*, translucent
   through blending in three stepped opacities, lit by the look's ambient
   (`uShade`, from `lightLook`) so it darkens at night. Ground dust is a
   flattened sprite, or it reads as a stone.
@@ -835,7 +838,8 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   street, the fronts and the props round it by day as well as by night and
   washing the air, then it falls to the fireball's orange glow; under it
   the added core, flame spears thrown radially well past it (`jets`), and
-  only then a few orange flame balls.
+  then the ragged fireball of flame sprites, white-yellow in the middle and
+  orange at the tips, with dark soot at its crown.
 - **A blast throws, and it is late.** `explode` sets a velocity change (out,
   50-70 degrees up, tumbling), not an impulse, falling with the square root
   of the mass; blasts a beat apart redirect more than they add. Explosives
