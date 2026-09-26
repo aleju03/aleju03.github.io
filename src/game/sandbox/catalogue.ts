@@ -105,7 +105,11 @@ def('crate', {
   // glued slab and landed as a raft, rather than coming apart as it fell
   friction: 0.42,
   restitution: 0.22,
-  density: 0.4,
+  // wood crates ride about half under, and level: the load on the floor
+  // puts the centre of mass a seventh of the side low, past the twelfth of
+  // the side a cube at this draft needs to float flat rather than on an edge
+  density: 0.5,
+  ballast: { share: 0.35, at: [0, -DIMS.crate * 0.85, 0] },
   surface: 'wood',
   breaks: { speed: 30 },
 })
@@ -116,7 +120,8 @@ def('crate_small', {
   mass: 12,
   friction: 0.42,
   restitution: 0.22,
-  density: 0.4,
+  density: 0.5,
+  ballast: { share: 0.35, at: [0, -DIMS.crateSmall * 0.85, 0] },
   surface: 'wood',
   breaks: { speed: 26 },
 })

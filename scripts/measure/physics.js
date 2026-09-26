@@ -11,6 +11,8 @@
     tunnel     fast things do not pass through thin things or the ground
     walker     the walk pushes a crate, is stopped by a block, stands on a
                stack and rides a moving plank
+    float      each kind dropped into still water: waterline, attitude, and
+               how long it takes to stop rolling
     scenarios  every registered scenario, run to its end, with its report
 */
 import { createSandbox } from '../../src/game/sandbox/sandbox.ts'
@@ -77,6 +79,16 @@ if (want('ground')) {
 
 /* --------------------------------------------------------------- cost -- */
 if (want('cost')) {
+  // the solids under the field, built before anything is timed: in the game
+  // they come from chunks the streamer built long ago, and here the first
+  // touch of each one is a full buildChunk (5-20 ms) that would otherwise
+  // land inside a "physics" frame. (The 50 ms first frame the first round
+  // reported was something else, and real: V8 compiling Rapier's WASM on
+  // its first step. physics.ts's warmUp pays it at load now; this frame 0
+  // is the number that keeps it honest)
+  for (let dz = -3; dz <= 3; dz++) for (let dx = -3; dx <= 3; dx++) {
+    chunkSolids(chunkX(flat.x) + dx, chunkZ(flat.z) + dz)
+  }
   for (const count of [50, 200, 500]) {
     const { sb } = newSandbox()
     await sb.whenReady
@@ -117,8 +129,9 @@ if (want('cost')) {
     const hold = held.reduce((a, b) => a + b, 0) / held.length
     const stepShare = stepMs / (frames.length + held.length)
     const peak = Math.max(...frames, ...held)
+    const at = [...frames, ...held].indexOf(peak)
     console.log(`cost     ${pad(count + ' props', 10)} piling ${f(pile, 2)} ms/frame, held awake ${f(hold, 2)} ms/frame, ` +
-      `worst frame ${f(peak, 2)}, Rapier's step ${f(stepShare, 2)} of it (awake after 2 s: ${awakeAfter})`)
+      `worst frame ${f(peak, 2)} (frame ${at}), Rapier's step ${f(stepShare, 2)} of it (awake after 2 s: ${awakeAfter})`)
     sb.dispose()
   }
 }
@@ -289,6 +302,70 @@ if (want('walker')) {
   console.log(`walker   rode a plank dragged 6 units: walker moved ${f(cam.position.x - rideStart.x, 2)}, ` +
     `plank moved ${f(plEnd.x - pt.x, 2)}, feet ${f(walk.feetY - (plEnd.y + 0.09), 3)} over it`)
   sb.dispose()
+}
+
+/* -------------------------------------------------------------- sites -- */
+if (want('sites')) {
+  // where each scenario stages itself, and how long finding it took
+  for (const s of SCENARIOS) {
+    const t0 = performance.now()
+    const site = s.site()
+    console.log(`site     ${pad(s.id, 16)} ${Math.round(site.x)},${Math.round(site.z)}  facing ${f(site.dx, 2)},${f(site.dz, 2)}` +
+      `  ${site.memo ? JSON.stringify(site.memo) : ''}  (${Math.round(performance.now() - t0)} ms)`)
+  }
+}
+
+/* -------------------------------------------------------------- float -- */
+if (want('float')) {
+  // each kind dropped tilted into still open water, one at a time, and
+  // watched for ten seconds: where it rides, how it lies, when it stops
+  // rolling. "flat" is the angle from the nearest face-on orientation, so 0
+  // is a crate riding level and 45 is one floating on an edge
+  const sea = SCENARIOS.find((s) => s.id === 'sandbox:float').site()
+  for (const kind of ['crate', 'barrel', 'ball', 'plank', 'cone', 'block']) {
+    const { sb } = newSandbox(false)
+    await sb.whenReady
+    const focus = { x: sea.x, y: SEA_Y, z: sea.z }
+    const id = sb.spawn(kind, { x: sea.x, y: SEA_Y + 4, z: sea.z }, {
+      quaternion: new THREE.Quaternion().setFromEuler(new THREE.Euler(0.5, 0.3, 0.35)),
+      angular: { x: 0.8, y: 0.4, z: -0.6 },
+    })
+    const p = sb.get(id)
+    let settled = 0
+    let lateSpin = 0
+    let lateBob = 0
+    let lastY = null
+    for (let i = 0; i < 600; i++) {
+      sb.tick({ dt: 1 / 60, active: true, focus })
+      const w = p.body.angvel()
+      const spin = Math.hypot(w.x, w.y, w.z)
+      if (spin > 0.35) settled = (i + 1) / 60
+      const y = p.body.translation().y
+      if (process.env.DEBUG_FLOAT === kind && i % 20 === 0) {
+        const v = p.body.linvel()
+        const tt = p.body.translation()
+        console.log(i, 'y', f(tt.y - SEA_Y, 2), 'w', f(w.x, 2), f(w.y, 2), f(w.z, 2), 'v', f(v.x, 2), f(v.y, 2), f(v.z, 2), 'damp', f(p.body.linearDamping(), 2), f(p.body.angularDamping(), 2), 'sleep', p.body.isSleeping())
+      }
+      if (i >= 360) {
+        lateSpin = Math.max(lateSpin, spin)
+        if (lastY !== null) lateBob = Math.max(lateBob, Math.abs(y - lastY) * 60)
+      }
+      lastY = y
+    }
+    const q = p.body.rotation()
+    const quat = new THREE.Quaternion(q.x, q.y, q.z, q.w)
+    let flat = 90
+    for (const ax of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)]) {
+      const d = Math.abs(ax.applyQuaternion(quat).y)
+      flat = Math.min(flat, Math.acos(Math.min(1, d)) * 180 / Math.PI)
+    }
+    const t = p.body.translation()
+    const e = p.extents
+    console.log(`float    ${pad(kind, 7)} centre ${f(t.y - SEA_Y, 2).padStart(6)} over the water ` +
+      `(half-height ${f(e.y, 2)}), ${f(flat, 0).padStart(2)} deg off a face, stopped rolling at ${f(settled, 1)} s, ` +
+      `after 6 s spin <= ${f(lateSpin, 2)} rad/s, bob <= ${f(lateBob, 2)} u/s`)
+    sb.dispose()
+  }
 }
 
 /* ---------------------------------------------------------- scenarios -- */

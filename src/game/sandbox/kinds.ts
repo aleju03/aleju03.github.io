@@ -89,6 +89,12 @@ export interface PropKind {
   density: number
   linearDamping?: number
   angularDamping?: number
+  /** a share of the mass carried as a point load at a local position (a
+      crate's contents resting on its floor). It lowers the centre of mass
+      without changing the shape, which is what lets a crate float level at
+      half its depth: a uniform cube at that density is only stable resting
+      on an edge, and floats like a diamond */
+  ballast?: { share: number; at: [number, number, number] }
   /** how it sounds when it hits something; 'wood' when omitted */
   surface?: Surface
   /** comes apart into gibs (models.ts's GIBS) on a hard enough blow */
