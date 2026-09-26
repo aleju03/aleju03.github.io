@@ -246,8 +246,10 @@ export const createProps = (o: PropsOpts): Props => {
   }
 
   const colliderDescs = (s: ShapeSpec, mass: number) => {
-    const parts = s.type === 'compound' ? s.parts : [{ shape: s, at: undefined, rot: undefined }]
-    const vols = parts.map((p) => volumeOf(p.shape))
+    const parts = s.type === 'compound' ? s.parts : [{ shape: s, at: undefined, rot: undefined, w: 1 }]
+    // a part's share of the mass is its volume times its weight, which is how
+    // a lamp post's cast base keeps its centre of mass at its foot
+    const vols = parts.map((p) => volumeOf(p.shape) * (p.w ?? 1))
     const total = vols.reduce((a, b) => a + b, 0) || 1
     return parts.map((p, i) => {
       const ps = p.shape
