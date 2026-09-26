@@ -3176,13 +3176,19 @@ export default function CrtScene({
               const cp = Math.cos(walk.pitch)
               aimDir.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp)
               const hit = sandbox && level.id === 'overworld' ? sandbox.raycast(headPos, aimDir, AIM_REACH) : null
+              // the boom has only just moved the lens; its inverse is last
+              // frame's until this, and every projection below would be too
+              camera.updateMatrixWorld()
               crossPt.copy(headPos).addScaledVector(aimDir, hit ? hit.distance : 40).project(camera)
               const w = webgl ? webgl.domElement.clientWidth : 0
               const h = webgl ? webgl.domElement.clientHeight : 0
               // a mark that would land on your own back says nothing (the
               // point it stands for is behind you from the lens's side), so
               // it is hidden while the body covers it: the body's screen box
-              // is its crown and its soles projected, a shoulder's width wide
+              // is its crown and its soles projected, a shoulder's width wide.
+              // The boom sits on the gaze line, so in practice the mark is
+              // hidden whenever the body is in frame and shows only once the
+              // boom has swung clear of it (a steep look up or down)
               crossBox.copy(headPos).setY(headPos.y + 0.6).project(camera)
               const top = crossBox.y
               const midX = crossBox.x
