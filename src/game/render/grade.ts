@@ -64,42 +64,48 @@ export interface Grade {
 }
 
 /**
-  Daylight: moody but friendly. The anchors are the families the world is
-  actually built from (brick and roof tile, sand and straw, moss and leaf,
-  sea and shade, sky and slate, dusk) so the pull tidies rather than recolours.
+  Daylight: murky but warm, and still friendly. Chroma is capped low and the
+  greens gather toward olive, so a meadow reads as a painted field rather
+  than as a lawn under studio light, while the warm split tone keeps it an
+  afternoon rather than an overcast morgue. The anchors are the families the
+  world is actually built from (brick and roof tile, sand and straw, olive
+  and leaf, sea and shade, sky and slate, dusk), so the pull tidies rather
+  than recolours.
 */
 export const GRADE_DAY: Grade = {
-  floor: 0.05,
-  ceiling: 0.96,
-  contrast: 0.45,
-  gamma: 1.02,
-  sat: 1.05,
-  shadowSat: 0.8,
-  chromaCap: 0.17,
-  shadowTint: [245, 0.03],
-  highlightTint: [78, 0.01],
-  anchors: [32, 72, 122, 175, 238, 312],
-  pull: 0.38,
+  floor: 0.055,
+  ceiling: 0.95,
+  contrast: 0.4,
+  gamma: 1.04,
+  sat: 0.82,
+  shadowSat: 0.72,
+  chromaCap: 0.115,
+  shadowTint: [60, 0.012],
+  highlightTint: [80, 0.01],
+  anchors: [34, 74, 118, 168, 240, 314],
+  pull: 0.35,
 }
 
 /**
-  Night: the Purkinje shift. Under starlight the eye loses colour before it
-  loses shape and what is left leans blue, so the night table drains chroma
-  and pushes the darks toward slate rather than simply being darker (the
-  lights already are).
+  Night: the Purkinje shift, and real darks. Under starlight the eye loses
+  colour before it loses shape and what is left leans blue, so the night
+  table drains chroma and pushes the darks toward slate; and it crushes the
+  middle (gamma well over 1, a floor near black), so the moonlit ground is a
+  deep dark and the things that are *lit* (lamp pools, windows, a headlamp)
+  are the islands the eye goes to.
 */
 export const GRADE_NIGHT: Grade = {
-  floor: 0.1,
-  ceiling: 0.94,
-  contrast: 0.2,
-  gamma: 0.92,
-  sat: 0.62,
-  shadowSat: 0.5,
-  chromaCap: 0.11,
-  shadowTint: [258, 0.045],
-  highlightTint: [70, 0.028],
-  anchors: [32, 72, 122, 175, 238, 312],
-  pull: 0.45,
+  floor: 0.05,
+  ceiling: 0.95,
+  contrast: 0.26,
+  gamma: 1.06,
+  sat: 0.66,
+  shadowSat: 0.45,
+  chromaCap: 0.12,
+  shadowTint: [255, 0.03],
+  highlightTint: [68, 0.03],
+  anchors: [34, 74, 118, 168, 240, 314],
+  pull: 0.4,
 }
 
 /* --------------------------------------------------------------- oklab -- */

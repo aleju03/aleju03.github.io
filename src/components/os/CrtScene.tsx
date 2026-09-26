@@ -47,6 +47,7 @@ import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/quality'
 import { createPixelLook, type PixelLook } from '../../game/render/pixelLook'
 import { texelateTree } from '../../game/render/texel'
+import { BIOME_AIR, airForSky, lightsForSky } from '../../game/render/atmosphere'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
 import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
 import {
@@ -777,6 +778,9 @@ export default function CrtScene({
           side: THREE.DoubleSide,
         })
         glass.castShadow = false
+        // the look redraws the hole at the canvas's own resolution, so the
+        // live screen's edge is a line rather than a staircase of pixels
+        look.addHole(glass)
 
         // glass front center + facing direction, measured off the actual mesh
         // (the tube face is tilted slightly upward on its stand)
@@ -2133,7 +2137,56 @@ export default function CrtScene({
           // not through the twilight: golden hour is the warmest moment of
           // the day, and the night table's drained chroma would grey it out
           look.setMood(sky.night * (1 - sky.twilight))
+          dressAir(sky)
           levels.current.overrideLight?.(lightRig)
+        }
+
+        /*
+          The look's air and its night lights, dressed from the same sky the
+          light pass just composed (render/atmosphere.ts has the numbers).
+          The two lookups that walk the world, the biome under the camera
+          and the nearest lamps, are re-asked only after real travel or a
+          few frames, so neither costs anything per frame; everything else
+          is a handful of uniforms.
+        */
+        const airSun = new THREE.Vector3()
+        const airAmb = new THREE.Color()
+        const lampBuf = new Float32Array(16 * 3)
+        let lampCount = 0
+        let airBiome = 1
+        let airAskX = Number.NaN
+        let airAskZ = 0
+        let airAskAge = 0
+        const dressAir = (sky: OutsideState) => {
+          const overworld = levels.current.id === 'overworld'
+          const p = camera.position
+          airAskAge++
+          if (
+            !Number.isFinite(airAskX) || airAskAge > 45 ||
+            (p.x - airAskX) ** 2 + (p.z - airAskZ) ** 2 > 36
+          ) {
+            airAskX = p.x
+            airAskZ = p.z
+            airAskAge = 0
+            const b = outside.biomeAt(p.x, p.z)
+            airBiome = b ? BIOME_AIR[b] ?? 1 : 1
+            lampCount = overworld ? outside.nearLamps(p.x, p.z, lampBuf, 16) : 0
+          }
+          airSun.subVectors(outside.sun.position, outside.sun.target.position).normalize()
+          airForSky(look.air, sky, airBiome, airSun, outside.sun.color)
+          // the backrooms carry their own fog and no sky: no air, no lamps
+          if (!overworld) look.air.max = 0
+          airAmb.copy(hemi.color).multiplyScalar(hemi.intensity)
+          lightsForSky(look.lights, sky, lampBuf, overworld ? lampCount : 0, airAmb)
+          // the headlamp is yours: on while you are on your feet in the
+          // overworld at night, off at the wheel (the car has its own) and
+          // at the desk
+          const head = look.lights.head
+          head.on = head.on && fps && roaming && overworld && !fleet.driving
+          if (head.on) {
+            head.pos.copy(camera.position)
+            camera.getWorldDirection(head.dir)
+          }
         }
 
         const render = () => {
@@ -3595,6 +3648,8 @@ export default function CrtScene({
               screen: house.screen,
               trackDisposable: (d) => void disposer.add(d),
             })
+            // its edge redrawn at full resolution, like the monitor's
+            look.addHole(tv.hole)
           }
           disposer.textures.forEach((texture) => webgl?.initTexture(texture))
 
