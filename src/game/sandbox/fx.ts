@@ -176,12 +176,12 @@ const ditherFade = <M extends THREE.Material>(m: M, key: string): M => {
 
 /* the fire ramp, HDR linear: white-hot to soot */
 const RAMP: Array<[number, number, number, number]> = [
-  [0, 7, 5.2, 2.6],
-  [0.1, 5.4, 2.2, 0.35],
-  [0.3, 3.2, 0.8, 0.1],
-  [0.55, 1.3, 0.26, 0.06],
-  [0.8, 0.3, 0.09, 0.04],
-  [1, 0.1, 0.05, 0.04],
+  [0, 4.2, 3.0, 1.3],
+  [0.1, 3.2, 1.3, 0.2],
+  [0.3, 2.0, 0.5, 0.07],
+  [0.55, 0.9, 0.17, 0.04],
+  [0.8, 0.26, 0.07, 0.03],
+  [1, 0.09, 0.045, 0.035],
 ]
 const ramp = (t: number, out: Float32Array, o: number) => {
   let i = 1
@@ -381,7 +381,7 @@ export const createFx = (o: FxOpts): Fx => {
       flash.power = k
       flash.t = 0
       // the flash: one white-hot ball the size of a room, for two frames
-      emit(fire, at.x, at.y + 0.5, at.z, 0, 0, 0, 0.08, R * 0.2, R * 0.2, R * 0.2, 1.5, 1.5, 1.5, { grow: 1.3 })
+      emit(fire, at.x, at.y + 0.5, at.z, 0, 0, 0, 0.08, R * 0.2, R * 0.2, R * 0.2, 2.2, 2.2, 2.2, { grow: 1.3 })
       // the fireball: a cluster of blobs thrown out and dragged to a stop
       const blobs = Math.round(12 + 6 * k)
       for (let i = 0; i < blobs; i++) {

@@ -79,7 +79,7 @@ export const renderThumbnails = async (
     box.getBoundingSphere(sph)
     // three-quarter view from the front left and a little above, far enough
     // back that the bounding sphere fills most of the frame
-    const d = sph.radius / Math.sin(THREE.MathUtils.degToRad(cam.fov / 2)) * 0.92
+    const d = sph.radius / Math.sin(THREE.MathUtils.degToRad(cam.fov / 2)) * 1.04
     const dir = new THREE.Vector3(-0.62, 0.48, 0.62).normalize()
     cam.position.copy(sph.center).addScaledVector(dir, d)
     cam.lookAt(sph.center)

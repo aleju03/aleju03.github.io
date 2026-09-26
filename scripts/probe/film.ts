@@ -460,7 +460,7 @@ export const turntable = async (spec: TurntableSpec) => {
       st.cam.updateProjectionMatrix()
       const half = THREE.MathUtils.degToRad(st.cam.fov / 2)
       const fit = Math.min(half, Math.atan(Math.tan(half) * st.cam.aspect))
-      const d = (rad / Math.sin(fit)) * 0.98
+      const d = (rad / Math.sin(fit)) * 1.2
       const cy = y
       st.cam.position.set(st.c.x - d * 0.66, cy + d * 0.34, st.c.z + d * 0.67)
       st.cam.lookAt(st.c.x, cy, st.c.z)
