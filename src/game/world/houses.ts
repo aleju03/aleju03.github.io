@@ -3,7 +3,7 @@ import { noStand } from '../physics/collision'
 import { SURF, type SurfaceId } from './surface'
 import {
   CONE4, CYL8, CYL12, GLASS_DARK, GLASS_LIT, HIP, PRISM, SHED, TUBE12,
-  aabb, box, fork, frameOf, panel, pick, put, strut, type BuildOut, type Lot,
+  aabb, box, fork, frameOf, nudge, panel, pick, put, strut, type BuildOut, type Lot,
 } from './kitbash'
 
 /*
@@ -100,11 +100,6 @@ const BLOOMS = ['#b8474a', '#d88a3a', '#c9a2c8', '#e0d060', '#d8d8d0']
 /** what is parked in a drive */
 const CAR_PAINT = ['#8a2a24', '#2f4a6a', '#c8c4b8', '#3a3d40', '#6a7a4a', '#b8a060', '#5a5f66']
 
-const tint = new THREE.Color()
-/** a colour nudged by `k` (a few percent either way), multiplicatively, so a
-    dark trim cannot clamp to black the way an additive jitter would */
-const nudge = (hex: string, k: number) =>
-  `#${tint.set(hex).multiplyScalar(k).getHexString()}`
 
 /**
  * Everything a plan needs to stamp itself: the lot's frame with `mir` already

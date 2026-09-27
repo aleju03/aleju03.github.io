@@ -154,6 +154,13 @@ export const GLASS_DARK = '#2e3a44'
 /** and what a lit one reads as after dusk */
 export const GLASS_LIT = '#ffd9a0'
 
+const tint = new THREE.Color()
+/** a colour nudged by `k` (a few percent either way), multiplicatively, so a
+    dark stone or a dark trim cannot clamp to black the way an additive
+    jitter would */
+export const nudge = (hex: string, k: number) =>
+  `#${tint.set(hex).multiplyScalar(k).getHexString()}`
+
 /** pick from a palette with one roll */
 export const pick = <T>(list: T[], r: number) => list[Math.min(list.length - 1, Math.floor(r * list.length))]
 
