@@ -69,6 +69,8 @@ targets
                        and the old eye-scaled size next to it
   body:closeup         one body close: front, three-quarter, side and back
   body:wardrobe        every headgear once, close, over the builds and outfits
+  body:phones          the headset on every build under four headgears, from
+                       the front, where a cup off the head shows as daylight
   body:gear            the beaver and the headset: a beaver in a blue cap with
                        the headset over it four ways round, the headset over
                        every other headgear, and the three furs

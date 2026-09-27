@@ -842,6 +842,24 @@ const gear = (spec: BodySpec, snap: Snap) => {
   }
 }
 
+/** the headset on every build under four headgears (bare, the cap on a
+    beaver, the hood, the bucket hat), straight from the front, where a cup
+    standing off the head shows as daylight */
+const PHONES_HATS = [6, 1, 7, 2]
+const phonesSheet = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  for (const hat of PHONES_HATS) {
+    for (let build = 0; build < 5; build++) {
+      const look: PlayerLook = { ...OWNER_LOOK, hat, build, costume: hat === 1 ? BEAVER : 0, accent: hat === 1 ? '#2860c8' : '#e86810' }
+      const p = actor(st, look, st.x, st.z, 0)
+      for (let f = 0; f < 90; f++) tick(p, st.env)
+      snap(`hat ${hat} build ${build}`, camAt(tw, th, new THREE.Vector3(st.x, st.gy + 2.35, st.z), Math.PI - 0.12, 7, 0.5, 34))
+      st.scene.remove(p.rig.group)
+    }
+  }
+}
+
 /*
   Where the skin folds: a posed body with every triangle that faces against
   its own skinned vertex normals painted red over it (the same test
@@ -950,6 +968,7 @@ export const shootBody = (spec: BodySpec) => {
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
     if (a === 'wardrobe') return n + WARDROBE.length
     if (a === 'gear') return n + 4 + GEAR_LOOKS.length
+    if (a === 'phones') return n + 5 * PHONES_HATS.length
     return n
   }, 0)
   const motionOnly = spec.targets.every((t) => t.arg === 'motion' || t.arg?.startsWith('strip'))
@@ -1039,6 +1058,7 @@ export const shootBody = (spec: BodySpec) => {
     }
     else if (a === 'wardrobe') run(wardrobe)
     else if (a === 'gear') run(gear)
+    else if (a === 'phones') run(phonesSheet)
     else if (a.startsWith('folds')) run((sp, sn) => folds(sp, sn, Number(a.split(':')[1] ?? 0)))
     else throw new Error(`unknown body target "${a}"`)
   }

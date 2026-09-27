@@ -1013,7 +1013,7 @@ const hatBuild = (fr: Frame, kind: number): HatBuild => {
         gearPiece(fr, shell, lo, hi, A),
         gearPiece(fr, button, [-0.1, crown - 0.05, -0.1], [0.1, crown + 0.12, 0.1], T, undefined, 0.02),
         gearPiece(fr, brim, [-0.35, yc - 0.12, fz - 0.14], [0.35, yc + 0.14, fz + 0.5], A, undefined, 0.02),
-      ], (x, y, z) => Math.min(bean(x, y, z), shell(x, y, z), button(x, y, z)))
+      ], (x, y, z) => Math.min(bean(x, y, z), shell(x, y, z)))
     }
     case BUCKET: {
       // a bucket hat: a soft crown and a floppy brim tipped down all round,
@@ -1244,22 +1244,6 @@ const gradOf = (f: Field, x: number, y: number, z: number, out: THREE.Vector3): 
   ).normalize()
 }
 
-/** a rounded disc whose axis is x: radius `r`, from x0 to x1, its edges
-    rounded by `rr`. A cushion, a cup */
-const discX = (cy: number, cz: number, r: number, x0: number, x1: number, rr: number): Field => {
-  const cx = (x0 + x1) / 2
-  const ht = (x1 - x0) / 2
-  return (x, y, z) => {
-    const a = len(y - cy, z - cz) - (r - rr)
-    const b = Math.abs(x - cx) - (ht - rr)
-    return Math.min(Math.max(a, b), 0) + len(Math.max(a, 0), Math.max(b, 0)) - rr
-  }
-}
-
-/** a ring round the x axis at x = cx: radius `r`, tube `t` */
-const ringX = (cx: number, cy: number, cz: number, r: number, t: number): Field =>
-  (x, y, z) => len(len(y - cy, z - cz) - r, x - cx) - t
-
 /** a flat strap laid along a polyline in the plane z = z0: `ht` thick
     across the line and `hw` wide along z, its edges rounded by `rr` */
 const strap = (pts: Array<[number, number]>, z0: number, ht: number, hw: number, rr: number): Field => {
@@ -1309,45 +1293,6 @@ const boxOf = (pts: ReadonlyArray<{ x: number; y: number; z: number }>, pad: num
     hi[2] = Math.max(hi[2], p.z + pad)
   }
   return [lo, hi]
-}
-
-/** the convex hull of 2D points (Andrew's monotone chain), counter-clockwise */
-const hull2 = (src: Array<[number, number]>): Array<[number, number]> => {
-  const p = [...src].sort((a, b) => a[0] - b[0] || a[1] - b[1])
-  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
-    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-  const lower: Array<[number, number]> = []
-  for (const q of p) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop()
-    lower.push(q)
-  }
-  const upper: Array<[number, number]> = []
-  for (let i = p.length - 1; i >= 0; i--) {
-    const q = p[i]
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop()
-    upper.push(q)
-  }
-  lower.pop()
-  upper.pop()
-  return lower.concat(upper)
-}
-
-/** how far a ray from the origin travels before leaving a convex polygon
-    that contains it */
-const rayOut = (poly: Array<[number, number]>, dx: number, dy: number): number => {
-  let best = 0
-  for (let i = 0; i < poly.length; i++) {
-    const [px, py] = poly[i]
-    const [qx, qy] = poly[(i + 1) % poly.length]
-    const ex = qx - px
-    const ey = qy - py
-    const den = dx * ey - dy * ex
-    if (Math.abs(den) < 1e-9) continue
-    const t = (px * ey - py * ex) / den
-    const u = (px * dy - py * dx) / den
-    if (u >= -1e-6 && u <= 1 + 1e-6 && t > best) best = t
-  }
-  return best
 }
 
 const EMPTY_PIECE: Piece = {
@@ -1478,13 +1423,24 @@ const beaverPieces = (fr: Frame, hug: Field | null): PieceJob[] => {
 
   They are worn over whatever is on the head, and that is the whole
   problem, so nothing here is placed by hand. `hug` is the bean and the
-  hat's own outside (brims and all, never tails or cords); the cups sit
-  against its widest point over their footprint at ear height, and the
-  band is the convex hull of its outline in the band's plane, laid a strap's
-  thickness off it: over a cap it crosses the cap's crown and button, over a
-  hood the hood, over a bucket hat it rides out over the brim, and behind a
-  party hat (`bandZ`) rather than up round the cone. The mic's path is
-  pushed out of the same field so it never goes through a hood's rim.
+  hat's own outside (brims and all, never tails or cords):
+
+  - each cup is pressed onto it. The contact is where the surface is at ear
+    height, the cup's axis is the surface's normal there (so on a bean that
+    widens downward the cup tilts with the side of the head), and it is
+    then pushed in until the highest point of the surface under its
+    footprint is a centimetre into the cushion. A first version sat both
+    cups outside the widest point anywhere under them and floated a finger
+    off the head;
+  - the band is one smooth superellipse over the top, solved as the
+    tightest one that passes through a point just above each fork and
+    keeps every point of the outline above that height inside it, a
+    strap's thickness off. It follows a dome or a cap's crown and runs
+    straight into the sliders, which carry its tangent on down to the fork.
+    A first version laid the band on the convex hull of the outline, and
+    with a cap's button on top that hull was a triangle. Over a brim or a
+    hard hat's rim, where no such curve passes through the fork, the band
+    comes down outside the brim and the sliders bend in under it.
 
   Every vertex is weighted to the head bone outright: a headset is rigid,
   and skinned to the neck under its lower rim the cups sheared on a nod.
@@ -1494,8 +1450,14 @@ const phonesPieces = (fr: Frame, hug: Field, bandZ: number): PieceJob[] => {
   const zC = -0.02
   /** the cups' radius */
   const R = 0.2
-  /** how far the band's middle lies off whatever it rests on */
-  const CLEAR = 0.04
+  /** how far the band's centre line lies off whatever it rests on */
+  const CLEAR = 0.045
+  /** the band's superellipse exponent: a little squarer than an ellipse,
+      the way a skull and a cap's crown are */
+  const EXP = 2.4
+  /** where along the cup's axis the fork holds it, and the fork's radius */
+  const UM = 0.11
+  const RY = R + 0.032
   const K = 40
   const H = B.HEAD
   interface Rig {
@@ -1504,93 +1466,152 @@ const phonesPieces = (fr: Frame, hug: Field, bandZ: number): PieceJob[] => {
     bandBox: Box
     sliders: Field
     sliderBox: Box
-    xin: number
-    xo: number
-    xm: number
-    Ry: number
+    cup: Field
+    metal: Field
+    cupBox: Box
     mic: Field
     micBox: Box
   }
   return lazyJobs<Rig>(8, function* () {
-    // the cups' inner face: the widest the head (and hat) get over their footprint
-    let xin = 0
+    // the cup: where the side of the head is at ear height, and which way
+    // it faces there. A cup rolls and yaws only so far with it
+    const xs = outermost(hug, 0, yC, zC, 1, 0, 0, 1.4)
+    const n = gradOf(hug, xs, yC, zC, new THREE.Vector3())
+    n.x = Math.max(n.x, 0.84)
+    n.normalize()
+    const e1 = new THREE.Vector3(0, 1, 0).addScaledVector(n, -n.y).normalize()
+    const e2 = new THREE.Vector3().crossVectors(n, e1)
+    const P = new THREE.Vector3(xs, yC, zC)
+    // how far the surface under the footprint stands proud of the plane
+    // through the contact: the cushion is pressed in past the highest of it
+    let proud = 0
+    const O = new THREE.Vector3()
     for (let i = -2; i <= 2; i++) {
       for (let j = -2; j <= 2; j++) {
-        const dy = (i / 2) * R * 0.85
-        const dz = (j / 2) * R * 0.85
-        if (dy * dy + dz * dz > (R * 0.9) ** 2) continue
-        for (const sx of [1, -1]) xin = Math.max(xin, outermost(hug, 0, yC + dy, zC + dz, sx, 0, 0, 1.4))
+        const v = (i / 2) * R * 0.9
+        const w = (j / 2) * R * 0.9
+        if (v * v + w * w > (R * 0.9) ** 2) continue
+        O.copy(P).addScaledVector(e1, v).addScaledVector(e2, w).addScaledVector(n, -0.5)
+        const r = outermost(hug, O.x, O.y, O.z, n.x, n.y, n.z, 1)
+        if (r > 0) proud = Math.max(proud, r - 0.5)
       }
       yield
     }
-    xin += 0.012
-    const xo = xin + 0.17
-    const xm = xin + 0.11
-    const Ry = R + 0.032
-    const Ty = yC + Ry
-    // the outline of the head and hat in the band's plane, over the top
+    const C0 = P.clone().addScaledVector(n, proud - 0.012)
+    const T = C0.clone().addScaledVector(n, UM).addScaledVector(e1, RY)
+
+    // the outline of the head and hat in the band's plane, a strap's
+    // clearance out, above where the band ends
+    const Ey = T.y + 0.08 - yC
     const pts: Array<[number, number]> = []
-    for (let a = -84; a <= 84; a += 4) {
-      const ph = (a * Math.PI) / 180
+    for (let d = -87; d <= 87; d += 3) {
+      const ph = (d * Math.PI) / 180
       const dx = Math.sin(ph)
       const dy = Math.cos(ph)
       let r = 0
       for (const dz of [-0.07, 0, 0.07]) r = Math.max(r, outermost(hug, 0, yC, bandZ + dz, dx, dy, 0))
-      pts.push([dx * r, dy * r])
-      if (a % 16 === 0) yield
+      r += CLEAR
+      if (dy * r >= Ey - 0.02) pts.push([Math.abs(dx * r), dy * r])
+      if (d % 15 === 0) yield
     }
-    // the band comes down to just over each fork, and the hull closes under
-    // the centre so the centre is inside it
-    const Ax = xm - CLEAR
-    const Ay = Ty + 0.09 - yC
-    pts.push([Ax, Ay], [-Ax, Ay], [0, -0.3])
-    const hull = hull2(pts)
-    const phA = Math.atan2(Ax, Ay)
-    const rs: number[] = []
-    const phs: number[] = []
-    for (let k = 0; k <= K; k++) {
-      const ph = -phA + (2 * phA * k) / K
-      phs.push(ph)
-      rs.push(rayOut(hull, Math.sin(ph), Math.cos(ph)) + CLEAR)
-    }
-    // a light smoothing that may only move the band outward
-    const sm = rs.map((r, k) => {
-      let s = 0
-      let n = 0
-      for (let q = -2; q <= 2; q++) {
-        const i = k + q
-        if (i < 0 || i > K) continue
-        s += rs[i]
-        n++
+    const sup = (x: number, a: number) => Math.pow(Math.max(1e-9, 1 - Math.pow(x / a, EXP)), 1 / EXP)
+    const bMin = (a: number) => {
+      let b = 0
+      for (const [px, py] of pts) {
+        if (px >= a) return Infinity
+        b = Math.max(b, py / sup(px, a))
       }
-      return Math.max(r, s / n)
+      return b
+    }
+    // the flattest band through (ex, Ey) that still clears the outline
+    const solve = (ex: number) => {
+      let best: [number, number] | null = null
+      for (let a = ex + 0.004; a < ex + 1.2; a += 0.004) {
+        const b = Ey / sup(ex, a)
+        if (b >= bMin(a)) best = [a, b]
+        else if (best) break
+      }
+      return best
+    }
+    let ex = T.x
+    let fit = solve(ex)
+    if (!fit) {
+      // a brim or a rim in the way: come down outside it
+      for (const [px, py] of pts) if (py <= Ey + 0.14) ex = Math.max(ex, px + 0.01)
+      fit = solve(ex) ?? [ex + 0.1, bMin(ex + 0.1)]
+    }
+    const [a, b] = fit
+    const te = Math.acos(Math.min(1, Math.pow(Ey / b, EXP / 2)))
+    const at = (t: number): [number, number] => [
+      a * Math.sign(Math.sin(t)) * Math.pow(Math.abs(Math.sin(t)), 2 / EXP),
+      yC + b * Math.pow(Math.abs(Math.cos(t)), 2 / EXP),
+    ]
+    const line: Array<[number, number]> = []
+    for (let k = 0; k <= K; k++) line.push(at(-te + (2 * te * k) / K))
+    // the stripe along its spine, off the band's middle stretch
+    const spine = line.slice(Math.round(K * 0.14), Math.round(K * 0.86) + 1).map(([x, y]): [number, number] => {
+      const rx = x
+      const ry = y - yC
+      const l = Math.hypot(rx, ry) || 1
+      return [x + (rx / l) * 0.03, y + (ry / l) * 0.03]
     })
-    const line = phs.map((ph, k): [number, number] => [Math.sin(ph) * sm[k], yC + Math.cos(ph) * sm[k]])
-    const spine = phs
-      .map((ph, k): [number, number] => [Math.sin(ph) * (sm[k] + 0.03), yC + Math.cos(ph) * (sm[k] + 0.03)])
-      .slice(Math.round(K * 0.14), Math.round(K * 0.86) + 1)
     const band = strap(line, bandZ, 0.036, 0.078, 0.026)
     const stripe = strap(spine, bandZ, 0.012, 0.022, 0.01)
-    const topY = Math.max(...line.map((p) => p[1]))
-    const bx = Math.max(...line.map((p) => Math.abs(p[0])))
-    const bandBox: Box = [[-bx - 0.12, yC - 0.05, bandZ - 0.14], [bx + 0.12, topY + 0.1, bandZ + 0.14]]
-    // the sliders, from each end of the band down to the top of its fork,
-    // with a block where they leave the band
-    const ends = [line[0], line[K]].map(([x, y]) => new THREE.Vector3(x, y, bandZ))
-    const tops = ends.map((e) => new THREE.Vector3(Math.sign(e.x) * xm, Ty, zC))
-    const rods = ends.map((e, i) => roundCone(e.x, e.y + 0.02, e.z, tops[i].x, tops[i].y, tops[i].z, 0.026, 0.024))
-    const blocks = ends.map((e) => ellipsoid(e.x, e.y, e.z, 0.045, 0.055, 0.052))
+    const bandBox: Box = [[-a - 0.15, yC + Ey - 0.15, bandZ - 0.14], [a + 0.15, yC + b + 0.12, bandZ + 0.14]]
+
+    // the sliders carry the band's own tangent on down to the top of the
+    // fork: a curve, not a rod stuck on at an angle
+    const E = new THREE.Vector3(line[K][0], line[K][1], bandZ)
+    const tan = new THREE.Vector3(line[K][0] - line[K - 1][0], line[K][1] - line[K - 1][1], 0).normalize()
+    const Q = E.clone().addScaledVector(tan, 0.45 * E.distanceTo(T))
+    const rod: THREE.Vector3[] = []
+    for (let k = 0; k <= 8; k++) {
+      const t = k / 8
+      rod.push(new THREE.Vector3()
+        .addScaledVector(E, (1 - t) * (1 - t)).addScaledVector(Q, 2 * t * (1 - t)).addScaledVector(T, t * t))
+    }
+    const slider = tube(rod, 0.024)
+    const block = ellipsoid(E.x, E.y, E.z, 0.04, 0.05, 0.05)
     const sliders: Field = (x, y, z) =>
-      Math.min(rods[0](x, y, z), rods[1](x, y, z), blocks[0](x, y, z), blocks[1](x, y, z))
-    const sliderBox = boxOf([...ends, ...tops], 0.1)
+      Math.min(slider(x, y, z), slider(-x, y, z), block(x, y, z), block(-x, y, z))
+    const sliderBox = boxOf([E, T, Q, new THREE.Vector3(-E.x, E.y, E.z), new THREE.Vector3(-T.x, T.y, T.z)], 0.1)
+
+    // the cup, in its own frame: u along the axis from the contact, v up
+    // the side of the head, w forward
+    const loc = (x: number, y: number, z: number): [number, number, number] => {
+      const px = x - C0.x
+      const py = y - C0.y
+      const pz = z - C0.z
+      return [px * n.x + py * n.y + pz * n.z, px * e1.x + py * e1.y + pz * e1.z, px * e2.x + py * e2.y + pz * e2.z]
+    }
+    const disc = (u: number, v: number, w: number, r: number, u0: number, u1: number, rr: number) => {
+      const p = len(v, w) - (r - rr)
+      const q = Math.abs(u - (u0 + u1) / 2) - ((u1 - u0) / 2 - rr)
+      return Math.min(Math.max(p, q), 0) + len(Math.max(p, 0), Math.max(q, 0)) - rr
+    }
+    const cup: Field = (x, y, z) => {
+      const [u, v, w] = loc(x, y, z)
+      return Math.min(disc(u, v, w, R, 0, 0.08, 0.035), disc(u, v, w, R - 0.018, 0.06, 0.17, 0.05))
+    }
+    const metal: Field = (x, y, z) => {
+      const [u, v, w] = loc(x, y, z)
+      const rho = len(v, w)
+      const ring = len(rho - 0.128, u - 0.162) - 0.018
+      const logo = (len((u - 0.166) / 0.016, v / 0.042, w / 0.03) - 1) * 0.016
+      const arc = smax(len(rho - RY, u - UM) - 0.022, -0.005 - v, 0.01)
+      const piv = Math.min(len(u - UM, v, w - RY), len(u - UM, v, w + RY)) - 0.034
+      return Math.min(ring, logo, arc, piv)
+    }
+    const cupBox = boxOf([C0, C0.clone().addScaledVector(n, 0.2)], RY + 0.08)
     yield
+
     // the boom: out of the front of the left cup, down and forward to the
     // corner of the mouth, pushed clear of anything it would pass through
     const tipY = yC - 0.19
     const tipX = 0.3
     const tip = new THREE.Vector3(tipX, tipY, outermost(hug, tipX, tipY, 0, 0, 0, 1, 1.4) + 0.11)
-    const P0 = new THREE.Vector3(xin + 0.12, yC - 0.09, zC + 0.1)
-    const P1 = new THREE.Vector3(xo + 0.03, yC - 0.3, zC + 0.3)
+    const P0 = C0.clone().addScaledVector(n, 0.12).addScaledVector(e1, -0.09).addScaledVector(e2, 0.1)
+    const P1 = C0.clone().addScaledVector(n, 0.2).addScaledVector(e1, -0.3).addScaledVector(e2, 0.3)
     const path: THREE.Vector3[] = []
     const g = new THREE.Vector3()
     for (let k = 0; k <= 10; k++) {
@@ -1610,37 +1631,20 @@ const phonesPieces = (fr: Frame, hug: Field, bandZ: number): PieceJob[] => {
     const boom = tube(path, 0.02)
     const foam = ellipsoid(end.x, end.y, end.z, 0.055, 0.05, 0.058)
     const mic: Field = (x, y, z) => smin(boom(x, y, z), foam(x, y, z), 0.02)
-    return { band, stripe, bandBox, sliders, sliderBox, xin, xo, xm, Ry, mic, micBox: boxOf(path, 0.1) }
+    return { band, stripe, bandBox, sliders, sliderBox, cup, metal, cupBox, mic, micBox: boxOf(path, 0.1) }
   }, (r, i) => {
-    const cupBox = (s: number): Box => {
-      const x0 = r.xin - 0.04
-      const x1 = r.xo + 0.04
-      return [
-        [s > 0 ? x0 : -x1, yC - r.Ry - 0.08, zC - r.Ry - 0.08],
-        [s > 0 ? x1 : -x0, yC + r.Ry + 0.08, zC + r.Ry + 0.08],
-      ]
-    }
-    // one side's cup, drawn for +x; the other side reads it mirrored
-    const cushion = discX(yC, zC, R, r.xin, r.xin + 0.08, 0.035)
-    const shell = discX(yC, zC, R - 0.018, r.xin + 0.06, r.xo, 0.05)
-    const black: Field = (x, y, z) => Math.min(cushion(x, y, z), shell(x, y, z))
-    const ring = ringX(r.xo - 0.008, yC, zC, 0.128, 0.018)
-    const logo = ellipsoid(r.xo - 0.004, yC, zC, 0.016, 0.042, 0.03)
-    const arc: Field = (x, y, z) =>
-      smax(len(len(y - yC, z - zC) - r.Ry, x - r.xm) - 0.022, yC - 0.005 - y, 0.01)
-    const pivots = [1, -1].map((s) => ellipsoid(r.xm, yC, zC + s * r.Ry, 0.034, 0.034, 0.034))
-    const metal: Field = (x, y, z) =>
-      Math.min(ring(x, y, z), logo(x, y, z), arc(x, y, z), pivots[0](x, y, z), pivots[1](x, y, z))
+    // the right cup is the left one read mirrored
+    const mirror = (bx: Box): Box => [[-bx[1][0], bx[0][1], bx[0][2]], [-bx[0][0], bx[1][1], bx[1][2]]]
     const M = ROLE.PHONES_METAL
     const P = ROLE.PHONES
     switch (i) {
       case 0: return gearPiece(fr, r.band, r.bandBox[0], r.bandBox[1], P, undefined, 0.026, H)
       case 1: return gearPiece(fr, r.stripe, r.bandBox[0], r.bandBox[1], M, undefined, 0.012, H)
       case 2: return gearPiece(fr, r.sliders, r.sliderBox[0], r.sliderBox[1], M, undefined, 0.018, H)
-      case 3: return gearPiece(fr, black, ...cupBox(1), P, undefined, 0.026, H)
-      case 4: return gearPiece(fr, (x, y, z) => black(-x, y, z), ...cupBox(-1), P, undefined, 0.026, H)
-      case 5: return gearPiece(fr, metal, ...cupBox(1), M, undefined, 0.015, H)
-      case 6: return gearPiece(fr, (x, y, z) => metal(-x, y, z), ...cupBox(-1), M, undefined, 0.015, H)
+      case 3: return gearPiece(fr, r.cup, r.cupBox[0], r.cupBox[1], P, undefined, 0.026, H)
+      case 4: return gearPiece(fr, (x, y, z) => r.cup(-x, y, z), ...mirror(r.cupBox), P, undefined, 0.026, H)
+      case 5: return gearPiece(fr, r.metal, r.cupBox[0], r.cupBox[1], M, undefined, 0.015, H)
+      case 6: return gearPiece(fr, (x, y, z) => r.metal(-x, y, z), ...mirror(r.cupBox), M, undefined, 0.015, H)
       default: return gearPiece(fr, r.mic, r.micBox[0], r.micBox[1], P, undefined, 0.016, H)
     }
   })
