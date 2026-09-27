@@ -2572,8 +2572,7 @@ export default function CrtScene({
         const nearSphere = new THREE.Sphere()
         const nearMeshes: THREE.Mesh[] = []
         let earthGround: THREE.Object3D | null = null
-        const portalMeshes = (at: THREE.Vector3, r: number): readonly THREE.Mesh[] => {
-          earthGround ??= scene?.getObjectByName('earth-ground') ?? null
+        const meshesUnder = (roots: THREE.Object3D[], at: THREE.Vector3, r: number): readonly THREE.Mesh[] => {
           nearMeshes.length = 0
           const visit = (obj: THREE.Object3D) => {
             if (!obj.visible) return
@@ -2590,13 +2589,19 @@ export default function CrtScene({
             }
             for (const c of obj.children) visit(c)
           }
-          // (a hidden root is skipped by `visit`: the Moon's ground is only
-          // there to shoot at while you stand on it)
-          if (levels.current.house) visit(house.root)
-          if (earthGround && levels.current.outdoors) visit(earthGround)
-          const moonGround = outside.moonPortal.root()
-          if (moonGround && levels.current.outdoors) visit(moonGround)
+          for (const root of roots) visit(root)
           return nearMeshes
+        }
+        const portalMeshes = (at: THREE.Vector3, r: number): readonly THREE.Mesh[] => {
+          earthGround ??= scene?.getObjectByName('earth-ground') ?? null
+          // (a hidden root is skipped: the Moon's ground is only there to
+          // shoot at while you stand on it)
+          const roots: THREE.Object3D[] = []
+          if (levels.current.house) roots.push(house.root)
+          if (earthGround && levels.current.outdoors) roots.push(earthGround)
+          const moonGround = outside.moonPortal.root()
+          if (moonGround && levels.current.outdoors) roots.push(moonGround)
+          return meshesUnder(roots, at, r)
         }
         /*
           The furnished house's own meshes along a portal shot (its doors,
@@ -2611,8 +2616,9 @@ export default function CrtScene({
           for (let q: THREE.Object3D | null = o; q; q = q.parent) if (!q.visible) return false
           return true
         }
-        const portalHouseHit = (o: THREE.Vector3, d: THREE.Vector3, max: number) => {
-          if (!levels.current.house) return null
+        const portalHouseHit = (o: THREE.Vector3, d: THREE.Vector3, max: number) =>
+          levels.current.house ? houseHitAny(o, d, max) : null
+        const houseHitAny = (o: THREE.Vector3, d: THREE.Vector3, max: number) => {
           houseRay.set(o, d)
           houseRay.near = 0
           houseRay.far = max
@@ -2667,8 +2673,36 @@ export default function CrtScene({
         /** a portal shot into the open sky: the Moon, if it is under the ray
             (sandbox/tools/portalMoon.ts) */
         const portalSky = (color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3): boolean => {
+          // from the Moon, the Earth hanging in its sky
+          if (portalMoon?.onEarth(dir)) return portalEarthShot(color)
           if (!portalMoon?.sky(color, eye, dir)) return false
           pushFeed({ tone: 'ok', text: bilingual('a portal on the Moon', 'un portal en la Luna') })
+          return true
+        }
+        /*
+          A shot at the Earth from the Moon opens on the Earth at a fixed
+          spot, the left leaf of the garage door at home, fitted by the gun's
+          own fit against the house (which stands in the scene whichever
+          level is live), then photographed for the Moon side's view.
+        */
+        const EARTH_SPOT_EYE = new THREE.Vector3(9.25, 3.84, -9)
+        const EARTH_SPOT_AT = new THREE.Vector3(9.25, 2.35, -1.75)
+        const portalEarthShot = (color: PortalColor): boolean => {
+          const earth = homeLevels.find((l) => l.house)
+          if (!tools || !portalMoon || !earth) return false
+          const dir = EARTH_SPOT_AT.clone().sub(EARTH_SPOT_EYE).normalize()
+          const shot = tools.portals.fire(color, EARTH_SPOT_EYE, dir, {
+            level: earth.id, collision: earth.collision, groundAt: earth.groundYAt, groundY: earth.groundY,
+            waterY: earth.waterY, sandbox: sandboxes.get(earth.id)?.sb ?? null,
+            meshesNear: (at, r) => meshesUnder([house.root], at, r),
+            drawnHit: (o, d, max) => houseHitAny(o, d, max),
+          })
+          const p = tools.portals.list[color]
+          if (!shot.ok || !p) return false
+          // (taken from the Moon, the Earth's side is lit by the Moon's sun:
+          // no lift, whatever time it is at home)
+          portalMoon.snapshotFrom(p, scene, 1)
+          pushFeed({ tone: 'ok', text: bilingual('a portal on the Earth: the garage door at home', 'un portal en la Tierra: la puerta del garaje de casa') })
           return true
         }
         /** a pair spanning two levels: the Earth's side photographed on the

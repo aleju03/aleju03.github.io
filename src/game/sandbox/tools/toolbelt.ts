@@ -305,6 +305,11 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     portalSfx?.shot(color)
     const w = o.portalWorld?.()
     if (!w) return
+    // a body in the sky under the crosshair (the Moon by night, the Earth
+    // from the Moon) takes the shot first, if nothing solid is near
+    // in front of it: the ground a long way behind a disc is not the target
+    if (!sb.raycast(input.aim.eye, input.aim.dir, 60, { props: true, world: true }) &&
+      o.portalElsewhere?.(color, input.aim.eye, input.aim.dir)) return
     const shot = portals.fire(color, input.aim.eye, input.aim.dir, w)
     // nothing solid down the ray: the sky may have somewhere to put it
     if (!shot.ok && shot.reason === 'miss' && !o.portalElsewhere?.(color, input.aim.eye, input.aim.dir)) {

@@ -2325,6 +2325,74 @@ try {
         await sleep(1500)
         console.log(`  home: level ${await evaluate('window.__levels.current.id')}, at ${f1(await here())}`)
         await pShot('moon-4-home')
+
+        /* Back to the Moon the same way, and there: a pair on the Moon's
+           own ground seeing through each other, then a shot at the Earth
+           hanging in the sky, which must open on the Earth (the garage door
+           at home), walked through and back */
+        await phase('moon: again')
+        await face(blue, 5, null)
+        const n2 = await evaluate('window.__portalWalk.last.count')
+        await hold('KeyW', true)
+        await waitFor(() => evaluate(`window.__portalWalk.last.count > ${n2}`), 80, 100, 'into blue again').catch(() => {})
+        await hold('KeyW', false)
+        await sleep(1500)
+        console.log(`  back on the Moon: level ${await evaluate('window.__levels.current.id')}`)
+        await phase('moon: a pair on the Moon')
+        await evaluate('window.__tools.portals.close(); true')
+        const mc = await here()
+        await tpFeet(mc[0] - 14, mc[2], await evaluate(`window.__levels.current.groundYAt(${mc[0] - 14}, ${mc[2]})`) + 0.1, Math.PI / 2)
+        await sleep(1200)
+        // blue on the ground a few units ahead, orange further on
+        await look(Math.PI / 2, -0.75)
+        await click('Mouse0')
+        await look(Math.PI / 2, -0.28)
+        await click('Mouse2')
+        const mp = await evaluate(`[0, 1].map((c) => { const p = window.__tools.portals.list[c]; return p ? [p.level, p.pos.toArray().map((n) => +n.toFixed(1)), p.n.toArray().map((n) => +n.toFixed(2))] : null })`)
+        console.log(`  on the Moon's ground: blue ${JSON.stringify(mp[0])}, orange ${JSON.stringify(mp[1])}${mp[0] && mp[1] ? '' : '  (why: ' + await evaluate('window.__tools.portals.why') + ')'}`)
+        if (mp[0] && mp[1]) {
+          // look into blue from beside it: through it, up out of orange
+          await look(Math.PI / 2, -0.95)
+          await sleep(900)
+          console.log(`  looking into blue: ${await evaluate('window.__tools.portalView.stats.passes')} live view(s)`)
+          await pShot('moon-5-pair-on-the-moon')
+          await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+          await look(Math.PI / 2, -0.5)
+          await sleep(1200)
+          await pShot('moon-5b-pair-on-the-moon-third')
+          await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+        }
+        await phase('moon: the Earth')
+        const ed = await evaluate(`(() => { const v = window.__sandboxCamera.position.clone(); const r = window.__outside.moonPortal.skyEarth(v); return r > 0 ? v.toArray() : null })()`)
+        if (!ed) console.log('  no Earth in the sky  <-- WRONG')
+        else {
+          await look(Math.atan2(-ed[0], -ed[2]), Math.asin(ed[1]))
+          await sleep(500)
+          await click('Mouse0')
+          const eb = await evaluate('(() => { const p = window.__tools.portals.list[0]; return p ? [p.level, p.pos.toArray().map((n) => +n.toFixed(1))] : null })()')
+          console.log(`  blue fired at the Earth: ${eb ? JSON.stringify(eb) : 'nothing  <-- WRONG'} (${await evaluate('window.__tools.portals.why')})`)
+          const op = await evaluate(`(() => { const p = window.__tools.portals.list[1]; return p ? { pos: p.pos.toArray(), n: p.n.toArray() } : null })()`)
+          if (eb && op) {
+            // orange (on the Moon's ground) shows the Earth's snapshot
+            await tpFeet(op.pos[0] - 5, op.pos[2] + 1, await evaluate(`window.__levels.current.groundYAt(${op.pos[0] - 5}, ${op.pos[2] + 1})`) + 0.1, 0)
+            await sleep(1000)
+            {
+              const c = await here()
+              await look(Math.atan2(-(op.pos[0] - c[0]), -(op.pos[2] - c[2])), Math.atan2(op.pos[1] - c[1], Math.hypot(op.pos[0] - c[0], op.pos[2] - c[2])))
+            }
+            await sleep(800)
+            await pShot('moon-6-earth-through-orange')
+            // and into it: a floor portal on the Moon, out of the garage door
+            const n3 = await evaluate('window.__portalWalk.last.count')
+            await tpFeet(op.pos[0], op.pos[2], op.pos[1] + 5, 0)
+            await waitFor(() => evaluate(`window.__portalWalk.last.count > ${n3}`), 80, 100, 'into orange on the Moon').catch(() => {})
+            await sleep(1600)
+            console.log(`  through orange: level ${await evaluate('window.__levels.current.id')}, at ${f1(await here())}`)
+            await look(Math.PI, 0.05)
+            await sleep(900)
+            await pShot('moon-7-out-of-the-garage-door')
+          }
+        }
       }
     }
     if (blue && orange) {

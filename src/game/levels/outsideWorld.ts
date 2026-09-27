@@ -216,6 +216,12 @@ export interface OutsideHandles {
         hung in its sky). Returns the undressing, or null when it cannot be
         done here (up in the sky, where the globes are the sky's own) */
     dress: (cam: THREE.Vector3) => (() => void) | null
+    /** on the Moon: the Earth hanging in its sky, its direction into
+        `out`, and its angular radius (0 when there is no Earth to aim at) */
+    skyEarth: (out: THREE.Vector3) => number
+    /** on the Moon, for one photograph of the Earth's side: its streamed
+        ground shown and the Moon's put away. Returns the undressing */
+    dressEarth: () => (() => void) | null
   }
   /** cut up to two ovals out of the grass and the wildflowers (open floor
       portals): centre and the two half-axes, world units. An empty list
@@ -760,6 +766,23 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   }
   const MOON_SUN_COLOR = new THREE.Color('#fff2dc')
   const moonPortal: OutsideHandles['moonPortal'] = {
+    skyEarth: (out) => {
+      if (venue !== 'moon' || !w || !w.globes.earthReady) return 0
+      out.copy(landing.earthDir).normalize()
+      return Math.asin(Math.min(0.99, EARTH_R / landing.earthDist))
+    },
+    dressEarth: () => {
+      if (venue !== 'moon' || !w) return null
+      const root = w.moon.root
+      const rootShown = root.visible
+      const groundShown = groundRoot.visible
+      root.visible = false
+      groundRoot.visible = true
+      return () => {
+        root.visible = rootShown
+        groundRoot.visible = groundShown
+      }
+    },
     skyMoon: (out) => {
       if (venue !== 'earth' || !w || moonAt.on || view.space > 0.12) return false
       sky.moonDir(out)

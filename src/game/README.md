@@ -1412,6 +1412,19 @@ drawn through this world's machinery:
   and its headlamp leave it alone (the headlamp read the sunlit regolith as
   albedo and burned it white). The view back from the Moon is a snapshot,
   lifted by how dark the night it was taken in was.
+- **And the Earth from the Moon.** On the Moon a shot at the Earth hanging
+  in its sky opens on a fixed spot at home, the left leaf of the garage door
+  (fitted by the gun's own fit against the house, which stands in the scene
+  whichever level is live; the painted globe is not mapped back to planet
+  coordinates). Its view from the Moon is a snapshot taken at once, lit by
+  the Moon's sun under a black sky, and replaced by a proper one the first
+  time you step through from the Earth. A sky body is checked before the
+  world, so a shot on a disc with nothing solid within 60 units opens there
+  rather than on ground far behind it, and a shot at empty sky fizzles.
+  A pair on the Moon's own ground works like any other; two floor portals
+  look up out of each other into the Moon's black, starred sky, which is
+  what reads as black ovals. There are no portals in the backrooms, which
+  have no sandbox.
 - **Local only.** Portals are not on the wire; each player's pair is their
   own.
 
