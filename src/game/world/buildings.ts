@@ -2,6 +2,7 @@ import type { MeshBuilder } from '../core/geometry'
 import { noStand } from '../physics/collision'
 import type { District } from './settlements'
 import type { InteriorRect } from './interiors'
+import { suburbHouse } from './houses'
 import { SURF, type SurfaceId } from './surface'
 import {
   BARREL, BODY, BOX, CONE4, CONE12, CYL12, GAMBREL, GLASS_DARK, PLANE, PRISM, TOWER,
@@ -1296,6 +1297,9 @@ export const shopFront = (out: BuildOut, lot: Lot) => {
   if (!out.detailed) {
     const h = floorY + SHOP_H - baseY
     box(out.solid, body, lot.x, baseY + h / 2, lot.z, W, h, D, 0, SURF.plaster)
+    // the roof slab, so the shell's roofline is the detailed shop's
+    box(out.solid, '#4a463f', lot.x, floorY + SHOP_H + 0.3, lot.z, W + 0.6, 0.6, D + 0.6, 0,
+      SURF.paving)
     out.boxes.push(noStand(aabb(lot.x, baseY - 2, lot.z,
       W / 2 + 0.2, floorY + SHOP_H, D / 2 + 0.2)))
     return
@@ -1554,3 +1558,37 @@ export const BLOCK_KIND_RATE = (district: District) =>
     it rolled wants a whole block rather than a share of one */
 export const isBlockKind = (k: BuildKind) =>
   k === 'warehouse' || k === 'chapel' || k === 'parking'
+
+/**
+ * Which kit a platted lot actually raises once the ground under it is known,
+ * or null for none: a footprint whose corners disagree by more than its
+ * plinth can hide builds nothing (a block-scale shell carries a deeper one,
+ * so it takes a bumpier site), and an enterable shop past a shin-and-a-bit of
+ * spread would need a staircase for a stoop, so it builds a shell instead.
+ * The chunk and the far field's impostors both ask here, so a lot the chunk
+ * turns into a mid-rise is a mid-rise from the air too.
+ */
+export const settleKind = (
+  kind: BuildKind, district: District, baseY: number, topY: number,
+): BuildKind | null => {
+  if (topY - baseY > (isBlockKind(kind) ? 3.0 : 2.2)) return null
+  if (kind === 'shop' && topY - baseY > 1.2) return district === 'suburb' ? 'house' : 'midrise'
+  return kind
+}
+
+/** raise `kind` on `lot`: the one dispatch every consumer of a lot goes
+    through, the chunk at every tier and the far field's impostors alike */
+export const raiseKind = (out: BuildOut, kind: BuildKind, lot: Lot) => {
+  switch (kind) {
+    case 'tower': tower(out, lot); break
+    case 'slab': slabTower(out, lot); break
+    case 'round': roundTower(out, lot); break
+    case 'midrise': midriseBlock(out, lot); break
+    case 'mixed': mixedUse(out, lot); break
+    case 'shop': shopFront(out, lot); break
+    case 'warehouse': warehouse(out, lot); break
+    case 'chapel': chapel(out, lot); break
+    case 'parking': parkingDeck(out, lot); break
+    default: suburbHouse(out, lot)
+  }
+}

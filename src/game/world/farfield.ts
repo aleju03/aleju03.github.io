@@ -1,9 +1,10 @@
 import * as THREE from 'three'
 import { CHUNK, OFF_X, OFF_Z, chunkX, chunkZ, originX, originZ } from './grid'
 import { groundSample, heightAt, SEA_Y } from './terrain'
-import { nearestTown, placeAt, townsNear, type District, type Town } from './settlements'
+import { nearestTown, placeAt, townsNear, type Town } from './settlements'
 import { liveOf, networkOf, parcelsInChunk, prepareTown, SPINE_REACH } from './streets'
-import type { BuildKind } from './buildings'
+import { settleKind } from './buildings'
+import { massOf, type Drum, type Stamp } from './massing'
 import { BIOMES, type BiomeId } from './biomes'
 import { hash2 } from './noise'
 import { FIELDS_GLSL } from './groundLook'
@@ -31,8 +32,11 @@ import { gfx } from './quality'
     the town's plan (streets.ts), and forests get a canopy of lit crowns,
     because the loaded ring's real trees stop three chunks out.
   - **towns** as impostors: every platted lot of every district, off the
-    same parcel list `chunk.ts`'s buildBlock builds from, as boxes with a
-    gable on a house, windows drawn by the shader and lit at night. Merged
+    same parcel list `chunk.ts`'s buildBlock builds from, each raised
+    through its own kit off its own stream and cut down to the volumes that
+    read at range (world/massing.ts), so a tower is the same tower, in the
+    same paint, from a kilometre off and from its lobby. Windows are drawn by
+    the shader on the bodies and lit at night. Merged
     into the tile's one geometry, so a tile is one draw. A tile grows the
     plans of the towns near it a slice at a time before it samples any
     height (streets.ts's prepareTown), so meeting a new city from the air
@@ -494,83 +498,93 @@ for (const [id, b] of Object.entries(BIOMES) as Array<[BiomeId, (typeof BIOMES)[
 
 /* ------------------------------------------------------------ impostors -- */
 
-const hex = (s: string) => new THREE.Color(s)
-const WALLS: Record<District, THREE.Color[]> = {
-  suburb: ['#d3ccbb', '#c4b595', '#b9aa92', '#a7b0ae', '#cdbf9f'].map(hex),
-  midrise: ['#8b5f48', '#9a7057', '#7f6b5c', '#a4937b', '#86776a'].map(hex),
-  downtown: ['#8a9298', '#727f8a', '#a3a49c', '#5f6d78', '#94907f'].map(hex),
-}
-const ROOFS: Record<District, THREE.Color[]> = {
-  suburb: ['#7a4331', '#5a4a44', '#6e6458', '#8a4c34', '#4f5358'].map(hex),
-  midrise: ['#4c4740', '#57524a', '#4a4f52'].map(hex),
-  downtown: ['#4a4f52', '#55585a', '#43403a'].map(hex),
-}
-
-const imp = new THREE.Color()
+const nm = new THREE.Matrix3()
+const pv = new THREE.Vector3()
+const nv = new THREE.Vector3()
+/** source vertex -> soup vertex, per stamp */
+const remap = new Int32Array(4096)
 
 /**
- * One building as far geometry: a box of walls, and either a flat roof or a
- * gable along its longer side.
+ * One kept stamp of a lot's massing (world/massing.ts) into the soup: the
+ * kit's own unit geometry, transformed exactly as the chunk stamps it, minus
+ * every face looking down. A body's walls are kind 1, so the shader draws its
+ * windows; everything else (roofs, plinths, a gable end) is kind 2, plain.
  */
-const building = (
-  s: Soup, level: number, x: number, z: number, w: number, d: number,
-  y0: number, h: number, gable: number, wall: THREE.Color, roof: THREE.Color,
-  office: number, seed: number,
-) => {
-  const x0 = x - w / 2
-  const x1 = x + w / 2
-  const z0 = z - d / 2
-  const z1 = z + d / 2
-  const y1 = y0 + h
-  imp.copy(wall)
-  // walls: kind 1, windows on them
-  s.quad([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], [0, 0, 1], imp, 1, level, office, seed)
-  s.quad([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], [0, 0, -1], imp, 1, level, office, seed)
-  s.quad([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], [1, 0, 0], imp, 1, level, office, seed)
-  s.quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], [-1, 0, 0], imp, 1, level, office, seed)
-  if (gable <= 0) {
-    s.quad([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], [0, 1, 0], roof, 2, level, 0, 0)
-    return
-  }
-  const alongX = w >= d
-  const ry = y1 + gable
-  if (alongX) {
-    const nz = gable / Math.hypot(gable, d / 2)
-    const ny = (d / 2) / Math.hypot(gable, d / 2)
-    s.quad([[x0, y1, z1], [x1, y1, z1], [x1, ry, z], [x0, ry, z]], [0, ny, nz], roof, 2, level, 0, 0)
-    s.quad([[x1, y1, z0], [x0, y1, z0], [x0, ry, z], [x1, ry, z]], [0, ny, -nz], roof, 2, level, 0, 0)
-    s.tri([[x1, y1, z1], [x1, y1, z0], [x1, ry, z]], [1, 0, 0], imp, 1, level)
-    s.tri([[x0, y1, z0], [x0, y1, z1], [x0, ry, z]], [-1, 0, 0], imp, 1, level)
-  } else {
-    const nx = gable / Math.hypot(gable, w / 2)
-    const ny = (w / 2) / Math.hypot(gable, w / 2)
-    s.quad([[x1, y1, z1], [x1, y1, z0], [x, ry, z0], [x, ry, z1]], [nx, ny, 0], roof, 2, level, 0, 0)
-    s.quad([[x0, y1, z0], [x0, y1, z1], [x, ry, z1], [x, ry, z0]], [-nx, ny, 0], roof, 2, level, 0, 0)
-    s.tri([[x0, y1, z1], [x1, y1, z1], [x, ry, z1]], [0, 0, 1], imp, 1, level)
-    s.tri([[x1, y1, z0], [x0, y1, z0], [x, ry, z0]], [0, 0, -1], imp, 1, level)
+const emitStamp = (s: Soup, level: number, st: Stamp, office: number, seed: number) => {
+  const g = st.geo
+  const pos = g.getAttribute('position')
+  const nor = g.getAttribute('normal')
+  const index = g.getIndex()
+  const n = index ? index.count : pos.count
+  nm.getNormalMatrix(st.m)
+  remap.fill(-1, 0, Math.min(pos.count, remap.length))
+  for (let t = 0; t + 2 < n; t += 3) {
+    const i0 = index ? index.getX(t) : t
+    const i1 = index ? index.getX(t + 1) : t + 1
+    const i2 = index ? index.getX(t + 2) : t + 2
+    // a face looking down is never seen from the air, and a box's is a sixth
+    // of it
+    nv.fromBufferAttribute(nor, i0).applyMatrix3(nm).normalize()
+    if (nv.y < -0.7) continue
+    for (const i of [i0, i1, i2]) {
+      if (i < remap.length && remap[i] >= 0) {
+        s.idx.push(remap[i])
+        continue
+      }
+      pv.fromBufferAttribute(pos, i).applyMatrix4(st.m)
+      nv.fromBufferAttribute(nor, i).applyMatrix3(nm).normalize()
+      const wall = st.body && Math.abs(nv.y) < 0.5
+      const o = s.count
+      s.vert(pv.x, pv.y, pv.z, nv.x, nv.y, nv.z, st.color, wall ? 1 : 2, level,
+        wall ? office : 0, wall ? seed : 0)
+      if (i < remap.length) remap[i] = o
+      s.idx.push(o)
+    }
   }
 }
 
-/** kit heights the lot's `height` does not describe */
-const shapeOf = (kind: BuildKind, height: number, w: number, d: number) => {
-  switch (kind) {
-    case 'house': return { h: 4.4, gable: Math.min(w, d) * 0.32 }
-    case 'shop': return { h: 6.2, gable: 0 }
-    case 'warehouse': return { h: 9, gable: Math.min(w, d) * 0.12 }
-    case 'chapel': return { h: 9.5, gable: Math.min(w, d) * 0.3 }
-    case 'parking': return { h: 12, gable: 0 }
-    default: return { h: Math.max(8, height), gable: 0 }
+/** a merged round tower: twelve walls with windows and a flat cap */
+const emitDrum = (s: Soup, level: number, dr: Drum, seed: number) => {
+  const K = 12
+  // a spire or a needle is not glazed; a drum a storey wide is
+  const glazed = dr.r0 >= 3
+  for (let k = 0; k < K; k++) {
+    const a0 = (k / K) * Math.PI * 2
+    const a1 = ((k + 1) / K) * Math.PI * 2
+    const am = (a0 + a1) / 2
+    const c0 = Math.cos(a0)
+    const s0 = Math.sin(a0)
+    const c1 = Math.cos(a1)
+    const s1 = Math.sin(a1)
+    s.quad([
+      [dr.x + c0 * dr.r0, dr.y0, dr.z + s0 * dr.r0],
+      [dr.x + c0 * dr.r1, dr.y1, dr.z + s0 * dr.r1],
+      [dr.x + c1 * dr.r1, dr.y1, dr.z + s1 * dr.r1],
+      [dr.x + c1 * dr.r0, dr.y0, dr.z + s1 * dr.r0],
+    ], [Math.cos(am), 0, Math.sin(am)], dr.color, glazed ? 1 : 2, level, glazed ? 1 : 0, glazed ? seed : 0)
   }
+  const o = s.count
+  s.vert(dr.x, dr.y1, dr.z, 0, 1, 0, dr.color, 2, level, 0, 0)
+  for (let k = 0; k < K; k++) {
+    const a = (k / K) * Math.PI * 2
+    s.vert(dr.x + Math.cos(a) * dr.r1, dr.y1, dr.z + Math.sin(a) * dr.r1, 0, 1, 0,
+      dr.color, 2, level, 0, 0)
+  }
+  for (let k = 0; k < K; k++) s.idx.push(o, o + 1 + ((k + 1) % K), o + 1 + k)
 }
+
+/** the smallest footprint an impostor ring keeps a stamp of: the nearest
+    ring keeps a bulkhead, the outer ones only what stands out of a block */
+const MIN_AREA = [5, 14, 30]
 
 /**
  * A chunk's buildings as impostors, off the same platted lots `chunk.ts`
- * builds (streets.ts's parcels, one list per town): the same footprint,
- * facing, kind and height, so the replay is exact by construction rather
- * than by re-drawing a seeded sequence in step. Only the ground under a
- * footprint is sampled differently (corners of the far terrain rather than
- * the chunk's lattice), so a lot on a slope the chunk refuses can still
- * stand here. From where anyone sees these, that is the same skyline.
+ * builds (streets.ts's parcels, one list per town), raised through the same
+ * kit off the same stream (world/massing.ts): the same kind, footprint,
+ * height, paint and roof, with only the detail dropped. Only the ground under
+ * a footprint is sampled differently (corners of the far terrain rather than
+ * the chunk's lattice), which can move a building by a fraction of a unit
+ * and never swap it.
  */
 const blockImpostors = (
   s: Soup, level: number, cx: number, cz: number, ground: (x: number, z: number) => number,
@@ -595,18 +609,19 @@ const blockImpostors = (
       // the second ring only keeps what stands up out of the ground colour
       if (level > 0 && district === 'suburb') continue
       if (level > 1 && district !== 'downtown') continue
-      const block = p.kind === 'warehouse' || p.kind === 'chapel' || p.kind === 'parking'
       const [y0, y1] = base(p.x, p.z, p.w, p.d)
-      if (y0 < SEA_Y + 1 || y1 - y0 > (block ? 3 : 2.2)) continue
-      const walls = WALLS[district]
-      const roofs = ROOFS[district]
-      const sh = shapeOf(p.kind, p.height, p.w, p.d)
-      const k = hash2(Math.round(p.x), Math.round(p.z), 0x51f3)
+      if (y0 < SEA_Y + 1) continue
+      const kind = settleKind(p.kind, district, y0, y1)
+      if (!kind) continue
+      const mass = massOf(kind, {
+        x: p.x, z: p.z, w: p.w, d: p.d, baseY: y0, topY: y1, height: p.height, face: p.face,
+      }, MIN_AREA[level] ?? 30)
+      const office = kind === 'tower' || kind === 'slab' || kind === 'round' ? 1 : 0
+      const seed = (hash2(Math.round(p.x), Math.round(p.z), 0x51f3) & 0xffff) / 97
       s.ownX = p.x
       s.ownZ = p.z
-      building(s, level, p.x, p.z, p.w, p.d, y0 - 0.5, sh.h + 0.5, sh.gable,
-        walls[k % walls.length], roofs[(k >>> 8) % roofs.length],
-        p.kind === 'house' ? 0 : district === 'suburb' ? 0 : 1, (k & 0xffff) / 97)
+      for (const st of mass.stamps) emitStamp(s, level, st, office, seed)
+      for (const dr of mass.drums) emitDrum(s, level, dr, seed)
       s.ownX = 1e9
       s.ownZ = 1e9
     }
@@ -780,8 +795,10 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
   if (level < IMPOSTOR_LEVELS) {
     for (let dz = 0; dz < per; dz++) {
       for (let dx = 0; dx < per; dx++) {
+        // a chunk's impostors run its kits, so a suburb chunk of twenty
+        // houses is its own slice
         blockImpostors(s, level, c0 + dx, d0 + dz, ground)
-        if ((dx & 3) === 3) yield
+        yield
       }
       yield
     }

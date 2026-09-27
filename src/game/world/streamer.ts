@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
 import { CHUNK, chunkX, chunkZ, OFF_Z, originX, originZ } from './grid'
 import {
-  buildChunk, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Tier,
+  buildChunk, spin, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Spinner, type Tier,
 } from './chunk'
 import { applyGroundLook, groundLookUniforms } from './groundLook'
 import { applyFadeIn, FADE_FRAG_ALPHA, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead } from './fade'
@@ -585,8 +585,12 @@ export function buildWorld(opts: Opts): WorldHandles {
     }
   }
 
+  /** every turning part in the loaded ring (a windmill's sails) */
+  const spinners = new Set<Spinner>()
+
   const drop = (c: Chunk) => {
     root.remove(c.group)
+    for (const sp of c.spinners) spinners.delete(sp)
     for (const g of c.geos) freeing.push(g)
     chunks.delete(key(c.cx, c.cz))
     solidAt.delete(key(c.cx, c.cz))
@@ -599,6 +603,10 @@ export function buildWorld(opts: Opts): WorldHandles {
     c.group.visible = chunksOn
     root.add(c.group)
     chunks.set(key(cx, cz), c)
+    for (const sp of c.spinners) {
+      spinners.add(sp)
+      spin(sp, windUniforms.uTime.value)
+    }
     const solid = fade && fade.from === undefined ? fade.at + FADE_S : -Infinity
     solidAt.set(key(cx, cz), solid)
     solidEpoch++
@@ -708,6 +716,9 @@ export function buildWorld(opts: Opts): WorldHandles {
 
   const update = (x: number, z: number, dt: number, alt = 0) => {
     tickWind(dt)
+    // off the wind's clock, so a chunk rebuilt on a tier change picks its
+    // sails up at the angle the old one left them
+    for (const sp of spinners) spin(sp, windUniforms.uTime.value)
     const moved = Number.isNaN(prevX) ? 0 : Math.hypot(x - prevX, z - prevZ)
     const speed = dt > 0 ? moved / dt : 0
     prevX = x

@@ -1033,6 +1033,7 @@ const ranch = (c: Ctx): Home => {
   if (rng() < 0.45) chimney(c, mu + mhu * 0.5, -hv * 0.5, y + h, y + h + rise + 1.2)
 
   const doorU = mu + mhu * 0.2 * (ell ? es : 1)
+  const carport = !ell && rng() < 0.5
   if (out.detailed) {
     frontDoor(c, doorU, hv * 0.9, y + 0.6)
     window_(c, mu - mhu * 0.42 * (ell ? es : 1), hv * 0.9, y + 3.3, 3.4, 1.9, 0, 1, litRate)
@@ -1052,15 +1053,19 @@ const ranch = (c: Ctx): Home => {
       const u = mu + (i / posts - 0.5) * (pw - 0.3)
       c.b(c.scheme.trim, u, hv * 0.9 + 2.8, y + 3.2, 0.26, 5.4, 0.26)
     }
-    if (!ell && dr() < 0.5) {
-      // a carport at the free end: posts and a flat deck
-      const s = -Math.sign(doorU || 1)
-      const cu = s * (hu + 2.6)
-      c.b(roofC, cu, hv * 0.2, y + 5.6, 5.4, 0.3, hv * 2.3, SURF.plank)
-      for (const q of [-1, 1]) c.b(c.scheme.trim, cu + s * 2.2, hv * 0.2 + q * hv, y + 2.8, 0.26, 5.6, 0.26)
-      c.solid(cu, hv * 0.2, 5.4, hv * 2.3, y + 5.6, y + 5.9)
-      garage = { u: cu, v: hv * 0.2 + hv, w: 5 }
-    }
+  }
+  if (carport) {
+    // a carport at the free end: posts and a flat deck. It is a shape, and
+    // it decides whether the yard adds a garage, so it is rolled off the
+    // lot's own stream and built at every tier: rolled off the dressing
+    // stream inside the detailed build, a ranch had a carport up close and a
+    // detached garage at the back from the outer ring
+    const s = -Math.sign(doorU || 1)
+    const cu = s * (hu + 2.6)
+    c.b(roofC, cu, hv * 0.2, y + 5.6, 5.4, 0.3, hv * 2.3, SURF.plank)
+    for (const q of [-1, 1]) c.b(c.scheme.trim, cu + s * 2.2, hv * 0.2 + q * hv, y + 2.8, 0.26, 5.6, 0.26)
+    c.solid(cu, hv * 0.2, 5.4, hv * 2.3, y + 5.6, y + 5.9)
+    garage = { u: cu, v: hv * 0.2 + hv, w: 5 }
   }
   return { y, hu, hv: HV, doorU, side: ell ? es : 1, garage }
 }

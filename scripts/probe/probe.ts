@@ -23,6 +23,8 @@ import type { SkyState } from '../../src/game/levels/sky'
 import { altitudeOf, domeScaleFor, fogForAltitude, viewFarFor } from '../../src/game/levels/altitude'
 import { windUniforms } from '../../src/game/world/wind'
 import { gfx } from '../../src/game/world/quality'
+import { buildMoon, moonGroundY } from '../../src/game/levels/moon'
+import { MOON_ORIGIN } from '../../src/game/levels/space'
 
 /*
   The world, rendered off to one side so it can be photographed.
@@ -62,7 +64,7 @@ export type Tod = number
 
 export interface Target {
   /** what to look at */
-  kind: 'at' | 'biome' | 'landmark' | 'town' | 'home'
+  kind: 'at' | 'biome' | 'landmark' | 'town' | 'home' | 'moon'
   arg?: string
   x?: number
   z?: number
@@ -170,6 +172,11 @@ const search = (
 
 const resolve = (t: Target): { x: number; z: number; label: string } => {
   if (t.kind === 'home') return { x: 0, z: 34, label: 'home' }
+  if (t.kind === 'moon') {
+    // moon:<dx>,<dz> off the landing site (moon:0,0 is the pad itself)
+    const [dx, dz] = (t.arg ?? '0,0').split(',').map(Number)
+    return { x: MOON_ORIGIN.x + (dx || 0), z: MOON_ORIGIN.z + (dz || 0), label: `moon:${dx || 0},${dz || 0}` }
+  }
   if (t.kind === 'at') return { x: t.x ?? 0, z: t.z ?? 0, label: `${t.x},${t.z}` }
   if (t.kind === 'biome') {
     const want = t.arg as BiomeId
@@ -617,6 +624,53 @@ const climbRow = (
   return out
 }
 
+/*
+  The Moon, as the 'moon' level draws it once you have landed: its ground
+  (levels/moon.ts) at its own origin in the scene, under the sky with space
+  turned all the way up (black, the day dome gone, the hemisphere light at
+  space's own), orbit or eye framing as for any other target.
+*/
+const moonTile = (
+  spec: ShotSpec, x: number, z: number, label: string, tw: number, th: number,
+  index: number, cols: number, height: number,
+): ShotResult => {
+  const r = renderer!
+  const scene = new THREE.Scene()
+  const moon = buildMoon({ parent: scene, obstacles: [], trackDisposable: noop })
+  moon.ensureBuilt()
+  moon.root.visible = true
+  const gy = moonGroundY(x, z)
+  const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.5, 6000)
+  const aim = new THREE.Vector3()
+  if (spec.eye) {
+    cam.position.set(x, gy + 3.55, z)
+    aim.set(x + Math.sin(spec.yaw) * 20, gy + 2.0, z + Math.cos(spec.yaw) * 20)
+  } else {
+    cam.position.set(x + Math.cos(spec.yaw) * spec.dist, gy + spec.height, z + Math.sin(spec.yaw) * spec.dist)
+    aim.set(x, gy + spec.height * 0.32, z)
+  }
+  cam.lookAt(aim)
+  const sky = buildSky({ parent: scene, trackTexture: noop, trackDisposable: noop })
+  sky.setScale(domeScaleFor(cam.far))
+  const st = sky.update(cam.position, spec.tod, 1, false)
+  sky.sun.shadow.needsUpdate = true
+  scene.add(new THREE.HemisphereLight(st.hemiSky, st.hemiGround, HEMI_ROAM * st.dayBoost))
+  scene.fog = new THREE.Fog(st.fogColor.clone(), 4000, 5800)
+  scene.background = st.fogColor.clone()
+  if (look) dressLook(look, scene, st, cam, null, [], spec.eye)
+  tiles.push({ scene, cam, chunks: [] })
+  const col = index % cols
+  const row = Math.floor(index / cols)
+  r.setViewport(col * tw, height - (row + 1) * th, tw, th)
+  r.setScissor(col * tw, height - (row + 1) * th, tw, th)
+  if (look) look.render(scene, cam)
+  else r.render(scene, cam)
+  return {
+    label, x: Math.round(x), z: Math.round(z), y: Math.round(gy * 10) / 10,
+    biome: 'rock' as BiomeId, district: null, verts: 0,
+  }
+}
+
 export const shoot = (spec: ShotSpec): ShotResult[] => {
   const canvas = document.getElementById('c') as HTMLCanvasElement
   const list = spec.targets.length === 1 && spec.targets[0].kind === 'landmark'
@@ -692,6 +746,10 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
   }
   for (let i = 0; i < list.length; i++) {
     const { x, z, label } = list[i]
+    if (label.startsWith('moon:')) {
+      out.push(moonTile(spec, x, z, label, tw, th, i, cols, canvas.height))
+      continue
+    }
     const scene = new THREE.Scene()
     const gy = terrainY(x, z)
     const c0 = chunkX(x)

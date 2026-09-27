@@ -1,8 +1,7 @@
 import * as THREE from 'three'
 import { createMeshBuilder, type MeshBuilder } from '../core/geometry'
-import { seeded } from '../core/rand'
 import { noStand, type Solid } from '../physics/collision'
-import { hash2, mix, rand2, rand3, smoothstep } from './noise'
+import { mix, rand2, rand3, smoothstep } from './noise'
 import {
   CHUNK, GRID, inReserved, inYard, originX, originZ,
 } from './grid'
@@ -10,18 +9,15 @@ import { SEA_Y, latticeGround, latticeHeight, terrainY } from './terrain'
 import { placeAt, roadAt, pavedAt, townsNear, ROAD_HALF, WALK_W } from './settlements'
 import { parcelsInChunk } from './streets'
 import { buildStreets, makeLayer, type Layer } from './streetMesh'
-import { box, type Lot } from './kitbash'
+import { lotStream, type Lot } from './kitbash'
 import { BIOMES, type BiomeId, type PropKind } from './biomes'
 import {
   SNAP, VARIANTS, kitsFor, stampKit, variantFor, type Kit, type Palette,
 } from './props'
 import { SURF } from './surface'
-import {
-  chapel, midriseBlock, mixedUse, parkingDeck, roundTower, shopFront, slabTower, tower,
-  warehouse, type BuildKind, type BuildOut,
-} from './buildings'
-import { suburbHouse } from './houses'
-import { landmarkIn } from './landmarks'
+import { raiseKind, settleKind, type BuildKind, type BuildOut } from './buildings'
+import { landmarkAt, landmarkIn, type Landmark } from './landmarks'
+import { furnishPlaza, plazaInner } from './plaza'
 import { buildLandmark } from './structures'
 import { bakeBirth, PREBORN } from './fade'
 import type { InteriorRect } from './interiors'
@@ -102,7 +98,36 @@ export interface Chunk {
   /** every building and landmark in it, recorded for destruction
       (world/fracture.ts, sandbox/destruction.ts) */
   structures: StructureRec[]
+  /** parts that turn (a windmill's sails), each its own small mesh; the
+      streamer sets their angle every frame off one clock (see `spin`) */
+  spinners: Spinner[]
 }
+
+/** a turning part: its mesh, the axis it turns about and how fast */
+export interface Spinner {
+  mesh: THREE.Mesh
+  axis: THREE.Vector3
+  rate: number
+}
+
+/** the angle every spinner stands at is a pure function of one clock, so a
+    rebuilt chunk's sails pick up exactly where they were */
+export const spin = (s: Spinner, t: number) => {
+  s.mesh.quaternion.setFromAxisAngle(s.axis, s.rate * t)
+}
+
+interface RotorSpec {
+  b: MeshBuilder
+  x: number
+  y: number
+  z: number
+  axis: THREE.Vector3
+  rate: number
+  rec?: StructureRec
+}
+/** the rotors the chunk being built has handed out, so recordStructure can
+    tie each to the structure that stamped it (build is synchronous) */
+let rotorsMade: RotorSpec[] | null = null
 
 /**
  * Stamp one building with the recorder running: its spans in both soups, the
@@ -123,6 +148,7 @@ const recordStructure = (
   const gv = out.glass.count
   const gi = out.glass.indexCount
   const bn = out.boxes.length
+  const rn = rotorsMade?.length ?? 0
   const md: number[] = []
   const mg: number[] = []
   out.solid.marks = md
@@ -143,6 +169,8 @@ const recordStructure = (
     gmarks: Int32Array.from(mg),
     boxes: out.boxes.slice(bn),
   })
+  // its turning parts go when it is opened into pieces (debris.ts)
+  if (rotorsMade) for (const r of rotorsMade.slice(rn)) r.rec = list[list.length - 1]
 }
 
 /**
@@ -526,38 +554,25 @@ const buildBlock = (
 
   // ids are the lot's own centre on a half-unit grid: a pure function of the
   // lot, and not of how many lots before it happened to build. The kit rolls
-  // from its own stream seeded on that same centre: a kit draws more on a
-  // detailed build than on the outer ring (its window lights, its dressing),
-  // so a shared stream meant promoting a chunk a tier reshuffled every lot
-  // after the first, and the house you were walking toward turned into a
-  // different house
+  // from its own stream seeded on that same centre (kitbash.ts's lotStream):
+  // a kit draws more on a detailed build than on the outer ring (its window
+  // lights, its dressing), so a shared stream meant promoting a chunk a tier
+  // reshuffled every lot after the first, and the house you were walking
+  // toward turned into a different house. The far field raises the same lot
+  // off the same stream through the same kit (world/massing.ts), so from the
+  // air it is that house too
   const raise = (kind: BuildKind, lot: Lot) => {
     const hx = Math.round(lot.x * 2)
     const hz = Math.round(lot.z * 2)
-    lot.rng = seeded(hash2(hx, hz, 0x7a3e))
     recordStructure(out, `${cx},${cz}:B${hx},${hz}`, kind, lot.baseY,
-      () => raiseKit(kind, lot))
-  }
-  const raiseKit = (kind: BuildKind, lot: Lot) => {
-    switch (kind) {
-      case 'tower': tower(out, lot); break
-      case 'slab': slabTower(out, lot); break
-      case 'round': roundTower(out, lot); break
-      case 'midrise': midriseBlock(out, lot); break
-      case 'mixed': mixedUse(out, lot); break
-      case 'shop': shopFront(out, lot); break
-      case 'warehouse': warehouse(out, lot); break
-      case 'chapel': chapel(out, lot); break
-      case 'parking': parkingDeck(out, lot); break
-      default: suburbHouse(out, lot)
-    }
+      () => raiseKind(out, kind, lot))
   }
 
   /** trees on a jittered lattice through a rectangle, this chunk's share:
       a lattice in world space, so a park across a chunk border is one park */
   const grove = (
     x0: number, z0: number, x1: number, z1: number, step: number, rate: number,
-    kinds: PropKind[],
+    kinds: PropKind[], skip?: (x: number, z: number) => boolean,
   ) => {
     const gx0 = Math.ceil(Math.max(x0, ox) / step)
     const gx1 = Math.floor(Math.min(x1, ox + CHUNK) / step)
@@ -569,7 +584,7 @@ const buildBlock = (
         const px = gx * step + (rand2(gx, gz, 0x1c55) - 0.5) * step * 0.7
         const pz = gz * step + (rand2(gx, gz, 0x6e21) - 0.5) * step * 0.7
         if (!inChunk(px, pz) || px < x0 + 2 || px > x1 - 2 || pz < z0 + 2 || pz > z1 - 2) continue
-        if (inReserved(px, pz, 4)) continue
+        if (inReserved(px, pz, 4) || skip?.(px, pz)) continue
         const py = terrainY(px, pz)
         if (py < SEA_Y + 0.5) continue
         const li = Math.min(VERTS - 1, Math.max(0, Math.round((px - ox) / GRID)))
@@ -597,20 +612,18 @@ const buildBlock = (
         continue
       }
       if (p.use === 'plaza') {
-        // a paved square, trees in a formal grid, and a fountain in the middle
+        // a paved square with its trees round the border, and the open
+        // middle furnished (world/plaza.ts): fountain, benches, a market,
+        // a café and planters
         layer.poly([p.x0, p.z0, p.x1, p.z0, p.x1, p.z1, p.x0, p.z1], 0.04, PLAZA, SURF.paving)
-        grove(p.x0 + 4, p.z0 + 4, p.x1 - 4, p.z1 - 4, 9, 0.8, ['broadleaf'])
-        if (inChunk(p.x, p.z) && out.detailed) {
-          const y = terrainY(p.x, p.z)
-          box(out.solid, '#a9a498', p.x, y + 0.3, p.z, 7, 0.6, 7, 0, SURF.paving)
-          box(out.solid, '#3d6f86', p.x, y + 0.62, p.z, 6, 0.06, 6, 0, SURF.none)
-          box(out.solid, '#a9a498', p.x, y + 1.4, p.z, 0.9, 2.2, 0.9, 0, SURF.paving)
-          const b = noStand(new THREE.Box3(
-            new THREE.Vector3(p.x - 3.6, y - 1, p.z - 3.6),
-            new THREE.Vector3(p.x + 3.6, y + 0.65, p.z + 3.6),
-          )) as Solid
-          out.boxes.push(b)
-        }
+        const { hx, hz } = plazaInner(p)
+        grove(p.x0, p.z0, p.x1, p.z1, 7.5, 0.85, ['broadleaf'],
+          (x, z) => Math.abs(x - p.x) < hx + 1 && Math.abs(z - p.z) < hz + 1)
+        furnishPlaza(out, layer, p, inChunk)
+        // the paving is laid, not graded, so pavedAt knows nothing of it:
+        // without this the grass and the town's garden scatter grew
+        // through the square
+        out.interiors.push({ minX: p.x0, maxX: p.x1, minZ: p.z0, maxZ: p.z1 })
         continue
       }
       if (p.use === 'lot') {
@@ -643,25 +656,18 @@ const buildBlock = (
         ) as Solid)
         continue
       }
-      let kind = p.kind
-      const block = kind === 'warehouse' || kind === 'chapel' || kind === 'parking'
-      const [baseY, topY] = groundUnder(p.x, p.z, p.w, p.d, kind === 'shop')
+      const [baseY, topY] = groundUnder(p.x, p.z, p.w, p.d, p.kind === 'shop')
       if (baseY < SEA_Y + 1) continue
       // no building at all where the corners disagree by more than the plinth
-      // can hide (a block-scale shell carries a deeper plinth, so it takes a
-      // bumpier site). The rim of a town is only half-graded now that the
-      // hills start there, and a house sunk to its windowsills reads as the
-      // ground eating it
-      if (topY - baseY > (block ? 3.0 : 2.2)) continue
-      // an enterable shop grades its floor up to the *highest* ground under
-      // it and meets the street with a stoop; past a shin-and-a-bit of spread
-      // the stoop turns into a staircase, so the lot builds a shell instead
-      if (kind === 'shop' && topY - baseY > 1.2) {
-        kind = p.district === 'suburb' ? 'house' : 'midrise'
-      }
+      // can hide, and a shop on a slope builds a shell (buildings.ts's
+      // settleKind, which the far field's impostors ask too). The rim of a
+      // town is only half-graded now that the hills start there, and a house
+      // sunk to its windowsills reads as the ground eating it
+      const kind = settleKind(p.kind, p.district, baseY, topY)
+      if (!kind) continue
       raise(kind, {
         x: p.x, z: p.z, w: p.w, d: p.d, baseY, topY, height: p.height, face: p.face,
-        rng: seeded(p.id),
+        rng: lotStream(p.x, p.z),
       })
     }
   }
@@ -857,14 +863,21 @@ export const buildChunk = (
   const doors: ShopDoorSpec[] = []
   const props: Smashable[] = []
   const structures: StructureRec[] = []
+  const rotors: RotorSpec[] = []
+  rotorsMade = rotors
   const out: BuildOut = {
     solid: detail, glass, boxes, lamps, interiors, doors, smash: props, structures,
     detailed: tier !== 'bare',
+    rotor: (x, y, z, ax, ay, az, rate) => {
+      const b = createMeshBuilder()
+      rotors.push({ b, x, y, z, axis: new THREE.Vector3(ax, ay, az).normalize(), rate })
+      return b
+    },
   }
 
   const poles = buildRoads(cx, cz, detail, glass, out.detailed, props, lamps)
   const neighbours = buildBlock(cx, cz, out, ground, leaves, makeLayer(cx, cz, detail))
-  const landmark = buildLandmarks(cx, cz, out)
+  buildLandmarks(cx, cz, out)
   // everything in `boxes` at this point is a building — the roads register
   // theirs separately and the scatter has not run yet — so this is the
   // footprint list the scatterer needs to keep trees out of people's living
@@ -882,16 +895,26 @@ export const buildChunk = (
       new THREE.Vector3(r.minX, 0, r.minZ), new THREE.Vector3(r.maxX, 0, r.maxZ),
     ))
   }
-  // ...and a landmark clears its whole pad rather than just the boxes it
+  // ...and a landmark clears its whole graded pad, not just the boxes it
   // registered. A ring of standing stones is nine thin solids with the site
   // wide open between them, and a forest growing up through the middle of it
   // is the difference between a monument and a clearing that happens to have
   // rocks in it. Same phantom trick as an interior: never collided with, read
-  // only for its extents
-  if (landmark) {
+  // only for its extents. It is asked of every landmark whose pad could reach
+  // this chunk, not only the one standing in it: a pad runs a good way past
+  // its footprint, and the chunk next door used to grow a broadleaf up
+  // through the edge of the ring
+  const pads = new Set<Landmark>()
+  const lx0 = originX(cx)
+  const lz0 = originZ(cz)
+  for (const [px, pz] of [[lx0, lz0], [lx0 + CHUNK, lz0], [lx0, lz0 + CHUNK], [lx0 + CHUNK, lz0 + CHUNK]]) {
+    const l = landmarkAt(px, pz)
+    if (l) pads.add(l)
+  }
+  for (const l of pads) {
+    const r = Math.max(l.r, l.pad)
     built.push(new THREE.Box3(
-      new THREE.Vector3(landmark.x - landmark.r, 0, landmark.z - landmark.r),
-      new THREE.Vector3(landmark.x + landmark.r, 0, landmark.z + landmark.r),
+      new THREE.Vector3(l.x - r, 0, l.z - r), new THREE.Vector3(l.x + r, 0, l.z + r),
     ))
   }
   for (const p of poles) boxes.push(p)
@@ -947,16 +970,40 @@ export const buildChunk = (
     smash.meshes.glass = m
   }
 
+  rotorsMade = null
+  const spinners: Spinner[] = []
+  for (const r of rotors) {
+    const g = r.b.build()
+    if (!g) continue
+    // re-based on its pivot, so the mesh turns about its own origin
+    g.translate(-r.x, -r.y, -r.z)
+    g.computeBoundingSphere()
+    geos.push(g)
+    bakeBirth(g, baseBirth)
+    const m = new THREE.Mesh(g, mats.detail)
+    m.position.set(r.x, r.y, r.z)
+    m.castShadow = true
+    m.receiveShadow = true
+    group.add(m)
+    spinners.push({ mesh: m, axis: r.axis, rate: r.rate })
+    if (r.rec) (r.rec.rotors ??= []).push(m)
+  }
+
   group.updateMatrixWorld(true)
   group.traverse((o) => {
     o.matrixAutoUpdate = false
   })
+  // ...all but what turns, which also opts out of the scene's own freeze
+  for (const sp of spinners) {
+    sp.mesh.matrixAutoUpdate = true
+    sp.mesh.userData.dynamic = true
+  }
   // door ids are position-stable across rebuilds, so the session's open/shut
   // state survives a tier change or a ring exit and return
   doors.forEach((d, i) => {
     d.id = `${cx},${cz}:${i}`
   })
-  return { cx, cz, tier, group, geos, boxes, lamps, interiors, doors, smash, structures }
+  return { cx, cz, tier, group, geos, boxes, lamps, interiors, doors, smash, structures, spinners }
 }
 
 /**
