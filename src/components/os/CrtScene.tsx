@@ -18,7 +18,7 @@ import type { HouseModels } from '../../game/levels/houseWorld'
 import { CABIN_FIT, buildPlayerBody, type PlayerPose } from '../../game/player/playerBody'
 import { packLook, sanitizeLook, unpackLook, type PlayerLook } from '../../game/player/look'
 import type { RagdollEnv } from '../../game/player/ragdoll'
-import { createChaseCam, type ChaseEnv } from '../../game/player/chaseCam'
+import { createChaseCam, SHOULDER, type ChaseEnv } from '../../game/player/chaseCam'
 import { createImpactWatch, type Impact } from '../../game/player/impacts'
 import {
   MAX_POINTS, bodyExtent, createBodyContact, posedPoints, type BodyExtent, type Bumpable, type Bumper,
@@ -473,8 +473,6 @@ export default function CrtScene({
   const typingRef = useRef(false)
   // set by the effect: give the mouse back to the walk once an overlay closes
   const relockRef = useRef<(() => void) | null>(null)
-  /** the crosshair's wrapper, moved off centre in third person (walkTick) */
-  const crossRef = useRef<HTMLDivElement>(null)
   const closeChat = () => {
     typingRef.current = false
     setTyping(null)
@@ -1101,8 +1099,8 @@ export default function CrtScene({
 
         // the player's body: the articulated robot in playerBody.ts. In first
         // person it trails the camera so looking down shows your own legs; in
-        // third person (v) the chase boom in chaseCam.ts backs the lens off
-        // it, and a flop (x) hands the whole skeleton to the ragdoll
+        // third person (f5) the chase boom in chaseCam.ts stands the lens off
+        // over its shoulder, and a flop (x) hands the whole skeleton to the ragdoll
         // same gravity as the walk tune, and whatever colours the character
         // screen last saved: the body is built wearing them, so the third
         // person camera never shows a frame of the default robot
@@ -1362,17 +1360,18 @@ export default function CrtScene({
         }
         let hereNow = 0
         let aimNow: CrosshairAim = 'none'
-        const crossPt = new THREE.Vector3()
-        const crossBox = new THREE.Vector3()
-        const camRight = new THREE.Vector3()
-        let crossMoved = false
+        /** which shoulder the third-person lens stands over: 1 right, -1 left */
+        let shoulderSide = 1
+        // scratch for resolveAim
+        const aimLens = new THREE.Vector3()
+        const aimAt = new THREE.Vector3()
+        const aimQ = new THREE.Quaternion()
+        const aimEul = new THREE.Euler(0, 0, 0, 'YXZ')
         /** props still scaling in from a spawn, and how long that takes */
         const pops: { mesh: THREE.Object3D; t: number }[] = []
         const POP_S = 0.24
         /** how far the crosshair notices a prop: the console's own reach */
         const AIM_REACH = 120
-        /** the chase boom's offset to the right while flying, world units */
-        const NOCLIP_SHOULDER = 2.2
 
         // prompt bookkeeping mirrored into React state only on change
         let nearNow = false
@@ -1511,7 +1510,9 @@ export default function CrtScene({
         }
 
         const leaveSeat = () => {
-          const spot = seating.stand()
+          // the spot is checked against the room as it is now (seating.ts)
+          const lv = levels.current
+          const spot = seating.stand({ set: lv.collision, groundAt: (x, z) => floorOf(lv, x, z) })
           if (!spot) return false
           rig.showHead(true) // rig.update owns it again from the next frame
           chase.drop()
@@ -2191,6 +2192,41 @@ export default function CrtScene({
           setFlying(on)
         }
         const aimDir = new THREE.Vector3()
+        /*
+          Aim, in either view. In first person it is the lens's own ray and
+          `dir` comes back as it went in. Over the shoulder the crosshair is
+          dead centre of a lens standing off to the side of the head, so the
+          ray through it is cast from the lens to find what is under the
+          crosshair, and the aim is then taken from the head at that point:
+          what you point at is what the physgun, E and the console get, and
+          whether it is in reach is still a question about the character.
+          While the physgun holds something the point is where the lens ray
+          runs the held distance from the head, so the held prop rides under
+          the crosshair rather than chasing its own surface. `quat` is the
+          head's turn (the lens offset is stored in the head's frame).
+        */
+        const resolveAim = (head: THREE.Vector3, quat: THREE.Quaternion, dir: THREE.Vector3) => {
+          if (chase.dist <= 1.2 || rig.down) return dir
+          chase.lens(head, quat, aimLens)
+          // the stretch of the lens ray behind the head is not in play, and
+          // neither is the body itself
+          const t0 = Math.max(0, aimAt.subVectors(head, aimLens).dot(dir)) + 0.6
+          let t = t0 + AIM_REACH
+          const pg = tools?.physgun
+          if (pg?.holding) {
+            // |lens + dir t - head| = the held distance, the far root
+            const b = aimAt.subVectors(aimLens, head).dot(dir)
+            const disc = b * b - (aimAt.lengthSq() - pg.hold.dist * pg.hold.dist)
+            t = disc > 0 ? -b + Math.sqrt(disc) : t0
+          } else if (sandbox) {
+            aimAt.copy(aimLens).addScaledVector(dir, t0)
+            const hit = sandbox.raycast(aimAt, dir, AIM_REACH)
+            if (hit) t = t0 + hit.distance
+          }
+          aimAt.copy(aimLens).addScaledVector(dir, t).sub(head)
+          const len = aimAt.length()
+          return len > 1e-4 ? dir.copy(aimAt).divideScalar(len) : dir
+        }
         const canAct = () => !fleet.riding && !levels.frozen && !seating.current && !rig.down
         /** Garry's Mod lets you noclip or teleport out of a heap on the
             floor, so the console and the noclip key do too: the body stands
@@ -2225,7 +2261,9 @@ export default function CrtScene({
             if (fleet.riding || seating.current || rig.down) return { origin: headPos, dir: headDir }
             const cp = Math.cos(walk.pitch)
             aimDir.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp)
-            return { origin: headPos, dir: aimDir }
+            // over the shoulder, through the crosshair (resolveAim)
+            aimQ.setFromEuler(aimEul.set(walk.pitch, walk.yaw, 0))
+            return { origin: headPos, dir: resolveAim(headPos, aimQ, aimDir) }
           },
           here: () => ({ x: headPos.x, y: walk.feetY, z: headPos.z, yaw: walk.yaw }),
           teleport: (x, z, y, yaw) => {
@@ -3165,7 +3203,8 @@ export default function CrtScene({
             else if (edges.pressed('slot2')) tools.select(1)
             else if (edges.pressed('slot3')) tools.select(2)
             toolAim.eye.copy(camera.position)
-            camera.getWorldDirection(toolAim.dir)
+            // from the head, at whatever is under the crosshair (resolveAim)
+            resolveAim(camera.position, camera.quaternion, camera.getWorldDirection(toolAim.dir))
             toolAim.yaw = walk.yaw
             toolIn.dt = dt
             toolIn.fire = held(k, 'grab')
@@ -3268,6 +3307,8 @@ export default function CrtScene({
           // back up. Every key here is read through the key table
           chase.third = prefsRef.current.third
           if (edges.pressed('camera') && !levels.frozen) setPrefs((p) => ({ ...p, third: !p.third }))
+          // and which shoulder it looks over
+          if (edges.pressed('shoulder') && !levels.frozen && chase.third) shoulderSide = -shoulderSide
           // noclip: not from a chair, a heap on the floor or mid-cut
           if (edges.pressed('noclip') && !levels.frozen && !sitting) {
             standNow()
@@ -3441,6 +3482,9 @@ export default function CrtScene({
           // rather than from inside your head once you have walked away from it
           setPcListenerDistance(dist)
           camera.getWorldDirection(gazeVec)
+          // over the shoulder, what the crosshair is on rather than what the
+          // head faces: every prompt and E below answers to the same aim
+          resolveAim(camera.position, camera.quaternion, gazeVec)
           // still the head here — chase.apply() only borrows the camera below
           headPos.copy(camera.position)
           headDir.copy(gazeVec)
@@ -3558,52 +3602,11 @@ export default function CrtScene({
           chaseEnv.yaw = walk.yaw
           chaseEnv.pitch = walk.pitch
           chaseEnv.focus = rig.ragdolling ? rig.focus(focusPt) : null
-          // flying, the boom goes over the right shoulder: a body that faces
-          // where you look, straight in front of the lens, would sit exactly
-          // under the crosshair for the whole flight
-          chaseEnv.shoulder = walk.noclip ? NOCLIP_SHOULDER : 0
+          // over the shoulder, whichever one: the body stands in the left (or
+          // right) third of the frame and the crosshair stays dead centre,
+          // clear of it (chaseCam.ts; the aim follows it in resolveAim)
+          chaseEnv.shoulder = SHOULDER * shoulderSide
           chase.apply(camera, dt, chaseEnv)
-          // the crosshair marks where the head's gaze lands. In first person
-          // that is the middle of the screen; with the boom out the middle is
-          // the back of your own head, so the gaze's hit (or a point well
-          // down it) is projected through the boom's lens and the mark moves
-          // there, which is also exactly where a spawn will go
-          if (crossRef.current) {
-            const el = crossRef.current
-            if (chase.dist > 1.2 && !rig.down) {
-              const cp = Math.cos(walk.pitch)
-              aimDir.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp)
-              const hit = sandbox ? sandbox.raycast(headPos, aimDir, AIM_REACH) : null
-              // the boom has only just moved the lens; its inverse is last
-              // frame's until this, and every projection below would be too
-              camera.updateMatrixWorld()
-              crossPt.copy(headPos).addScaledVector(aimDir, hit ? hit.distance : 40).project(camera)
-              const w = webgl ? webgl.domElement.clientWidth : 0
-              const h = webgl ? webgl.domElement.clientHeight : 0
-              // a mark that would land on your own back says nothing (the
-              // point it stands for is behind you from the lens's side), so
-              // it is hidden while the body covers it: the body's screen box
-              // is its crown and its soles projected, a shoulder's width wide.
-              // The boom sits on the gaze line, so in practice the mark is
-              // hidden whenever the body is in frame and shows only once the
-              // boom has swung clear of it (a steep look up or down)
-              crossBox.copy(headPos).setY(headPos.y + 0.6).project(camera)
-              const top = crossBox.y
-              const midX = crossBox.x
-              crossBox.set(headPos.x, walk.feetY, headPos.z).project(camera)
-              const bottom = crossBox.y
-              crossBox.copy(headPos).addScaledVector(camRight.setFromMatrixColumn(camera.matrixWorld, 0), 1.3).project(camera)
-              const halfW = Math.abs(crossBox.x - midX)
-              const onBody = crossPt.y < top && crossPt.y > bottom && Math.abs(crossPt.x - midX) < halfW
-              el.style.visibility = crossPt.z < 1 && !onBody ? '' : 'hidden'
-              el.style.transform = `translate(${Math.round(crossPt.x * w * 0.5)}px, ${Math.round(-crossPt.y * h * 0.5)}px)`
-              crossMoved = true
-            } else if (crossMoved) {
-              el.style.transform = ''
-              el.style.visibility = ''
-              crossMoved = false
-            }
-          }
           // the gun and the beam go where the lens ended up: in the hand of
           // the body when the boom is out, in front of the lens when it is not
           if (tools) {
@@ -3851,6 +3854,10 @@ export default function CrtScene({
                 // every solid the walk collides with, for a harness sweeping
                 // a door leaf through its swing against the furniture
                 __obstacles: obstacles,
+                // the house's doors and cushions, for a harness sitting on
+                // every seat and opening every door from both sides
+                __house: house,
+                __seat: { seating, take: takeSeat, leave: leaveSeat },
                 // the fleet's world, for a harness recalling a machine
                 __fleetEnv: () => aimFleetEnv(fleetLevel()),
               })
@@ -4599,6 +4606,8 @@ export default function CrtScene({
                 ? `${RIDE_ALONG[language]} · ${DRIVE_TAIL[language](driving.cockpit)}`
                 : `${DRIVE_KEYS[driving.id][language]} · ${DRIVE_TAIL[language](driving.cockpit)}`
               : tapeLine(keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
+                  prefs.third ? ` · ${t.sandbox.hud.shoulder}` : ''
+                }${
                   mp.status === 'live' ? ` · ${t.sandbox.hud.voice}` : ''
                 } · ${t.sandbox.hud.pauses}`, language))}
         </p>
@@ -4687,7 +4696,7 @@ export default function CrtScene({
           mouse freed for the catalogue, because that is exactly when you
           need to know where the thing you click is going to land */}
       {roam && walking && !paused && !driving && !seated && (
-        <div ref={crossRef} className="pointer-events-none absolute inset-0 z-10">
+        <div className="pointer-events-none absolute inset-0 z-10">
           <Crosshair aim={aim} />
         </div>
       )}

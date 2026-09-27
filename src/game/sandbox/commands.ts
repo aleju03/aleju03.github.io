@@ -1052,7 +1052,7 @@ registerCommand({
 registerCommand({
   name: 'thirdperson',
   aliases: ['camera', 'tp3'],
-  help: msg('see yourself from behind (f5 does it too)', 'mírate desde atrás (también con f5)'),
+  help: msg('see yourself over the shoulder (f5 does it too, h swaps shoulder)', 'mírate por encima del hombro (también con f5; h cambia de hombro)'),
   run: (ctx) => toggle(ctx, ctx.host.thirdPerson, msg('third person', 'tercera persona')),
 })
 

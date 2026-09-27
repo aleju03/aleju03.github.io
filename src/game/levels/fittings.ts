@@ -45,8 +45,31 @@ import { propSnap } from '../core/sfx'
 
   No collision is registered. A leaf is thin, it stands open for a few
   seconds, and an AABB that appeared in front of the player mid-reach would
-  shove them out of their own kitchen.
+  shove them out of their own kitchen. But a leaf still never passes through
+  the player: `update` takes the eye, and a leaf whose next step would bring
+  its moving edge closer to the body under it (a disc, `BODY_DISC` wide,
+  shared with the room doors) than it already is holds where it is and
+  carries on once they step back. A fridge door opened from right in front
+  of it therefore swings until it meets your belly, the way a real one does.
 */
+
+/**
+ * The body a leaf must not pass through: a disc under the eye, a belly wide
+ * (the bean is widest low, about 0.85 across the middle; a leaf stopping at
+ * 0.75 reads as touching it), standing from the eye down to the soles.
+ * houseWorld's room doors use the same numbers.
+ */
+export const BODY_DISC = 0.75
+export const BODY_TALL = 3.9
+
+/** how far (x, z) is from the flat segment a->b */
+export const segGap = (x: number, z: number, ax: number, az: number, bx: number, bz: number) => {
+  const dx = bx - ax
+  const dz = bz - az
+  const ll = dx * dx + dz * dz
+  const t = ll > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / ll)) : 0
+  return Math.hypot(x - ax - dx * t, z - az - dz * t)
+}
 
 /** how a leaf gets out of the way */
 export type FittingMotion =
@@ -125,8 +148,9 @@ export interface FittingPrompt {
 
 export interface FittingHandles {
   add: (spec: FittingSpec) => void
-  /** ease every leaf toward its target; true while any of them is moving */
-  update: (dt: number) => boolean
+  /** ease every leaf toward its target, keeping each clear of the body under
+      `eye`; true while any of them is moving */
+  update: (dt: number, eye?: THREE.Vector3) => boolean
   /** the leaf within reach the player is looking at: verb and what it is */
   prompt: (p: THREE.Vector3, gaze: THREE.Vector3) => FittingPrompt | null
   /** work it. Returns false when nothing was in reach */
@@ -194,6 +218,20 @@ interface Fitting {
   ax: number
   ay: number
   az: number
+  /** the leaf's flat footprint, to keep it off the player: the shut leaf's
+      free edge from the hinge (a swing), its lateral half-extent and
+      facing (a drop or a slide), its depth and height, and its span in y */
+  tip0x: number
+  tip0z: number
+  fx: number
+  fz: number
+  lx: number
+  lz: number
+  wl: number
+  wf: number
+  h: number
+  y0: number
+  y1: number
   /** 0 shut .. 1 open */
   open: number
   target: 0 | 1
@@ -296,6 +334,17 @@ export function buildFittings({ parent, trackDisposable }: Opts): FittingHandles
       ax: aim.x,
       ay: aim.y,
       az: aim.z,
+      tip0x: -l.x * side * wl,
+      tip0z: -l.z * side * wl,
+      fx: f.x,
+      fz: f.z,
+      lx: l.x,
+      lz: l.z,
+      wl,
+      wf,
+      h: size.y,
+      y0: box.min.y,
+      y1: box.max.y,
       open: 0,
       target: 0,
       cavity: null,
@@ -421,11 +470,48 @@ export function buildFittings({ parent, trackDisposable }: Opts): FittingHandles
     fit.pivot.quaternion.setFromAxisAngle(fit.axis, fit.open * fit.travel)
   }
 
-  const update = (dt: number) => {
+  /** how far the body at (x, z) is from the leaf's moving edge at `open` */
+  const gapAt = (fit: Fitting, open: number, x: number, z: number) => {
+    if (fit.motion === 'swing') {
+      // the free edge turned about +Y: (x cos + z sin, -x sin + z cos)
+      const a = open * fit.travel
+      const c = Math.cos(a)
+      const s = Math.sin(a)
+      const tx = fit.tip0x * c + fit.tip0z * s
+      const tz = -fit.tip0x * s + fit.tip0z * c
+      return segGap(x, z, fit.home.x, fit.home.z, fit.home.x + tx, fit.home.z + tz)
+    }
+    // a flap's top edge or a drawer's front, across the leaf's width
+    const out =
+      fit.wf / 2 + (fit.motion === 'drop' ? fit.h * Math.sin(open * fit.travel) : open * fit.travel)
+    const mx = fit.cx + fit.fx * out
+    const mz = fit.cz + fit.fz * out
+    const hx = fit.lx * fit.wl * 0.5
+    const hz = fit.lz * fit.wl * 0.5
+    return segGap(x, z, mx - hx, mz - hz, mx + hx, mz + hz)
+  }
+
+  const update = (dt: number, eye?: THREE.Vector3) => {
     let moving = false
     for (const fit of items) {
       if (fit.open === fit.target) continue
-      const next = fit.open + (fit.target - fit.open) * (1 - Math.exp(-6.5 * dt))
+      let next = fit.open + (fit.target - fit.open) * (1 - Math.exp(-6.5 * dt))
+      if (eye && eye.y > fit.y0 && eye.y - BODY_TALL < fit.y1) {
+        // a step into the body's disc, or deeper into it, is cut back to
+        // where the edge touches it, and the leaf waits there
+        const now = Math.min(BODY_DISC, gapAt(fit, fit.open, eye.x, eye.z))
+        if (gapAt(fit, next, eye.x, eye.z) < now) {
+          let lo = 0
+          let hi = 1
+          for (let i = 0; i < 7; i++) {
+            const mid = (lo + hi) / 2
+            if (gapAt(fit, fit.open + (next - fit.open) * mid, eye.x, eye.z) >= now) lo = mid
+            else hi = mid
+          }
+          if (lo === 0) continue
+          next = fit.open + (next - fit.open) * lo
+        }
+      }
       const settled = Math.abs(next - fit.target) < 0.004
       fit.open = settled ? fit.target : next
       apply(fit)

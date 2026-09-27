@@ -5,7 +5,9 @@ import { noStand, padXZ } from '../physics/collision'
 import { doorCreak, doorLatch, type StepSurface } from '../core/sfx'
 import { applyFixedSurface, SURF, type SurfaceId } from '../world/surface'
 import { buildKitTree } from '../world/treeMesh'
-import { buildFittings, facingOf, type FittingHandles, type FittingSpec } from './fittings'
+import {
+  BODY_DISC, BODY_TALL, buildFittings, facingOf, segGap, type FittingHandles, type FittingSpec,
+} from './fittings'
 import type { SeatSpec } from '../player/seating'
 import { texelate } from '../render/texel'
 import { mergeGeoms } from '../core/geometry'
@@ -53,6 +55,20 @@ export interface ModelLike {
   They cast no shadows so the baked maps stay valid. Working one creaks the
   hinge (core/sfx.ts) and a closing leaf clicks its latch home as it seats.
 
+  A leaf never passes through the player. Swinging away from whoever opens
+  it keeps it off them in the ordinary case, but not in all of them: a door
+  that may only open one way (the computer room's, which has a railing on
+  its far side) swings *toward* anybody opening it from in there, and
+  closing a door you have just walked through sweeps the side you are now
+  standing on. So `update` takes the eye and treats the body under it as a
+  disc a belly wide: a step that would bring the leaf's edge closer to that
+  disc than it already is does not happen, and the leaf waits, still aimed
+  where it was going, and carries on once you step out of its way. The same
+  body keeps a closing doorway from turning solid around somebody standing
+  in it, and a leaf standing fully open is solid itself (a thin box, its
+  swing being square or near it), so you walk round an open door rather
+  than through it. `fittings.ts` does the same for the furniture.
+
   The furniture works too, and none of that machinery is here. This module
   knows *which* pieces open, where their cushions are and where the
   television's glass ended up; the three things that make those facts do
@@ -90,8 +106,19 @@ export interface ScreenPlacement {
 
 export interface HouseHandles {
   root: THREE.Group
-  /** door easing, working furniture and firefly drift; call every roam frame */
-  update: (dt: number) => void
+  /** door easing, working furniture and firefly drift; call every roam frame.
+      `eye` is the player's head, whose body every leaf keeps out of */
+  update: (dt: number, eye?: THREE.Vector3) => void
+  /** every room door's leaf as it stands (hinge, tip, angle), for harnesses */
+  doorLeaves: () => Array<{
+    axis: 'x' | 'z'; at: number; y: number; cx: number; cz: number
+    /** hinge, latch and centre along the wall */
+    hu: number; lu: number; cu: number
+    hx: number; hz: number; tx: number; tz: number
+    angle: number; target: number
+  }>
+  /** shut every room door on the spot (a harness's clean slate) */
+  resetDoors: () => void
   /** the door within reach the player is looking at: which verb to prompt */
   doorPrompt: (p: THREE.Vector3, gaze: THREE.Vector3) => 'open' | 'close' | null
   /** work that door; a closed leaf swings away from the player's side */
@@ -469,14 +496,21 @@ interface Door {
       a doorway with no room on one side for the leaf; unset swings away
       from whoever opens it */
   opens?: 1 | -1
+  /** the hinge line (world x, z), and how far the leaf reaches from it */
+  hx: number
+  hz: number
+  reach: number
   angle: number
   target: number
-  /** blocks the doorway while the leaf is in the way; emptied once clear */
+  /** blocks the doorway while the leaf is in the way, then the open leaf
+      itself once it has come to rest; emptied while it swings */
   block: THREE.Box3
   closedMin: THREE.Vector3
   closedMax: THREE.Vector3
-  solid: boolean
+  /** what `block` is standing for right now */
+  held: 'shut' | 'leaf' | 'none'
 }
+
 
 export function buildHouse(opts: BuildOpts): HouseHandles {
   const {
@@ -853,7 +887,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     obstacles.push(block)
     doors.push({
       pivot, axis, at, dir, ...center, y: lv, swing, opens: o.opens,
-      angle: 0, target: 0, block, closedMin, closedMax, solid: true,
+      hx: pivot.position.x, hz: pivot.position.z, reach: w + 0.04,
+      angle: 0, target: 0, block, closedMin, closedMax, held: 'shut',
     })
   }
 
@@ -1177,10 +1212,14 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   cornerPosts(PAINT.den, [[BATH.maxX, HALL.maxZ], [BATH.maxX, BATH.maxZ]])
 
   // -- upstairs doors. The computer room's always swings into the room: the
-  // gallery outside it is 1.8 wide and the leaf 2.1, so swung
-  // it the other way it went straight through the stairwell's railing; and
-  // square is as far as it goes, or it meets the bookshelf behind the hinge
-  doorUnit('x', PART_X, BED_DOOR.u0, BED_DOOR.u1, 'u0', Math.PI * 0.5, { opens: -1 })
+  // gallery outside it is 1.8 wide and the leaf 2.1, so swung the other way
+  // it went straight through the stairwell's railing. It hangs on the north
+  // jamb, so it folds back flat against the room's north wall, off the path
+  // to the desk; on the south one it stood out across the room beside the
+  // bookshelf and swept the spot anybody leaving the desk walks through.
+  // It still swings toward somebody opening it from inside, which is what
+  // the body check in `update` is for: it stops at you and waits
+  doorUnit('x', PART_X, BED_DOOR.u0, BED_DOOR.u1, 'u1', Math.PI * 0.5, { opens: -1 })
   doorUnit('x', BATH.maxX, BATH_DOOR.u0, BATH_DOOR.u1, 'u0', Math.PI * 0.44, { color: '#8a7b64', panel: '#7a6c57' })
   // a right angle and no further: its hinge is a hand's width off the
   // partition, and past square the leaf's edge went into it
@@ -1935,6 +1974,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
           label: 'the sofa',
           x, z: 5.03,
           cushionY: cushion,
+          floor: sofa.box.min.y,
           atTv: true,
           yaw: Math.PI, // the model is turned to face +z, and so is the set
           stand: { x, z: 2.9, y: sofa.box.min.y },
@@ -1949,6 +1989,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         atTv: true,
         x: -5.9, z: 1.6,
         cushionY: armchair.box.min.y + 1.24,
+        floor: armchair.box.min.y,
         yaw: 0.38 + Math.PI,
         stand: { x: -4.4, z: 3.45, y: armchair.box.min.y },
       })
@@ -2010,9 +2051,13 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
           label: 'the chair',
           x, z,
           cushionY: chair.box.min.y + 0.96,
+          floor: chair.box.min.y,
           yaw: rotY + Math.PI,
-          // a dining chair has clear floor behind it, so the default
-          // stand-up spot (a step back out of the seat) is the right one
+          // the default stand-up spot, a step back out of the seat, is the
+          // right one for the two on the far side of the table. The near one
+          // backs onto the half bath's corner, and a step back from it lands
+          // in that wall: seating.ts checks every spot against the room and
+          // turns it out into the kitchen instead
         })
       }
     }
@@ -2023,6 +2068,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         label: 'the armchair',
         x: 5.0, z: 22.9,
         cushionY: reading.box.min.y + 1.24,
+        floor: reading.box.min.y,
         yaw: -HPI + 0.3 + Math.PI,
         stand: { x: 3.1, z: 22.4, y: reading.box.min.y },
       })
@@ -2091,6 +2137,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         label: 'the bed',
         x: -4.5, z: 8.03,
         cushionY: bed.box.min.y + 0.92,
+        floor: bed.box.min.y,
         yaw: -HPI,
         stand: { x: -3.1, z: 8.03, y: bed.box.min.y },
       })
@@ -2129,6 +2176,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         label: 'the bed',
         x: 3.4, z: 18.5,
         cushionY: mbed.box.min.y + 0.92,
+        floor: mbed.box.min.y,
         yaw: 0,
         stand: { x: 3.4, z: 16.8, y: mbed.box.min.y },
       })
@@ -2161,6 +2209,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         label: 'the armchair',
         x: -5.6, z: 20.6,
         cushionY: dchair.box.min.y + 1.24,
+        floor: dchair.box.min.y,
         yaw: -HPI,
         stand: { x: -3.9, z: 20.6, y: dchair.box.min.y },
       })
@@ -2319,27 +2368,74 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     d.pivot.matrixAutoUpdate = true
   })
 
-  const update = (dt: number) => {
+  /** the leaf's far edge at `angle`: local +x turned by the pivot's yaw */
+  const tipOf = (d: Door, angle: number) => {
+    const r = (d.pivot.userData.baseRotY as number) + angle
+    return {
+      x: d.hx + Math.cos(r) * d.dir * d.reach,
+      z: d.hz - Math.sin(r) * d.dir * d.reach,
+    }
+  }
+  const leafGap = (d: Door, angle: number, bx: number, bz: number) => {
+    const t = tipOf(d, angle)
+    return segGap(bx, bz, d.hx, d.hz, t.x, t.z)
+  }
+
+  const update = (dt: number, eye?: THREE.Vector3) => {
     // the working furniture eases on the same clock as the doors. The shadow
     // maps it dirties are re-baked by whoever pressed the key, not from here:
     // this runs inside a Level's update, which has no way to report back
-    fittings.update(dt)
+    fittings.update(dt, eye)
     props.update(dt)
     // doors ease toward wherever the interact key last put them
     for (const d of doors) {
-      const next = d.angle + (d.target - d.angle) * (1 - Math.exp(-5.5 * dt))
+      // the body, if it is on this door's storey
+      const body = eye && eye.y > d.y && eye.y - BODY_TALL < d.y + DOOR_H ? eye : null
+      let next = d.angle + (d.target - d.angle) * (1 - Math.exp(-5.5 * dt))
+      if (body && next !== d.angle) {
+        // a step that would bring the edge inside the body's disc, or deeper
+        // into it, is cut back to where it touches: the leaf waits there
+        // for you to move, still aimed where it was going
+        const now = Math.min(BODY_DISC, leafGap(d, d.angle, body.x, body.z))
+        if (leafGap(d, next, body.x, body.z) < now) {
+          let lo = 0
+          let hi = 1
+          for (let i = 0; i < 7; i++) {
+            const mid = (lo + hi) / 2
+            if (leafGap(d, d.angle + (next - d.angle) * mid, body.x, body.z) >= now) lo = mid
+            else hi = mid
+          }
+          next = d.angle + (next - d.angle) * lo
+        }
+      }
       // a closing leaf seating back into its frame is the audible full stop
       if (d.target === 0 && Math.abs(d.angle) > 0.02 && Math.abs(next) <= 0.02) doorLatch()
       if (Math.abs(next - d.angle) > 0.00012) {
         d.angle = next
         d.pivot.rotation.y = (d.pivot.userData.baseRotY as number) + next
       }
-      // the doorway stays solid until the leaf is well out of the way
-      const solid = Math.abs(d.angle) < d.swing * 0.45
-      if (solid !== d.solid) {
-        d.solid = solid
-        if (solid) d.block.set(d.closedMin, d.closedMax)
-        else {
+      // the doorway stays solid until the leaf is well out of the way, and
+      // does not close round somebody standing in it; a leaf at rest wide
+      // open is a thin wall of its own
+      let held: Door['held'] = 'none'
+      if (Math.abs(d.angle) < d.swing * 0.45) {
+        const inDoorway =
+          body &&
+          body.x > d.closedMin.x && body.x < d.closedMax.x &&
+          body.z > d.closedMin.z && body.z < d.closedMax.z
+        held = inDoorway && d.held !== 'shut' ? 'none' : 'shut'
+      } else if (d.target !== 0 && Math.abs(d.target - d.angle) < 0.01) {
+        held = 'leaf'
+      }
+      if (held !== d.held) {
+        d.held = held
+        if (held === 'shut') d.block.set(d.closedMin, d.closedMax)
+        else if (held === 'leaf') {
+          const t = tipOf(d, d.angle)
+          d.block.min.set(Math.min(d.hx, t.x), d.y, Math.min(d.hz, t.z))
+          d.block.max.set(Math.max(d.hx, t.x), d.y + DOOR_H, Math.max(d.hz, t.z))
+          padXZ(d.block, WALL_SHOULDER)
+        } else {
           d.block.min.set(0, 0, 0)
           d.block.max.set(0, 0, 0)
         }
@@ -2389,6 +2485,27 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   const doorPrompt = (p: THREE.Vector3, gaze: THREE.Vector3) => {
     const d = findDoor(p, gaze)
     return d ? (d.target === 0 ? ('open' as const) : ('close' as const)) : null
+  }
+
+  const doorLeaves = () =>
+    doors.map((d) => {
+      const t = tipOf(d, d.angle)
+      const hu = d.axis === 'x' ? d.hz : d.hx
+      const cu = d.axis === 'x' ? d.cz : d.cx
+      return {
+        axis: d.axis, at: d.at, y: d.y, cx: d.cx, cz: d.cz,
+        hu, lu: hu + d.dir * d.reach, cu,
+        hx: d.hx, hz: d.hz, tx: t.x, tz: t.z, angle: d.angle, target: d.target,
+      }
+    })
+
+  const resetDoors = () => {
+    for (const d of doors) {
+      d.angle = d.target = 0
+      d.pivot.rotation.y = d.pivot.userData.baseRotY as number
+      d.held = 'shut'
+      d.block.set(d.closedMin, d.closedMax)
+    }
   }
 
   const useDoor = (p: THREE.Vector3, gaze: THREE.Vector3) => {
@@ -2449,7 +2566,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   }
 
   return {
-    root, update, doorPrompt, useDoor, surfaceAt,
+    root, update, doorPrompt, useDoor, doorLeaves, resetDoors, surfaceAt,
     setRoamLight, setDay, flagShadows, shadowLights, furnish,
     propPrompt: fittings.prompt,
     useProp: fittings.use,

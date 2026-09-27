@@ -65,8 +65,10 @@ player/
                      must fire when they arrive, not after they are drawn
                      inside somebody). Lean (push apart), charge, tackle,
                      stomp, trample, through one indexed `Bumpable` interface
-  chaseCam.ts        createChaseCam(): the third-person boom (v), collision-
-                     clamped, which also frames a downed body
+  chaseCam.ts        createChaseCam(): the third-person boom (f5), over the
+                     right shoulder (h swaps it), exactly clipped against the
+                     level, folding onto the head when crushed; also frames
+                     a downed body
   seating.ts         createSeating(): sitting on the furniture. A seat is a
                      cushion, a facing and a spot to stand up onto; the walk
                      freezes and the lens drops, and that is the whole of it
@@ -1194,14 +1196,16 @@ printer: t, enter or / opens it, /command runs, plain text chats online and
 works offline), `components/os/SpawnMenu.tsx` (a mail-order catalogue held
 up with q; its find line pins it open) and `components/os/Crosshair.tsx`
 (a 15-cell pixel crosshair with a one-cell ink ring, tinted by what it is
-on; the physgun reads the same `CrosshairAim`; in third person the scene
-projects the gaze's hit through the boom and hides the mark while your own
-body covers it). The catalogue is a two-page spread of plates, five across
+on; the physgun reads the same `CrosshairAim`; it stays dead centre in both
+views, and in third person CrtScene's `resolveAim` casts from the lens
+through it and aims the physgun, E and the console from the head at what it
+hit, so what the crosshair covers is what you get). The catalogue is a two-page spread of plates, five across
 and as many rows as the window allows (all 41 props fit on one spread at
 1280x800), with index tabs on the top edge for the sections, a find line,
 the curled corner or the wheel for the next spread, and the order slip
-clipped to the bottom edge. Flying, the chase boom sits over the right
-shoulder (`ChaseEnv.shoulder`) so the body is not under the crosshair. Both overlays free the pointer, CrtScene's `onLock` knows
+clipped to the bottom edge. The chase boom sits over a shoulder
+(`ChaseEnv.shoulder`), walking and flying alike, so the body is never under
+the crosshair. Both overlays free the pointer, CrtScene's `onLock` knows
 an unlock they asked for is not esc, and an esc close waits for the key to
 come up before taking the pointer back, or Chrome spends the release on
 unlocking again. A spawn lands at the crosshair's hit, never within the

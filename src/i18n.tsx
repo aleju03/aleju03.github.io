@@ -196,6 +196,8 @@ const dictionaries = {
         pauses: 'esc pauses',
         pauseNote: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {spawnMenu} props · {undo} undo · {chat} chat · {command} commands',
         voice: '{mic} mic',
+        /** only in third person, where there is a shoulder to change */
+        shoulder: '{shoulder} shoulder',
       },
       // the voice filter on the pause sheet (components/os/voiceFilters.ts),
       // in VOICE_FILTERS order
@@ -405,6 +407,7 @@ const dictionaries = {
         pauses: 'esc pausa',
         pauseNote: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {spawnMenu} objetos · {undo} deshacer · {chat} chat · {command} comandos',
         voice: '{mic} micro',
+        shoulder: '{shoulder} hombro',
       },
       voiceFx: {
         label: 'tu voz',
