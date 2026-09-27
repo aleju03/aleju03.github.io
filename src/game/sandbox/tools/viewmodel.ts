@@ -49,6 +49,15 @@ import { buildGripMitten } from './viewHand'
   the chase camera over that shoulder. The belt says which of the two
   guns is out; the springs, the bob and the draw are shared.
 
+  **The portal gun** (slot 4, once taken from the catalogue) is a third
+  model on the same programs again: a cream shell over a slate receiver, a
+  glass chamber at the front lit in the colour of the last portal it opened
+  (its own two glowing materials, which share the core's program), and three
+  long dark claws reaching past a lens. Aperture's silhouette, this world's
+  slabs and eight-sided drums, and the palette's cream and slate, not white
+  plastic; the chamber's colour eases from blue to orange rather than
+  snapping, and the claws twitch in on every shot.
+
   **The hand** is `viewHand.ts`: one smooth surface drawn the way the body is
   drawn, a mitten closed round the grip with a stub of forearm leaving the
   frame, in the body's colour and its vinyl sheen. Both guns' first-person
@@ -72,6 +81,7 @@ import { buildGripMitten } from './viewHand'
 */
 
 const SLATE = '#5a6478'
+const CREAM = '#d9d2bf'
 const SLATE_DARK = '#2a2f3a'
 const STEEL = '#9aa3b0'
 const OCHRE = '#c08a2e'
@@ -101,6 +111,9 @@ const FP_TURN = new THREE.Euler(0.03, 0, -0.3, 'YXZ')
 /** the tool gun's: nearly level, and yawed a little so its left flank and
     barrel show past the screen (which faces the eye whatever this is) */
 const TOOL_TURN = new THREE.Euler(0.04, 0.16, -0.08, 'YXZ')
+/** the portal gun's: rolled a touch less than the physgun, so the chamber
+    and the top claw both show */
+const PORTAL_TURN = new THREE.Euler(0.1, 0.3, -0.18, 'YXZ')
 /** where a first-person gun points when nothing pulls it: this far down the
     crosshair, in the lens's frame */
 const CONVERGE = new THREE.Vector3(0, 0, -16)
@@ -154,6 +167,9 @@ interface Mats {
   hand: THREE.MeshStandardMaterial
   core: THREE.MeshBasicMaterial
   lens: THREE.MeshBasicMaterial
+  cream: THREE.MeshStandardMaterial
+  /** the portal gun's chamber, in the last portal's colour */
+  portal: THREE.MeshBasicMaterial
 }
 
 const makeMats = (fp: boolean): Mats => {
@@ -177,8 +193,21 @@ const makeMats = (fp: boolean): Mats => {
     ),
     core: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
     lens: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
+    cream: std(CREAM, 0.55, 0.1),
+    portal: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: PORTAL_GLOW[0].clone() })), fp),
   }
 }
+
+/** the portal gun's chamber, blue and orange, linear and HDR */
+const PORTAL_GLOW = [new THREE.Color(0.1, 0.8, 3.4), new THREE.Color(3.4, 1.0, 0.06)] as const
+
+/**
+ * A surface for things this world builds around the portals (the Moon's
+ * slab), on the viewmodel's program: a flat-shaded standard material with the
+ * depth squeeze switched off, which links nothing the belt has not already.
+ */
+export const portalWorldMaterial = (color: THREE.ColorRepresentation, rough = 0.8, metal = 0.1) =>
+  vmMaterial(new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal, flatShading: true }), false)
 
 /** geometries, shared by both copies of the gun */
 interface Geos {
@@ -362,6 +391,73 @@ const buildToolgun = (g: Geos, mats: Mats, hand: THREE.BufferGeometry | null, sc
   return { root, muzzle, bezel }
 }
 
+interface PortalGun {
+  root: THREE.Group
+  muzzle: THREE.Object3D
+  claws: THREE.Group[]
+}
+
+/** the portal gun: origin at the grip, forward -z, the physgun's materials
+    plus the cream shell and the chamber. `hand` as the tool gun's */
+const buildPortalgun = (g: Geos, mats: Mats, hand: THREE.BufferGeometry | null): PortalGun => {
+  const root = new THREE.Group()
+  const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number, parent: THREE.Object3D = root) => {
+    const mesh = new THREE.Mesh(geo, m)
+    mesh.position.set(x, y, z)
+    parent.add(mesh)
+    return mesh
+  }
+  // the back: a slate receiver under a fat cream shell tapering to a
+  // rounded tail, a slate ring round the tail, and a lit strip along the top
+  // that shows the last portal's colour from behind
+  add(g.box(0.2, 0.16, 0.36), mats.slate, 0, 0.08, 0.04)
+  add(g.drum(0.15, 0.4, 8), mats.cream, 0, 0.17, 0.0)
+  add(g.drum(0.145, 0.1, 8, 0.09), mats.cream, 0, 0.17, 0.25)
+  add(g.drum(0.152, 0.03, 8), mats.slate, 0, 0.17, 0.17)
+  add(g.box(0.06, 0.035, 0.3), mats.dark, 0, 0.32, -0.01)
+  add(g.box(0.03, 0.02, 0.26), mats.portal, 0, 0.34, -0.01)
+  // a waist band, and the chamber: glass lit in the portal's colour, caged
+  // by four dark ribs so the light shows through the gaps
+  add(g.drum(0.165, 0.05, 8), mats.dark, 0, 0.17, -0.22)
+  add(g.drum(0.11, 0.2, 8), mats.portal, 0, 0.17, -0.35)
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4
+    const rib = add(g.box(0.03, 0.03, 0.22), mats.dark, Math.cos(a) * 0.12, 0.17 + Math.sin(a) * 0.12, -0.35)
+    rib.rotation.z = a
+  }
+  // the front collar and the lens the shot leaves by
+  add(g.drum(0.14, 0.05, 8), mats.cream, 0, 0.17, -0.47)
+  add(g.drum(0.07, 0.03, 8), mats.portal, 0, 0.17, -0.5)
+  const muzzle = new THREE.Object3D()
+  muzzle.position.set(0, 0.17, -0.6)
+  root.add(muzzle)
+  // three long claws, hinged on the collar: the top one straight, the two
+  // lower ones splayed, each with a glowing tip
+  const claws: THREE.Group[] = []
+  for (const a of [Math.PI / 2, Math.PI / 2 + (Math.PI * 2) / 3, Math.PI / 2 - (Math.PI * 2) / 3]) {
+    const hinge = new THREE.Group()
+    hinge.position.set(Math.cos(a) * 0.13, 0.17 + Math.sin(a) * 0.13, -0.47)
+    hinge.rotation.z = a - Math.PI / 2
+    root.add(hinge)
+    add(g.box(0.04, 0.035, 0.26), mats.dark, 0, 0, -0.13, hinge)
+    add(g.box(0.042, 0.012, 0.2), mats.cream, 0, 0.022, -0.12, hinge)
+    const tip = add(g.box(0.035, 0.03, 0.08), mats.portal, 0, -0.018, -0.28, hinge)
+    tip.rotation.x = -0.4
+    claws.push(hinge)
+  }
+  // grip, trigger, guard, and the mitten on it (first person only)
+  const grip = add(g.box(0.08, 0.26, 0.11), mats.rubber, 0, -0.1, 0.06)
+  grip.rotation.x = -0.28
+  add(g.box(0.025, 0.06, 0.03), mats.dark, 0, -0.03, -0.05)
+  add(g.box(0.03, 0.02, 0.14), mats.dark, 0, -0.07, -0.04)
+  if (hand) add(hand, mats.hand, 0, 0, 0)
+  root.traverse((o) => {
+    o.castShadow = false
+    o.receiveShadow = false
+  })
+  return { root, muzzle, claws }
+}
+
 /*
   The screen's picture. The look draws about 400 lines at render scale 1 and
   the panel lands on roughly 58 by 36 of them in first person, so the canvas
@@ -534,8 +630,10 @@ export interface ViewFrame {
   /** drawn at all (the physgun is out, nobody is driving) */
   shown: boolean
   /** which gun is out (default the physgun) */
-  tool?: 'physgun' | 'toolgun'
+  tool?: ViewTool
 }
+
+export type ViewTool = 'physgun' | 'toolgun' | 'portalgun'
 
 export interface Viewmodel {
   readonly root: THREE.Group
@@ -552,6 +650,9 @@ export interface Viewmodel {
   setHandColor: (c: THREE.ColorRepresentation) => void
   /** what the tool gun's screen says: a big line and a small one */
   setScreen: (a: string, b: string) => void
+  /** the portal gun fired this colour (0 blue, 1 orange): the chamber turns
+      to it and the claws twitch */
+  portalShot: (color: 0 | 1) => void
   stage: (camera: THREE.Camera) => void
   unstage: () => void
   dispose: () => void
@@ -603,12 +704,19 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   const tpTool = buildToolgun(geos, tpGun.mats, null, tpScreen)
   faceTheEye(fpTool.bezel)
   screen.draw('WELD', 'A')
-  // each copy is a holder for both guns; the belt says which is out
+  const fpPortal = buildPortalgun(geos, fpGun.mats, mitten)
+  const tpPortal = buildPortalgun(geos, tpGun.mats, null)
+  // each copy is a holder for every gun; the belt says which is out
   const fp = new THREE.Group()
   const tp = new THREE.Group()
-  fp.add(fpGun.root, fpTool.root)
-  tp.add(tpGun.root, tpTool.root)
-  let which: 'physgun' | 'toolgun' = 'physgun'
+  fp.add(fpGun.root, fpTool.root, fpPortal.root)
+  tp.add(tpGun.root, tpTool.root, tpPortal.root)
+  let which: ViewTool = 'physgun'
+  /** the chamber's colour, eased toward the last shot's */
+  let portalHue = 0
+  let portalWant = 0
+  let claw = 0
+  let clawV = 0
   for (const g of [fp, tp]) {
     g.traverse((o) => {
       o.frustumCulled = false
@@ -667,6 +775,16 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     which = f.tool ?? 'physgun'
     fpGun.root.visible = tpGun.root.visible = which === 'physgun'
     fpTool.root.visible = tpTool.root.visible = which === 'toolgun'
+    fpPortal.root.visible = tpPortal.root.visible = which === 'portalgun'
+    if (which === 'portalgun') {
+      portalHue += (portalWant - portalHue) * (1 - Math.exp(-dt * 12))
+      ;[claw, clawV] = spring(claw, clawV, 0, 30, 0.35, dt)
+      for (const gun of [fpGun, tpGun]) {
+        gun.mats.portal.color.copy(PORTAL_GLOW[0]).lerp(PORTAL_GLOW[1], portalHue)
+          .multiplyScalar(0.92 + 0.08 * Math.sin(time * 29))
+      }
+      for (const pg of [fpPortal, tpPortal]) for (const c of pg.claws) c.rotation.x = -claw * 0.35
+    }
     fp.visible = visible && f.firstPerson
     tp.visible = visible && !f.firstPerson
 
@@ -747,7 +865,7 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       fp.position.applyMatrix4(cam.matrixWorld)
       fp.quaternion.copy(cam.quaternion).multiply(aimQ)
       // then the gun's own turn, and the springs' sway on top
-      const turn = which === 'toolgun' ? TOOL_TURN : FP_TURN
+      const turn = which === 'toolgun' ? TOOL_TURN : which === 'portalgun' ? PORTAL_TURN : FP_TURN
       eul.set(turn.x + rot.x, turn.y + rot.y, turn.z + rot.z, 'YXZ')
       fp.quaternion.multiply(q.setFromEuler(eul))
     } else aimed = false
@@ -773,7 +891,9 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
 
   const muzzle = (pos: THREE.Vector3, dir: THREE.Vector3) => {
     const holder = usingFp ? fp : tp
-    const m = which === 'toolgun' ? (usingFp ? fpTool : tpTool).muzzle : (usingFp ? fpGun : tpGun).muzzle
+    const m = which === 'toolgun' ? (usingFp ? fpTool : tpTool).muzzle
+      : which === 'portalgun' ? (usingFp ? fpPortal : tpPortal).muzzle
+      : (usingFp ? fpGun : tpGun).muzzle
     holder.updateMatrixWorld(true)
     m.getWorldPosition(pos)
     dir.set(0, 0, -1).applyQuaternion(holder.quaternion).normalize()
@@ -792,6 +912,7 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     tp.visible = true
     // both guns in both copies, so every program either draws is linked
     fpGun.root.visible = tpGun.root.visible = fpTool.root.visible = tpTool.root.visible = true
+    fpPortal.root.visible = tpPortal.root.visible = true
     fp.position.copy(FP_OFFSET).applyMatrix4(camera.matrixWorld)
     fp.quaternion.copy(camera.quaternion)
     tp.position.set(-0.6, -0.2, -2.5).applyMatrix4(camera.matrixWorld)
@@ -819,6 +940,12 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       }
     },
     setScreen: (a, b) => screen.draw(a, b),
+    portalShot: (color) => {
+      portalWant = color
+      clawV += 7
+      offV.z += 1.2
+      rotV.x += 3.5
+    },
     stage,
     unstage,
     dispose: () => {

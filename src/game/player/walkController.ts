@@ -163,6 +163,12 @@ export interface WalkController {
       the walk was carrying is mostly lost and the keys do nothing for that
       many seconds. Ignored in noclip */
   push: (vx: number, vy: number, vz: number, stun?: number) => void
+  /** carried out of a portal (sandbox/tools/portals.ts) at this velocity,
+      all three axes: the walk's own speed takes as much of the planar part
+      as a run could, and the rest is the drift a flight leaves, which only
+      air drag and a landing take away. Always leaves the ground, so a fall
+      into a floor portal comes out of a wall portal as a flight */
+  fling: (vx: number, vy: number, vz: number) => void
   /** kill planar velocity only (the moment a level cut triggers) */
   haltPlanar: () => void
   /** zero all motion state (level swap, sitting down) */
@@ -401,6 +407,19 @@ export function createWalkController(
         grounded = false
         vy = Math.max(vy, py)
       }
+    },
+    fling: (vx, vyIn, vz) => {
+      if (noclip) {
+        fly.set(vx, vyIn, vz)
+        return
+      }
+      const planar = Math.hypot(vx, vz)
+      const k = planar > tune.runSpeed ? tune.runSpeed / planar : 1
+      vel.set(vx * k, 0, vz * k)
+      drift.set(vx - vel.x, 0, vz - vel.z)
+      shove.set(0, 0, 0)
+      vy = vyIn
+      grounded = false
     },
     haltPlanar: () => {
       vel.set(0, 0, 0)

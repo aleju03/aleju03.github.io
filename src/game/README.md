@@ -686,6 +686,16 @@ scattered, and no screenshot was ever going to say otherwise.
   streamer every frame), never an accumulated delta, so a chunk rebuilt on
   a tier change picks the sails up where the old one left them; and its
   StructureRec lists it, so opening the mill into pieces hides it.
+- **The portal gun is the other way there** (`sandbox/tools/portalMoon.ts`).
+  A shot at the sky's Moon by night opens on a fixed spot on the Moon (a dark
+  slab on the landing pad, facing the Earth); going through is the level
+  system's `cross`, the same swap as a seamless seam with nobody moved,
+  because the portal places the walker in the Moon level's own coordinates.
+  Looking through from the Earth dresses the scene as the Moon for one pass
+  (`outsideWorld.moonPortal.dress`: its ground at the level's origin, the
+  Earth's ground put away, the Moon's sun, the Earth hung low in its black
+  sky, no air) and undresses it after; looking back from the Moon shows a
+  snapshot of the Earth's side taken as you stepped through.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs
@@ -850,6 +860,22 @@ sandbox/
                   clicks, R steps the mode), each joint one undo entry
     toolgunText.ts  its words in both languages, import-free for the scene
     scenarios.ts  the films: swing, rotate, heavy, throw, ragdoll, each -3p
+    portals.ts    slot 4, the portal gun's world: placing a portal (a ray,
+                  then a fit to the box and to the drawn wall), the pair's
+                  transform, the walls that step aside for the walker, the
+                  hole in the terrain, the crossing, and props carried
+                  through by touch. Headless
+    portalWalk.ts the walker's two calls round its step (before: aperture
+                  and hole; after: the carry, gaze and velocity turned)
+    portalView.ts the ovals and the view through each: the scene again from
+                  the lens carried through the pair, oblique near plane,
+                  cropped to the oval, sampled in screen space so the look
+                  grades it with everything else
+    portalMoon.ts the Moon by portal: the sky shot, the slab, the far side
+                  made ready a slice a frame, the dressed view there and
+                  the snapshot of the Earth's side for the view back
+    portalSfx.ts  its shot, opening, fizzle and whoosh
+    portalThumb.ts  its catalogue plate, painted cell by cell
   destruction.ts  buildings coming down: damage from blasts, impacts, cars
                 and the console; storeys failing under their load; rubble
                 that breaks up level by level as it lands; the budget
@@ -1297,6 +1323,59 @@ npm run measure -- physics contraptions all three headless, twice for the
 npm run drive -- contraption            the real game: parts tab, tool gun,
                                         the car from its seat, the rocket
 ```
+
+### The portals
+
+The catalogue's Tools tab hands over a portal gun (slot 4, `4` draws it):
+left click opens the blue portal and right click the orange on whatever
+surface is under the crosshair, and R closes both. It is Portal's rules
+drawn through this world's machinery:
+
+- **A portal has to fit.** The shot is a ray against the level's collision
+  boxes, its ground and its props (a prop or the sea fizzles it); then the
+  oval must lie flat on the surface, which is a dozen short rays down the
+  normal from points round its rim, against the boxes *and* against the
+  drawn wall (`soupAround`: the few hundred triangles near the hit that face
+  the shot), because a box stands a shoulder's width proud of its wall and
+  can run past the building's corner. A shot near an edge is nudged inward,
+  a wall shot a little above a floor slides down to stand on it, and a
+  floor or ceiling portal turns its top the way you were looking.
+- **One matrix carries everything.** Going in one is coming out of the
+  other turned half round its up axis, so `orange * flip * blue^-1` maps the
+  walker's centre, its gaze and its velocity alike, and a fall into a floor
+  portal at 46 u/s leaves a wall portal at 46 u/s. The walker comes out
+  upright (it never rolls) and flung (`walk.fling`: the run takes what a
+  run can hold, the rest is drift that only air and a landing take away).
+- **The wall steps aside.** The walk is a point among boxes, so while its
+  centre is in front of an open oval the boxes the portal lies on are
+  `through` (collision.ts skips them) and the terrain under a floor portal
+  is a hole; the crossing is the centre or the eye passing the plane inside
+  the oval between two steps.
+- **Props go through by touch.** A Rapier body cannot enter the wall, so a
+  prop over an oval, moving into it (or resting on a floor portal) and
+  closer than its own half-depth is moved out of the partner with its pose,
+  velocity and spin turned. Held, frozen and parked props stay put.
+- **The view is the scene again.** Each visible portal with a partner
+  renders the scene from the lens carried through the pair into a target
+  the size of the look's own, with an oblique near plane on the exit (a
+  projection, not a clipping plane, which would relink every material) and
+  the frustum cropped to the oval's rectangle on screen; the oval samples it
+  at `gl_FragCoord`, so the far side goes through the grade, the posterize
+  and the outlines with everything else. No recursion: during the passes
+  every oval shows its closed swirl. Measured downtown on an RTX-class card,
+  one on-screen portal costs about 1 to 3.5 ms a frame depending on what is
+  behind the exit; a shot costs about a millisecond.
+- **The Moon is one shot away at night.** Fire at the Moon in the sky and
+  that portal opens on a slab on the Moon (see "Leaving the planet"); its
+  oval swirls shut until the Moon's ground and the Earth in its sky have been
+  made, a few seconds of a two-millisecond slice a frame. The view from the
+  Earth is live (about 0.7 ms a frame, measured) and written with the look's
+  light code, since it is another level's daylight: this level's night grade
+  and its headlamp leave it alone (the headlamp read the sunlit regolith as
+  albedo and burned it white). The view back from the Moon is a snapshot,
+  lifted by how dark the night it was taken in was.
+- **Local only.** Portals are not on the wire; each player's pair is their
+  own.
 
 ### The console, the keys and undo
 

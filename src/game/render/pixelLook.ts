@@ -261,6 +261,10 @@ export interface PixelLook {
   addHole: (mesh: THREE.Mesh) => void
   /** link every program now, under whatever is covering the boot */
   compile: () => void
+  /** size the targets for the renderer's current viewport now, ahead of a
+      render, and say what the scene target will be: a pass that has to match
+      it pixel for pixel (the portals' views) sizes itself off this */
+  fitNow: () => { w: number; h: number; k: number }
   /** what the last render actually drew at, for HUDs and measurements */
   readonly internal: { w: number; h: number; k: number }
   dispose: () => void
@@ -528,6 +532,13 @@ export const createPixelLook = (
     U.uFlashCol.value.copy(fl.color)
   }
 
+  const fitNow = () => {
+    renderer.getViewport(vp)
+    const pr = renderer.getPixelRatio()
+    fit(Math.max(1, Math.round(vp.z * pr)), Math.max(1, Math.round(vp.w * pr)))
+    return internal
+  }
+
   const render = (scene: THREE.Scene, camera: THREE.Camera) => {
     const prevTarget = renderer.getRenderTarget()
     const autoClear = renderer.autoClear
@@ -622,6 +633,7 @@ export const createPixelLook = (
     setGrade,
     addHole,
     compile,
+    fitNow,
     internal,
     dispose,
   }

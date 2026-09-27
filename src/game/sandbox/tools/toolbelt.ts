@@ -7,6 +7,9 @@ import type { RigEntry, ToolInput, VehicleGrab } from './types'
 import { createViewmodel, type Viewmodel } from './viewmodel'
 import { createToolgun, toolgunScreen, type Toolgun } from './toolgun'
 import { contraptionOf, type Contraption } from '../contraption/contraption'
+import { createPortals, type PortalColor, type Portals, type PortalWorld } from './portals'
+import { createPortalSfx } from './portalSfx'
+import { createPortalView, type PortalView } from './portalView'
 
 /*
   The tool belt: which thing is in your hand, and the one object CrtScene
@@ -14,9 +17,18 @@ import { contraptionOf, type Contraption } from '../contraption/contraption'
 
   Slots are GMod's: 1 is your hands (nothing drawn, E uses doors and seats
   the way it always has), 2 is the physgun, 3 is the tool gun (toolgun.ts:
-  weld, axis, rope, no-collide, keys, remove). The wheel cycles slots while
-  nothing is held, and belongs to the physgun's distance while something is.
-  A slot with nothing in it is skipped.
+  weld, axis, rope, no-collide, keys, remove). 4 is the portal gun
+  (portals.ts), which is not carried until it is taken from the catalogue
+  (`give`): left click opens the blue portal, right click the orange, R
+  closes both. The wheel cycles slots while nothing is held, and belongs to
+  the physgun's distance while something is. A slot with nothing in it, or a
+  tool not yet given, is skipped.
+
+  The portals themselves outlive the gun being out: they stay open with any
+  tool in hand, and the belt carries props through them after every fixed
+  slice of the live sandbox. What a shot lands on is asked of the live level
+  (`portalWorld`), and a shot that finds nothing is offered to
+  `portalElsewhere` before it fizzles (the Moon in the night sky).
 
   The belt is also where the contraption controller (contraption/) gets its
   keys: every `update` hands the live sandbox's contraption this frame's key
@@ -37,13 +49,16 @@ import { contraptionOf, type Contraption } from '../contraption/contraption'
   measure harness and a future authoritative server would run.
 
   Everything the beam's look needs to compile (the viewmodel's two programs,
-  the ribbon, the sprites, the halo shell) is built here at construction and
+  the ribbon, the sprites, the halo shell, the portals' ovals) is built here
+  at construction and
   shown to a camera by `stage()` so it can be compiled and first-drawn under
   the boot cover; `unstage()` puts it all back.
 */
 
-export type ToolId = 'hands' | 'physgun' | 'toolgun'
-export const SLOTS: readonly (ToolId | null)[] = ['hands', 'physgun', 'toolgun']
+export type ToolId = 'hands' | 'physgun' | 'toolgun' | 'portalgun'
+export const SLOTS: readonly (ToolId | null)[] = ['hands', 'physgun', 'toolgun', 'portalgun']
+/** carried from the start; the rest are given */
+const STARTER: readonly ToolId[] = ['hands', 'physgun', 'toolgun']
 
 export interface ToolbeltOpts {
   sb: Sandbox
@@ -59,6 +74,13 @@ export interface ToolbeltOpts {
   slot?: number
   /** synthesize the physgun's sound (default: when drawn) */
   sound?: boolean
+  /** the renderer the portals' views are drawn with; omit and the ovals
+      are not built (headless) */
+  renderer?: THREE.WebGLRenderer | null
+  /** the live level as the portal gun sees it (null: no portals here) */
+  portalWorld?: () => PortalWorld | null
+  /** a portal shot that hit nothing: open it somewhere else, or say no */
+  portalElsewhere?: (color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3) => boolean
 }
 
 export interface ToolFrame {
@@ -87,6 +109,13 @@ export interface Toolbelt {
   cycle: (dir: number) => void
   readonly physgun: Physgun
   readonly toolgun: Toolgun
+  /** the blue and the orange portal, and everything that goes through them */
+  readonly portals: Portals
+  /** hand over a tool the belt does not carry yet (the catalogue's portal
+      gun); returns false when it was carried already */
+  give: (tool: ToolId) => boolean
+  /** is this tool carried */
+  has: (tool: ToolId) => boolean
   /** the live sandbox's contraptions (the parts, the joints, the drive) */
   readonly contraption: Contraption
   /** the language the tool gun's screen is written in */
@@ -113,6 +142,8 @@ export interface Toolbelt {
   unstage: () => void
   readonly beam: Beam | null
   readonly viewmodel: Viewmodel | null
+  /** the ovals and the views through them, when drawn */
+  readonly portalView: PortalView | null
   dispose: () => void
 }
 
@@ -132,6 +163,13 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     vehicles: o.vehicles,
   })
   const toolgun = createToolgun(sb)
+  const portals = createPortals()
+  const owned = new Set<ToolId>(STARTER)
+  const portalSfx = (o.sound ?? !!o.parent) ? createPortalSfx() : null
+  const portalView = o.parent && o.renderer ? createPortalView(portals, o.parent, o.renderer) : null
+  let portalFireWas = false
+  let portalAltWas = false
+  let portalCloseWas = false
   let lang: 'en' | 'es' = 'en'
   /** the tool gun's tracer: the beam flicked to where a click landed */
   let tracer = 0
@@ -225,8 +263,46 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     }
   })
 
+  const offPortals = portals.on((e) => {
+    switch (e.type) {
+      case 'open':
+        portalSfx?.open(e.color)
+        sb.fx.zap(e.point, portals.list[e.color]?.n ?? e.point)
+        break
+      case 'fizzle':
+        portalSfx?.fizzle()
+        sb.fx.dust(e.point, 0.6)
+        break
+      case 'close':
+        portalSfx?.close()
+        break
+      case 'pass':
+        if (e.prop >= 0) portalSfx?.pass()
+        break
+    }
+  })
+  /** props through the portals, after every slice of the live sandbox */
+  const carry = () => {
+    const w = o.portalWorld?.()
+    if (w) portals.carryProps(sb, w.level, physgun.prop?.id ?? null)
+  }
+  let offCarry = sb.onAfterSlice(carry)
+
+  const firePortal = (color: PortalColor, input: ToolInput) => {
+    vm?.portalShot(color)
+    portalSfx?.shot(color)
+    const w = o.portalWorld?.()
+    if (!w) return
+    const shot = portals.fire(color, input.aim.eye, input.aim.dir, w)
+    // nothing solid down the ray: the sky may have somewhere to put it
+    if (!shot.ok && shot.reason === 'miss' && !o.portalElsewhere?.(color, input.aim.eye, input.aim.dir)) {
+      portalSfx?.fizzle()
+    }
+  }
+
   const select = (s: number) => {
     if (s < 0 || s >= SLOTS.length || !SLOTS[s] || s === slot) return
+    if (!owned.has(SLOTS[s]!)) return
     if (physgun.holding) physgun.release(false)
     toolgun.cancel()
     slot = s
@@ -234,7 +310,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   const cycle = (dir: number) => {
     for (let k = 1; k <= SLOTS.length; k++) {
       const s = (((slot + dir * k) % SLOTS.length) + SLOTS.length) % SLOTS.length
-      if (SLOTS[s]) {
+      if (SLOTS[s] && owned.has(SLOTS[s]!)) {
         select(s)
         return
       }
@@ -264,6 +340,15 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     if (SLOTS[slot] === 'physgun') physgun.update(input)
     else if (physgun.holding) physgun.release(false)
     if (SLOTS[slot] === 'toolgun') toolgun.update(input)
+    if (SLOTS[slot] === 'portalgun') {
+      // a click opens one; holding it down does not keep firing
+      if (input.fire && !portalFireWas) firePortal(0, input)
+      else if (input.alt && !portalAltWas) firePortal(1, input)
+      if (input.reload && !portalCloseWas) portals.close()
+      portalFireWas = input.fire
+      portalAltWas = input.alt
+      portalCloseWas = input.reload
+    } else portalFireWas = portalAltWas = portalCloseWas = false
     // a hoverball carried on the beam holds wherever it is let go
     con.held = physgun.prop?.id ?? null
   }
@@ -277,6 +362,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     const tool = SLOTS[slot]
     const shown = f.active && tool === 'physgun'
     const toolOut = f.active && tool === 'toolgun'
+    const portalOut = f.active && tool === 'portalgun'
+    portals.tick(f.dt)
     tracer = Math.max(0, tracer - f.dt)
     if (physgun.holding) aimAt.copy(physgun.view.target)
     else if (physgun.view.mode === 'miss') aimAt.copy(physgun.view.end)
@@ -289,12 +376,12 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       vm.update({
         camera: f.camera, dt: f.dt, gait: f.gait, grounded: f.grounded,
         holding: physgun.holding, strain: physgun.view.strain,
-        firstPerson: f.firstPerson, hand: f.hand, handL: f.handL, aim: aimDir, aimAt, shown: shown || toolOut,
-        tool: tool === 'toolgun' ? 'toolgun' : 'physgun',
+        firstPerson: f.firstPerson, hand: f.hand, handL: f.handL, aim: aimDir, aimAt, shown: shown || toolOut || portalOut,
+        tool: tool === 'toolgun' || tool === 'portalgun' ? tool : 'physgun',
       })
     }
     if (beam) {
-      if (vm && (shown || toolOut)) vm.muzzle(muzzle, forward)
+      if (vm && (shown || toolOut || portalOut)) vm.muzzle(muzzle, forward)
       else {
         f.camera.getWorldDirection(forward)
         muzzle.copy(f.camera.position).addScaledVector(forward, 0.8)
@@ -306,6 +393,13 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
         beam.holdHalo(pend?.mesh ?? null)
         beam.update({
           muzzle, forward, end: tracerEnd, target: tracerEnd, mode: tracer > 0 ? 'miss' : 'off',
+          strain: 0, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
+        })
+      } else if (portalOut) {
+        // the portal gun draws no beam: its shot is the oval opening
+        beam.holdHalo(null)
+        beam.update({
+          muzzle, forward, end: tracerEnd, target: tracerEnd, mode: 'off',
           strain: 0, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
         })
       } else {
@@ -330,6 +424,13 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     cycle,
     physgun,
     toolgun,
+    portals,
+    give: (tool) => {
+      if (owned.has(tool)) return false
+      owned.add(tool)
+      return true
+    },
+    has: (tool) => owned.has(tool),
     get contraption() {
       return con
     },
@@ -368,21 +469,29 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       con = contraptionOf(next)
       physgun.retarget(next)
       toolgun.retarget(next)
+      offCarry()
+      offCarry = next.onAfterSlice(carry)
     },
     setHandColor: (c) => vm?.setHandColor(c),
     stage: (camera) => {
       vm?.stage(camera)
       beam?.stage(camera)
+      portalView?.stage(camera)
     },
     unstage: () => {
       vm?.unstage()
       beam?.unstage()
+      portalView?.unstage()
     },
     beam,
     viewmodel: vm,
+    portalView,
     dispose: () => {
       offEvents()
       offTool()
+      offPortals()
+      offCarry()
+      portalView?.dispose()
       toolgun.dispose()
       physgun.dispose()
       beam?.dispose()
@@ -391,3 +500,9 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     },
   }
 }
+
+// the walker's side of the portals and their way to the Moon, for the scene
+// that owns the walk and the levels
+export { createPortalWalk, type PortalWalk } from './portalWalk'
+export { createPortalMoon, type PortalMoon } from './portalMoon'
+export { portalWorldMaterial } from './viewmodel'

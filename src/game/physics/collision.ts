@@ -20,6 +20,10 @@ import * as THREE from 'three'
   of the walls, so anything whose box is taller than the thing it wraps says
   so at registration.
 
+  A box may also be `through` for a frame: a portal is open in it where the
+  walker stands (sandbox/tools/portals.ts), and all three questions below
+  skip it until the body has gone through or stepped away.
+
   The other is `hull`, and it exists because one class of solid moves: a
   vehicle. Everything the world builds is axis-aligned by construction, so an
   AABB costs it nothing — but a 9.4-unit car parked at forty-five degrees has
@@ -105,6 +109,10 @@ export interface Breakable {
     honest without asking every builder for real geometry. */
 export interface Solid extends THREE.Box3 {
   noStand?: boolean
+  /** a portal is open in it where the walker stands this frame
+      (sandbox/tools/portals.ts): it is no wall and no floor until the body
+      has gone through or stepped away */
+  through?: boolean
   hull?: Hull
   breaks?: Breakable
 }
@@ -300,7 +308,7 @@ export const supportY = (
 ) => {
   let top = floorY
   for (const b of set.boxes) {
-    if (b.noStand || b.max.y <= b.min.y || b.max.y <= top) continue
+    if (b.noStand || b.through || b.max.y <= b.min.y || b.max.y <= top) continue
     // out of reach culls a plain box outright, but a hull's box top is the
     // whole body's highest point — the bonnet under the player's feet can be
     // well inside a reach the roof is well outside of, so it has to be asked
@@ -333,6 +341,7 @@ export const blockedAt = (
   if (x < set.bounds.minX || x > set.bounds.maxX) return true
   if (z < set.bounds.minZ || z > set.bounds.maxZ) return true
   for (const b of set.boxes) {
+    if (b.through) continue
     const walkable = b.noStand ? footY : footY + stepUp
     if (b.max.y <= walkable || b.min.y >= headY) continue
     if (!(x > b.min.x && x < b.max.x && z > b.min.z && z < b.max.z)) continue
@@ -363,6 +372,7 @@ export const resolveXZ = (
     // so there is nothing to climb onto and it stays a wall to the last
     // millimetre — but it still stops blocking once the feet clear it,
     // which is what lets a walk cross a low rail from something taller.
+    if (b.through) continue
     const walkable = b.noStand ? footY : footY + stepUp
     if (b.max.y <= walkable || b.min.y >= headY) continue
     if (!(p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z)) continue

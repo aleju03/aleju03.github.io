@@ -58,7 +58,11 @@ import {
     the Moon (`setVenue('moon')`) this same module draws its sky: no ground
     of the Earth's, the Moon's terrain in its own coordinates and the globe's
     Moon past it, black air, and the Earth hung where it was when you came
-    in.
+    in. The portal gun reaches the same Moon a second way (`moonPortal`): a
+    shot at the sky's Moon by night opens on a fixed spot there, whose
+    ground and whose Earth this module makes ready a slice a frame, and the
+    view through the pair dresses the scene as the Moon for the one pass
+    (`dress`) and puts the night back after.
 
   The one thing the room tier cannot skip is *something to see out of the
   windows*. Past the yard fence the streamed terrain is simply absent, which
@@ -191,6 +195,26 @@ export interface OutsideHandles {
     ground: SandboxGround
     obstacles: Solid[]
     readonly spawn: { x: number; z: number; y: number; yaw: number }
+  }
+  /** the portal gun's way to the Moon (sandbox/tools/portalMoon.ts) */
+  moonPortal: {
+    /** the sky's Moon from the lens, when it is up over the Earth's ground
+        at night (and the lens is not up in the sky, where it is a body) */
+    skyMoon: (out: THREE.Vector3) => boolean
+    /** the Moon's drawn ground, once the world is here: a portal there and
+        the slab it stands on ride it */
+    root: () => THREE.Object3D | null
+    /** a slice of making the far side ready: the Moon's ground, and the
+        Earth to hang in its sky, painted round (x, z). True once both are */
+    prepare: (x: number, z: number, ms: number) => boolean
+    /** a trip by portal arrives in this frame: the Earth hangs along
+        `earthDir`, the Moon's own sun, nothing swung */
+    land: (earthDir: THREE.Vector3) => void
+    /** draw the scene as the Moon for one pass from `cam` (its ground where
+        the level puts it, the Earth's hidden, the sun the Moon's, the Earth
+        hung in its sky). Returns the undressing, or null when it cannot be
+        done here (up in the sky, where the globes are the sky's own) */
+    dress: (cam: THREE.Vector3) => (() => void) | null
   }
   /** the scene's sun and sky light, for the globes (they light themselves the
       way the ground under them is lit) */
@@ -721,6 +745,100 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     return state
   }
 
+  /* ---- the portal gun's Moon (see the header) ---- */
+  const dressSun = new THREE.Vector3()
+  const dressSave = {
+    sunPos: new THREE.Vector3(), sunTarget: new THREE.Vector3(), sunI: 0, sunColor: new THREE.Color(),
+    shadowI: 0, shadowNeeds: false, rootPos: new THREE.Vector3(), rootQ: new THREE.Quaternion(),
+    rootShown: false, groundShown: true,
+  }
+  const MOON_SUN_COLOR = new THREE.Color('#fff2dc')
+  const moonPortal: OutsideHandles['moonPortal'] = {
+    skyMoon: (out) => {
+      if (venue !== 'earth' || !w || moonAt.on || view.space > 0.12) return false
+      sky.moonDir(out)
+      // up, and clear of the skyline: the disc sits low for a while at dusk
+      return out.y > 0.06
+    },
+    root: () => (w ? w.moon.root : null),
+    prepare: (x, z, ms) => {
+      if (!w) return false
+      const t0 = performance.now()
+      const ground = w.moon.build(ms)
+      const g = w.globes
+      g.wantEarth(x, z)
+      g.wantMoon()
+      const left = ms - (performance.now() - t0)
+      if (left > 0) g.work(left)
+      return ground && g.earthReady
+    },
+    land: (earthDir) => {
+      landing.shift.set(0, 0, 0)
+      landing.q.identity()
+      landing.sun.set(0.6, 0.55, 0.3).normalize()
+      landing.earthDir.copy(earthDir).normalize()
+      landing.earthDist = MOON_DIST
+      landing.turned = false
+    },
+    dress: (cam) => {
+      if (!w || venue !== 'earth' || moonAt.on || view.curve > 0.04 || !w.moon.built || !w.globes.earthReady) return null
+      const sun = sky.sun
+      const root = w.moon.root
+      const S = dressSave
+      S.sunPos.copy(sun.position)
+      S.sunTarget.copy(sun.target.position)
+      S.sunI = sun.intensity
+      S.sunColor.copy(sun.color)
+      S.shadowI = sun.shadow.intensity
+      S.shadowNeeds = sun.shadow.needsUpdate
+      S.rootPos.copy(root.position)
+      S.rootQ.copy(root.quaternion)
+      S.rootShown = root.visible
+      S.groundShown = groundRoot.visible
+      // the Moon's ground where its level puts it, the Earth's put away
+      root.position.set(0, 0, 0)
+      root.quaternion.identity()
+      root.updateMatrixWorld(true)
+      root.visible = true
+      groundRoot.visible = false
+      // the Moon's sun, as its level lights it (updateMoon), and no shadow:
+      // the map is the Earth's, and this pass must not redraw it
+      dressSun.copy(landing.sun)
+      sun.target.position.set(cam.x, cam.y, cam.z + 10)
+      sun.position.copy(sun.target.position).addScaledVector(dressSun, 60)
+      sun.target.updateMatrixWorld()
+      sun.updateMatrixWorld()
+      sun.intensity = 2.3 * 2.6
+      sun.color.copy(MOON_SUN_COLOR)
+      sun.shadow.intensity = 0
+      sun.shadow.needsUpdate = false
+      // and the Earth hung in its sky, nearer and smaller as updateMoon has
+      // it, lit by the Moon's sun (its day side toward you) rather than by
+      // the night the Earth's own sky is having
+      w.globes.setSun(landing.sun, performance.now() / 1000)
+      w.globes.earthInSky(cam, landing.earthDir, EARTH_SKY_DIST, (EARTH_R * EARTH_SKY_DIST) / landing.earthDist)
+      return () => {
+        if (!w) return
+        sun.position.copy(S.sunPos)
+        sun.target.position.copy(S.sunTarget)
+        sun.target.updateMatrixWorld()
+        sun.updateMatrixWorld()
+        sun.intensity = S.sunI
+        sun.color.copy(S.sunColor)
+        sun.shadow.intensity = S.shadowI
+        sun.shadow.needsUpdate = S.shadowNeeds
+        root.position.copy(S.rootPos)
+        root.quaternion.copy(S.rootQ)
+        root.updateMatrixWorld(true)
+        root.visible = S.rootShown
+        groundRoot.visible = S.groundShown
+        w.globes.hideEarth()
+        // (sunDir still holds the direction the frame's update set)
+        w.globes.setSun(sunDir, performance.now() / 1000)
+      }
+    },
+  }
+
   const onProperty = (x: number, z: number) =>
     x > YARD.minX - 1 && x < YARD.maxX + 1 && z > YARD.minZ - 1 && z < YARD.maxZ + 1
 
@@ -842,6 +960,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       },
     },
     warmSpace: (on) => w?.globes.warm(on),
+    moonPortal,
     lightGlobes: (sun, ambient) => w?.globes.setLights(sun, ambient),
   }
 }

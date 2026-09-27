@@ -37,13 +37,13 @@ const noise = (a: AudioContext) => {
   return noiseBuf
 }
 
-const env = (g: GainNode, at: number, peak: number, attack: number, dur: number) => {
+export const env = (g: GainNode, at: number, peak: number, attack: number, dur: number) => {
   g.gain.setValueAtTime(0.0001, at)
   g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), at + attack)
   g.gain.exponentialRampToValueAtTime(0.0001, at + dur)
 }
 
-const pop = (a: AudioContext, at: number, type: BiquadFilterType, f: number, q: number, peak: number, dur: number) => {
+export const pop = (a: AudioContext, at: number, type: BiquadFilterType, f: number, q: number, peak: number, dur: number) => {
   const s = a.createBufferSource()
   s.buffer = noise(a)
   s.loop = true
@@ -58,7 +58,7 @@ const pop = (a: AudioContext, at: number, type: BiquadFilterType, f: number, q: 
   s.stop(at + dur + 0.02)
 }
 
-const sweep = (a: AudioContext, at: number, type: OscillatorType, f0: number, f1: number, peak: number, dur: number) => {
+export const sweep = (a: AudioContext, at: number, type: OscillatorType, f0: number, f1: number, peak: number, dur: number) => {
   const o = a.createOscillator()
   o.type = type
   o.frequency.setValueAtTime(f0, at)
@@ -71,7 +71,7 @@ const sweep = (a: AudioContext, at: number, type: OscillatorType, f0: number, f1
 }
 
 /** a spray of small noise pops: the crackle of the beam catching */
-const crackle = (a: AudioContext, at: number, n: number, span: number, peak: number) => {
+export const crackle = (a: AudioContext, at: number, n: number, span: number, peak: number) => {
   for (let i = 0; i < n; i++) {
     const t = at + Math.random() * span
     pop(a, t, 'highpass', 2200 + Math.random() * 3000, 0.8, peak * (0.4 + Math.random() * 0.6), 0.012 + Math.random() * 0.02)

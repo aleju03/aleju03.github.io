@@ -65,6 +65,26 @@
                                       and the point key aimed at a crate;
                                       links counted (must be 0). Shots to
                                       ~/.cache/overhaul/emotes (--emote-out)
+    npm run drive -- portal           the portal gun: taken from the catalogue's
+                                      tools tab, a blue and an orange portal
+                                      opened on two walls downtown and each
+                                      looked through, the frame cost with a
+                                      portal on screen (against the same view
+                                      with its partner closed), a walk through,
+                                      a fall into a floor portal flung out of
+                                      the wall one (velocity in and out
+                                      printed), a crate through the same pair;
+                                      links counted from the catalogue on
+                                      (must be 0). Shots to
+                                      ~/.cache/overhaul/portal (--portal-out)
+    npm run drive -- portalmoon       the Moon by portal, at night: blue on a
+                                      wall downtown, orange fired at the Moon
+                                      in the sky, the Moon looked at through
+                                      blue (and its cost), walked through to
+                                      the Moon, home looked at through the
+                                      slab, and walked back; links counted
+                                      (must be 0). Shots moon-* beside the
+                                      portal ones
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -103,7 +123,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--emote-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
+const VALUED = new Set(['--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -1805,13 +1825,13 @@ try {
     await look(Number(flag('yaw', Math.PI)), -0.05)
     await sleep(1200)
     await evaluate(`(() => {
-      window.__pLinks = 0
+      window.__pauseLinks = 0
       for (const c of document.querySelectorAll('canvas')) {
         const gl = c.width && c.getContext('webgl2')
         if (!gl || c.__pauseWrapped) continue
         c.__pauseWrapped = true
         const real = gl.linkProgram.bind(gl)
-        gl.linkProgram = (p) => { window.__pLinks++; real(p) }
+        gl.linkProgram = (p) => { window.__pauseLinks++; real(p) }
       }
       document.dispatchEvent(new Event('pointerlockchange'))
       return true
@@ -1836,9 +1856,338 @@ try {
     await evaluate(`[...document.querySelectorAll('nav')].filter((n) => n.querySelector('button[aria-current]')).pop().querySelectorAll('button')[1].click()`)
     await sleep(1500)
     await shot('pause-settings')
-    console.log(`  ${await evaluate('window.__pLinks')} programs linked on the game's context while paused`)
+    console.log(`  ${await evaluate('window.__pauseLinks')} programs linked on the game's context while paused`)
     await tap('Escape')
     await sleep(400)
+  }
+
+  if (WHAT.includes('portal') || WHAT.includes('portalmoon')) {
+    const moonTrip = WHAT.includes('portalmoon')
+    /*
+      The portal gun in the real game (see the header). Walls are found by
+      sweeping the view round and firing until a portal lands upright a
+      sensible walk away, which is how a player finds one too.
+    */
+    console.log('portal')
+    const P_OUT = resolve(flag('portal-out', join(process.env.HOME ?? '.', '.cache/overhaul/portal')))
+    mkdirSync(P_OUT, { recursive: true })
+    const pShot = async (name) => {
+      const path = join(P_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    await evaluate(`(() => { window.__pLinks = []; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__pWrapped) continue; gl.__pWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => {
+        const src = (gl.getAttachedShaders(p) ?? []).map((sh) => gl.getShaderSource(sh) ?? '').join('\\n')
+        const name = /#define SHADER_NAME ([^\\s]+)/.exec(src)?.[1] ?? /#define SHADER_TYPE ([^\\s]+)/.exec(src)?.[1] ?? 'raw'
+        window.__pLinks.push((window.__pPhase || '?') + ' (' + name + ')'); real(p) } } return true })()`)
+    const phase = (name) => evaluate(`window.__pPhase = ${JSON.stringify(name)}; true`)
+    await phase(moonTrip ? 'setup (to the street, night)' : 'setup (to the street)')
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const click = async (code) => {
+      await hold(code, true)
+      await sleep(90)
+      await hold(code, false)
+      await sleep(260)
+    }
+    const portalAt = (c) => evaluate(`(() => { const p = window.__tools.portals.list[${c}]; return p ? { pos: p.pos.toArray(), n: p.n.toArray(), up: p.up.toArray() } : null })()`)
+    const here = () => evaluate('window.__sandboxCamera.position.toArray()')
+    const tpFeet = (x, z, y, yaw) => evaluate(`(window.__sandbox.console.host.teleport(${x}, ${z}, ${y}, ${yaw}), true)`)
+    const f1 = (v) => v.map((n) => n.toFixed(1)).join(', ')
+
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await goTo(flag('at', '-32 -331').replace(',', ' '))
+    await sleep(6000)
+    await phase(moonTrip ? 'setup (night falls)' : 'setup (morning)')
+    await run(moonTrip ? 'time 22:30' : 'time 10:30')
+    await sleep(1500)
+    await phase('setup (standing)')
+    await stand()
+    await look(Math.PI / 2, -0.05)
+    await sleep(800)
+
+    // 1. the gun, out of the catalogue's tools tab
+    await phase('catalogue')
+    if (moonTrip) await evaluate(`(() => { window.__tools.give('portalgun'); window.__tools.select(3); return true })()`)
+    else {
+    await tap('KeyQ')
+    await sleep(400)
+    await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 4`), 60, 250, 'the catalogue icons')
+    const tab = await evaluate(`(() => { const el = document.querySelector('[data-category="tools"]'); if (!el) return false; el.click(); return true })()`)
+    if (!tab) console.log('  no tools section  <-- WRONG')
+    await sleep(900)
+    await pShot('1-catalogue-tools')
+    await evaluate(`(() => { const el = document.querySelector('[data-kind="tool:portalgun"]'); el && el.click(); return !!el })()`)
+    await sleep(500)
+    await tap('Escape')
+    await sleep(1200)
+    }
+    console.log(`  in hand: ${await evaluate('window.__tools.tool')}`)
+    if (!moonTrip) await pShot('2-gun-in-hand')
+
+    // 2. a wall for each colour
+    await phase('open')
+    await evaluate(`window.__pEv = []; window.__tools.portals.on((e) => window.__pEv.push(e.type + ':' + e.color + '@' + e.point.toArray().map((n) => n.toFixed(1)).join(','))); true`)
+    // what a shot costs the frame it is fired on (the fit and its rays)
+    await evaluate(`(() => { const P = window.__tools.portals, real = P.fire; window.__fireMs = []
+      P.fire = (...a) => { const t = performance.now(); const r = real(...a); window.__fireMs.push(performance.now() - t); return r }; return true })()`)
+    const findWall = async (color, avoid) => {
+      const eye = await here()
+      for (let k = 0; k < 24; k++) {
+        const yaw = (k / 24) * Math.PI * 2
+        await look(yaw, -0.03)
+        await click(color ? 'Mouse2' : 'Mouse0')
+        const p = await portalAt(color)
+        if (has('debug')) console.log(`    ${color ? 'orange' : 'blue'} at yaw ${yaw.toFixed(2)}: ${p ? `${f1(p.pos)} n ${f1(p.n)}` : 'none'} ${await evaluate('window.__pEv.splice(0).join(" ")')}`)
+        if (!p || Math.abs(p.n[1]) > 0.3) continue
+        const d = Math.hypot(p.pos[0] - eye[0], p.pos[2] - eye[2])
+        if (d < 6 || d > 90) continue
+        if (avoid && (Math.hypot(p.pos[0] - avoid.pos[0], p.pos[2] - avoid.pos[2]) < 8 ||
+          p.n[0] * avoid.n[0] + p.n[2] * avoid.n[2] > 0.3)) continue
+        return p
+      }
+      return null
+    }
+    const blue = await findWall(0, null)
+    const orange = blue && !moonTrip ? await findWall(1, blue) : null
+    console.log(`  blue:   ${blue ? `${f1(blue.pos)}  facing ${f1(blue.n)}` : 'none  <-- WRONG'}`)
+    if (!moonTrip) console.log(`  orange: ${orange ? `${f1(orange.pos)}  facing ${f1(orange.n)}` : 'none  <-- WRONG'}`)
+    console.log('  a shot costs ' + await evaluate(`(() => { const v = window.__fireMs.slice().sort((a, b) => a - b); return v.length ? v[v.length >> 1].toFixed(1) + ' ms median, ' + v[v.length - 1].toFixed(1) + ' ms worst over ' + v.length : '-' })()`))
+    if (moonTrip && blue) {
+      /* The Moon by portal: orange fired at the Moon in the night sky opens
+         on the slab there; blue on its wall downtown is then looked
+         through (the Moon's ground, the Earth low in its sky) and costed,
+         walked through to the Moon, looked back through (the snapshot of
+         the street), and walked back through home */
+      await phase('moon: open')
+      const md = await evaluate(`(() => { const v = window.__sandboxCamera.position.clone(); return window.__outside.moonPortal.skyMoon(v) ? v.toArray() : null })()`)
+      if (!md) console.log('  no Moon in the sky  <-- WRONG')
+      else {
+        await look(Math.atan2(-md[0], -md[2]), Math.asin(md[1]))
+        await sleep(400)
+        await pShot('moon-0-aim')
+        await click('Mouse2')
+        const o = await evaluate(`(() => { const p = window.__tools.portals.list[1]; return p ? [p.level, p.site, p.ready] : null })()`)
+        console.log(`  orange: ${o ? o.join(', ') : 'none  <-- WRONG'}`)
+        const t0 = Date.now()
+        await waitFor(() => evaluate('window.__tools.portals.list[1]?.ready'), 400, 100, 'the Moon made ready').catch(() => {})
+        console.log(`  the far side ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`)
+        const face = async (p, back, name) => {
+          const x = p.pos[0] + p.n[0] * back
+          const z = p.pos[2] + p.n[2] * back
+          const gy = await evaluate(`window.__levels.current.groundYAt(${x}, ${z})`)
+          await tpFeet(x, z, gy + 0.2, Math.atan2(p.n[0], p.n[2]))
+          await sleep(1600)
+          const c = await here()
+          await look(Math.atan2(-(p.pos[0] - c[0]), -(p.pos[2] - c[2])), Math.atan2(p.pos[1] + 0.8 - c[1], back))
+          await sleep(900)
+          if (name) await pShot(name)
+        }
+        await phase('moon: look through')
+        await face(blue, 7, 'moon-1-the-moon-through-blue')
+        const cost = async (label) => {
+          const r = await evaluate(`(async () => {
+            const gl = window.__renderer.getContext()
+            const raf = window.requestAnimationFrame
+            const t = []; let passes = 0, n = 0
+            window.requestAnimationFrame = (cb) => raf((ts) => {
+              const t0 = performance.now(); cb(ts); gl.finish(); const dt = performance.now() - t0
+              if (dt > 0.4) { t.push(dt); passes += window.__tools.portalView.stats.passes; n++ }
+            })
+            await new Promise((r) => setTimeout(r, 3000))
+            window.requestAnimationFrame = raf
+            t.sort((a, b) => a - b)
+            return { mean: t.reduce((a, b) => a + b, 0) / Math.max(1, t.length), med: t[t.length >> 1] ?? 0, n: t.length, passes: passes / Math.max(1, n) }
+          })()`)
+          console.log(`  ${label.padEnd(34)} ${r.mean.toFixed(2)} ms mean, ${r.med.toFixed(2)} median over ${r.n} frames; ${r.passes.toFixed(2)} views/frame`)
+          return r
+        }
+        const withMoon = await cost('the Moon through blue')
+        await look(null, -1.2)
+        await sleep(600)
+        const without = await cost('same spot, looking down')
+        console.log(`  the Moon's view costs ${(withMoon.mean - without.mean).toFixed(2)} ms a frame (mean)`)
+        await face(blue, 5, null)
+        await phase('moon: the trip')
+        const n0 = await evaluate('window.__portalWalk.last.count')
+        await hold('KeyW', true)
+        await waitFor(() => evaluate(`window.__portalWalk.last.count > ${n0}`), 80, 100, 'into blue').catch(() => {})
+        await hold('KeyW', false)
+        await sleep(1500)
+        const lv = await evaluate('window.__levels.current.id')
+        const c = await here()
+        console.log(`  through: level ${lv}, at ${f1(c)}`)
+        await look(null, 0.12)
+        await sleep(900)
+        await pShot('moon-2-arrived')
+        // turned round: the slab, and home through it
+        const sp = await evaluate(`(() => { const p = window.__tools.portals.list[1]; return { pos: p.pos.toArray(), n: p.n.toArray() } })()`)
+        await face(sp, 8, 'moon-3-home-through-the-slab')
+        console.log('  ' + await evaluate(`(() => { const s = window.__tools.portalView.stats; return 'moon side: ' + s.passes + ' live views' })()`))
+        if (has('debug')) {
+          const b64 = await evaluate(`(() => {
+            const rt = window.__portalMoon.snapshot; if (!rt) return ''
+            const r = window.__renderer, w = rt.width, h = rt.height, px = new Uint16Array(w * h * 4)
+            r.readRenderTargetPixels(rt, 0, 0, w, h, px)
+            const f = (u) => { const e = (u >> 10) & 31, m = u & 1023; const v = e === 0 ? m / 1024 * 2 ** -14 : e === 31 ? 65504 : (1 + m / 1024) * 2 ** (e - 15); return (u & 0x8000) ? -v : v }
+            const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); const img = g.createImageData(w, h)
+            for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = ((h - 1 - y) * w + x) * 4, j = (y * w + x) * 4
+              for (let k = 0; k < 3; k++) img.data[j + k] = Math.min(255, Math.pow(Math.max(0, f(px[i + k])), 1 / 2.2) * 255 * 2)
+              img.data[j + 3] = 255 }
+            g.putImageData(img, 0, 0); return c.toDataURL('image/png').split(',')[1] })()`)
+          if (b64) writeFileSync(join(P_OUT, 'debug-snapshot.png'), Buffer.from(b64, 'base64'))
+          console.log('    snapshot: ' + await evaluate(`(() => {
+            const rt = window.__portalMoon.snapshot; if (!rt) return 'none'
+            const r = window.__renderer, w = rt.width, px = new Uint16Array(4)
+            const probe = (x, y) => { r.readRenderTargetPixels(rt, x, y, 1, 1, px); return Array.from(px).map((v) => v.toString(16)).join('/') }
+            const m = window.__scene.getObjectByName('portal-orange')?.material ?? window.__scene.getObjectByName('portal-blue')?.material
+            const M = m.uniforms.uSnapM.value, V = window.__sandboxCamera.position.constructor
+            const c = [[0, 0], [0.5, 0], [0, 0.5]].map(([x, y]) => { const e = M.elements
+              const v = [x, y, 1, 1].map((_, r) => e[r] * x + e[4 + r] * y + e[8 + r] + e[12 + r])
+              return (v[0] / v[3] * 0.5 + 0.5).toFixed(2) + ',' + (v[1] / v[3] * 0.5 + 0.5).toFixed(2) + ' w' + v[3].toExponential(1) })
+            return 'centre ' + probe(w >> 1, w >> 1) + ' low ' + probe(w >> 1, w >> 3) + ' mode ' + m?.uniforms.uMode.value +
+              ' uv ' + c.join('  ') + ' map ' + (m.uniforms.uMap.value === rt.texture) + ' res ' + m.uniforms.uRes.value.toArray()
+          })()`))
+        }
+        await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+        await sleep(1200)
+        await pShot('moon-3b-slab-third-person')
+        await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+        await face(sp, 5, null)
+        await phase('moon: home')
+        const n1 = await evaluate('window.__portalWalk.last.count')
+        await hold('KeyW', true)
+        await waitFor(() => evaluate(`window.__portalWalk.last.count > ${n1}`), 80, 100, 'into orange').catch(() => {})
+        await hold('KeyW', false)
+        await sleep(1500)
+        console.log(`  home: level ${await evaluate('window.__levels.current.id')}, at ${f1(await here())}`)
+        await pShot('moon-4-home')
+      }
+    }
+    if (blue && orange) {
+      // 3. each looked through from nine units out
+      const faceIt = async (p, name, back = 9) => {
+        const x = p.pos[0] + p.n[0] * back
+        const z = p.pos[2] + p.n[2] * back
+        const gy = await evaluate(`window.__levels.current.groundYAt(${x}, ${z})`)
+        await tpFeet(x, z, gy + 0.2, Math.atan2(p.n[0], p.n[2]))
+        await sleep(1600)
+        const c = await here()
+        await look(Math.atan2(-(p.pos[0] - c[0]), -(p.pos[2] - c[2])), Math.atan2(p.pos[1] - c[1], back))
+        await sleep(900)
+        if (name) await pShot(name)
+      }
+      await phase('look through')
+      // from a slant first, which is where a portal floating off its wall
+      // would show
+      {
+        const r = [blue.up[1] * blue.n[2] - blue.up[2] * blue.n[1], 0, blue.up[0] * blue.n[1] - blue.up[1] * blue.n[0]]
+        const x = blue.pos[0] + blue.n[0] * 4 + r[0] * 5
+        const z = blue.pos[2] + blue.n[2] * 4 + r[2] * 5
+        const gy = await evaluate(`window.__levels.current.groundYAt(${x}, ${z})`)
+        await tpFeet(x, z, gy + 0.2, 0)
+        await sleep(1400)
+        const c = await here()
+        await look(Math.atan2(-(blue.pos[0] - c[0]), -(blue.pos[2] - c[2])), Math.atan2(blue.pos[1] - c[1], Math.hypot(blue.pos[0] - c[0], blue.pos[2] - c[2])))
+        await sleep(900)
+        await pShot('3a-blue-slant')
+      }
+      await faceIt(blue, '3-through-blue')
+      /* the frame cost of that view: every animation frame's callback timed
+         with a gl.finish() behind it, so the GPU's share is inside, with the
+         views drawn and the pixels they covered; then the same view with the
+         orange portal closed (so no pass), and orange put back */
+      const frameCost = async (label) => {
+        const r = await evaluate(`(async () => {
+          const gl = window.__renderer.getContext()
+          const raf = window.requestAnimationFrame
+          const t = []; let passes = 0, px = 0, n = 0
+          window.requestAnimationFrame = (cb) => raf((ts) => {
+            const t0 = performance.now(); cb(ts); gl.finish(); const dt = performance.now() - t0
+            if (dt > 0.4) { t.push(dt); const s = window.__tools.portalView.stats; passes += s.passes; px += s.pixels; n++ }
+          })
+          await new Promise((r) => setTimeout(r, 3000))
+          window.requestAnimationFrame = raf
+          t.sort((a, b) => a - b)
+          const mean = t.reduce((a, b) => a + b, 0) / Math.max(1, t.length)
+          return { n: t.length, mean, med: t[t.length >> 1] ?? 0, p95: t[Math.floor(t.length * 0.95)] ?? 0,
+            passes: passes / Math.max(1, n), px: px / Math.max(1, n) }
+        })()`)
+        console.log(`  ${label.padEnd(34)} ${r.mean.toFixed(2)} ms mean, ${r.med.toFixed(2)} median, ${r.p95.toFixed(2)} p95 ` +
+          `over ${r.n} frames; ${r.passes.toFixed(2)} views/frame covering ${Math.round(r.px)} px`)
+        return r
+      }
+      const on = await frameCost('blue on screen, looked through')
+      await evaluate('window.__keepOrange = window.__tools.portals.list[1]; window.__tools.portals.close(1); true')
+      await sleep(500)
+      const off = await frameCost('same view, orange closed')
+      await evaluate(`(() => { const o = window.__keepOrange; window.__tools.portals.placeAt(1, o.level, o.pos, o.n, o.up, null, o.hosts); return true })()`)
+      console.log(`  an on-screen portal costs ${(on.mean - off.mean).toFixed(2)} ms a frame (mean), ${(on.med - off.med).toFixed(2)} (median)`)
+      await sleep(600)
+      await faceIt(orange, '4-through-orange')
+
+      // 4. walked through: into blue, out of orange
+      await phase('walk through')
+      await faceIt(blue, null, 6)
+      const n0 = await evaluate('window.__portalWalk.last.count')
+      await hold('KeyW', true)
+      await waitFor(() => evaluate(`window.__portalWalk.last.count > ${n0}`), 60, 100, 'the walk through').catch(() => {})
+      await sleep(250)
+      await hold('KeyW', false)
+      const w = await evaluate('(() => { const l = window.__portalWalk.last; return [l.vin.toArray(), l.vout.toArray(), l.count] })()')
+      console.log(`  walked through: in ${f1(w[0])}  out ${f1(w[1])}  (${w[2] - n0} carries)`)
+      await sleep(400)
+      await pShot('5-walked-out-of-orange')
+
+      // 5. the fling: blue moved onto the ground in front of orange's wall,
+      // a drop from 30 up into it, out of orange's wall at speed
+      await phase('fling')
+      const ox = orange.pos[0] + orange.n[0] * 14
+      const oz = orange.pos[2] + orange.n[2] * 14
+      const og = await evaluate(`window.__levels.current.groundYAt(${ox}, ${oz})`)
+      await tpFeet(ox, oz, og + 0.2, Math.atan2(orange.n[0], orange.n[2]))
+      await sleep(1500)
+      // blue on the ground a few units ahead, looking steeply down
+      await look(Math.atan2(orange.n[0], orange.n[2]) + Math.PI, -1.05)
+      await click('Mouse0')
+      const floor = await portalAt(0)
+      console.log(`  blue on the ground: ${floor ? `${f1(floor.pos)}  facing ${f1(floor.n)}` : 'none'}`)
+      if (floor && floor.n[1] > 0.6) {
+        const n1 = await evaluate('window.__portalWalk.last.count')
+        await tpFeet(floor.pos[0], floor.pos[2], floor.pos[1] + 30, 0)
+        await look(null, -1.3)
+        await sleep(900)
+        await pShot('6-falling-into-blue')
+        await waitFor(() => evaluate(`window.__portalWalk.last.count > ${n1}`), 60, 50, 'the fall through').catch(() => {})
+        const f = await evaluate('(() => { const l = window.__portalWalk.last; return [l.vin.toArray(), l.vout.toArray()] })()')
+        const sp = (v) => Math.hypot(v[0], v[1], v[2]).toFixed(1)
+        console.log(`  fling: in ${f1(f[0])} (${sp(f[0])} u/s)  out ${f1(f[1])} (${sp(f[1])} u/s)`)
+        await look(null, 0)
+        await sleep(250)
+        await pShot('7-flung-out-of-orange')
+        // where the flight came down, measured from the wall
+        await sleep(2500)
+        const land = await here()
+        console.log(`  landed ${Math.hypot(land[0] - orange.pos[0], land[2] - orange.pos[2]).toFixed(1)} units out from the orange wall`)
+
+        // 6. a crate through the same pair
+        await phase('prop')
+        await evaluate(`window.__propPass = 0; window.__tools.portals.on((e) => { if (e.type === 'pass' && e.prop >= 0) { window.__propPass++; window.__propOut = e.point.toArray() } }); true`)
+        await tpFeet(orange.pos[0] + orange.n[0] * 12 + orange.up[0], orange.pos[2] + orange.n[2] * 12, og + 0.2, 0)
+        await sleep(1200)
+        const c2 = await here()
+        await look(Math.atan2(-(orange.pos[0] - c2[0]), -(orange.pos[2] - c2[2])), 0.02)
+        await evaluate(`(() => { const sb = window.__sandbox; window.__crate = sb.spawn('crate', { x: ${floor.pos[0]}, y: ${floor.pos[1] + 9}, z: ${floor.pos[2]} }); return true })()`)
+        await waitFor(() => evaluate('window.__propPass > 0'), 60, 50, 'the crate through').catch(() => {})
+        await sleep(160)
+        await pShot('8-crate-out-of-orange')
+        const cp = await evaluate(`(() => { const sb = window.__sandbox, v = window.__sandboxCamera.position.clone(); sb.getVelocity(window.__crate, v); const p = v.clone(); sb.getTransform(window.__crate, p); return [p.toArray(), v.toArray()] })()`)
+        console.log(`  crate: ${await evaluate('window.__propPass')} pass(es), out at ${f1(cp[0])} moving ${f1(cp[1])}`)
+      }
+    }
+    const plinks = await evaluate('window.__pLinks')
+    console.log(`  ${plinks.length} programs linked from the catalogue on${plinks.length ? ': ' + plinks.join(', ') : ''}`)
   }
 
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))
