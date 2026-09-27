@@ -163,6 +163,111 @@ sitting in the driving one.
 - `{type:'world-signal', to, data}` → `{type:'world-signal', from, data}`. The WebRTC offer/answer/ICE relay for proximity voice, forwarded verbatim between two peers in the same level. **No audio ever passes through this process**; peers talk browser to browser and the server only introduces them. A signal aimed at someone who just left or stepped through a seam is dropped in silence, because that race is one the caller already recovers from
 - `world-exit {id}` on departure; a socket closing leaves the world as well as its chat room and any duel
 
+### Sandbox props
+
+The relay keeps an in-memory registry per level, bounded to 150 props per
+spawner across levels, 2,000 per level and 8,000 per process. There is no
+persistence across server restarts. Catalogue kinds are allowlisted in
+`src/props.js`; scale is clamped to 0.2..4 and mass to 0.05..20,000.
+Kinds define colour, atlas material and collision shape on both clients.
+The WebSocket frame ceiling is 256 KiB to accommodate batched handoffs;
+individual chat, signalling and identity limits still apply.
+
+Every message below includes `level`. Requests for a different level are
+ignored. `id` is server assigned; `nonce` is a positive client-local spawn
+or constraint id and is only used to match the acknowledgement. `epoch`
+changes on every authority grant. Mutations are limited to 200/s per socket,
+movement and handoff batches to 30/s each, and hits and blasts to 20/s each.
+These are ceilings, not target send rates: clients batch motion at 15 Hz.
+
+A pose row is `[id,epoch,x,y,z,qx,qy,qz,qw,flags]`. Positions are integer
+centimetres, quaternions integer ten-thousandths, normalized by the server.
+Flags: 1 frozen, 2 sleeping or parked, 4 teleport (snap rather than interpolate).
+Spawn and handoff rows append `[vx,vy,vz,wx,wy,wz]`, scaled by 100. Ordinary
+motion omits velocities. A final sleeping pose is sent once; unchanged props
+produce no traffic. Other clients interpolate two ticks behind, never
+extrapolate, and keep the Rapier body kinematic.
+
+A prop record is `{id,owner,name,authority,epoch,kind,scale,mass,pose,lock,part,life,transfer?}`.
+`owner` is the spawner's world-session id, separate from authority. `name` is
+retained for admin cleanup after the spawner leaves. `lock` is null, `hand`,
+`seat` or `keys`. `part` is null or `[keyPair,flip,targetHeight,fire]`;
+`life` is null or `[health,fuseSeconds,detonationSeconds,initialFuseSeconds]`.
+A pending `transfer` is `{to,lock,waiting}`, where `waiting` is the previous
+authority until its acknowledgement arrives.
+
+- C to S `world-prop-spawn {nonce,kind,scale,mass?,pose}`. The server assigns
+  owner and initial authority from the socket, then sends everyone
+  `world-prop-spawn {nonce,prop}`. A pending local body is kinematic until
+  accepted. Arbitrary meshes, materials, hulls and data bags are not accepted.
+- S to C `world-prop-snapshot {props,joints}` follows `world-welcome` and every
+  `world-level`. It contains the complete current level, including sleeping
+  props, original local constraint frames, part settings and fuse state.
+- C to S and S to C `world-prop-move {rows}`. The server accepts only rows
+  matching the sender's authority and epoch, coalesces dirty rows, then
+  broadcasts one batch per changed level per world tick. No idle snapshots.
+- C to S `world-prop-claim {id,reason,source?}`. Reasons: `hand`, `seat`,
+  `keys`, `collision`, `release`. Hands and seats require reach (90 units,
+  including lag); seats require a seat kind. Keys require the part's owner.
+  Collision requires a moving, unfrozen source owned and simulated by the
+  requester within 24 units of the target. Existing hand/seat/key locks
+  cannot be stolen. Release clears the lock but retains the thrower's physics.
+- S to C `world-prop-state {props}` announces claims and metadata. A claim
+  covers the entire graph connected by welds, axes, ropes or no-collides.
+  On transfer the server sets authority to zero and asks the previous
+  simulator to stop through `transfer.waiting`. C to S `world-prop-ack {rows}`
+  returns final poses and velocities in one batch. Only after every previous
+  simulator acknowledges does the server grant the new epoch. Stale motion
+  is rejected. An unresponsive simulator leaves a transfer frozen until its
+  acknowledgement or disconnection, never with two active simulators.
+- C to S `world-prop-meta {id,epoch,part,life}` updates part controls and
+  health/fuses from the authority. Only the owner can change key bindings
+  and flip; a driver can update motion-related part state. The result is a
+  `world-prop-state`. Fuse countdowns are quantized to fifths of a second.
+- C to S `world-prop-joint {id,b,kind,frames,nonce}` joins two props owned and
+  simulated by the sender. `kind` is `weld`, `axis`, `rope`, or `nocollide`.
+  `frames` is 17 numbers: anchor A (3), anchor B (3), relative frame B
+  quaternion (4), local axis A (3), local axis B (3), rope length (1).
+  S to C `world-prop-joint {joint:{id,a,b,kind,frames},nonce}` acknowledges it.
+  C to S and S to C `world-prop-unjoint {id}` removes an owned constraint.
+- C to S `world-prop-hit {id,amount,ignite}` requests damage or ignition on
+  a nearby prop. The server clamps damage to 200 and forwards the same
+  message to its authority only. That simulator decides whether it breaks.
+- C to S `world-prop-break {id,epoch,how}` requires authority; `how` is
+  `break` or `explode`. S to C `world-prop-break {id,how}` plays the effect,
+  followed by the removal. Splinters use existing cosmetic particle pools
+  on all clients, with no local colliders influencing shared bodies.
+- C to S `world-prop-explosion {id?,epoch?,at:[x,y,z],power,radius}` requires
+  source authority, or a free blast within 90 units of the caller. Power is
+  clamped to 0.1..4, radius to 1..50. S to C
+  `world-prop-explosion {from,at,power,radius}` plays the effect and lets each
+  prop's authority apply its own impulse and damage, including chain fuses.
+- C to S `world-prop-remove {id}` removes only the sender's own prop. Undo
+  uses this path. S to C `world-prop-remove {ids}` removes bodies and their
+  incident constraints, also used for cleanup and breakage.
+- C to S `world-prop-cleanup {target}`: `mine`, `all`, or a player name.
+  Mine uses the server's ownership registry, independent of undo history.
+  All requires admin or being the only player in this level. A name always
+  requires admin, and matches stored spawner names case-insensitively.
+- S to C `world-prop-denied {op,reason,nonce?}` reports `admin`, `limit`,
+  `name`, `busy`, `reach`, `invalid`, or `rate`. Spawn refusals remove the
+  pending body; cleanup permission and cap refusals print English/Spanish
+  messages in the console feed.
+
+Leaving or changing levels retains props. The first remaining player in the
+level becomes authority; with nobody left authority is zero and the last
+pose stays parked. The first arrival takes over parked bodies. Ownership
+retains the original session id, so reconnecting with a new id does not
+silently adopt old props; the admin can clean those by the retained name.
+
+Portals are outside this protocol. Same-level prop crossings already go
+through the sandbox's transform setter and send the teleport flag, keeping
+the same prop and group identity. A future portal protocol can store its
+level, owner, surface and frame alongside this registry. Cross-level prop
+migration would need a server-approved atomic move of a connected group
+between registries, including ownership, joints and epochs.
+
+
 Voice needs a path between two browsers, and a minority of visitors, both ends
 behind a symmetric NAT, have none that STUN can find. `TURN_URLS` + `TURN_SECRET`
 add a relay for exactly those pairs; leave them unset and nothing changes, which

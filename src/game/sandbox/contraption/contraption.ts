@@ -81,6 +81,7 @@ export interface Constraint {
   readonly anchorA: THREE.Vector3
   readonly anchorB: THREE.Vector3
   /** a rope's length */
+  readonly frames: number[]
   readonly length: number
   /** the undo entry that takes it back, if one was recorded */
   entry: HistoryEntry | null
@@ -100,6 +101,8 @@ export interface PartState {
 }
 
 export interface AddOpts {
+  /** network reconstruction uses the original local joint frames */
+  frames?: number[]
   /** the anchor, world (weld, axis: where the axle is; default A's centre) */
   at?: Vec3Like
   /** a rope's anchor on B, world */
@@ -229,6 +232,7 @@ export function createContraption(sb: Sandbox): Contraption {
   let keysTtl = 0
   let seat: PropId | null = null
   let removing = false
+  const keyed = new Set<PropId>()
 
   /* ------------------------------------------------------ the parts -- */
 
@@ -308,6 +312,7 @@ export function createContraption(sb: Sandbox): Contraption {
     const A = sb.get(a)
     const B = sb.get(b)
     if (!w || !Rp || !A || !B || a === b) return null
+    if (!o.frames && sb.network && (!sb.network.owns(a) || !sb.network.owns(b))) return null
     // one of each kind per pair is plenty; a second weld is the first one
     for (const r of byProp.get(a) ?? []) {
       if (r.type === type && ((r.a === a && r.b === b) || (r.a === b && r.b === a)) && type !== 'rope') return r
@@ -319,13 +324,26 @@ export function createContraption(sb: Sandbox): Contraption {
     let length = 0
     let data: RAPIER_NS.JointData
     const v = (x: THREE.Vector3) => ({ x: x.x, y: x.y, z: x.z })
-    if (type === 'weld') {
+    let frameB = new THREE.Quaternion()
+    let axisA = new THREE.Vector3(1, 0, 0)
+    let axisB = new THREE.Vector3(1, 0, 0)
+    if (o.frames) {
+      const f = o.frames
+      anchorA.fromArray(f, 0); anchorB.fromArray(f, 3)
+      frameB.fromArray(f, 6); axisA.fromArray(f, 10); axisB.fromArray(f, 13)
+      length = f[16]
+      data = type === 'weld'
+        ? Rp.JointData.fixed(v(anchorA), { x: 0, y: 0, z: 0, w: 1 }, v(anchorB), frameB)
+        : type === 'axis' ? Rp.JointData.revoluteWithAxes(v(anchorA), v(anchorB), v(axisA), v(axisB))
+          : Rp.JointData.rope(type === 'nocollide' ? 1e6 : length, v(anchorA), v(anchorB))
+    } else if (type === 'weld') {
       // anchored halfway between the two, at the pose they are in now
       const mid = o.at ? tmp.set(o.at.x, o.at.y, o.at.z) : tmp.copy(pa).add(pb).multiplyScalar(0.5)
       toLocal(pa, qa, mid, anchorA)
       toLocal(pb, qb, mid, anchorB)
       // frames: the identity on A, and A's orientation seen from B
       const fb = tmpQ.copy(qb).invert().multiply(qa)
+      frameB = fb.clone()
       data = Rp.JointData.fixed(v(anchorA), { x: 0, y: 0, z: 0, w: 1 }, v(anchorB), { x: fb.x, y: fb.y, z: fb.z, w: fb.w })
     } else if (type === 'axis') {
       const at = o.at ? tmp.set(o.at.x, o.at.y, o.at.z) : tmp.copy(pa)
@@ -336,6 +354,7 @@ export function createContraption(sb: Sandbox): Contraption {
       const axW = o.axis && !isWheel ? tmp2.set(o.axis.x, o.axis.y, o.axis.z).normalize() : tmp2.copy(X).applyQuaternion(qa)
       const axA = axW.clone().applyQuaternion(tmpQ.copy(qa).invert())
       const axB = axW.clone().applyQuaternion(tmpQ.copy(qb).invert())
+      axisA = axA.clone(); axisB = axB.clone()
       data = Rp.JointData.revoluteWithAxes(v(anchorA), v(anchorB), v(axA), v(axB))
       // a wheel's forward key rolls it the way its maker was facing
       const st = parts.get(a)
@@ -357,7 +376,8 @@ export function createContraption(sb: Sandbox): Contraption {
     }
     const joint = w.createImpulseJoint(data, A.body, B.body, true)
     if (type !== 'rope') joint.setContactsEnabled(false)
-    const r: Rec = { id: nextId++, type, a, b, anchorA, anchorB, length, entry: null, joint, mesh: null, motor: NaN }
+    const frames = [...anchorA.toArray(), ...anchorB.toArray(), ...frameB.toArray(), ...axisA.toArray(), ...axisB.toArray(), length]
+    const r: Rec = { frames, id: nextId++, type, a, b, anchorA, anchorB, length, entry: null, joint, mesh: null, motor: NaN }
     recs.set(r.id, r)
     link(r, a)
     link(r, b)
@@ -395,12 +415,13 @@ export function createContraption(sb: Sandbox): Contraption {
 
   const remove = (id: number) => {
     const r = recs.get(id)
-    if (!r) return false
+    if (!r || (sb.network && (!sb.network.owns(r.a) || !sb.network.owns(r.b)))) return false
     drop(r, false)
     return true
   }
 
   const strip = (prop: PropId, type?: ConstraintType) => {
+    if (sb.network && !sb.network.owns(prop)) return 0
     const l = [...(byProp.get(prop) ?? [])].filter((r) => !type || r.type === type)
     for (const r of l) {
       drop(r, false)
@@ -500,6 +521,7 @@ export function createContraption(sb: Sandbox): Contraption {
   /* ---------------------------------------------------- the placing -- */
 
   const snapOnto = (a: PropId, point: Vec3Like, normal: Vec3Like, view?: Vec3Like) => {
+    if (sb.network && !sb.network.owns(a)) return false
     const A = sb.get(a)
     const st = parts.get(a)
     if (!A || !st || st.type === 'plate') return false
@@ -572,7 +594,11 @@ export function createContraption(sb: Sandbox): Contraption {
     if (!sb.ready || parts.size === 0) return
     refresh()
     if (keysTtl > 0) keysTtl--
-    else keys = EMPTY
+    else {
+      keys = EMPTY
+      for (const id of keyed) sb.network?.release(id)
+      keyed.clear()
+    }
     const g = -sb.gravity
 
     // the seat's machine, and its frame
@@ -580,7 +606,7 @@ export function createContraption(sb: Sandbox): Contraption {
     let throttle = 0
     let steer = 0
     let lift = 0
-    const S = seat !== null ? sb.get(seat) : undefined
+    const S = seat !== null && sb.isAuthority(seat) ? sb.get(seat) : undefined
     if (S) {
       driven = new Set(machine(S.id))
       poseOf(S, pa, qa)
@@ -614,10 +640,11 @@ export function createContraption(sb: Sandbox): Contraption {
     firing = 0
     for (const st of parts.values()) {
       const p = sb.get(st.id)
+      if (p && !sb.isAuthority(p.id)) { if (st.fire) firing++; continue }
       st.fire = 0
       if (!p || p.parked || p.mode !== 'dynamic') continue
       const inSeat = driven?.has(st.id) ?? false
-      const own = st.keys >= 0 ? pairValue(st.keys) * (st.flip ? -1 : 1) : 0
+      const own = st.keys >= 0 && (!sb.network || sb.network.owns(st.id)) ? pairValue(st.keys) * (st.flip ? -1 : 1) : 0
       switch (st.type) {
         case 'thruster': {
           const cmd = Math.max(-1, Math.min(1, own + (inSeat ? lift : 0)))
@@ -814,10 +841,12 @@ export function createContraption(sb: Sandbox): Contraption {
     part: (id) => parts.get(id) ?? null,
     parts,
     setKeys: (id, pair) => {
+      if (sb.network && !sb.network.owns(id)) return
       const st = parts.get(id)
       if (st) st.keys = Math.max(-1, Math.min(KEY_PAIRS.length - 1, pair))
     },
     cycleKeys: (id, dir = 1) => {
+      if (sb.network && !sb.network.owns(id)) return -1
       const st = parts.get(id)
       if (!st || st.type === 'seat' || st.type === 'plate') return -1
       const n = KEY_PAIRS.length
@@ -825,6 +854,7 @@ export function createContraption(sb: Sandbox): Contraption {
       return st.keys
     },
     flip: (id) => {
+      if (sb.network && !sb.network.owns(id)) return false
       const st = parts.get(id)
       if (!st || st.type === 'seat' || st.type === 'plate') return false
       st.flip = !st.flip
@@ -832,8 +862,22 @@ export function createContraption(sb: Sandbox): Contraption {
     },
     snapOnto,
     input: (k, s = null, ttl = 6) => {
+      if (seat !== s && seat !== null) sb.network?.release(seat)
+      if (s !== null && sb.network && !sb.network.claim(s, 'seat')) { keys = EMPTY; return }
       keys = k
       keysTtl = ttl
+      if (sb.network?.online) {
+        const next = new Set<PropId>()
+        if (s === null) for (const st of parts.values()) {
+          if (st.keys >= 0 && pairValue(st.keys) && sb.network.owns(st.id)) {
+            next.add(st.id)
+            sb.network.claim(st.id, 'keys')
+          }
+        }
+        for (const id of keyed) if (!next.has(id)) sb.network.release(id)
+        keyed.clear()
+        for (const id of next) keyed.add(id)
+      }
       seat = s !== null && parts.get(s)?.type === 'seat' ? s : null
     },
     held: null,

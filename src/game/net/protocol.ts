@@ -19,14 +19,11 @@
   decimals (a hair under a tenth of a degree), positions two (a centimetre) —
   both far finer than the interpolation that reads them.
 
-  The fleet is the one exception to "nothing about the planet travels", and it
-  is not an exception at all: a car is not the planet. Where a chunk is a pure
-  function of its coordinates, a machine is where somebody left it, so the
-  three transforms and the six seats are the only world state this server has
-  ever held. The shape follows the same rule as everything else here — the
-  driver's client owns the physics and its transform is relayed; the server
-  arbitrates *who* is driving and nothing else. It is the referee for the one
-  question two clients cannot answer between themselves.
+  The fleet and sandbox are stateful exceptions: machines and props remain
+  where players leave them. The server arbitrates seats and prop claims,
+  while one client simulates each machine or connected contraption. Prop
+  records and compact movement batches live in propProtocol.ts; the same
+  server and frontend release must understand both halves of the wire.
 */
 
 /** the id the server hands a socket for as long as it stays in the world.
@@ -259,6 +256,7 @@ export interface WorldGrab {
 }
 
 export type WorldServerMessage =
+  | import('./propProtocol').PropServerMessage
   | WorldShove
   | WorldGrab
   | WorldWelcome
@@ -281,6 +279,7 @@ export type VoiceSignal =
   | { kind: 'ice'; candidate: RTCIceCandidateInit }
 
 export type WorldClientMessage =
+  | import('./propProtocol').PropClientMessage
   /** `look` rides the join so a body is never drawn in the wrong colours even
       for the one tick between arriving and repainting */
   | { type: 'world-join'; level: string; look?: string }

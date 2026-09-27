@@ -74,6 +74,7 @@ export interface SpawnMenuProps {
   source: CatalogueSource | null
   orders: OrderLine[]
   onSpawn: (id: string) => void
+  onCleanup: () => void
   /** the find line has the keyboard: the catalogue stays up without q, and
       the walk stops reading keys, until it lets go */
   onPin: (pinned: boolean) => void
@@ -106,7 +107,7 @@ function Ring() {
   )
 }
 
-export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClose }: SpawnMenuProps) {
+export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, onPin, onClose }: SpawnMenuProps) {
   const { language, t } = useI18n()
   const s = t.sandbox.menu
   const [cat, setCat] = useState(ALL)
@@ -521,6 +522,11 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
               ))}
             </ol>
           )}
+          <button type="button" onClick={onCleanup}
+            className="mt-2 cursor-pointer border-b border-dashed bg-transparent px-1 font-mono text-[11px] italic hover:opacity-70 focus-visible:outline-dotted"
+            style={{ color: RED, borderColor: RED, transform: 'rotate(-2deg)' }}>
+            {s.cleanup}
+          </button>
           <p className="mt-0.5 font-mono text-[9.5px]" style={{ color: INK_SOFT }}>{keyHint(s.undoHint, language)}</p>
         </div>
       </div>

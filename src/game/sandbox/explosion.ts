@@ -163,6 +163,7 @@ export const createExplosions = (
     const R = Math.max(1, radius)
     hitList.length = 0
     sb.queryBall(c, R, (p) => {
+      if (!sb.isAuthority(p.id)) return
       if (p.id === source || p.mode === 'frozen') {
         // a frozen prop does not move, but it still burns and breaks
         if (p.id !== source) hitList.push({ id: p.id, f: -1 })

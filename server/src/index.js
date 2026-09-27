@@ -20,6 +20,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import Database from 'better-sqlite3';
 import { createAnalytics } from './analytics.js';
 import { createYouTubeSearch } from './ytsearch.js';
+import { createPropRegistry } from './props.js';
 
 // ---------------------------------------------------------------- config
 
@@ -132,7 +133,7 @@ const WORLD_CHAT_RATE_WINDOW_MS = 20_000;
 const WORLD_SIGNAL_RATE_MAX = 150; // an ICE burst is chatty and short-lived
 const WORLD_SIGNAL_RATE_WINDOW_MS = 10_000;
 const WORLD_MAX_TEXT_LEN = 200;
-const WORLD_MAX_SIGNAL_LEN = 6_000; // one SDP blob; maxPayload is 8 KiB
+const WORLD_MAX_SIGNAL_LEN = 6_000; // one SDP blob; maxPayload is 256 KiB (batched props)
 const WORLD_LEVEL_RE = /^[a-z0-9-]{1,24}$/;
 // A player's colours: four packed hex triplets from src/game/player/look.ts.
 // This process has no opinion about which of them is the visor and which is
@@ -358,7 +359,7 @@ function strike(ws) {
 // more than these tiny JSON payloads could ever save.
 const wss = new WebSocketServer({
   noServer: true,
-  maxPayload: 8 * 1024,
+  maxPayload: 256 * 1024,
   perMessageDeflate: false,
 });
 const roomSockets = new Map(ROOMS.map((r) => [r, new Set()])); // room -> Set<ws>
@@ -876,6 +877,8 @@ function handleDuelRematch(ws) {
 //      when the two are near each other and both on foot
 //   6. grabs: the physgun holding another player, streamed to the victim
 //      alone, who pins their own ragdoll to it
+//   7. sandbox props: per-level ownership, claims, joints and dirty poses;
+//      props.js arbitrates while one browser simulates each connected group
 //
 // Sockets stay in the world independently of chat: `ws.world` is set by
 // world-join and is the whole of a player's server-side state.
@@ -891,6 +894,7 @@ const worldShoveRate = new WeakMap();
 const worldGrabRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
+const propRegistry = createPropRegistry({ players: worldPlayers, send });
 
 // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
 // `hand` is whoever has an *empty* machine on their physgun (or is letting it
@@ -1107,6 +1111,7 @@ function handleWorldVehicle(ws, msg) {
 // it — including its own subject, so the payload stays identical per level and
 // the client can reconcile against what the server thinks it said.
 function worldTick() {
+  propRegistry.tick();
   if (!worldDirty || worldPlayers.size === 0) return;
   worldDirty = false;
   const byLevel = new Map();
@@ -1203,6 +1208,7 @@ function handleWorldJoin(ws, msg) {
     ...(vehicles.length > 0 ? { vehicles } : {}),
     ...(worldFleet.some((v) => v.seats.some(Boolean)) ? { seats: worldSeatTable() } : {}),
   });
+  propRegistry.join(ws);
   worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   worldDirty = true;
   startWorldTicker();
@@ -1213,6 +1219,7 @@ function leaveWorld(ws) {
   if (!w) return;
   ws.world = null;
   worldPlayers.delete(w.id);
+  propRegistry.leave(w.id, w.level);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(w.id);
@@ -1260,7 +1267,10 @@ function handleWorldLevel(ws, msg) {
     strike(ws);
     return;
   }
+  const previousLevel = w.level;
   w.level = msg.level;
+  propRegistry.leave(w.id, previousLevel);
+  propRegistry.join(ws);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(w.id)) announceSeats();
   worldDirty = true;
@@ -1754,6 +1764,20 @@ function handleMessage(ws, msg) {
     case 'duel-rematch':
       handleDuelRematch(ws);
       return;
+    case 'world-prop-spawn':
+    case 'world-prop-move':
+    case 'world-prop-ack':
+    case 'world-prop-claim':
+    case 'world-prop-remove':
+    case 'world-prop-cleanup':
+    case 'world-prop-hit':
+    case 'world-prop-break':
+    case 'world-prop-explosion':
+    case 'world-prop-meta':
+    case 'world-prop-joint':
+    case 'world-prop-unjoint':
+      propRegistry.handle(ws, msg);
+      break;
     case 'world-join':
       handleWorldJoin(ws, msg);
       return;

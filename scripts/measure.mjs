@@ -12,6 +12,7 @@
     node scripts/measure.mjs physics       the sandbox: ground, cost, stacks,
                                            tunnelling, the walker, scenarios,
                                            destruction
+    node scripts/measure.mjs prop-sync     shared props, handoffs, joints, cleanup and idle traffic
     node scripts/measure.mjs console       every console command run headless
                                            against a real sandbox, and noclip
     node scripts/measure.mjs fracture      every building in a few town blocks
@@ -197,9 +198,10 @@ const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
 // the sandbox's report lives in its own file (it is long, and it imports the
 // sandbox, which nothing else here needs); `physics <section>` runs one part
-if (what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies' || what === 'body' || what === 'seats') {
+if (what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies' || what === 'body' || what === 'seats' || what === 'prop-sync') {
   body = readFileSync(join(ROOT, 'scripts', 'measure', `${what}.js`), 'utf8')
     .replace(/'\.\.\/\.\.\/src\//g, `'${ROOT}/src/`)
+    .replace(/'\.\.\/\.\.\/server\//g, `'${ROOT}/server/`)
 }
 if (what === 'eval') {
   if (!arg) { console.error('measure.mjs eval <file.js>'); process.exit(1) }
@@ -230,6 +232,6 @@ const build = spawnSync('npx', [
   `--outfile=${out}`, '--log-level=error',
 ], { stdio: 'inherit', cwd: ROOT })
 if (build.status !== 0) process.exit(build.status ?? 1)
-const run = spawnSync(process.execPath, [...(process.env.PROF ? ['--cpu-prof', `--cpu-prof-dir=${process.env.PROF}`] : []), out, ...((what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies' || what === 'body' || what === 'seats') && arg ? [arg] : [])], { stdio: 'inherit' })
+const run = spawnSync(process.execPath, [...(process.env.PROF ? ['--cpu-prof', `--cpu-prof-dir=${process.env.PROF}`] : []), out, ...((what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies' || what === 'body' || what === 'seats' || what === 'prop-sync') && arg ? [arg] : [])], { stdio: 'inherit' })
 rmSync(stage, { recursive: true, force: true })
 process.exit(run.status ?? 0)

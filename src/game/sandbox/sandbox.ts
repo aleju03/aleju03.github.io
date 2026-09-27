@@ -129,7 +129,23 @@ export interface RayHit {
   ground: boolean
 }
 
+/** The socket-free authority seam. Null keeps offline play unchanged. */
+export interface SandboxNetwork {
+  readonly online: boolean
+  authority: (id: PropId) => boolean
+  owns: (id: PropId) => boolean
+  claim: (id: PropId, reason: 'hand' | 'seat' | 'keys') => boolean
+  release: (id: PropId) => void
+  cleanup: (target: string) => void
+  hit: (id: PropId, amount: number, ignite?: boolean) => void
+  frame: () => void
+  remove: (id: PropId) => boolean
+}
+
 export interface Sandbox {
+  network: SandboxNetwork | null
+  isAuthority: (id: PropId) => boolean
+
   readonly ready: boolean
   readonly whenReady: Promise<void>
   /** every prop mesh hangs off this */
@@ -361,6 +377,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     frameOut.moving = 0
     const l = live
     if (!l) return frameOut
+    sb.network?.frame()
     const t0 = performance.now()
     const w = t.walker ?? null
     const fx = w ? w.eye.x : (t.focus?.x ?? 0)
@@ -430,6 +447,8 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
   let explosions: Explosions = null as unknown as Explosions
 
   const sb: Sandbox = {
+    network: null,
+    isAuthority: (id) => sb.network?.authority(id) ?? true,
     get ready() {
       return live !== null
     },
@@ -445,15 +464,25 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
       queued.push((l) => void l.props.spawn(kind, pos, { ...o, id }))
       return id
     },
-    remove: (id) => (live ? live.props.remove(id) : false),
-    clear: () => run((l) => l.props.clear()),
+    remove: (id) => {
+      if (sb.network && !sb.network.remove(id)) return false
+      return live ? live.props.remove(id) : false
+    },
+    clear: () => {
+      if (sb.network?.online) sb.network.cleanup('all')
+      else run((l) => l.props.clear())
+    },
     get: (id) => live?.props.get(id),
     forEach: (fn) => live?.props.forEach(fn),
     get count() {
       return live ? live.props.count : queued.length
     },
     getTransform: (id, pos, quat) => (live ? live.props.getTransform(id, pos, quat) : false),
-    setTransform: (id, pos, quat) => run((l) => l.props.setTransform(id, pos, quat)),
+    setTransform: (id, pos, quat) => run((l) => {
+      const p = l.props.get(id)
+      if (p && sb.network?.online && sb.isAuthority(id)) p.data.netTeleport = true
+      l.props.setTransform(id, pos, quat)
+    }),
     getVelocity: (id, lin, ang) => (live ? live.props.getVelocity(id, lin, ang) : false),
     setVelocity: (id, lin, ang) => run((l) => l.props.setVelocity(id, lin, ang)),
     applyImpulse: (id, imp, at) => run((l) => l.props.applyImpulse(id, imp, at)),
@@ -567,9 +596,18 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     explode: (at, power = 1, radius = 16) => explosions.explode(at, power, radius, null),
     onExplosion: (fn) => explosions.onExplosion(fn),
     onBreak: (fn) => life.onBreak(fn),
-    damage: (id, amount, from) => life.damage(id, amount, from),
-    shatter: (id) => life.shatter(id),
-    ignite: (id) => life.ignite(id),
+    damage: (id, amount, from) => {
+      if (!sb.isAuthority(id)) sb.network?.hit(id, amount)
+      else life.damage(id, amount, from)
+    },
+    shatter: (id) => {
+      if (!sb.isAuthority(id)) { sb.network?.hit(id, 200); return false }
+      return life.shatter(id)
+    },
+    ignite: (id) => {
+      if (!sb.isAuthority(id)) sb.network?.hit(id, 0, true)
+      else life.ignite(id)
+    },
     fx: effects,
     ear: (x, y, z, rx = 0, rz = 0) => setEar(x, y, z, rx, rz),
     get rapier() {

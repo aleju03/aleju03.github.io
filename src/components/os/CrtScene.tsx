@@ -73,6 +73,7 @@ import {
   WIRE_VEHICLES,
   WORLD_MAX_TEXT_LEN,
 } from '../../game/net/protocol'
+import { createPropNetwork } from '../../game/net/remoteProps'
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
@@ -1438,6 +1439,7 @@ export default function CrtScene({
         /** the prop under the crosshair within arm's reach (a contraption
             seat offers itself off this), and the tool gun's last readout */
         let reachPropNow: number | null = null
+        let partSeatRequest: { id: number; until: number } | null = null
         let toolLineNow = ''
         /** props still scaling in from a spawn, and how long that takes */
         const pops: { mesh: THREE.Object3D; t: number }[] = []
@@ -1626,6 +1628,10 @@ export default function CrtScene({
         const takePartSeat = () => {
           if (fleet.riding || levels.frozen || rig.down || !tools || reachPropNow === null) return false
           if (!tools.contraption.isSeat(reachPropNow)) return false
+          if (sandbox?.network?.online && !sandbox.network.claim(reachPropNow, 'seat')) {
+            partSeatRequest = { id: reachPropNow, until: performance.now() + 1500 }
+            return false
+          }
           partSeat = reachPropNow
           if (!tools.contraption.seatView(partSeat, EYE, partView)) {
             partSeat = null
@@ -1650,6 +1656,7 @@ export default function CrtScene({
         }
         const leavePartSeat = () => {
           if (partSeat === null) return false
+          sandbox?.network?.release(partSeat)
           partSeat = null
           // out to the seat's right, a little above the cushion, and let the
           // walk find what is under that (the machine's deck, or the ground)
@@ -1891,6 +1898,10 @@ export default function CrtScene({
               : { tone: 'chat', text: line.text, name: line.name, admin: line.admin, mine: line.mine },
           )
 
+        const propNet = createPropNetwork(
+          (m) => net?.prop(m),
+          (en, es) => pushFeed({ tone: 'err', text: bilingual(en, es) }),
+        )
         const syncVoice = () => {
           if (!voice) return
           setVoiceHud({
@@ -1916,11 +1927,15 @@ export default function CrtScene({
             // read, not captured: a reconnect must carry whatever the player
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
-            onStatus: (status) => setMp((m) => ({ ...m, status })),
+            onStatus: (status) => {
+              if (status !== 'live') propNet.offline()
+              setMp((m) => ({ ...m, status }))
+            },
             onName: (name) => setMyName(name),
             onNick: (result) =>
               setRename(result.ok ? { pending: false, error: null } : { pending: false, error: result.error }),
             onMessage: (msg) => {
+              propNet.receive(msg)
               switch (msg.type) {
                 case 'world-welcome':
                   remote.welcome(msg.you, msg.tick, msg.players)
@@ -2053,6 +2068,7 @@ export default function CrtScene({
         }
 
         const leaveWorld = () => {
+          propNet.offline()
           voice?.dispose()
           voice = null
           voicePreviewRef.current = null
@@ -2746,6 +2762,7 @@ export default function CrtScene({
             if (craft?.spacecraft) fleet.shiftRiding(shift.x, shift.y, shift.z)
             if (rig.ragdolling) rig.reset()
             if (level === from) return
+            propNet.setLevel(level.id)
             net?.setLevel(level.id)
             // the server frees a chair at a level change: take it back
             if (craft?.spacecraft) {
@@ -2782,6 +2799,7 @@ export default function CrtScene({
             // everyone else is scoped by level, so the swap has to be
             // announced: until it is, we are still drawing the crowd we just
             // walked away from, and they are still drawing us
+            propNet.setLevel(level.id)
             net?.setLevel(level.id)
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
@@ -3519,6 +3537,17 @@ export default function CrtScene({
           seamPt.set(camera.position.x, walk.feetY, camera.position.z)
           levels.tick(now, seamPt, fps)
           const level = levels.current
+          if (partSeatRequest) {
+            const request = partSeatRequest
+            if (performance.now() > request.until || !sandbox?.get(request.id)) partSeatRequest = null
+            else if (sandbox?.network?.claim(request.id, 'seat')) {
+              const aimed = reachPropNow
+              reachPropNow = request.id
+              takePartSeat()
+              reachPropNow = aimed
+              partSeatRequest = null
+            }
+          }
           // a contraption seat that has gone (undone, removed) stands you up
           if (partSeat !== null && !placePartSeat()) leavePartSeat()
           const sitting: Seat | null = seating.current ?? (partSeat !== null ? partSeatObj : null)
@@ -4197,6 +4226,7 @@ export default function CrtScene({
             chunkSolids: o.chunkSolids,
           })
           sandboxes.set(level.id, { sb, level })
+          propNet.attach(sb, level.id)
           sb.gravity = -GRAVITY * rules.gravity * gravityOf(level)
           sb.timescale = rules.timescale
           const h = historyOf(sb)
@@ -5245,6 +5275,7 @@ export default function CrtScene({
           source={catalogue}
           orders={orders}
           onSpawn={(kind) => spawnRef.current?.(kind)}
+          onCleanup={() => { void consoleRef.current?.run('cleanup') }}
           onPin={(on) => pinMenuRef.current?.(on)}
           onClose={() => closeMenuRef.current?.()}
         />

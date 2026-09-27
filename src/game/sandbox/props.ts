@@ -123,6 +123,7 @@ export interface Prop {
   /** local half extents of the collision shape */
   readonly extents: THREE.Vector3
   readonly mass: number
+  readonly scale: number
   mode: PropMode
   /** disabled because nobody is near it; see the header */
   parked: boolean
@@ -545,7 +546,7 @@ export const createProps = (o: PropsOpts): Props => {
     }
     const extents = shapeExtents(shape)
     const r: Rec = {
-      id, kind, body, colliders, mesh, extents, mass,
+      id, kind, body, colliders, mesh, extents, mass, scale: k,
       mode: opts.frozen ? 'frozen' : 'dynamic',
       parked: false,
       data: opts.data ?? {},
@@ -1072,7 +1073,9 @@ export const createProps = (o: PropsOpts): Props => {
       // lost under the ground: lift it back, or give up on it
       const gy = o.groundAt(r.cur[0], r.cur[2])
       if (r.cur[1] < gy - Math.max(2, r.radius * LOST_DEPTH) || r.cur[1] < -2000) {
-        if (++r.lost > MAX_RESCUES || r.cur[1] < -2000) {
+        // Shared bodies stay registered until an authoritative removal. A
+        // missing floor rescues them instead of leaving a ghost on peers.
+        if ((++r.lost > MAX_RESCUES || r.cur[1] < -2000) && !r.data.net) {
           remove(r.id)
           continue
         }

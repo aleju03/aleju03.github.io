@@ -836,28 +836,21 @@ registerCommand({
 
 registerCommand({
   name: 'cleanup',
-  args: [{ name: 'whose', nameEs: 'de quién', type: 'choice', optional: true, choices: ['mine', 'all'] }],
-  help: msg(
-    'remove every prop you made, or everyone\'s with "all"',
-    'quita todo lo que sacaste, o lo de todos con "all"',
-  ),
+  args: [{ name: 'whose', nameEs: 'de quién', type: 'text', optional: true }],
+  help: msg('clean up your props; all or a player name requires admin (all also works alone)',
+    'limpia tus objetos; all o un nombre requiere administrador (all también sirve a solas)'),
   run: (ctx) => {
     const sb = ctx.needSandbox()
-    const h = ctx.host.history()
-    const all = ctx.args[0]?.toLowerCase() === 'all'
-    const online = ctx.host.online?.() ?? false
-    if (all || !online) {
-      let n = 0
-      const how = ctx.host.rules.act('cleanup-all', () => {
-        n = h ? h.cleanup('all') : sb.count
-        if (!h) sb.clear()
-      })
-      if (how === 'sent') ctx.out(msg('asked the server to clean up', 'se le pidió al servidor que limpie'))
-      else ctx.ok(msg(`cleaned up ${n} ${plural(n, 'prop')}`, `se limpiaron ${n} ${pluralEs(n, 'objeto')}`))
+    const requested = ctx.args.join(' ').trim() || 'mine'
+    const target = /^(mine|all)$/i.test(requested) ? requested.toLowerCase() : requested
+    if (sb.network?.online) {
+      sb.network.cleanup(target)
+      ctx.out(msg('cleanup requested', 'limpieza solicitada'))
       return
     }
-    const n = h?.cleanup() ?? 0
-    ctx.ok(msg(`cleaned up ${n} of yours`, `se limpiaron ${n} tuyos`))
+    if (target !== 'mine' && target !== 'all') ctx.fail(msg('that player is not here', 'ese jugador no está aquí'))
+    const n = ctx.host.history()?.cleanup(target === 'all' ? 'all' : undefined) ?? 0
+    ctx.ok(msg(`cleaned up ${n} props`, `se limpiaron ${n} objetos`))
   },
 })
 

@@ -347,6 +347,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
   /* ------------------------------------------------------- grab/drop -- */
 
   const grabProp = (p: Prop, point: THREE.Vector3, aim: Aim) => {
+    if (sb.network && !sb.network.claim(p.id, 'hand')) return false
     if (p.mode === 'kinematic') return false
     if (p.mode === 'frozen') {
       sb.unfreeze(p.id)
@@ -405,7 +406,10 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
   }
 
   const clearHold = () => {
-    if (prop) delete prop.data.beam
+    if (prop) {
+      delete prop.data.beam
+      sb.network?.release(prop.id)
+    }
     prop = null
     rig = null
     rigKey = ''
@@ -530,7 +534,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     if (hit) {
       const p = sb.propOf(hit.collider)
       va.copy(aim.dir).multiplyScalar(hit.timeOfImpact).add(aim.eye)
-      if (p && p.mode !== 'kinematic' && !p.parked) return grabProp(p, va, aim)
+      if (p && !p.parked) return grabProp(p, va, aim)
       // nothing to hold: the beam stops on the surface
       view.end.copy(va)
       view.normal.set(hit.normal.x, hit.normal.y, hit.normal.z)
@@ -561,6 +565,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
       if (pr.alive && !pr.alive()) pins.splice(k, 1)
     }
     // standing on it: a beam that lifts its own holder is a motor
+    if (prop && !sb.isAuthority(prop.id)) clearHold()
     if (prop && sb.standing === prop) release(false)
 
     if (prop || rig) {

@@ -1322,7 +1322,9 @@ Rules that hold it together:
   materials; only its screen is new, and `stage()` compiles it under the
   boot cover. `npm run drive -- contraption` counts links from the catalogue
   to the rocket: 0.
-- **Local only.** Like every prop, nothing here is on the wire yet.
+- **Shared authority.** `net/remoteProps.ts` sends the original joint frames
+  and part settings. The entire connected graph changes authority together;
+  a driver or keyed part requests its claim before the controller runs.
 
 ```
 npm run film -- contraption:car         built, driven, turned, boosted
@@ -1697,6 +1699,48 @@ without it the graph is correct and silent.
 The known gap is NAT: there is only public STUN and no TURN relay, so some
 visitors will fail to open a voice channel to some peers. Everything else about
 them still works.
+
+### Shared sandbox props
+
+`net/remoteProps.ts` owns the headless prop store and attaches through
+`Sandbox.network`. `components/os/worldNet.ts` owns its socket transport.
+`net/propProtocol.ts` declares records; `server/src/props.js` validates and
+arbitrates them. The complete JSON protocol is in `server/README.md`.
+
+The server separates **ownership** (spawn, edit, undo, cleanup) from
+**authority** (one simulator per connected contraption). All other bodies
+are kinematic, played two ticks behind with no extrapolation. Spawn ids are
+mapped from a local nonce, so a late snapshot cannot collide with local
+Rapier ids. Claims use revoke, final-state acknowledgement and an epoch
+increment before the next simulator runs. The physgun keeps reaching while
+waiting; seats wait for the same grant; keyed parts claim for their owner.
+Movement is a 15 Hz batch of ten integers per changed body, with six extra
+velocity integers only on a handoff. A sleeping body's final row is its
+last traffic until something changes. Teleports snap while retaining ids.
+
+Both the console's `cleanup` and the catalogue's handwritten return slip
+request owner cleanup from the server. `cleanup all` requires the admin or
+an otherwise empty level. `cleanup <name>` is admin-only. Undo calls the
+same owned removal path. The cap is 150 props per spawner across levels.
+Disconnected owners' props stay; another player on that level simulates
+those bodies, or they park until somebody arrives. Ownership is the original
+world session id, including after a reconnect.
+
+Catalogue colours and materials are defined by kind and use the same atlas,
+geometry and batcher for remote and local props. Scale and mass travel.
+Arbitrary custom meshes and environmental rubble are outside the registry.
+Breaks, explosions, health and fuses travel; online splinters are particles
+with no physics, so cosmetic debris cannot change another authority's
+simulation. Procedural building fracture remains local: this protocol owns
+catalogue props, not the planet's building damage registry.
+
+Verification: `npm run measure -- prop-sync` runs the real client stores and
+Rapier bodies against the registry in Node. `node scripts/prop-sync-drive.mjs`
+uses two Chrome processes, a private Vite and a private relay, prints both
+throw endpoints, tests claims, joints, explosion, late join and cleanup,
+and measures JSON bytes per second with 200 resting props and ten moving.
+`npm run drive -- links` covers program reuse in the real renderer.
+
 
 ## The look
 

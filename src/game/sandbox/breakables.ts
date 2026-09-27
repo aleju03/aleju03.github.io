@@ -167,7 +167,9 @@ export const createLife = (
   const stateOf = (id: PropId) => {
     let s = state.get(id)
     if (!s) {
-      s = { hp: 1, fuse: -1, boom: -1, lit: 1 }
+      s = (sb.get(id)?.data.life as State | undefined) ?? { hp: 1, fuse: -1, boom: -1, lit: 1 }
+      const p = sb.get(id)
+      if (p) p.data.life = s
       state.set(id, s)
     }
     return s
@@ -179,6 +181,9 @@ export const createLife = (
   /* ------------------------------------------------------------ gibs -- */
 
   const spawnGibs = (p: Prop, from?: Vec3Like): PropId[] => {
+    // Online debris is cosmetic on every peer, with no colliders to change
+    // the next authority's result. The existing FX pools draw the pieces.
+    if (sb.network?.online) return []
     const specs = GIBS[p.kind.id]?.()
     if (!specs || !sb.getTransform(p.id, pos, quat)) return []
     sb.getVelocity(p.id, lin, ang)
@@ -231,12 +236,13 @@ export const createLife = (
 
   const shatter = (id: PropId, from?: Vec3Like) => {
     const p = sb.get(id)
-    if (!p || !p.kind.breaks) return false
+    if (!p || !p.kind.breaks || !sb.isAuthority(id)) return false
     if (!sb.getTransform(id, pos, quat)) return false
     sb.getVelocity(id, lin)
     const at = { x: pos.x, y: pos.y, z: pos.z }
     const surface = p.kind.surface ?? 'wood'
     const ids = spawnGibs(p, from)
+    p.data.breaking = true
     sb.remove(id)
     breakSound(surface, 1, at.x, at.y, at.z)
     fx.debris(DEBRIS[surface] ?? 'wood', at, lin, Math.max(p.extents.x, p.extents.y, p.extents.z))
@@ -246,7 +252,7 @@ export const createLife = (
 
   const goOff = (id: PropId) => {
     const p = sb.get(id)
-    if (!p || !p.kind.explodes) return
+    if (!p || !p.kind.explodes || !sb.isAuthority(id)) return
     if (!sb.getTransform(id, pos, quat)) return
     const at = { x: pos.x, y: pos.y, z: pos.z }
     const { power, radius } = p.kind.explodes
@@ -261,6 +267,7 @@ export const createLife = (
       v.y += 18 + sb.random() * 20
       sb.setVelocity(g, v, { x: (sb.random() - 0.5) * 20, y: (sb.random() - 0.5) * 20, z: (sb.random() - 0.5) * 20 })
     }
+    p.data.breaking = true
     sb.remove(id)
     explodeAt(at, power, radius, id)
     emitBreak({ id, kind: p.kind.id, x: at.x, y: at.y, z: at.z, how: 'explode', gibs: ids })
@@ -268,7 +275,7 @@ export const createLife = (
 
   const ignite = (id: PropId, fuse?: number) => {
     const p = sb.get(id)
-    if (!p?.kind.explodes) return
+    if (!p?.kind.explodes || !sb.isAuthority(id)) return
     const s = stateOf(id)
     if (s.fuse >= 0 || s.boom >= 0) return
     s.fuse = fuse ?? FUSE + sb.random() * FUSE_JITTER
@@ -279,7 +286,7 @@ export const createLife = (
 
   const detonate = (id: PropId, delay = 0) => {
     const p = sb.get(id)
-    if (!p?.kind.explodes) return
+    if (!p?.kind.explodes || !sb.isAuthority(id)) return
     const s = stateOf(id)
     if (delay <= 0) {
       goOff(id)
@@ -307,7 +314,7 @@ export const createLife = (
   */
   const damage = (id: PropId, amount: number, from?: Vec3Like, blast = false) => {
     const p = sb.get(id)
-    if (!p || amount <= 0) return
+    if (!p || amount <= 0 || !sb.isAuthority(id)) return
     const k = p.kind
     if (k.explodes) {
       const s = stateOf(id)
@@ -400,6 +407,8 @@ export const createLife = (
       const list = blows.splice(0)
       for (const b of list) damage(b.id, b.amount, b)
     }
+    // A new authority inherits the previous simulator's health and fuse.
+    sb.forEach((p) => { if (p.data.life && !state.has(p.id)) stateOf(p.id) })
     // fuses, pending bangs
     for (const [id, s] of state) {
       if (s.boom < 0 && s.fuse < 0) continue
@@ -410,6 +419,7 @@ export const createLife = (
         tmp.set(0, p.extents.y * 0.9, 0).applyQuaternion(quat).add(pos)
         fx.burn(tmp, s.boom >= 0 ? 1 : 1 - Math.max(0, s.fuse) / Math.max(0.1, s.lit))
       }
+      if (!sb.isAuthority(id)) continue
       if (s.boom >= 0) {
         s.boom -= h
         if (s.boom <= 0) {

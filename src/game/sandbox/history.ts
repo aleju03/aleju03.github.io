@@ -205,6 +205,10 @@ export const createHistory = (sb: Sandbox): History => {
       return null
     },
     cleanup: (owner = h.me) => {
+      if (sb.network?.online) {
+        sb.network.cleanup(owner === 'all' ? 'all' : 'mine')
+        return 0
+      }
       const all = owner === 'all'
       const ids: PropId[] = []
       if (all) {
