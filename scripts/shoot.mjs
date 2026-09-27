@@ -58,9 +58,11 @@ targets
   body:lineup          the player character: six looks front and back, and a
                        row of poses (wave, crouch, jump, sprint, heap, stretch)
   body:motion          filmstrips of every action below, one row each
-  body:strip:<action>  one filmstrip: walk|run|jump|land|ragdoll|recover|idle
+  body:strip:<action>  one filmstrip: walk|run|runside|turn|jump|land|ragdoll|recover|idle
   body:fp              the first-person lens looking down at your own body
   body:seat            seated in the car, boat and helicopter seat nodes
+  body:size            one bean beside a 4.7 doorway and the 3.84 lens line,
+                       and the old eye-scaled size next to it
   body:closeup         one body close: front, three-quarter, side and back
   body:wardrobe        every headgear once, close, over the builds and outfits
   body:folds[:<n>]     eight poses with every folded triangle of the skin

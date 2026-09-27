@@ -6,7 +6,7 @@ import { slopeAt, terrainY } from '../../src/game/world/terrain'
 import { placeAt, roadAt } from '../../src/game/world/settlements'
 import { makeCollisionSet, type Solid } from '../../src/game/physics/collision'
 import {
-  CABIN_FIT, buildPlayerBody, type PlayerPose, type PlayerRig,
+  CABIN_FIT, DESIGN_EYE, DESIGN_LENS, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../../src/game/player/playerBody'
 import type { RagdollEnv } from '../../src/game/player/ragdoll'
 import { setBodyBuildSync } from '../../src/game/player/bodyShape'
@@ -27,6 +27,9 @@ import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook
     npm run shoot -- body:strip:ragdoll   one of those strips on its own
     npm run shoot -- body:fp              what the first-person lens sees of
                                           your own body, looking down
+    npm run shoot -- body:size            how big a bean is: beside a house
+                                          doorway in a storey-high wall, under
+                                          the lens line, beside the old eye-scaled size
     npm run shoot -- body:seat            seated in the car, the boat and the
                                           helicopter's real seat nodes
     ... --pixel 3                          render at a third of the resolution,
@@ -311,6 +314,43 @@ const lineup = (spec: BodySpec, snap: Snap) => {
   snap('poses', camAt(tw, th, new THREE.Vector3(st.x, st.gy + 2, st.z), Math.PI + 0.12, 29, 2.2))
 }
 
+/** How big a bean is. A doorway as the house draws them (2.1 wide, 4.7 high),
+    a thin line at the walker's lens (3.84) and one at the storey's ceiling
+    (6), the body as it is built now beside it, a second one of the same
+    size, and the size it was built at when it was scaled onto its painted
+    eyes rather than its crown, greyed back */
+const size = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  const gy = st.gy
+  const add = (w: number, h: number, d: number, x: number, y: number, z: number, color: string) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color, roughness: 0.8 }))
+    m.position.set(x, y, z)
+    m.castShadow = true
+    st.scene.add(m)
+  }
+  // the door: a wall with a 2.1 x 4.7 hole in it, 6 high like a storey
+  const dx = st.x + 1.5
+  add(3, 6, 0.3, dx - 1.05 - 1.5, gy + 3, st.z + 1.2, "#b8b2a4")
+  add(3, 6, 0.3, dx + 1.05 + 1.5, gy + 3, st.z + 1.2, "#b8b2a4")
+  add(2.1, 6 - 4.7, 0.3, dx, gy + 4.7 + (6 - 4.7) / 2, st.z + 1.2, "#b8b2a4")
+  // the lens line
+  add(14, 0.04, 0.04, st.x, gy + 3.84, st.z + 1.0, '#e8402a')
+  const now = actor(st, LOOKS[0], st.x - 1.8, st.z, 0)
+  const two = actor(st, LOOKS[2], dx, st.z + 1.2, 0)
+  const old = buildPlayerBody(3.84 * (DESIGN_LENS / DESIGN_EYE), GRAV, LOOKS[3])
+  st.scene.add(old.group)
+  const was = { rig: old, pose: { ...now.pose }, x: st.x - 5.4, z: st.z, y: gy, vx: 0, vz: 0, vy: 0, grounded: true }
+  old.face(0)
+  for (let f = 0; f < 120; f++) {
+    tick(now, st.env)
+    tick(two, st.env)
+    tick(was, st.env)
+  }
+  const at = new THREE.Vector3(st.x - 1, gy + 2.6, st.z)
+  snap('size: old scale, now, now in a 4.7 door; red = lens 3.84', camAt(tw, th, at, Math.PI - 0.25, 17, 0.6, 34))
+}
+
 /** one body, close: front, three-quarter, side and back, where a face,
     the headband and the colour blocks can actually be judged */
 const closeup = (spec: BodySpec, snap: Snap) => {
@@ -342,6 +382,24 @@ const ACTIONS: Record<string, {
   run: {
     frames: [0.25, 0.7, 0.77, 0.84, 0.91, 0.98, 1.05, 1.12],
     run: (a, st) => tick(a, st.env, { speed: RUN, run: true }),
+  },
+  // the same run from dead side-on, a full cycle (two steps) at the run's
+  // own cadence: where the arm swing and the legs can be read against each
+  // other
+  runside: {
+    frames: [0.8, 0.835, 0.87, 0.905, 0.94, 0.975, 1.01, 1.045],
+    cam: [0, 10, 0.2],
+    run: (a, st) => tick(a, st.env, { speed: RUN, run: true }),
+  },
+  // a full run swerving hard left: the bank, the lean and what the arms do
+  // with a yaw rate on them
+  turn: {
+    frames: [0.5, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.45],
+    cam: [Math.PI - 0.2, 12, 3],
+    run: (a, st, f) => {
+      if (f > 36 && f < 80) a.pose.yaw += 3 / 60
+      tick(a, st.env, { speed: RUN, run: true })
+    },
   },
   // a standing hop and the landing, then the settle
   jump: {
@@ -618,6 +676,7 @@ export const shootBody = (spec: BodySpec) => {
     const a = t.arg ?? ''
     if (a === 'lineup') return n + 3
     if (a === 'closeup') return n + 4
+    if (a === 'size') return n + 1
     if (a === 'motion') return n + 8 * Object.keys(ACTIONS).length
     if (a.startsWith('strip')) return n + 8
     if (a === 'fp') return n + 5
@@ -699,6 +758,7 @@ export const shootBody = (spec: BodySpec) => {
       fn(spec, (label, cam) => snap(lastStage!.scene)(label, cam))
     if (a === 'lineup') run(lineup)
     else if (a === 'closeup') run(closeup)
+    else if (a === 'size') run(size)
     else if (a === 'motion') for (const n of Object.keys(ACTIONS)) run((sp, s) => strip(sp, n, s))
     else if (a.startsWith('strip:')) run((sp, s) => strip(sp, a.slice(6), s))
     else if (a === 'fp') run(firstPerson)
