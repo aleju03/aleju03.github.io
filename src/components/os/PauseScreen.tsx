@@ -471,7 +471,13 @@ export default function PauseScreen({
           </p>
         </header>
 
-        <div className="flex min-h-0 flex-col gap-8 overflow-y-auto sm:flex-row sm:gap-10">
+        {/* Scrolls when a short window needs it, but never draws a bar: a bar
+            takes its own width out of the columns, the widest option row then
+            wraps onto one more line, and the taller page keeps the bar it
+            caused. That loop had two stable states on a laptop, and whichever
+            one the last relayout (a hover) landed in stuck. Sideways it never
+            scrolls: the rows' hover nudge is not content */}
+        <div className="flex min-h-0 flex-col gap-8 overflow-x-hidden overflow-y-auto [scrollbar-width:none] sm:flex-row sm:gap-10">
           <nav className="flex w-full shrink-0 flex-col gap-0.5 sm:w-44">
             {pages.map((p) => (
               <Row
