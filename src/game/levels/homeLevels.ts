@@ -33,7 +33,7 @@ import { MOON_ORIGIN, MOON_WALK } from './space'
   streaming: the maze wanders far enough that the overworld would otherwise
   keep rebuilding terrain around coordinates nobody is standing on.
 
-  - 'moon' — reached by flying at the Moon from orbit, and left by flying
+  - 'moon': reached by flying at the Moon from orbit, and left by flying
     up off it (levels/space.ts has the numbers, outsideWorld.ts the seams).
     Its ground is levels/moon.ts's craters, its sky the same sky module with
     the air taken out and the globe hung in it, and it has a sandbox of its
