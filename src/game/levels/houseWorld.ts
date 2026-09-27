@@ -9,6 +9,7 @@ import { buildFittings, facingOf, type FittingHandles, type FittingSpec } from '
 import type { SeatSpec } from '../player/seating'
 import { texelate } from '../render/texel'
 import { mergeGeoms } from '../core/geometry'
+import { buildHouseProps } from './houseProps'
 
 /** anything with a .scene group — a GLTFLoader result or a slice of one */
 export interface ModelLike {
@@ -111,7 +112,7 @@ export interface HouseHandles {
   screen: ScreenPlacement | null
   /** what a footstep lands on here: plank floors inside the walls, the
       concrete porch slab, grass everywhere else on the property */
-  surfaceAt: (x: number, z: number) => StepSurface
+  surfaceAt: (x: number, z: number, y?: number) => StepSurface
   /** 0 seated .. 1 walking: ramps every house light with the room rig */
   setRoamLight: (k: number) => void
   /** 0 night .. 1 day: fades fireflies and the curtained-window glow out */
@@ -122,6 +123,10 @@ export interface HouseHandles {
   shadowLights: THREE.SpotLight[]
   /** attach the downloaded furniture models during the covered boot warm-up */
   furnish: (models: HouseModels) => void
+  /** the house's lamps as the look's pools: x, y, z and radius per lamp, the
+      radius negative for an indoor lamp (houseProps.ts says why) */
+  lamps: Float32Array
+  lampCount: number
 }
 
 interface BuildOpts {
@@ -253,6 +258,28 @@ export const NOCLIP = { z0: 16.0, z1: 17.8 }
 const BATH = { minX: -7.6, maxX: -2.4, minZ: 10.5, maxZ: 16.6 }
 const HALL = { minX: BATH.maxX, maxX: 7.6, minZ: 10.5, maxZ: 14.0 }
 const DOOR_H = 4.7
+/**
+  The paint, room by room: a family's choices in 2005, builder beige where
+  nobody chose, a harvest-gold kitchen, a slate-blue room for the kid. Each
+  sits in one of the grade's anchor families (render/grade.ts) and a value
+  step or two off its neighbours, so a doorway reads as a change of room
+  through the posterize rather than as one wall folding into the next.
+*/
+const PAINT = {
+  living: '#7d6a52',
+  hall: '#76694f',
+  kitchen: '#8c7448',
+  halfBath: '#5f7a74',
+  garage: '#8a8578',
+  office: '#4f5f78',
+  linen: '#8a8070',
+  bath: '#6f8a8c',
+  den: '#5e4f3e',
+  master: '#7e6f63',
+  ceiling: '#766e62',
+  bathCeiling: '#7a8480',
+  garageCeiling: '#6a665c',
+}
 // Walk collision tracks the camera as a point; authored solids grow sideways
 // by this much to represent its shoulders. Wall pieces need the same margin
 // along their length, especially where a fixed jamb meets a dynamic door.
@@ -367,6 +394,20 @@ const makeTileTexture = () =>
       ctx.moveTo(0, i * s)
       ctx.lineTo(w, i * s)
       ctx.stroke()
+    }
+  })
+
+/** wall-to-wall carpet: a flat colour with a speckle of tufts a shade either
+    side of it, so it reads as pile rather than as paint */
+const makeCarpetTexture = (base: string, seed: number) =>
+  canvasTexture([128, 128], (ctx, w, h) => {
+    const rand = seeded(seed)
+    ctx.fillStyle = base
+    ctx.fillRect(0, 0, w, h)
+    for (let i = 0; i < 1400; i++) {
+      const light = rand() < 0.5
+      ctx.fillStyle = light ? 'rgba(255,245,225,0.07)' : 'rgba(0,0,0,0.09)'
+      ctx.fillRect(rand() * w, rand() * h, 1, 1)
     }
   })
 
@@ -573,20 +614,30 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
             ),
       ))
     }
-    let cursor = u0
-    for (const c of sorted) {
-      panel(cursor, c.u0, 0, h)
-      base(cursor, c.u0)
-      panel(c.u0, c.u1, 0, c.y0)
-      panel(c.u0, c.u1, c.y1, h)
-      if (c.y0 > 0.5) {
-        // window: wall below it still blocks and keeps its baseboard
-        base(c.u0, c.u1)
+    // The panels are cut column by column between every edge any hole has,
+    // so holes may share a span of the wall: a facade two storeys tall
+    // carries a window over a window, and a cut-by-cut walk along the wall
+    // painted each one's full-height jamb panel straight over the other.
+    // Each column is solid except where the holes over it are, and it keeps
+    // a baseboard unless a hole in it reaches the floor
+    const edges = [...new Set([u0, u1, ...sorted.flatMap((c) => [c.u0, c.u1])])]
+      .filter((u) => u >= u0 && u <= u1)
+      .sort((a, b) => a - b)
+    for (let i = 0; i + 1 < edges.length; i++) {
+      const a = edges[i]
+      const b = edges[i + 1]
+      const mid = (a + b) / 2
+      const over = sorted
+        .filter((c) => c.u0 < mid && c.u1 > mid)
+        .sort((p, q) => p.y0 - q.y0)
+      let y = 0
+      for (const c of over) {
+        panel(a, b, y, c.y0)
+        y = Math.max(y, c.y1)
       }
-      cursor = c.u1
+      panel(a, b, y, h)
+      if (!over.some((c) => c.y0 <= 0.5)) base(a, b)
     }
-    panel(cursor, u1, 0, h)
-    base(cursor, u1)
 
     // Windows are visual cuts only. Build collision in long uninterrupted
     // runs and split it solely around an opening that actually reaches the
@@ -799,9 +850,11 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   /* ------------------------------------------------------- floor planes -- */
 
-  const plankBedTex = track(texelate(makePlankTexture('#2a2018', '#1c150e', 0xbed0)))
-  const plankLivTex = track(texelate(makePlankTexture('#32261c', '#221912', 0x11f0)))
+  const plankBedTex = track(texelate(makePlankTexture('#43301f', '#2c2015', 0xbed0)))
+  const plankLivTex = track(texelate(makePlankTexture('#4e3824', '#33251a', 0x11f0)))
   const tileTex = track(texelate(makeTileTexture()))
+  const carpetDenTex = track(texelate(makeCarpetTexture('#4a4f3c', 0xde11)))
+  const carpetMbrTex = track(texelate(makeCarpetTexture('#7a6c5a', 0x3b12)))
   const grassTex = track(texelate(makeGrassTexture()))
 
   const floorPlane = (
@@ -923,21 +976,21 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   // -- the street wall: the living room's picture window, the foyer's
   // sidelight and the front door. Every hole in it has a room behind it
-  wall('z', HOUSE.minZ, HOUSE.minX, HOUSE.maxX, 1, '#4f4234', [
+  wall('z', HOUSE.minZ, HOUSE.minX, HOUSE.maxX, 1, PAINT.living, [
     LIVING_WIN, ENTRY_WIN, opening(FRONT_DOOR),
   ])
 
   // -- living room: the old bedroom's footprint, less the foyer
-  wall('x', HOUSE.minX, HOUSE.minZ, 10.5, 1, '#584839', [BEDROOM_WIN])
-  wall('z', 10.5, HOUSE.minX, PART_G, -1, '#584839')
+  wall('x', HOUSE.minX, HOUSE.minZ, 10.5, 1, PAINT.living, [BEDROOM_WIN])
+  wall('z', 10.5, HOUSE.minX, PART_G, -1, PAINT.living)
   // the partition, drawn from both sides; only the living room's face
   // registers the obstacle, or the opening would be blocked by the other
   // face's box
-  wall('x', PART_G, HOUSE.minZ, 10.5, -1, '#584839', [opening(LIVING_ARCH, LIVING_ARCH.h)])
-  wall('x', PART_G, HOUSE.minZ, 10.5, 1, '#4a4034', [opening(LIVING_ARCH, LIVING_ARCH.h)], { obstacle: false })
+  wall('x', PART_G, HOUSE.minZ, 10.5, -1, PAINT.living, [opening(LIVING_ARCH, LIVING_ARCH.h)])
+  wall('x', PART_G, HOUSE.minZ, 10.5, 1, PAINT.hall, [opening(LIVING_ARCH, LIVING_ARCH.h)], { obstacle: false })
   casing('x', PART_G, LIVING_ARCH.u0, LIVING_ARCH.u1, LIVING_ARCH.h)
   floorPlane(HOUSE.minX, PART_G, HOUSE.minZ, 10.5, plankLivTex, 3.4)
-  ceiling(HOUSE.minX, PART_G, HOUSE.minZ, 10.5, '#3d342b')
+  ceiling(HOUSE.minX, PART_G, HOUSE.minZ, 10.5, PAINT.ceiling)
   windowUnit('x', HOUSE.minX + 0.045, BEDROOM_WIN.u0, BEDROOM_WIN.u1, BEDROOM_WIN.y0, BEDROOM_WIN.y1)
   windowUnit('z', HOUSE.minZ + 0.045, LIVING_WIN.u0, LIVING_WIN.u1, LIVING_WIN.y0, LIVING_WIN.y1)
   windowUnit('z', HOUSE.minZ + 0.045, ENTRY_WIN.u0, ENTRY_WIN.u1, ENTRY_WIN.y0, ENTRY_WIN.y1)
@@ -945,44 +998,44 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   // -- foyer: the stairs run up its east wall, and its north end is open to
   // the hall, so there is nothing else to build but the floor it shares.
   // Its ceiling stops at the stairwell, which is open to the roof
-  wall('x', HOUSE.maxX, HOUSE.minZ, 10.5, -1, '#4a4034')
+  wall('x', HOUSE.maxX, HOUSE.minZ, 10.5, -1, PAINT.hall)
   floorPlane(PART_G, HOUSE.maxX, HOUSE.minZ, 10.5, plankBedTex, 3.4)
-  ceiling(PART_G, STAIR.x0, HOUSE.minZ, 10.5, '#3a3129')
-  ceiling(STAIR.x0, HOUSE.maxX, HOUSE.minZ, STAIR.z0, '#3a3129')
+  ceiling(PART_G, STAIR.x0, HOUSE.minZ, 10.5, PAINT.ceiling)
+  ceiling(STAIR.x0, HOUSE.maxX, HOUSE.minZ, STAIR.z0, PAINT.ceiling)
 
   // -- half bath and the laundry
-  wall('z', BATH.minZ, BATH.minX, BATH.maxX, 1, '#5d665b')
-  wall('x', BATH.maxX, BATH.minZ, BATH.maxZ, -1, '#5d665b', [opening(BATH_DOOR)])
-  wall('z', BATH.maxZ, BATH.minX, BATH.maxX, -1, '#5d665b')
-  wall('x', BATH.minX, BATH.minZ, BATH.maxZ, 1, '#5d665b', [BATH_WIN])
+  wall('z', BATH.minZ, BATH.minX, BATH.maxX, 1, PAINT.halfBath)
+  wall('x', BATH.maxX, BATH.minZ, BATH.maxZ, -1, PAINT.halfBath, [opening(BATH_DOOR)])
+  wall('z', BATH.maxZ, BATH.minX, BATH.maxX, -1, PAINT.halfBath)
+  wall('x', BATH.minX, BATH.minZ, BATH.maxZ, 1, PAINT.halfBath, [BATH_WIN])
   floorPlane(BATH.minX, BATH.maxX, BATH.minZ, BATH.maxZ, tileTex, 2.3, 0.004)
-  ceiling(BATH.minX, BATH.maxX, BATH.minZ, BATH.maxZ, '#3f4440')
+  ceiling(BATH.minX, BATH.maxX, BATH.minZ, BATH.maxZ, PAINT.bathCeiling)
   windowUnit('x', BATH.minX + 0.045, BATH_WIN.u0, BATH_WIN.u1, BATH_WIN.y0, BATH_WIN.y1, true)
 
   // -- hall: the foyer arrives at its east end, beside the back of the
   // stairs; the garage is through its east wall
-  wall('z', HALL.minZ, HALL.minX, PART_G, 1, '#4a4034')
-  wall('x', HALL.minX, HALL.minZ, HALL.maxZ, 1, '#4a4034', [opening(BATH_DOOR)])
-  wall('x', HALL.maxX, HALL.minZ, HALL.maxZ, -1, '#4a4034', [opening(GARAGE_IN)])
-  wall('z', HALL.maxZ, HALL.minX, HALL.maxX, -1, '#4a4034', [opening(ARCH, ARCH.h)])
+  wall('z', HALL.minZ, HALL.minX, PART_G, 1, PAINT.hall)
+  wall('x', HALL.minX, HALL.minZ, HALL.maxZ, 1, PAINT.hall, [opening(BATH_DOOR)])
+  wall('x', HALL.maxX, HALL.minZ, HALL.maxZ, -1, PAINT.hall, [opening(GARAGE_IN)])
+  wall('z', HALL.maxZ, HALL.minX, HALL.maxX, -1, PAINT.hall, [opening(ARCH, ARCH.h)])
   floorPlane(HALL.minX, HALL.maxX, HALL.minZ, HALL.maxZ, plankBedTex, 3.4, 0.002)
-  ceiling(HALL.minX, HALL.maxX, HALL.minZ, HALL.maxZ, '#3a3129')
+  ceiling(HALL.minX, HALL.maxX, HALL.minZ, HALL.maxZ, PAINT.ceiling)
 
   // -- kitchen and dining (L-shaped around the bath block)
-  wall('z', 14, HALL.minX, HALL.maxX, 1, '#554636', [opening(ARCH, ARCH.h)])
-  wall('x', BATH.maxX, 14, BATH.maxZ, 1, '#554636')
-  wall('z', BATH.maxZ, BATH.minX, BATH.maxX, 1, '#554636')
-  wall('x', HOUSE.minX, BATH.maxZ, HOUSE.maxZ, 1, '#554636', [SINK_WIN])
-  wall('z', HOUSE.maxZ, HOUSE.minX, HOUSE.maxX, -1, '#5a4b3a', [opening(BACK_DOOR), BACK_WIN])
-  wall('x', HOUSE.maxX, 14, HOUSE.maxZ, -1, '#554636', [
+  wall('z', 14, HALL.minX, HALL.maxX, 1, PAINT.kitchen, [opening(ARCH, ARCH.h)])
+  wall('x', BATH.maxX, 14, BATH.maxZ, 1, PAINT.kitchen)
+  wall('z', BATH.maxZ, BATH.minX, BATH.maxX, 1, PAINT.kitchen)
+  wall('x', HOUSE.minX, BATH.maxZ, HOUSE.maxZ, 1, PAINT.kitchen, [SINK_WIN])
+  wall('z', HOUSE.maxZ, HOUSE.minX, HOUSE.maxX, -1, PAINT.kitchen, [opening(BACK_DOOR), BACK_WIN])
+  wall('x', HOUSE.maxX, 14, HOUSE.maxZ, -1, PAINT.kitchen, [
     // the backrooms seam: a full-height floor cut, so no panel and no
     // obstacle span it; the disguise below makes it read as wall anyway
     { u0: NOCLIP.z0, u1: NOCLIP.z1, y0: 0, y1: UP },
   ])
   floorPlane(HOUSE.minX, HOUSE.maxX, BATH.maxZ, HOUSE.maxZ, plankLivTex, 3.4)
   floorPlane(HALL.minX, HOUSE.maxX, 14, BATH.maxZ, plankLivTex, 3.4)
-  ceiling(HOUSE.minX, HOUSE.maxX, BATH.maxZ, HOUSE.maxZ, '#3a332b')
-  ceiling(HALL.minX, HOUSE.maxX, 14, BATH.maxZ, '#3a332b')
+  ceiling(HOUSE.minX, HOUSE.maxX, BATH.maxZ, HOUSE.maxZ, PAINT.ceiling)
+  ceiling(HALL.minX, HOUSE.maxX, 14, BATH.maxZ, PAINT.ceiling)
   windowUnit('x', HOUSE.minX + 0.045, SINK_WIN.u0, SINK_WIN.u1, SINK_WIN.y0, SINK_WIN.y1)
   windowUnit('z', HOUSE.maxZ - 0.045, BACK_WIN.u0, BACK_WIN.u1, BACK_WIN.y0, BACK_WIN.y1)
 
@@ -991,7 +1044,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   // the hairline shadow around it is the only visual tell (that, and the
   // damp stain backrooms.ts hangs on it)
   const slip = new THREE.Mesh(
-    new THREE.PlaneGeometry(NOCLIP.z1 - NOCLIP.z0, CEIL_H), wallMat('#554636'))
+    new THREE.PlaneGeometry(NOCLIP.z1 - NOCLIP.z0, CEIL_H), wallMat(PAINT.kitchen))
   slip.position.set(HOUSE.maxX + 0.01, CEIL_H / 2, (NOCLIP.z0 + NOCLIP.z1) / 2)
   slip.rotation.y = -Math.PI / 2
   slip.receiveShadow = true
@@ -1004,16 +1057,16 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   root.add(slipBase)
 
   casing('z', 14, ARCH.u0, ARCH.u1, ARCH.h)
-  cornerPosts('#554636', [[BATH.maxX, HALL.maxZ], [BATH.maxX, BATH.maxZ]])
+  cornerPosts(PAINT.kitchen, [[BATH.maxX, HALL.maxZ], [BATH.maxX, BATH.maxZ]])
 
   // -- garage: bare paint on block, a concrete floor, one window. Its west
   // wall is the house's east facade, siding and all, which is what a
   // garage built onto a house looks like from inside it
-  wall('z', GARAGE.minZ, GARAGE.minX, GARAGE.maxX, 1, '#7a7466', [
+  wall('z', GARAGE.minZ, GARAGE.minX, GARAGE.maxX, 1, PAINT.garage, [
     opening(GARAGE_DOOR, GARAGE_DOOR.h),
   ], { h: CEIL_H })
-  wall('x', GARAGE.maxX, GARAGE.minZ, GARAGE.maxZ, -1, '#7a7466', [GAR_WIN], { h: CEIL_H })
-  wall('z', GARAGE.maxZ, GARAGE.minX, GARAGE.maxX, -1, '#7a7466', [], { h: CEIL_H })
+  wall('x', GARAGE.maxX, GARAGE.minZ, GARAGE.maxZ, -1, PAINT.garage, [GAR_WIN], { h: CEIL_H })
+  wall('z', GARAGE.maxZ, GARAGE.minX, GARAGE.maxX, -1, PAINT.garage, [], { h: CEIL_H })
   {
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(GARAGE.maxX - GARAGE.minX, GARAGE.maxZ - GARAGE.minZ), concreteMat)
@@ -1022,7 +1075,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     floor.receiveShadow = true
     root.add(floor)
   }
-  ceiling(GARAGE.minX, GARAGE.maxX, GARAGE.minZ, GARAGE.maxZ, '#57524a')
+  ceiling(GARAGE.minX, GARAGE.maxX, GARAGE.minZ, GARAGE.maxZ, PAINT.garageCeiling)
   windowUnit('x', GARAGE.maxX - 0.045, GAR_WIN.u0, GAR_WIN.u1, GAR_WIN.y0, GAR_WIN.y1)
 
   // -- ground-floor doors; each swings away from whoever opens it
@@ -1045,70 +1098,72 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   // -- the street wall: the computer room's window over the living room's;
   // the linen closet over the front door has none
-  wall('z', HOUSE.minZ, HOUSE.minX, HOUSE.maxX, 1, '#3d3328', [FRONT_WIN])
+  wall('z', HOUSE.minZ, HOUSE.minX, HOUSE.maxX, 1, PAINT.office, [FRONT_WIN])
 
   // -- the computer room: the desk scene's room, exactly where the bedroom
   // under it was, one storey up
-  wall('x', HOUSE.minX, HOUSE.minZ, 10.5, 1, '#4a3d30', [BEDROOM_WIN])
-  wall('z', 10.5, HOUSE.minX, PART_X, -1, '#50412f')
-  wall('x', PART_X, HOUSE.minZ, 10.5, -1, '#50412f', [opening(BED_DOOR)])
-  wall('x', PART_X, HOUSE.minZ, 10.5, 1, '#4a4034', [opening(BED_DOOR)], { obstacle: false })
+  wall('x', HOUSE.minX, HOUSE.minZ, 10.5, 1, PAINT.office, [BEDROOM_WIN])
+  wall('z', 10.5, HOUSE.minX, PART_X, -1, PAINT.office)
+  wall('x', PART_X, HOUSE.minZ, 10.5, -1, PAINT.office, [opening(BED_DOOR)])
+  wall('x', PART_X, HOUSE.minZ, 10.5, 1, PAINT.hall, [opening(BED_DOOR)], { obstacle: false })
   floorPlane(HOUSE.minX, PART_X, HOUSE.minZ, 10.5, plankBedTex, 3.4)
-  ceiling(HOUSE.minX, PART_X, HOUSE.minZ, 10.5, '#3a3129')
+  ceiling(HOUSE.minX, PART_X, HOUSE.minZ, 10.5, PAINT.ceiling)
   windowUnit('x', HOUSE.minX + 0.045, BEDROOM_WIN.u0, BEDROOM_WIN.u1, BEDROOM_WIN.y0, BEDROOM_WIN.y1)
   windowUnit('z', HOUSE.minZ + 0.045, FRONT_WIN.u0, FRONT_WIN.u1, FRONT_WIN.y0, FRONT_WIN.y1)
 
   // -- the linen closet over the front door, and the gallery beside the
   // stairwell. The closet's wall is the stairwell's south end, so it hangs
   // over the foot of the stairs; its gallery face registers the obstacle
-  wall('z', LINEN_Z, PART_X, HOUSE.maxX, 1, '#4a4034', [opening(LINEN_DOOR)])
-  wall('z', LINEN_Z, PART_X, HOUSE.maxX, -1, '#5e5445', [opening(LINEN_DOOR)], { obstacle: false })
-  wall('x', HOUSE.maxX, HOUSE.minZ, 10.5, -1, '#4a4034')
+  wall('z', LINEN_Z, PART_X, HOUSE.maxX, 1, PAINT.hall, [opening(LINEN_DOOR)])
+  wall('z', LINEN_Z, PART_X, HOUSE.maxX, -1, PAINT.linen, [opening(LINEN_DOOR)], { obstacle: false })
+  wall('x', HOUSE.maxX, HOUSE.minZ, 10.5, -1, PAINT.hall)
   floorPlane(PART_X, HOUSE.maxX, HOUSE.minZ, LINEN_Z, plankBedTex, 3.4)
   floorPlane(PART_X, STAIR.x0, LINEN_Z, 10.5, plankLivTex, 3.4)
-  ceiling(PART_X, HOUSE.maxX, HOUSE.minZ, 10.5, '#3a3129')
+  ceiling(PART_X, HOUSE.maxX, HOUSE.minZ, 10.5, PAINT.ceiling)
 
   // -- the upper hall: the stairs arrive at its east end
-  wall('z', HALL.minZ, HALL.minX, PART_X, 1, '#4a4034')
-  wall('x', HALL.minX, HALL.minZ, HALL.maxZ, 1, '#4a4034', [opening(BATH_DOOR)])
-  wall('x', HALL.maxX, HALL.minZ, HALL.maxZ, -1, '#4a4034', [HALL_WIN])
-  wall('z', HALL.maxZ, HALL.minX, HALL.maxX, -1, '#4a4034', [opening(DEN_DOOR), opening(MBR_DOOR)])
+  wall('z', HALL.minZ, HALL.minX, PART_X, 1, PAINT.hall)
+  wall('x', HALL.minX, HALL.minZ, HALL.maxZ, 1, PAINT.hall, [opening(BATH_DOOR)])
+  wall('x', HALL.maxX, HALL.minZ, HALL.maxZ, -1, PAINT.hall, [HALL_WIN])
+  wall('z', HALL.maxZ, HALL.minX, HALL.maxX, -1, PAINT.hall, [opening(DEN_DOOR), opening(MBR_DOOR)])
   floorPlane(HALL.minX, HALL.maxX, HALL.minZ, HALL.maxZ, plankLivTex, 3.4, 0.002)
-  ceiling(HALL.minX, HALL.maxX, HALL.minZ, HALL.maxZ, '#3a3129')
+  ceiling(HALL.minX, HALL.maxX, HALL.minZ, HALL.maxZ, PAINT.ceiling)
   windowUnit('x', HALL.maxX - 0.045, HALL_WIN.u0, HALL_WIN.u1, HALL_WIN.y0, HALL_WIN.y1)
 
   // -- the full bathroom, over the half bath
-  wall('z', BATH.minZ, BATH.minX, BATH.maxX, 1, '#5b6b70')
-  wall('x', BATH.maxX, BATH.minZ, BATH.maxZ, -1, '#5b6b70', [opening(BATH_DOOR)])
-  wall('z', BATH.maxZ, BATH.minX, BATH.maxX, -1, '#5b6b70')
-  wall('x', BATH.minX, BATH.minZ, BATH.maxZ, 1, '#5b6b70', [BATH_WIN])
+  wall('z', BATH.minZ, BATH.minX, BATH.maxX, 1, PAINT.bath)
+  wall('x', BATH.maxX, BATH.minZ, BATH.maxZ, -1, PAINT.bath, [opening(BATH_DOOR)])
+  wall('z', BATH.maxZ, BATH.minX, BATH.maxX, -1, PAINT.bath)
+  wall('x', BATH.minX, BATH.minZ, BATH.maxZ, 1, PAINT.bath, [BATH_WIN])
   floorPlane(BATH.minX, BATH.maxX, BATH.minZ, BATH.maxZ, tileTex, 2.3, 0.004)
-  ceiling(BATH.minX, BATH.maxX, BATH.minZ, BATH.maxZ, '#3f4440')
+  ceiling(BATH.minX, BATH.maxX, BATH.minZ, BATH.maxZ, PAINT.bathCeiling)
   windowUnit('x', BATH.minX + 0.045, BATH_WIN.u0, BATH_WIN.u1, BATH_WIN.y0, BATH_WIN.y1, true)
 
   // -- the den (an L round the bathroom, like the kitchen under it) and the
   // master bedroom, either side of one partition
-  wall('x', BATH.maxX, HALL.maxZ, BATH.maxZ, 1, '#4f4a3c')
-  wall('z', BATH.maxZ, BATH.minX, BATH.maxX, 1, '#4f4a3c')
-  wall('x', HOUSE.minX, BATH.maxZ, HOUSE.maxZ, 1, '#4f4a3c', [DEN_WIN_W])
-  wall('z', HOUSE.maxZ, HOUSE.minX, HOUSE.maxX, -1, '#4f4a3c', [DEN_WIN, MBR_WIN])
-  wall('x', DEN_X, HALL.maxZ, HOUSE.maxZ, -1, '#4f4a3c')
-  wall('x', DEN_X, HALL.maxZ, HOUSE.maxZ, 1, '#5a4c44', [], { obstacle: false })
-  wall('z', HALL.maxZ, HALL.minX, HALL.maxX, 1, '#5a4c44', [
+  wall('x', BATH.maxX, HALL.maxZ, BATH.maxZ, 1, PAINT.den)
+  wall('z', BATH.maxZ, BATH.minX, BATH.maxX, 1, PAINT.den)
+  wall('x', HOUSE.minX, BATH.maxZ, HOUSE.maxZ, 1, PAINT.den, [DEN_WIN_W])
+  wall('z', HOUSE.maxZ, HOUSE.minX, HOUSE.maxX, -1, PAINT.den, [DEN_WIN, MBR_WIN])
+  wall('x', DEN_X, HALL.maxZ, HOUSE.maxZ, -1, PAINT.den)
+  wall('x', DEN_X, HALL.maxZ, HOUSE.maxZ, 1, PAINT.master, [], { obstacle: false })
+  wall('z', HALL.maxZ, HALL.minX, HALL.maxX, 1, PAINT.master, [
     opening(DEN_DOOR), opening(MBR_DOOR),
   ], { obstacle: false })
-  wall('x', HOUSE.maxX, HALL.maxZ, HOUSE.maxZ, -1, '#5a4c44', [MBR_WIN_E])
-  floorPlane(HOUSE.minX, DEN_X, BATH.maxZ, HOUSE.maxZ, plankBedTex, 3.4)
-  floorPlane(HALL.minX, DEN_X, HALL.maxZ, BATH.maxZ, plankBedTex, 3.4)
-  floorPlane(DEN_X, HOUSE.maxX, HALL.maxZ, HOUSE.maxZ, plankLivTex, 3.4)
-  ceiling(HOUSE.minX, DEN_X, BATH.maxZ, HOUSE.maxZ, '#3a332b')
-  ceiling(HALL.minX, DEN_X, HALL.maxZ, BATH.maxZ, '#3a332b')
-  ceiling(DEN_X, HOUSE.maxX, HALL.maxZ, HOUSE.maxZ, '#3a332b')
+  wall('x', HOUSE.maxX, HALL.maxZ, HOUSE.maxZ, -1, PAINT.master, [MBR_WIN_E])
+  // carpet in both: the den's a dark green nobody would pick now, the
+  // master's the beige everybody did
+  floorPlane(HOUSE.minX, DEN_X, BATH.maxZ, HOUSE.maxZ, carpetDenTex, 2.0)
+  floorPlane(HALL.minX, DEN_X, HALL.maxZ, BATH.maxZ, carpetDenTex, 2.0)
+  floorPlane(DEN_X, HOUSE.maxX, HALL.maxZ, HOUSE.maxZ, carpetMbrTex, 2.0)
+  ceiling(HOUSE.minX, DEN_X, BATH.maxZ, HOUSE.maxZ, PAINT.ceiling)
+  ceiling(HALL.minX, DEN_X, HALL.maxZ, BATH.maxZ, PAINT.ceiling)
+  ceiling(DEN_X, HOUSE.maxX, HALL.maxZ, HOUSE.maxZ, PAINT.ceiling)
   windowUnit('x', HOUSE.minX + 0.045, DEN_WIN_W.u0, DEN_WIN_W.u1, DEN_WIN_W.y0, DEN_WIN_W.y1)
   windowUnit('z', HOUSE.maxZ - 0.045, DEN_WIN.u0, DEN_WIN.u1, DEN_WIN.y0, DEN_WIN.y1)
   windowUnit('z', HOUSE.maxZ - 0.045, MBR_WIN.u0, MBR_WIN.u1, MBR_WIN.y0, MBR_WIN.y1)
   windowUnit('x', HOUSE.maxX - 0.045, MBR_WIN_E.u0, MBR_WIN_E.u1, MBR_WIN_E.y0, MBR_WIN_E.y1)
-  cornerPosts('#4f4a3c', [[BATH.maxX, HALL.maxZ], [BATH.maxX, BATH.maxZ]])
+  cornerPosts(PAINT.den, [[BATH.maxX, HALL.maxZ], [BATH.maxX, BATH.maxZ]])
 
   // -- upstairs doors
   doorUnit('x', PART_X, BED_DOOR.u0, BED_DOOR.u1, 'u0', Math.PI * 0.52)
@@ -1140,7 +1195,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     from stepping off the flight into the foyer; it rides the steps, so it is
     over the head of anyone passing underneath.
   */
-  const STAIR_BODY = '#4a4034'
+  const STAIR_BODY = PAINT.hall
   {
     const body: Part[] = []
     const treads: Part[] = []
@@ -1201,7 +1256,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
 
   /* ============================================================ EXTERIOR */
 
-  const facadeColor = '#6f6252'
+  const facadeColor = '#9c8c6c'
   const FACADE = { base: false, obstacle: false, surf: SURF.plank, h: EAVE_Y, cast: true } as const
   // both storeys at once: the holes of each floor, the upper ones lifted
   wall('z', HOUSE.maxZ + 0.14, HOUSE.minX - 0.14, HOUSE.maxX + 0.14, 1, facadeColor, [
@@ -1493,6 +1548,12 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   root.add(flies)
   let flyT = 0
 
+  /* -------------------------------------------------------------- props -- */
+
+  // the family's things, one merged draw (houseProps.ts): standing from the
+  // first frame like the walls, since none of it waits on a download
+  const props = buildHouseProps({ root, obstacles, up: UP, trackDisposable })
+
   /* ------------------------------------------------------------- lights -- */
 
   const addLight = (light: THREE.Light, on: number) => {
@@ -1768,6 +1829,18 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       return Math.max(b.max.x - b.min.x, b.max.z - b.min.z)
     }
     const freezer = width('doorLeft') <= width('doorRight') ? 'doorLeft' : 'doorRight'
+    // the fridge side wears the family's paper: hung on the leaf's own node
+    // so it swings open with the door
+    const door = piece.group.getObjectByName(freezer === 'doorLeft' ? 'doorRight' : 'doorLeft')
+    if (door) {
+      door.updateWorldMatrix(true, true)
+      const paper = props.fridgeFront(new THREE.Box3().setFromObject(door))
+      if (paper) {
+        root.add(paper)
+        paper.updateMatrixWorld(true)
+        door.attach(paper)
+      }
+    }
     const cold = { depth: 1.05, shelves: 3, stock: 9, lit: 1, tint: '#eceae3' }
     work(piece, {
       doorLeft: {
@@ -2232,6 +2305,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     // maps it dirties are re-baked by whoever pressed the key, not from here:
     // this runs inside a Level's update, which has no way to report back
     fittings.update(dt)
+    props.update(dt)
     // doors ease toward wherever the interact key last put them
     for (const d of doors) {
       const next = d.angle + (d.target - d.angle) * (1 - Math.exp(-5.5 * dt))
@@ -2320,8 +2394,12 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       poured above, so moving one means moving both. Everything past the
       fence is the open world's answer to give. */
   const FRONT_CX_S = (FRONT_DOOR.u0 + FRONT_DOOR.u1) / 2
-  const surfaceAt = (x: number, z: number): StepSurface => {
-    if (x > HOUSE.minX && x < HOUSE.maxX && z > HOUSE.minZ && z < HOUSE.maxZ) return 'wood'
+  const surfaceAt = (x: number, z: number, y = 0): StepSurface => {
+    if (x > HOUSE.minX && x < HOUSE.maxX && z > HOUSE.minZ && z < HOUSE.maxZ) {
+      // upstairs at the back is carpeted, both rooms
+      if (y > CEIL_H && z > HALL.maxZ && !(x < BATH.maxX && z < BATH.maxZ)) return 'carpet'
+      return 'wood'
+    }
     if (x > GARAGE.minX && x < GARAGE.maxX && z > GARAGE.minZ && z < GARAGE.maxZ) return 'stone'
     // back porch slab
     if (x > -5.45 && x < -1.65 && z > HOUSE.maxZ && z < HOUSE.maxZ + 2.85) return 'stone'
@@ -2357,6 +2435,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     useProp: fittings.use,
     addFitting: fittings.add,
     seats,
+    lamps: props.lamps,
+    lampCount: props.lampCount,
     get screen() {
       return screen
     },

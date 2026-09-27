@@ -275,8 +275,13 @@ export const GRADE_FRAG = /* glsl */ `
           vec4 L = uPools[i];
           vec3 d = wp - L.xyz;
           float k = clamp(1.0 - dot(d.xz, d.xz) / (L.w * L.w), 0.0, 1.0);
-          // the foot of the lamp: five to eight units under the lens
-          k *= smoothstep(-3.8, -5.2, d.y) * smoothstep(-9.0, -7.5, d.y);
+          // the foot of the lamp: five to eight units under a streetlamp's
+          // lens; for an indoor lamp (a negative radius), anything from just
+          // under the shade down to the floor under a ceiling fixture, and
+          // not a storey below it or at all above it
+          k *= L.w > 0.0
+            ? smoothstep(-3.8, -5.2, d.y) * smoothstep(-9.0, -7.5, d.y)
+            : (1.0 - smoothstep(-0.7, 0.1, d.y)) * smoothstep(-7.4, -6.6, d.y);
           pool = max(pool, k * k);
         }
         pool = band(pool * up, 4.0, bayer(p + ivec2(2, 1)), 0.45);

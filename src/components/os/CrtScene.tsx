@@ -2390,7 +2390,46 @@ export default function CrtScene({
         const airSun = new THREE.Vector3()
         const airAmb = new THREE.Color()
         const lampBuf = new Float32Array(16 * 3)
+        const lampRadii = new Float32Array(16)
+        const worldLamps = new Float32Array(16 * 3)
+        const houseDist = new Float32Array(16)
         let lampCount = 0
+        /*
+          The house's own lamps join the streetlamps as pools, the nearest
+          few to the lens first, so walking through the house at night finds
+          every lit room pooled on its floor. A dozen at most: the look shades
+          sixteen, and from the front door the street's lamps want the rest.
+        */
+        const HOUSE_POOLS = 10
+        const gatherLamps = (p: THREE.Vector3) => {
+          let n = 0
+          const src = house.lamps
+          for (let i = 0; i < house.lampCount; i++) {
+            const lx = src[i * 4]
+            const ly = src[i * 4 + 1]
+            const lz = src[i * 4 + 2]
+            // storeys count double, so the floor you are on wins its lamps
+            const d = (lx - p.x) ** 2 + (lz - p.z) ** 2 + 4 * (ly - p.y) ** 2
+            if (d > 900) continue
+            if (n === HOUSE_POOLS && d >= houseDist[n - 1]) continue
+            let j = n < HOUSE_POOLS ? n++ : n - 1
+            while (j > 0 && houseDist[j - 1] > d) {
+              houseDist[j] = houseDist[j - 1]
+              lampBuf.copyWithin(j * 3, (j - 1) * 3, j * 3)
+              lampRadii[j] = lampRadii[j - 1]
+              j--
+            }
+            houseDist[j] = d
+            lampBuf[j * 3] = lx
+            lampBuf[j * 3 + 1] = ly
+            lampBuf[j * 3 + 2] = lz
+            lampRadii[j] = src[i * 4 + 3]
+          }
+          const m = outside.nearLamps(p.x, p.z, worldLamps, 16 - n)
+          lampBuf.set(worldLamps.subarray(0, m * 3), n * 3)
+          lampRadii.fill(8.5, n, n + m)
+          return n + m
+        }
         let airBiome = 1
         let airAskX = Number.NaN
         let airAskZ = 0
@@ -2408,7 +2447,7 @@ export default function CrtScene({
             airAskAge = 0
             const b = outside.biomeAt(p.x, p.z)
             airBiome = b ? BIOME_AIR[b] ?? 1 : 1
-            lampCount = overworld ? outside.nearLamps(p.x, p.z, lampBuf, 16) : 0
+            lampCount = overworld ? gatherLamps(p) : 0
           }
           airSun.subVectors(outside.sun.position, outside.sun.target.position).normalize()
           const ov = outside.view
@@ -2425,7 +2464,7 @@ export default function CrtScene({
           // the backrooms carry their own fog and no sky: no air, no lamps
           if (!overworld) look.air.max = 0
           airAmb.copy(hemi.color).multiplyScalar(hemi.intensity)
-          lightsForSky(look.lights, sky, lampBuf, overworld ? lampCount : 0, airAmb)
+          lightsForSky(look.lights, sky, lampBuf, overworld ? lampCount : 0, airAmb, lampRadii)
           // the headlamp is yours: on while you are on your feet in the
           // overworld at night, off at the wheel (the car has its own) and
           // at the desk
@@ -3023,7 +3062,7 @@ export default function CrtScene({
                 : step.wet > 0.12
                   ? 'water'
                   : outside.onProperty(px, pz)
-                    ? house.surfaceAt(px, pz)
+                    ? house.surfaceAt(px, pz, walk.feetY)
                     : outside.surfaceAt(px, pz)
             if (step.landing > 3) landThump(surface, Math.min(1, (step.landing - 3) / 14))
             else footstep(surface, step.gait * (1 - walk.crouchK * 0.65), step.run)
