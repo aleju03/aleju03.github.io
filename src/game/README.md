@@ -322,8 +322,11 @@ world/
                   cross wing, cottage, ranch, townhouse, villa) rather than
                   one kit with a dozen booleans on it, because what breaks a
                   street up is plan, not dressing
-  buildings.ts    the town and the city: walk-ups, mixed use, towers (setback,
-                  slab, round), enterable shopfronts, and the three
+  buildings.ts    the town and the city: walk-ups in three hands (tenement,
+                  deco, sixties), mixed use, towers (setback with a lobby, a
+                  skin and a crown, slab, round), enterable shopfronts, the
+                  roof clutter they share (bulkheads, water tanks, plant,
+                  aerials), and the three
                   block-scale kits a lot is too small for (warehouse, chapel
                   and churchyard, parking deck)
   structures.ts   the nine landmark kits: lighthouse, tower windmill,
@@ -565,6 +568,13 @@ scattered, and no screenshot was ever going to say otherwise.
   the frontage, `v` out toward the street, and the four cardinal facings fall
   out of two sign flips. Respect `out.detailed`: on the outer ring it is a
   silhouette and window grids are the most expensive thing the city builds.
+  `lot.rng` is the kit's own stream, seeded on the lot's centre by `raise`,
+  and it must only decide *shapes*; anything rolled for a detailed build
+  alone (window lights, fences, dressing) comes from `fork(lot.rng)`, or the
+  outer ring and the near one disagree about the roofline and a water tank
+  appears on a roof as you walk toward it. Wrap-round detail (a sill course,
+  a cornice) is one box round the whole body via `course()`, not one per
+  face; frames, brackets, piers and fire escapes go on the street face only.
 - **A landmark**: add a kind to `LandmarkKind`, a footprint and pad to `SIZE`
   (the pad must stay under `PAD_MAX` or the cheap single-cell lookup stops
   being correct), a line or two in `eligible()`'s biome table, and a builder

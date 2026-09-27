@@ -6,6 +6,8 @@ import type { ShopDoorSpec } from './shopDoors'
 import type { Smashable } from './debris'
 import type { StructureRec } from './fracture'
 import { SURF, type SurfaceId } from './surface'
+import { seeded } from '../core/rand'
+import { hash2 } from './noise'
 
 /*
   The vocabulary every built thing out here is stamped from.
@@ -153,6 +155,19 @@ export const GLASS_LIT = '#ffd9a0'
 
 /** pick from a palette with one roll */
 export const pick = <T>(list: T[], r: number) => list[Math.min(list.length - 1, Math.floor(r * list.length))]
+
+/**
+ * A second stream split off a kit's rng with one roll, for the rolls only a
+ * detailed build makes. A chunk is rebuilt when it changes tier, and a kit
+ * that rolled its window lights out of the same stream as its roofline got a
+ * different roofline on the outer ring from the one it had up close, so a
+ * water tank appeared on a roof as you walked toward it. Silhouette rolls
+ * come from the lot's own stream, dressing from the fork. The roll is hashed
+ * rather than used as a seed directly: `seeded` is an LCG, and seeding one
+ * with its parent's next state replays the parent.
+ */
+export const fork = (rng: () => number) =>
+  seeded(hash2(Math.floor(rng() * 4294967296), 0x6b1d, 0x3c7))
 
 /* ------------------------------------------------------- unit primitives -- */
 
@@ -363,12 +378,13 @@ export const shaft = (
 
 /** a beam between two points in space, of square section `t`. Guy wires,
     braces, splayed legs, a fallen mast: anything whose two ends are known and
-    whose angle is not. */
+    whose angle is not. `across` widens it sideways (horizontally across
+    the run) for a flat member, a stair flight or a ramp, rather than a beam */
 export const strut = (
   out: MeshBuilder, hex: string,
   x0: number, y0: number, z0: number,
   x1: number, y1: number, z1: number,
-  t: number, surf: SurfaceId = SURF.none,
+  t: number, surf: SurfaceId = SURF.none, across = t,
 ) => {
   const dx = x1 - x0
   const dy = y1 - y0
@@ -380,7 +396,7 @@ export const strut = (
   const yaw = Math.atan2(dx, dz)
   const pitch = Math.acos(Math.max(-1, Math.min(1, dy / len)))
   put(out, BOX, hex, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2,
-    pitch, yaw, 0, t, len, t, surf)
+    pitch, yaw, 0, across, len, t, surf)
 }
 
 /* ------------------------------------------------------------- collision -- */

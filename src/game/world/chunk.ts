@@ -885,11 +885,21 @@ const buildBlock = (
       bz - d / 2 < RESERVED.maxZ + 4 && bz + d / 2 > RESERVED.minZ - 4)
 
   // ids are the lot's own centre on a half-unit grid: a pure function of the
-  // chunk, and not of how many lots before it happened to build
-  const raise = (kind: BuildKind, lot: Lot) => recordStructure(
-    out, `${cx},${cz}:B${Math.round(lot.x * 2)},${Math.round(lot.z * 2)}`, kind, lot.baseY,
-    () => raiseKit(kind, lot),
-  )
+  // chunk, and not of how many lots before it happened to build. The kit
+  // rolls from its own stream seeded on that same centre rather than from
+  // the block's: a kit draws more on a detailed build than on the outer
+  // ring (its window lights, its dressing), so sharing the block's stream
+  // meant promoting a chunk a tier reshuffled every lot after the first, and
+  // the house you were walking toward turned into a different house. It is
+  // also what lets the far field's replay of this loop (farfield.ts) land on
+  // the same footprints the whole way down the block, not just the first
+  const raise = (kind: BuildKind, lot: Lot) => {
+    const hx = Math.round(lot.x * 2)
+    const hz = Math.round(lot.z * 2)
+    lot.rng = seeded(hash2(hx, hz, 0x7a3e))
+    recordStructure(out, `${cx},${cz}:B${hx},${hz}`, kind, lot.baseY,
+      () => raiseKit(kind, lot))
+  }
   const raiseKit = (kind: BuildKind, lot: Lot) => {
     switch (kind) {
       case 'tower': tower(out, lot); break
