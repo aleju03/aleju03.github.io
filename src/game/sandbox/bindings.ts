@@ -92,6 +92,15 @@ export const BINDINGS = {
     'Numpad8', 'Numpad5', 'Numpad7', 'Numpad4', 'Numpad9', 'Numpad6',
   ],
 
+  /* --- emotes ---------------------------------------------------------- */
+  /** held: the emote wheel. The mouse swings its arrow instead of the view,
+      and letting go plays whatever it points at (the hub plays nothing and
+      stops whatever was playing) */
+  emote: ['KeyG'],
+  /** held: the right arm points at whatever the crosshair is on. f is the
+      one the tape names; the middle button does it too */
+  point: ['KeyF', 'Mouse1'],
+
   /* --- the shared walk ------------------------------------------------- */
   mic: ['KeyM'],
   talkMode: ['KeyN'],
@@ -177,6 +186,7 @@ export const keyLabel = (action: Action, lang: 'en' | 'es' = 'en'): string => {
   if (code.startsWith('Digit')) return code.slice(5)
   if (code === 'Mouse0') return lang === 'es' ? 'clic izq' : 'lmb'
   if (code === 'Mouse2') return lang === 'es' ? 'clic der' : 'rmb'
+  if (code === 'Mouse1') return lang === 'es' ? 'clic central' : 'mmb'
   if (code === 'Slash') return '/'
   if (code === 'Space') return lang === 'es' ? 'espacio' : 'space'
   if (code.startsWith('Shift')) return 'shift'

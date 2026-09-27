@@ -80,6 +80,8 @@ import { snapPixelProofs, type PixelProofs } from './pixelProofs'
 import { createProximityVoice, type VoiceMode } from './proximityVoice'
 import type { Session } from './osContext'
 import { track } from '../../analytics'
+import { EmoteWheel, PointMark, type EmoteWheelApi } from './EmoteWheel'
+import { EMOTES, WHEEL_DEAD, WHEEL_REACH, wheelSlice } from '../../game/player/emotes'
 import { OS_SCENE_READY_EVENT } from '../../events'
 
 /*
@@ -447,6 +449,12 @@ export default function CrtScene({
   const [orders, setOrders] = useState<OrderLine[]>([])
   /** noclip, mirrored for the key hints */
   const [flying, setFlying] = useState(false)
+  // the emote wheel is up (g held); its arrow is driven through the api, not
+  // through state, so a mouse move is a style write rather than a render
+  const [wheelOpen, setWheelOpen] = useState(false)
+  const wheelApi = useRef<EmoteWheelApi>(null)
+  // the point key is held: the crosshair gets its pencilled mitten
+  const [pointHud, setPointHud] = useState(false)
   const { t, language } = useI18n()
   // the tool gun's screen is written in the visitor's language
   const langRef = useRef(language)
@@ -1232,6 +1240,24 @@ export default function CrtScene({
           dt: 0, gait: 0, crouchK: 0, grounded: true, run: false,
           yaw: 0, pitch: 0, vx: 0, vz: 0, vy: 0, landing: 0, show: 0,
         }
+        /*
+          Emotes and the point key (game/player/emotes.ts; the poses are the
+          rig's). `wheel` is the cursor on the emote wheel while g is held:
+          the mouse drives it instead of the view (see onTurn). `emoteCam`
+          swings the chase camera out for an emote and back when it ends,
+          decided once as it starts. The point is aimed from the right
+          shoulder at whatever the crosshair is on, so the copy on somebody
+          else's screen points at the same thing.
+        */
+        const wheel = { open: false, x: 0, y: 0 }
+        let emoteCam = false
+        let pointHudNow = false
+        const POINT_REACH = 80
+        const POINT_SKIP = 1.2
+        const shoulderLimb = Math.max(0, rig.limbs.findIndex((l) => l.name === 'shoulderR'))
+        const pointDir = new THREE.Vector3()
+        const pointAt = new THREE.Vector3()
+        const pointFrom = new THREE.Vector3()
         // collision is re-pointed at the live level's set every tick
         const bootSet = makeCollisionSet(
           { minX: -1e3, maxX: 1e3, minZ: -1e3, maxZ: 1e3 },
@@ -2193,6 +2219,18 @@ export default function CrtScene({
           // walk.turn it would silently spin the suspended walker's heading
           // and stand you down facing somewhere you never looked
           onTurn: (dx, dy, sign) => {
+            // g held: the mouse swings the emote wheel's arrow, not the view
+            if (wheel.open && !fleet.riding) {
+              wheel.x += dx
+              wheel.y += dy
+              const r = Math.hypot(wheel.x, wheel.y)
+              if (r > WHEEL_REACH) {
+                wheel.x *= WHEEL_REACH / r
+                wheel.y *= WHEEL_REACH / r
+              }
+              wheelApi.current?.aim(wheel.x, wheel.y)
+              return
+            }
             // E held on a prop in the beam: the mouse turns the prop, and
             // the view holds still while it does
             if (tools?.capturesLook && !fleet.riding) {
@@ -3372,7 +3410,7 @@ export default function CrtScene({
           // step, so this frame's slices already pull. Only on foot, out in
           // the world, standing: a seat, a heap on the floor and the pause
           // sheet all holster it
-          toolsLive = !!tools && !!sandbox && !sitting && !rig.down && fps
+          toolsLive = !!tools && !!sandbox && !sitting && !rig.down && fps && !rig.acting
           if (tools && !pausedNow) {
             const k = input.keys
             if (edges.pressed('slot1')) tools.select(0)
@@ -3495,7 +3533,7 @@ export default function CrtScene({
           // boom just follows it and the camera key (bindings.ts) flips it;
           // x flops, and once the ragdoll settles, x or any move key stands
           // back up. Every key here is read through the key table
-          chase.third = prefsRef.current.third
+          chase.third = prefsRef.current.third || emoteCam
           if (edges.pressed('camera') && !levels.frozen) setPrefs((p) => ({ ...p, third: !p.third }))
           // and which shoulder it looks over
           if (edges.pressed('shoulder') && !levels.frozen && chase.third) shoulderSide = -shoulderSide
@@ -3554,6 +3592,31 @@ export default function CrtScene({
           }
           if (edges.pressed('talkMode') && voice?.enabled) voice.cycleMode()
           voice?.setPushing(held(input.keys, 'pushToTalk'))
+          // g held: the emote wheel; letting go plays what its arrow points
+          // at, and its hub stops whatever is playing. Not from a seat, a heap
+          // or a level cut, and a pause shuts it without playing anything
+          const actFree = !levels.frozen && !sitting && !rig.down && !pausedNow
+          if (edges.pressed('emote') && actFree && !wheel.open) {
+            wheel.open = true
+            wheel.x = wheel.y = 0
+            setWheelOpen(true)
+          } else if (wheel.open && (!held(input.keys, 'emote') || !actFree)) {
+            wheel.open = false
+            setWheelOpen(false)
+            if (actFree) {
+              const slice = wheelSlice(wheel.x, wheel.y, WHEEL_DEAD)
+              if (slice < 0) rig.act(0)
+              else {
+                rig.act(EMOTES[slice].id)
+                // out to third person to watch it, unless it is an upper-body
+                // one begun on the move, where a swinging camera would only
+                // get in the way of the walk
+                emoteCam = EMOTES[slice].full || step.gait < 0.1
+              }
+            }
+          }
+          // and back in when it ends, or once an upper-body one is walked on
+          if (emoteCam && (!rig.acting || (!rig.actFull && step.gait > 0.15))) emoteCam = false
           // the body plants its feet under the camera and faces the walk
           // (or hangs from it, mid-hop), unless the ragdoll owns it, or a
           // seat does: a sitter's body was placed on the cushion when they
@@ -3579,6 +3642,27 @@ export default function CrtScene({
           // the physgun out: the right arm comes up and carries it
           rigPose.aim = toolsLive && tools && tools.tool !== 'hands' ? 1 : 0
           rigPose.aimLoad = tools?.physgun.holding ? tools.physgun.view.strain : 0
+          // f (or the middle button) held: the right arm points at whatever the
+          // crosshair is on. Not with a gun out, whose grip already has that
+          // arm, and not from under the wheel
+          const pointing = held(input.keys, 'point') && actFree && !wheel.open && !rigPose.aim
+          rigPose.point = pointing ? 1 : 0
+          if (pointing !== pointHudNow) {
+            pointHudNow = pointing
+            setPointHud(pointing)
+          }
+          if (pointing) {
+            resolveAim(camera.position, camera.quaternion, camera.getWorldDirection(pointDir))
+            // (from a little out along the ray, clear of the walker's own
+            // capsule, which a ray from inside the head hits first and which
+            // turned the first point into a salute)
+            pointAt.copy(camera.position).addScaledVector(pointDir, POINT_SKIP)
+            const hit = sandbox?.raycast(pointAt, pointDir, POINT_REACH)
+            pointAt.addScaledVector(pointDir, hit ? hit.distance : POINT_REACH)
+            pointAt.sub(rig.limbPos(shoulderLimb, pointFrom))
+            rigPose.pointYaw = Math.atan2(-pointAt.x, -pointAt.z)
+            rigPose.pointPitch = Math.atan2(pointAt.y, Math.hypot(pointAt.x, pointAt.z))
+          }
           // the ragdoll and the boom both work in a few units around the
           // body, so one terrain sample under it is the floor for both —
           // they never need the whole heightfield, only the local plane
@@ -3625,6 +3709,10 @@ export default function CrtScene({
                 fly: step.flying,
                 held: grabTaker.held && rig.ragdolling,
               }),
+              rig.acting,
+              rig.actAge,
+              pointing ? rigPose.pointYaw : NaN,
+              pointing ? rigPose.pointPitch : NaN,
             )
             remote.sample(now, dt)
             avatarEnv.collision = level.collision
@@ -3802,7 +3890,8 @@ export default function CrtScene({
           // over the shoulder, whichever one: the body stands in the left (or
           // right) third of the frame and the crosshair stays dead centre,
           // clear of it (chaseCam.ts; the aim follows it in resolveAim)
-          chaseEnv.shoulder = SHOULDER * shoulderSide
+          // an emote is watched square on, the body in the middle of the frame
+          chaseEnv.shoulder = emoteCam ? 0 : SHOULDER * shoulderSide
           chase.apply(camera, dt, chaseEnv)
           // the gun and the beam go where the lens ended up: in the hand of
           // the body when the boom is out, in front of the lens when it is not
@@ -4032,6 +4121,13 @@ export default function CrtScene({
                 // steer any other way (it is never granted the pointer lock)
                 __sandboxWalk: walk,
                 __sandboxRig: rig,
+                // the emote wheel's cursor, which a headless drive cannot move
+                // with a mouse it was never given the lock for
+                __emoteAim: (x: number, y: number) => {
+                  wheel.x = x
+                  wheel.y = y
+                  wheelApi.current?.aim(x, y)
+                },
                 __tools: tools,
                 // scripted contraptions (a car, a rocket, a hovercraft), through
                 // the app's own module graph so they share its contraptions
@@ -4908,10 +5004,15 @@ export default function CrtScene({
       {/* the crosshair, whenever there is a walk to aim: also with the
           mouse freed for the catalogue, because that is exactly when you
           need to know where the thing you click is going to land */}
-      {roam && walking && !paused && !driving && !seated && (
+      {roam && walking && !paused && !driving && !seated && !wheelOpen && (
         <div className="pointer-events-none absolute inset-0 z-10">
           <Crosshair aim={aim} />
+          {pointHud && <PointMark />}
         </div>
+      )}
+      {/* the emote wheel, while g is held (EmoteWheel.tsx) */}
+      {roam && walking && !paused && !driving && !seated && wheelOpen && (
+        <EmoteWheel ref={wheelApi} labels={t.sandbox.emotes.names} hub={t.sandbox.emotes.hub} />
       )}
       {/* the nudge that exists so nobody walks a whole session as guest-08c9
           without ever learning there was a choice. Not a button: at this

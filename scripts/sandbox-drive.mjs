@@ -59,6 +59,12 @@
                                       tried on, and the settings page's
                                       pixel prints; links on the game's
                                       context counted (must be 0)
+    npm run drive -- emotes           the emote wheel held open, three emotes
+                                      mid-pose from the chase camera swung
+                                      round to the front (dance, flex, sit),
+                                      and the point key aimed at a crate;
+                                      links counted (must be 0). Shots to
+                                      ~/.cache/overhaul/emotes (--emote-out)
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -97,7 +103,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
+const VALUED = new Set(['--emote-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -156,6 +162,7 @@ const CODES = {
   KeyQ: ['q', 81], KeyV: ['v', 86], KeyW: ['w', 87], KeyT: ['t', 84], KeyZ: ['z', 90],
   KeyC: ['c', 67], Enter: ['Enter', 13], Tab: ['Tab', 9], Space: [' ', 32],
   ShiftLeft: ['Shift', 16], Slash: ['/', 191], Escape: ['Escape', 27], F5: ['F5', 116],
+  KeyG: ['g', 71], KeyF: ['f', 70],
 }
 const key = (type, code) => {
   const [k, vk] = CODES[code]
@@ -1565,6 +1572,129 @@ try {
     console.log(`  rocket ${(p[1] - (await evaluate(`window.__sandbox.groundY(${p[0]}, ${p[2]})`))).toFixed(0)} u up after 2.5 s on i`)
     const links = await evaluate('window.__cLinks')
     console.log(`  ${links.length} programs linked from the catalogue to the rocket${links.length ? ': ' + links.join(', ') : ''}`)
+    await run('cleanup')
+  }
+
+  if (WHAT.includes('emotes')) {
+    /*
+      The wheel is held open with a real g and its cursor set through
+      `__emoteAim` (headless Chrome never gets the pointer lock that would
+      carry the mouse to it). Each emote is picked from behind, then the
+      chase camera is swung round to the front, which is what the held
+      facing is for. The point key is a real f, aimed at a crate spawned off
+      to one side.
+    */
+    console.log('emotes')
+    const EMOTE_OUT = resolve(flag('emote-out', join(process.env.HOME ?? '.', '.cache/overhaul/emotes')))
+    mkdirSync(EMOTE_OUT, { recursive: true })
+    const eshot = async (name) => {
+      const path = join(EMOTE_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    await goTo(flag('at', '5654 -844').replace(',', ' '))
+    await sleep(1500)
+    await stand()
+    await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+    const yaw0 = Number(flag('yaw', 0.6))
+    await look(yaw0, -0.12)
+    await sleep(1200)
+    await evaluate(`(() => {
+      window.__links = []
+      for (const c of document.querySelectorAll('canvas')) {
+        if (!c.width || c.__linkWrapped) continue
+        const gl = c.getContext('webgl2')
+        if (!gl) continue
+        c.__linkWrapped = true
+        const real = gl.linkProgram.bind(gl)
+        gl.linkProgram = (p) => { window.__links.push(window.__phase || '?'); real(p) }
+      }
+      return true
+    })()`)
+    // the wheel's slices, clockwise from the top (player/emotes.ts's EMOTES)
+    const NAMES = ['wave', 'thumbs', 'clap', 'laugh', 'dance', 'joy', 'flex', 'facepalm', 'sit']
+    const aimAt = (name) => {
+      const a = (NAMES.indexOf(name) / NAMES.length) * Math.PI * 2
+      return [Math.sin(a) * 70, -Math.cos(a) * 70]
+    }
+    const play = async (name, shootWheel) => {
+      await evaluate(`window.__phase = ${JSON.stringify(name)}; true`)
+      await look(yaw0, -0.12)
+      await sleep(700)
+      await down('KeyG')
+      await sleep(250)
+      const [x, y] = aimAt(name)
+      await evaluate(`window.__emoteAim(${x}, ${y}); true`)
+      await sleep(300)
+      if (shootWheel) await eshot('wheel-open')
+      await up('KeyG')
+      await sleep(150)
+      const on = await evaluate('window.__sandboxRig.acting')
+      console.log(`  ${name.padEnd(9)} playing id ${on}`)
+    }
+    // round to the front: the body holds its facing while it emotes
+    const front = (turn = 2.55, pitch = -0.3) => look(yaw0 + turn, pitch)
+    await play('dance', true)
+    await front()
+    await sleep(900)
+    // four frames a quarter of a beat apart: a dance is its motion
+    for (let i = 0; i < 4; i++) {
+      await eshot(`dance-${i}`)
+      await sleep(110)
+    }
+    await play('flex')
+    await front(2.4)
+    await sleep(700)
+    await eshot('flex')
+    await play('sit')
+    await front(2.4, -0.42)
+    await sleep(1400)
+    await eshot('sit')
+    await play('clap')
+    await front(2.5)
+    await sleep(500)
+    await eshot('clap')
+    // the hub lets go of whatever is playing
+    await evaluate(`window.__phase = 'hub'; true`)
+    await down('KeyG')
+    await sleep(200)
+    await evaluate('window.__emoteAim(0, 0); true')
+    await up('KeyG')
+    await sleep(900)
+    console.log(`  after the hub the rig plays id ${await evaluate('window.__sandboxRig.acting')}`)
+    // the point: a crate off to the right, the camera turned onto it
+    await evaluate(`window.__phase = 'point'; true`)
+    await look(yaw0, -0.12)
+    await sleep(600)
+    // the body settles facing yaw0; the crate stands off to its right, and
+    // the view is turned onto it by less than the angle that makes a
+    // standing body pivot, so the arm is seen reaching out sideways
+    await evaluate(`(() => { const sb = window.__sandbox, b = window.__sandboxRig.group.position, y = ${yaw0} - 0.62;
+      const x = b.x - Math.sin(y) * 11, z = b.z - Math.cos(y) * 11;
+      window.__pointCrate = [x, z]; sb.spawn('crate', { x, y: sb.restY('crate', x, z) + 0.3, z }); return true })()`)
+    await sleep(1500)
+    // the crosshair on the crate: the chase lens stands off to the right of
+    // the head, so the view is turned a touch further left than the crate
+    await evaluate(`(() => { const [x, z] = window.__pointCrate, c = window.__sandboxRig.group.position, w = window.__sandboxWalk;
+      w.yaw = Math.atan2(-(x - c.x), -(z - c.z)) + 0.08; w.pitch = -0.16; return true })()`)
+    await sleep(400)
+    await down('KeyF')
+    await sleep(800)
+    await eshot('point')
+    await up('KeyF')
+    await sleep(400)
+    // first person: the arm is outside the lens, so the crosshair carries the mark
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await sleep(900)
+    await evaluate(`(() => { const [x, z] = window.__pointCrate, c = window.__sandboxCamera.position, w = window.__sandboxWalk;
+      w.yaw = Math.atan2(-(x - c.x), -(z - c.z)); w.pitch = -0.2; return true })()`)
+    await down('KeyF')
+    await sleep(600)
+    await eshot('point-first')
+    await up('KeyF')
+    const links = await evaluate('window.__links')
+    console.log(`  ${links.length} programs linked through the wheel, the emotes and the point${
+      links.length ? ': ' + links.join(', ') : ''}`)
     await run('cleanup')
   }
 

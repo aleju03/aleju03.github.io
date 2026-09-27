@@ -12,6 +12,9 @@
     net     two players: the local walker sprinting and then leaning into a
             remote body played back by the real snapshot store, the shoves
             that produces, and the victim's own client taking them
+    emotes  a remote player's emotes and point key through the real store
+            and the real avatars: the copy dances on the dancer's beat,
+            waves, points its arm where they pointed, and lets go of both
 
   Nothing here draws. The picture is `npm run film -- sandbox:bump`.
 */
@@ -24,6 +27,8 @@ import { bodyExtent, createBodyContact, CHARGE, TACKLE } from '../../src/game/pl
 import { buildPlayerBody } from '../../src/game/player/playerBody.ts'
 import { createRemoteWorld } from '../../src/game/net/remotePlayers.ts'
 import { createRemoteBumps, createShoveTaker } from '../../src/game/net/shove.ts'
+import { createRemoteAvatars } from '../../src/game/net/avatars.ts'
+import { EMOTES, packEmote } from '../../src/game/player/emotes.ts'
 
 const only = process.argv[2]
 const want = (s) => !only || only === s
@@ -327,4 +332,92 @@ if (want('net')) {
   console.log(`         ${sent.length} shoves sent (${knockSends} knocks, ${leans} leans); the victim's client took ` +
     `${effects.flop} as a flop, ${effects.stumble} as a stumble, ignored ${effects.ignore}; ` +
     `victim went down at ${downAt < 0 ? 'never' : f(downAt, 2) + ' s'} and ended ${f(Math.hypot(vCam.position.x, vCam.position.z + 8), 1)} from where it stood`)
+}
+
+/* ------------------------------------------------------------- emotes -- */
+/*
+  What somebody else sees when a player emotes and points. The player's
+  snapshots carry the packed emote (id and age) and the point direction in
+  the tuple's optional tail, fed to the real store at 15 Hz with a little
+  jitter; the real avatars draw them. The copy has to start the dance on the
+  dancer's own beat (two ticks of playback late, no more), change to a wave
+  when they do, hold its right arm along the direction they pointed, and
+  let go of all of it when the stream does.
+*/
+if (want('emotes')) {
+  // the name plates are canvases, and nothing here draws: a stub will do
+  if (typeof document === 'undefined') {
+    const ctx = new Proxy({}, {
+      get: (t, k) => (k in t ? t[k] : k === 'measureText' ? () => ({ width: 40 }) : () => {}),
+      set: (t, k, v) => ((t[k] = v), true),
+    })
+    globalThis.document = { createElement: () => ({ width: 1, height: 1, style: {}, getContext: () => ctx }) }
+  }
+  const idOf = (n) => EMOTES.find((e) => e.name === n).id
+  const DANCE = idOf('dance')
+  const WAVE = idOf('wave')
+  const world = createRemoteWorld()
+  world.welcome(1, 66, [{ id: 2, name: 'dancer', admin: false, registered: false }])
+  const avatars = createRemoteAvatars(EYE, 34)
+  const env = { groundAt: () => 0, collision: open(), eyePos: new THREE.Vector3(0, EYE, 6) }
+  // the dancer's own timeline: nothing, a dance from 1 s, a wave from 3 s
+  // with the arm pointing from 3.4 s, then neither from 5 s
+  const PY = 0.9
+  const PP = 0.35
+  const tail = (t) => {
+    const e = t >= 1 && t < 3 ? packEmote(DANCE, t - 1) : t >= 3 && t < 5 ? packEmote(WAVE, t - 3) : 0
+    const pointing = t >= 3.4 && t < 5
+    return pointing ? [e, PY, PP] : e ? [e] : []
+  }
+  const want3 = new THREE.Vector3(-Math.sin(PY) * Math.cos(PP), Math.sin(PP), -Math.cos(PY) * Math.cos(PP))
+  const sh = new THREE.Vector3()
+  const hand = new THREE.Vector3()
+  const pointErr = (rig) => {
+    rig.group.updateMatrixWorld(true)
+    const si = rig.limbs.findIndex((l) => l.name === 'shoulderR')
+    const hi = rig.limbs.findIndex((l) => l.name === 'handR')
+    rig.limbPos(si, sh)
+    rig.limbPos(hi, hand)
+    return (hand.sub(sh).normalize().angleTo(want3) * 180) / Math.PI
+  }
+  const pelvisYs = []
+  const report = []
+  let nextSnap = 0
+  let t = 0
+  const dt = 1 / 60
+  for (let i = 0; i < 60 * 6.2; i++) {
+    t = i * dt
+    const nowMs = t * 1000
+    if (nowMs >= nextSnap) {
+      world.tick([[2, 0, 0, -3, 0, 0, 0, 1, ...tail(t)]], nowMs)
+      nextSnap += 66 + ((i * 7919) % 9) - 4
+    }
+    world.sample(nowMs, dt)
+    avatars.update(world, dt, env)
+    const rig = avatars.rigOf(2)
+    if (!rig) continue
+    if (t > 1.5 && t < 2.9) pelvisYs.push(rig.limbPos(0, sh).y)
+    for (const at of [0.8, 2.5, 3.2, 4.6, 5.9]) {
+      if (Math.abs(t - at) < dt / 2) {
+        const name = EMOTES.find((e) => e.id === rig.acting)?.name ?? 'none'
+        const own = at >= 1 && at < 3 ? at - 1 : at >= 3 && at < 5 ? at - 3 : 0
+        report.push({ at, name, age: rig.actAge, own, point: pointErr(rig) })
+      }
+    }
+  }
+  const expect = { 0.8: 'none', 2.5: 'dance', 3.2: 'wave', 4.6: 'wave', 5.9: 'none' }
+  let ok = true
+  for (const r of report) {
+    const lag = r.own - r.age
+    const good = r.name === expect[r.at] && (r.name === 'none' || (lag > -0.02 && lag < 0.3))
+    if (!good) ok = false
+    console.log(`emotes   at ${f(r.at, 1)} s the copy is ${r.name.padEnd(5)}` +
+      (r.name === 'none' ? '' : ` ${f(r.age, 2)} s in (the dancer ${f(r.own, 2)}, ${f(lag, 2)} behind)`) +
+      `; right arm ${f(r.point, 1)} deg off the pointed direction${good ? '' : '  <-- WRONG'}`)
+  }
+  const at46 = report.find((r) => r.at === 4.6)
+  if (!(at46 && at46.point < 12)) ok = false
+  const bounce = Math.max(...pelvisYs) - Math.min(...pelvisYs)
+  console.log(`         the copy's hips bounce ${f(bounce, 2)} units through the dance; pointing it held the arm within ` +
+    `${f(at46?.point ?? NaN, 1)} deg of where the dancer pointed ${ok ? '(ok)' : '<-- FAILED'}`)
 }

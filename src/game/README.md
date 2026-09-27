@@ -65,6 +65,12 @@ player/
                      must fire when they arrive, not after they are drawn
                      inside somebody). Lean (push apart), charge, tackle,
                      stomp, trample, through one indexed `Bumpable` interface
+  emotes.ts          the emote wheel's nine emotes (g) as pose layers: per
+                     moment, hips, trunk, head and mitten targets the rig
+                     blends over its own pose and solves with the arm IK;
+                     upper-body ones play while walking, whole-body ones
+                     hold the facing and cancel on a step. Also the wire
+                     packing (id and age in one integer) and wheelSlice()
   chaseCam.ts        createChaseCam(): the third-person boom (f5), over the
                      right shoulder (h swaps it), exactly clipped against the
                      level, folding onto the head when crushed; also frames
@@ -1511,6 +1517,19 @@ be recomputed are where the other people are, and where they left the car.
   nobody can be pinned to the floor. The fall reaches everyone else through
   the ordinary `down` pose bit. `npm run measure -- bodies net` drives the
   real snapshot store at 15 Hz against a sprint and a lean.
+- **Emotes and pointing ride the pose tuple's tail.** A tuple is eight
+  numbers for somebody doing neither; an emote adds one integer
+  (`player/emotes.ts`'s `packEmote`: the id in four bits and its age in
+  tenths of a second above them) and a point adds a world yaw and pitch from
+  the right shoulder, so the copy points at what the owner pointed at without
+  the target travelling. The server range-checks both and relays them
+  without decoding. The store ages an emote to the playback instant rather
+  than interpolating it, so `avatars.ts` starts a late copy on the dancer's
+  own beat, restarts it only when a different one (or the same one again)
+  begins, and never restarts a whole-body one under somebody walking, since
+  the copy has already let go of it by itself. `npm run measure -- bodies
+  emotes` drives the real store and avatars through a dance, a wave and a
+  point.
 - **The physgun takes other players the same way.** `net/grab.ts` adds every
   remote body on foot to the beam's rigs through a thin adapter, so the aim
   and the glow are unchanged. A hold streams `world-grab` 'hold' at 20 Hz
