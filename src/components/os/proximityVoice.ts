@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { sharedAudio } from '../../game/core/sfx'
 import type { PlayerId, VoiceSignal } from '../../game/net/protocol'
 import type { RemotePlayer } from '../../game/net/remotePlayers'
+import { createVoiceFx, type VoiceFilter } from './voiceFilters'
 
 /*
   Proximity voice: a WebRTC mesh between the browsers standing near each
@@ -38,10 +39,22 @@ import type { RemotePlayer } from '../../game/net/remotePlayers'
   the voice gate open more readily, or a quiet speaker turns the dial up and
   still gets cut off mid-word.
 
+  The visitor's voice filter (`voiceFilters.ts`: helium, giant, robot, radio,
+  cave, or none, picked on the pause sheet as `roamPrefs.voiceFx`) sits
+  between the gate and the send limiter, so it is applied on *this* side and
+  every listener hears it with nothing added to the protocol. Its two ends
+  are fixed nodes and a switch is a crossfade behind them, which is what makes
+  it live mid-call. The radio's squelch is keyed off this gate closing. The
+  sheet's "hear yourself" preview (`preview()`) holds the gate open, mutes the
+  send so the test stays private, and routes the filtered voice to your own
+  speakers for a few seconds, arming the microphone for the duration if it
+  was off.
+
   Two details that are load-bearing and look like mistakes:
 
   - The microphone is never handed straight to a peer connection. It goes
-    mic -> gate -> MediaStreamDestination, and the *destination's* track is
+    mic -> trim -> gate -> filter -> limiter -> MediaStreamDestination, and
+    the *destination's* track is
     what every peer sends. That track exists from the moment the module does,
     so turning the mic on, muting it, switching between open-mic and
     push-to-talk, and revoking it again are all a gain ramp — no track
@@ -100,6 +113,11 @@ const GATE_RAMP = 0.015
 
 const MODE_KEY = 'alejos-voice-mode'
 
+/** how long "hear yourself" listens, and how long the monitor stays up after
+    the gate shuts so a squelch or a cave's tail is heard out */
+const PREVIEW_MS = 4000
+const PREVIEW_TAIL_MS = 900
+
 export type VoiceMode = 'open' | 'ptt'
 
 interface Peer {
@@ -136,6 +154,9 @@ export interface ProximityVoice {
     camera: THREE.Camera,
     dt: number,
   ) => void
+  /** play your own filtered voice back to you for a few seconds, privately:
+      the send is muted for the duration. Resolves when it is over */
+  preview: () => Promise<void>
   /** a world-signal came back off the socket */
   accept: (from: PlayerId, data: VoiceSignal) => void
   dispose: () => void
@@ -151,6 +172,8 @@ export interface ProximityVoiceOpts {
       checked against what is already on the graph before anything is set, so
       asking every frame costs a pair of comparisons */
   levels: () => { mic: number; out: number }
+  /** the voice filter, read fresh every frame like the dials */
+  filter: () => VoiceFilter
   /** the ICE servers to open the next peer with, read fresh each time: the
       server hands them over at join, and a TURN credential in them expires */
   ice: () => RTCIceServer[]
@@ -211,19 +234,27 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
   let vadUntil = 0
   let spatialAcc = 0
 
-  // The send chain, built once and never rebuilt: trim -> gate -> destination,
-  // and the destination's track is what every peer connection carries for the
-  // whole session. Muting is `gate.gain = 0`, not a track swap.
+  // The send chain, built once and never rebuilt: trim -> gate -> filter ->
+  // send -> limiter -> destination, and the destination's track is what every
+  // peer connection carries for the whole session. Muting is
+  // `gate.gain = 0`, not a track swap; a filter change is a rewire *inside*
+  // `fx`, whose two ends never move.
   const trim = ctx ? ctx.createGain() : null
   const gate = ctx ? ctx.createGain() : null
+  const fx = ctx ? createVoiceFx(ctx, opts.filter()) : null
+  const send = ctx ? ctx.createGain() : null
   const outLimit = ctx ? limiterIn(ctx) : null
   const outDest = ctx ? ctx.createMediaStreamDestination() : null
-  if (gate && outDest && outLimit) {
+  // the preview's tap: the filtered voice, back to this machine's speakers
+  const monitor = ctx ? ctx.createGain() : null
+  if (gate && fx && send && outDest && outLimit) {
     gate.gain.value = 0
     // the trim can be pushed to +6 dB, and the browser's AGC is not on every
     // platform: what leaves here is what everybody else hears, so it leaves
     // through a limiter rather than as somebody's clipped track
-    gate.connect(outLimit)
+    gate.connect(fx.input)
+    fx.output.connect(send)
+    send.connect(outLimit)
     outLimit.connect(outDest)
   }
   const outTrack = outDest?.stream.getAudioTracks()[0] ?? null
@@ -237,7 +268,15 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     bus.gain.value = VOICE_MAKEUP
     bus.connect(limiter)
     limiter.connect(ctx.destination)
+    // the monitor skips the bus's makeup (a voice at zero distance with no
+    // panner in front of it needs none) but not its limiter
+    if (fx && monitor) {
+      monitor.gain.value = 0
+      fx.output.connect(monitor)
+      monitor.connect(limiter)
+    }
   }
+  let previewing = false
   // what the graph is currently set to, so a per-frame read is two compares
   let micVol = 1
   let outVol = 1
@@ -255,6 +294,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       outVol = o
       bus?.gain.setTargetAtTime(VOICE_MAKEUP * o, ctx.currentTime, 0.02)
     }
+    fx?.set(opts.filter())
   }
 
   // scratch, reused per frame
@@ -270,6 +310,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     if (speaking === open) return
     speaking = open
     gate.gain.setTargetAtTime(open ? 1 : 0, ctx.currentTime, GATE_RAMP)
+    if (!open) fx?.gateClosed()
     changed()
   }
 
@@ -433,7 +474,9 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       return mode
     },
     get speaking() {
-      return speaking
+      // a preview holds the gate open with the send muted: nobody is hearing
+      // it, so nobody should see the speaking mark either
+      return speaking && !previewing
     },
     get peerCount() {
       let n = 0
@@ -469,7 +512,9 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       applyLevels()
 
       // --- the gate ------------------------------------------------------
-      if (enabled) {
+      if (previewing) {
+        setGate(enabled)
+      } else if (enabled) {
         const now = performance.now()
         if (mode === 'ptt') {
           setGate(pushing)
@@ -551,6 +596,34 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       }
     },
 
+    async preview() {
+      if (!available || !ctx || !send || !monitor || previewing) return
+      // a click on the sheet is the gesture getUserMedia wants, so a preview
+      // with the mic off arms it for the duration and hands it back after
+      const armed = !enabled
+      if (armed) await startMic()
+      if (!enabled) return
+      if (ctx.state === 'suspended') await ctx.resume()
+      fx?.set(opts.filter())
+      previewing = true
+      const t = ctx.currentTime
+      send.gain.setTargetAtTime(0, t, GATE_RAMP)
+      monitor.gain.setTargetAtTime(1, t, GATE_RAMP)
+      setGate(true)
+      changed()
+      await new Promise((r) => setTimeout(r, PREVIEW_MS))
+      // shut the gate first, so the squelch and the reverb tail play out on
+      // the monitor, and only then take the monitor down and the send back up
+      previewing = false
+      setGate(false)
+      await new Promise((r) => setTimeout(r, PREVIEW_TAIL_MS))
+      const t2 = ctx.currentTime
+      monitor.gain.setTargetAtTime(0, t2, GATE_RAMP)
+      send.gain.setTargetAtTime(1, t2, GATE_RAMP)
+      if (armed && enabled) stopMic()
+      changed()
+    },
+
     accept(from, data) {
       if (!ctx) return
       void (async () => {
@@ -583,6 +656,9 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       stopMic()
       trim?.disconnect()
       gate?.disconnect()
+      fx?.dispose()
+      send?.disconnect()
+      monitor?.disconnect()
       outLimit?.disconnect()
       bus?.disconnect()
       limiter?.disconnect()

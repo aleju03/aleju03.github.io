@@ -9,6 +9,7 @@ import {
   DETAILS, FPS_CAPS, PIXEL_SIZES, SCALE_MAX, SCALE_MIN, VOL_MAX, VOL_MIN,
   detailTier, fpsCapLabel, type RoamPrefs,
 } from './roamPrefs'
+import { VOICE_FILTERS, type VoiceFilter } from './voiceFilters'
 import type { GfxTier } from '../../game/world/quality'
 
 /*
@@ -314,6 +315,9 @@ export interface PauseScreenProps {
   multiplayer: boolean
   prefs: RoamPrefs
   onPrefs: (next: (p: RoamPrefs) => RoamPrefs) => void
+  /** play your own filtered voice back to you for a few seconds; resolves
+      when it has finished */
+  onVoicePreview: () => Promise<void>
   /** what the GPU sniff decided, and what the running world was actually
       built at; they differ exactly when `prefs.detail` has overruled the
       sniff. Null only before the renderer has classified, which cannot
@@ -337,6 +341,7 @@ export default function PauseScreen({
   multiplayer,
   prefs,
   onPrefs,
+  onVoicePreview,
   tier,
   fleet,
   people,
@@ -348,6 +353,8 @@ export default function PauseScreen({
 }: PauseScreenProps) {
   const { t, language } = useI18n()
   const [page, setPage] = useState<Page>('character')
+  const [hearing, setHearing] = useState(false)
+  const fxWords = VOICE_FILTERS.map((id, i) => ({ id, label: t.sandbox.voiceFx.names[i] }))
   const pages: Array<{ id: Page; label: string }> = [
     { id: 'character', label: 'character' },
     { id: 'settings', label: 'settings' },
@@ -611,6 +618,34 @@ export default function PauseScreen({
                         onPrefs((p) => ({ ...p, voiceVol: Math.round(v * 100) / 100 }))
                       }
                     />
+                    {/* what everybody else hears you through. The filter is
+                        applied on this machine before the voice leaves it
+                        (`voiceFilters.ts`), so the only honest way to show it
+                        is to play it back: the pencil note on the right is a
+                        button that does, privately, for a few seconds */}
+                    <div className="sm:col-span-2">
+                      <Choice<VoiceFilter>
+                        label={t.sandbox.voiceFx.label}
+                        note={
+                          <button
+                            type="button"
+                            disabled={hearing}
+                            onClick={() => {
+                              setHearing(true)
+                              void onVoicePreview().finally(() => setHearing(false))
+                            }}
+                            className="underline decoration-dotted underline-offset-2 disabled:no-underline"
+                          >
+                            <Note>
+                              {hearing ? t.sandbox.voiceFx.listening : `▸ ${t.sandbox.voiceFx.preview}`}
+                            </Note>
+                          </button>
+                        }
+                        options={fxWords}
+                        value={prefs.voiceFx}
+                        onPick={(voiceFx) => onPrefs((p) => ({ ...p, voiceFx }))}
+                      />
+                    </div>
                   </div>
                 )}
               </div>

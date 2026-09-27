@@ -20,16 +20,18 @@
   next load. The menu is the one place that difference is visible, so the menu
   is where it has to be said out loud rather than papered over.
 
-  The two voice dials are here for the same reason the rest is: the pause
-  sheet moves them and `proximityVoice` reads them off the live record every
-  frame, and neither of those two modules is a place for a third copy of what
-  a sane volume is.
+  The two voice dials, and the voice filter beside them, are here for the
+  same reason the rest is: the pause sheet moves them and `proximityVoice`
+  reads them off the live record every frame, and neither of those two
+  modules is a place for a third copy of what a sane volume is. The filter is
+  whitelisted against `voiceFilters.ts`'s own list, like `detail` is.
 
   Nothing in here touches the renderer or React; it is a record, a whitelist
   and a parser.
 */
 
 import type { GfxTier } from '../../game/world/quality'
+import { VOICE_FILTERS, type VoiceFilter } from './voiceFilters'
 
 /**
   What the visitor may say about `world/quality.ts`'s tier. 'auto' trusts the
@@ -77,6 +79,9 @@ export interface RoamPrefs {
   /** and how loud everyone else comes back. Not per person: the mesh is
       proximity-mixed, so the useful knob is the whole room's */
   voiceVol: number
+  /** what everybody else hears you through: none, or one of the silly ones.
+      Applied on the sending side, live */
+  voiceFx: VoiceFilter
   /** frames per second the walk is allowed to draw; 0 is uncapped */
   cap: number
   /** how much world to build: the tier override, applied on the next load */
@@ -109,7 +114,7 @@ export const fpsCapLabel = (cap: number) => (cap === 0 ? 'no limit' : `${cap} fp
 export const PREFS_KEY = 'alejos-roam-prefs'
 const PREFS_DEFAULT: RoamPrefs = {
   fov: 60, sens: 1, third: false, cap: 160, detail: 'auto', scale: 1,
-  pixels: 'medium', micVol: 1, voiceVol: 1,
+  pixels: 'medium', micVol: 1, voiceVol: 1, voiceFx: 'none',
 }
 
 /** a stored volume, which may be a 0 somebody meant: `Number(x) || d` would
@@ -130,6 +135,9 @@ export const loadPrefs = (): RoamPrefs => {
         third: p.third === true,
         micVol: vol(p.micVol, PREFS_DEFAULT.micVol),
         voiceVol: vol(p.voiceVol, PREFS_DEFAULT.voiceVol),
+        voiceFx: VOICE_FILTERS.includes(p.voiceFx as VoiceFilter)
+          ? (p.voiceFx as VoiceFilter)
+          : PREFS_DEFAULT.voiceFx,
         // a stored cap is checked against the detents rather than clamped to
         // their range: both ends are meaningful values, and anything in
         // between is a bead pointing at no tick at all

@@ -197,6 +197,14 @@ const dictionaries = {
         pauseNote: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {spawnMenu} props · {undo} undo · {chat} chat · {command} commands',
         voice: '{mic} mic',
       },
+      // the voice filter on the pause sheet (components/os/voiceFilters.ts),
+      // in VOICE_FILTERS order
+      voiceFx: {
+        label: 'your voice',
+        names: ['plain', 'helium', 'giant', 'robot', 'walkie', 'cave'],
+        preview: 'hear yourself',
+        listening: 'listening... say something',
+      },
     },
     // the four colour knobs on the pause sheet's character page
     // (components/os/WorldIdentity.tsx), in the order look.ts packs them
@@ -395,6 +403,12 @@ const dictionaries = {
         pauses: 'esc pausa',
         pauseNote: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {spawnMenu} objetos · {undo} deshacer · {chat} chat · {command} comandos',
         voice: '{mic} micro',
+      },
+      voiceFx: {
+        label: 'tu voz',
+        names: ['normal', 'helio', 'gigante', 'robot', 'walkie', 'cueva'],
+        preview: 'escúchate',
+        listening: 'escuchando... di algo',
       },
     },
     look: {

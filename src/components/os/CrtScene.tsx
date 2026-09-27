@@ -479,6 +479,9 @@ export default function CrtScene({
       state lives out here rather than inside the closure */
   const applyLookRef = useRef<((look: PlayerLook) => void) | null>(null)
   const setNickRef = useRef<((name: string) => void) | null>(null)
+  // the pause sheet's "hear yourself", which has to reach the voice graph
+  // living inside the scene effect; null whenever there is no world to share
+  const voicePreviewRef = useRef<(() => Promise<void>) | null>(null)
   useEffect(() => {
     failRef.current = onFail
     stageRef.current = onStage
@@ -1807,6 +1810,7 @@ export default function CrtScene({
               mic: prefsRef.current.micVol,
               out: prefsRef.current.voiceVol,
             }),
+            filter: () => prefsRef.current.voiceFx,
             // read per peer, not captured: a reconnect brings a fresh TURN
             // credential and the old one may already have expired
             ice: () => net?.ice ?? [],
@@ -1815,11 +1819,13 @@ export default function CrtScene({
           })
           syncVoice()
           setNickRef.current = (name) => net?.setNick(name)
+          voicePreviewRef.current = () => voice?.preview() ?? Promise.resolve()
         }
 
         const leaveWorld = () => {
           voice?.dispose()
           voice = null
+          voicePreviewRef.current = null
           net?.close()
           net = null
           setNickRef.current = null
@@ -4371,6 +4377,7 @@ export default function CrtScene({
           multiplayer={mp.status === 'live'}
           prefs={prefs}
           onPrefs={setPrefs}
+          onVoicePreview={() => voicePreviewRef.current?.() ?? Promise.resolve()}
           tier={tierInfo}
           fleet={fleetWhere}
           people={people}
