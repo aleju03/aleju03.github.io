@@ -91,7 +91,14 @@
                                       every machine taken as a prop and thrown
                                       at the ground at 20 to 900 u/s: must
                                       never go a unit under it or be rescued
-    npm run drive -- roofs            flat and pitched roofs at home and
+    npm run drive -- moonfleet        the fleet on the Moon: the car ordered,
+                                      driven over the craters (never under
+                                      the ground), shot with the Earth in the
+                                      sky, thrown on the physgun; the heli
+                                      and the boat ordered; home, where the
+                                      car is gone until ordered; links
+                                      counted (must be 0)
+    npm run drive -- roofs          flat and pitched roofs at home and
                                       downtown landed on from noclip, dropped
                                       and let go inside the building: the feet
                                       must end on the roof (shots roofs-*.png)
@@ -2707,6 +2714,196 @@ try {
     }
     console.log(`  ${bad === 0 ? 'PASS' : `FAIL: ${bad} throws went under the ground`}`)
     if (bad) process.exitCode = 1
+  }
+
+  if (WHAT.includes('moonfleet')) {
+    /*
+      The whole fleet on the Moon. Cut to the Moon, the car ordered from the
+      catalogue to the crosshair, boarded and driven flat out over the
+      craters (its height over the drawn ground printed every second: it
+      must never go under), a chase shot mid-drive and one of it parked with
+      the Earth in the sky; then taken on the physgun and thrown at the
+      regolith, the helicopter and the boat ordered, and home to Earth, where
+      the car must be gone until it is ordered again. Every shader link from
+      the Moon on is counted (must be 0).
+    */
+    console.log('moonfleet')
+    // every link from here on, and the draw that caused it
+    await evaluate(`(() => { window.__mfLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__mfWrapped) continue; gl.__mfWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__mfLinks++; real(p) } }
+      const r = window.__renderer, draw = r.renderBufferDirect.bind(r)
+      r.renderBufferDirect = (cam, scene, geo, mat, obj, grp) => { const n = window.__mfLinks; draw(cam, scene, geo, mat, obj, grp)
+        if (window.__mfLinks > n) { let q = obj, path = []; while (q && path.length < 6) { path.push(q.name || q.type); q = q.parent }
+          window.__mfWhat.push((window.__mfPhase || '') + ': ' + path.join('<') + ' as ' + mat.type) } }
+      window.__mfWhat = []
+      return true })()`)
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    // the painted Earth for the Moon's sky, as the portal gun prepares it
+    // (a cut straight there never flew past it), then the cut
+    await waitFor(() => evaluate(`(() => { const c = window.__sandboxCamera.position; return window.__outside.moonPortal.prepare(c.x, c.z, 40) })()`), 400, 50, 'the Earth globe')
+    await evaluate(`window.__levels.goTo('moon')`)
+    await waitFor(() => evaluate(`window.__levels.current.id === 'moon'`), 60, 250, 'the Moon')
+    await sleep(5000)
+    await stand()
+    await evaluate('window.__mfLinks = 0; window.__mfWhat = []')
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const carAt = () => evaluate(`(() => { const v = window.__fleet.all.find((m) => m.id === 'car'), p = v.root.position
+      const L = window.__levels.current
+      return { x: p.x, y: p.y, z: p.z, up: p.y - (L.groundYAt ? L.groundYAt(p.x, p.z) : L.groundY), shown: v.root.visible, level: L.id } })()`)
+    const orderIt = async (id) => {
+      await tap('KeyQ')
+      await sleep(400)
+      await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length >= 4`), 60, 250, 'the catalogue icons')
+      await evaluate(`(() => { const el = document.querySelector('[data-category="vehicles"]'); el && el.click(); return true })()`)
+      await sleep(600)
+      const ok = await evaluate(`(() => { const el = document.querySelector('[data-kind="fleet:${id}"]'); el && el.click(); return !!el })()`)
+      await sleep(400)
+      await tap('Escape')
+      await sleep(1200)
+      const r = await evaluate(`(() => { const v = window.__fleet.all.find((m) => m.id === '${id}'), p = v.root.position
+        const c = window.__sandboxCamera.position, L = window.__levels.current
+        return [p.x, p.y, p.z, p.y - L.groundYAt(p.x, p.z), Math.hypot(p.x - c.x, p.z - c.z), v.root.visible] })()`)
+      console.log(`  ordered the ${id}${ok ? '' : ' (no plate!)'}: at ${r.slice(0, 3).map((n) => n.toFixed(1)).join(', ')}, ` +
+        `${r[3].toFixed(2)} over the ground, ${r[4].toFixed(1)} from you, ${r[5] ? 'shown' : 'HIDDEN  <-- WRONG'}`)
+      return r
+    }
+    // the heading with the most crater in it over the next 150 units: the
+    // car is delivered side-on to you, so looking a quarter turn left of it
+    // points the car's nose down it
+    const crater = await evaluate(`(() => { const L = window.__levels.current, c = window.__sandboxCamera.position
+      let best = 0, bestRange = -1
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2, fx = -Math.sin(a), fz = -Math.cos(a)
+        let lo = Infinity, hi = -Infinity
+        for (let d = 20; d <= 150; d += 5) { const g = L.groundYAt(c.x + fx * d, c.z + fz * d); lo = Math.min(lo, g); hi = Math.max(hi, g) }
+        if (hi - lo > bestRange) { bestRange = hi - lo; best = a }
+      }
+      return [best, bestRange] })()`)
+    console.log(`  the most crater: heading ${crater[0].toFixed(2)}, ${crater[1].toFixed(1)} units of relief`)
+    await look(crater[0] + Math.PI / 2, -0.3)
+    await evaluate(`window.__mfPhase = 'order car'`)
+    const car0 = await orderIt('car')
+    // beside the driver's door, and in
+    const yaw0 = await evaluate(`window.__fleet.all.find((m) => m.id === 'car').yaw`)
+    await run(`tp ${(car0[0] + Math.cos(yaw0) * 3.4).toFixed(1)} ${(car0[2] - Math.sin(yaw0) * 3.4).toFixed(1)}`)
+    await sleep(1500)
+    await tap('KeyE', 150)
+    await sleep(1500)
+    if (!(await evaluate(`window.__fleet.riding?.id === 'car'`))) console.log('  E did not board the car  <-- WRONG')
+    // flat out for ten seconds, a bit of steering, sampled every 0.2 s
+    await evaluate(`window.__mfPhase = 'drive'`)
+    await hold('KeyW', true)
+    let worst = Infinity, airborne = 0, maxUp = 0, gMin = Infinity, gMax = -Infinity, n = 0
+    const t = Date.now()
+    let shotTaken = false
+    while (Date.now() - t < 10000) {
+      await hold('KeyA', Date.now() - t > 4000 && Date.now() - t < 5500)
+      const s = await evaluate(`(() => { const v = window.__fleet.all.find((m) => m.id === 'car'), p = v.root.position
+        const L = window.__levels.current, c = Math.cos(v.yaw), sn = Math.sin(v.yaw)
+        // the footprint: under it everywhere is under the ground, and a
+        // pit smaller than the car under its middle is not
+        let lo = Infinity
+        for (const [lx, lz] of [[0, 0], [-1.6, -3.2], [1.6, -3.2], [-1.6, 3.2], [1.6, 3.2]])
+          lo = Math.min(lo, L.groundYAt(p.x + lx * c + lz * sn, p.z - lx * sn + lz * c))
+        return { x: p.x, y: p.y, z: p.z, up: p.y - lo } })()`)
+      const g = s.y - s.up
+      worst = Math.min(worst, s.up)
+      maxUp = Math.max(maxUp, s.up)
+      gMin = Math.min(gMin, g)
+      gMax = Math.max(gMax, g)
+      if (s.up > 0.8) airborne++
+      n++
+      if (n % 5 === 0) console.log(`    ${((Date.now() - t) / 1000).toFixed(1)} s  car ${s.x.toFixed(0)}, ${s.y.toFixed(1)}, ${s.z.toFixed(0)}  ${s.up.toFixed(2)} over the ground`)
+      if (!shotTaken && Date.now() - t > 3000) {
+        shotTaken = true
+        await shot('moonfleet-driving')
+      }
+      await sleep(200)
+    }
+    await hold('KeyW', false)
+    await hold('KeyA', false)
+    console.log(`  drove over ground from ${gMin.toFixed(1)} to ${gMax.toFixed(1)}: lowest ${worst.toFixed(2)} over it, ` +
+      `highest ${maxUp.toFixed(2)}, off the ground in ${airborne}/${n} samples  ${worst > -0.5 ? 'ok' : 'UNDER THE GROUND  <-- WRONG'}`)
+    // stop, out, and stand off with the car between you and the Earth
+    await hold('KeyS', true)
+    await sleep(3000)
+    await hold('KeyS', false)
+    await tap('KeyE', 150)
+    await sleep(1500)
+    // then facing the Earth, the car ordered again onto the ground in front
+    // (the drive ends wherever the craters left it, often down in a bowl)
+    const earth = () => evaluate(`(() => { const e = window.__scene.getObjectByName('globe-earth'), c = window.__sandboxCamera.position
+      const p = e.getWorldPosition(c.clone()).sub(c).normalize(); return [p.x, p.y, p.z] })()`)
+    const ed = await earth()
+    const earthYaw = Math.atan2(-ed[0], -ed[2])
+    await look(earthYaw, -0.35)
+    await orderIt('car')
+    // pitched between the two, so the car and the Earth share the frame
+    const toCar = await evaluate(`(() => { const p = window.__fleet.all.find((m) => m.id === 'car').root.position, c = window.__sandboxCamera.position
+      const d = p.clone().sub(c); return [Math.atan2(-d.x, -d.z), Math.atan2(d.y + 1, Math.hypot(d.x, d.z))] })()`)
+    await look(earthYaw, (toCar[1] + Math.asin(ed[1])) * 0.5)
+    await sleep(600)
+    await shot('moonfleet-parked-earth')
+    // the physgun: taken and thrown at the regolith
+    await evaluate(`window.__mfPhase = 'throw'`)
+    let bad = 0
+    for (const [speed, deg] of [[40, 30], [300, 70], [900, 89]]) {
+      const r = await evaluate(`(async () => {
+        const f = window.__fleet, sb = window.__sandbox, cam = window.__sandboxCamera.position
+        const next = () => new Promise((res) => requestAnimationFrame(res))
+        const v = f.all.find((m) => m.id === 'car')
+        f.recall('car', cam, window.__fleetEnv())
+        for (let i = 0; i < 20; i++) await next()
+        const prop = f.take('car', sb)
+        if (!prop) return { err: 'not taken' }
+        const yaw = window.__sandboxWalk.yaw
+        const fx = -Math.sin(yaw), fz = -Math.cos(yaw)
+        const x = cam.x + fx * 14, z = cam.z + fz * 14
+        sb.setTransform(prop.id, { x, y: sb.groundY(x, z) + 8, z })
+        const a = ${deg} * Math.PI / 180
+        sb.setVelocity(prop.id, { x: fx * Math.cos(a) * ${speed}, y: -Math.sin(a) * ${speed}, z: fz * Math.cos(a) * ${speed} }, { x: 1.5, y: 0.5, z: -1 })
+        let worst = Infinity, rescued = 0
+        const t0 = performance.now()
+        while (performance.now() - t0 < 6000) {
+          await next()
+          const p = v.root.position
+          worst = Math.min(worst, p.y - sb.groundY(p.x, p.z))
+          const q = sb.get(prop.id)
+          if (q) rescued = Math.max(rescued, q.lost)
+        }
+        const p = v.root.position
+        return { worst, rescued, end: p.y - window.__levels.current.groundYAt(p.x, p.z), carried: !!sb.get(prop.id) }
+      })()`)
+      if (r.err) { console.log(`  thrown: ${r.err}  <-- WRONG`); bad++; continue }
+      const ok = r.worst > -1 && r.rescued === 0
+      if (!ok) bad++
+      console.log(`  car thrown at ${speed} u/s, ${deg} deg: deepest ${r.worst.toFixed(2)}, rests ${r.end.toFixed(2)} over the ground, ` +
+        `${r.rescued} rescues, ${r.carried ? 'still a prop' : 'handed back'}  ${ok ? 'ok' : 'FAIL'}`)
+    }
+    await sleep(1500)
+    await look(0, -0.3)
+    await evaluate(`window.__mfPhase = 'heli boat'`)
+    await orderIt('heli')
+    await look(Math.PI / 2, -0.3)
+    await orderIt('boat')
+    await look(Math.PI * 0.25, -0.15)
+    await sleep(500)
+    await shot('moonfleet-heli-boat')
+    const links = await evaluate('window.__mfLinks')
+    // (and what linked, and on which draw)
+    if (links) console.log('    ' + (await evaluate(`(window.__mfWhat || []).join('\\n    ')`)))
+    // home: the car stays on the Moon
+    await evaluate(`window.__levels.goTo('overworld')`)
+    await waitFor(() => evaluate(`window.__levels.current.id === 'overworld'`), 60, 250, 'the Earth')
+    await sleep(3000)
+    const home = await carAt()
+    console.log(`  back on Earth the car is ${home.shown ? 'SHOWN  <-- WRONG' : 'not here'} (left at ${home.x.toFixed(0)}, ${home.z.toFixed(0)})`)
+    await look(0, -0.3)
+    const again = await orderIt('car')
+    console.log(`  ordered on Earth: ${again[5] && again[4] < 40 ? 'here' : 'NOT HERE  <-- WRONG'}`)
+    console.log(`  shader links on the Moon: ${links}${links ? '  <-- WRONG' : ''}; throws ${bad ? 'FAIL' : 'ok'}`)
+    if (bad || links) process.exitCode = 1
   }
 
   if (WHAT.includes('roofs')) {

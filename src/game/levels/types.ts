@@ -123,11 +123,11 @@ export interface Level {
   /** a props sandbox runs here (the Q catalogue, the physgun, the console's
       spawns), standing on this */
   sandbox?: LevelSandbox
-  /** the fleet lives here: its machines prompt, can be boarded and recalled */
+  /** the fleet runs here: its machines are ordered from the catalogue,
+      prompt, are boarded and taken on the physgun, all four of them. Each
+      stands in one level at a time (vehicles/registry.ts), so a car left on
+      the Moon is not on the street, and ordering it pulls it to you */
   vehicles?: boolean
-  /** only the fleet's spacecraft fly here (the Moon): the ship lands, is
-      boarded and recalled, and the ground machines are a world away */
-  spacecraft?: boolean
   /** the town's pedestrians walk here: bumps, blasts and a car reach them */
   crowd?: boolean
   /** the house stands here: its doors, fittings, seats and television answer
@@ -140,4 +140,8 @@ export interface Level {
   air?: boolean
   /** what a footstep lands on at a point, at a sole height */
   surfaceAt?: (x: number, z: number, feetY: number, wet: number) => StepSurface
+  /** what a wheel or a hull is on, where that is not what a boot is: the
+      Moon's regolith is sand underfoot and firm going under a tyre. Default
+      the overworld's own answer (the property, then the open world) */
+  driveSurface?: (x: number, z: number) => StepSurface
 }

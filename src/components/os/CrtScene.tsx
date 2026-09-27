@@ -10,7 +10,7 @@ import {
 import { buildOutsideWorld, type OutsideState } from '../../game/levels/outsideWorld'
 import { buildBackrooms } from '../../game/levels/backrooms'
 import { buildDeskRoom } from '../../game/levels/deskRoom'
-import { makeHomeLevels } from '../../game/levels/homeLevels'
+import { fleetLevelAt, makeHomeLevels } from '../../game/levels/homeLevels'
 import { createLevelSystem } from '../../game/levels/levelSystem'
 import type { Level, LevelLightRig } from '../../game/levels/types'
 import { buildPaperPlane } from '../../game/props/paperPlane'
@@ -1333,13 +1333,18 @@ export default function CrtScene({
           fleetEnv.gravity = level.gravity ?? 1
           fleetEnv.air = !!level.air
           fleetEnv.collision = level.collision
+          fleetEnv.surfaceAt = level.driveSurface ?? surfaceOf
+          fleetEnv.level = level.id
           return fleetEnv
         }
-        /** the level the machines live in: the live one when it has them,
-            else the first that does. A welcome that lands while you are on
-            the Moon must place the car on the street, not on the regolith */
-        const fleetLevel = () =>
-          levels.current.vehicles ? levels.current : homeLevels.find((l) => l.vehicles) ?? levels.current
+        /** the level the machines start in (the first that has them: their
+            home spots are on the street), for spawnAll */
+        const fleetLevel = () => homeLevels.find((l) => l.vehicles) ?? levels.current
+        /** the level a machine the server placed is in (each is in one) */
+        const fleetLevelOf = (x: number, z: number) => {
+          const id = fleetLevelAt(x, 0, z)
+          return homeLevels.find((l) => l.id === id) ?? fleetLevel()
+        }
         /*
           The fleet's half of the network, once a frame.
 
@@ -1390,9 +1395,8 @@ export default function CrtScene({
         /** the machines, put where the server last saw them. Only on joining */
         const placeFleetFromNet = () => {
           if (!fleetPlaced) return // spawnAll has not run yet; it calls back
-          const q = aimFleetEnv(fleetLevel())
           for (const v of fleetNet.vehicles) {
-            if (v.known) fleet.placeFromNet(v.id, v.x, v.z, v.yaw, q)
+            if (v.known) fleet.placeFromNet(v.id, v.x, v.z, v.yaw, aimFleetEnv(fleetLevelOf(v.x, v.z)))
           }
         }
 
@@ -2787,7 +2791,7 @@ export default function CrtScene({
         const orderVehicle = (id: VehicleId) => {
           const lv = levels.current
           const label = fleet.all.find((v) => v.id === id)?.label ?? id
-          if (!(lv.vehicles || (lv.spacecraft && id === 'ship'))) {
+          if (!lv.vehicles) {
             pushFeed({ tone: 'err', text: bilingual(`no ${label} delivered here`, `aquí no se entrega ${label}`) })
             return
           }
@@ -3405,8 +3409,7 @@ export default function CrtScene({
             camera,
             fovBase: prefsRef.current.fov,
             playerPos: v.root.position,
-            outdoors: !!level.vehicles || !!level.spacecraft,
-            spaceOnly: !level.vehicles,
+            outdoors: !!level.vehicles,
           })
           // whatever this machine is driven into goes over
           impacts.track(fleet.all, pausedNow ? 0 : dt)
@@ -4201,8 +4204,7 @@ export default function CrtScene({
             camera,
             fovBase: prefsRef.current.fov,
             playerPos: camera.position,
-            outdoors: !!level.vehicles || !!level.spacecraft,
-            spaceOnly: !level.vehicles,
+            outdoors: !!level.vehicles,
           })
           // somebody else's car coming down the street at you: the watch
           // knows how fast it is going, and a seat or a level cut is immune
@@ -4568,7 +4570,7 @@ export default function CrtScene({
                 __house: house,
                 __seat: { seating, take: takeSeat, leave: leaveSeat },
                 // the fleet's world, for a harness recalling a machine
-                __fleetEnv: () => aimFleetEnv(fleetLevel()),
+                __fleetEnv: () => aimFleetEnv(levels.current.vehicles ? levels.current : fleetLevel()),
               })
               // the fleet through its binding: the real one is built below
               Object.defineProperty(window, '__fleet', { get: () => fleet, configurable: true })
@@ -4576,6 +4578,9 @@ export default function CrtScene({
             fleet = registry.buildFleet({
               scene,
               obstacles,
+              // the Moon's collision set too: the fleet runs there as well
+              alsoIn: [outside.moon.obstacles],
+              levelAt: fleetLevelAt,
               trackTexture: disposer.texture,
               trackDisposable: disposer.add,
             })
@@ -4632,6 +4637,10 @@ export default function CrtScene({
           outside.sun.shadow.needsUpdate = true
           render()
         }
+        /** the fleet's meshes unculled for the warm's sun passes, and its
+            lamps put out for the second of them */
+        const warmUnculled: THREE.Object3D[] = []
+        const warmDark: THREE.Object3D[] = []
         const warmForRoam = async (at: THREE.Vector3) => {
           await ensureWorld()
           if (disposed) return
@@ -4685,8 +4694,33 @@ export default function CrtScene({
               webgl.setScissor(0, 0, 1, 1)
               webgl.setViewport(0, 0, 1, 1)
               outside.sun.shadow.needsUpdate = true
+              /* Every machine into the sun's map, whatever its box covers,
+                 with the headlamps lit and then dark: a depth program's key
+                 carries the spot count too. The fleet runs on the Moon as
+                 well, far from where it was warmed, and its depth variants
+                 were being linked there, mid-walk, the moment a car was
+                 delivered in whichever lamp state this pass had missed */
+              fleet.root.traverse((o) => {
+                if ((o as THREE.Mesh).isMesh && o.frustumCulled) {
+                  o.frustumCulled = false
+                  warmUnculled.push(o)
+                }
+              })
+              webgl.render(scene, warmCam)
+              fleet.setLightWarmup(false)
+              fleet.root.traverse((o) => {
+                if ((o as THREE.SpotLight).isSpotLight && o.visible) {
+                  o.visible = false
+                  warmDark.push(o)
+                }
+              })
+              outside.sun.shadow.needsUpdate = true
               webgl.render(scene, warmCam)
             } finally {
+              for (const o of warmUnculled) o.frustumCulled = true
+              for (const o of warmDark) o.visible = true
+              warmUnculled.length = 0
+              warmDark.length = 0
               fleet.setLightWarmup(false)
             }
           } finally {
