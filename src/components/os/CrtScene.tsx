@@ -2562,10 +2562,10 @@ export default function CrtScene({
             : { tone: 'ok', text: bilingual('portal gun out', 'pistola de portales en mano') })
         }
         /*
-          The drawn meshes near a portal shot, for fitting it to the wall you
-          can see rather than to the collision box round it (portals.ts's
-          `soupAround`): the house's and the streamed world's, by bounding
-          sphere. Instanced and skinned draws (the grass, the herd, the crowd)
+          The drawn meshes near a portal shot, for fitting it to the surface
+          you can see rather than to the collision box round it (portals.ts's
+          `soupAround`): the house's, the streamed world's and the Moon's, by
+          bounding sphere. Instanced and skinned draws (the grass, the herd, the crowd)
           are nothing to open a portal on.
         */
         const nearSphere = new THREE.Sphere()
@@ -2577,7 +2577,9 @@ export default function CrtScene({
           const visit = (obj: THREE.Object3D) => {
             if (!obj.visible) return
             const mesh = obj as THREE.Mesh
-            if (mesh.isMesh && !(obj as THREE.InstancedMesh).isInstancedMesh && !(obj as THREE.SkinnedMesh).isSkinnedMesh) {
+            // (not the ovals themselves: a Moon portal rides the Moon's root)
+            if (mesh.isMesh && !(obj as THREE.InstancedMesh).isInstancedMesh && !(obj as THREE.SkinnedMesh).isSkinnedMesh &&
+              obj.name !== 'portal-blue' && obj.name !== 'portal-orange') {
               const geo = mesh.geometry
               if (!geo.boundingSphere) geo.computeBoundingSphere()
               if (geo.boundingSphere) {
@@ -2587,8 +2589,12 @@ export default function CrtScene({
             }
             for (const c of obj.children) visit(c)
           }
+          // (a hidden root is skipped by `visit`: the Moon's ground is only
+          // there to shoot at while you stand on it)
           if (levels.current.house) visit(house.root)
           if (earthGround && levels.current.outdoors) visit(earthGround)
+          const moonGround = outside.moonPortal.root()
+          if (moonGround && levels.current.outdoors) visit(moonGround)
           return nearMeshes
         }
         /** a portal shot into the open sky: the Moon, if it is under the ray

@@ -1331,15 +1331,24 @@ left click opens the blue portal and right click the orange on whatever
 surface is under the crosshair, and R closes both. It is Portal's rules
 drawn through this world's machinery:
 
-- **A portal has to fit.** The shot is a ray against the level's collision
-  boxes, its ground and its props (a prop or the sea fizzles it); then the
-  oval must lie flat on the surface, which is a dozen short rays down the
-  normal from points round its rim, against the boxes *and* against the
-  drawn wall (`soupAround`: the few hundred triangles near the hit that face
-  the shot), because a box stands a shoulder's width proud of its wall and
-  can run past the building's corner. A shot near an edge is nudged inward,
-  a wall shot a little above a floor slides down to stand on it, and a
-  floor or ceiling portal turns its top the way you were looking.
+- **A portal only opens on something you can see.** The shot is a ray
+  against the level's collision boxes, its ground and its props (a prop or
+  the sea fizzles it), but a collision box is not a surface: lamp posts wear
+  guard boxes and buildings stand broad-phase boxes proud of their walls and
+  past their corners, and a portal fitted to one hung in the air. So the
+  drawn meshes are felt for along the ray round the hit (`soupAround`: the
+  few hundred triangles there, flattened once per shot), a box with nothing
+  drawn near its face is set aside and the ray goes on, and the whole oval
+  must then lie on that drawn surface: seventeen short rays down the normal
+  from its rim and middle each meet a facet facing within 14 degrees, all of
+  them on one plane within 4 cm, and the oval sits on that plane 2 cm proud.
+  A shot near an edge is nudged inward, a wall shot a little above a floor
+  slides down to stand on it, a floor or ceiling portal turns its top the
+  way you were looking, and anything that cannot fit near where it landed
+  fizzles (a lamp post, a corner, ground that rolls). `drive -- portal`
+  measures every placement against the drawn surface independently (13
+  rim and middle samples, max gap printed; 0.02 is the offset) and shoots a
+  lamp post and an empty collision face.
 - **One matrix carries everything.** Going in one is coming out of the
   other turned half round its up axis, so `orange * flip * blue^-1` maps the
   walker's centre, its gaze and its velocity alike, and a fall into a floor
