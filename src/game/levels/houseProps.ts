@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { createMeshBuilder, type MeshBuilder } from '../core/geometry'
 import { seeded } from '../core/rand'
 import { noStand } from '../physics/collision'
+import { createPictureAtlas, type PictureId, type UvRect } from './housePictures'
 
 /*
   The clutter that makes the house somebody's: a family's things in about
@@ -16,7 +17,10 @@ import { noStand } from '../physics/collision'
   reads them as glowing. Two programs and two draw calls for the whole lot,
   compiled at boot with the rest of the room, which is the only way a house
   this full stays inside the room's shader budget: a material per prop would
-  be a program per prop, linked the first time somebody turned round.
+  be a program per prop, linked the first time somebody turned round. The
+  pictures in the frames and on the posters are a third merged draw, quads
+  on one painted atlas (levels/housePictures.ts) through a plain mapped
+  MeshStandardMaterial, the same program the house's floors already link.
 
   Three things are not in the soup, each for a reason:
   - the router's LEDs blink, so each is a tiny mesh of its own sharing the
@@ -42,7 +46,7 @@ export interface PropsHandles {
   lampCount: number
   /** blink the router */
   update: (dt: number) => void
-  /** the fridge door's magnets, a paper calendar and a drawing: a mesh laid
+  /** the fridge door's magnets, a paper calendar, a drawing and a snapshot: a mesh laid
       on a door whose front is the +x face of `front`, for the caller to hang
       on the door's own node */
   fridgeFront: (front: THREE.Box3) => THREE.Mesh | null
@@ -124,32 +128,77 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
     if (face[0] === 'x') stamp(lit, UNIT, col(hex), depth, h, w, c, y, u)
     else stamp(lit, UNIT, col(hex), w, h, depth, u, y, c)
   }
-  /** a poster: a ground, a shape, a title bar, a strip of small print */
-  const poster = (
-    face: Face, at: number, u: number, y: number, w: number, h: number,
-    ground: string, shape: string, title: string, round = false,
+  /*
+    The pictures: quads on the painted atlas, merged into one draw. A quad
+    faces the wall's inward normal, and its right-hand edge is up x normal,
+    so every picture reads the right way round from inside the room.
+  */
+  const atlas = createPictureAtlas()
+  type Quads = { pos: number[]; nor: number[]; uv: number[]; idx: number[] }
+  const newQuads = (): Quads => ({ pos: [], nor: [], uv: [], idx: [] })
+  const pics = newQuads()
+  const NORMAL: Record<Face, [number, number, number]> = {
+    'x+': [1, 0, 0], 'x-': [-1, 0, 0], 'z+': [0, 0, 1], 'z-': [0, 0, -1],
+  }
+  const quad = (
+    into: Quads, face: Face, cx: number, cy: number, cz: number,
+    w: number, h: number, uv: UvRect, tilt = 0,
   ) => {
-    onWall(face, at, u, y, w, h, 0.01, ground, 0.02)
-    const sgn = face.endsWith('+') ? 1 : -1
-    if (round) {
-      const c = at + sgn * 0.035
-      const r = Math.min(w, h) * 0.3
-      if (face[0] === 'x') stamp(lit, CYL, col(shape), r * 2, 0.02, r * 2, c, y + h * 0.08, u, 0, 0, Math.PI / 2)
-      else stamp(lit, CYL, col(shape), r * 2, 0.02, r * 2, u, y + h * 0.08, c, 0, Math.PI / 2)
-    } else {
-      onWall(face, at, u, y + h * 0.08, w * 0.62, h * 0.5, 0.03, shape, 0.01)
+    const [nx, , nz] = NORMAL[face]
+    // up x n, with up = +y: (nz, 0, -nx)
+    let rx = nz
+    let ry = 0
+    let rz = -nx
+    let ux = 0
+    let uy = 1
+    let uz = 0
+    if (tilt) {
+      const c = Math.cos(tilt)
+      const sn = Math.sin(tilt)
+      ;[rx, ry, rz, ux, uy, uz] = [rx * c + ux * sn, ry * c + uy * sn, rz * c + uz * sn,
+        ux * c - rx * sn, uy * c - ry * sn, uz * c - rz * sn]
     }
-    onWall(face, at, u, y - h * 0.34, w * 0.8, h * 0.12, 0.03, title, 0.01)
-    onWall(face, at, u, y + h * 0.4, w * 0.5, h * 0.05, 0.03, title, 0.01)
+    const base = into.pos.length / 3
+    for (const [a, b, u, vv] of [[-1, -1, uv.u0, uv.v0], [1, -1, uv.u1, uv.v0], [1, 1, uv.u1, uv.v1], [-1, 1, uv.u0, uv.v1]]) {
+      into.pos.push(
+        cx + (rx * a * w + ux * b * h) / 2,
+        cy + (ry * a * w + uy * b * h) / 2,
+        cz + (rz * a * w + uz * b * h) / 2,
+      )
+      into.nor.push(nx, 0, nz)
+      into.uv.push(u, vv)
+    }
+    into.idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+  }
+  /** a picture hung flat on a wall, `out` proud of it */
+  const picture = (
+    face: Face, at: number, u: number, y: number,
+    w: number, h: number, out: number, id: PictureId,
+  ) => {
+    const sgn = face.endsWith('+') ? 1 : -1
+    const c = at + sgn * out
+    const uv = atlas.place(id, w, h)
+    if (face[0] === 'x') quad(pics, face, c, y, u, w, h, uv)
+    else quad(pics, face, u, y, c, w, h, uv)
+  }
+  /** a poster: a paper backing and the painted sheet on it */
+  const poster = (
+    face: Face, at: number, u: number, y: number, w: number, h: number, id: PictureId,
+  ) => {
+    onWall(face, at, u, y, w + 0.04, h + 0.04, 0.01, '#d8d0bc', 0.02)
+    picture(face, at, u, y, w, h, 0.034, id)
   }
   /** a framed photo */
-  const photo = (face: Face, at: number, u: number, y: number, w: number, h: number, hex: string) => {
+  const photo = (face: Face, at: number, u: number, y: number, w: number, h: number, id: PictureId) => {
     // each layer stands proud of the one behind it, or the frame box
     // swallows the mat and the picture and hangs a dark tile on the wall
     onWall(face, at, u, y, w + 0.12, h + 0.12, 0.005, '#3b2a1c', 0.03)
     onWall(face, at, u, y, w, h, 0.035, '#e6dcc6', 0.02)
-    onWall(face, at, u, y - h * 0.05, w * 0.8, h * 0.7, 0.055, hex, 0.01)
+    picture(face, at, u, y + h * 0.02, w * 0.84, h * 0.8, 0.058, id)
   }
+  // the fridge door's two are hung long after the walls, but they are
+  // painted with them: reserve their cells now
+  const FRIDGE_ART = { crayon: atlas.place('crayon', 0.5, 0.4), dog: atlas.place('dog', 0.26, 0.34) }
 
   const lamps: number[] = []
   /** an indoor pool: its lens, and how far across it lights */
@@ -204,9 +253,9 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
   shine('#39ff7a', 3, 0.14, 0.04, 0.02, -1.05, CAB_TOP + 0.08, 9.46)
   shine('#ff5a3a', 3, 0.04, 0.03, 0.02, -1.6, CAB_TOP + 0.25, 9.49)
   // three frames over the set
-  photo('z-', 10.5, -4.0, 4.2, 0.7, 0.9, '#6b8fb0')
-  photo('z-', 10.5, -2.65, 4.4, 1.1, 0.8, '#b08a5c')
-  photo('z-', 10.5, -1.3, 4.2, 0.7, 0.9, '#8aa06b')
+  photo('z-', 10.5, -4.0, 4.2, 0.7, 0.9, 'school')
+  photo('z-', 10.5, -2.65, 4.4, 1.1, 0.8, 'beach')
+  photo('z-', 10.5, -1.3, 4.2, 0.7, 0.9, 'wedding')
   // the coffee table's top: a stack of magazines, the remote, a TV guide
   {
     const top = 1.01
@@ -301,25 +350,26 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
      boxes along the east wall, a bicycle leaning by the window, metal
      shelving with paint cans, an oil stain, a basketball hoop outside */
   {
-    // east of the hall door's swing, which sweeps two units into the garage
+    // clear of the hall door's swing, which sweeps a 2.1 radius round its
+    // hinge at (7.6, 11.3): the bench's near corner has to stay past 9.4
     const z = 14.0
-    const x = 11.1
-    box('#7a5a3a', 3.6, 0.14, 1.4, x, 1.76, z - 0.75)
-    for (const [dx, dz] of [[-1.7, -0.1], [1.7, -0.1], [-1.7, -1.35], [1.7, -1.35]]) {
+    const x = 11.3
+    box('#7a5a3a', 3.2, 0.14, 1.4, x, 1.76, z - 0.75)
+    for (const [dx, dz] of [[-1.5, -0.1], [1.5, -0.1], [-1.5, -1.35], [1.5, -1.35]]) {
       box('#4a3a2a', 0.12, 1.76, 0.12, x + dx, 0, z + dz)
     }
-    box('#6a4a2e', 3.5, 0.08, 1.25, x, 0.5, z - 0.75)
-    box('#b89a6a', 3.4, 1.8, 0.05, x, 2.3, z - 0.05)
+    box('#6a4a2e', 3.1, 0.08, 1.25, x, 0.5, z - 0.75)
+    box('#b89a6a', 3.0, 1.8, 0.05, x, 2.3, z - 0.05)
     // the tools on it: silhouettes
-    box('#2a2a2c', 0.08, 0.7, 0.04, x - 1.4, 2.9, z - 0.1)
-    box('#2a2a2c', 0.4, 0.12, 0.04, x - 1.4, 3.55, z - 0.1)
+    box('#2a2a2c', 0.08, 0.7, 0.04, x - 1.2, 2.9, z - 0.1)
+    box('#2a2a2c', 0.4, 0.12, 0.04, x - 1.2, 3.55, z - 0.1)
     box('#8a8e92', 0.9, 0.35, 0.03, x - 0.6, 3.2, z - 0.1, 0, 0, 0.2)
     box('#c43b2a', 0.1, 0.6, 0.04, x + 0.1, 2.9, z - 0.1)
     box('#2a2a2c', 0.5, 0.1, 0.04, x + 0.7, 3.4, z - 0.1)
-    box('#e2b43a', 0.3, 0.3, 0.04, x + 1.3, 3.0, z - 0.1)
-    box('#3a3a3c', 0.3, 0.28, 0.4, x + 1.3, 1.9, z - 0.8)
-    box('#5a5a5c', 0.5, 0.26, 0.3, x - 1.2, 1.9, z - 0.7, 0.4)
-    solid(x - 1.85, 0, z - 1.5, x + 1.85, 1.9, z)
+    box('#e2b43a', 0.3, 0.3, 0.04, x + 1.2, 3.0, z - 0.1)
+    box('#3a3a3c', 0.3, 0.28, 0.4, x + 1.15, 1.9, z - 0.8)
+    box('#5a5a5c', 0.5, 0.26, 0.3, x - 1.05, 1.9, z - 0.7, 0.4)
+    solid(x - 1.65, 0, z - 1.5, x + 1.65, 1.9, z)
   }
   {
     const x = 12.5
@@ -398,10 +448,10 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
   /* -- the computer room: posters, the CD tower with the modem on it, the
      speakers either side of the monitor with the sub on the floor, the desk
      lamp, and the mess: a throw kicked off the bed, clothes, a backpack */
-  poster('x+', -7.6, 3.0, U + 3.6, 1.25, 1.75, '#1c2a4a', '#e8c23a', '#e8e2d2', true)
-  poster('x-', 3.4, 3.8, U + 3.5, 1.3, 1.8, '#8c1f2a', '#1a1a1a', '#e8e2d2')
-  poster('z+', -1.75, -2.65, U + 3.9, 1.0, 1.4, '#2e6a4a', '#e8e2d2', '#1a1a1a', true)
-  poster('z+', -1.75, 2.55, U + 3.7, 1.1, 1.5, '#3a2a5c', '#e06a2a', '#e8e2d2')
+  poster('x+', -7.6, 3.0, U + 3.6, 1.25, 1.75, 'space')
+  poster('x-', 3.4, 3.8, U + 3.5, 1.3, 1.8, 'band')
+  poster('z+', -1.75, -2.65, U + 3.9, 1.0, 1.4, 'skate')
+  poster('z+', -1.75, 2.55, U + 3.7, 1.1, 1.5, 'monster')
   {
     // the CD tower, a column of jewel cases
     const x = 2.55
@@ -453,9 +503,9 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
   pool(0, U + 5.4, 4.4, 4.0)
 
   /* -- the upper hall and the linen closet */
-  photo('z+', 10.5, -1.2, U + 3.4, 0.8, 1.0, '#a07a5a')
-  photo('z+', 10.5, 0.3, U + 3.6, 0.7, 0.7, '#6a8fa0')
-  photo('z+', 10.5, 1.8, U + 3.4, 0.8, 1.0, '#8a9a6a')
+  photo('z+', 10.5, -1.2, U + 3.4, 0.8, 1.0, 'birthday')
+  photo('z+', 10.5, 0.3, U + 3.6, 0.7, 0.7, 'certificate')
+  photo('z+', 10.5, 1.8, U + 3.4, 0.8, 1.0, 'lake')
   {
     // shelves along the street wall, towels folded on them
     for (const y of [1.2, 2.4, 3.6]) {
@@ -542,7 +592,7 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
     }
     solid(x - 0.35, U, z - 1.05, x + 0.35, U + 2.95, z + 1.05, false)
   }
-  poster('z-', 24.5, -1.4, U + 3.6, 1.2, 1.7, '#1a1a1a', '#e03a3a', '#e8e2d2', true)
+  poster('z-', 24.5, -1.4, U + 3.6, 1.2, 1.7, 'arcade')
   pool(-3.4, U + 5.6, 20.6, 3.8)
 
   /* ------------------------------------------------------------ build -- */
@@ -562,6 +612,26 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
   }
   add(lit, litMat, true)
   add(glow, glowMat, false)
+
+  // the pictures: one atlas, one mapped material, one draw
+  const picTex = atlas.paint()
+  trackDisposable(picTex)
+  const picMat = new THREE.MeshStandardMaterial({ map: picTex, roughness: 0.8 })
+  trackDisposable(picMat)
+  const quadMesh = (qd: Quads) => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute(qd.pos, 3))
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(qd.nor, 3))
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(qd.uv, 2))
+    g.setIndex(qd.idx)
+    g.computeBoundingSphere()
+    trackDisposable(g)
+    const mesh = new THREE.Mesh(g, picMat)
+    mesh.castShadow = false
+    mesh.receiveShadow = true
+    return mesh
+  }
+  root.add(quadMesh(pics))
 
   // the router's lights: separate so they can blink, sharing the glow
   const leds: Array<{ mesh: THREE.Mesh; rate: number; phase: number; duty: number }> = []
@@ -604,12 +674,8 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
     at('#f2eee4', 0.55, 0.8, -0.05, 0.62)
     at('#3b6fb0', 0.5, 0.3, -0.05, 0.72, 0.024)
     at('#c43b3b', 0.5, 0.05, -0.05, 0.57, 0.024)
-    // a drawing, a photo, a takeout menu, magnets
-    at('#fbf7e8', 0.42, 0.34, 0.22, 0.46, 0.02, 0.1)
-    at('#e2c93a', 0.14, 0.12, 0.18, 0.49, 0.026)
-    at('#3a8a4a', 0.2, 0.06, 0.25, 0.42, 0.026)
-    at('#e8e2d2', 0.3, 0.4, -0.25, 0.4, 0.02, -0.06)
-    at('#b08a5c', 0.24, 0.3, -0.25, 0.41, 0.024, -0.06)
+    // a takeout menu and magnets; the drawing and the snapshot are painted
+    // (below), on a child mesh that swings with this one
     at('#f4f0e6', 0.3, 0.55, 0.2, 0.75, 0.02, 0.04)
     for (const [u, v, hex] of [
       [-0.2, 0.83, '#c43b3b'], [0.1, 0.8, '#2a5c9c'], [0.28, 0.6, '#e2c93a'],
@@ -618,7 +684,12 @@ export function buildHouseProps({ root, obstacles, up, trackDisposable }: Opts):
     const g = b.build()
     if (!g) return null
     trackDisposable(g)
-    return new THREE.Mesh(g, litMat)
+    const paper = new THREE.Mesh(g, litMat)
+    const art = newQuads()
+    quad(art, 'x+', x + 0.026, y0 + h * 0.44, zc + w * 0.2, 0.5, 0.4, FRIDGE_ART.crayon, 0.08)
+    quad(art, 'x+', x + 0.026, y0 + h * 0.4, zc - w * 0.26, 0.26, 0.34, FRIDGE_ART.dog, -0.06)
+    paper.add(quadMesh(art))
+    return paper
   }
 
   return { lamps: new Float32Array(lamps), lampCount: lamps.length / 4, update, fridgeFront }
