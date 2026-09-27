@@ -771,6 +771,7 @@ export default function CrtScene({
           reload: false, wheel: 0, lookX: 0, lookY: 0,
         }
         const toolHand = new THREE.Vector3()
+        const toolHandL = new THREE.Vector3()
         let toolsLive = false
         /** its undo stack, once it exists (sandbox/history.ts) */
         let history: History | null = null
@@ -1066,6 +1067,7 @@ export default function CrtScene({
         const chase = createChaseCam()
         /** the right hand, where the body carries the physgun in third person */
         const handR = rig.limbs.findIndex((l) => l.name === 'handR')
+        const handL = rig.limbs.findIndex((l) => l.name === 'handL')
         /** where a shove from another player lands */
         const chestLimb = Math.max(0, rig.limbs.findIndex((l) => l.name === 'chest'))
         /*
@@ -3081,6 +3083,7 @@ export default function CrtScene({
           rigPose.show = Math.min(1, chase.dist / 1.2)
           // the physgun out: the right arm comes up and carries it
           rigPose.aim = toolsLive && tools?.tool === 'physgun' ? 1 : 0
+          rigPose.aimLoad = tools?.physgun.holding ? tools.physgun.view.strain : 0
           // the ragdoll and the boom both work in a few units around the
           // body, so one terrain sample under it is the floor for both —
           // they never need the whole heightfield, only the local plane
@@ -3332,9 +3335,10 @@ export default function CrtScene({
           if (tools) {
             const third = chase.dist > 1.2
             if (third && handR >= 0) rig.limbPos(handR, toolHand)
+            if (third && handL >= 0) rig.limbPos(handL, toolHandL)
             tools.present({
               camera, dt, gait: step.gait, grounded: step.grounded,
-              firstPerson: !third, hand: third ? toolHand : null,
+              firstPerson: !third, hand: third ? toolHand : null, handL: third ? toolHandL : null,
               active: toolsLive && !pausedNow, lines: look.knobs.lines,
             })
           }

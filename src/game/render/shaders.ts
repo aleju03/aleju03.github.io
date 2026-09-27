@@ -218,12 +218,20 @@ export const GRADE_FRAG = /* glsl */ `
     // posterize, so it bands and dithers like everything else
     float emits = a >= 0.99 && a < 0.9985 ? 1.0 : 0.0;
     if (emits > 0.5) a = 1.0;
+    // Veiled: alpha between 0.2 and 0.99 is a solid pixel seen through
+    // air (the sandbox's smoke and dust write their transmittance there with
+    // a MIN blend, see sandbox/fx.ts). Whatever that air covers loses its
+    // ink with its colour, up to all of it by a transmittance of 0.65:
+    // inked through a translucent cloud, the boards and crates flying in the
+    // smoke drew as grey line art pasted over it
+    float veil = a >= 0.2 && a < 0.99 ? clamp((0.99 - a) / 0.35, 0.0, 1.0) : 0.0;
+    if (veil > 0.0) a = 1.0;
     float depth = texelFetch(tDepth, p, 0).x;
     bool sky = depth >= 0.999999;
     vec3 ray = viewRay(p);
     vec3 dirW = normalize(uCamRot * ray);
 
-    // A hole (the CSS3D glass writes a near-zero alpha) is redrawn exactly
+    // A hole (the CSS3D glass writes a near-zero alpha, under 0.2) is redrawn exactly
     // at full resolution by the punch pass. Here it is filled from its solid
     // neighbours, so the chunky pixels along its rim are bezel, not window
     if (a < 0.99) {
@@ -329,6 +337,7 @@ export const GRADE_FRAG = /* glsl */ `
       // with the air there instead: with nothing fading it, every ridge in
       // the far field wore a dark line
       float inkK = fogK * mix(1.0, 1.0 - smoothstep(0.08, 0.3, 1.0 - exp(-max(0.0, range - uAir.x) / uAir.y)), uAirLift.z);
+      inkK *= 1.0 - veil;
       col *= 1.0 - fold * (1.0 - convex) * uEdge.y * inkK;
       col *= 1.0 + convex * uEdge.z * inkK;
 
@@ -390,7 +399,7 @@ export const GRADE_FRAG = /* glsl */ `
       // Distance takes the line too, whatever the air says: a ridge a few
       // hundred metres off inked against the sky is the lip of a bowl
       if (skyBehind) silK *= (1.0 - smoothstep(0.3, 0.7, air)) * (1.0 - smoothstep(90.0, 260.0, range));
-      col *= 1.0 - sil * silK * (1.0 - emits);
+      col *= 1.0 - sil * silK * (1.0 - max(emits, veil));
     } else {
       // ---- the sky, tied to the air --------------------------------------
       float toward = max(dot(dirW, uSunDir), 0.0);
