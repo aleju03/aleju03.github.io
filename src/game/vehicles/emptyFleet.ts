@@ -68,6 +68,7 @@ export function emptyFleet(): VehicleFleet {
     // "there is nowhere for it to go" is exactly true with no world loaded,
     // and it is already the answer the caller knows how to show
     recall: () => false,
+    order: () => 'nowhere' as const,
     placeFromNet: () => {},
     where: () => ({ dist: 0, bearing: 'N' }),
     setDay: () => {},

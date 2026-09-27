@@ -36,6 +36,8 @@
     npm run drive -- shipfly          the ship by mouse: turned, climbed to
                                       orbit, hands off (must hold), E out,
                                       and the unstuck command home
+    npm run drive -- order            the catalogue's Vehicles section, and
+                                      the car ordered to the crosshair
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -1310,6 +1312,38 @@ try {
     else console.log(`  wrote ${outFile}`)
     rmSync(dir, { recursive: true, force: true })
   }
+
+  if (WHAT.includes('order')) {
+    /*
+      The catalogue's Vehicles section, and an order from it: the book opened
+      at the section, then the car ordered at the crosshair on the street in
+      front of you, and the view of it delivered.
+    */
+    console.log('order')
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await run('time 11:00')
+    await goTo('30 -14')
+    await sleep(2000)
+    await stand()
+    await look(Math.PI / 2, -0.25)
+    await tap('KeyQ')
+    await sleep(400)
+    await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 4`), 60, 250, 'the catalogue icons')
+    const tab = await evaluate(`(() => { const el = document.querySelector('[data-category="vehicles"]'); if (!el) return false; el.click(); return true })()`)
+    if (!tab) console.log('  no vehicles section  <-- WRONG')
+    await sleep(900)
+    await shot('order-catalogue')
+    const before = await evaluate(`window.__fleet.all.find((v) => v.id === 'car').root.position.toArray()`)
+    await evaluate(`(() => { const el = document.querySelector('[data-kind="fleet:car"]'); el && el.click(); return !!el })()`)
+    await sleep(500)
+    await tap('Escape')
+    await sleep(1200)
+    const after = await evaluate(`window.__fleet.all.find((v) => v.id === 'car').root.position.toArray()`)
+    const c = await evaluate('window.__sandboxCamera.position.toArray()')
+    console.log(`  car from ${before.map((n) => n.toFixed(0)).join(', ')} to ${after.map((n) => n.toFixed(0)).join(', ')}, ${Math.hypot(after[0] - c[0], after[2] - c[2]).toFixed(1)} from you`)
+    await shot('order-car-delivered')
+  }
+
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))
   if (probe.errors.length) {
     console.log(`\npage errors (${probe.errors.length}):`)

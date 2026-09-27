@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { VehicleId } from '../../game/vehicles/types'
 import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
@@ -47,8 +46,8 @@ import type { GfxTier } from '../../game/world/quality'
   its own page is the one showing.
 */
 
-/** the fleet's compass rose, the same eight points `vehicles/registry.ts`
-    rounds a bearing to, in the same clockwise order */
+/** the compass rose the people page's bearings use: the same eight points
+    `vehicles/registry.ts` rounds a bearing to, in the same clockwise order */
 const COMPASS_DEG: Record<string, number> = {
   N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315,
 }
@@ -83,7 +82,7 @@ export interface PersonWhere {
   bearing?: string
 }
 
-type Page = 'character' | 'settings' | 'fleet' | 'people'
+type Page = 'character' | 'settings' | 'people'
 
 /**
   A row of the menu. The selected one is swiped through with the marker: a
@@ -270,50 +269,6 @@ function Dial({
   )
 }
 
-/** the fleet's badges, drawn in the same pen as the rules */
-function VehicleGlyph({ id }: { id: VehicleId }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      className="size-7 shrink-0"
-      aria-hidden
-      fill="none"
-      stroke={INK}
-      strokeWidth={1.3}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {id === 'car' && (
-        <>
-          <path d="M2 9.5h12M3 9.5 4.6 6h6.8L13 9.5v2.2H3z" />
-          <circle cx="5.2" cy="11.7" r="1.2" />
-          <circle cx="10.8" cy="11.7" r="1.2" />
-        </>
-      )}
-      {id === 'boat' && (
-        <>
-          <path d="M2.5 10.5h11l-1.6 2.6H4.1z" />
-          <path d="M8 10.5V3l4 4.5H8" />
-        </>
-      )}
-      {id === 'ship' && (
-        <>
-          <path d="M8 2.5 10 8.5 8 12.5 6 8.5Z" />
-          <path d="M6 8.5 2.5 10.5v1.5L6.3 11M10 8.5l3.5 2v1.5L9.7 11" />
-          <path d="M7.2 13.8h1.6" />
-        </>
-      )}
-      {id === 'heli' && (
-        <>
-          <path d="M2 4h12M8 4v1.8" />
-          <path d="M4.6 5.8h5.2c1.6 0 2.6 1 2.6 2.3s-1 2.2-2.6 2.2H4.6c-1 0-1.6-.7-1.6-2.2s.6-2.3 1.6-2.3Z" />
-          <path d="M12.4 8h2.2M5 12.3h4.5" />
-        </>
-      )}
-    </svg>
-  )
-}
-
 export interface PauseScreenProps {
   /** the menu is actually up. False keeps it mounted, and the character
       preview's WebGL context alive, while hiding it outright */
@@ -330,14 +285,8 @@ export interface PauseScreenProps {
       sniff. Null only before the renderer has classified, which cannot
       coincide with a pause */
   tier: { auto: GfxTier; built: GfxTier } | null
-  /** where the machines are, measured when the menu went up */
-  fleet: Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
   /** and everyone else out there, measured at the same moment */
   people: PersonWhere[]
-  /** already at some wheel: recalling a machine from inside another one is a
-      trick nobody asked for and the sim would have to answer for */
-  driving: boolean
-  onRecall: (id: VehicleId, label: string) => void
   identity: Omit<WorldIdentityProps, 'active'>
   onLeave?: () => void
   onResume: () => void
@@ -350,10 +299,7 @@ export default function PauseScreen({
   onPrefs,
   onVoicePreview,
   tier,
-  fleet,
   people,
-  driving,
-  onRecall,
   identity,
   onLeave,
   onResume,
@@ -365,7 +311,6 @@ export default function PauseScreen({
   const pages: Array<{ id: Page; label: string }> = [
     { id: 'character', label: 'character' },
     { id: 'settings', label: 'settings' },
-    ...(fleet.length > 0 ? [{ id: 'fleet' as const, label: 'the fleet' }] : []),
     // only when there is a walk to share. Offline the page would be a page
     // about nobody, and the answer would never change
     ...(multiplayer ? [{ id: 'people' as const, label: 'who is here' }] : []),
@@ -661,67 +606,6 @@ export default function PauseScreen({
                     </div>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* where the machines are. A fixed fleet in an endless world needs
-                this: the boat lives on a coast two and a half kilometres out,
-                and without a bearing that is not a destination, it is a rumour.
-                "call it over" is the way back from having stranded one: it
-                puts the machine on the nearest place it can legally stand,
-                which is why the boat refuses unless there is water in reach */}
-            {page === 'fleet' && (
-              <div className="max-w-lg">
-                <div className="flex items-baseline justify-between gap-4">
-                  <span className="font-display text-[21px] uppercase" style={{ color: INK }}>
-                    where they are
-                  </span>
-                  <Note>e to get in</Note>
-                </div>
-                <ul className="mt-3 flex flex-col">
-                  {fleet.map((v) => (
-                    <li key={v.id} className="flex items-center gap-4 py-3">
-                      <VehicleGlyph id={v.id} />
-                      <span className="min-w-0 flex-1">
-                        <span
-                          className="font-display block truncate text-[24px] uppercase"
-                          style={{ color: INK }}
-                        >
-                          {v.label}
-                        </span>
-                        <Note>
-                          {/* the sim's units are not metres; the same 0.48
-                              scale the rest of the HUD reads distances in */}
-                          {v.dist < 1000
-                            ? `${Math.round(v.dist * 0.48)} m`
-                            : `${(v.dist * 0.00048).toFixed(1)} km`}{' '}
-                          {v.bearing}
-                        </Note>
-                      </span>
-                      {/* a needle already turned: a bearing you have to
-                          translate is a bearing you do not follow */}
-                      <span
-                        aria-hidden
-                        className="grid size-8 shrink-0 place-items-center"
-                        style={{ transform: `rotate(${COMPASS_DEG[v.bearing] ?? 0}deg)` }}
-                      >
-                        <svg viewBox="0 0 12 12" className="size-5">
-                          <path d="M6 1.2 8.8 9 6 7.2 3.2 9Z" fill={MARK} />
-                        </svg>
-                      </span>
-                      {v.dist > 80 && !driving && (
-                        <button
-                          type="button"
-                          onClick={() => onRecall(v.id, v.label)}
-                          className="font-display shrink-0 text-[17px] uppercase underline decoration-dotted underline-offset-4"
-                          style={{ color: INK_SOFT }}
-                        >
-                          call it over
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
               </div>
             )}
 

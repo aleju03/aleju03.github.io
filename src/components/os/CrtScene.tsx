@@ -298,6 +298,11 @@ const DRIVE_TAIL = {
 }
 const RIDE_ALONG = { en: 'along for the ride', es: 'de pasajero' }
 
+/** a catalogue id that orders a machine rather than a prop */
+const FLEET_PREFIX = 'fleet:'
+/** the machines' names in Spanish, for the catalogue's plates */
+const VEHICLE_ES: Record<VehicleId, string> = { car: 'coche', boat: 'lancha', heli: 'helicóptero', ship: 'nave' }
+
 /** fraction of the viewport height the glass fills once parked */
 const FILL = 0.86
 const INTRO_S = 2.6
@@ -414,16 +419,8 @@ export default function CrtScene({
     const t = setTimeout(() => setNotice(null), 2200)
     return () => clearTimeout(t)
   }, [notice])
-  /** the pause menu's vehicle list, refreshed only while the menu is up */
-  const [fleetWhere, setFleetWhere] = useState<
-    Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
-  >([])
   /** and its list of everyone else out there, taken at the same moment */
   const [people, setPeople] = useState<PersonWhere[]>([])
-  const fleetRef = useRef<{
-    where: () => Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
-    recall: (id: VehicleId) => boolean
-  } | null>(null)
   // the prompt buttons route here; E does the same through the input service
   const enterRef = useRef<(() => void) | null>(null)
   const leaveRef = useRef<(() => void) | null>(null)
@@ -2049,16 +2046,6 @@ export default function CrtScene({
             typingRef.current = false
             setTyping(null)
             setMenu(false)
-            // and while it is up, the menu lists where the machines are — a
-            // boat two kilometres away is otherwise something you have to
-            // remember rather than something you can look up
-            setFleetWhere(
-              fleet.all.map((v) => ({
-                id: v.id,
-                label: v.label,
-                ...fleet.where(v.id, camera.position),
-              })),
-            )
             // and the same for the people. The roster knows everyone the
             // server has told us about; `players` is the subset standing in
             // our own level, so anybody in the backrooms is on the list with
@@ -2363,7 +2350,40 @@ export default function CrtScene({
         // a click in the catalogue is a spawn at the crosshair, the same one
         // `spawn <kind>` does, without the echo
         spawnRef.current = (kind) => {
-          void sbConsole.run(`spawn ${kind}`, { quiet: true })
+          if (kind.startsWith(FLEET_PREFIX)) orderVehicle(kind.slice(FLEET_PREFIX.length) as VehicleId)
+          else void sbConsole.run(`spawn ${kind}`, { quiet: true })
+        }
+        /*
+          The catalogue's Vehicles section. There is one of each machine, shared
+          by everyone (the wire has four fleet slots and eight chairs, and a
+          second car would need a second of each), so an order is the machine
+          *delivered*: moved from wherever it was to the ground under the
+          crosshair, or the nearest place it may stand or float, side-on to
+          you. With a server it goes through the same claim a physgun does,
+          so nobody's car is pulled out from under them. Not undoable: there
+          is nothing to take back to, only somewhere else it was.
+        */
+        const orderVehicle = (id: VehicleId) => {
+          const lv = levels.current
+          const label = fleet.all.find((v) => v.id === id)?.label ?? id
+          if (!(lv.vehicles || (lv.spacecraft && id === 'ship'))) {
+            pushFeed({ tone: 'err', text: bilingual(`no ${label} delivered here`, `aquí no se entrega ${label}`) })
+            return
+          }
+          // the crosshair on the ground, or a stretch ahead of you
+          const a = host.aim?.()
+          const hit = a && sandbox ? sandbox.raycast(a.origin, a.dir, 90, { props: false, world: true }) : null
+          const at = new THREE.Vector3()
+          if (hit) at.copy(hit.point)
+          else if (a) at.copy(a.origin).addScaledVector(a.dir, 18)
+          else at.copy(camera.position)
+          const r = fleet.order(id, at, camera.position, aimFleetEnv(lv))
+          if (r === 'busy') pushFeed({ tone: 'err', text: bilingual(`the ${label} is in use`, `${label}: ya está en uso`) })
+          else if (r === 'nowhere') pushFeed({ tone: 'err', text: bilingual(`no room for the ${label} here`, `no hay sitio para ${label} aquí`) })
+          else {
+            pushFeed({ tone: 'ok', text: bilingual(`${label} delivered`, `${label} entregado`) })
+            spawnPop(800)
+          }
         }
         const undoLast = () => {
           if (!history || !sandbox) return
@@ -3781,12 +3801,28 @@ export default function CrtScene({
               import('../../game/sandbox/kinds'),
             ]).then(([list, kinds]) => {
               if (disposed) return
+              // the props, and the fleet as a section of its own at the end
+              let fleetPics: Promise<Map<string, string>> | null = null
               setCatalogue({
-                entries: list.spawnlist,
-                categories: list.spawnCategories,
+                entries: () => [
+                  ...list.spawnlist(),
+                  ...fleet.all.map((v) => ({
+                    id: `${FLEET_PREFIX}${v.id}`,
+                    category: 'vehicles',
+                    label: v.label,
+                    labelEs: VEHICLE_ES[v.id],
+                  })),
+                ],
+                categories: (entries) => [
+                  ...list.spawnCategories(entries),
+                  ...(fleet.all.length ? [{ id: 'vehicles', label: 'vehicles', labelEs: 'vehículos' }] : []),
+                ],
                 kind: (id) => kinds.KINDS[id],
                 note: list.kindNote,
-                thumbs: list.spawnThumbs,
+                thumbs: () => {
+                  fleetPics ??= import('../../game/vehicles/thumbs').then((m) => m.renderFleetThumbs(fleet.all))
+                  return Promise.all([list.spawnThumbs(), fleetPics]).then(([a, b]) => new Map([...a, ...b]))
+                },
               })
             })
             if (import.meta.env.DEV) {
@@ -4291,26 +4327,6 @@ export default function CrtScene({
           if (vehicleNow) enterVehicle(vehicleNow.id)
         }
         leaveRef.current = () => leaveVehicle()
-        // the pause menu's vehicle list: where each machine is, and the way
-        // out of having stranded one. A recall is not a teleport for the
-        // player — it puts the machine on the nearest place it can legally
-        // stand (or float), which is why the boat refuses inland
-        fleetRef.current = {
-          where: () =>
-            fleet.all.map((v) => ({
-              id: v.id,
-              label: v.label,
-              ...fleet.where(v.id, camera.position),
-            })),
-          recall: (id) => {
-            // the machines live in one level; there is no recalling a car to the Moon
-            const lv = levels.current
-            const ok = (!!lv.vehicles || (!!lv.spacecraft && id === 'ship')) &&
-              fleet.recall(id, camera.position, aimFleetEnv(lv))
-            setFleetWhere(fleetRef.current?.where() ?? [])
-            return ok
-          },
-        }
         // the pause menu's resume button (esc does the same via input)
         resumeRef.current = () => {
           setPauseNow(false)
@@ -4517,7 +4533,6 @@ export default function CrtScene({
       doorRef.current = null
       propRef.current = null
       resumeRef.current = null
-      fleetRef.current = null
       enterRef.current = null
       leaveRef.current = null
       applyLookRef.current = null
@@ -4700,12 +4715,7 @@ export default function CrtScene({
           onPrefs={setPrefs}
           onVoicePreview={() => voicePreviewRef.current?.() ?? Promise.resolve()}
           tier={tierInfo}
-          fleet={fleetWhere}
           people={people}
-          driving={!!driving}
-          onRecall={(id, label) => {
-            if (!fleetRef.current?.recall(id)) setNotice(`no room for the ${label} here`)
-          }}
           identity={{
             look,
             onLook: setLook,

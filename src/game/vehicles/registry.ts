@@ -286,6 +286,14 @@ export interface VehicleFleet {
   /** bring a machine to the player. Returns false when there is nowhere for
       it to go — a boat with no water within reach, mostly */
   recall: (id: VehicleId, p: THREE.Vector3, env: FleetEnvQueries) => boolean
+  /** the catalogue's order: put this machine at `at` (the crosshair on the
+      ground, or the nearest place it may stand, or float), facing `from`.
+      There is one of each, shared by everyone, so ordering one moves it to
+      you. 'placed' now, 'pending' while the server is asked (with a server
+      in the picture it is claimed, moved, relayed and let go, like a
+      physgun), 'busy' when somebody is in it or has it, 'nowhere' when
+      there is no ground (or water) near enough */
+  order: (id: VehicleId, at: THREE.Vector3, from: THREE.Vector3, env: FleetEnvQueries) => 'placed' | 'pending' | 'busy' | 'nowhere'
   /** put a machine where the server says it was left. Only ever called on
       joining: from then on a driven machine arrives frame by frame and a
       parked one is nobody's business but this client's */
@@ -332,6 +340,12 @@ interface Entry {
   heldRemote: boolean
   /** when we last asked the server for it, fleet clock seconds */
   asked: number
+  /** ordered from the catalogue and waiting on the server's claim: where it
+      is going, and when the order was placed */
+  order: { x: number; z: number; yaw: number; t: number } | null
+  /** placed by an order: keep the claim and keep saying where it is until
+      then, so everybody else hears the new spot before it is let go */
+  placedUntil: number
 }
 
 interface Carry {
@@ -434,6 +448,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     const e: Entry = {
       v, box, hull, step: null, emit: 0,
       net: null, voiced: false, carry: null, heldRemote: false, asked: -10,
+      order: null, placedUntil: -1,
     }
     entries.push(e)
     byId.set(v.id, e)
@@ -965,8 +980,27 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
         carryTick(e, dt)
         continue
       }
+      // an order waiting on the server: placed the moment it is ours, given
+      // up if the answer does not come
+      if (e.order) {
+        if (handOf(e) === 1) {
+          placeOrder(e, e.order.x, e.order.z, e.order.yaw)
+          e.order = null
+        } else if (clock - e.order.t > 3) e.order = null
+      }
+      // just placed by an order: say where, for long enough that everybody
+      // hears it, then let it go
+      if (e.placedUntil > 0 && handOf(e) === 1) {
+        const r = e.v.root
+        netState?.send?.(indexOf(e), r.position.x, r.position.y, r.position.z, e.v.yaw, e.v.pitch, e.v.roll)
+        if (clock > e.placedUntil) {
+          e.placedUntil = -1
+          e.asked = clock
+          netState?.claim?.(indexOf(e), false)
+        }
+      } else if (e.placedUntil > 0 && !netState?.claim) e.placedUntil = -1
       // a claim the server granted after the beam had moved on: give it back
-      if (handOf(e) === 1 && clock - e.asked > 2) {
+      if (handOf(e) === 1 && !e.order && e.placedUntil < 0 && clock - e.asked > 2) {
         e.asked = clock
         netState?.claim?.(indexOf(e), false)
       }
@@ -1138,25 +1172,21 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     env.frozen = false
   }
 
-  const recall = (id: VehicleId, p: THREE.Vector3, q: FleetEnvQueries) => {
-    const e = byId.get(id)
-    // ...and you may not summon a machine out from under the person driving
-    // it. It is theirs until they park it
-    if (!e || e === active || e.net) return false
-    if (e.carry) handBack(e)
-    fillEnv(q)
-    env.dt = SUBSTEP
-    e.box.makeEmpty()
-    const needWater = id === 'boat'
+  /** somewhere this machine may stand (or float) near `c`, tried outward
+      from it: rings from `r0` out, each place checked for water (a boat needs
+      it, the rest refuse it), clearance and a slope it will not slide off,
+      and kept `keep` clear of `from` so it never lands on whoever called it */
+  const findSpot = (e: Entry, cx: number, cz: number, r0: number, from: THREE.Vector3, keep: number, q: FleetEnvQueries) => {
+    const needWater = e.v.id === 'boat'
     const clearR = e.v.size.halfZ + 1.5
-    // spiral outward from the player: near enough to walk to, far enough not
-    // to land on their head
-    for (let ring = 0; ring < 9; ring++) {
-      const r = 9 + ring * 7
-      for (let i = 0; i < 12; i++) {
-        const a = (i / 12) * Math.PI * 2 + ring * 0.37
-        const x = p.x + Math.cos(a) * r
-        const z = p.z + Math.sin(a) * r
+    for (let ring = 0; ring < 10; ring++) {
+      const r = ring === 0 ? r0 : r0 + ring * 6
+      const n = r < 0.5 ? 1 : 12
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + ring * 0.37
+        const x = cx + Math.cos(a) * r
+        const z = cz + Math.sin(a) * r
+        if (Math.hypot(x - from.x, z - from.z) < keep) continue
         const g = q.groundAt(x, z)
         const deep = q.waterY !== undefined ? q.waterY - g : -1
         if (needWater ? deep < 1.6 : deep > 0.35) continue
@@ -1167,15 +1197,64 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
           Math.abs(q.groundAt(x, z + 3) - g), Math.abs(q.groundAt(x, z - 3) - g),
         )
         if (!needWater && tilt > 1.6) continue
-        // face it back toward whoever called it
-        const yaw = Math.atan2(-(p.x - x), -(p.z - z))
-        e.v.placeAt(x, z, yaw, env)
-        fitBox(e)
-        return true
+        return { x, z }
       }
     }
+    return null
+  }
+
+  const recall = (id: VehicleId, p: THREE.Vector3, q: FleetEnvQueries) => {
+    const e = byId.get(id)
+    // ...and you may not summon a machine out from under the person driving
+    // it. It is theirs until they park it
+    if (!e || e === active || e.net) return false
+    if (e.carry) handBack(e)
+    fillEnv(q)
+    env.dt = SUBSTEP
+    e.box.makeEmpty()
+    // near enough to walk to, far enough not to land on their head
+    const at = findSpot(e, p.x, p.z, 9, p, 6, q)
+    if (at) {
+      // face it back toward whoever called it
+      e.v.placeAt(at.x, at.z, Math.atan2(-(p.x - at.x), -(p.z - at.z)), env)
+    }
     fitBox(e)
-    return false
+    return !!at
+  }
+
+  /** put an ordered machine where it is going, and say so */
+  const placeOrder = (e: Entry, x: number, z: number, yaw: number) => {
+    if (e.carry) handBack(e)
+    if (lastQ) {
+      fillEnv(lastQ)
+      env.dt = SUBSTEP
+      e.box.makeEmpty()
+      e.v.placeAt(x, z, yaw, env)
+    }
+    fitBox(e)
+    hush(e)
+    e.placedUntil = clock + 0.6
+  }
+
+  const order = (id: VehicleId, at: THREE.Vector3, from: THREE.Vector3, q: FleetEnvQueries) => {
+    const e = byId.get(id)
+    if (!e) return 'nowhere' as const
+    if (e === active || e.net || e.heldRemote || freeSeat(e) !== 0) return 'busy' as const
+    const t = netState?.taken[indexOf(e)]
+    if (t && (t[0] || t[1])) return 'busy' as const
+    lastQ = q
+    const spot = findSpot(e, at.x, at.z, 0, from, e.v.size.halfZ + 2.5, q)
+    if (!spot) return 'nowhere' as const
+    // side-on to whoever ordered it, so it is presented rather than aimed
+    const yaw = Math.atan2(-(from.x - spot.x), -(from.z - spot.z)) + Math.PI / 2
+    if (netState?.claim && handOf(e) !== 1) {
+      e.order = { x: spot.x, z: spot.z, yaw, t: clock }
+      e.asked = clock
+      netState.claim(indexOf(e), true)
+      return 'pending' as const
+    }
+    placeOrder(e, spot.x, spot.z, yaw)
+    return 'placed' as const
   }
 
   const placeFromNet = (
@@ -1280,6 +1359,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     tick,
     spawnAll,
     recall,
+    order,
     placeFromNet,
     where,
     setDay: (day, night, fog, sunEl) => {

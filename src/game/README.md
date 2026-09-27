@@ -163,20 +163,28 @@ vehicles/
                   and roll, five gears, a slip model, a handbrake
   boat.ts         water: a centre console with a T-top. A faceted V-bottom hull with a hard chine,
                   buoyancy on the drawn swell, and a planing transition
-  ship.ts         air and space: a two-seat snub runabout. Hover and
-                  forward flight in the air, a 6-DOF coast in space, thrust
-                  and top speed growing with height (space.ts's flyScale),
+  ship.ts         air and space: a two-seat tandem runabout, steered by the
+                  mouse (it turns toward the drive camera's aim, `env.aim`),
+                  assisted everywhere: with no keys held it brakes to a
+                  hover, in the air, in space and on the Moon alike, and
+                  only boost coasts. Thrust and top speed grow with height
+                  (space.ts's flyScale),
                   engine glow from lamp clones rather than lights; flown
                   through the Earth-Moon seams by CrtScene (`warpRiding`)
   heli.ts         air: a light utility (news) helicopter in faceted panels. Thrust along the
                   rotor disc normal, coordinated turns on two keys, auto-hover
   driveCam.ts     the boom that follows the heading rather than the mouse,
-                  leans on the drift, and stretches with speed
+                  leans on the drift, and stretches with speed; a view with
+                  `aim` (the ship) is the one exception, where the mouse
+                  swings the boom and the machine follows it
+  thumbs.ts       the catalogue's plates for the fleet, drawn once in a
+                  throwaway renderer
   sfx.ts          the runtime's first live audio graphs: engine, outboard and
                   blade slap, all torn down explicitly
   effects.ts      one pooled Points system for dust, spray, wake and downwash
   registry.ts     the fleet: home spots, collision bookkeeping, enter/exit,
-                  the fixed-slice substep, recall, and what the HUD reads
+                  the fixed-slice substep, recall, the catalogue's `order`,
+                  and what the HUD reads
 ```
 
 ### Rules that hold it together
@@ -190,6 +198,19 @@ vehicles/
   there rather than back home. That is the "store the diffs, not the world"
   story from the debts below, half-built: `registry.ts` is still what would
   serialise it to disk.
+- **The catalogue orders machines, it does not make them.** There is one of
+  each, shared by everyone (the wire carries four transforms and eight
+  chairs), so ordering one from the Q catalogue's Vehicles section moves the
+  existing machine to the crosshair (`registry.order`, the same ring search
+  as `recall`), through the same server `hand` claim a physgun takes, and
+  relays the new spot before letting go. It is not undoable: there is
+  nothing to take back to, only somewhere else it was.
+- **Getting out is never refused.** `leave()` used to refuse an airborne
+  ship ("land first"), and a ship that would not stop circling the planet
+  was then a trap with no exit. E now always works: in the air the rider
+  comes out floating (noclip) and the empty ship holds station, and the
+  console's `unstuck` stands you at home on Earth from anywhere, through
+  `LevelSystem.goTo` when you are on another level.
 - **A seat node is where a face goes, not where hips go.** `playerBody.sit()`
   hangs the seated fold from its own eye line, so each machine's `driverSeat`
   and `passengerSeat` sit at the same height as its cockpit lens: one number

@@ -206,7 +206,7 @@ export interface Vehicle {
   /** put it in the air at a point, still and level, keeping whoever is
       aboard: a level cut flown through (the ship's Earth-Moon seams) */
   warp?: (x: number, y: number, z: number, yaw: number) => void
-  /** put it down here and let it settle: spawn, or a recall from the menu */
+  /** put it down here and let it settle: spawn, or a recall, or an order from the catalogue */
   placeAt: (x: number, z: number, yaw: number, env: DriveEnv) => void
   /** the player just got in */
   mount: () => void
