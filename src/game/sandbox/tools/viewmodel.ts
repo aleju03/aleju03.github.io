@@ -30,6 +30,14 @@ import { GLOW_ALPHA } from '../../render/pixelLook'
   know about. The squeezed depth still differs from the world's behind it, so
   the look outlines the gun's silhouette like everything else.
 
+  **The tool gun** (slot 3) is a second model in the same two copies, built
+  from the *same* materials, so it costs no program the physgun did not
+  already link: a boxy body with a long thin barrel and a glowing tip, and a
+  small screen on its back facing you that says which mode it is in (a
+  canvas, redrawn only when the mode or its step changes, on one glowing
+  material per copy, which `stage()` compiles with the rest). The belt says
+  which of the two is out; the springs, the bob and the draw are shared.
+
   **Motion** is springs on a few numbers, all integrated semi-implicitly:
   sway (the gun lags the view and rolls into turns), bob (a figure eight off
   the walk's own gait), a kick when the beam takes hold or freezes something,
@@ -262,6 +270,114 @@ const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
   return { root, mats, prongs, spinner, muzzle, hand }
 }
 
+interface Tool {
+  root: THREE.Group
+  muzzle: THREE.Object3D
+}
+
+/** the tool gun: origin at the grip, forward -z, the physgun's materials */
+const buildToolgun = (g: Geos, mats: Mats, withHand: boolean, screen: THREE.Material): Tool => {
+  const root = new THREE.Group()
+  const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number, parent: THREE.Object3D = root) => {
+    const mesh = new THREE.Mesh(geo, m)
+    mesh.position.set(x, y, z)
+    parent.add(mesh)
+    return mesh
+  }
+  // the body: a slab, a cream top rail, a dark belly
+  add(g.box(0.2, 0.18, 0.44), mats.slate, 0, 0.1, -0.04)
+  add(g.box(0.13, 0.05, 0.36), mats.steel, 0, 0.215, -0.08)
+  add(g.box(0.17, 0.05, 0.4), mats.dark, 0, -0.005, -0.08)
+  // ochre side plates and the glowing coil between them
+  for (const sx of [-1, 1]) add(g.box(0.03, 0.12, 0.22), mats.ochre, sx * 0.115, 0.1, -0.12)
+  add(g.drum(0.07, 0.12, 8), mats.core, 0, 0.1, -0.3)
+  // the barrel: a shroud, a long thin tube, a collar and the glowing tip
+  add(g.box(0.12, 0.11, 0.16), mats.dark, 0, 0.1, -0.4)
+  add(g.drum(0.035, 0.36, 6), mats.steel, 0, 0.1, -0.64)
+  add(g.drum(0.06, 0.04, 8), mats.dark, 0, 0.1, -0.8)
+  add(g.drum(0.04, 0.05, 8), mats.lens, 0, 0.1, -0.84)
+  const muzzle = new THREE.Object3D()
+  muzzle.position.set(0, 0.1, -0.9)
+  root.add(muzzle)
+  // the screen on its back, tilted up at the holder: a dark bezel and the
+  // lit face drawn by the belt
+  const bezel = add(g.box(0.3, 0.2, 0.03), mats.dark, -0.03, 0.3, 0.16)
+  bezel.rotation.set(-0.5, -0.25, 0)
+  const face = new THREE.Mesh(g.box(0.27, 0.17, 0.005), screen)
+  face.position.set(0, 0, 0.017)
+  bezel.add(face)
+  // grip, trigger, guard, and the fist on it (first person only)
+  const grip = add(g.box(0.08, 0.26, 0.11), mats.rubber, 0, -0.1, 0.06)
+  grip.rotation.x = -0.28
+  add(g.box(0.025, 0.06, 0.03), mats.dark, 0, -0.03, -0.05)
+  add(g.box(0.03, 0.02, 0.14), mats.dark, 0, -0.07, -0.04)
+  if (withHand) {
+    const fist = add(g.blob(1), mats.hand, 0.01, -0.09, 0.07)
+    fist.scale.set(0.12, 0.13, 0.13)
+    fist.rotation.x = -0.28
+    const knuckles = add(g.blob(1), mats.hand, -0.02, -0.03, -0.01)
+    knuckles.scale.set(0.1, 0.075, 0.085)
+    const thumb = add(g.blob(1), mats.hand, -0.07, 0.0, 0.05)
+    thumb.scale.set(0.05, 0.045, 0.08)
+    thumb.rotation.x = -0.3
+    const wrist = add(g.blob(1), mats.hand, 0.03, -0.2, 0.2)
+    wrist.scale.set(0.1, 0.11, 0.16)
+    wrist.rotation.x = 0.6
+  }
+  root.traverse((o) => {
+    o.castShadow = false
+    o.receiveShadow = false
+  })
+  return { root, muzzle }
+}
+
+/** the screen's picture: a 64x32 canvas, two lines of text on dark glass */
+const SCREEN_W = 64
+const SCREEN_H = 32
+const makeScreen = () => {
+  const canvas = typeof document !== 'undefined' ? document.createElement('canvas') : null
+  if (canvas) {
+    canvas.width = SCREEN_W
+    canvas.height = SCREEN_H
+  }
+  const tex = canvas ? new THREE.CanvasTexture(canvas) : new THREE.Texture()
+  tex.magFilter = THREE.NearestFilter
+  tex.minFilter = THREE.NearestFilter
+  tex.generateMipmaps = false
+  tex.colorSpace = THREE.SRGBColorSpace
+  let last = ''
+  const draw = (a: string, b: string) => {
+    const key = `${a}|${b}`
+    if (!canvas || key === last) return
+    last = key
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.imageSmoothingEnabled = false
+    ctx.fillStyle = '#0b1a22'
+    ctx.fillRect(0, 0, SCREEN_W, SCREEN_H)
+    ctx.fillStyle = '#123040'
+    for (let y = 0; y < SCREEN_H; y += 2) ctx.fillRect(0, y, SCREEN_W, 1)
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = '#8ff0ff'
+    // shrink a long name to fit rather than clip it
+    let size = 14
+    ctx.font = `bold ${size}px monospace`
+    while (size > 8 && ctx.measureText(a).width > SCREEN_W - 4) {
+      size--
+      ctx.font = `bold ${size}px monospace`
+    }
+    ctx.fillText(a, SCREEN_W / 2, b ? 11 : 16)
+    if (b) {
+      ctx.fillStyle = '#ffd27a'
+      ctx.font = 'bold 10px monospace'
+      ctx.fillText(b, SCREEN_W / 2, 24)
+    }
+    tex.needsUpdate = true
+  }
+  return { tex, draw }
+}
+
 export interface ViewFrame {
   camera: THREE.PerspectiveCamera
   dt: number
@@ -283,6 +399,8 @@ export interface ViewFrame {
   aimAt?: THREE.Vector3 | null
   /** drawn at all (the physgun is out, nobody is driving) */
   shown: boolean
+  /** which gun is out (default the physgun) */
+  tool?: 'physgun' | 'toolgun'
 }
 
 export interface Viewmodel {
@@ -298,6 +416,8 @@ export interface Viewmodel {
   kick: (k: number) => void
   /** the hand's colour, from the body's look */
   setHandColor: (c: THREE.ColorRepresentation) => void
+  /** what the tool gun's screen says: a big line and a small one */
+  setScreen: (a: string, b: string) => void
   stage: (camera: THREE.Camera) => void
   unstage: () => void
   dispose: () => void
@@ -311,8 +431,22 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   const geos = makeGeos()
   const fpGun = buildGun(geos, makeMats(true), true)
   const tpGun = buildGun(geos, makeMats(false), false)
-  const fp = fpGun.root
-  const tp = tpGun.root
+  // the tool gun, in the same materials, and its screen (one glowing
+  // material per copy, since the first-person depth squeeze is per material)
+  const screen = makeScreen()
+  const screenMat = (fpCopy: boolean) =>
+    vmMaterial(glowing(new THREE.MeshBasicMaterial({ map: screen.tex, color: 0xffffff })), fpCopy)
+  const fpScreen = screenMat(true)
+  const tpScreen = screenMat(false)
+  const fpTool = buildToolgun(geos, fpGun.mats, true, fpScreen)
+  const tpTool = buildToolgun(geos, tpGun.mats, false, tpScreen)
+  screen.draw('WELD', 'A')
+  // each copy is a holder for both guns; the belt says which is out
+  const fp = new THREE.Group()
+  const tp = new THREE.Group()
+  fp.add(fpGun.root, fpTool.root)
+  tp.add(tpGun.root, tpTool.root)
+  let which: 'physgun' | 'toolgun' = 'physgun'
   for (const g of [fp, tp]) {
     g.traverse((o) => {
       o.frustumCulled = false
@@ -364,6 +498,9 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     drawn += ((f.shown ? 1 : 0) - drawn) * (1 - Math.exp(-dt * (f.shown ? 9 : 16)))
     const visible = drawn > 0.02
     usingFp = f.firstPerson
+    which = f.tool ?? 'physgun'
+    fpGun.root.visible = tpGun.root.visible = which === 'physgun'
+    fpTool.root.visible = tpTool.root.visible = which === 'toolgun'
     fp.visible = visible && f.firstPerson
     tp.visible = visible && !f.firstPerson
 
@@ -463,10 +600,11 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   }
 
   const muzzle = (pos: THREE.Vector3, dir: THREE.Vector3) => {
-    const gun = usingFp ? fpGun : tpGun
-    gun.root.updateMatrixWorld(true)
-    gun.muzzle.getWorldPosition(pos)
-    dir.set(0, 0, -1).applyQuaternion(gun.root.quaternion).normalize()
+    const holder = usingFp ? fp : tp
+    const m = which === 'toolgun' ? (usingFp ? fpTool : tpTool).muzzle : (usingFp ? fpGun : tpGun).muzzle
+    holder.updateMatrixWorld(true)
+    m.getWorldPosition(pos)
+    dir.set(0, 0, -1).applyQuaternion(holder.quaternion).normalize()
   }
 
   const kick = (k: number) => {
@@ -480,6 +618,8 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     camera.updateMatrixWorld()
     fp.visible = true
     tp.visible = true
+    // both guns in both copies, so every program either draws is linked
+    fpGun.root.visible = tpGun.root.visible = fpTool.root.visible = tpTool.root.visible = true
     fp.position.copy(FP_OFFSET).applyMatrix4(camera.matrixWorld)
     fp.quaternion.copy(camera.quaternion)
     tp.position.set(-0.6, -0.2, -2.5).applyMatrix4(camera.matrixWorld)
@@ -503,12 +643,16 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       fpGun.mats.hand.color.set(c)
       tpGun.mats.hand.color.set(c)
     },
+    setScreen: (a, b) => screen.draw(a, b),
     stage,
     unstage,
     dispose: () => {
       root.removeFromParent()
       for (const g of geos.list) g.dispose()
       for (const gun of [fpGun, tpGun]) for (const m of Object.values(gun.mats)) (m as THREE.Material).dispose()
+      fpScreen.dispose()
+      tpScreen.dispose()
+      screen.tex.dispose()
     },
   }
 }

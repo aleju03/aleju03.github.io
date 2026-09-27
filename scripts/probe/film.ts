@@ -57,6 +57,7 @@ const SCENARIO_MODULES: Array<() => Promise<unknown>> = [
   () => import('../../src/game/sandbox/propScenarios'),
   () => import('../../src/game/sandbox/destructionScenarios'),
   () => import('../../src/game/sandbox/bumpScenarios'),
+  () => import('../../src/game/sandbox/contraption/scenarios'),
 ]
 
 export interface FilmSpec {

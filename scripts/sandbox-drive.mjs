@@ -38,6 +38,13 @@
                                       and the unstuck command home
     npm run drive -- order            the catalogue's Vehicles section, and
                                       the car ordered to the crosshair
+    npm run drive -- contraption      contraptions in the real game: the
+                                      catalogue's parts tab, the tool gun
+                                      welding a thruster on, a car built from
+                                      parts sat in and driven, a rocket on
+                                      its thrusters; links counted (must be
+                                      0). Four shots to ~/.cache/overhaul/
+                                      contraptions (--parts-out <dir>)
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -76,7 +83,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
+const VALUED = new Set(['--parts-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -1400,6 +1407,140 @@ try {
     const c = await evaluate('window.__sandboxCamera.position.toArray()')
     console.log(`  car from ${before.map((n) => n.toFixed(0)).join(', ')} to ${after.map((n) => n.toFixed(0)).join(', ')}, ${Math.hypot(after[0] - c[0], after[2] - c[2]).toFixed(1)} from you`)
     await shot('order-car-delivered')
+  if (WHAT.includes('contraption')) {
+    /*
+      Contraptions in the real game: the catalogue open on its parts tab, the
+      tool gun out welding a thruster onto a plate (the first click taken,
+      its halo on the thruster), a car built from parts (build.ts, the tool
+      gun's own placing and joining) sat in with E and driven with W and
+      space, and a rocket lifting off on i. Every shader link from the first
+      part spawned on is counted (must be 0). Four shots to
+      ~/.cache/overhaul/contraptions (--parts-out <dir>).
+    */
+    console.log('contraption')
+    const PARTS_OUT = resolve(flag('parts-out', join(process.env.HOME ?? '.', '.cache/overhaul/contraptions')))
+    mkdirSync(PARTS_OUT, { recursive: true })
+    const partShot = async (name) => {
+      const path = join(PARTS_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    await evaluate(`(() => { window.__cLinks = []; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__cWrapped) continue; gl.__cWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__cLinks.push(window.__cPhase || '?'); real(p) } } return true })()`)
+    const phase = (name) => evaluate(`window.__cPhase = ${JSON.stringify(name)}; true`)
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const aimAt = async (x, y, z) => {
+      await evaluate(`(() => { const c = window.__sandboxCamera.position, w = window.__sandboxWalk
+        const dx = ${x} - c.x, dy = ${y} - c.y, dz = ${z} - c.z
+        w.yaw = Math.atan2(-dx, -dz); w.pitch = Math.atan2(dy, Math.hypot(dx, dz)); return true })()`)
+      await sleep(350)
+    }
+    const posOf = (id) => evaluate(`(() => { const p = window.__sandbox.get(${id}); if (!p) return null
+      const t = p.body.translation(); return [t.x, t.y, t.z] })()`)
+    await stand()
+    await look(0.6, -0.2)
+    // 1. the catalogue, open on the parts
+    await phase('catalogue')
+    await tap('KeyQ')
+    await sleep(300)
+    await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 4`), 60, 250, 'the catalogue icons')
+    await clickOn('[data-category="parts"]')
+    await sleep(400)
+    await hover('[data-kind="thruster"]')
+    await sleep(200)
+    console.log(`  parts tab: ${await evaluate(`[...document.querySelectorAll('[data-kind]')].map((e) => e.dataset.kind).join(' ')`)}`)
+    await partShot('menu-parts')
+    await tap('Escape')
+    await sleep(600)
+    // 2. the tool gun: a plate and a thruster set down ahead, the thruster
+    // clicked (the halo), then the plate's end: welded on, nozzle out
+    await phase('tool gun')
+    const yaw = await evaluate('window.__sandboxWalk.yaw')
+    const ahead = `const sb = window.__sandbox, c = window.__sandboxCamera.position, y = ${yaw};
+      const fx = -Math.sin(y), fz = -Math.cos(y);
+      const put = (k, d, s, o) => { const x = c.x + fx * d - fz * s, z = c.z + fz * d + fx * s; return sb.spawn(k, { x, y: sb.restY(k, x, z) + 0.1, z }, { yaw: y, ...o }) };`
+    const [plate, thr] = await evaluate(`(() => { ${ahead} return [put('plate_m', 9, 0, { frozen: true }), put('thruster', 7, -4)] })()`)
+    await sleep(1200)
+    await evaluate('window.__tools.select(2)')
+    await sleep(500)
+    let p = await posOf(thr)
+    await aimAt(p[0], p[1], p[2])
+    await hold('Mouse0', true)
+    await sleep(150)
+    await hold('Mouse0', false)
+    await sleep(250)
+    p = await posOf(plate)
+    // the plate's near edge, on its top face: the thruster goes on standing up
+    await aimAt(p[0] + Math.sin(yaw) * 1.2, p[1] + 0.1, p[2] + Math.cos(yaw) * 1.2)
+    console.log(`  tool gun: ${await evaluate('window.__tools.toolgun.state')}, first pick ${await evaluate('window.__tools.toolgun.pending')}`)
+    await partShot('toolgun')
+    await hold('Mouse0', true)
+    await sleep(150)
+    await hold('Mouse0', false)
+    await sleep(500)
+    console.log(`  after the second click: ${await evaluate('window.__tools.contraption.stats.constraints')} constraint(s), ` +
+      `thruster at ${(await posOf(thr)).map((n) => n.toFixed(1)).join(', ')}`)
+    // 3. a car, built by script, sat in and driven
+    await phase('car')
+    await evaluate('window.__tools.select(0)')
+    const car = await evaluate(`(async () => { ${ahead} const m = await window.__contraptionBuild()
+      const x = c.x + fx * 14 + fz * 8, z = c.z + fz * 14 - fx * 8
+      const b = m.buildCar(sb, { x, y: 0, z }, y); return b })()`)
+    await sleep(1500)
+    p = await posOf(car.seat)
+    // walk up beside the seat so it is in reach, and look at it
+    await run(`tp ${(p[0] + Math.cos(yaw) * 3.5).toFixed(2)} ${(p[2] - Math.sin(yaw) * 3.5).toFixed(2)}`)
+    await sleep(900)
+    await aimAt(p[0], p[1] + 0.3, p[2])
+    await sleep(400)
+    await tap('KeyE')
+    await sleep(600)
+    const seated = await evaluate(`/wasd drive|wasd conducir|stand up/.test(document.body.innerText)`)
+    console.log(`  E on the seat: ${seated ? 'sitting in it' : 'NOT SEATED  <-- WRONG'}`)
+    const eyeUp = await evaluate(`(() => { const c = window.__sandboxCamera.position; return c.y - window.__sandbox.groundY(c.x, c.z) })()`)
+    console.log(`  the seated eye is ${eyeUp.toFixed(2)} u over the ground`)
+    const start = await posOf(car.chassis)
+    await hold('KeyW', true)
+    await sleep(2200)
+    await hold('Space', true)
+    await sleep(900)
+    await evaluate('window.__sandboxWalk.pitch = -0.05')
+    await sleep(100)
+    await partShot('drive')
+    await hold('Space', false)
+    await sleep(600)
+    await hold('KeyW', false)
+    const end = await posOf(car.chassis)
+    console.log(`  drove ${Math.hypot(end[0] - start[0], end[2] - start[2]).toFixed(1)} u from the seat`)
+    await sleep(1200)
+    await tap('KeyE')
+    await sleep(600)
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    // 4. a rocket, lifting off on its thrusters' own key
+    await phase('rocket')
+    await stand()
+    const y2 = await evaluate('window.__sandboxWalk.yaw')
+    const rocket = await evaluate(`(async () => { const sb = window.__sandbox, c = window.__sandboxCamera.position
+      const m = await window.__contraptionBuild()
+      const x = c.x - Math.sin(${y2}) * 26, z = c.z - Math.cos(${y2}) * 26
+      return m.buildRocket(sb, { x, y: 0, z }) })()`)
+    await sleep(1000)
+    await evaluate(`window.__sandbox.unfreeze(${rocket.chassis})`)
+    p = await posOf(rocket.chassis)
+    await aimAt(p[0], p[1] + 6, p[2])
+    await hold('KeyI', true)
+    await sleep(1700)
+    p = await posOf(rocket.chassis)
+    await aimAt(p[0], p[1] + 2, p[2])
+    await partShot('rocket')
+    await sleep(800)
+    await hold('KeyI', false)
+    p = await posOf(rocket.chassis)
+    console.log(`  rocket ${(p[1] - (await evaluate(`window.__sandbox.groundY(${p[0]}, ${p[2]})`))).toFixed(0)} u up after 2.5 s on i`)
+    const links = await evaluate('window.__cLinks')
+    console.log(`  ${links.length} programs linked from the catalogue to the rocket${links.length ? ': ' + links.join(', ') : ''}`)
+    await run('cleanup')
   }
 
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))

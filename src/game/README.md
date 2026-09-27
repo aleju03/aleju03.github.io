@@ -808,12 +808,26 @@ sandbox/
     viewmodel.ts  the gun, first person (depth-squeezed, never in a wall)
                   and in the body's hand
     sfx.ts        the hum pitched by strain, the grab and freeze one-shots
-    toolbelt.ts   slots 1/2/3, and the one object CrtScene talks to
+    toolbelt.ts   slots 1/2/3, and the one object CrtScene talks to; also
+                  where the contraptions get their keys every frame
+    toolgun.ts    slot 3: weld, axis, rope, no-collide, keys, remove (two
+                  clicks, R steps the mode), each joint one undo entry
+    toolgunText.ts  its words in both languages, import-free for the scene
     scenarios.ts  the films: swing, rotate, heavy, throw, ragdoll, each -3p
   destruction.ts  buildings coming down: damage from blasts, impacts, cars
                 and the console; storeys failing under their load; rubble
                 that breaks up level by level as it lands; the budget
   destructionScenarios.ts  demolish-house, tower, wall, ruin
+  contraption/  building your own vehicles, Garry's Mod style:
+    parts.ts      the parts tab: plates, beams, thruster, wheel, hoverball,
+                  seat (ordinary kinds on the one atlas) and KEY_PAIRS
+    contraption.ts  contraptionOf(sb): the joints (weld, axis, rope,
+                  no-collide), the groups read off them, and the per-slice
+                  controller that makes thrusters push, wheels turn,
+                  hoverballs hold and a seat drive the machine it is in
+    build.ts      buildCar / buildRocket / buildHover, by the tool gun's own
+                  two calls (snapOnto, add)
+    scenarios.ts  contraption:car, :rocket, :moon
 ```
 
 ### The contract
@@ -1171,6 +1185,82 @@ spawned.
   `onBeforeSlice`, with `setVelocity` toward a target or `addForce`, or switch
   one to `kinematic` and `moveKinematic` it every slice. Per-frame writes land
   on the first slice only.
+
+### Contraptions
+
+Plates and beams to make a chassis, and five parts that do something: a
+thruster pushes along its axis while its key is held (flame and pale smoke
+out of the nozzle, fx.ts's `thrust`, sprites on the existing pools and the
+fuse's fake light, no light object), a wheel is driven by the motor of the
+axis it is hinged on, a hoverball holds a height its keys raise and lower,
+and a seat drives the machine it is welded into. They are ordinary props
+under a *parts* tab in the catalogue; the tool gun (slot 3) joins them.
+
+```ts
+const c = contraptionOf(sb)             // one per sandbox, like historyOf
+c.snapOnto(part, point, normal, view)   // set a part on a face the way it mounts
+c.add('weld' | 'axis' | 'rope' | 'nocollide', a, b, { at, atB, axis, forward })
+c.remove(id); c.strip(prop, type?); c.constraints(prop?)
+c.linked(id); c.machine(id); c.massOf(id)   // the groups
+c.part(id); c.cycleKeys(id); c.flip(id)     // a part's key pair and direction
+c.input(keys, seatId, ttl = 6)              // the belt calls this every frame
+c.seatView(seatId, EYE, out)                // where a sitter's eye goes
+c.present(dt)                               // ropes and flames, per frame
+```
+
+The keys. Every powered part has a *pair* (forward/back, up/down) from
+`KEY_PAIRS`, the right hand's letter block laid out like a numpad with the
+numpad as an alias: thrusters start on i/k (8/5), hoverballs on u/j (7/4),
+wheels on the arrows; the tool gun's keys mode steps a part to the next pair
+and its right click reverses it. Sitting in a seat (E on it) freezes the
+walk the way the sofa does, and then WASD drives every wheel in the seat's
+machine (each wheel's direction is worked out from its axle against the
+seat's frame, and A/D slow one side against the other, like a tank), space
+fires the thrusters and lifts the hoverballs, shift reverses and sinks them.
+So a car made of parts drives like a car without any wheel set up by hand.
+
+Rules that hold it together:
+
+- **Forces go on the heaviest welded body, at the part.** A thruster's push
+  laid on the six-kilogram can has to reach the chassis through a weld, and a
+  weld carrying fifty times its lighter body's weight every slice is where
+  a joint starts to shake. The same for a hoverball's lift, which pays its
+  share (the machine's mass over its hoverballs) of the machine's weight.
+- **Joints switch contacts off between their pair** (all but ropes): a wheel
+  rubbing the chassis it is hinged to is a brake. A wheel's axis joint has
+  the wheel as its first body, and Rapier's revolute motor then spins it at
+  *minus* the target about its own axle (measured, not assumed).
+- **Mass ratios are clamped.** The lighter of any joined pair is weighed up to
+  a thirtieth of the heavier through Rapier's additional mass (only on a kind
+  with no ballast, whose slot is free). Every part weighs 5-50 kg anyway.
+- **Everything joined is held under 120 u/s and 45 rad/s**, and a hoverball
+  asleep at its height is left asleep, so a parked car sleeps in 0.7 s.
+- **Keys expire.** The controller forgets them after a frame's worth of
+  slices unless the belt says them again, so a loop that stops calling (the
+  pause sheet, a fleet car) stops the machine instead of holding the throttle.
+- **A joint leaves with its prop,** before the body goes (onRemove fires
+  first), and takes its undo entry with it (`history.discard`), so Z never
+  spends a press on nothing. Z takes the last joint or the last part back.
+- **The physgun lifts the machine.** Its hold weighs `massOf` (the whole
+  welded machine) and its reload thaws everything `linked`; a hoverball
+  carried on the beam holds wherever it is let go.
+- **Nothing new links.** Parts are atlas props, ropes are plain meshes on the
+  props' material (the sandbox's warm mesh's program), flames and sparks are
+  the fx pools, and the tool gun is a second model in the physgun's own
+  materials; only its screen is new, and `stage()` compiles it under the
+  boot cover. `npm run drive -- contraption` counts links from the catalogue
+  to the rocket: 0.
+- **Local only.** Like every prop, nothing here is on the wire yet.
+
+```
+npm run film -- contraption:car         built, driven, turned, boosted
+npm run film -- contraption:rocket      lift-off on four thrusters
+npm run film -- contraption:moon        a hovercraft at a sixth of the gravity
+npm run measure -- physics contraptions all three headless, twice for the
+                                        hash, a parked car sleeping, one Z
+npm run drive -- contraption            the real game: parts tab, tool gun,
+                                        the car from its seat, the rocket
+```
 
 ### The console, the keys and undo
 

@@ -35,6 +35,8 @@ import { BARRIER_PROFILE, DIMS, MODELS } from './models'
 export type Category =
   | 'wood' | 'metal' | 'plastic' | 'furniture' | 'food'
   | 'construction' | 'vehicle' | 'explosive' | 'big'
+  /** contraption parts: contraption/parts.ts registers them and the tab */
+  | 'parts'
 
 export interface Names {
   en: string

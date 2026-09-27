@@ -13,6 +13,8 @@ import {
 import { createWalker, type Walker, type WalkerState } from './walker'
 import { createWake } from './wake'
 import './catalogue'
+// the contraption parts register after the catalogue, under their own tab
+import './contraption/parts'
 import { createBatcher, warmBatch, type Batcher } from './batch'
 import { createFx, type Fx } from './fx'
 import { createLife, type BreakEvent, type PropLife } from './breakables'

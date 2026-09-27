@@ -57,6 +57,14 @@ export interface Fx {
   burn: (at: Vec3Like, k: number) => void
   /** a puff of dust where something heavy landed */
   dust: (at: Vec3Like, size: number) => void
+  /** one frame of a thruster burning: flame out of the nozzle along `dir`
+      (unit, the exhaust's way), carried with the machine's velocity, a
+      trail of pale smoke, and the look's fake light at the nozzle. `k` is
+      the throttle, `dt` the frame, so the rate does not follow the fps */
+  thrust: (at: Vec3Like, dir: Vec3Like, vel: Vec3Like, k: number, dt: number) => void
+  /** the tool gun's spark where it welded something: a few blue sparks off
+      the face along `normal` */
+  zap: (at: Vec3Like, normal: Vec3Like) => void
   /** masonry dust from a building coming down: big slow billows the
       colour of what broke (linear rgb), rolling out along the ground and
       hanging in the air for seconds. `size` is about a storey's width */
@@ -79,6 +87,8 @@ const NOOP_FX: Fx = {
   debris: () => {},
   burn: () => {},
   dust: () => {},
+  thrust: () => {},
+  zap: () => {},
   plume: () => {},
   rubble: () => {},
   lightLook: () => {},
@@ -826,6 +836,45 @@ export const createFx = (o: FxOpts): Fx => {
       }
       if (Math.random() < 0.08) {
         emit(sparks, at.x, at.y, at.z, rnd(-3, 3), rnd(5, 10), rnd(-3, 3), rnd(0.3, 0.6), 0.06, 0.06, 0.4, 7, 4, 1, { drag: 0.5 })
+      }
+    },
+
+    thrust: (at, d, vel, k, dt) => {
+      // the flame: small hot sprites thrown hard out of the nozzle, short
+      // lived so the plume is a tongue a few units long rather than a ball,
+      // and kept under the size at which a flame sprite hands on to smoke
+      const n = Math.floor(dt * 75 * (0.45 + 0.55 * k) + Math.random())
+      for (let i = 0; i < n; i++) {
+        const sp = rnd(11, 19) * (0.6 + 0.4 * k)
+        const s = rnd(0.24, 0.46) * (0.75 + 0.25 * k)
+        const f = Math.random() * 0.4
+        emit(fire,
+          at.x + d.x * f + rnd(-0.12, 0.12), at.y + d.y * f + rnd(-0.12, 0.12), at.z + d.z * f + rnd(-0.12, 0.12),
+          vel.x * 0.7 + d.x * sp + rnd(-1.2, 1.2), vel.y * 0.7 + d.y * sp + rnd(-1.2, 1.2), vel.z * 0.7 + d.z * sp + rnd(-1.2, 1.2),
+          rnd(0.07, 0.15), s, s * 1.3, s, rnd(1.02, 1.18), 0, 0, { grow: 0.7, drag: 2.5 })
+      }
+      // the trail: pale exhaust smoke left behind the machine
+      if (Math.random() < dt * 14 * k) {
+        const s = rnd(0.35, 0.65)
+        const g = rnd(0.34, 0.46)
+        emit(puffs, at.x + d.x * 1.2, at.y + d.y * 1.2, at.z + d.z * 1.2,
+          vel.x * 0.15 + d.x * rnd(3, 6), vel.y * 0.15 + d.y * rnd(3, 6), vel.z * 0.15 + d.z * rnd(3, 6),
+          rnd(0.9, 1.5), s, s, s, g, g, g * 0.97, { grow: 2.8, drag: 1.4, spin: 1 })
+      }
+      // and the nozzle lights what is round it, in the fuse's slot
+      flash.burn = Math.max(flash.burn, 0.35 + 0.35 * k)
+      flash.bx = at.x
+      flash.by = at.y
+      flash.bz = at.z
+    },
+
+    zap: (at, nrm) => {
+      for (let i = 0; i < 9; i++) {
+        dir(0, d3)
+        const sp = rnd(3, 8)
+        emit(sparks, at.x, at.y, at.z,
+          nrm.x * sp + d3[0] * 3, nrm.y * sp + d3[1] * 3, nrm.z * sp + d3[2] * 3,
+          rnd(0.15, 0.32), 0.05, 0.05, 0.3, 2.2, 5, 9, { drag: 1.5 })
       }
     },
 
