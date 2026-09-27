@@ -1935,6 +1935,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
           label: 'the sofa',
           x, z: 5.03,
           cushionY: cushion,
+          floor: sofa.box.min.y,
           atTv: true,
           yaw: Math.PI, // the model is turned to face +z, and so is the set
           stand: { x, z: 2.9, y: sofa.box.min.y },
@@ -1949,6 +1950,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         atTv: true,
         x: -5.9, z: 1.6,
         cushionY: armchair.box.min.y + 1.24,
+        floor: armchair.box.min.y,
         yaw: 0.38 + Math.PI,
         stand: { x: -4.4, z: 3.45, y: armchair.box.min.y },
       })
@@ -2010,9 +2012,13 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
           label: 'the chair',
           x, z,
           cushionY: chair.box.min.y + 0.96,
+          floor: chair.box.min.y,
           yaw: rotY + Math.PI,
-          // a dining chair has clear floor behind it, so the default
-          // stand-up spot (a step back out of the seat) is the right one
+          // the default stand-up spot, a step back out of the seat, is the
+          // right one for the two on the far side of the table. The near one
+          // backs onto the half bath's corner, and a step back from it lands
+          // in that wall: seating.ts checks every spot against the room and
+          // turns it out into the kitchen instead
         })
       }
     }
@@ -2023,6 +2029,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         label: 'the armchair',
         x: 5.0, z: 22.9,
         cushionY: reading.box.min.y + 1.24,
+        floor: reading.box.min.y,
         yaw: -HPI + 0.3 + Math.PI,
         stand: { x: 3.1, z: 22.4, y: reading.box.min.y },
       })
@@ -2091,6 +2098,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         label: 'the bed',
         x: -4.5, z: 8.03,
         cushionY: bed.box.min.y + 0.92,
+        floor: bed.box.min.y,
         yaw: -HPI,
         stand: { x: -3.1, z: 8.03, y: bed.box.min.y },
       })
@@ -2129,6 +2137,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         label: 'the bed',
         x: 3.4, z: 18.5,
         cushionY: mbed.box.min.y + 0.92,
+        floor: mbed.box.min.y,
         yaw: 0,
         stand: { x: 3.4, z: 16.8, y: mbed.box.min.y },
       })
@@ -2161,6 +2170,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
         label: 'the armchair',
         x: -5.6, z: 20.6,
         cushionY: dchair.box.min.y + 1.24,
+        floor: dchair.box.min.y,
         yaw: -HPI,
         stand: { x: -3.9, z: 20.6, y: dchair.box.min.y },
       })

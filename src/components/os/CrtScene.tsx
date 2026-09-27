@@ -1495,7 +1495,9 @@ export default function CrtScene({
         }
 
         const leaveSeat = () => {
-          const spot = seating.stand()
+          // the spot is checked against the room as it is now (seating.ts)
+          const lv = levels.current
+          const spot = seating.stand({ set: lv.collision, groundAt: (x, z) => floorOf(lv, x, z) })
           if (!spot) return false
           rig.showHead(true) // rig.update owns it again from the next frame
           chase.drop()
@@ -3781,6 +3783,10 @@ export default function CrtScene({
                 // every solid the walk collides with, for a harness sweeping
                 // a door leaf through its swing against the furniture
                 __obstacles: obstacles,
+                // the house's doors and cushions, for a harness sitting on
+                // every seat and opening every door from both sides
+                __house: house,
+                __seat: { seating, take: takeSeat, leave: leaveSeat },
                 // the fleet's world, for a harness recalling a machine
                 __fleetEnv: () => aimFleetEnv(fleetLevel()),
               })
