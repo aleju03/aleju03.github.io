@@ -76,6 +76,7 @@ import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
 import { PIXEL_LINES_K, PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
+import { snapPixelProofs, type PixelProofs } from './pixelProofs'
 import { createProximityVoice, type VoiceMode } from './proximityVoice'
 import type { Session } from './osContext'
 import { track } from '../../analytics'
@@ -519,6 +520,9 @@ export default function CrtScene({
   // the pause sheet's "hear yourself", which has to reach the voice graph
   // living inside the scene effect; null whenever there is no world to share
   const voicePreviewRef = useRef<(() => Promise<void>) | null>(null)
+  // the pause sheet's pixel-size proofs, answered by the next drawn frame
+  // (see pixelProofs.ts); null whenever nothing 3D is drawing
+  const pixelProofsRef = useRef<(() => Promise<PixelProofs | null>) | null>(null)
   useEffect(() => {
     failRef.current = onFail
     stageRef.current = onStage
@@ -2867,10 +2871,27 @@ export default function CrtScene({
           }
         }
 
+        // the settings page's proofs: the frame drawn once per pixel size, the
+        // middle cut out after each, then drawn again at the real one, all
+        // before the browser presents anything (pixelProofs.ts)
+        let proofWaiters: Array<(p: PixelProofs | null) => void> = []
+        pixelProofsRef.current = () => new Promise((res) => proofWaiters.push(res))
         const render = () => {
           if (!webgl || !scene) return
           applyLight()
           look.render(scene, camera)
+          if (proofWaiters.length) {
+            const sc = scene
+            const waiting = proofWaiters
+            proofWaiters = []
+            const proofs = snapPixelProofs(webgl.domElement, (size) => {
+              look.knobs.lines = gfx.pixelLines * PIXEL_LINES_K[size]
+              look.render(sc, camera)
+            })
+            look.knobs.lines = gfx.pixelLines * PIXEL_LINES_K[pixSize]
+            look.render(scene, camera)
+            for (const w of waiting) w(proofs)
+          }
           css3d.render(cssScene, camera)
         }
 
@@ -4724,6 +4745,7 @@ export default function CrtScene({
       doorRef.current = null
       propRef.current = null
       resumeRef.current = null
+      pixelProofsRef.current = null
       enterRef.current = null
       leaveRef.current = null
       applyLookRef.current = null
@@ -4914,6 +4936,7 @@ export default function CrtScene({
           prefs={prefs}
           onPrefs={setPrefs}
           onVoicePreview={() => voicePreviewRef.current?.() ?? Promise.resolve()}
+          onPixelProofs={() => pixelProofsRef.current?.() ?? Promise.resolve(null)}
           tier={tierInfo}
           people={people}
           identity={{
@@ -4933,8 +4956,8 @@ export default function CrtScene({
                 : null,
             renameNote:
               session?.kind === 'user'
-                ? 'signed in, this is your account name'
-                : 'connect to the world to pick a name',
+                ? t.look.accountName
+                : t.look.offlineName,
             pending: rename.pending,
             error: rename.error,
           }}

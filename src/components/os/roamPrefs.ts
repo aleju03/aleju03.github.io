@@ -57,7 +57,9 @@ export const SCALE_MAX = 1
   How big a pixel of the look is, as three words rather than a number,
   because what matters is the feel and the device-pixel size falls out of the
   screen: at "medium" a 1080p panel is an exact 2x and a 1440p one an exact
-  3x. Each is a multiplier on the tier's `pixelLines`.
+  3x. Each is a multiplier on the tier's `pixelLines`. The pause sheet deals
+  them out as three prints of the live view (`pixelProofs.ts`), named
+  chunky, classic and fine, biggest pixel first.
 */
 export const PIXEL_SIZES = ['small', 'medium', 'large'] as const
 export type PixelSize = (typeof PIXEL_SIZES)[number]

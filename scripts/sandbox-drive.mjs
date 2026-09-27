@@ -54,6 +54,11 @@
                                       standing and walking; links counted
                                       (must be 0). Shots to ~/.cache/overhaul/
                                       viewmodel (--vm-out <dir>)
+    npm run drive -- pause            the pause sheet on a town street: the
+                                      wardrobe's snapshots, one hovered and
+                                      tried on, and the settings page's
+                                      pixel prints; links on the game's
+                                      context counted (must be 0)
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -1654,6 +1659,56 @@ try {
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
     await evaluate('window.__tools.select(0)')
     console.log(`  ${await evaluate('window.__vLinks')} programs linked across the viewmodel shots`)
+  }
+
+  if (WHAT.includes('pause')) {
+    // the pause sheet: the wardrobe's snapshots, one tried on by hovering,
+    // and the settings page's pixel prints, on a town street so the prints
+    // have something to show. Headless Chrome never holds the pointer lock,
+    // so the pause is the lock-loss event the real esc would raise. Links
+    // are counted on the game's own context only (the preview's context is
+    // opened after the wrap and is its own business): must be 0
+    console.log('pause')
+    await goTo(flag('at', '-32 -331').replace(',', ' '))
+    await sleep(1500)
+    await stand()
+    await look(Number(flag('yaw', Math.PI)), -0.05)
+    await sleep(1200)
+    await evaluate(`(() => {
+      window.__pLinks = 0
+      for (const c of document.querySelectorAll('canvas')) {
+        const gl = c.width && c.getContext('webgl2')
+        if (!gl || c.__pauseWrapped) continue
+        c.__pauseWrapped = true
+        const real = gl.linkProgram.bind(gl)
+        gl.linkProgram = (p) => { window.__pLinks++; real(p) }
+      }
+      document.dispatchEvent(new Event('pointerlockchange'))
+      return true
+    })()`)
+    // every snapshot is one frame of the preview's loop, once its body
+    // variant has been built in idle time
+    await sleep(3500)
+    await shot('pause-wardrobe')
+    const snaps = await evaluate(`[...document.querySelectorAll('button[title]')].length`)
+    console.log(`  ${snaps} snapshots on the sheet`)
+    // hover the fourth hat (the party hat): it is tried on the Polaroid
+    const at = await evaluate(`(() => {
+      const b = [...document.querySelectorAll('button[title]')][3]
+      const r = b.getBoundingClientRect()
+      return [r.x + r.width / 2, r.y + r.height / 2]
+    })()`)
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at[0], y: at[1] })
+    await sleep(900)
+    await shot('pause-wardrobe-peek')
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 })
+    // the sheet's own menu is the nav whose current row is marked
+    await evaluate(`[...document.querySelectorAll('nav')].filter((n) => n.querySelector('button[aria-current]')).pop().querySelectorAll('button')[1].click()`)
+    await sleep(1500)
+    await shot('pause-settings')
+    console.log(`  ${await evaluate('window.__pLinks')} programs linked on the game's context while paused`)
+    await tap('Escape')
+    await sleep(400)
   }
 
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))
