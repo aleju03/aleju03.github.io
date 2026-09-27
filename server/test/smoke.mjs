@@ -684,6 +684,40 @@ async function main() {
   w1.send({ type: 'world-shove', to: welcome1.you, vx: 8, vy: 0, vz: 0 });
   w1.send({ type: 'world-chat', text: 'marker: self' });
   await noShoveBefore(w1, 'a shove at yourself is dropped');
+  // 17d. Grabs. The physgun on a player is a stream relayed to the victim
+  //      alone, inside the beam's reach, never at somebody flying, and a
+  //      throw is clamped; a release always goes through.
+  const noGrabBefore = async (client, label) => {
+    for (let i = 0; i < 40; i++) {
+      const msg = await client.next(label);
+      assert.notEqual(msg.type, 'world-grab', `${label}: a grab got through`);
+      if (msg.type === 'world-chat') return;
+    }
+    throw new Error(`never saw the chat marker (${label})`);
+  };
+  w1.send({ type: 'world-grab', to: welcome2.you, phase: 'hold', limb: 4, x: 58.004, y: 5, z: 0 });
+  const grabbed = await w2.nextOf('world-grab', 'a grab reaches its victim');
+  assert.equal(grabbed.from, welcome1.you, 'the victim is told who has them');
+  assert.equal(grabbed.phase, 'hold');
+  assert.equal(grabbed.limb, 4);
+  assert.equal(grabbed.x, 58, 'the point is rounded like everything else');
+  w1.send({ type: 'world-grab', to: welcome2.you, phase: 'release', limb: 4, x: 58, y: 5, z: 0, vx: 90, vy: 0, vz: 0 });
+  const thrown = await w2.nextOf('world-grab', 'the release reaches its victim');
+  assert.equal(thrown.phase, 'release');
+  assert.equal(thrown.vx, 40, 'a throw is clamped to WORLD_GRAB_THROW_MAX');
+  // somebody in noclip is not there to be held
+  w2.send({ type: 'world-move', x: 60, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 64 });
+  await w1.nextOf('world-tick', 'the victim takes off');
+  w1.send({ type: 'world-grab', to: welcome2.you, phase: 'hold', limb: 4, x: 58, y: 5, z: 0 });
+  w1.send({ type: 'world-chat', text: 'marker: grab flying' });
+  await noGrabBefore(w2, 'a grab at a flyer is dropped');
+  // nor is anybody past the beam's reach
+  w2.send({ type: 'world-move', x: 400, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  await w1.nextOf('world-tick', 'the victim runs off');
+  w1.send({ type: 'world-grab', to: welcome2.you, phase: 'hold', limb: 4, x: 20, y: 5, z: 0 });
+  w1.send({ type: 'world-chat', text: 'marker: grab far' });
+  await noGrabBefore(w2, 'a grab from four hundred units away is dropped');
+  console.log('17d. open world: grabs relayed within reach, never at a flyer, throws clamped');
   // back behind the wheel, for 17b's last check: a dropped driver's seat
   w1.send({ type: 'world-seat', v: 0, seat: 0 });
   await w1.nextOf('world-seats', 'the driver gets back in');

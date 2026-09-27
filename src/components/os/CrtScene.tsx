@@ -23,6 +23,7 @@ import {
   type ContactStep,
 } from '../../game/player/bodyContact'
 import { createRemoteBumps, createShoveTaker } from '../../game/net/shove'
+import { createGrabTaker, createRemoteGrabs } from '../../game/net/grab'
 import { createWalkController } from '../../game/player/walkController'
 import { createSeating } from '../../game/player/seating'
 import { facingOf } from '../../game/levels/fittings'
@@ -1602,6 +1603,27 @@ export default function CrtScene({
           now: () => performance.now() / 1000,
         })
         const shoveTaker = createShoveTaker()
+        /*
+          The physgun on other players (game/net/grab.ts): the same deal as a
+          shove. Our beam streams where their limb should be and their client
+          pins its own ragdoll to it; their beam does the same to us, and we
+          are the judge of whether we can be held (not seated, not in noclip,
+          not in god mode) and for how long
+        */
+        const remoteGrabs = createRemoteGrabs({
+          world: remote,
+          rigOf: avatars.rigOf,
+          claim: avatars.claim,
+          seated: (id) => fleetNet.seatOf(id) !== null,
+          send: (to, phase, limb, x, y, z, vx, vy, vz) => net?.grab(to, phase, limb, x, y, z, vx, vy, vz),
+          now: () => performance.now() / 1000,
+        })
+        const grabTaker = createGrabTaker(rig)
+        const grabAble = () =>
+          !fleet.riding && !seating.current && !walk.noclip && !godMode && !levels.frozen
+        /** what the wire says our position is while the body is a heap: its
+            chest, so a body carried off on somebody's beam is seen carried */
+        const heapPt = new THREE.Vector3()
         /** seconds of hit-stop left, and how slow time runs in it */
         let hitStop = 0
         const HIT_STOP = 0.05
@@ -1735,6 +1757,7 @@ export default function CrtScene({
                   })
                   break
                 case 'world-exit': {
+                  grabTaker.drop(msg.id)
                   const gone = remote.roster.get(msg.id)
                   remote.exit(msg.id)
                   if (gone) {
@@ -1786,6 +1809,10 @@ export default function CrtScene({
                   }
                   break
                 }
+                // somebody has us on their physgun: our body, our call
+                case 'world-grab':
+                  grabTaker.take(msg, performance.now() / 1000, grabAble())
+                  break
                 // somebody renamed or repainted. Both land on the roster
                 // first — a body that has not spawned yet reads it there —
                 // and only then on the meshes, if there are any
@@ -2690,6 +2717,7 @@ export default function CrtScene({
             avatarEnv.collision = level.collision
             avatarEnv.ceilingY = level.ceilingY
             avatars.update(remote, dt, avatarEnv)
+            remoteGrabs.tick(dt)
             voice?.update(remote.players, camera, dt)
             if (remote.players.size !== hereNow) {
               hereNow = remote.players.size
@@ -3106,6 +3134,9 @@ export default function CrtScene({
           rigEnv.groundAt = level.groundYAt
           rigEnv.ceilingY = level.ceilingY
           rigEnv.collision = level.collision
+          // somebody's beam on us: ease the pinned limb toward their stream
+          // and let go of a hold that went quiet, ran out or became impossible
+          grabTaker.tick(now / 1000, dt, grabAble())
           if (!sitting) rig.update(rigPose, rigEnv)
           bumper.npts = !sitting && !rig.ragdolling && bumper.pts
             ? posedPoints(rig, camera.position.x, walk.feetY, camera.position.z, bumper.pts)
@@ -3117,10 +3148,13 @@ export default function CrtScene({
           // further down, and a listener parked on the boom would hear the
           // world from somewhere behind your own back.
           if (net) {
+            // a heap on the floor (or on a beam) is where its chest is: the
+            // walker stays frozen where the body went down
+            const heap = rig.ragdolling ? rig.limbPos(chestLimb, heapPt) : null
             net.move(
-              camera.position.x,
-              walk.feetY,
-              camera.position.z,
+              heap ? heap.x : camera.position.x,
+              heap ? heap.y : walk.feetY,
+              heap ? heap.z : camera.position.z,
               walk.yaw,
               walk.pitch,
               step.gait,
@@ -3134,12 +3168,14 @@ export default function CrtScene({
                 speaking: Boolean(voice?.speaking),
                 down: rig.down,
                 fly: step.flying,
+                held: grabTaker.held && rig.ragdolling,
               }),
             )
             remote.sample(now, dt)
             avatarEnv.collision = level.collision
             avatarEnv.ceilingY = level.ceilingY
             avatars.update(remote, dt, avatarEnv)
+            remoteGrabs.tick(dt)
             voice?.update(remote.players, camera, dt)
             if (remote.players.size !== hereNow) {
               hereNow = remote.players.size
@@ -3444,7 +3480,11 @@ export default function CrtScene({
             tools = toolsMod.createToolbelt({
               sb: sandbox,
               parent: scene,
-              rigs: () => outside.people(),
+              // the town's crowd, and the other players through the wire
+              rigs: function* () {
+                yield* outside.people()
+                if (net) yield* remoteGrabs.rigs()
+              },
             })
             tools.setHandColor(lookRef.current.shell)
             sandbox.gravity = -GRAVITY * rules.gravity
@@ -3502,6 +3542,13 @@ export default function CrtScene({
                 __sandboxWalk: walk,
                 __sandboxRig: rig,
                 __tools: tools,
+                // the shared walk, for a two-client drive: the keys (the
+                // physgun's trigger is a mouse button only a locked pointer
+                // reports), who else is here and what their beams are doing
+                __input: input,
+                __remote: remote,
+                __avatars: avatars,
+                __grabTaker: grabTaker,
                 // the view from the air: what the fog, the far field and the
                 // look's air are doing right now (levels/altitude.ts)
                 __outside: outside,
