@@ -58,6 +58,10 @@ export const openProbe = async ({ port, cdp, page, ready, width, height, keep = 
     `--window-size=${width},${height}`,
     '--no-first-run',
     `--user-data-dir=/tmp/world-probe-chrome-${cdp}`,
+    // extra flags for one run, e.g. PROBE_CHROME_ARGS="--disable-gpu-vsync
+    // --disable-frame-rate-limit" to let rAF run past the panel's rate, which
+    // is what a frame limiter has to be measured against
+    ...(process.env.PROBE_CHROME_ARGS ?? '').split(/\s+/).filter(Boolean),
   ], { stdio: 'ignore' })
   const target = await waitFor(async () => {
     const list = await (await fetch(`http://127.0.0.1:${cdp}/json/list`)).json()
