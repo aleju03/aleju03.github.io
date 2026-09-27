@@ -453,7 +453,11 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     // the house's flat pad before the world exists
     const alt = Math.max(0, camPos.y - (w ? w.mods.terrain.terrainY(camPos.x, camPos.z) : 0))
     const space = active && w ? spaceK(alt) : 0
-    const state = sky.update(camPos, todOverride, space, true)
+    // how far below level the planet's limb is from up here, so the sky's
+    // horizon blend starts where the ground does (sky.ts's uHorizonDip)
+    const kDip = active && w ? curveK(alt) : 0
+    const dip = kDip > 0.04 ? Math.acos(globeRadius(kDip) / (globeRadius(kDip) + alt)) : 0
+    const state = sky.update(camPos, todOverride, space, true, dip)
     view.alt = 0
     view.reach = 0
     view.far = viewFarFor(0)

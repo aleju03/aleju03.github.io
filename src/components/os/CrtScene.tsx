@@ -2194,6 +2194,7 @@ export default function CrtScene({
           history: () => history,
           rules,
           worldLoaded: () => outside.hasWorld(),
+          placesHere: () => !!levels.current.house,
           online: () => net !== null,
           // the head and gaze as of the last frame: commands run from DOM
           // events, when the chase boom may be holding the camera
@@ -2213,6 +2214,11 @@ export default function CrtScene({
             standNow()
             if (fleet.riding || rig.down) return
             const level = levels.current
+            // never outside the level's own square: past it there may be no
+            // ground worth the name (the Moon curves away into its horizon)
+            const b = level.collision.bounds
+            x = Math.min(b.maxX, Math.max(b.minX, x))
+            z = Math.min(b.maxZ, Math.max(b.minZ, z))
             const floor = floorOf(level, x, z)
             // a little above whatever is there and let gravity settle it:
             // the chunks under a far teleport are not built yet, and their

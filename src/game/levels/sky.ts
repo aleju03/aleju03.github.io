@@ -81,7 +81,9 @@ export interface SkyState {
 export interface SkyHandles {
   /** `space` 0..1 thins the sky away (see the header); `moonDisc` false
       hides the sky's own moon (you are standing on it) */
-  update: (camPos: THREE.Vector3, todOverride?: number, space?: number, moonDisc?: boolean) => SkyState
+  update: (
+    camPos: THREE.Vector3, todOverride?: number, space?: number, moonDisc?: boolean, dip?: number,
+  ) => SkyState
   /** the world's one moving shadow caster. Its castShadow flag is stable;
       strength and explicit map updates handle indoor/night transitions */
   sun: THREE.DirectionalLight
@@ -266,22 +268,29 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   /** how high up the dome the fog colour reaches: low by day, so a clear
       sky stays blue almost to the skyline, higher at night */
   const horizonReachU = { value: 0.14 }
+  /** where the horizon is, as the sine of how far below level: 0 on the
+      ground, and from high up the planet's limb (outsideWorld passes the
+      dip), so the fog colour starts where the ground does. Left at level,
+      it painted a flat slate band between the sky and the curve of the
+      planet on the way up */
+  const horizonDipU = { value: 0 }
   const blendHorizon = <T extends THREE.MeshBasicMaterial>(material: T, key: string): T => {
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uHorizonFog = horizonFogU
       shader.uniforms.uHorizonReach = horizonReachU
+      shader.uniforms.uHorizonDip = horizonDipU
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\n varying vec3 vSkyDir;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\n vSkyDir = position;')
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
-          '#include <common>\n varying vec3 vSkyDir;\n uniform vec3 uHorizonFog;\n uniform float uHorizonReach;',
+          '#include <common>\n varying vec3 vSkyDir;\n uniform vec3 uHorizonFog;\n uniform float uHorizonReach;\n uniform float uHorizonDip;',
         )
         .replace(
           '#include <opaque_fragment>',
           `#include <opaque_fragment>
-           float horizonFogK = 1.0 - smoothstep(0.0, uHorizonReach, normalize(vSkyDir).y);
+           float horizonFogK = 1.0 - smoothstep(-uHorizonDip, uHorizonReach - uHorizonDip, normalize(vSkyDir).y);
            gl_FragColor.rgb = mix(gl_FragColor.rgb, uHorizonFog, horizonFogK);`,
         )
     }
@@ -755,7 +764,7 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   const SPACE_FOG = new THREE.Color('#000000')
   const SPACE_HEMI = new THREE.Color('#1c2130')
 
-  const update = (camPos: THREE.Vector3, todOverride?: number, space = 0, moonDisc = true) => {
+  const update = (camPos: THREE.Vector3, todOverride?: number, space = 0, moonDisc = true, dip = 0) => {
     const now = performance.now()
     const tod = todOverride !== undefined
       ? todOverride
@@ -828,6 +837,7 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     if (space > 0) state.fogColor.lerp(SPACE_FOG, smooth01(space * 1.3))
     horizonFogU.value.copy(state.fogColor)
     horizonReachU.value = 0.14 - 0.09 * day * (1 - twilight)
+    horizonDipU.value = Math.sin(dip)
     state.hemiSky.lerpColors(HEMI_SKY_NIGHT, HEMI_SKY_DAY, day)
     state.hemiGround.lerpColors(HEMI_GROUND_NIGHT, HEMI_GROUND_DAY, day)
     state.dayBoost = 1 + 2.1 * day * (1 - 0.7 * indoor)
