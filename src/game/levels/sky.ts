@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { HOUSE } from './houseWorld'
+import { insideBy } from './houseWorld'
 import { seeded } from '../core/rand'
 import { canvasTexture, makeGlowTexture } from '../core/textures'
 import { gfx } from '../world/quality'
@@ -779,10 +779,12 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       really is leaving. The front door sits on `HOUSE.minZ` with about a
       unit and a half of path beyond it, so the transition still completes
       before they are properly out in the yard.
+
+      The shell is the house's whole footprint, the garage included
+      (`insideBy`), and it is a plan, not a volume: both storeys are indoors,
+      and so is anybody standing on the roof, which is nobody.
     */
-    const dxIn = Math.min(camPos.x - HOUSE.minX, HOUSE.maxX - camPos.x)
-    const dzIn = Math.min(camPos.z - HOUSE.minZ, HOUSE.maxZ - camPos.z)
-    const indoor = smooth01(1 + Math.min(dxIn, dzIn) / INDOOR_FADE)
+    const indoor = smooth01(1 + insideBy(camPos.x, camPos.z) / INDOOR_FADE)
 
     state.day = day
     state.night = night

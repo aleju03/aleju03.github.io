@@ -57,15 +57,18 @@ export const inYard = (x: number, z: number, pad = 0) =>
   z > YARD_FENCE.minZ - pad &&
   z < YARD_FENCE.maxZ + pad
 
-/** the authored hardscape inside the fence — the house slab, the back porch,
-    the front step and walk, the stepping stones — mirrored from houseWorld the
+/** the authored hardscape inside the fence (the house slab and the garage's,
+    the back porch, the front step and walk, the driveway, the stepping
+    stones) mirrored from houseWorld the
     same way YARD_FENCE is, so the grass field can grow the yard's turf and
     still mow around what was built by hand. */
 const HOME_HARD_RECTS = [
   { minX: -8.1, maxX: 8.1, minZ: -2.3, maxZ: 25.0 }, // house + wall margin
+  { minX: 7.4, maxX: 13.5, minZ: -2.3, maxZ: 14.5 }, // the garage
   { minX: -5.6, maxX: -1.5, minZ: 24.4, maxZ: 27.5 }, // back porch slab
   { minX: 3.85, maxX: 7.15, minZ: -3.1, maxZ: -1.7 }, // front doorstep
   { minX: 4.6, maxX: 6.4, minZ: -4.3, maxZ: -2.9 }, // front walk to the gate
+  { minX: 7.8, maxX: 12.8, minZ: -4.6, maxZ: -1.7 }, // the driveway
 ]
 const HOME_STONES: Array<[number, number]> = [
   [-2.1, 27.3], [-1.0, 28.4], [0.2, 29.3], [1.5, 30.1],

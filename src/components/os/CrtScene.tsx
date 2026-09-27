@@ -4,7 +4,9 @@ import { createPortal } from 'react-dom'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js'
-import { BACK_DOOR_X, buildHouse, CEIL_H, FRONT_DOOR_X, HOUSE } from '../../game/levels/houseWorld'
+import {
+  BACK_DOOR_X, buildHouse, CEIL_H, FRONT_DOOR_X, GARAGE, GARAGE_DOOR, HOUSE, insideBy, UP,
+} from '../../game/levels/houseWorld'
 import { buildOutsideWorld, type OutsideState } from '../../game/levels/outsideWorld'
 import { buildBackrooms } from '../../game/levels/backrooms'
 import { buildDeskRoom } from '../../game/levels/deskRoom'
@@ -150,23 +152,25 @@ export type LoadStage = 'models' | 'world' | 'shaders' | 'stepping'
  * Generous on purpose: paying a beat early is invisible under the cover, while
  * paying late means stepping out onto placeholder ground.
  *
- * There are two doors, and this used to know about one. Working the back door
- * fetched nothing, so you walked out of it into the yard and stood on the
- * stand-in plane with the planet never asked for.
+ * There are three doors out, all on the ground floor, and this used to know
+ * about one. Working the back door fetched nothing, so you walked out of it
+ * into the yard and stood on the stand-in plane with the planet never asked
+ * for. The garage's carriage doors are the third.
  */
 function atExteriorDoor(p: THREE.Vector3): boolean {
+  if (p.y > UP) return false // the linen closet over the front door is not a way out
+  const garageX = (GARAGE_DOOR.u0 + GARAGE_DOOR.u1) / 2
   return (
     (Math.abs(p.x - FRONT_DOOR_X) < 3 && Math.abs(p.z - HOUSE.minZ) < 3.5) ||
-    (Math.abs(p.x - BACK_DOOR_X) < 3 && Math.abs(p.z - HOUSE.maxZ) < 3.5)
+    (Math.abs(p.x - BACK_DOOR_X) < 3 && Math.abs(p.z - HOUSE.maxZ) < 3.5) ||
+    (Math.abs(p.x - garageX) < 3.5 && Math.abs(p.z - GARAGE.minZ) < 3.5)
   )
 }
 
-/** past the house's own footprint, by a margin, in any direction */
+/** past the house's own footprint (garage included), by a margin, in any
+    direction */
 function outsideShell(p: THREE.Vector3): boolean {
-  return (
-    p.x < HOUSE.minX - 1 || p.x > HOUSE.maxX + 1 ||
-    p.z < HOUSE.minZ - 1 || p.z > HOUSE.maxZ + 1
-  )
+  return insideBy(p.x, p.z) < -1
 }
 
 /** one line of chat on its way to the receipt. `mine` is what tints it, not
@@ -270,7 +274,9 @@ const DRIVE_KEYS: Record<VehicleId, string> = {
 /** fraction of the viewport height the glass fills once parked */
 const FILL = 0.86
 const INTRO_S = 2.6
-const WINDOW_CENTER_Y = 3.3
+/** the computer room's west window, which the moonlight comes in through.
+    The room is upstairs: these are measured off its own floor */
+const WINDOW_CENTER_Y = UP + 3.3
 const WINDOW_CENTER_Z = 5.75
 
 const makeMoonSpillTexture = () => {
@@ -679,7 +685,7 @@ export default function CrtScene({
         // the pendant lamp the room light actually comes from; its bulb
         // material glows once the roam fill ramps in
         lamp.scene.scale.setScalar(1.6)
-        lamp.scene.position.set(0, CEIL_H, 4.4)
+        lamp.scene.position.set(0, UP + CEIL_H, 4.4)
         let bulbMat: THREE.MeshStandardMaterial | null = null
         lamp.scene.traverse((o) => {
           const mesh = o as THREE.Mesh
@@ -870,7 +876,7 @@ export default function CrtScene({
         // chair, nose pointed into the room like it glided out of the screen
         if (paperPlaneRef.current) {
           const dart = buildPaperPlane()
-          dart.position.set(1.6, 0.02, 4.2)
+          dart.position.set(1.6, UP + 0.02, 4.2)
           dart.rotation.y = -1.05
           scene.add(dart)
         }
@@ -889,13 +895,13 @@ export default function CrtScene({
         const moonPool = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 2.05), moonSpillMat)
         moonPool.rotation.x = -Math.PI / 2
         moonPool.rotation.z = -0.13
-        moonPool.position.set(-3.6, 0.028, WINDOW_CENTER_Z + 0.1)
+        moonPool.position.set(-3.6, UP + 0.028, WINDOW_CENTER_Z + 0.1)
         moonPool.renderOrder = 12
         moonPool.frustumCulled = false
         scene.add(moonPool)
         const windowSpill = new THREE.SpotLight('#9dbfff', 0, 8, 0.6, 0.78, 1.6)
         windowSpill.position.set(HOUSE.minX + 0.06, WINDOW_CENTER_Y + 0.08, WINDOW_CENTER_Z + 0.05)
-        windowSpill.target.position.set(HOUSE.minX + 4.6, 0.55, WINDOW_CENTER_Z - 0.22)
+        windowSpill.target.position.set(HOUSE.minX + 4.6, UP + 0.55, WINDOW_CENTER_Z - 0.22)
         scene.add(windowSpill, windowSpill.target)
 
         // seated, the desk spot is the whole show; walking wakes a real light
@@ -907,11 +913,11 @@ export default function CrtScene({
         scene.add(hemi)
         const roomGlow = new THREE.PointLight('#8a7a64', 0, 0, 1.2)
         // parked just under the pendant's bulb so the light has a source
-        roomGlow.position.set(0, 4.75, 4.4)
+        roomGlow.position.set(0, UP + 4.75, 4.4)
         scene.add(roomGlow)
         const pendant = new THREE.SpotLight('#ffd9ae', 0, 0, 1.05, 0.85, 1.5)
-        pendant.position.set(0, 5.45, 4.4)
-        pendant.target.position.set(0, 0, 4.4)
+        pendant.position.set(0, UP + 5.45, 4.4)
+        pendant.target.position.set(0, UP, 4.4)
         pendant.castShadow = true
         pendant.shadow.mapSize.set(1024, 1024)
         pendant.shadow.bias = -0.00005
@@ -922,8 +928,8 @@ export default function CrtScene({
         pendant.shadow.autoUpdate = false // baked; re-flagged only when dirty
         scene.add(pendant, pendant.target)
         const moon = new THREE.DirectionalLight('#8fa6d4', 0)
-        moon.position.set(HOUSE.minX - 4, 4.6, 5.5)
-        moon.target.position.set(0, 0.6, 4.5)
+        moon.position.set(HOUSE.minX - 4, UP + 4.6, 5.5)
+        moon.target.position.set(0, UP + 0.6, 4.5)
         scene.add(moon, moon.target)
         const HEMI_SEATED = 0.55
         const HEMI_ROAM = 1.5
@@ -940,7 +946,7 @@ export default function CrtScene({
           roamK = k
         }
         const key = new THREE.SpotLight('#ffd9a0', 60, 0, 0.55, 0.6, 1.6)
-        key.position.set(-3.2, 5.2, 2.8)
+        key.position.set(-3.2, UP + 5.2, 2.8)
         key.target.position.set(0.3, deskTop, 0)
         key.castShadow = true
         key.shadow.mapSize.set(2048, 2048)
@@ -951,6 +957,13 @@ export default function CrtScene({
         key.shadow.camera.near = 2
         key.shadow.autoUpdate = false
         scene.add(key, key.target)
+        /** the computer room's two casting lights want a re-bake only while
+            somebody moves in their reach, which is upstairs at the front */
+        const flagDeskShadows = (p: THREE.Vector3) => {
+          if (p.y < deskRoom.floorY) return
+          if (p.z < 15.5) pendant.shadow.needsUpdate = true
+          if (p.z < 7) key.shadow.needsUpdate = true
+        }
         // Every local shadow map is hand-baked while BootCover is still
         // opaque. One light per frame keeps the compositor's loading bar
         // moving between maps; announcing the scene before this loop is done
@@ -965,7 +978,7 @@ export default function CrtScene({
           }
         }
         const rim = new THREE.DirectionalLight('#7e8ea8', 0.5)
-        rim.position.set(2.5, 3, -2)
+        rim.position.set(2.5, UP + 3, -2)
         scene.add(rim)
         // the tube's own spill onto keyboard and desk once it is awake
         const spill = new THREE.PointLight('#9db4e8', 0, 2.0, 1.8)
@@ -996,15 +1009,17 @@ export default function CrtScene({
         const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 900)
         camera.rotation.order = 'YXZ' // yaw/pitch compose FPS-style while walking
         const tanHalf = Math.tan(THREE.MathUtils.degToRad(38 / 2))
-        const camStart = new THREE.Vector3(2.4, 2.9, 4.5)
+        const camStart = new THREE.Vector3(2.4, UP + 2.9, 4.5)
         const camEndFor = (h: number) =>
           front.clone().add(normal.clone().multiplyScalar((gSize.y * h) / (divH * 2 * tanHalf)))
         let camEnd = camEndFor(H)
         // where the walk stands. Up here with the camera rather than down in
         // the runtime block, because the /world entrance opens the lens on it
         // directly rather than gliding up to it from the chair
-        const EYE = deskTop + 2.0 // standing eye height over this desk's scale
-        const SPAWN = new THREE.Vector3(1.15, EYE, 2.55)
+        // standing eye height over this desk's scale. deskTop is a world
+        // height and the desk is upstairs, so measure it off its own floor
+        const EYE = deskTop - deskRoom.floorY + 2.0
+        const SPAWN = new THREE.Vector3(1.15, deskRoom.floorY + EYE, 2.55)
         // Warm every static texture now and let the drivers link the shader
         // pile in parallel: the old synchronous compile() blocked the main
         // thread for its whole duration, which froze the warp tunnel's canvas
@@ -1181,18 +1196,21 @@ export default function CrtScene({
             the level's own terrain where the floor under all of it is. */
         const floorOf = (level: Level, x: number, z: number) =>
           level.groundYAt ? level.groundYAt(x, z) : level.groundY
-        const spawnY = (level: Level, x: number, z: number) => {
+        /** ...or, given `from`, whatever is there at that height: the
+            computer room is upstairs, and a spawn asked from the ground would
+            stand you in the living room under it */
+        const spawnY = (level: Level, x: number, z: number, from?: number) => {
           const floor = floorOf(level, x, z)
-          return supportY(x, z, floor + EYE * 0.12, level.collision, floor)
+          return supportY(x, z, (from ?? floor) + EYE * 0.12, level.collision, floor)
         }
         /** the authored spawn, nudged aside so simultaneous arrivals do not
             stand up inside one another. Slot 0 (nobody else here, or the
             first one in) is the authored point untouched, so single player
             is pixel-for-pixel what it always was. */
-        const spawnSpotFor = (level: Level, x: number, z: number) => {
+        const spawnSpotFor = (level: Level, x: number, z: number, from?: number) => {
           if (spawnSlot <= 0) return { x, z }
           return scatterSpawn(x, z, spawnSlot, (cx, cz) => {
-            const floor = spawnY(level, cx, cz)
+            const floor = spawnY(level, cx, cz, from)
             return !blockedAt(cx, cz, floor, floor + EYE, level.collision, EYE * 0.12)
           })
         }
@@ -1484,8 +1502,7 @@ export default function CrtScene({
           body.visible = true
           // the body just reappeared somewhere new, and the machine's own
           // shadow moved with it
-          if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
-          if (camera.position.z < 7) key.shadow.needsUpdate = true
+          flagDeskShadows(camera.position)
           house.flagShadows(camera.position)
           seatWanted = null
           net?.unseat()
@@ -1861,11 +1878,13 @@ export default function CrtScene({
           }
           scattered = true
           if (spawnSlot === 0) return // nobody else here: the authored spot
-          const spot = spawnSpotFor(level, spawnHome.x, spawnHome.y)
+          // on whichever storey they are standing on: the chair is upstairs
+          const from = walk.feetY
+          const spot = spawnSpotFor(level, spawnHome.x, spawnHome.y, from)
           // the boom writes back the head position it saved last frame, so a
           // teleport it has not been told about is undone one frame later
           chase.drop()
-          walk.teleport(spot.x, spot.z, spawnY(level, spot.x, spot.z))
+          walk.teleport(spot.x, spot.z, spawnY(level, spot.x, spot.z, from))
           rig.reset()
           rig.face(walk.yaw)
           poseBody()
@@ -2162,7 +2181,7 @@ export default function CrtScene({
             poseBody()
             headPos.set(x, feet + EYE, z)
           },
-          home: () => ({ x: SPAWN.x, z: SPAWN.z }),
+          home: () => ({ x: SPAWN.x, z: SPAWN.z, y: spawnY(levels.current, SPAWN.x, SPAWN.z, deskRoom.floorY) }),
           noclip: (on) => {
             if (on && !levels.frozen && !fleet.riding && !seating.current) standNow()
             if (on !== undefined && canAct()) setNoclip(on)
@@ -2651,8 +2670,7 @@ export default function CrtScene({
           // gates the whole hand-baked shadow regime — comes from a walk
           // controller that is not running. The fleet reports its own
           if (level.id === 'overworld' && fs.moved) {
-            if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
-            if (camera.position.z < 7) key.shadow.needsUpdate = true
+            flagDeskShadows(camera.position)
             house.flagShadows(camera.position)
             followSunShadow(v.root.position, now)
           }
@@ -3159,8 +3177,7 @@ export default function CrtScene({
           if (level.id === 'overworld' && bodyMoved) {
             // generous regions: a map must keep re-baking until the player is
             // fully out of its light's frustum, or their shadow strands there
-            if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
-            if (camera.position.z < 7) key.shadow.needsUpdate = true
+            flagDeskShadows(camera.position)
             house.flagShadows(camera.position)
             // The sun's program stays invariant now, but its hand-managed map
             // still follows a genuinely moving caster, on the error gate and not
@@ -3587,7 +3604,8 @@ export default function CrtScene({
           // Stand at the actual front door, not at the bedroom spawn's x. The
           // exact live lighting state and caster set at this threshold are the
           // things this warm-up exists to pay for.
-          warmCam.position.set(FRONT_DOOR_X, at.y, HOUSE.minZ - 1.25)
+          // (on the ground: `at` is the spawn, which is upstairs)
+          warmCam.position.set(FRONT_DOOR_X, EYE, HOUSE.minZ - 1.25)
           warmCam.rotation.set(0, 0, 0)
           warmCam.updateMatrixWorld(true)
           // This render bypasses render()'s light pass, so compose the day
@@ -3811,8 +3829,7 @@ export default function CrtScene({
               // not the shadow itself, because an invisible person must not
               // leave a silhouette beside the desk during the intro.
               if (!spawnShadowsReady) {
-                if (camera.position.z < 15.5) pendant.shadow.needsUpdate = true
-                if (camera.position.z < 7) key.shadow.needsUpdate = true
+                flagDeskShadows(camera.position)
                 house.flagShadows(camera.position)
               }
               input.tryLock()
@@ -4112,7 +4129,7 @@ export default function CrtScene({
           const spawnAim = lookAngles(SPAWN, front)
           walk.spawnAt(
             SPAWN.x, SPAWN.z, spawnAim.yaw,
-            spawnY(levels.current, SPAWN.x, SPAWN.z),
+            spawnY(levels.current, SPAWN.x, SPAWN.z, deskRoom.floorY),
           )
           walk.pitch = spawnAim.pitch
           rig.reset()
