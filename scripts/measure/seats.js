@@ -67,6 +67,9 @@ for (const [hat, name] of [[3, 'party hat'], [4, 'hard hat'], [8, 'helmet']]) {
     LOOKS.push({ look: { ...DEFAULT_LOOK, hat, build }, label: `${name}, ${bname}` })
   }
 }
+// the widest look: a beaver (the tail out the back) in a cap with the
+// headset's cups out at the sides
+LOOKS.push({ look: { ...DEFAULT_LOOK, hat: 1, build: 1, costume: 5, phones: 1 }, label: 'beaver, cap, headset, chubby' })
 const ray = new THREE.Raycaster()
 const eye = new THREE.Vector3()
 const p = new THREE.Vector3()

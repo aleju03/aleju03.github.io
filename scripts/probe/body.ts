@@ -27,7 +27,7 @@ import { domeScaleFor } from '../../src/game/levels/altitude'
 import {
   EARTH_IN_MOON_SKY, EARTH_R, EARTH_SKY_DIST, MOON_DIST, MOON_FAR, MOON_ORIGIN, MOON_TOD,
 } from '../../src/game/levels/space'
-import { HELMET_HAT, SPACESUIT } from '../../src/game/player/look'
+import { BEAVER, HELMET_HAT, SPACESUIT } from '../../src/game/player/look'
 
 /*
   The player character, photographed and filmed without booting the site.
@@ -43,6 +43,8 @@ import { HELMET_HAT, SPACESUIT } from '../../src/game/player/look'
                                           the lens line, beside the old eye-scaled size
     npm run shoot -- body:astronaut       the spacesuit and helmet in three
                                           colourings, front, back and close
+    npm run shoot -- body:gear            the beaver and the headset, over
+                                          every headgear
     npm run shoot -- body:moon            astronauts on the Moon, the Earth
                                           hanging in its sky
     npm run shoot -- body:seat            seated in the car, the boat and the
@@ -799,6 +801,47 @@ const wardrobe = (spec: BodySpec, snap: Snap) => {
   }
 }
 
+/** the gear worn over any hat: the owner's look (a beaver in a blue cap
+    with the headset over it) four ways round, the headset over every other
+    headgear, and the beaver's three furs under a few hats */
+const OWNER_LOOK: PlayerLook = {
+  shell: '#2f6fcf', trim: '#f2eee0', accent: '#2860c8', glow: '#1c1a20',
+  hat: 1, costume: BEAVER, build: 0, fur: 0, phones: 1,
+}
+const GEAR_LOOKS: PlayerLook[] = [
+  ...[0, 2, 7, 3, 4, 5, 6, 8].map((hat, i) => ({
+    ...DEFAULT_LOOK,
+    shell: ['#2f6fcf', '#3f9a38', '#8a4fc8', '#d2452f', '#e0a21a', '#1f9a8a', '#d9508f', '#2f6fcf'][i],
+    trim: ['#f2eee0', '#e0a218', '#1c1c20', '#2f6fcc', '#d2452c', '#f2eee0', '#3f9a38', '#d2452c'][i],
+    accent: ['#c84028', '#f0e8e0', '#e86810', '#e8b818', '#e8b818', '#2860c8', '#c84028', '#c84028'][i],
+    hat,
+    build: [0, 1, 2, 3, 4, 0, 1, 0][i],
+    costume: [0, 2, 0, 1, 3, 0, 0, 4][i],
+    phones: [1, 1, 2, 3, 1, 2, 1, 1][i],
+  })),
+  { ...OWNER_LOOK, hat: 6, fur: 0, phones: 0, build: 1 },
+  { ...OWNER_LOOK, hat: 7, fur: 1, phones: 0, accent: '#e86810', build: 2 },
+  { ...OWNER_LOOK, hat: 3, fur: 2, phones: 3, accent: '#38a038', build: 4 },
+]
+const gear = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  const a = actor(st, OWNER_LOOK, st.x, st.z, 0)
+  for (let f = 0; f < 120; f++) tick(a, st.env)
+  const at = new THREE.Vector3(st.x, st.gy + 2.1, st.z)
+  for (const [label, b] of [['front', Math.PI], ['three-quarter', Math.PI - 0.7], ['side', -Math.PI / 2], ['back', 0.35]] as const) {
+    snap(`beaver, blue cap, headset: ${label}`, camAt(tw, th, at, b, 10, 0.9, 32))
+  }
+  st.scene.remove(a.rig.group)
+  for (const look of GEAR_LOOKS) {
+    const p = actor(st, look, st.x, st.z, 0)
+    for (let f = 0; f < 120; f++) tick(p, st.env)
+    snap(`hat ${look.hat} outfit ${look.costume} fur ${look.fur} phones ${look.phones}`,
+      camAt(tw, th, new THREE.Vector3(st.x, st.gy + 2.3, st.z), Math.PI - 0.6, 9, 1.1, 34))
+    st.scene.remove(p.rig.group)
+  }
+}
+
 /*
   Where the skin folds: a posed body with every triangle that faces against
   its own skinned vertex normals painted red over it (the same test
@@ -906,6 +949,7 @@ export const shootBody = (spec: BodySpec) => {
     if (/^(car|heli|boat|ship)(-empty)?$/.test(a)) return n + 5
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
     if (a === 'wardrobe') return n + WARDROBE.length
+    if (a === 'gear') return n + 4 + GEAR_LOOKS.length
     return n
   }, 0)
   const motionOnly = spec.targets.every((t) => t.arg === 'motion' || t.arg?.startsWith('strip'))
@@ -994,6 +1038,7 @@ export const shootBody = (spec: BodySpec) => {
       run(machine(build, a.endsWith('-empty')))
     }
     else if (a === 'wardrobe') run(wardrobe)
+    else if (a === 'gear') run(gear)
     else if (a.startsWith('folds')) run((sp, sn) => folds(sp, sn, Number(a.split(':')[1] ?? 0)))
     else throw new Error(`unknown body target "${a}"`)
   }

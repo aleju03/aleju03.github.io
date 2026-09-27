@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { DEFAULT_LOOK, type PlayerLook } from './look'
+import { DEFAULT_LOOK, FUR_SWATCHES, PHONES_RED, type PlayerLook } from './look'
 import { B, boneRestWorld, faceWindow } from './bodyShape'
 
 /*
@@ -20,8 +20,9 @@ import { B, boneRestWorld, faceWindow } from './bodyShape'
     vertex shader hands the fragment shader the vertex's bind-pose position
     (`vBind`, taken before skinning, so it rides the body however it bends),
     and the face panel, the two pill eyes, the five expressions and the
-    four outfits (spots, stripes, overalls and the spacesuit, with its chest
-    unit, patch and flag) and the helmet's gold visor are small 2D and 3D
+    five outfits (spots, stripes, overalls, the spacesuit, with its chest
+    unit, patch and flag, and the beaver's fur, belly and paws), the scales
+    on the beaver's tail and the helmet's gold visor are small 2D and 3D
     distance functions of it. A shape
     painted this way is crisp at any mesh resolution, blinks by scaling one
     uniform, and costs no geometry variant: `uFace`, `uLid` and `uCostume`
@@ -32,10 +33,12 @@ import { B, boneRestWorld, faceWindow } from './bodyShape'
     skin folds shut into a smooth dome where the head was, and looking down
     you see a closed bean, your own chest and belly. Cutting the top off
     instead leaves the skin open, and from above an open skin is a hollow
-    cup with the road visible down each leg. The headgear is discarded. The
-    shadow pass draws with three's own depth material, which knows nothing
-    of any of this, so the body still casts whole. The shadow pass draws with three's own depth material,
-    which knows nothing of the flag, so the body still casts.
+    cup with the road visible down each leg. The headgear is discarded, and
+    so is everything else that is not the bean: the beaver's ears, snout
+    and tail and the headphones, which sit right beside the lens and would
+    otherwise be the inside of an earcup filling the screen. The shadow pass
+    draws with three's own depth material, which knows nothing of any of
+    this, so the body still casts whole.
 
   Every body builds its own instance (the palette is per body) but they all
   share one compiled program: `customProgramCacheKey` names the injection,
@@ -55,6 +58,23 @@ const HAIR = '#7a4e33'
 const SUIT_WHITE = '#e4e0d4'
 /** the life-support pack: the suit's white gone to machinery */
 const SUIT_GREY = '#9c9a94'
+/** the beaver's belly, snout and inner ears */
+const BEAVER_CREAM = '#ecd9b4'
+/** the headset's plastic and leather: a hair off pure black, so the look's
+    outline still finds its edge against a dark hat */
+const PHONES_BLACK = '#222126'
+/** the tail is the fur gone leathery: darker and greyer */
+const TAIL_LEATHER = new THREE.Color('#3a302a')
+
+/** the beaver's and the headset's paints, from the look: the fur (and the
+    tail darkened from it), and the headset's metal in the colour its
+    `phones` value names (look.ts's PHONES) */
+const gearPaint = (look: PlayerLook, pal: THREE.Color[]) => {
+  pal[11].set(FUR_SWATCHES[look.fur ?? 0] ?? FUR_SWATCHES[0])
+  pal[13].copy(pal[11]).multiplyScalar(0.55).lerp(TAIL_LEATHER, 0.45)
+  const phones = look.phones ?? 0
+  pal[15].set(phones === 2 ? look.trim : phones === 3 ? look.accent : PHONES_RED)
+}
 
 export interface BodyMaterial {
   material: THREE.MeshStandardMaterial
@@ -85,10 +105,12 @@ const v3 = (bone: number) => {
 }
 
 export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial {
-  const pal = [FACE_LIGHT, look.shell, look.trim, look.accent, look.glow, INK, CHEEK, GLINT, HAIR, SUIT_WHITE, SUIT_GREY].map(
-    (c) => new THREE.Color(c),
-  )
+  const pal = [
+    FACE_LIGHT, look.shell, look.trim, look.accent, look.glow, INK, CHEEK, GLINT, HAIR, SUIT_WHITE, SUIT_GREY,
+    FUR_SWATCHES[0], BEAVER_CREAM, FUR_SWATCHES[0], PHONES_BLACK, PHONES_RED,
+  ].map((c) => new THREE.Color(c))
   faceFor(look.glow, pal[0])
+  gearPaint(look, pal)
   const uniforms = {
     uPal: { value: pal },
     uGlowK: { value: 1 },
@@ -151,7 +173,7 @@ if (uHideHead > 0.5) {
       .replace(
         '#include <common>',
         `#include <common>
-uniform vec3 uPal[11];
+uniform vec3 uPal[16];
 uniform float uGlowK;
 uniform float uHideHead;
 uniform float uFaceLift;
@@ -308,6 +330,31 @@ if (role == 1) {
     vec3 flagCol = mix(uPal[7], uPal[2], stripes);
     flagCol = mix(flagCol, uPal[1], step(fq2.x, -0.01) * step(0.0, fq2.y));
     bodyCol = mix(bodyCol, flagCol, flag);
+  } else if (costume == 5) {
+    /*
+      The beaver onesie: fur all over in the look's fur shade, whatever the
+      body colour, a grain of darker tufts through it, a cream belly and
+      paws gone dark. The tail, the ears and the snout are modelled (their
+      own roles, below and in bodyShape's beaverPieces).
+    */
+    vec3 fur = uPal[11];
+    bodyCol = fur;
+    vec3 tp = vBind / vec3(0.09, 0.15, 0.09);
+    vec3 cell = floor(tp);
+    vec3 jit = fract(sin(vec3(dot(cell, vec3(12.9, 78.2, 37.7)), dot(cell, vec3(39.3, 11.1, 83.4)),
+      dot(cell, vec3(73.1, 52.7, 9.2)))) * 43758.5) - 0.5;
+    vec3 tq = fract(tp) - 0.5 - jit * 0.4;
+    float tuft = aaStep((length(tq * vec3(1.0, 0.45, 1.0)) - 0.2) * 0.09);
+    bodyCol *= 1.0 - 0.16 * tuft;
+    // the paws: the mittens and the feet
+    vec2 sh = vec2(abs(vBind.x) - 0.58, vBind.y - 1.62);
+    float t = dot(sh, vec2(0.7513, -0.6600));
+    float arms = (1.0 - trunk) * (1.0 - legs);
+    float paw = max(step(0.745, t) * arms, step(vBind.y, 0.17) * legs);
+    bodyCol = mix(bodyCol, fur * 0.5, paw);
+    // the belly: a cream oval down the front of the trunk
+    float bellyD = length(vec2(vBind.x / 0.36, (vBind.y - 1.1) / 0.46)) - 1.0;
+    bodyCol = mix(bodyCol, uPal[12], aaStep(bellyD * 0.3) * step(0.0, vBind.z) * trunk);
   }
   bodyCol = mix(bodyCol, uPal[2], trimK);
 
@@ -350,6 +397,14 @@ if (role == 3 && int(uHat + 0.5) == 5) {
   float d = length(fract(p) - 0.5) - 0.28;
   bodyCol = mix(bodyCol, uPal[2], aaStep(d * 0.13));
 }
+// the beaver's tail: its scales, a crosshatch running diagonally across the
+// paddle (s is along it, as bodyShape hangs it)
+if (role == 13) {
+  float s = dot(vBind, vec3(0.0, -0.722, -0.692));
+  vec2 g = vec2(vBind.x + s, vBind.x - s) / 0.085;
+  vec2 f = abs(fract(g) - 0.5);
+  bodyCol = mix(bodyCol, bodyCol * 0.5, aaStep((min(f.x, f.y) - 0.09) * 0.085));
+}
 diffuseColor.rgb = bodyCol;`,
       )
       .replace(
@@ -366,7 +421,7 @@ totalEmissiveRadiance += diffuseColor.rgb * uFaceLift * (facePanel * (0.07 + 0.2
 totalEmissiveRadiance += diffuseColor.rgb * uGummy * (0.55 + 0.45 * (1.0 - rim));`,
       )
   }
-  material.customProgramCacheKey = () => 'playerBody-v6'
+  material.customProgramCacheKey = () => 'playerBody-v7'
 
   return {
     material,
@@ -376,6 +431,7 @@ totalEmissiveRadiance += diffuseColor.rgb * uGummy * (0.55 + 0.45 * (1.0 - rim))
       pal[3].set(next.accent)
       pal[4].set(next.glow)
       faceFor(next.glow, pal[0])
+      gearPaint(next, pal)
       uniforms.uCostume.value = next.costume ?? 0
       uniforms.uHat.value = next.hat ?? 0
       setWin(next.build ?? 0)

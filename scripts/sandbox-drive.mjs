@@ -7,7 +7,9 @@
     npm run drive -- noclip           a noclip flight: a first-person strip and a
                                       third-person strip of the float pose
     npm run drive -- links            shader links counted in the real game across
-                                      a first spawn, a break, a fuse and a chain
+                                      a first spawn, a change of look (the
+                                      beaver, a cap, the headset), a break, a
+                                      fuse and a chain
                                       of bangs (must be 0)
     npm run drive -- space            the way up and to the Moon: the street's
                                       frame cost, a crate dropped from 20 up, a
@@ -759,6 +761,15 @@ try {
       window.__ids = [put('barrel_explosive', 16, -3), put('barrel_explosive', 21, 1), put('barrel_explosive', 26, -2),
         put('crate', 18, 3), put('crate', 22, -4), put('crate_small', 24, 4), put('melon', 17, 5), put('bottle', 19, -5),
         put('gascan', 28, 2)]`, 1500)
+    // a change of look is a palette and a geometry swap, never a program:
+    // the beaver, a cap and the headset put on in the chase view, where the
+    // body is drawn whole
+    await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+    await sleep(800)
+    total += await phase('a new look (beaver, cap, headset)', `window.__sandboxRig.setLook({ shell: '#2f6fcf',
+      trim: '#f2eee0', accent: '#2860c8', glow: '#1c1a20', hat: 1, costume: 5, build: 0, fur: 1, phones: 1 })`, 2500)
+    await shot('links-look')
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
     total += await phase('a crate broken (boards, dust)', `window.__sandbox.shatter(window.__ids[3])`, 1500)
     total += await phase('a fuse lit (sputter, burn fx)', `window.__sandbox.ignite(window.__ids[8])`, 1200)
     total += await phase('the chain (flash, jets, fire, smoke)', `window.__sandbox.damage(window.__ids[0], 1000)`, 600)

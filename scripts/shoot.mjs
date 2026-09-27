@@ -69,6 +69,9 @@ targets
                        and the old eye-scaled size next to it
   body:closeup         one body close: front, three-quarter, side and back
   body:wardrobe        every headgear once, close, over the builds and outfits
+  body:gear            the beaver and the headset: a beaver in a blue cap with
+                       the headset over it four ways round, the headset over
+                       every other headgear, and the three furs
   body:folds[:<n>]     eight poses with every folded triangle of the skin
                        painted red over it (pair with --raw); n picks one of
                        the lineup's six looks (4 wears the hood)

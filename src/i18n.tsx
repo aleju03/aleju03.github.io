@@ -226,7 +226,13 @@ const dictionaries = {
       shape: 'shape',
       builds: ['bean', 'chubby', 'slim', 'tall', 'stubby'],
       outfit: 'outfit',
-      costumes: ['none', 'spots', 'stripes', 'overalls', 'spacesuit'],
+      costumes: ['none', 'spots', 'stripes', 'overalls', 'spacesuit', 'beaver'],
+      // the beaver's three furs, in look.ts's FUR_SWATCHES order
+      fur: 'fur',
+      // headphones worn over any headgear, and what colour their metal is
+      // (look.ts's PHONES order: none, red, the detail colour, the hat colour)
+      phones: 'phones',
+      phonesKinds: ['none', 'red', 'detail', 'hat'],
       // one tap into the helmet and the spacesuit, keeping your colours
       suitUp: 'suit up',
     },
@@ -433,7 +439,10 @@ const dictionaries = {
       shape: 'forma',
       builds: ['frijol', 'gordito', 'flaco', 'alto', 'rechoncho'],
       outfit: 'traje',
-      costumes: ['nada', 'lunares', 'rayas', 'overol', 'traje espacial'],
+      costumes: ['nada', 'lunares', 'rayas', 'overol', 'traje espacial', 'castor'],
+      fur: 'pelaje',
+      phones: 'audífonos',
+      phonesKinds: ['no', 'rojos', 'detalle', 'gorro'],
       suitUp: 'a la luna',
     },
   },
