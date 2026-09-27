@@ -47,6 +47,10 @@ export const POSE = {
   /** noclip: floating, no ground under the pose. Without it a flyer reads
       as someone frozen at the top of a jump */
   fly: 64,
+  /** hanging off somebody's physgun (net/grab.ts). While it is set the
+      position is the ragdoll's chest, and everyone else's copy of the body
+      is pulled along it instead of tumbling on its own */
+  held: 128,
 } as const
 
 /** [id, x, y, z, yaw, pitch, gait, poseBits] — y is the soles, not the eye */
@@ -214,8 +218,27 @@ export interface WorldShove {
   vz: number
 }
 
+/** somebody has us on the end of a physgun. `hold` streams at about the
+    snapshot rate with where the grabbed limb should be; `freeze` pins it
+    there; `release` lets go with the throw's velocity. Ours to apply, and
+    `net/grab.ts`'s taker caps it and times it out */
+export type GrabPhase = 'hold' | 'freeze' | 'release'
+export interface WorldGrab {
+  type: 'world-grab'
+  from: PlayerId
+  phase: GrabPhase
+  limb: number
+  x: number
+  y: number
+  z: number
+  vx: number
+  vy: number
+  vz: number
+}
+
 export type WorldServerMessage =
   | WorldShove
+  | WorldGrab
   | WorldWelcome
   | WorldEnter
   | WorldExit
@@ -267,6 +290,21 @@ export type WorldClientMessage =
       Relayed to them alone, clamped, rate-limited, and dropped unless the
       two of us are within WORLD_SHOVE_REACH of each other and on foot */
   | { type: 'world-shove'; to: PlayerId; vx: number; vy: number; vz: number }
+  /** my physgun has this player by `limb`: see WorldGrab. Relayed to them
+      alone while the two of us are within the beam's reach and they are on
+      foot; a release is always relayed, and its velocity is clamped */
+  | {
+      type: 'world-grab'
+      to: PlayerId
+      phase: GrabPhase
+      limb: number
+      x: number
+      y: number
+      z: number
+      vx: number
+      vy: number
+      vz: number
+    }
   | {
       type: 'world-vehicle'
       v: number
@@ -294,6 +332,7 @@ export function packPose(o: {
   speaking: boolean
   down: boolean
   fly?: boolean
+  held?: boolean
 }): number {
   return (
     (o.grounded ? POSE.grounded : 0) |
@@ -302,6 +341,7 @@ export function packPose(o: {
     (o.swimming ? POSE.swimming : 0) |
     (o.speaking ? POSE.speaking : 0) |
     (o.down ? POSE.down : 0) |
-    (o.fly ? POSE.fly : 0)
+    (o.fly ? POSE.fly : 0) |
+    (o.held ? POSE.held : 0)
   )
 }

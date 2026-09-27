@@ -2,6 +2,7 @@ import { sessionExpired } from './session'
 import type { Session } from './osContext'
 import {
   isWorldMessage,
+  type GrabPhase,
   type PlayerId,
   type VoiceSignal,
   type WorldServerMessage,
@@ -71,6 +72,12 @@ export interface WorldNet {
   /** we bumped into this player: the velocity their own client should take
       (game/net/shove.ts). Throttled by the caller, clamped by the server */
   shove: (to: PlayerId, vx: number, vy: number, vz: number) => void
+  /** our physgun has this player (game/net/grab.ts). Throttled by the
+      caller, checked and clamped by the server */
+  grab: (
+    to: PlayerId, phase: GrabPhase, limb: number,
+    x: number, y: number, z: number, vx?: number, vy?: number, vz?: number,
+  ) => void
   /** where the machine we are driving is; throttled like `move` */
   vehicle: (
     v: number,
@@ -351,6 +358,14 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     shove(to, vx, vy, vz) {
       const r = (n: number) => Math.round(n * 100) / 100
       inWorld({ type: 'world-shove', to, vx: r(vx), vy: r(vy), vz: r(vz) })
+    },
+
+    grab(to, phase, limb, x, y, z, vx = 0, vy = 0, vz = 0) {
+      const r = (n: number) => Math.round(n * 100) / 100
+      inWorld({
+        type: 'world-grab', to, phase, limb,
+        x: r(x), y: r(y), z: r(z), vx: r(vx), vy: r(vy), vz: r(vz),
+      })
     },
 
     setLevel(next) {

@@ -66,10 +66,11 @@ import {
   thaws whatever you are looking at. A rig limb frozen is a limb pinned in
   place, which is how a ragdoll gets posed.
 
-  **Rigs** are bodies built by `buildPlayerBody()` (pedestrians, and later
-  remote players), grabbed by their nearest limb through the rig's own
-  `grab(i, target)` hook: the verlet ragdoll follows a point that this
-  module moves. They are found by testing the view ray against each limb's
+  **Rigs** are bodies built by `buildPlayerBody()` (pedestrians, and other
+  players through `net/grab.ts`'s adapter), grabbed by their nearest limb
+  through the rig's own `grab(i, target)` hook: the verlet ragdoll follows a
+  point that this module moves. A rig that says it is no longer `alive` (a
+  player who left, sat down or ran out the hold's cap) is let go. They are found by testing the view ray against each limb's
   sphere, which is exact for the thing a ragdoll is made of.
 
   Nothing allocates per frame. The Rapier bindings do allocate for their
@@ -417,7 +418,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
       }
       emit('release', view.end.x, view.end.y, view.end.z, thrown ? va.length() : 0)
     } else if (rig) {
-      rig.grab(limb, null)
+      rig.grab(limb, null, undefined, thrown ? targetVel : undefined)
       emit('release', view.end.x, view.end.y, view.end.z, thrown ? targetVel.length() : 0)
     }
     clearHold()
@@ -521,8 +522,14 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     reloadWas = inp.reload
     if (!inp.fire) spent = false
 
-    // a prop that vanished under the hold (removed, parked, undone)
+    // a prop that vanished under the hold (removed, parked, undone), or a
+    // body that can no longer be held (a player who left or sat down)
     if (prop && (!sb.get(prop.id) || prop.parked)) clearHold()
+    if (rig && rig.alive && !rig.alive()) clearHold()
+    for (let k = pins.length - 1; k >= 0; k--) {
+      const pr = pins[k].rig
+      if (pr.alive && !pr.alive()) pins.splice(k, 1)
+    }
     // standing on it: a beam that lifts its own holder is a motor
     if (prop && sb.standing === prop) release(false)
 

@@ -98,6 +98,10 @@ net/                 the shared walk, see "Multiplayer" below
                      cannot move, whose hard bumps go out as world-shove;
                      createShoveTaker(): the victim's own client deciding
                      stumble, flop or nothing
+  grab.ts            createRemoteGrabs(): other players offered to the
+                     physgun as rigs, the hold streamed as world-grab;
+                     createGrabTaker(): the victim pinning its own ragdoll
+                     to the stream, capped and timed out
   spawn.ts           scatterSpawn(): the sunflower offset that keeps two
                      simultaneous arrivals out of each other's ribcage
 vehicles/            three driveable machines, see "The fleet" below
@@ -1252,6 +1256,19 @@ be recomputed are where the other people are, and where they left the car.
   nobody can be pinned to the floor. The fall reaches everyone else through
   the ordinary `down` pose bit. `npm run measure -- bodies net` drives the
   real snapshot store at 15 Hz against a sprint and a lean.
+- **The physgun takes other players the same way.** `net/grab.ts` adds every
+  remote body on foot to the beam's rigs through a thin adapter, so the aim
+  and the glow are unchanged. A hold streams `world-grab` 'hold' at 20 Hz
+  (the limb and where it should be), a freeze sends 'freeze' and letting go
+  sends 'release' with the beam's velocity; the server relays it to the
+  victim alone within 180 units, never at somebody seated or flying, and
+  clamps the throw to 40 u/s. The victim pins its own ragdoll's limb to the
+  eased stream and tops its velocity up to the throw on release, lets go of a
+  hold that goes quiet for 0.5 s or whose grabber leaves, and caps any hold
+  or freeze at 8 s. While held its snapshot carries the chest and the `held`
+  bit, which third parties' copies follow; the grabber's own copy is pinned
+  to the beam end locally (`avatars.claim`) so the hold never feels a round
+  trip late, and rejoins the victim's stream at the get-up.
 - **Distance is done in WebAudio.** Each peer's stream lands on its own
   `PannerNode` with the listener riding the camera. Peers open at 55 units and
   drop at 80; the gap is what stops someone pacing the boundary from

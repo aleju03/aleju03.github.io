@@ -107,8 +107,13 @@ export const emptyHold = (holder = 'local'): HoldRecord => ({
 export interface GrabRig {
   readonly limbs: readonly { radius: number }[]
   limbPos: (i: number, out: THREE.Vector3) => THREE.Vector3
-  /** hold a limb toward a live point, read by reference; null lets go */
-  grab: (i: number, target: THREE.Vector3 | null, k?: number) => void
+  /** hold a limb toward a live point, read by reference; null lets go, and
+      a throw hands the beam's velocity at that moment as `v` (a local body
+      already carries it in its verlet; another player's needs telling) */
+  grab: (i: number, target: THREE.Vector3 | null, k?: number, v?: THREE.Vector3) => void
+  /** false once this body can no longer be held (its player left, sat
+      down, took off, or the hold ran past its cap): the beam lets go */
+  alive?: () => boolean
 }
 
 /** a rig, with a stable name the hold record can carry */

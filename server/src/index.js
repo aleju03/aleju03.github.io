@@ -158,6 +158,17 @@ const WORLD_SHOVE_MAX = 24; // units/s, planar and vertical
 const WORLD_SHOVE_REACH = 12; // between the two last reported poses; lag is generous
 const WORLD_SHOVE_RATE_MAX = 12; // a held lean is ~3 a second
 const WORLD_SHOVE_RATE_WINDOW_MS = 3_000;
+// The physgun on a player. Same deal as a shove: the grabber proposes where
+// the victim's limb should be (and, letting go, how fast they leave), and the
+// victim's own client pins its own ragdoll to it (src/game/net/grab.ts). This
+// process checks the two are within the beam's reach, the victim is on foot
+// and not flying, and the stream is not a firehose. Mirrors THROW_MAX there.
+const WORLD_GRAB_REACH = 180; // the beam's farthest push, plus lag
+const WORLD_GRAB_THROW_MAX = 40; // units/s
+const WORLD_GRAB_LIMBS = 13;
+const WORLD_GRAB_PHASES = new Set(['hold', 'freeze', 'release']);
+const WORLD_GRAB_RATE_MAX = 90; // the hold streams at ~20Hz
+const WORLD_GRAB_RATE_WINDOW_MS = 3_000;
 
 const MAX_TEXT_LEN = 600;
 const HISTORY_LIMIT = 60;
@@ -863,6 +874,8 @@ function handleDuelRematch(ws) {
 //      question clients cannot settle between themselves: who has the wheel
 //   5. shoves — one walker bumping another, relayed to the victim alone
 //      when the two are near each other and both on foot
+//   6. grabs: the physgun holding another player, streamed to the victim
+//      alone, who pins their own ragdoll to it
 //
 // Sockets stay in the world independently of chat: `ws.world` is set by
 // world-join and is the whole of a player's server-side state.
@@ -875,6 +888,7 @@ const worldSignalRate = new WeakMap();
 const worldSeatRate = new WeakMap();
 const worldLookRate = new WeakMap();
 const worldShoveRate = new WeakMap();
+const worldGrabRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
 
@@ -896,7 +910,8 @@ const W_SWIM = 8;
 const W_SPEAKING = 16;
 const W_DOWN = 32;
 const W_FLY = 64; // noclip
-const W_FLAGS = W_GROUNDED | W_RUN | W_CROUCH | W_SWIM | W_SPEAKING | W_DOWN | W_FLY;
+const W_HELD = 128; // hanging off somebody's physgun
+const W_FLAGS = W_GROUNDED | W_RUN | W_CROUCH | W_SWIM | W_SPEAKING | W_DOWN | W_FLY | W_HELD;
 
 function allowWorld(map, ws, max, windowMs) {
   const now = Date.now();
@@ -1299,6 +1314,64 @@ function handleWorldShove(ws, msg) {
   send(peer, { type: 'world-shove', from: w.id, vx: r2(vx), vy: r2(vy), vz: r2(vz) });
 }
 
+// Somebody has somebody else on the end of a physgun. Streamed at about the
+// snapshot rate while held; a 'freeze' pins the limb where it is and a
+// 'release' carries the throw. Nothing here moves anybody: the victim's own
+// client pins its own body to the point, caps the hold and times it out.
+// Every refusal is silent, because a hold is a stream and the victim's side
+// already lets go of one that stops arriving.
+function handleWorldGrab(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (
+    !Number.isInteger(msg.to) ||
+    !WORLD_GRAB_PHASES.has(msg.phase) ||
+    !Number.isInteger(msg.limb) ||
+    msg.limb < 0 ||
+    msg.limb >= WORLD_GRAB_LIMBS ||
+    !finite(msg.x) ||
+    !finite(msg.y) ||
+    !finite(msg.z)
+  ) {
+    strike(ws);
+    return;
+  }
+  if (!allowWorld(worldGrabRate, ws, WORLD_GRAB_RATE_MAX, WORLD_GRAB_RATE_WINDOW_MS)) return;
+  const peer = worldPlayers.get(msg.to);
+  if (!peer || peer === ws || peer.world.level !== w.level) return;
+  const p = peer.world;
+  // a release always goes through, so a victim is never left hanging by a
+  // refusal; everything else must be honest
+  if (msg.phase !== 'release') {
+    if (Math.hypot(p.x - w.x, p.y - w.y, p.z - w.z) > WORLD_GRAB_REACH) return;
+    if (Math.hypot(msg.x - w.x, msg.y - w.y, msg.z - w.z) > WORLD_GRAB_REACH) return;
+    if (p.f & W_FLY) return;
+    if (worldSeated(p.id)) return;
+  }
+  let vx = finite(msg.vx) ? msg.vx : 0;
+  let vy = finite(msg.vy) ? msg.vy : 0;
+  let vz = finite(msg.vz) ? msg.vz : 0;
+  const speed = Math.hypot(vx, vy, vz);
+  if (speed > WORLD_GRAB_THROW_MAX) {
+    const k = WORLD_GRAB_THROW_MAX / speed;
+    vx *= k;
+    vy *= k;
+    vz *= k;
+  }
+  send(peer, {
+    type: 'world-grab',
+    from: w.id,
+    phase: msg.phase,
+    limb: msg.limb,
+    x: r2(clampCoord(msg.x)),
+    y: r2(clampCoord(msg.y)),
+    z: r2(clampCoord(msg.z)),
+    vx: r2(vx),
+    vy: r2(vy),
+    vz: r2(vz),
+  });
+}
+
 // ---------------------------------------------------------------- analytics
 
 // A failure here must never take the chat down with it: a bad Turso token or
@@ -1658,6 +1731,9 @@ function handleMessage(ws, msg) {
       return;
     case 'world-shove':
       handleWorldShove(ws, msg);
+      return;
+    case 'world-grab':
+      handleWorldGrab(ws, msg);
       return;
     case 'peeko-monitor':
       handlePeekoMonitor(ws, msg);

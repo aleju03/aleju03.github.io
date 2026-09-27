@@ -74,6 +74,8 @@ export interface RemotePlayer {
   down: boolean
   /** in noclip: the body floats rather than falls */
   flying: boolean
+  /** on the end of somebody's physgun: x/y/z is their ragdoll's chest */
+  held: boolean
   /** downward speed a touchdown absorbed this frame, else 0 */
   landing: number
   /** the body was placed rather than moved this frame: spawn, seam, teleport */
@@ -141,6 +143,7 @@ function makePlayer(entry: RosterEntry): RemotePlayer {
     speaking: false,
     down: false,
     flying: false,
+    held: false,
     landing: 0,
     snapped: true,
   }
@@ -295,6 +298,7 @@ export function createRemoteWorld(): RemoteWorld {
         player.speaking = (f & POSE.speaking) !== 0
         player.down = (f & POSE.down) !== 0
         player.flying = (f & POSE.fly) !== 0
+        player.held = (f & POSE.held) !== 0
         player.landing = !wasGrounded && player.grounded ? Math.max(0, -player.vy) : 0
 
         const crouchTo = (f & POSE.crouch) !== 0 ? 1 : 0
