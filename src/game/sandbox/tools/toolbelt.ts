@@ -59,6 +59,8 @@ export interface ToolFrame {
   firstPerson: boolean
   /** third person: the body's right hand, world */
   hand?: THREE.Vector3 | null
+  /** third person: the body's left hand, on the foregrip */
+  handL?: THREE.Vector3 | null
   /** the tool is usable at all this frame: on foot, in the sandbox's level,
       not sitting, not a heap on the floor */
   active: boolean
@@ -192,7 +194,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       vm.update({
         camera: f.camera, dt: f.dt, gait: f.gait, grounded: f.grounded,
         holding: physgun.holding, strain: physgun.view.strain,
-        firstPerson: f.firstPerson, hand: f.hand, aim: aimDir, aimAt, shown,
+        firstPerson: f.firstPerson, hand: f.hand, handL: f.handL, aim: aimDir, aimAt, shown,
       })
     }
     if (beam) {
