@@ -7,7 +7,7 @@ import { gfx } from '../world/quality'
 /*
   Everything above the horizon, and the clock that drives it.
 
-  A full day is DAY_LEN seconds, Minecraft-style. The sun and moon ride one
+  A full day is DAY_LEN seconds, Minecraft-style, most of it daylight. The sun and moon ride one
   orbit half a day apart; a painted day dome crossfades over the star dome, a
   shell of animated FBM clouds drifts over both (adapted from cortiz2894/
   stylized-components' SkyDome, MIT © Christian Ortiz), a twilight band flares
@@ -54,8 +54,30 @@ import { gfx } from '../world/quality'
   (world/globe.ts), and on the Moon itself `moonDisc` false hides it.
 */
 
-const DAY_LEN = 480 // seconds per full in-world day
+const DAY_LEN = 1200 // seconds per full in-world day
 const START_TOD = 0.36 // 0 midnight .. 0.5 noon; 0.36 = mid-morning
+/*
+  The clock does not run evenly. At eight minutes a day the daylight was
+  gone in about four, which was too short to get anything done in; a
+  longer, even day would only make the night drag as much. So the day is
+  twenty minutes and the hours between DAWN and DUSK take DAY_SHARE of
+  them (about fourteen and a half minutes of light), and the night the
+  rest (about five and a half, still long enough to aim a portal at the
+  Moon). The mapping is piecewise linear, so the sky's own dusk and dawn
+  ramps, which are written against tod, are just crossed more slowly.
+*/
+const DAWN = 0.23
+const DUSK = 0.77
+const DAY_SHARE = 0.72
+/** tod for a clock that has run `r` cycles from dawn */
+const todOfCycle = (r: number) => {
+  const f = r - Math.floor(r)
+  return f < DAY_SHARE
+    ? DAWN + (f / DAY_SHARE) * (DUSK - DAWN)
+    : (DUSK + ((f - DAY_SHARE) / (1 - DAY_SHARE)) * (1 - (DUSK - DAWN))) % 1
+}
+/** where the clock starts, so boot still lands on START_TOD */
+const START_CYCLE = ((START_TOD - DAWN) / (DUSK - DAWN)) * DAY_SHARE
 
 export interface SkyState {
   /** 0 night .. 1 day (smoothed on sun elevation) */
@@ -788,7 +810,7 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     const now = performance.now()
     const tod = todOverride !== undefined
       ? todOverride
-      : (START_TOD + (now - birth) / (1000 * DAY_LEN)) % 1
+      : todOfCycle(START_CYCLE + (now - birth) / (1000 * DAY_LEN))
     const a = (tod - 0.25) * Math.PI * 2
     lastA = a
     const sunEl = Math.sin(a)

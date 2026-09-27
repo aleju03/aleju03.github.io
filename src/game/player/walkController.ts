@@ -56,6 +56,10 @@ import { axis, held } from '../sandbox/bindings'
   the first walk tick after a flight asks collision.ts's `surfaceAbove`.
 */
 
+/** the mid-air hop's launch speed as a share of a jump's: height goes with
+    its square, so 0.72 is about half a jump's height */
+const HOP_K = 0.72
+
 export interface WalkTuning {
   /** standing eye height over the surface underfoot */
   eye: number
@@ -117,6 +121,8 @@ export interface WalkStep {
   /** a sole landed this tick — one per bob cycle, at the bottom of the dip.
       The sim only reports it; the scene decides what a step sounds like */
   footfall: boolean
+  /** the one mid-air hop fired this tick: the scene puffs a cloud under it */
+  airHop: boolean
   /** the body is in water over its chest: buoyancy owns the vertical, planar
       speed is damped, and the scene should stop asking the ground what a
       footstep sounds like */
@@ -206,6 +212,10 @@ export function createWalkController(
   let feetY = 0 // absolute; the sole height, whatever it is standing on
   let vy = 0
   let grounded = true
+  /** the one hop allowed between landings has been spent */
+  let hopped = false
+  /** space was down last tick, so a hop needs a fresh press, never a hold */
+  let jumpWas = false
   let bobT = 0
   let stride = 0 // which bob cycle the last voiced footfall belonged to
   let noclip = false
@@ -235,7 +245,7 @@ export function createWalkController(
   // reused across ticks: the walk loop runs at 60Hz and shouldn't feed the GC
   const step: WalkStep = {
     planar: 0, gait: 0, grounded: true, duck: false, run: false, moved: false,
-    vx: 0, vz: 0, vy: 0, landing: 0, support: 0, footfall: false,
+    vx: 0, vz: 0, vy: 0, landing: 0, support: 0, footfall: false, airHop: false,
     swimming: false, wet: 0, flying: false,
   }
 
@@ -448,6 +458,7 @@ export function createWalkController(
       stride = 0 // or the clock rewind reads as one phantom footfall
     },
     update: (o) => {
+      step.airHop = false
       if (noclip) return flyStep(o)
       const { dt, keys, frozen, groundY, groundAt, ceilingY, waterY, collision, fovBase } = o
       step.flying = false
@@ -536,9 +547,21 @@ export function createWalkController(
         floorY,
       )
       // space jumps; holding it bunny-hops off each landing
-      if (!frozen && !stunned && !swimming && held(keys, 'jump') && grounded && !duck) {
+      const jumpNow = !frozen && held(keys, 'jump')
+      const jumpPress = jumpNow && !jumpWas
+      jumpWas = jumpNow
+      if (grounded) hopped = false
+      if (!frozen && !stunned && !swimming && jumpNow && grounded && !duck) {
         grounded = false
         vy = tune.jumpV
+      } else if (jumpPress && !grounded && !hopped && !stunned && !swimming) {
+        // and one small hop in the air, on a fresh press: about half a
+        // jump's height again from wherever it is fired, enough to make a
+        // ledge a plain jump just misses, never a second full jump. It
+        // replaces a fall rather than adding to it, so a late hop still lifts
+        hopped = true
+        vy = Math.max(vy, tune.jumpV * HOP_K)
+        step.airHop = true
       }
       step.landing = 0
       if (swimming && waterY !== undefined) {

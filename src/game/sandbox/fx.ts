@@ -57,6 +57,9 @@ export interface Fx {
   burn: (at: Vec3Like, k: number) => void
   /** a puff of dust where something heavy landed */
   dust: (at: Vec3Like, size: number) => void
+  /** a small white cloud kicked out under a mid-air hop, as if it was
+      stepped off */
+  cloud: (at: Vec3Like) => void
   /** one frame of a thruster burning: flame out of the nozzle along `dir`
       (unit, the exhaust's way), carried with the machine's velocity, a
       trail of pale smoke, and the look's fake light at the nozzle. `k` is
@@ -87,6 +90,7 @@ const NOOP_FX: Fx = {
   debris: () => {},
   burn: () => {},
   dust: () => {},
+  cloud: () => {},
   thrust: () => {},
   zap: () => {},
   plume: () => {},
@@ -885,6 +889,25 @@ export const createFx = (o: FxOpts): Fx => {
         const s = rnd(0.22, 0.42) * Math.min(2.5, size)
         emit(puffs, at.x + d3[0] * size * 0.5, at.y, at.z + d3[2] * size * 0.5, d3[0] * 3, rnd(0.6, 1.6), d3[2] * 3,
           rnd(0.5, 0.8), s, s, s, 0.32, 0.29, 0.24, { grow: 1.8, drag: 2.5, spin: 1.5, fadeAt: 0.05 })
+      }
+    },
+
+    cloud: (at) => {
+      // a flat ring of soft white puffs thrown out sideways from the soles
+      // and a couple left hanging where the foot was: the smoke's own
+      // sprites in a pale colour, so no new program
+      for (let i = 0; i < 9; i++) {
+        const a = (i / 9) * Math.PI * 2 + rnd(-0.25, 0.25)
+        const sp = rnd(2.4, 3.6)
+        const s = rnd(0.32, 0.5)
+        emit(puffs, at.x + Math.cos(a) * 0.35, at.y + rnd(-0.1, 0.1), at.z + Math.sin(a) * 0.35,
+          Math.cos(a) * sp, rnd(-0.4, 0.3), Math.sin(a) * sp,
+          rnd(0.45, 0.65), s, s * 0.7, s, 0.93, 0.93, 0.95, { grow: 1.6, drag: 4, spin: 1, fadeAt: 0.05 })
+      }
+      for (let i = 0; i < 2; i++) {
+        const s = rnd(0.45, 0.6)
+        emit(puffs, at.x + rnd(-0.2, 0.2), at.y + rnd(0, 0.2), at.z + rnd(-0.2, 0.2), 0, rnd(-0.6, -0.2), 0,
+          rnd(0.5, 0.7), s, s * 0.75, s, 0.96, 0.96, 0.97, { grow: 1.4, drag: 3, spin: 0.8, fadeAt: 0.05 })
       }
     },
 

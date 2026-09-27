@@ -3696,6 +3696,11 @@ export default function CrtScene({
             if (step.landing > 3) landThump(surface, Math.min(1, (step.landing - 3) / 14))
             else footstep(surface, step.gait * (1 - walk.crouchK * 0.65), step.run)
           }
+          // the mid-air hop kicks a little cloud out from under the feet
+          if (step.airHop) {
+            sandbox?.fx.cloud({ x: camera.position.x, y: walk.feetY, z: camera.position.z })
+            spawnPop(0.4)
+          }
           // the view is a saved preference the pause menu also owns, so the
           // boom just follows it and the camera key (bindings.ts) flips it;
           // x flops, and once the ragdoll settles, x or any move key stands
