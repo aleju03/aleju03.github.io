@@ -116,7 +116,9 @@ export function createPortalWalk(env: PortalWalkEnv): PortalWalk {
       const cp = Math.cos(walk.pitch)
       d.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp).applyQuaternion(q)
       v.set(vx, vy, vz).applyQuaternion(q)
-      curC.applyMatrix4(M)
+      // (a portal on a prop is crossed a body's radius off its face, and
+      // left the same way: see Portal.skin)
+      curC.addScaledVector(from.n, -from.skin).applyMatrix4(M).addScaledVector(to.n, to.skin)
       if (to.level !== from.level && !env.changeLevel?.(to.level, c)) return null
       const nl = env.level()
       let feet = curC.y - PORTAL_BODY_MID

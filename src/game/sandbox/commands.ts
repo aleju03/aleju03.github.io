@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { STEP_SETS, setStepSet, stepSet, type StepSet } from '../core/footsteps'
+import { forceMusic, musicNow, type Mood } from '../music'
 import { labelIn, type History } from './history'
 import type { PropKind } from './kinds'
 import type { WorldRules } from './rules'
@@ -1141,6 +1142,30 @@ registerCommand({
       c: msg('the bean', 'el frijol'),
     }[now]
     ctx.ok(msg(`footsteps: ${now} (${say(name, 'en')})`, `pasos: ${now} (${say(name, 'es')})`))
+  },
+})
+
+// the soundtrack (game/music): what is playing, and a lever on it
+const MOODS: Mood[] = ['home', 'field', 'town', 'night', 'sea', 'sky', 'orbit']
+registerCommand({
+  name: 'music',
+  aliases: ['song'],
+  args: [{ name: 'what', nameEs: 'qué', type: 'choice', optional: true, choices: ['next', 'off', 'auto', ...MOODS] }],
+  help: msg(
+    'what is playing; next skips, off silences, a mood (home, field, town, night, sea, sky, orbit) pins it, auto hands it back',
+    'qué suena; next salta, off calla, un ánimo (home, field, town, night, sea, sky, orbit) lo fija, auto lo devuelve',
+  ),
+  run: (ctx) => {
+    const w = ctx.args[0]?.toLowerCase()
+    if (w === 'next') forceMusic('next')
+    else if (w === 'off') forceMusic('off')
+    else if (w === 'auto') forceMusic(null)
+    else if (w) forceMusic(w as Mood)
+    const n = musicNow()
+    if (n.playing) ctx.ok(msg(`playing: ${n.playing}`, `suena: ${n.playing}`))
+    else if (!n.mood) ctx.ok(msg('silence', 'silencio'))
+    else if (n.loading) ctx.ok(msg(`tuning up for ${n.mood}`, `afinando para ${n.mood}`))
+    else ctx.ok(msg(`quiet for ${Math.round(n.resting)} s, then ${n.mood}`, `silencio ${Math.round(n.resting)} s, luego ${n.mood}`))
   },
 })
 

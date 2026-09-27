@@ -643,6 +643,8 @@ export const DIMS = {
   vending: { hx: 1.15, hy: 2.2, hz: 1.0 },
   lamp: { h: 9.8 },
   container: { hx: 7.2, hy: 3.0, hz: 2.9 },
+  /** the portal panel: a little bigger than the portal gun's oval */
+  portalPanel: { hx: 1.4, hy: 2.6, hz: 0.08 },
 }
 
 /* ------------------------------------------------------------ models -- */
@@ -1059,6 +1061,25 @@ const sodacan = () => {
   return m.mesh()
 }
 
+/** the portal panel: a big thin board in a pale concrete grey, a slate edge
+    round it and a narrow frame proud of each face at the rim, so the middle
+    stays one flat field a portal fits on (Aperture's white panel, in this
+    world's palette rather than its white plastic) */
+const portalPanel = () => {
+  const { hx, hy, hz } = DIMS.portalPanel
+  const m = model()
+  const face = flat('#d4d2cb')
+  m.box([0, 0, 0], [2 * hx, 2 * hy, 2 * hz], { side: flat(PAL.steelDark), py: flat(PAL.steelDark), ny: flat(PAL.steelDark), pz: face, nz: face })
+  for (const s of [-1, 1]) {
+    const z = s * (hz + 0.012)
+    m.box([0, hy - 0.06, z], [2 * hx, 0.12, 0.024], flat('#9ea3a8'))
+    m.box([0, -hy + 0.06, z], [2 * hx, 0.12, 0.024], flat('#9ea3a8'))
+    m.box([hx - 0.06, 0, z], [0.12, 2 * hy, 0.024], flat('#9ea3a8'))
+    m.box([-hx + 0.06, 0, z], [0.12, 2 * hy, 0.024], flat('#9ea3a8'))
+  }
+  return m.mesh()
+}
+
 const block = () => {
   const { hx, hy, hz } = DIMS.block
   const m = model()
@@ -1410,6 +1431,7 @@ export const MODELS: Record<string, () => THREE.Object3D> = {
   vending,
   streetlamp,
   container,
+  portal_panel: portalPanel,
 }
 
 /* -------------------------------------------------------------- gibs -- */

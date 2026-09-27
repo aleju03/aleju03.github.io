@@ -27,6 +27,11 @@ export interface Aim {
   dir: THREE.Vector3
   /** heading, the walk's convention (0 faces -Z) */
   yaw: number
+  /** the ray only starts this far along (an aim carried through a portal
+      begins behind the exit's wall, and must not find the wall) */
+  near?: number
+  /** this aim was carried through a portal: your own body may be taken */
+  through?: boolean
 }
 
 /** one frame of intent, however it was produced */

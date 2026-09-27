@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { MeshBuilder } from '../core/geometry'
 import { raiseKind, type BuildKind } from './buildings'
+import { lotClear } from './chunk'
 import { BOX, PLANE, lotStream, type BuildOut, type Lot } from './kitbash'
 import { SURF } from './surface'
 
@@ -101,6 +102,9 @@ export const massOf = (kind: BuildKind, lot: Omit<Lot, 'rng'>, minArea = 5): Mas
     doors: [],
     smash: [],
     detailed: false,
+    // the same street test the chunk's kits get, or a garage the chunk
+    // refuses on a side street would stand there in the far field
+    clear: lotClear(lot.x, lot.z),
   }
   raiseKind(out, kind, { ...lot, rng: lotStream(lot.x, lot.z) })
 

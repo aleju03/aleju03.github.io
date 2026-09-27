@@ -3,7 +3,7 @@ import { registerKind, type PropKind, type ShapeSpec } from './kinds'
 import { BARRIER_PROFILE, DIMS, MODELS } from './models'
 
 /*
-  The spawnable prop catalogue: forty-one things to throw, stack and break,
+  The spawnable prop catalogue: forty-two things to throw, stack and break,
   chosen for a suburban and downtown planet (a house, shops, roads) and for
   being fun in a physics sandbox, Garry's Mod's own list read through that
   world: crates of two sizes, pallets and planks, oil drums and the red
@@ -485,6 +485,18 @@ def('soda_can', {
 
 /* ------------------------------------------------------- construction -- */
 
+// big and flat on purpose: the one prop made to carry a portal (the gun
+// fits its oval to the box, and the portal rides it)
+def('portal_panel', {
+  category: 'construction',
+  name: { en: 'Portal panel', es: 'Panel para portales' },
+  shape: box(DIMS.portalPanel.hx, DIMS.portalPanel.hy, DIMS.portalPanel.hz),
+  mass: 60,
+  friction: 0.8,
+  restitution: 0.05,
+  density: 0.7,
+  surface: 'sheet',
+})
 def('block', {
   category: 'construction',
   name: { en: 'Concrete block', es: 'Bloque de concreto' },
