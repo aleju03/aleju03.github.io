@@ -5,9 +5,10 @@ import { BR } from './backrooms'
 import type { OutsideHandles } from './outsideWorld'
 import { makeCollisionSet } from '../physics/collision'
 import type { Level } from './types'
+import { MOON_ORIGIN, MOON_WALK } from './space'
 
 /*
-  The two levels the game ships today, adapted onto the Level contract:
+  The three levels the game ships today, adapted onto the Level contract:
 
   - 'overworld' — the house, the yard, and an endless procedural world past
     the fence. Its collision set is the shared obstacle list every builder
@@ -32,9 +33,17 @@ import type { Level } from './types'
   streaming: the maze wanders far enough that the overworld would otherwise
   keep rebuilding terrain around coordinates nobody is standing on.
 
-  Both keep the house and the backrooms modules ticking every frame no matter
-  which side you're on: doors keep easing shut upstairs while you're below,
-  and the seam keeps whispering upstairs while you're not.
+  - 'moon' — reached by flying at the Moon from orbit, and left by flying
+    up off it (levels/space.ts has the numbers, outsideWorld.ts the seams).
+    Its ground is levels/moon.ts's craters, its sky the same sky module with
+    the air taken out and the globe hung in it, and it has a sandbox of its
+    own standing on its own lattice, at a sixth of the gravity. It stands
+    far off in the scene, so nothing of the overworld's is inside its far
+    plane, and it declares no fleet, no crowd, no house and no air.
+
+  All of them keep the house and the backrooms modules ticking every frame no
+  matter which side you're on: doors keep easing shut upstairs while you're
+  below, and the seam keeps whispering upstairs while you're not.
 */
 
 export function makeHomeLevels(
@@ -70,7 +79,8 @@ export function makeHomeLevels(
       house.update(dt) // doors easing, fireflies drifting
       backrooms.update(dt, p, false) // the seam's whisper from below
     },
-    seamTo: (p) => (backrooms.overEntry(p) ? { to: 'backrooms' } : null),
+    // the backrooms' doctored wall, or the Moon from orbit
+    seamTo: (p) => (backrooms.overEntry(p) ? { to: 'backrooms' } : outside.moonSeam(p)),
     // everything: the one level that has the lot
     gravity: 1,
     sandbox: {
@@ -136,5 +146,47 @@ export function makeHomeLevels(
     },
   }
 
-  return [overworld, level0]
+  const moon: Level = {
+    id: 'moon',
+    groundY: -1e5,
+    groundYAt: outside.moon.groundYAt,
+    // the walkable square: past it the ground curves away into the horizon
+    collision: makeCollisionSet(
+      {
+        minX: MOON_ORIGIN.x - MOON_WALK,
+        maxX: MOON_ORIGIN.x + MOON_WALK,
+        minZ: MOON_ORIGIN.z - MOON_WALK,
+        maxZ: MOON_ORIGIN.z + MOON_WALK,
+      },
+      outside.moon.obstacles,
+    ),
+    get spawn() {
+      return outside.moon.spawn
+    },
+    enter: () => {
+      outside.setVenue('moon')
+    },
+    leave: () => {
+      outside.setVenue('earth')
+    },
+    update: (dt, p) => {
+      house.update(dt)
+      backrooms.update(dt, p, false)
+    },
+    seamTo: (p) => outside.earthSeam(p),
+    // a black sky lights nothing: the shadow side of a crater is dark, and
+    // the house's moonlight and window spill are a world away
+    overrideLight: (rig) => {
+      rig.hemi.intensity *= 0.35
+      rig.moon.intensity = 0
+      rig.windowSpill.intensity = 0
+      rig.setMoonPool(0)
+    },
+    gravity: 1 / 6,
+    sandbox: { ground: outside.moon.ground },
+    outdoors: true,
+    surfaceAt: () => 'sand',
+  }
+
+  return [overworld, level0, moon]
 }

@@ -72,8 +72,8 @@ const volWord = (v: number) => (v <= 0 ? 'muted' : `${Math.round(v * 100)}%`)
 
 /** somebody else out in the world, as this screen lists them: who they are,
     what colour they painted their shell, and where they were standing when
-    the menu went up. No bearing means they are in another level, which for
-    now is the backrooms */
+    the menu went up. No bearing means they are in another level: the
+    backrooms or the Moon */
 export interface PersonWhere {
   id: number
   name: string
@@ -721,8 +721,8 @@ export default function PauseScreen({
             {/* who else is out there. The roster is the server's, so this is
                 the same list the chat rail and the plates over their heads
                 are drawn from, and a name here is a name you can shout at.
-                Somebody with no bearing is in another level, which for now
-                means they found the backrooms */}
+                Somebody with no bearing is in another level: they found the
+                backrooms, or flew to the Moon */}
             {page === 'people' && (
               <div className="max-w-lg">
                 <div className="flex items-baseline justify-between gap-4">

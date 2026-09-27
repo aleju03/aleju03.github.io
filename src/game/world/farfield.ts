@@ -59,6 +59,12 @@ import { gfx } from './quality'
   whole. A ring only swaps if its square still contains the finer ring's and
   sits inside the coarser one's, which is what keeps the holes nested.
 
+  Leaving the planet (levels/space.ts), the same program bends every tile
+  onto the planet's curve about the eye (`uCurve`, a parabola that
+  world/globe.ts's sphere continues past the rim) and dithers the whole
+  field out over the globe (`uFarFade`), so orbit is two uniforms, not a
+  new program.
+
   Cost, measured: see `npm run measure -- far`.
 */
 
@@ -96,6 +102,9 @@ export interface FarField {
   readonly pending: number
   /** night 0..1: the impostors' windows */
   setNight: (n: number) => void
+  /** leaving the planet (levels/space.ts): bend by `curve` (1 / 2R, 0 flat)
+      about the eye, and dither out to `fade` (1 drawn, 0 gone) */
+  setSpace: (curve: number, eyeX: number, eyeZ: number, fade: number) => void
   /** meshes, vertices and tiles currently drawn, for the harness */
   stats: () => { tiles: number; verts: number; tris: number }
   dispose: () => void
@@ -108,6 +117,8 @@ const FAR_VERT_HEAD = /* glsl */ `
   attribute vec3 aExt;
   attribute vec3 aLeaf;
   uniform vec4 uRect[4];
+  uniform float uCurve;
+  uniform vec2 uEye;
   varying vec3 vFarW;
   varying vec4 vFar;
   varying float vDepth;
@@ -131,6 +142,13 @@ const FAR_VERT_BODY = /* glsl */ `
     }
   }
   vFarW = (modelMatrix * vec4(transformed, 1.0)).xyz;
+  // from high up the ground bends onto the planet (levels/space.ts): a
+  // parabola in the distance from the camera, which world/globe.ts's sphere
+  // continues past the rim. vFarW keeps the unbent height for the patterns
+  if (uCurve > 0.0) {
+    vec2 cd = vFarW.xz - uEye;
+    transformed.y -= uCurve * dot(cd, cd);
+  }
 `
 
 const FAR_FRAG_HEAD = /* glsl */ `
@@ -139,6 +157,7 @@ const FAR_FRAG_HEAD = /* glsl */ `
   uniform vec4 uHole[4];
   uniform vec3 uWater;
   uniform float uNight;
+  uniform float uFarFade;
   varying vec3 vFarW;
   varying vec4 vFar;
   varying float vDepth;
@@ -161,6 +180,13 @@ const FAR_FRAG_HEAD = /* glsl */ `
 /** discard what a finer ring or a built chunk already draws */
 const FAR_FRAG_CLIP = /* glsl */ `
   {
+    // leaving the planet: the ground dithers out over the globe under it,
+    // one ordered-dither threshold per pixel of the look's target
+    if (uFarFade < 0.999) {
+      ivec2 dq = ivec2(mod(floor(gl_FragCoord.xy), 4.0));
+      float dm[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+      if ((dm[dq.y * 4 + dq.x] + 0.5) / 16.0 >= uFarFade) discard;
+    }
     vec4 hr = uHole[int(vFar.y + 0.5)];
     if (vFarW.x > hr.x && vFarW.x < hr.z && vFarW.z > hr.y && vFarW.z < hr.w) discard;
     vec2 cc = floor((vFarW.xz - vec2(${OFF_X.toFixed(2)}, ${OFF_Z.toFixed(2)})) / ${CHUNK.toFixed(1)}) - uMaskO;
@@ -357,6 +383,9 @@ interface FarUniforms {
   uRect: { value: THREE.Vector4[] }
   uWater: { value: THREE.Color }
   uNight: { value: number }
+  uCurve: { value: number }
+  uEye: { value: THREE.Vector2 }
+  uFarFade: { value: number }
 }
 
 const makeFarMaterial = (u: FarUniforms) => {
@@ -375,7 +404,7 @@ const makeFarMaterial = (u: FarUniforms) => {
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${FAR_FRAG_NORMAL}`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${FAR_FRAG_EMISSIVE}`)
   }
-  mat.customProgramCacheKey = () => 'far-field-2'
+  mat.customProgramCacheKey = () => 'far-field-3'
   return mat
 }
 
@@ -823,6 +852,9 @@ export const buildFarField = (opts: {
     uRect: { value: [EMPTY(), EMPTY(), EMPTY(), EMPTY()] },
     uWater: { value: opts.water },
     uNight: { value: 0 },
+    uCurve: { value: 0 },
+    uEye: { value: new THREE.Vector2() },
+    uFarFade: { value: 1 },
   }
   const mat = makeFarMaterial(U)
   opts.trackDisposable(mat)
@@ -1029,6 +1061,11 @@ export const buildFarField = (opts: {
     },
     setNight: (n) => {
       U.uNight.value = n
+    },
+    setSpace: (curve, eyeX, eyeZ, fade) => {
+      U.uCurve.value = curve
+      U.uEye.value.set(eyeX, eyeZ)
+      U.uFarFade.value = fade
     },
     stats: () => {
       let tiles = 0

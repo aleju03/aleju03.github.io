@@ -59,6 +59,7 @@ import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/qua
 import { createPixelLook, type PixelLook } from '../../game/render/pixelLook'
 import { texelateTree } from '../../game/render/texel'
 import { BIOME_AIR, airForSky, lightsForSky } from '../../game/render/atmosphere'
+import { GROUND_OFF } from '../../game/levels/space'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
 import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
 import {
@@ -93,9 +94,13 @@ import { OS_SCENE_READY_EVENT } from '../../events'
   (intro flight, outro, stand-up, sit-down), the desk-room light rig and
   the HUD. The simulation is delegated — input events to game/core/input,
   FPS movement and collision to game/player/walkController +
-  game/physics/collision, and which world is live (house/yard vs the
-  backrooms, including the noclip cut between them) to game/levels. The
-  walkTick below is just the per-frame conductor calling each in order.
+  game/physics/collision, and which world is live (house/yard, the
+  backrooms, the Moon, and the noclip cut between them) to game/levels.
+  Nothing here asks which level is live: each declares what it has (its
+  gravity, a props sandbox and its ground, the fleet, the crowd, the house,
+  sky and air), and each level with a sandbox gets its own, which the tool
+  belt and the undo stack follow across a cut. The walkTick below is just
+  the per-frame conductor calling each in order.
 
   Every frame of it, room and world alike, is drawn through the pixel look
   (game/render/pixelLook.ts): a low internal resolution, outlines, a baked
@@ -2476,6 +2481,8 @@ export default function CrtScene({
           lampRadii.fill(8.5, n, n + m)
           return n + m
         }
+        /** the house's drawables put away from orbit (see dressAir) */
+        let houseHidden: THREE.Object3D[] | null = null
         let airBiome = 1
         let airAskX = Number.NaN
         let airAskZ = 0
@@ -2504,15 +2511,54 @@ export default function CrtScene({
             look.air, sky, airBiome, airSun, outside.sun.color,
             air ? ov.alt : 0, air ? ov.reach : 0, Math.max(-100, outside.waterY),
           )
-          // from the air the lens reaches the far field's rim (levels/altitude.ts)
+          // from the air the lens reaches the far field's rim (levels/altitude.ts),
+          // and from space the globe and the Moon (levels/space.ts)
           const wantFar = open ? ov.far : 900
-          if (camera.far !== wantFar) {
+          const wantNear = open ? ov.near : 0.1
+          // from orbit the house is a speck under a whole planet, and a
+          // thousand draw calls: its drawables go with the streamed ground
+          // (levels/space.ts's GROUND_OFF). Its drawables, not its root: the
+          // root carries the house's PointLights, and a light leaving the
+          // scene changes NUM_POINT_LIGHTS and relinks every lit program
+          const houseAway = open && ov.alt >= GROUND_OFF
+          if (houseAway !== !!houseHidden) {
+            if (houseAway) {
+              houseHidden = []
+              house.root.traverseVisible((o) => {
+                if (isDrawable(o)) houseHidden?.push(o)
+              })
+              for (const o of houseHidden) o.visible = false
+            } else {
+              for (const o of houseHidden ?? []) o.visible = true
+              houseHidden = null
+            }
+          }
+          if (camera.far !== wantFar || camera.near !== wantNear) {
             camera.far = wantFar
+            camera.near = wantNear
             camera.updateProjectionMatrix()
           }
           // the backrooms carry their own fog and no sky, and the Moon has
-          // a sky and nothing to see it through: no air, no lamps
+          // a sky and nothing to see it through: no air, no lamps. On the way
+          // to orbit the air drains away under you (levels/space.ts)
           if (!air) look.air.max = 0
+          else {
+            look.air.max *= 1 - ov.space
+            // thinner air up high: the haze lengthens with height. And once
+            // the globe carries on past the far field's rim the rim is no
+            // longer an edge to hide, so the air's rim (which takes a pixel
+            // to all air whatever the air's cap says) moves out past the
+            // planet's horizon; left where it was, it painted the whole globe
+            // the colour of the sky, and from space that colour is black
+            look.air.dist *= 1 + Math.max(0, ov.alt - 120) / 700
+            look.air.edge *= 1 + 30 * ov.curve * ov.curve
+            // ...and the sky under the horizon is the air's colour only while
+            // there is air: from space, past the limb, it is space
+            const thin = 1 - ov.space
+            look.air.liftK *= thin
+            look.air.skyHorizon *= thin
+            look.air.skyAll *= thin
+          }
           airAmb.copy(hemi.color).multiplyScalar(hemi.intensity)
           lightsForSky(look.lights, sky, lampBuf, air ? lampCount : 0, airAmb, lampRadii)
           // the headlamp is yours: on while you are on your feet in the
@@ -2962,6 +3008,9 @@ export default function CrtScene({
           levels.tick(now, seamPt, fps)
           const level = levels.current
           const sitting = seating.current
+          // noclip speeds up with height, so orbit is seconds away (the
+          // outside's last update measured it, one frame ago)
+          walk.flyScale = outside.view.fly
           const step = walk.update({
             dt,
             keys: input.keys,
@@ -3584,6 +3633,8 @@ export default function CrtScene({
           const next = sandboxFor(level)
           if (next === sandbox) return
           sandbox = next
+          // a level's props are drawn only while it is live
+          for (const { sb } of sandboxes.values()) sb.root.visible = sb === next
           history = next ? historyOf(next) : null
           const h = history
           setOrders(h ? h.entries(h.me).map((e) => ({ seq: e.seq, label: e.label, kind: e.kind })) : [])
@@ -3763,6 +3814,9 @@ export default function CrtScene({
           // the tool belt's gun, beam, glows and rim shells, in front of the
           // warm camera for the compile and the one-pixel draw below
           tools?.stage(warmCam)
+          // ...and the globes (the planet from orbit and the Moon), so the
+          // first climb out of the air links nothing mid-flight
+          outside.warmSpace(true)
           try {
             // The initial compile ran before the streamed chunks existed.
             // Compile their live outdoor lighting variant now; the promise
@@ -3789,6 +3843,7 @@ export default function CrtScene({
             }
           } finally {
             tools?.unstage()
+            outside.warmSpace(false)
             if (webgl) {
               webgl.setScissorTest(false)
               webgl.setViewport(0, 0, warmSize.x, warmSize.y)

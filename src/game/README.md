@@ -75,7 +75,14 @@ levels/
                      and what a level has: gravity, a sandbox and its ground,
                      the fleet, the crowd, the house, sky, air, footsteps
   levelSystem.ts     createLevelSystem(): which level is live + the noclip cut
-  homeLevels.ts      the two shipped levels: 'overworld' and 'backrooms'
+  homeLevels.ts      the three shipped levels: 'overworld', 'backrooms', 'moon'
+  space.ts           the way up in numbers: the planet's radius, the bands of
+                     height where the ground bends, the sky thins and the
+                     ground goes, noclip's speed with height, the Moon's
+                     size, distance and seams. Pure, imported by the room tier
+  moon.ts            the Moon's ground: craters on five scales, a lattice on
+                     the world grid the walker and the sandbox both stand on,
+                     a horizon that curves away, boulders; built on arrival
   houseWorld.ts      the house + yard, two storeys (walls, stairs, slab, roof,
                      doors, furniture placement); owns the property line
                      inward. The computer room is upstairs, at UP
@@ -349,6 +356,10 @@ world/
                   bay), plus the support graph and Voronoi shattering.
                   Pure, so `measure fracture` runs it on every building
   streamer.ts     the ring, the build budget, the collision shelf
+  globe.ts        the planet from orbit and the Moon: one polar-grid sphere
+                  program bent to any radius, painted from land.ts's fields
+                  around the player on a progressive, double-buffered map,
+                  lit by the sky's sun, towns glowing on the night side
   farfield.ts     everything past the ring, for a camera in the air: nested
                   square rings of coarse terrain tiles (8, 16, 32, 64-unit
                   cells, gfx.farLevels of them) out to 2-4 km, the sea held
@@ -518,6 +529,51 @@ scattered, and no screenshot was ever going to say otherwise.
   the same altitude (`airForSky`'s `alt`/`reach`): a height layer so a ray
   looking down crosses only the top of the haze, and an `edge` where the air
   takes everything, so the world's rim draws no line.
+- **Leaving the planet is five bands of one number** (`levels/space.ts`, height
+  over the ground). Past 300 the far field bends onto a sphere of the
+  planet's radius (a parabola about the eye in its vertex shader, `uCurve`)
+  and `world/globe.ts` continues the same curve past its rim, its radius
+  following the bend so the two always meet; the air's rim moves out to the
+  planet's horizon at the same pace, because left at the far field's edge it
+  painted the whole globe the colour of the sky. From 800 the sky thins
+  (`sky.ts`'s `space`): clouds first, then the day dome to dark blue and
+  black, stars in daylight, the look's air and its under-horizon pull
+  drained. From 12000 the streamed ground dithers out over the globe
+  (`uFarFade`), and past 20000 it is neither drawn nor streamed, and neither
+  are the house's meshes (its drawables, never its root: the root carries
+  PointLights, and a light leaving the scene relinks every lit program).
+  Noclip's speed grows with height (`flyScale`), the near plane steps to 1
+  above 4000 so the depth buffer can tell the globe from the sky, and the far
+  plane and the dome grow to clear the globe's horizon and the Moon.
+- **The globe is painted, not modelled, and lies under the far field.** Its
+  map is an azimuthal-equidistant disc of the whole planet around an anchor,
+  distance linear in the radius so a texel is square everywhere (a
+  square-root mapping put more texels near you and stretched every town into
+  a spoke). It is re-baked around you only after 20000 units of drift, a
+  coarse sixteenth first so a whole planet shows within a few frames, a few
+  milliseconds a frame, and never below 250 up, so the helicopter never pays
+  for it. While the far field is drawn the globe discards its cap out to the
+  far field's reach and sinks with distance; a polygon offset was tried and
+  its slope term pushed the edge-on horizon behind the sky dome. Its
+  fragments write the look's veil alpha, since a depth buffer thousands of
+  units deep cannot resolve its folds and inked it drew the grid's spokes,
+  and it is lit in world space off the sky's sun. The grid must be wound
+  counter-clockwise seen from above the pole: the other way round, back-face
+  culling keeps the far hemisphere's inside and the planet is drawn inside
+  out, lit backwards, with the map's clamped rim as spokes round the nadir.
+- **The Moon is a level, reached by flying at it.** Past 3000 up the Moon is
+  pinned 300000 units off along the sky moon's bearing (or high in the sky
+  by day), drawn by the same globe program painted from `levels/moon.ts`'s
+  albedo, so the landing site you see from orbit is where you land. Within
+  2600 of its surface the overworld's seam (`outsideWorld.moonSeam`) cuts to
+  'moon', arriving 260 over the landing pad facing the Earth; flying 2400 up
+  off it cuts back, 40000 over the point the climb began. The Moon stands at
+  (0, 60000) in the scene so the house, the fleet and the overworld's props
+  are past its far plane; its sky is the same sky with the air taken out and
+  the Earth hung in it (drawn nearer and smaller at the same angular size, so
+  the depth buffer holds); its sun keeps its own low time of day and is the
+  only light; and its gravity is a sixth, so a crate from 20 up lands in
+  2.72 s against the street's 1.10.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs
@@ -722,8 +778,9 @@ await renderThumbnails(ids?, size = 96)  // [{ id, canvas }], pixel-art icons
 A `Prop` carries `id`, `kind`, `body` (the Rapier body), `colliders`, `mesh`,
 `extents`, `mass`, `mode`, `parked`, `wet` (the share of it under the sea)
 and a free `data` bag. Every call that
-takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
-`window.__sandbox` and the lens on `window.__sandboxCamera`.
+takes a position takes any `{x, y, z}`. In dev, CrtScene puts the live level's
+facade on `window.__sandbox` (re-pointed across a level cut), the lens on
+`window.__sandboxCamera` and the level system on `window.__levels`.
 
 ### Rules that hold it together
 

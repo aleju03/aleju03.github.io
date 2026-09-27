@@ -9,6 +9,19 @@
     npm run drive -- links            shader links counted in the real game across
                                       a first spawn, a break, a fuse and a chain
                                       of bangs (must be 0)
+    npm run drive -- space            the way up and to the Moon: the street's
+                                      frame cost, a crate dropped from 20 up, a
+                                      noclip climb shot at the stratosphere, the
+                                      curve and orbit, the orbit's cost, a flight
+                                      at the Moon to the level cut, its surface
+                                      with the Earth in the sky, its cost, the
+                                      same crate falling at a sixth of the
+                                      gravity (timed against the street's), and
+                                      up off it home. Every shader link from the
+                                      street on is counted (must be 0). Eight
+                                      shots to ~/.cache/overhaul/space
+                                      (--space-out <dir>); --dump-globe stops at
+                                      orbit and writes the globe's painted map
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -465,7 +478,17 @@ try {
        gl.finish() behind it, so the GPU's share is inside the number, and
        the draw calls and triangles three reports for the same frames. The
        limiter is lifted for the window, since a capped loop measures the cap */
-    const cost = (label, ms = 2500) => evaluate(`(async () => {
+    const cost = async (label, ms = 2500) => {
+      // a window with no frames in it (the loop stalled on something else)
+      // is measured again rather than reported as free
+      for (let i = 0; i < 3; i++) {
+        const r = await costOnce(label, ms)
+        if (!/over [0-9] frames|over [12][0-9] frames/.test(r)) return r
+        await sleep(1500)
+      }
+      return costOnce(label, ms)
+    }
+    const costOnce = (label, ms) => evaluate(`(async () => {
       const look = window.__look
       const gl = document.querySelector('canvas').getContext('webgl2')
       const real = look.render
@@ -499,6 +522,179 @@ try {
     await look(Number(flag('yaw', Math.PI)), 0.05)
     await sleep(1500)
     console.log('  ' + await cost('ground'))
+    await spaceShot('1-ground')
+
+    // every program linked from here to the end is a hitch in somebody's
+    // flight: the climb, the orbit, the cut to the Moon and back must be 0
+    await evaluate(`(() => {
+      window.__spaceLinks = []
+      const c = document.querySelector('canvas')
+      const gl = c.getContext('webgl2')
+      if (!c.__spaceWrapped) {
+        c.__spaceWrapped = true
+        const real = gl.linkProgram.bind(gl)
+        gl.linkProgram = (p) => {
+          window.__spaceLinks.push((window.__spacePhase || '?') + ' ' + performance.now().toFixed(0))
+          real(p)
+        }
+      }
+      return true
+    })()`)
+    const phase = (name) => evaluate(`window.__spacePhase = ${JSON.stringify(name)}; true`)
+    const where = () => evaluate(`(() => { const c = window.__sandboxCamera.position, v = window.__outside.view;
+      return { x: c.x, y: c.y, z: c.z, alt: v.alt, space: v.space, level: window.__levels.current.id,
+        moon: v.moon ? [v.moon.x, v.moon.y, v.moon.z] : null } })()`)
+
+    /* A crate dropped from a known height ahead, timed in the sandbox's own
+       clock from release to its first touch of the ground, against
+       sqrt(2h/g). The same drop on the street and on the Moon */
+    const drop = (h) => evaluate(`(async () => {
+      const sb = window.__sandbox, c = window.__sandboxCamera.position, yaw = window.__sandboxWalk.yaw
+      const x = c.x - Math.sin(yaw) * 9, z = c.z - Math.cos(yaw) * 9
+      const y = sb.restY('crate', x, z) + ${h}
+      await sb.whenReady
+      const t0 = sb.stats.time
+      return await new Promise((res) => {
+        let id = -1
+        const off = sb.onImpact((e) => {
+          if (e.id !== id || e.with === 'prop') return
+          off()
+          res({ t: sb.stats.time - t0, g: -sb.gravity, theory: Math.sqrt(2 * ${h} / -sb.gravity) })
+        })
+        id = sb.spawn('crate', { x, y, z })
+        setTimeout(() => { off(); res({ t: -1, g: -sb.gravity, theory: 0 }) }, 15000)
+      })
+    })()`)
+    const earthDrop = await drop(20)
+    console.log(`  a crate from 20 up, street: ${earthDrop.t.toFixed(2)} s (g ${earthDrop.g.toFixed(1)}, sqrt(2h/g) ${earthDrop.theory.toFixed(2)} s)`)
+    await run('cleanup')
+
+    // up: noclip, and space + shift held, straight up (no W, so the gaze is
+    // free to frame the shots)
+    await phase('climb')
+    await evaluate('window.__sandbox.console.host.noclip(true)')
+    await look(null, -0.22)
+    const climbTo = async (alt, name, pitch) => {
+      await down('Space')
+      await down('ShiftLeft')
+      await waitFor(async () => (await where()).alt > alt, 400, 50, `${alt} up`)
+      await up('Space')
+      await up('ShiftLeft')
+      await look(null, pitch)
+      await sleep(1800)
+      const w = await where()
+      console.log(`  ${name}: ${Math.round(w.alt)} up, space ${w.space.toFixed(2)}`)
+      await spaceShot(name)
+    }
+    const t1 = Date.now()
+    await climbTo(5200, '2-stratosphere', -0.25)
+    await climbTo(9000, '3-curve', -0.35)
+    await climbTo(34000, '4-orbit', -1.05)
+    console.log(`  street to orbit in ${((Date.now() - t1) / 1000).toFixed(1)} s, shots included`)
+    if (has('dump-globe')) {
+      // the Earth's painted map as it stands (world/globe.ts), rgb over the
+      // towns' night glow, and stop there
+      await sleep(4000)
+      const b64 = await evaluate(`(() => {
+        const m = window.__scene.getObjectByName('globe-earth').material.uniforms.uMap.value.image
+        const c = document.createElement('canvas'); c.width = m.width; c.height = m.height * 2
+        const g = c.getContext('2d'); const img = g.createImageData(m.width, m.height * 2)
+        for (let i = 0; i < m.width * m.height; i++) {
+          for (let k = 0; k < 3; k++) img.data[i * 4 + k] = m.data[i * 4 + k]
+          img.data[i * 4 + 3] = 255
+          const j = i + m.width * m.height
+          img.data[j * 4] = img.data[j * 4 + 1] = img.data[j * 4 + 2] = m.data[i * 4 + 3]; img.data[j * 4 + 3] = 255
+        }
+        g.putImageData(img, 0, 0)
+        return c.toDataURL('image/png').split(',')[1]
+      })()`)
+      writeFileSync(join(SPACE_OUT, 'globe-map.png'), Buffer.from(b64, 'base64'))
+      console.log(`  wrote ${join(SPACE_OUT, 'globe-map.png')}`)
+      probe.close()
+      process.exit(0)
+    }
+    await sleep(2500)
+    console.log('  ' + await cost('orbit'))
+
+    // at the Moon: aim at its centre and fly, shift held, until the cut.
+    // The clock is let go first: the Moon keeps its own time of day
+    await run('time')
+    await phase('to the moon')
+    const w0 = await where()
+    if (!w0.moon) console.log('  no Moon pinned  <-- WRONG')
+    else {
+      const aim = async () => {
+        const w = await where()
+        if (!w.moon) return w
+        const dx = w.moon[0] - w.x, dy = w.moon[1] - w.y, dz = w.moon[2] - w.z
+        await evaluate(`(() => { const k = window.__sandboxWalk; k.yaw = ${Math.atan2(-dx, -dz)}; k.pitch = ${Math.atan2(dy, Math.hypot(dx, dz))} })()`)
+        return { ...w, d: Math.hypot(dx, dy, dz) }
+      }
+      await aim()
+      await down('KeyW')
+      await down('ShiftLeft')
+      let shotApproach = false
+      await waitFor(async () => {
+        const w = await aim()
+        if (!shotApproach && w.d && w.d < 26000) {
+          shotApproach = true
+          await spaceShot('5-moon-approach')
+        }
+        return w.level === 'moon'
+      }, 600, 100, 'the Moon')
+      await up('KeyW')
+      await up('ShiftLeft')
+      await phase('moon')
+      await sleep(2500)
+      const m = await where()
+      const mg = await evaluate(`window.__levels.current.groundYAt(${m.x}, ${m.z})`)
+      console.log(`  on the Moon: ${Math.round(m.y - mg)} over its ground, at ${Math.round(m.x)}, ${Math.round(m.z)}`)
+      // down to the surface in noclip, then drop the last hop and stand
+      await look(null, -0.3)
+      await down('KeyC')
+      await waitFor(() => evaluate(`(() => { const k = window.__sandboxWalk, c = window.__sandboxCamera.position;
+        return k.feetY - window.__levels.current.groundYAt(c.x, c.z) < 2 })()`), 400, 50, 'the regolith').catch(() => {})
+      await up('KeyC')
+      await evaluate('window.__sandbox.console.host.noclip(false)')
+      await sleep(2500)
+      await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+      // over the shoulder toward the Earth (the arrival faces it)
+      await look(0.6, 0.3)
+      await sleep(1500)
+      await spaceShot('6-moon-surface')
+      console.log('  ' + await cost('moon'))
+      await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+      await look(0.6, 0.12)
+      const moonDrop = await drop(20)
+      console.log(`  a crate from 20 up, Moon:   ${moonDrop.t.toFixed(2)} s (g ${moonDrop.g.toFixed(1)}, sqrt(2h/g) ${moonDrop.theory.toFixed(2)} s)`)
+      if (earthDrop.t > 0 && moonDrop.t > 0) {
+        console.log(`  Moon fall / street fall = ${(moonDrop.t / earthDrop.t).toFixed(2)} (sqrt(6) = 2.45)`)
+      }
+      // a second crate, photographed on its way down
+      await evaluate(`(() => { const sb = window.__sandbox, c = window.__sandboxCamera.position, yaw = window.__sandboxWalk.yaw
+        const x = c.x - Math.sin(yaw) * 10, z = c.z - Math.cos(yaw) * 10
+        sb.spawn('barrel', { x, y: sb.restY('barrel', x, z) + 14, z }); return true })()`)
+      await sleep(1100)
+      await spaceShot('7-moon-prop')
+      // and home: straight up off the Moon until the cut
+      await phase('home')
+      await evaluate('window.__sandbox.console.host.noclip(true)')
+      await down('Space')
+      await down('ShiftLeft')
+      await waitFor(async () => (await where()).level === 'overworld', 600, 100, 'the Earth').catch(() => {})
+      await up('Space')
+      await up('ShiftLeft')
+      await sleep(2500)
+      const h = await where()
+      console.log(`  home: level ${h.level}, ${Math.round(h.alt)} over the ground at ${Math.round(h.x)}, ${Math.round(h.z)}` +
+        ` (left from ${Math.round(w0.x)}, ${Math.round(w0.z)})`)
+      await look(null, -1.4)
+      await sleep(1500)
+      await spaceShot('8-home-from-above')
+    }
+    const links = await evaluate('window.__spaceLinks')
+    console.log(`  ${links.length} programs linked from the street to the Moon and back`)
+    for (const l of links) console.log(`    linked during ${l}`)
   }
 
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))
