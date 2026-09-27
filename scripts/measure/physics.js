@@ -28,6 +28,10 @@
     blast      a row of red barrels set off at one end: how many go, how
                far a crate beside them flies, and that one out of reach sleeps
     scenarios  every registered scenario, run to its end, with its report
+    contraptions  the car, the rocket and the Moon hovercraft built from
+               parts and driven: speed, height, the worst joint stretch, the
+               same run twice for the hash; a parked car going to sleep; and
+               Z taking the whole machine and its joints back
     destruction  the three demolitions (house, tower, wall) in the real
                chunks with their ruins armed: pieces down, rubble, and
                what a frame of the collapse costs (median, p95, worst)
@@ -49,6 +53,10 @@ import { createPhysgun, tune } from '../../src/game/sandbox/tools/physgun.ts'
 import { emptyInput } from '../../src/game/sandbox/tools/types.ts'
 // the physgun's films register themselves as scenarios too
 import '../../src/game/sandbox/tools/scenarios.ts'
+// ...and the contraptions' (a car, a rocket, a hovercraft on the Moon)
+import '../../src/game/sandbox/contraption/scenarios.ts'
+import { contraptionOf } from '../../src/game/sandbox/contraption/contraption.ts'
+import { buildCar } from '../../src/game/sandbox/contraption/build.ts'
 
 const only = process.argv[2]
 const want = (s) => !only || only === s
@@ -1109,6 +1117,49 @@ if (want('scenarios')) {
     ms.sort((a, b) => a - b)
     console.log(`scenario ${pad(s.id, 16)} at ${Math.round(c.x)},${Math.round(c.z)}  ${s.report ? s.report(c) : ''}  ` +
       `(${f(ms[Math.floor(ms.length / 2)], 2)} ms/frame median)`)
+    sb.dispose()
+  }
+}
+
+/* ------------------------------------------------------- contraptions -- */
+if (want('contraptions')) {
+  for (const s of SCENARIOS.filter((o) => o.id.startsWith('contraption:'))) {
+    const hashes = []
+    for (let k = 0; k < 2; k++) {
+      const { sb } = newSandbox(true, false)
+      await sb.whenReady
+      const c = stageScenario(s, sb)
+      const ms = []
+      advanceScenario(s, c, s.duration, (_t, _dt, m) => ms.push(m))
+      ms.sort((a, b) => a - b)
+      hashes.push(sb.stateHash())
+      if (k === 0) {
+        console.log(`${pad(s.id, 20)} ${s.report(c)}  (${f(ms[Math.floor(ms.length / 2)], 2)} ms/frame median)`)
+      }
+      sb.dispose()
+    }
+    console.log(`${pad('', 20)} twice: ${hashes[0] === hashes[1] ? 'same hash' : 'DIFFERENT ' + hashes.join(' vs ')}`)
+  }
+  // a car nobody is driving should go to sleep where it stands, and one Z
+  // should take it back, joints and all
+  {
+    const { sb } = newSandbox(true, false)
+    await sb.whenReady
+    const site = SCENARIOS.find((o) => o.id === 'contraption:car').site()
+    sb.tick({ dt: 0, active: true, focus: { x: site.x, y: 0, z: site.z } })
+    const c = contraptionOf(sb)
+    const built = buildCar(sb, { x: site.x, y: 0, z: site.z }, 0.4)
+    let asleep = -1
+    for (let i = 0; i < 60 * 12; i++) {
+      sb.tick({ dt: 1 / 60, active: true, focus: { x: site.x, y: 0, z: site.z } })
+      if (asleep < 0 && built.ids.every((id) => sb.get(id)?.body.isSleeping())) asleep = i / 60
+    }
+    const before = c.stats
+    const h = historyOf(sb)
+    h.undo()
+    console.log(`parked car: ${asleep < 0 ? 'NEVER ASLEEP in 12 s' : 'asleep after ' + asleep.toFixed(2) + ' s'}; ` +
+      `undo took ${before.constraints} constraints and ${before.parts} parts to ${c.stats.constraints} and ${c.stats.parts}, ` +
+      `${sb.count} props left, ${h.entries().length} undo entries left`)
     sb.dispose()
   }
 }

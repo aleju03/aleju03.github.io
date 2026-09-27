@@ -168,6 +168,9 @@ export interface PhysgunOpts {
   rigs?: () => Iterable<RigEntry>
   /** props that move together with this one (welds); reload thaws them too */
   linked?: (id: number) => Iterable<number>
+  /** what holding this prop actually lifts: a welded machine weighs all of
+      its parts, and the hold pays that weight (default: the prop's own) */
+  massOf?: (id: number) => number
   /** the fleet: parked machines the beam can take (types.ts's VehicleGrab) */
   vehicles?: VehicleGrab
 }
@@ -643,7 +646,9 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     va.set(t.x, t.y, t.z)
     qa.set(r.x, r.y, r.z, r.w)
     const P = pointOf(va, qa, vb)
-    const m = body.mass()
+    // a prop joined into a machine carries the machine: the budget and the
+    // weight are the whole thing's, laid on the part the beam has hold of
+    const m = o.massOf ? Math.max(body.mass(), o.massOf(p.id)) : body.mass()
     tune(m, tn)
 
     /* position: an implicit damped spring on the grab point */

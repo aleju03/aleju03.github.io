@@ -190,12 +190,17 @@ const dictionaries = {
         noMatch: 'nothing by that name in here',
       },
       hud: {
-        walk: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {spawnMenu} props · {chat} chat · {command} commands',
+        walk: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {spawnMenu} props · {slot2} physgun · {slot3} tool gun · {chat} chat · {command} commands',
         fly: 'flying · {flyUp} up · {flyDown} down · {flyFast} fast · {flySlow} slow · {noclip} to land',
         grab: 'wasd to move · click to grab the mouse · esc to leave',
         pauses: 'esc pauses',
         pauseNote: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {spawnMenu} props · {undo} undo · {chat} chat · {command} commands',
         voice: '{mic} mic',
+        // sitting in a contraption seat (sandbox/contraption): the machine's
+        // own wheels, thrusters and hoverballs answer, plus each part's keys
+        seat: 'wasd drive · {jump} thrusters and lift · {sprint} reverse and sink · i/k u/j o/l arrows: part keys · {use} get up',
+        // after the tool gun's own line
+        toolTail: '{slot2} physgun · {undo} undo · {spawnMenu} parts',
       },
       // the voice filter on the pause sheet (components/os/voiceFilters.ts),
       // in VOICE_FILTERS order
@@ -399,12 +404,14 @@ const dictionaries = {
         noMatch: 'aquí no hay nada con ese nombre',
       },
       hud: {
-        walk: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {spawnMenu} objetos · {chat} chat · {command} comandos',
+        walk: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {spawnMenu} objetos · {slot2} pistola física · {slot3} pistola de herramientas · {chat} chat · {command} comandos',
         fly: 'volando · {flyUp} sube · {flyDown} baja · {flyFast} rápido · {flySlow} lento · {noclip} para aterrizar',
         grab: 'wasd para moverse · clic para agarrar el mouse · esc para salir',
         pauses: 'esc pausa',
         pauseNote: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {spawnMenu} objetos · {undo} deshacer · {chat} chat · {command} comandos',
         voice: '{mic} micro',
+        seat: 'wasd conducir · {jump} propulsores y subir · {sprint} reversa y bajar · i/k u/j o/l flechas: teclas de piezas · {use} levantarte',
+        toolTail: '{slot2} pistola física · {undo} deshacer · {spawnMenu} piezas',
       },
       voiceFx: {
         label: 'tu voz',

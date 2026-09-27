@@ -27,7 +27,8 @@ import {
 import { createRemoteBumps, createShoveTaker } from '../../game/net/shove'
 import { createGrabTaker, createRemoteGrabs } from '../../game/net/grab'
 import { createWalkController } from '../../game/player/walkController'
-import { createSeating } from '../../game/player/seating'
+import { createSeating, type Seat } from '../../game/player/seating'
+import { toolgunLine } from '../../game/sandbox/tools/toolgunText'
 import { facingOf } from '../../game/levels/fittings'
 import { buildHouseTv, type TvHandles } from './houseTv'
 import { resetPcAudio, setPcListenerDistance } from './pcAudio'
@@ -353,7 +354,10 @@ export default function CrtScene({
   const [propVerb, setPropVerb] = useState<string | null>(null)
   /** sitting on something: what the HUD says you may get off, and whether
       this particular cushion can see the television */
-  const [seated, setSeated] = useState<{ label: string; atTv: boolean } | null>(null)
+  // `part`: a contraption seat (sandbox/contraption), driven rather than sat on
+  const [seated, setSeated] = useState<{ label: string; atTv: boolean; part?: boolean } | null>(null)
+  /** the tool gun's readout: its `mode:step` and the keys it is aimed at */
+  const [toolLine, setToolLine] = useState<{ state: string; keys: string | null } | null>(null)
   /** what the crosshair is on (Crosshair.tsx) */
   const [aim, setAim] = useState<CrosshairAim>('none')
   /** the channel the set is showing, while you are sitting in front of it */
@@ -427,6 +431,11 @@ export default function CrtScene({
   /** noclip, mirrored for the key hints */
   const [flying, setFlying] = useState(false)
   const { t, language } = useI18n()
+  // the tool gun's screen is written in the visitor's language
+  const langRef = useRef(language)
+  useEffect(() => {
+    langRef.current = language
+  }, [language])
   // named for what it is: a mirror of proximityVoice.ts's state for the HUD,
   // not the voice channel itself (that lives in the scene effect below)
   const [voiceHud, setVoiceHud] = useState<VoiceHud>({
@@ -1126,6 +1135,23 @@ export default function CrtScene({
         */
         const seating = createSeating(EYE)
         const seatEye = new THREE.Vector3()
+        /*
+          ...and a contraption seat, which is the sofa's arithmetic on a seat
+          that moves: the walk frozen, the body folded, the lens at the
+          seated eye, but all of it re-read off the seat prop every frame
+          (twice: before the props step, and after, off the pose they are
+          drawn at), and the head carried round with the seat's heading.
+          `partSeatObj` is the Seat-shaped record the ordinary seated frame
+          reads, so every "not while sitting" rule applies to it unchanged;
+          the machine itself hears WASD through the tool belt (`toolIn.seat`)
+        */
+        let partSeat: number | null = null
+        let partYaw = 0
+        const partView = { eye: new THREE.Vector3(), cushion: new THREE.Vector3(), yaw: 0 }
+        const partSeatObj: Seat = {
+          label: 'the seat', x: 0, z: 0, cushionY: 0, yaw: 0, eyeY: 0, cone: Math.PI,
+          stand: { x: 0, y: 0, z: 0 }, atTv: false,
+        }
         /** the living-room set, once its model has landed */
         let tv: TvHandles | null = null
         // the eye sits ahead of the spine; keeps the chest out of frame. The
@@ -1346,6 +1372,10 @@ export default function CrtScene({
         }
         let hereNow = 0
         let aimNow: CrosshairAim = 'none'
+        /** the prop under the crosshair within arm's reach (a contraption
+            seat offers itself off this), and the tool gun's last readout */
+        let reachPropNow: number | null = null
+        let toolLineNow = ''
         const crossPt = new THREE.Vector3()
         const crossBox = new THREE.Vector3()
         const camRight = new THREE.Vector3()
@@ -1510,6 +1540,73 @@ export default function CrtScene({
           return true
         }
 
+        /** re-read the contraption seat: false when it is gone (undone,
+            removed, a level away) */
+        const placePartSeat = () => {
+          if (partSeat === null) return false
+          const con = tools?.contraption
+          if (!con || !con.seatView(partSeat, EYE, partView)) return false
+          // the head turns with the seat, whatever the seat is doing
+          let d = partView.yaw - partYaw
+          d = Math.atan2(Math.sin(d), Math.cos(d))
+          partYaw = partView.yaw
+          walk.yaw += d
+          walk.pitch = Math.max(-0.95, Math.min(0.75, walk.pitch))
+          // the walker rides the cushion (the network and the seams read it)
+          walk.teleport(partView.cushion.x, partView.cushion.z, partView.cushion.y)
+          camera.position.copy(partView.eye)
+          camera.rotation.set(walk.pitch, walk.yaw, 0)
+          partSeatObj.x = partView.cushion.x
+          partSeatObj.z = partView.cushion.z
+          partSeatObj.cushionY = partView.cushion.y
+          partSeatObj.eyeY = partView.eye.y
+          partSeatObj.yaw = partView.yaw
+          return true
+        }
+        const takePartSeat = () => {
+          if (fleet.riding || levels.frozen || rig.down || !tools || reachPropNow === null) return false
+          if (!tools.contraption.isSeat(reachPropNow)) return false
+          partSeat = reachPropNow
+          if (!tools.contraption.seatView(partSeat, EYE, partView)) {
+            partSeat = null
+            return false
+          }
+          partYaw = partView.yaw
+          setNoclip(false)
+          walk.resetMotion()
+          walk.yaw = partView.yaw
+          // level: looking down from a seat is looking at your own lap
+          walk.pitch = 0.02
+          placePartSeat()
+          chase.drop()
+          rig.reset()
+          rig.sit()
+          rig.face(partView.yaw)
+          poseSeated(partSeatObj)
+          body.visible = true
+          tools.holster()
+          setSeated({ label: 'the seat', atTv: false, part: true })
+          return true
+        }
+        const leavePartSeat = () => {
+          if (partSeat === null) return false
+          partSeat = null
+          // out to the seat's right, a little above the cushion, and let the
+          // walk find what is under that (the machine's deck, or the ground)
+          const level = levels.current
+          const x = partSeatObj.x + Math.cos(partSeatObj.yaw) * 2.6
+          const z = partSeatObj.z - Math.sin(partSeatObj.yaw) * 2.6
+          rig.showHead(true)
+          chase.drop()
+          walk.resetMotion()
+          walk.teleport(x, z, Math.max(floorOf(level, x, z), partSeatObj.cushionY - 0.4))
+          rig.reset()
+          rig.face(walk.yaw)
+          poseBody()
+          setSeated(null)
+          return true
+        }
+
         const leaveVehicle = () => {
           const v = fleet.riding
           if (!v) return
@@ -1667,7 +1764,7 @@ export default function CrtScene({
         })
         const grabTaker = createGrabTaker(rig)
         const grabAble = () =>
-          !fleet.riding && !seating.current && !walk.noclip && !godMode && !levels.frozen
+          !fleet.riding && !seating.current && partSeat === null && !walk.noclip && !godMode && !levels.frozen
         /** what the wire says our position is while the body is a heap: its
             chest, so a body carried off on somebody's beam is seen carried */
         const heapPt = new THREE.Vector3()
@@ -1845,7 +1942,7 @@ export default function CrtScene({
                 case 'world-shove': {
                   shoveV.set(msg.vx, msg.vy, msg.vz)
                   const able =
-                    !fleet.riding && !seating.current && !walk.noclip && !godMode && !rig.down && !levels.frozen
+                    !fleet.riding && !seating.current && partSeat === null && !walk.noclip && !godMode && !rig.down && !levels.frozen
                   const fx = shoveTaker.take(shoveV, performance.now() / 1000, able)
                   if (fx === 'flop') {
                     rig.limbPos(chestLimb, impact.point)
@@ -2109,6 +2206,10 @@ export default function CrtScene({
               leaveSeat()
               return true
             }
+            if (partSeat !== null) {
+              leavePartSeat()
+              return true
+            }
             if (nearNow) {
               interactRef.current()
               return true
@@ -2135,6 +2236,7 @@ export default function CrtScene({
                 return true
               }
               if (takeSeat()) return true
+              if (takePartSeat()) return true
             }
             if (vehicleNow) {
               enterVehicle(vehicleNow.id, vehicleNow.seat)
@@ -2186,7 +2288,7 @@ export default function CrtScene({
           setFlying(on)
         }
         const aimDir = new THREE.Vector3()
-        const canAct = () => !fleet.riding && !levels.frozen && !seating.current && !rig.down
+        const canAct = () => !fleet.riding && !levels.frozen && !seating.current && partSeat === null && !rig.down
         /** Garry's Mod lets you noclip or teleport out of a heap on the
             floor, so the console and the noclip key do too: the body stands
             up on the spot, at once, where the ragdoll came to rest */
@@ -2217,7 +2319,7 @@ export default function CrtScene({
           // are this instant's, rather than off a camera one frame behind a
           // mouse flick: a spawn lands under the crosshair you see now)
           aim: () => {
-            if (fleet.riding || seating.current || rig.down) return { origin: headPos, dir: headDir }
+            if (fleet.riding || seating.current || partSeat !== null || rig.down) return { origin: headPos, dir: headDir }
             const cp = Math.cos(walk.pitch)
             aimDir.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp)
             return { origin: headPos, dir: aimDir }
@@ -2226,6 +2328,7 @@ export default function CrtScene({
           teleport: (x, z, y, yaw) => {
             if (fleet.riding) leaveVehicle()
             if (seating.current) leaveSeat()
+            leavePartSeat()
             standNow()
             if (fleet.riding || rig.down) return
             const level = levels.current
@@ -2250,7 +2353,7 @@ export default function CrtScene({
           },
           home: () => ({ x: SPAWN.x, z: SPAWN.z, y: spawnY(levels.current, SPAWN.x, SPAWN.z, deskRoom.floorY) }),
           noclip: (on) => {
-            if (on && !levels.frozen && !fleet.riding && !seating.current) standNow()
+            if (on && !levels.frozen && !fleet.riding && !seating.current && partSeat === null) standNow()
             if (on !== undefined && canAct()) setNoclip(on)
             return walk.noclip
           },
@@ -2356,6 +2459,8 @@ export default function CrtScene({
             // the seat is in another level and the television is unhearable
             // from one, having no spatialiser to fall silent with
             leaveSeat()
+            // a contraption belongs to the level's own sandbox
+            leavePartSeat()
             tv?.silence()
             // the noclip cut is the one way out of a machine that does not go
             // through leaveVehicle: the fleet lives in the overworld, and the
@@ -3053,7 +3158,9 @@ export default function CrtScene({
           seamPt.set(camera.position.x, walk.feetY, camera.position.z)
           levels.tick(now, seamPt, fps)
           const level = levels.current
-          const sitting = seating.current
+          // a contraption seat that has gone (undone, removed) stands you up
+          if (partSeat !== null && !placePartSeat()) leavePartSeat()
+          const sitting: Seat | null = seating.current ?? (partSeat !== null ? partSeatObj : null)
           // noclip speeds up with height, so orbit is seconds away (the
           // outside's last update measured it, one frame ago)
           walk.flyScale = outside.view.fly
@@ -3080,11 +3187,14 @@ export default function CrtScene({
             // the walk wrote the standing eye over the cushion; put it back
             // at the height of somebody sitting on it, and hold the head
             // inside the arc the furniture implies
-            camera.position.copy(seating.eye(seatEye))
-            const held = seating.hold(walk.yaw, walk.pitch)
-            walk.yaw = held.yaw
-            walk.pitch = held.pitch
-            camera.rotation.set(held.pitch, held.yaw, 0)
+            if (partSeat !== null) placePartSeat()
+            else {
+              camera.position.copy(seating.eye(seatEye))
+              const held = seating.hold(walk.yaw, walk.pitch)
+              walk.yaw = held.yaw
+              walk.pitch = held.pitch
+              camera.rotation.set(held.pitch, held.yaw, 0)
+            }
             poseSeated(sitting)
             rig.seatedTick(dt)
             // a/d works the set from the sofa, the way a remote does: a dark
@@ -3123,7 +3233,18 @@ export default function CrtScene({
             toolIn.lookX = toolLook.x
             toolIn.lookY = toolLook.y
             toolLook.x = toolLook.y = 0
+            // the contraptions' keys, and the seat that drives one
+            toolIn.keys = k
+            toolIn.seat = partSeat
+            tools.lang = langRef.current
             tools.update(toolIn, toolsLive)
+            const tl = toolsLive && tools.tool === 'toolgun'
+              ? `${tools.toolgun.state}|${tools.toolgun.aimedKeys ?? ''}`
+              : ''
+            if (tl !== toolLineNow) {
+              toolLineNow = tl
+              setToolLine(tl ? { state: tools.toolgun.state, keys: tools.toolgun.aimedKeys } : null)
+            }
           }
           // the props: one fixed-step physics frame, the walker's shoves and
           // weight in, a ride carried out (it moves camera x/z, so it runs
@@ -3148,6 +3269,9 @@ export default function CrtScene({
               focus: camera.position,
             })
             if (sbf.moving && level.outdoors) followSunShadow(camera.position, now)
+            // a contraption seat moved in those slices: the lens and the body
+            // go where it is drawn now, not where it was a frame ago
+            if (partSeat !== null && sitting && placePartSeat()) poseSeated(sitting)
           }
           // other bodies: after the walk and the ride have moved the head and
           // before anything reads it. Not from a seat, a heap on the floor, a
@@ -3292,7 +3416,7 @@ export default function CrtScene({
           // the lens is back on the head, so the flair fades out with it
           rigPose.show = Math.min(1, chase.dist / 1.2)
           // the physgun out: the right arm comes up and carries it
-          rigPose.aim = toolsLive && tools?.tool === 'physgun' ? 1 : 0
+          rigPose.aim = toolsLive && tools && tools.tool !== 'hands' ? 1 : 0
           rigPose.aimLoad = tools?.physgun.holding ? tools.physgun.view.strain : 0
           // the ragdoll and the boom both work in a few units around the
           // body, so one terrain sample under it is the floor for both —
@@ -3396,6 +3520,7 @@ export default function CrtScene({
             const hit = sandbox && !rig.down
               ? sandbox.raycast(headPos, headDir, AIM_REACH, { world: false })
               : null
+            reachPropNow = hit?.prop && hit.distance < 7 ? hit.prop.id : null
             // the physgun holding something outranks whatever the ray finds
             const a: CrosshairAim = tools?.physgun.holding
               ? 'held'
@@ -3432,11 +3557,17 @@ export default function CrtScene({
             small one; a seat that outranked the drawer would swallow it.
           */
           const propVerb =
-            isNear || verb || rig.down || seating.current || !level.house
+            isNear || verb || rig.down || sitting
               ? null
-              : tvVerb(tv?.prompt(camera.position, gazeVec) ?? null) ??
-                fittingVerb(house.propPrompt(camera.position, gazeVec)) ??
-                sitVerb(seating.prompt(camera.position, gazeVec))
+              : (level.house
+                  ? tvVerb(tv?.prompt(camera.position, gazeVec) ?? null) ??
+                    fittingVerb(house.propPrompt(camera.position, gazeVec)) ??
+                    sitVerb(seating.prompt(camera.position, gazeVec))
+                  : null) ??
+                // a contraption seat in reach, in any level with a sandbox
+                (reachPropNow !== null && !walk.noclip && tools?.contraption.isSeat(reachPropNow)
+                  ? 'sit in the seat'
+                  : null)
           if (propVerb !== propVerbNow) {
             propVerbNow = propVerb
             setPropVerb(propVerb)
@@ -3472,7 +3603,7 @@ export default function CrtScene({
           // (and not to a flyer: a car offered to somebody passing overhead
           // at thirty units a second is noise)
           const atVehicle =
-            isNear || verb || propVerb || seating.current || rig.down || levels.frozen || walk.noclip
+            isNear || verb || propVerb || sitting || rig.down || levels.frozen || walk.noclip
               ? null
               : fs.prompt
           // "drive" when the wheel is free, "ride" when it is not: the prompt
@@ -3665,7 +3796,7 @@ export default function CrtScene({
           // sandbox's (explosion.ts), so the film harness agrees with this
           sb.onExplosion((e) => {
             if (sandbox !== sb) return
-            if (!seating.current && !levels.frozen && !fleet.driving && !godMode && !walk.noclip) {
+            if (!seating.current && partSeat === null && !levels.frozen && !fleet.driving && !godMode && !walk.noclip) {
               feetPt.set(camera.position.x, walk.feetY, camera.position.z)
               if (mod.blastImpact(e, feetPt, EYE * 1.15, rig.mass, impact)) {
                 rig.hit(impact.impulse, impact.point)
@@ -3763,6 +3894,9 @@ export default function CrtScene({
                 __sandboxWalk: walk,
                 __sandboxRig: rig,
                 __tools: tools,
+                // scripted contraptions (a car, a rocket, a hovercraft), through
+                // the app's own module graph so they share its contraptions
+                __contraptionBuild: () => import('../../game/sandbox/contraption/build'),
                 // the shared walk, for a two-client drive: the keys (the
                 // physgun's trigger is a mouse button only a locked pointer
                 // reports), who else is here and what their beams are doing
@@ -4243,6 +4377,10 @@ export default function CrtScene({
             leaveSeat()
             return
           }
+          if (partSeat !== null) {
+            leavePartSeat()
+            return
+          }
           if (tv?.use(headPos, headDir)) {
             if (tv.on) track('house_tv', { channel: tv.channel.label })
             return
@@ -4549,7 +4687,14 @@ export default function CrtScene({
                 driving.seat !== 0
                 ? `along for the ride · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
                 : `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
-              : tapeLine(keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
+              : seated?.part
+                ? // a contraption seat: the machine's keys, whatever it was built from
+                  tapeLine(keyHint(`${t.sandbox.hud.seat} · ${t.sandbox.hud.pauses}`, language))
+                : toolLine
+                  ? // the tool gun out: what its two buttons do in this mode, now
+                    tapeLine(keyHint(`${toolgunLine(toolLine.state, language, toolLine.keys)} · ${
+                      t.sandbox.hud.toolTail} · ${t.sandbox.hud.pauses}`, language))
+                  : tapeLine(keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
                   mp.status === 'live' ? ` · ${t.sandbox.hud.voice}` : ''
                 } · ${t.sandbox.hud.pauses}`, language))}
         </p>

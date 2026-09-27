@@ -50,6 +50,12 @@ export interface ToolInput {
       (right and down are positive). Only read while a tool captures look */
   lookX: number
   lookY: number
+  /** every key down this frame, for the contraption parts' own keys
+      (contraption/parts.ts's KEY_PAIRS) and a seat's WASD */
+  keys?: ReadonlySet<string>
+  /** the contraption seat the holder is sitting in, if any: its machine
+      answers to the driving keys */
+  seat?: number | null
 }
 
 export const emptyInput = (aim: Aim): ToolInput => ({

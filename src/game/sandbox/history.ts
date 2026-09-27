@@ -78,6 +78,9 @@ export interface History {
   /** add props to an entry recorded earlier (a demolition's rubble arrives
       over seconds, after the entry that undoes it was made) */
   attach: (entry: HistoryEntry, ids: Iterable<PropId>) => void
+  /** forget an entry without reversing it: what it would undo is already
+      gone (a weld whose prop was removed), so Z must not spend a press on it */
+  discard: (entry: HistoryEntry) => void
   /** the owner of a prop, or null for one nobody recorded (a scenario's,
       a world prop) */
   ownerOf: (id: PropId) => number | null
@@ -243,6 +246,11 @@ export const createHistory = (sb: Sandbox): History => {
         e.props.add(id)
         byProp.set(id, e)
       }
+      changed()
+    },
+    discard: (e) => {
+      if (!stack.includes(e)) return
+      drop(e)
       changed()
     },
     ownerOf: (id) => byProp.get(id)?.owner ?? null,

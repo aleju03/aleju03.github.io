@@ -5,15 +5,25 @@ import { createPhysgun, type Physgun } from './physgun'
 import { createPhysgunSfx, type PhysgunSfx } from './sfx'
 import type { RigEntry, ToolInput, VehicleGrab } from './types'
 import { createViewmodel, type Viewmodel } from './viewmodel'
+import { createToolgun, toolgunScreen, type Toolgun } from './toolgun'
+import { contraptionOf, type Contraption } from '../contraption/contraption'
 
 /*
   The tool belt: which thing is in your hand, and the one object CrtScene
   talks to about any of them.
 
   Slots are GMod's: 1 is your hands (nothing drawn, E uses doors and seats
-  the way it always has), 2 is the physgun, 3 is reserved for a toolgun. The
-  wheel cycles slots while nothing is held, and belongs to the physgun's
-  distance while something is. A slot with nothing in it is skipped.
+  the way it always has), 2 is the physgun, 3 is the tool gun (toolgun.ts:
+  weld, axis, rope, no-collide, keys, remove). The wheel cycles slots while
+  nothing is held, and belongs to the physgun's distance while something is.
+  A slot with nothing in it is skipped.
+
+  The belt is also where the contraption controller (contraption/) gets its
+  keys: every `update` hands the live sandbox's contraption this frame's key
+  set and the seat the holder is in, whatever tool is out and whether or not
+  any is usable, because a machine is driven from a seat where no tool is.
+  The physgun reads the contraption too: what it lifts weighs the whole
+  welded machine, and its reload thaws everything joined to what it hits.
 
   A frame is two calls, and the split is the same one the sandbox makes:
   `update(input)` before the sandbox ticks (it decides what the beam is
@@ -33,7 +43,7 @@ import { createViewmodel, type Viewmodel } from './viewmodel'
 */
 
 export type ToolId = 'hands' | 'physgun' | 'toolgun'
-export const SLOTS: readonly (ToolId | null)[] = ['hands', 'physgun', null]
+export const SLOTS: readonly (ToolId | null)[] = ['hands', 'physgun', 'toolgun']
 
 export interface ToolbeltOpts {
   sb: Sandbox
@@ -76,6 +86,11 @@ export interface Toolbelt {
   select: (slot: number) => void
   cycle: (dir: number) => void
   readonly physgun: Physgun
+  readonly toolgun: Toolgun
+  /** the live sandbox's contraptions (the parts, the joints, the drive) */
+  readonly contraption: Contraption
+  /** the language the tool gun's screen is written in */
+  lang: 'en' | 'es'
   /** before the sandbox ticks. `active` false holsters whatever is held */
   update: (input: ToolInput, active: boolean) => void
   /** after the camera is final */
@@ -101,10 +116,26 @@ export interface Toolbelt {
   dispose: () => void
 }
 
+const NO_KEYS: ReadonlySet<string> = new Set()
+
 export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   // the live level's sandbox, re-pointed on a level cut (setSandbox)
   let sb = o.sb
-  const physgun = createPhysgun({ sb, rigs: o.rigs, linked: o.linked, vehicles: o.vehicles })
+  let con = contraptionOf(sb)
+  const physgun = createPhysgun({
+    sb,
+    rigs: o.rigs,
+    // everything joined to what the reload hits thaws with it, and a hold
+    // weighs the machine it has hold of
+    linked: o.linked ?? ((id) => con.linked(id)),
+    massOf: (id) => con.massOf(id),
+    vehicles: o.vehicles,
+  })
+  const toolgun = createToolgun(sb)
+  let lang: 'en' | 'es' = 'en'
+  /** the tool gun's tracer: the beam flicked to where a click landed */
+  let tracer = 0
+  const tracerEnd = new THREE.Vector3()
   const beam = o.parent ? createBeam(o.parent) : null
   const vm = o.parent ? createViewmodel(o.parent) : null
   const sfx: PhysgunSfx | null = (o.sound ?? !!o.parent) ? createPhysgunSfx() : null
@@ -155,9 +186,49 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     }
   })
 
+  const offTool = toolgun.on((e) => {
+    tracer = 0.09
+    tracerEnd.copy(e.point)
+    const p = e.prop >= 0 ? sb.get(e.prop) : undefined
+    switch (e.type) {
+      case 'select':
+        sfx?.grab()
+        vm?.kick(0.5)
+        beam?.flash(p?.mesh ?? null, e.point, 0.6)
+        break
+      case 'join':
+      case 'set':
+        sfx?.freeze()
+        vm?.kick(0.8)
+        beam?.flash(p?.mesh ?? null, e.point)
+        sb.fx.zap(e.point, e.normal)
+        break
+      case 'remove':
+        sfx?.release(12)
+        vm?.kick(0.8)
+        sb.fx.zap(e.point, e.normal)
+        sb.fx.dust(e.point, 1)
+        break
+      case 'cancel':
+        sfx?.unfreeze()
+        vm?.kick(0.3)
+        break
+      case 'mode':
+        tracer = 0
+        sfx?.unfreeze()
+        vm?.kick(0.25)
+        break
+      case 'fail':
+        sfx?.miss()
+        vm?.kick(0.3)
+        break
+    }
+  })
+
   const select = (s: number) => {
     if (s < 0 || s >= SLOTS.length || !SLOTS[s] || s === slot) return
     if (physgun.holding) physgun.release(false)
+    toolgun.cancel()
     slot = s
   }
   const cycle = (dir: number) => {
@@ -173,8 +244,13 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   const update = (input: ToolInput, active: boolean) => {
     aimDir.copy(input.aim.dir)
     aimEye.copy(input.aim.eye)
+    // the machines hear the keys whatever is in your hand: a seat drives
+    // with no tool out at all
+    con.input(input.keys ?? NO_KEYS, input.seat ?? null)
     if (!active) {
       if (physgun.holding) physgun.release(false)
+      toolgun.cancel()
+      con.held = null
       lastActive = false
       return
     }
@@ -187,34 +263,58 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     }
     if (SLOTS[slot] === 'physgun') physgun.update(input)
     else if (physgun.holding) physgun.release(false)
+    if (SLOTS[slot] === 'toolgun') toolgun.update(input)
+    // a hoverball carried on the beam holds wherever it is let go
+    con.held = physgun.prop?.id ?? null
   }
 
   const present = (f: ToolFrame) => {
     if (vm) vm.root.visible = true
     if (beam) beam.root.visible = true
     physgun.sync()
-    const shown = f.active && SLOTS[slot] === 'physgun'
+    // the machines' flames and ropes, every frame, whatever is in hand
+    con.present(f.dt)
+    const tool = SLOTS[slot]
+    const shown = f.active && tool === 'physgun'
+    const toolOut = f.active && tool === 'toolgun'
+    tracer = Math.max(0, tracer - f.dt)
     if (physgun.holding) aimAt.copy(physgun.view.target)
     else if (physgun.view.mode === 'miss') aimAt.copy(physgun.view.end)
     else aimAt.copy(aimDir).multiplyScalar(24).add(aimEye)
     if (vm) {
+      if (toolOut) {
+        const [a, b] = toolgunScreen(toolgun.state, lang, toolgun.aimedKeys)
+        vm.setScreen(a, b)
+      }
       vm.update({
         camera: f.camera, dt: f.dt, gait: f.gait, grounded: f.grounded,
         holding: physgun.holding, strain: physgun.view.strain,
-        firstPerson: f.firstPerson, hand: f.hand, handL: f.handL, aim: aimDir, aimAt, shown,
+        firstPerson: f.firstPerson, hand: f.hand, handL: f.handL, aim: aimDir, aimAt, shown: shown || toolOut,
+        tool: tool === 'toolgun' ? 'toolgun' : 'physgun',
       })
     }
     if (beam) {
-      if (vm && shown) vm.muzzle(muzzle, forward)
+      if (vm && (shown || toolOut)) vm.muzzle(muzzle, forward)
       else {
         f.camera.getWorldDirection(forward)
         muzzle.copy(f.camera.position).addScaledVector(forward, 0.8)
       }
-      beam.holdHalo(shown ? physgun.prop?.mesh ?? null : null)
-      beam.update({
-        muzzle, forward, end: physgun.view.end, target: physgun.view.target, mode: shown ? physgun.view.mode : 'off',
-        strain: physgun.view.strain, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
-      })
+      if (toolOut) {
+        // the tool gun's beam is a flick to where the click landed, and the
+        // halo sits on the first prop of a joint while it waits for the second
+        const pend = toolgun.pending !== null ? sb.get(toolgun.pending) : undefined
+        beam.holdHalo(pend?.mesh ?? null)
+        beam.update({
+          muzzle, forward, end: tracerEnd, target: tracerEnd, mode: tracer > 0 ? 'miss' : 'off',
+          strain: 0, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
+        })
+      } else {
+        beam.holdHalo(shown ? physgun.prop?.mesh ?? null : null)
+        beam.update({
+          muzzle, forward, end: physgun.view.end, target: physgun.view.target, mode: shown ? physgun.view.mode : 'off',
+          strain: physgun.view.strain, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
+        })
+      }
     }
     sfx?.hum(shown && physgun.holding, physgun.view.strain)
   }
@@ -229,10 +329,22 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     select,
     cycle,
     physgun,
+    toolgun,
+    get contraption() {
+      return con
+    },
+    get lang() {
+      return lang
+    },
+    set lang(l) {
+      lang = l
+    },
     update,
     present,
     holster: () => {
       if (physgun.holding) physgun.release(false)
+      toolgun.cancel()
+      con.held = null
       if (vm) vm.root.visible = false
       if (beam) {
         beam.clear()
@@ -252,7 +364,10 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       beam?.holdHalo(null)
       beam?.clear()
       sb = next
+      con.input(NO_KEYS, null, 0)
+      con = contraptionOf(next)
       physgun.retarget(next)
+      toolgun.retarget(next)
     },
     setHandColor: (c) => vm?.setHandColor(c),
     stage: (camera) => {
@@ -267,6 +382,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     viewmodel: vm,
     dispose: () => {
       offEvents()
+      offTool()
+      toolgun.dispose()
       physgun.dispose()
       beam?.dispose()
       vm?.dispose()

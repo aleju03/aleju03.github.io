@@ -76,6 +76,19 @@ export const BINDINGS = {
   /** held while rotating: snap to the 45-degree grid */
   snap: ['ShiftLeft', 'ShiftRight'],
   unfreeze: ['KeyR'],
+  /** the tool gun (slot 3): r steps to its next mode (reload, like Garry's
+      Mod's own tool gun has no better key for it); shift+r steps back */
+  toolMode: ['KeyR'],
+
+  /* --- contraptions ---------------------------------------------------- */
+  /** the keys a thruster, wheel or hoverball can be set to answer to
+      (contraption/parts.ts's KEY_PAIRS: the right hand's letter block laid
+      out like a numpad, the numpad itself, and the arrows). Listed so the
+      input service tracks them; nothing reads them through `held` */
+  partKeys: [
+    'KeyI', 'KeyK', 'KeyU', 'KeyJ', 'KeyO', 'KeyL',
+    'Numpad8', 'Numpad5', 'Numpad7', 'Numpad4', 'Numpad9', 'Numpad6',
+  ],
 
   /* --- the shared walk ------------------------------------------------- */
   mic: ['KeyM'],
