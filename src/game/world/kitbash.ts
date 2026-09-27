@@ -177,6 +177,16 @@ export const pick = <T>(list: T[], r: number) => list[Math.min(list.length - 1, 
 export const fork = (rng: () => number) =>
   seeded(hash2(Math.floor(rng() * 4294967296), 0x6b1d, 0x3c7))
 
+/**
+ * The one stream a lot's kit rolls from, seeded on the lot's centre on a
+ * half-unit grid: a pure function of the lot, and not of how many lots were
+ * raised before it. Every consumer that raises a lot (the chunk at any tier,
+ * the far field's impostors) takes it from here, which is what makes them
+ * agree about which building stands there.
+ */
+export const lotStream = (x: number, z: number) =>
+  seeded(hash2(Math.round(x * 2), Math.round(z * 2), 0x7a3e))
+
 /* ------------------------------------------------------- unit primitives -- */
 
 export const BOX = new THREE.BoxGeometry(1, 1, 1)

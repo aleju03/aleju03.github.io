@@ -424,6 +424,14 @@ world/
                   grouped into pieces (wall per storey and side, floor, roof
                   bay), plus the support graph and Voronoi shattering.
                   Pure, so `measure fracture` runs it on every building
+  massing.ts      a lot's building as the far field draws it: the lot's own
+                  kit raised off the lot's own stream (kitbash.ts's
+                  lotStream) at the outer ring's tier into a builder that
+                  records stamps, kept only where a stamp is big enough to
+                  read at range, a round tower's courses merged into a drum.
+                  The far field simplifies what it is handed and never
+                  chooses a building, so a skyline is the same one from a
+                  kilometre off and from the pavement
   streamer.ts     the ring, the build budget, the collision shelf
   globe.ts        the planet from orbit and the Moon: one polar-grid sphere
                   program bent to any radius, painted from land.ts's fields
@@ -433,8 +441,8 @@ world/
                   square rings of coarse terrain tiles (8, 16, 32, 64-unit
                   cells, gfx.farLevels of them) out to 2-4 km, the sea held
                   flat with its depth banded and a one-pixel foam line,
-                  street strips and town impostors off the same plan and lots
-                  chunk.ts builds, a lit canopy, all in one
+                  street strips and town impostors (massing.ts: each lot's
+                  own kit, cut to its volumes), a lit canopy, all in one
                   program and one draw a tile. It discards what a finer ring
                   or a solid chunk already draws, stitches its ring edges to
                   the next ring's polyline, swaps a ring in whole, and builds
@@ -694,16 +702,22 @@ scattered, and no screenshot was ever going to say otherwise.
   a felled trunk up at a real angle, a lamp head does not).
 - **A building**: write a kit taking `(out: BuildOut, lot: Lot)`, add its name
   to `BuildKind`, hook it into `KIND_FOR` (a share of a block) or
-  `BLOCK_KIND_FOR` (a whole one), and give it a case in `chunk.ts`'s `raise`.
+  `BLOCK_KIND_FOR` (a whole one).
   Build it in the lot's own frame (`kitbash.ts`'s `frameOf`): `u` runs along
   the frontage, `v` out toward the street, and the four cardinal facings fall
   out of two sign flips. Respect `out.detailed`: on the outer ring it is a
   silhouette and window grids are the most expensive thing the city builds.
-  `lot.rng` is the kit's own stream, seeded on the lot's centre by `raise`,
-  and it must only decide *shapes*; anything rolled for a detailed build
-  alone (window lights, fences, dressing) comes from `fork(lot.rng)`, or the
-  outer ring and the near one disagree about the roofline and a water tank
-  appears on a roof as you walk toward it. Wrap-round detail (a sill course,
+  Hook it into `buildings.ts`'s `raiseKind` and nowhere else: the chunk at
+  every tier and the far field's impostors (`massing.ts`) all raise a lot
+  through it, off the same `lotStream`, which is the only reason a skyline
+  holds still as you fly toward it. `lot.rng` is that stream, and it must
+  only decide *shapes*; anything rolled for a detailed build alone (window
+  lights, fences, dressing) comes from `fork(lot.rng)`, or the outer ring
+  and the near one disagree about the roofline and a water tank appears on a
+  roof as you walk toward it. The converse bites too: a *shape* rolled off
+  the fork inside a detailed block (the ranch's carport once was, and it
+  decided whether the yard got a garage) is a building that changes as you
+  arrive. Wrap-round detail (a sill course,
   a cornice) is one box round the whole body via `course()`, not one per
   face; frames, brackets, piers and fire escapes go on the street face only.
 - **A landmark**: add a kind to `LandmarkKind`, a footprint and pad to `SIZE`

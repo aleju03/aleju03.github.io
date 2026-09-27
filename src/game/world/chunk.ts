@@ -1,8 +1,7 @@
 import * as THREE from 'three'
 import { createMeshBuilder, type MeshBuilder } from '../core/geometry'
-import { seeded } from '../core/rand'
 import { noStand, type Solid } from '../physics/collision'
-import { hash2, mix, rand2, rand3, smoothstep } from './noise'
+import { mix, rand2, rand3, smoothstep } from './noise'
 import {
   CHUNK, GRID, inReserved, inYard, originX, originZ,
 } from './grid'
@@ -10,17 +9,13 @@ import { SEA_Y, latticeGround, latticeHeight, terrainY } from './terrain'
 import { placeAt, roadAt, pavedAt, townsNear, ROAD_HALF, WALK_W } from './settlements'
 import { parcelsInChunk } from './streets'
 import { buildStreets, makeLayer, type Layer } from './streetMesh'
-import { box, type Lot } from './kitbash'
+import { box, lotStream, type Lot } from './kitbash'
 import { BIOMES, type BiomeId, type PropKind } from './biomes'
 import {
   SNAP, VARIANTS, kitsFor, stampKit, variantFor, type Kit, type Palette,
 } from './props'
 import { SURF } from './surface'
-import {
-  chapel, midriseBlock, mixedUse, parkingDeck, roundTower, shopFront, slabTower, tower,
-  warehouse, type BuildKind, type BuildOut,
-} from './buildings'
-import { suburbHouse } from './houses'
+import { raiseKind, settleKind, type BuildKind, type BuildOut } from './buildings'
 import { landmarkIn } from './landmarks'
 import { buildLandmark } from './structures'
 import { bakeBirth, PREBORN } from './fade'
@@ -526,31 +521,18 @@ const buildBlock = (
 
   // ids are the lot's own centre on a half-unit grid: a pure function of the
   // lot, and not of how many lots before it happened to build. The kit rolls
-  // from its own stream seeded on that same centre: a kit draws more on a
-  // detailed build than on the outer ring (its window lights, its dressing),
-  // so a shared stream meant promoting a chunk a tier reshuffled every lot
-  // after the first, and the house you were walking toward turned into a
-  // different house
+  // from its own stream seeded on that same centre (kitbash.ts's lotStream):
+  // a kit draws more on a detailed build than on the outer ring (its window
+  // lights, its dressing), so a shared stream meant promoting a chunk a tier
+  // reshuffled every lot after the first, and the house you were walking
+  // toward turned into a different house. The far field raises the same lot
+  // off the same stream through the same kit (world/massing.ts), so from the
+  // air it is that house too
   const raise = (kind: BuildKind, lot: Lot) => {
     const hx = Math.round(lot.x * 2)
     const hz = Math.round(lot.z * 2)
-    lot.rng = seeded(hash2(hx, hz, 0x7a3e))
     recordStructure(out, `${cx},${cz}:B${hx},${hz}`, kind, lot.baseY,
-      () => raiseKit(kind, lot))
-  }
-  const raiseKit = (kind: BuildKind, lot: Lot) => {
-    switch (kind) {
-      case 'tower': tower(out, lot); break
-      case 'slab': slabTower(out, lot); break
-      case 'round': roundTower(out, lot); break
-      case 'midrise': midriseBlock(out, lot); break
-      case 'mixed': mixedUse(out, lot); break
-      case 'shop': shopFront(out, lot); break
-      case 'warehouse': warehouse(out, lot); break
-      case 'chapel': chapel(out, lot); break
-      case 'parking': parkingDeck(out, lot); break
-      default: suburbHouse(out, lot)
-    }
+      () => raiseKind(out, kind, lot))
   }
 
   /** trees on a jittered lattice through a rectangle, this chunk's share:
@@ -643,25 +625,18 @@ const buildBlock = (
         ) as Solid)
         continue
       }
-      let kind = p.kind
-      const block = kind === 'warehouse' || kind === 'chapel' || kind === 'parking'
-      const [baseY, topY] = groundUnder(p.x, p.z, p.w, p.d, kind === 'shop')
+      const [baseY, topY] = groundUnder(p.x, p.z, p.w, p.d, p.kind === 'shop')
       if (baseY < SEA_Y + 1) continue
       // no building at all where the corners disagree by more than the plinth
-      // can hide (a block-scale shell carries a deeper plinth, so it takes a
-      // bumpier site). The rim of a town is only half-graded now that the
-      // hills start there, and a house sunk to its windowsills reads as the
-      // ground eating it
-      if (topY - baseY > (block ? 3.0 : 2.2)) continue
-      // an enterable shop grades its floor up to the *highest* ground under
-      // it and meets the street with a stoop; past a shin-and-a-bit of spread
-      // the stoop turns into a staircase, so the lot builds a shell instead
-      if (kind === 'shop' && topY - baseY > 1.2) {
-        kind = p.district === 'suburb' ? 'house' : 'midrise'
-      }
+      // can hide, and a shop on a slope builds a shell (buildings.ts's
+      // settleKind, which the far field's impostors ask too). The rim of a
+      // town is only half-graded now that the hills start there, and a house
+      // sunk to its windowsills reads as the ground eating it
+      const kind = settleKind(p.kind, p.district, baseY, topY)
+      if (!kind) continue
       raise(kind, {
         x: p.x, z: p.z, w: p.w, d: p.d, baseY, topY, height: p.height, face: p.face,
-        rng: seeded(p.id),
+        rng: lotStream(p.x, p.z),
       })
     }
   }
