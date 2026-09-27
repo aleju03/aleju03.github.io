@@ -276,6 +276,7 @@ const DRIVE_KEYS: Record<VehicleId, string> = {
   car: 'wasd drive · space handbrake · shift boost · x horn',
   boat: 'w/s throttle · a/d rudder · shift boost · x horn',
   heli: 'w/s tilt · a/d turn · space climb · ctrl descend · shift power',
+  ship: 'w/s thrust · a/d turn · r/f pitch · space up · ctrl down · shift boost',
 }
 
 /** fraction of the viewport height the glass fills once parked */
@@ -1246,6 +1247,8 @@ export default function CrtScene({
           flatY = level.groundY
           fleetEnv.groundAt = level.groundYAt ?? flatGround
           fleetEnv.waterY = level.waterY
+          fleetEnv.gravity = level.gravity ?? 1
+          fleetEnv.air = !!level.air
           fleetEnv.collision = level.collision
           return fleetEnv
         }
@@ -1544,8 +1547,8 @@ export default function CrtScene({
         /** what the HUD calls the person in this chair. A helicopter has a
             pilot and a copilot; a boat and a car do not */
         const crewLabel = (id: VehicleId, seat: number) => {
-          if (seat === SEAT_DRIVER) return id === 'heli' ? 'pilot' : 'driver'
-          return id === 'heli' ? 'copilot' : 'passenger'
+          if (seat === SEAT_DRIVER) return id === 'heli' || id === 'ship' ? 'pilot' : 'driver'
+          return id === 'heli' || id === 'ship' ? 'copilot' : 'passenger'
         }
 
         /*
@@ -2378,6 +2381,14 @@ export default function CrtScene({
             // and is lifted onto the floor if the number is under it
             const floorAt = spawnY(level, spot.x, spot.z)
             walk.spawnAt(spot.x, spot.z, spawn.yaw, spawn.y === undefined ? floorAt : Math.max(floorAt, spawn.y))
+            // flown through in the ship: it arrives where the seam lands, in
+            // the air, with us still in our chair, and the chair is claimed
+            // again (the server freed it at the level change)
+            const craft = fleet.riding
+            if (craft?.spacecraft && fleet.warpRiding(spot.x, Math.max(floorAt + 20, spawn.y ?? floorAt + 60), spot.z, spawn.yaw)) {
+              const idx = WIRE_VEHICLES.indexOf(craft.id)
+              if (idx >= 0) net?.seat(idx, fleet.seat)
+            }
             // the new level's gravity, and its own sandbox (or none)
             walk.gravityScale = rules.gravity * gravityOf(level)
             switchSandboxTo(level)
@@ -2785,9 +2796,10 @@ export default function CrtScene({
           const driver = fleet.seat === SEAT_DRIVER
           const level = levels.current
           // the cut state machine still has to run — but no seam may fire at
-          // the wheel, so it is never handed a live flag
+          // the wheel, except in a spacecraft: the ship is how you get to
+          // the Moon, and onSwapped carries it (and us) across the cut
           seamPt.set(v.root.position.x, v.root.position.y, v.root.position.z)
-          levels.tick(now, seamPt, false)
+          levels.tick(now, seamPt, !!v.spacecraft)
           // park the walker on the machine (see the header) — and do it *here*,
           // before the fleet tick, because the walk controller's rig is the
           // camera itself. Parked afterwards, the teleport threw the lens back
@@ -2808,7 +2820,8 @@ export default function CrtScene({
             camera,
             fovBase: prefsRef.current.fov,
             playerPos: v.root.position,
-            outdoors: !!level.vehicles,
+            outdoors: !!level.vehicles || !!level.spacecraft,
+            spaceOnly: !level.vehicles,
           })
           // whatever this machine is driven into goes over
           impacts.track(fleet.all, pausedNow ? 0 : dt)
@@ -3440,7 +3453,8 @@ export default function CrtScene({
             camera,
             fovBase: prefsRef.current.fov,
             playerPos: camera.position,
-            outdoors: !!level.vehicles,
+            outdoors: !!level.vehicles || !!level.spacecraft,
+            spaceOnly: !level.vehicles,
           })
           // somebody else's car coming down the street at you: the watch
           // knows how fast it is going, and a seat or a level cut is immune
@@ -4256,7 +4270,9 @@ export default function CrtScene({
             })),
           recall: (id) => {
             // the machines live in one level; there is no recalling a car to the Moon
-            const ok = !!levels.current.vehicles && fleet.recall(id, camera.position, aimFleetEnv(levels.current))
+            const lv = levels.current
+            const ok = (!!lv.vehicles || (!!lv.spacecraft && id === 'ship')) &&
+              fleet.recall(id, camera.position, aimFleetEnv(lv))
             setFleetWhere(fleetRef.current?.where() ?? [])
             return ok
           },
@@ -4553,7 +4569,7 @@ export default function CrtScene({
             {driving.id === 'car' && gauge.gear !== 0 && (
               <span>{gauge.gear < 0 ? 'R' : `gear ${gauge.gear}`}</span>
             )}
-            {driving.id === 'heli' && <span>{gauge.altitude} up</span>}
+            {(driving.id === 'heli' || driving.id === 'ship') && <span>{gauge.altitude} up</span>}
             <span className="text-stone-600">{driving.label}</span>
             {/* which chair, but only when it is not the obvious one: a lone
                 driver does not need telling that they are driving */}

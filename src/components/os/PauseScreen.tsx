@@ -296,6 +296,13 @@ function VehicleGlyph({ id }: { id: VehicleId }) {
           <path d="M8 10.5V3l4 4.5H8" />
         </>
       )}
+      {id === 'ship' && (
+        <>
+          <path d="M8 2.5 10 8.5 8 12.5 6 8.5Z" />
+          <path d="M6 8.5 2.5 10.5v1.5L6.3 11M10 8.5l3.5 2v1.5L9.7 11" />
+          <path d="M7.2 13.8h1.6" />
+        </>
+      )}
       {id === 'heli' && (
         <>
           <path d="M2 4h12M8 4v1.8" />

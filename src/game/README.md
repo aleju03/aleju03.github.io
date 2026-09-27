@@ -103,7 +103,7 @@ net/                 the shared walk, see "Multiplayer" below
                      implements by hand. Pose bits, snapshot tuples
   remotePlayers.ts   createRemoteWorld(): the roster, the snapshot buffer,
                      and the interpolation that plays it back a beat late
-  remoteVehicles.ts  createRemoteFleet(): the same, for the three machines,
+  remoteVehicles.ts  createRemoteFleet(): the same, for the four machines,
                      plus the seat table that says who is in which chair
   avatars.ts         createRemoteAvatars(): one buildPlayerBody() per
                      player, plus the name plate, speaker badge and chat
@@ -163,6 +163,11 @@ vehicles/
                   and roll, five gears, a slip model, a handbrake
   boat.ts         water: a centre console with a T-top. A faceted V-bottom hull with a hard chine,
                   buoyancy on the drawn swell, and a planing transition
+  ship.ts         air and space: a two-seat snub runabout. Hover and
+                  forward flight in the air, a 6-DOF coast in space, thrust
+                  and top speed growing with height (space.ts's flyScale),
+                  engine glow from lamp clones rather than lights; flown
+                  through the Earth-Moon seams by CrtScene (`warpRiding`)
   heli.ts         air: a light utility (news) helicopter in faceted panels. Thrust along the
                   rotor disc normal, coordinated turns on two keys, auto-hover
   driveCam.ts     the boom that follows the heading rather than the mouse,

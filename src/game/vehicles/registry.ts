@@ -13,13 +13,17 @@ import { clamp, clearAt, SURFACE_FEEL } from './chassis'
 import { buildCar } from './car'
 import { buildBoat } from './boat'
 import { buildHeli } from './heli'
+import { buildShip } from './ship'
 import type { DriveEnv, DriveStep, NetPose, Vehicle, VehicleId } from './types'
 import type { Prop, Sandbox } from '../sandbox/sandbox'
 import { registerKind, type PropKind } from '../sandbox/kinds'
 
 /*
-  The fleet: three machines, where they live, and everything that has to
-  happen around them that is not physics.
+  The fleet: four machines, where they live, and everything that has to
+  happen around them that is not physics. The fourth is the ship, which
+  also lives on the Moon (a level that says `spacecraft`, where the fleet
+  ticks it alone) and is carried through the Earth-Moon cuts with its crew
+  aboard (`warpRiding`).
 
   This module is the seam between the vehicles and the scene, and it exists so
   that CrtScene's per-frame conductor gains one call rather than a subsystem.
@@ -133,6 +137,9 @@ const HOME: Record<VehicleId, { x: number; z: number; yaw: number }> = {
   // twenty-five units off. Re-probed when the mountain retune lifted the
   // raw field — the old spot at (-2279, -614) kept half a unit of water
   boat: { x: -2170, z: -1080, yaw: -0.175 },
+  // the back garden, between the two yard trees and clear of the flower
+  // beds, nose to the house: out of the back door and there it is
+  ship: { x: 0.5, z: 31.5, yaw: 0 },
 }
 
 /** how long the camera takes to move from the player's eye into the seat */
@@ -146,6 +153,8 @@ const SIM_RANGE = 300
 export interface FleetEnvQueries {
   groundAt: (x: number, z: number) => number
   waterY?: number
+  gravity?: number
+  air?: boolean
   collision: DriveEnv['collision']
   surfaceAt: DriveEnv['surfaceAt']
   waveAt: DriveEnv['waveAt']
@@ -164,6 +173,8 @@ export interface FleetTickOpts {
   playerPos: THREE.Vector3
   /** the overworld is live. Level 0 has no vehicles in it and never will */
   outdoors: boolean
+  /** a level only spacecraft fly on (the Moon): the rest sit this one out */
+  spaceOnly?: boolean
 }
 
 export interface FleetStep {
@@ -254,6 +265,9 @@ export interface VehicleFleet {
   /** slide across without getting out: the passenger of a machine whose
       driver just left takes the wheel where they sit */
   takeSeat: (seat: number) => void
+  /** carry the machine we are in through a level cut: put it in the air at
+      the seam's arrival, still, with us aboard (spacecraft only) */
+  warpRiding: (x: number, y: number, z: number, yaw: number) => boolean
   /** climb out; null means "not from here" (a helicopter in the air). A
       passenger may always get out — they are not the one flying it */
   leave: (env: FleetEnvQueries) => ExitPlace | null
@@ -402,11 +416,12 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     car: createVehicleVoice('car'),
     boat: createVehicleVoice('boat'),
     heli: createVehicleVoice('heli'),
+    ship: createVehicleVoice('ship'),
   }
 
   const entries: Entry[] = []
   const byId = new Map<VehicleId, Entry>()
-  for (const v of [buildCar({ mats }), buildBoat({ mats }), buildHeli({ mats })]) {
+  for (const v of [buildCar({ mats }), buildBoat({ mats }), buildHeli({ mats }), buildShip({ mats })]) {
     root.add(v.root)
     const box = new THREE.Box3() as Solid
     const hull = makeHull(v.hull, PAD)
@@ -452,6 +467,8 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
   const fillEnv = (q: FleetEnvQueries) => {
     env.groundAt = q.groundAt
     env.waterY = q.waterY
+    env.gravity = q.gravity
+    env.air = q.air
     env.collision = q.collision
     env.surfaceAt = q.surfaceAt
     env.waveAt = q.waveAt
@@ -541,6 +558,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     const rz = fx
     const feel = SURFACE_FEEL[s.surface]
 
+    if (v.id === 'ship') return
     if (v.id === 'heli') {
       // downwash: a ring of dust thrown outward under the disc, and only
       // close enough to the ground for there to be anything to throw
@@ -663,7 +681,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     // you may not step out of something that is flying — unless you are not
     // the one flying it, in which case it is the pilot's problem and stepping
     // out is still a bad idea, so it is refused for both chairs
-    if (e.v.id === 'heli' && s && (!s.grounded || s.altitude > 1.2)) return null
+    if ((e.v.id === 'heli' || e.v.spacecraft) && s && (!s.grounded || s.altitude > 1.2)) return null
     fillEnv(q)
     env.dt = SUBSTEP
     const out = new THREE.Vector3()
@@ -921,6 +939,13 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     clock += dt
     lastQ = o.env
     for (const e of entries) {
+      // on a level only spacecraft fly on, the ground machines are a world
+      // away: not drawn, not ticked, not offered
+      e.v.root.visible = !o.spaceOnly || !!e.v.spacecraft
+      if (o.spaceOnly && !e.v.spacecraft) {
+        hush(e)
+        continue
+      }
       if (e.carry) {
         carryTick(e, dt)
         continue
@@ -1010,7 +1035,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       // The passenger gets it too — it is the one control in the cabin that
       // was never the driver's alone
       const hornNow = !o.frozen && o.keys.has('KeyX')
-      if (hornNow && !hornHeld && v.id !== 'heli') vehicleHorn()
+      if (hornNow && !hornHeld && v.id !== 'heli' && !v.spacecraft) vehicleHorn()
       hornHeld = hornNow
       if (s) {
         cam.apply(o.camera, dt, v, s, env, o.fovBase)
@@ -1030,6 +1055,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     }
 
     hornHeld = false
+    spaceOnlyNow = !!o.spaceOnly
     const at = nearest(o.playerPos)
     result.prompt = at
     result.promptSeat = at ? freeSeat(byId.get(at.id)!) : 0
@@ -1058,11 +1084,13 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     because crouching is what brought the eye down far enough. The boat and the
     helicopter hid it by reaching 5.
   */
+  let spaceOnlyNow = false
   const nearest = (p: THREE.Vector3): Vehicle | null => {
     let best: Vehicle | null = null
     let bestD = Infinity
     for (const e of entries) {
       if (e === active) continue
+      if (spaceOnlyNow && !e.v.spacecraft) continue
       // a machine with both chairs full is scenery, however close you stand
       if (freeSeat(e) < 0) continue
       const q = e.v.root.position
@@ -1221,6 +1249,12 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     take,
     enter,
     takeSeat,
+    warpRiding: (x, y, z, yaw) => {
+      const v = active?.v
+      if (!v?.warp) return false
+      v.warp(x, y, z, yaw)
+      return true
+    },
     leave,
     setNet: (state) => {
       netState = state

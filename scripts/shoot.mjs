@@ -63,7 +63,7 @@ targets
   body:seat            seated in the car, boat and helicopter seat nodes
   body:car             the car alone, five ways round with two aboard; at
                        night (--tod 0.9) its lamps and beams are on
-  body:heli, body:boat the same for the helicopter and the boat; append
+  body:heli, body:boat, body:ship  the same for the other three; append
                        -empty (body:boat-empty) to leave the seats empty
   body:size            one bean beside a 4.7 doorway and the 3.84 lens line,
                        and the old eye-scaled size next to it

@@ -184,6 +184,8 @@ export function makeHomeLevels(
     },
     gravity: 1 / 6,
     sandbox: { ground: outside.moon.ground },
+    // the ship flies here, and lands, under a sixth of the gravity
+    spacecraft: true,
     outdoors: true,
     surfaceAt: () => 'sand',
   }

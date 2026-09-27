@@ -30,6 +30,9 @@
                                       the physgun on a parked machine: taken,
                                       lifted, turned, thrown, landed, handed
                                       back to its own physics (a strip)
+    npm run drive -- ship             the ship: boarded in the back garden,
+                                      flown out of the air, through the seam
+                                      to the Moon, landed, and flown home
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -123,6 +126,7 @@ const probe = await openProbe({
 const { send, evaluate } = probe
 
 const CODES = {
+  KeyE: ['e', 69],
   KeyQ: ['q', 81], KeyV: ['v', 86], KeyW: ['w', 87], KeyT: ['t', 84], KeyZ: ['z', 90],
   KeyC: ['c', 67], Enter: ['Enter', 13], Tab: ['Tab', 9], Space: [' ', 32],
   ShiftLeft: ['Shift', 16], Slash: ['/', 191], Escape: ['Escape', 27], F5: ['F5', 116],
@@ -1091,6 +1095,113 @@ try {
     const layout = labels.map((_, i) => `${(i % cols) * 640}_${Math.floor(i / cols) * 400}`).join('|')
     const graph = `${scaled.join(';')};${labels.map((_, i) => `[v${i}]`).join('')}xstack=inputs=${labels.length}:layout=${layout}`
     const out = join(OUT, `carry-${which}.png`)
+    const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...inputs, '-filter_complex', graph, '-frames:v', '1', out])
+    if (r.status !== 0) console.error(String(r.stderr))
+    else console.log(`  wrote ${out}`)
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  if (WHAT.includes('ship')) {
+    /*
+      The ship, end to end: parked in the back garden, boarded with E, flown
+      up out of the air, carried through the seam to the Moon (warped to the
+      seam's edge once the Moon is pinned, since steering there by keys is
+      the player's job and not a harness's), landed on the regolith under a
+      sixth of the gravity, and flown back up through the seam home. A
+      labelled strip and the numbers per frame: level, where it is, height
+      over the ground, speed, riding or not, program links.
+    */
+    console.log('ship')
+    await evaluate(`(() => { window.__shipLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__shipWrapped) continue; gl.__shipWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__shipLinks++; real(p) } } return true })()`)
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await run('time 11:00')
+    await goTo('5.2 31.5')
+    await sleep(1500)
+    await stand()
+    await look(Math.PI / 2, -0.2)
+    const dir = mkdtempSync(join(tmpdir(), 'ship-'))
+    const labels = []
+    const state = () => evaluate(`(() => {
+      const v = window.__fleet.all.find((m) => m.id === 'ship'), p = v.root.position
+      const L = window.__levels.current
+      const g = L.groundYAt ? L.groundYAt(p.x, p.z) : L.groundY
+      return L.id + '  ' + [p.x, p.y, p.z].map((n) => n.toFixed(0)).join(', ') + '  ' + (p.y - g).toFixed(0) + ' up' +
+        (window.__fleet.riding ? '  aboard' : '  parked') + '  links ' + window.__shipLinks
+    })()`)
+    const frame = async (label, wait = 0) => {
+      await sleep(wait)
+      const f = join(dir, `${String(labels.length).padStart(2, '0')}.png`)
+      writeFileSync(f, await probe.screenshot(W, H))
+      labels.push(label)
+      console.log(`  ${label.padEnd(30)} ${await state()}`)
+    }
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    await frame('parked in the back garden', 300)
+    await tap('KeyE', 150)
+    await sleep(1500)
+    if (!(await evaluate('!!window.__fleet.riding'))) console.log('  E did not board it  <-- WRONG')
+    // lift off, then climb nose up on boost
+    await hold('Space', true)
+    await frame('lifting off', 2200)
+    await hold('Space', false)
+    await hold('KeyR', true)
+    await sleep(900)
+    await hold('KeyR', false)
+    await hold('KeyW', true)
+    await hold('ShiftLeft', true)
+    await hold('Space', true)
+    await frame('climbing out', 4000)
+    // on up until the Moon is pinned (the climb past 3000)
+    for (let i = 0; i < 40; i++) {
+      if (await evaluate('!!window.__outside.view.moon')) break
+      await sleep(500)
+    }
+    await frame('above the air', 1500)
+    await hold('KeyW', false)
+    await hold('ShiftLeft', false)
+    await hold('Space', false)
+    // to the seam's edge: just outside the Moon's cut radius, on the line to it
+    await evaluate(`(() => { const m = window.__outside.view.moon; const p = window.__fleet.riding.root.position
+      const d = m.clone().sub(p); const len = d.length(); d.normalize()
+      const at = m.clone().addScaledVector(d, -(9000 + 2400))
+      return window.__fleet.warpRiding(at.x, at.y, at.z, Math.atan2(-d.x, -d.z)) })()`)
+    await frame('at the Moon', 2500)
+    for (let i = 0; i < 30; i++) {
+      if (await evaluate(`window.__levels.current.id === 'moon'`)) break
+      await sleep(300)
+    }
+    await frame('arrived over the landing site', 2500)
+    // down onto the regolith
+    await hold('KeyC', true)
+    for (let i = 0; i < 40; i++) {
+      const up = await evaluate(`(() => { const p = window.__fleet.riding.root.position; const L = window.__levels.current; return p.y - L.groundYAt(p.x, p.z) })()`)
+      if (up < 1) break
+      await sleep(400)
+    }
+    await hold('KeyC', false)
+    await frame('landed on the Moon', 1500)
+    await look(null, 0)
+    // and home: straight up past the seam
+    await hold('Space', true)
+    await hold('ShiftLeft', true)
+    for (let i = 0; i < 60; i++) {
+      if (await evaluate(`window.__levels.current.id === 'overworld'`)) break
+      await sleep(400)
+    }
+    await hold('Space', false)
+    await hold('ShiftLeft', false)
+    await frame('back over the Earth', 2500)
+    for (const k of ['KeyW', 'KeyR', 'KeyC', 'Space', 'ShiftLeft']) await hold(k, false)
+    const cols = 4
+    const esc = (t) => t.replace(/[:\\']/g, (c) => `\\${c}`)
+    const inputs = labels.flatMap((_, i) => ['-i', join(dir, `${String(i).padStart(2, '0')}.png`)])
+    const scaled = labels.map((l, i) =>
+      `[${i}:v]scale=640:400,drawbox=x=0:y=370:w=640:h=30:color=black@0.55:t=fill,drawtext=text='${esc(`${i + 1}. ${l}`)}':x=10:y=378:fontsize=15:fontcolor=white[v${i}]`)
+    const layout = labels.map((_, i) => `${(i % cols) * 640}_${Math.floor(i / cols) * 400}`).join('|')
+    const graph = `${scaled.join(';')};${labels.map((_, i) => `[v${i}]`).join('')}xstack=inputs=${labels.length}:layout=${layout}`
+    const out = join(OUT, 'ship.png')
     const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...inputs, '-filter_complex', graph, '-frames:v', '1', out])
     if (r.status !== 0) console.error(String(r.stderr))
     else console.log(`  wrote ${out}`)

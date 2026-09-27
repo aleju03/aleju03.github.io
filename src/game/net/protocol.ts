@@ -83,7 +83,7 @@ export interface RosterEntry {
     do not need their spelling repeated fifteen times a second, and the server
     (which knows nothing about what a helicopter is) only has to bounds-check
     a small integer. Mirrored by W_FLEET in server/src/index.js */
-export const WIRE_VEHICLES = ['car', 'boat', 'heli'] as const
+export const WIRE_VEHICLES = ['car', 'boat', 'heli', 'ship'] as const
 export type WireVehicle = (typeof WIRE_VEHICLES)[number]
 
 /** the chair with the controls, and the one without */

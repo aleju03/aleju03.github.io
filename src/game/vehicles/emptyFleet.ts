@@ -60,6 +60,7 @@ export function emptyFleet(): VehicleFleet {
     take: () => null,
     enter: () => {},
     takeSeat: () => {},
+    warpRiding: () => false,
     leave: () => null,
     setNet: () => {},
     tick: () => STILL,

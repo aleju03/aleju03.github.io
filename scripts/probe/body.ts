@@ -16,7 +16,7 @@ import { createVehicleMaterials } from '../../src/game/vehicles/materials'
 import { buildCar } from '../../src/game/vehicles/car'
 import { buildHeli } from '../../src/game/vehicles/heli'
 import { buildBoat } from '../../src/game/vehicles/boat'
-const buildShip = buildCar
+import { buildShip } from '../../src/game/vehicles/ship'
 import { dressLook, lightFor } from './probe'
 import type { SkyState } from '../../src/game/levels/sky'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'

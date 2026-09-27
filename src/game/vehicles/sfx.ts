@@ -45,7 +45,7 @@ import { sharedAudio } from '../core/sfx'
   every method here becomes a no-op.
 */
 
-export type VoiceKind = 'car' | 'boat' | 'heli'
+export type VoiceKind = 'car' | 'boat' | 'heli' | 'ship'
 
 export interface VehicleVoice {
   /** build the graph and fade in */
@@ -117,6 +117,17 @@ const SPEC = {
     /** blade passage: two blades, so the slap runs at twice rotor speed.
         5 Hz on a lazy idle up to 19 at full song */
     slap: 1, slapF0: 4.5, slapF1: 19,
+  },
+  /** the ship: a soft triangle whine over a wide jet hiss, no firing note */
+  ship: {
+    f0: 62, f1: 250,
+    wave: 'triangle' as OscillatorType,
+    lp0: 700, lp1: 3400,
+    core0: 0.014, core1: 0.04,
+    bed: 0.04, bedF: 1100, bedQ: 0.6,
+    rush: 0.03, rushF: 2800,
+    spread: 18,
+    slap: 0,
   },
 } as const
 

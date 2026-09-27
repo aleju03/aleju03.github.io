@@ -146,7 +146,7 @@ const WORLD_COORD_LIMIT = 1e7; // the planet is endless, the wire is not
 // SEAT_* in src/game/net/protocol.ts. This process does not know what a
 // helicopter is and does not need to — a vehicle here is an index, a
 // transform and two seat holders.
-const WORLD_FLEET = 3;
+const WORLD_FLEET = 4; // car, boat, heli, ship: src/game/net/protocol.ts's WIRE_VEHICLES
 const WORLD_SEATS = 2;
 const WORLD_SEAT_RATE_MAX = 20; // door-handle spam, per window
 const WORLD_SEAT_RATE_WINDOW_MS = 10_000;

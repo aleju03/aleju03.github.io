@@ -33,7 +33,7 @@ import type { StepSurface } from '../core/sfx'
   own cosmetics off the motion that implies.
 */
 
-export type VehicleId = 'car' | 'boat' | 'heli'
+export type VehicleId = 'car' | 'boat' | 'heli' | 'ship'
 
 /** the world one tick happens in — the same four questions the walk asks */
 export interface DriveEnv {
@@ -46,6 +46,11 @@ export interface DriveEnv {
   groundAt: (x: number, z: number) => number
   /** the waterline, where the level has one */
   waterY?: number
+  /** the level's gravity as a share of the overworld's (the Moon's is a
+      sixth); only the ship reads it, the rest were built for one planet */
+  gravity?: number
+  /** false on a level with no air to fly in (the Moon) */
+  air?: boolean
   collision: CollisionSet
   /** what is underfoot: picks grip, rolling drag and the colour of the dust */
   surfaceAt: (x: number, z: number) => StepSurface
@@ -130,6 +135,9 @@ export interface DriveView {
   eye: THREE.Vector3
   /** and the passenger's, for the same view from the other chair */
   eye2: THREE.Vector3
+  /** smooth the chase boom in the machine's own frame, not the world's: a
+      machine that crosses kilometres a second outruns a world-space lag */
+  rigid?: boolean
 }
 
 export interface Vehicle {
@@ -186,6 +194,12 @@ export interface Vehicle {
       under its origin the hull that body is made of closes. Defaults suit a
       car */
   carry?: { mass: number; density: number; bottom: number }
+  /** it flies where there is no air, and lives on levels that say
+      `spacecraft` as well as those that say `vehicles` (the ship) */
+  spacecraft?: boolean
+  /** put it in the air at a point, still and level, keeping whoever is
+      aboard: a level cut flown through (the ship's Earth-Moon seams) */
+  warp?: (x: number, y: number, z: number, yaw: number) => void
   /** put it down here and let it settle: spawn, or a recall from the menu */
   placeAt: (x: number, z: number, yaw: number, env: DriveEnv) => void
   /** the player just got in */
