@@ -103,17 +103,25 @@ export const FPS_CAPS = [30, 45, 60, 75, 90, 120, 144, 160, 200, 240, 0]
 export const fpsCapLabel = (cap: number) => (cap === 0 ? 'no limit' : `${cap} fps`)
 
 /**
-  The frame limiter ships *on*, at 160, rather than uncapped or at the panel's
+  The frame limiter ships *on*, at 120, rather than uncapped or at the panel's
   own rate. This scene will happily draw as many frames as a card will give it,
   and on a fast one that means a room and a planet rendered three hundred times
-  a second so that a browser tab can run hot enough to hear. 160 is above every
-  common panel rate the walk is likely to be watched on except 240, so the
-  default costs nobody a frame they could see, and the dial is there for anyone
-  who disagrees in either direction.
+  a second so that a browser tab can run hot enough to hear; "the panel's own
+  rate" is no answer either, because the owner's is 360. It was 160 until the
+  fans on an RTX 4070 said otherwise: measured at the front gate, 160 kept the
+  main thread about 32% busy and 120 about 24%, for motion nobody on a 60 or
+  120 panel could tell apart. The dial is there for anyone who disagrees in
+  either direction.
 */
 export const PREFS_KEY = 'alejos-roam-prefs'
+/** which default the stored cap was written under. The whole prefs object is
+    saved on any change, so a stored 160 is usually the old default riding
+    along rather than a choice; it is moved to 120 once, and a 160 picked after
+    that stays picked */
+const CAP_DEFAULT_KEY = 'alejos-roam-cap-default'
+const OLD_CAP_DEFAULT = 160
 const PREFS_DEFAULT: RoamPrefs = {
-  fov: 60, sens: 1, third: false, cap: 160, detail: 'auto', scale: 1,
+  fov: 60, sens: 1, third: false, cap: 120, detail: 'auto', scale: 1,
   pixels: 'medium', micVol: 1, voiceVol: 1, voiceFx: 'none',
 }
 
@@ -127,8 +135,11 @@ const vol = (raw: unknown, fallback: number) => {
 export const loadPrefs = (): RoamPrefs => {
   try {
     const raw = localStorage.getItem(PREFS_KEY)
+    const capUnder = localStorage.getItem(CAP_DEFAULT_KEY)
+    localStorage.setItem(CAP_DEFAULT_KEY, String(PREFS_DEFAULT.cap))
     if (raw) {
       const p = JSON.parse(raw) as Partial<Record<keyof RoamPrefs, unknown>>
+      if (capUnder === null && Number(p.cap) === OLD_CAP_DEFAULT) p.cap = PREFS_DEFAULT.cap
       return {
         fov: Math.min(80, Math.max(30, Number(p.fov) || PREFS_DEFAULT.fov)),
         sens: Math.min(3, Math.max(0.3, Number(p.sens) || PREFS_DEFAULT.sens)),
