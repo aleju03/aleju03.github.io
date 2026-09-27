@@ -335,7 +335,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       a.group.rotation.set(0, Math.PI, 0)
       a.rig.reset()
       // only the fleet's seats come through here, and each says its own fit
-      a.rig.sit(seat.userData.fit ?? CABIN_FIT, seat.name === 'passengerSeat')
+      a.rig.sit(seat.userData.fit ?? CABIN_FIT, seat.name === 'passengerSeat', seat.userData.room ?? null)
     } else {
       root.add(a.group)
       a.group.rotation.set(0, 0, 0)

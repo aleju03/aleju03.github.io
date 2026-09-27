@@ -1101,6 +1101,11 @@ export function buildCar(opts: CarOpts): Vehicle {
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
   driverSeat.position.set(DX, SEAT_EYE_Y, SEAT_Z)
+  /* the cabin a rider stays inside (playerBody's `sit` and its clamp), seat
+     frame: the door glass leans in to about 1.45 from the centreline at head
+     height, the headliner is at 2.93, the raked windscreen is 0.5 ahead of a
+     face at the headliner, and the rear bench is the back */
+  driverSeat.userData.room = new THREE.Box3(new THREE.Vector3(-0.62, -1.3, -0.5), new THREE.Vector3(0.78, 0.8, 1.4))
   driverSeat.userData.fit = SEAT_FIT
   body.add(driverSeat)
   // the other side of the same bench: this is left-hand drive, so the mirror
@@ -1108,6 +1113,7 @@ export function buildCar(opts: CarOpts): Vehicle {
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
   passengerSeat.position.set(-DX, SEAT_EYE_Y, SEAT_Z)
+  passengerSeat.userData.room = new THREE.Box3(new THREE.Vector3(-0.78, -1.3, -0.5), new THREE.Vector3(0.62, 0.8, 1.4))
   passengerSeat.userData.fit = SEAT_FIT
   body.add(passengerSeat)
   root.add(body)

@@ -13,8 +13,8 @@ import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
   The ship: a two-seat snub runabout for getting off the planet, parked in
   the back garden. The brief was "a little spaceship, Star Wars inspired",
   so it borrows that family's vocabulary and none of its shapes: an
-  off-white wedge of a hull with a blunt faceted nose, a bubble canopy over
-  two seats side by side, stub wings carrying a pod engine each, a swept
+  off-white wedge of a hull with a blunt faceted nose, a tall bubble canopy
+  over two seats in tandem, stub wings carrying a pod engine each, a swept
   dorsal fin, red livery bands, and the hull broken up with greebles (vents,
   boxes, pipes, panel lines) the way a working machine's is. It is small:
   9.4 units nose to tail, 7.1 across the pods, a runabout, not a fighter.
@@ -68,7 +68,7 @@ const G = 34
 
 /* ----------------------------------------------------------------- scale -- */
 
-const SIZE = { halfX: 3.6, halfZ: 4.8, height: 3.9 }
+const SIZE = { halfX: 3.6, halfZ: 4.8, height: 4.7 }
 /** the pods' centre, either side */
 const POD_X = 3.0
 const POD_Y = 1.65
@@ -102,12 +102,15 @@ const sect = (z: number, bw: number, by: number, cw: number, cy: number, hw: num
 const SECTIONS: Sect[] = [
   sect(-4.7, 0.18, 1.45, 0.3, 1.5, 0.36, 1.7, 0.24, 1.86, 1.9),
   sect(-4.1, 0.34, 1.12, 0.78, 1.18, 0.95, 1.66, 0.62, 2.12, 2.2),
-  sect(-2.7, 0.42, 0.98, 1.12, 1.05, 1.36, 1.72, 1.08, 2.42, 2.62),
-  sect(0.8, 0.46, 0.95, 1.2, 1.02, 1.46, 1.76, 1.16, 2.5, 2.74),
-  sect(2.6, 0.46, 0.98, 1.18, 1.05, 1.42, 1.78, 1.1, 2.48, 2.7),
+  sect(-2.9, 0.44, 0.97, 1.16, 1.04, 1.44, 1.74, 1.22, 2.46, 2.66),
+  sect(1.9, 0.46, 0.96, 1.2, 1.03, 1.5, 1.78, 1.26, 2.52, 2.76),
+  sect(3.0, 0.46, 0.98, 1.18, 1.05, 1.42, 1.78, 1.1, 2.48, 2.7),
   sect(4.4, 0.38, 1.08, 0.98, 1.14, 1.2, 1.74, 0.92, 2.34, 2.5),
 ]
 const COCKPIT_BAY = 2
+/** how far the canopy stands over the shoulder line, and its crown */
+const CANOPY_LIFT = 1.4
+const CANOPY_TOP = 2.52 + 1.5 * CANOPY_LIFT
 
 const ringOf = (s: Sect) => {
   const half: Array<[number, number]> = [[s.bw, s.by], [s.cw, s.cy], [s.hw, s.hy], [s.sw, s.sy]]
@@ -127,7 +130,7 @@ const panelOf = (k: number) => (k === 8 ? -1 : k < 4 ? k : 7 - k)
 const HULL: HullStation[] = [
   ...SECTIONS.map((s) => {
     const wing = s.z > POD_Z0 && s.z < POD_Z1
-    return { z: s.z, hw: wing ? POD_X + POD_R : s.hw, top: s.z > -2.8 && s.z < 1 ? 3.7 : s.ty }
+    return { z: s.z, hw: wing ? POD_X + POD_R : s.hw, top: s.z > -3 && s.z < 2 ? CANOPY_TOP : s.ty }
   }),
   { z: POD_Z0, hw: POD_X + POD_R, top: 2.8 },
   { z: POD_Z1, hw: POD_X + POD_R, top: 2.6 },
@@ -156,10 +159,20 @@ const BANK = 0.5
 const TOP = 220
 const SPOOL = 0.7
 
-/** the seated faces, either side of the centreline */
-const SEAT_X = 0.6
+/*
+  The two seats, in tandem on the centreline: the pilot forward, the
+  passenger behind and higher so they see over the pilot's head, the way a
+  two-seat trainer or a snub fighter's gunner sits. Side by side, two beans
+  did not fit under any canopy the hull could carry, and the second one sat
+  half out through the glass. Each seat's `room` (seat frame: the eye at
+  the origin, +x to starboard, +z aft) is the inside of the canopy at that
+  seat, a little in from the glass, which playerBody's `sit` folds a tall
+  rider to clear and its seated clamp holds heads and arms inside.
+*/
 const SEAT_Y = 2.62
-const SEAT_Z = -0.95
+const SEAT_Z = -1.6
+const SEAT2_Y = 2.98
+const SEAT2_Z = 0.35
 const SEAT_FIT = 0.84
 
 /** a flat octagon pod along z, as rings for the facets */
@@ -222,42 +235,51 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
   capRing(f, rings[0], -1, 'paint')
   capRing(f, rings[rings.length - 1], 1, 'trim')
 
-  /* --- the canopy: a faceted bubble standing in the cockpit's hole --------- */
+  /* --- the canopy: a tall faceted bubble over both seats ------------------- */
   {
     const a = SECTIONS[COCKPIT_BAY]
     const c = SECTIONS[COCKPIT_BAY + 1]
-    const arch = (z: number, s: Sect, lift: number) => [
-      V(-s.sw, s.sy, z), V(-s.sw * 0.84, s.sy + 0.8 * lift, z), V(-s.sw * 0.44, s.sy + 1.25 * lift, z),
-      V(0, s.sy + 1.36 * lift, z), V(s.sw * 0.44, s.sy + 1.25 * lift, z), V(s.sw * 0.84, s.sy + 0.8 * lift, z), V(s.sw, s.sy, z),
-    ]
-    const mid = (t: number) => {
-      const z = a.z + (c.z - a.z) * t
-      const s: Sect = { ...a, z, sw: a.sw + (c.sw - a.sw) * t, sy: a.sy + (c.sy - a.sy) * t }
-      return s
+    /** the canopy's ring at z, `lift` of its full height: boxy sides, so the
+        heads have room at their own height, and a flat-topped crown */
+    const arch = (z: number, lift: number) => {
+      const t = (z - a.z) / (c.z - a.z)
+      const sw = a.sw + (c.sw - a.sw) * t
+      const sy = a.sy + (c.sy - a.sy) * t
+      const L = lift * CANOPY_LIFT
+      const half: Array<[number, number]> = [[sw, sy], [sw * 0.97, sy + 0.8 * L], [sw * 0.74, sy + 1.3 * L], [sw * 0.36, sy + 1.48 * L]]
+      const r: THREE.Vector3[] = []
+      for (const [x, y] of half) r.push(V(-x, y, z))
+      r.push(V(0, sy + 1.5 * L, z))
+      for (let i = half.length - 1; i >= 0; i--) r.push(V(half[i][0], half[i][1], z))
+      return r
     }
-    const can = [arch(a.z, a, 0.08), arch(mid(0.3).z, mid(0.3), 1), arch(mid(0.78).z, mid(0.78), 1), arch(c.z, c, 0.12)]
+    const can = [arch(a.z, 0.06), arch(-2.2, 0.82), arch(-1.3, 1), arch(0.9, 1), arch(c.z, 0.1)]
     skinRings(f, can, () => 'glass')
-    // the frame: a hoop at the windscreen's top edge, and a spine
+    // the frame: the windscreen's top hoop, a hoop between the two seats,
+    // and a spine along the crown
     b.add(tube(can[1], 0.05, 5), 'dark')
-    b.add(tube(can[2], 0.05, 5), 'dark')
-    b.add(tube([can[0][3], can[1][3], can[2][3], can[3][3]], 0.045, 5), 'dark')
+    b.add(tube(arch(-0.45, 1), 0.05, 5), 'dark')
+    b.add(tube(can[3], 0.05, 5), 'dark')
+    b.add(tube(can.map((r) => r[4]), 0.045, 5), 'dark')
     // the cockpit's inside: a floor, the side linings, the dash and the
     // rear bulkhead, since from the seats the hull is seen from behind
     const zf = a.z + 0.05
     const zr = c.z - 0.05
-    f.quadOut(V(-1.15, 1.35, zf), V(1.15, 1.35, zf), V(1.15, 1.35, zr), V(-1.15, 1.35, zr), 'trim', V(0, 1, 0))
+    f.quadOut(V(-1.2, 1.35, zf), V(1.2, 1.35, zf), V(1.2, 1.35, zr), V(-1.2, 1.35, zr), 'trim', V(0, 1, 0))
     for (const side of [-1, 1]) {
-      f.quadOut(V(side * 1.25, 1.35, zf), V(side * 1.25, 1.35, zr), V(side * 1.05, a.sy - 0.02, zr), V(side * 1.0, a.sy - 0.02, zf), 'trim', V(-side, 0, 0))
+      f.quadOut(V(side * 1.3, 1.35, zf), V(side * 1.3, 1.35, zr), V(side * 1.1, c.sy - 0.02, zr), V(side * 1.06, a.sy - 0.02, zf), 'trim', V(-side, 0, 0))
     }
     f.quadOut(V(-1.2, 1.35, zf), V(1.2, 1.35, zf), V(1.0, a.sy, zf), V(-1.0, a.sy, zf), 'dark', V(0, 0, 1))
-    f.quadOut(V(-1.2, 1.35, zr), V(1.2, 1.35, zr), V(1.08, c.sy, zr), V(-1.08, c.sy, zr), 'trim', V(0, 0, -1))
-    // seats, and the dash's instrument strip
-    b.both(() => {
-      b.add(new THREE.BoxGeometry(0.72, 0.2, 0.8), 'seat', at(SEAT_X, 1.55, -0.55))
-      b.add(new THREE.BoxGeometry(0.7, 0.95, 0.18), 'seat', at(SEAT_X, 2.05, -0.1, 0.18))
-    })
-    b.add(new THREE.BoxGeometry(1.6, 0.26, 0.5), 'trim', at(0, 2.1, a.z + 0.3, -0.5))
-    b.add(new THREE.BoxGeometry(1.2, 0.1, 0.06), 'lamp', at(0, 2.23, a.z + 0.16, -0.5))
+    f.quadOut(V(-1.2, 1.35, zr), V(1.2, 1.35, zr), V(1.1, c.sy, zr), V(-1.1, c.sy, zr), 'trim', V(0, 0, -1))
+    // the two seats: the pilot's on the floor, the passenger's on a riser
+    b.add(new THREE.BoxGeometry(0.9, 0.2, 0.8), 'seat', at(0, 1.5, SEAT_Z + 0.35))
+    b.add(new THREE.BoxGeometry(0.88, 1.0, 0.2), 'seat', at(0, 1.98, SEAT_Z + 0.82, 0.18))
+    b.add(new THREE.BoxGeometry(1.0, 0.4, 0.95), 'trim', at(0, 1.55, SEAT2_Z + 0.35))
+    b.add(new THREE.BoxGeometry(0.9, 0.2, 0.8), 'seat', at(0, 1.86, SEAT2_Z + 0.35))
+    b.add(new THREE.BoxGeometry(0.88, 1.0, 0.2), 'seat', at(0, 2.34, SEAT2_Z + 0.82, 0.18))
+    // the dash and its instrument strip, well ahead of the pilot's knees
+    b.add(new THREE.BoxGeometry(1.7, 0.26, 0.5), 'trim', at(0, 2.1, a.z + 0.25, -0.5))
+    b.add(new THREE.BoxGeometry(1.2, 0.1, 0.06), 'lamp', at(0, 2.23, a.z + 0.1, -0.5))
   }
 
   /* --- wings and pods -------------------------------------------------------- */
@@ -291,24 +313,24 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
 
   /* --- the dorsal fin and the greebles ------------------------------------- */
   {
-    const fin = [V(0, 2.7, 1.9), V(0, 4.0, 3.5), V(0, 4.0, 4.1), V(0, 2.5, 4.35)]
+    const fin = [V(0, 2.7, 2.35), V(0, 4.0, 3.6), V(0, 4.0, 4.15), V(0, 2.5, 4.35)]
     for (const side of [-1, 1]) {
       f.quadOut(...(fin.map((p) => V(side * 0.09, p.y, p.z)) as [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]), 'paint2', V(side, 0, 0))
     }
-    f.quadOut(V(-0.09, 4.0, 3.5), V(0.09, 4.0, 3.5), V(0.09, 4.0, 4.1), V(-0.09, 4.0, 4.1), 'paint', V(0, 1, 0))
-    f.quadOut(V(-0.09, 2.7, 1.9), V(0.09, 2.7, 1.9), V(0.09, 4.0, 3.5), V(-0.09, 4.0, 3.5), 'paint2', V(0, 0.8, -1))
+    f.quadOut(V(-0.09, 4.0, 3.6), V(0.09, 4.0, 3.6), V(0.09, 4.0, 4.15), V(-0.09, 4.0, 4.15), 'paint', V(0, 1, 0))
+    f.quadOut(V(-0.09, 2.7, 2.35), V(0.09, 2.7, 2.35), V(0.09, 4.0, 3.6), V(-0.09, 4.0, 3.6), 'paint2', V(0, 0.8, -1))
   }
   // vents, boxes and conduit on the hull's back: what makes a machine look
   // like it does something, and at this size a handful of flat chips
   const chip = (w: number, h: number, d: number, slot: 'metal' | 'dark' | 'trim', x: number, y: number, z: number) =>
     b.add(new THREE.BoxGeometry(w, h, d), slot, at(x, y, z))
   b.both(() => {
-    chip(0.42, 0.14, 0.7, 'metal', 0.55, 2.74, 1.5)
-    chip(0.3, 0.1, 0.3, 'dark', 0.62, 2.72, 2.5)
-    chip(0.5, 0.12, 0.26, 'metal', 0.5, 2.66, 3.4)
+    chip(0.42, 0.14, 0.6, 'metal', 0.55, 2.74, 2.4)
+    chip(0.3, 0.1, 0.3, 'dark', 0.62, 2.72, 3.0)
+    chip(0.5, 0.12, 0.26, 'metal', 0.5, 2.66, 3.6)
     chip(0.06, 0.3, 1.8, 'dark', 1.47, 1.72, 2.1)
     chip(0.3, 0.3, 0.5, 'metal', 1.3, 1.25, -3.4)
-    b.add(tube([V(0.95, 2.62, 1.0), V(1.05, 2.4, 2.4), V(1.02, 2.3, 3.9)], 0.05, 5), 'metal')
+    b.add(tube([V(1.0, 2.6, 2.05), V(1.05, 2.4, 3.0), V(1.02, 2.3, 3.9)], 0.05, 5), 'metal')
   })
   // the two thruster ports in the flat tail, dark bezels with the glow in them
   for (const x of [-0.55, 0.55]) {
@@ -354,13 +376,18 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
   root.add(shell, gear, glowGroup)
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(-SEAT_X, SEAT_Y, SEAT_Z)
+  driverSeat.position.set(0, SEAT_Y, SEAT_Z)
   driverSeat.userData.fit = SEAT_FIT
+  // the canopy's inside at the pilot's seat: the windscreen raked in front
+  // of the face, the glass either side, the crown overhead
+  driverSeat.userData.room = new THREE.Box3(new THREE.Vector3(-0.85, -1.3, -0.95), new THREE.Vector3(0.85, CANOPY_TOP - SEAT_Y - 0.45, 1.8))
   root.add(driverSeat)
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(SEAT_X, SEAT_Y, SEAT_Z)
+  passengerSeat.position.set(0, SEAT2_Y, SEAT2_Z)
   passengerSeat.userData.fit = SEAT_FIT
+  // ...and at the passenger's, where the canopy closes down behind
+  passengerSeat.userData.room = new THREE.Box3(new THREE.Vector3(-0.85, -1.3, -1.4), new THREE.Vector3(0.85, CANOPY_TOP - SEAT2_Y - 0.28, 0.75))
   root.add(passengerSeat)
   markDynamic(root)
 
@@ -617,8 +644,8 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
       stretch: 5,
       fov: 62,
       anchor: new THREE.Vector3(0, 2.4, 0.5),
-      eye: new THREE.Vector3(-SEAT_X, SEAT_Y, SEAT_Z - 0.2),
-      eye2: new THREE.Vector3(SEAT_X, SEAT_Y, SEAT_Z - 0.2),
+      eye: new THREE.Vector3(0, SEAT_Y, SEAT_Z - 0.2),
+      eye2: new THREE.Vector3(0, SEAT2_Y, SEAT2_Z - 0.2),
       // it goes fast enough that a lagging boom loses it: smooth the boom
       // in the ship's frame rather than the world's
       rigid: true,

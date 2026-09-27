@@ -878,7 +878,7 @@ const PROBES: Array<[number, number]> = [
 ]
 
 /** the two chairs: the seated face, either side of the centreline */
-const SEAT_X = 0.7
+const SEAT_X = 0.6
 const SEAT_Y = 2.72
 const SEAT_Z = -0.5
 /** no fold: 0.78 when the body was scaled onto its painted eyes, which is
@@ -898,6 +898,10 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   // is how far `sit()` folds a body smaller about its eye to clear the
   // cabin floor (see playerBody's CABIN_FIT)
   driverSeat.position.set(SEAT_X * -1, SEAT_Y, SEAT_Z)
+  // the cabin a rider stays inside (playerBody's `sit`), seat frame: the door
+  // glass at 1.4 from the centreline at head height, the roof over it at
+  // 3.9, the panel ahead and the aft bulkhead behind
+  driverSeat.userData.room = new THREE.Box3(new THREE.Vector3(-0.6, -1.37, -2.0), new THREE.Vector3(0.7, 0.98, 1.5))
   driverSeat.userData.fit = SEAT_FIT
   root.add(driverSeat)
   // the right-hand seat, the mirror of the pilot's: nothing else about the
@@ -905,6 +909,7 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
   passengerSeat.position.set(SEAT_X, SEAT_Y, SEAT_Z)
+  passengerSeat.userData.room = new THREE.Box3(new THREE.Vector3(-0.7, -1.37, -2.0), new THREE.Vector3(0.6, 0.98, 1.5))
   passengerSeat.userData.fit = SEAT_FIT
   root.add(passengerSeat)
   const pos = root.position

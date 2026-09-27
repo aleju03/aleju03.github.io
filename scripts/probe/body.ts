@@ -730,13 +730,24 @@ const machine = (build: typeof buildCar, empty = false) => (spec: BodySpec, snap
   vmats.setDay(st.sky.day, st.sky.night, st.sky.fogColor, st.sky.sunEl)
   v.setDay?.(st.sky.day, st.sky.night)
   const riders: THREE.Object3D[] = []
-  for (const [seat, lk] of [[v.driverSeat, LOOKS[0]], [v.passengerSeat, LOOKS[1]]] as const) {
+  // the two tallest things a rider can wear: the helmet on the chubby build
+  // and the party hat on the tall one, so a clip shows if there is one
+  const TALL: PlayerLook[] = [
+    { ...LOOKS[3], hat: 8, build: 1 },
+    { ...LOOKS[1], hat: 3, build: 3 },
+  ]
+  for (const [seat, lk] of [[v.driverSeat, TALL[0]], [v.passengerSeat, TALL[1]]] as const) {
     if (empty) break
     const rig = buildPlayerBody(EYE, GRAV, lk)
-    rig.sit(seat.userData.fit ?? CABIN_FIT, seat === v.passengerSeat)
+    rig.sit(seat.userData.fit ?? CABIN_FIT, seat === v.passengerSeat, seat.userData.room ?? null)
     seat.add(rig.group)
     rig.group.position.set(0, 0, 0)
     rig.group.rotation.set(0, Math.PI, 0)
+    // a few seconds of the seated idle, clamp included, as the game would
+    for (let f = 0; f < 90; f++) {
+      v.root.updateMatrixWorld(true)
+      rig.seatedTick(1 / 60)
+    }
     riders.push(rig.group)
   }
   v.root.updateMatrixWorld(true)

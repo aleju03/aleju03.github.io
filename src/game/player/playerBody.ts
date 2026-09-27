@@ -202,7 +202,7 @@ export interface PlayerRig {
       transform; this method owns only the articulated body shape. `fit`
       scales the folded body about its eye: 1 on the sofa, CABIN_FIT in the
       fleet's cabins (see there) */
-  sit: (fit?: number, passenger?: boolean) => void
+  sit: (fit?: number, passenger?: boolean, room?: THREE.Box3 | null) => void
   /**
    * Draw the head, or don't. The camera *is* the head in first person, so a
    * visible one fills the lens with the inside of your own skull; `update`
@@ -697,6 +697,28 @@ export function buildPlayerBody(
   let seatT = 0
   let seatTilt = 0
   let seatLook = 0
+  /*
+    The cabin a seated body has to stay inside, in the seat node's own frame
+    (the seat's `userData.room`), or null for none (the sofa). The seated
+    idle lolls the head, the jiggle bobs it, and a passenger's arm used to
+    flop out over the door; in a car that was a mitten through the door
+    glass, in the ship a head through the canopy. So every seated frame a
+    handful of the skin's own extreme vertices (the top of the headgear, the
+    head's sides, both mittens, found once per geometry) are skinned and
+    tested against the box: a head that would leave it is moved back in on
+    its neck, and an arm whose mitten would leave it sideways is folded in
+    toward the lap (ahead is the controls, not a wall). A rider too tall
+    for the roof at rest (a tall build, a party hat) is first folded
+    smaller by `sit` until the top of its headgear clears it. The clamp is
+    for motion, not a substitute for a cabin the body fits: the seats are
+    sized so that at rest nothing touches it (`npm run measure -- seats`).
+  */
+  let room: THREE.Box3 | null = null
+  /** the smallest fold a cabin may ask of a tall rider */
+  const ROOM_FIT_MIN = 0.62
+  let roomGeo: THREE.BufferGeometry | null = null
+  const roomHead: number[] = []
+  const roomHand: Array<[number, number]> = []
   let wobV = 0
   let idleT = 0
   let stillT = 0 // seconds without meaningful motion, for the fidgets
@@ -1873,6 +1895,96 @@ export function buildPlayerBody(
     )
   }
 
+  /** the few skin vertices the cabin clamp watches: the highest and the
+      widest of the head's (headgear included, it is weighted off the head),
+      and each mitten's farthest, found once per geometry */
+  const findRoomPoints = () => {
+    const g = mesh.geometry
+    roomGeo = g
+    roomHead.length = 0
+    roomHand.length = 0
+    const pos = g.getAttribute('position')
+    const si = g.getAttribute('skinIndex')
+    const sw = g.getAttribute('skinWeight')
+    const ext = { top: -1, left: -1, right: -1, front: -1, back: -1, hl: -1, hr: -1 }
+    const val = { top: -Infinity, left: Infinity, right: -Infinity, front: Infinity, back: -Infinity, hl: Infinity, hr: -Infinity }
+    for (let i = 0; i < pos.count; i++) {
+      // the bone carrying most of this vertex
+      let bi = si.getX(i)
+      let bw = sw.getX(i)
+      if (sw.getY(i) > bw) { bi = si.getY(i); bw = sw.getY(i) }
+      if (sw.getZ(i) > bw) { bi = si.getZ(i); bw = sw.getZ(i) }
+      if (sw.getW(i) > bw) bi = si.getW(i)
+      const x = pos.getX(i)
+      const y = pos.getY(i)
+      const z = pos.getZ(i)
+      if (bi === B.HEAD || bi === B.POM) {
+        if (y > val.top) { val.top = y; ext.top = i }
+        if (x < val.left) { val.left = x; ext.left = i }
+        if (x > val.right) { val.right = x; ext.right = i }
+        if (z < val.front) { val.front = z; ext.front = i }
+        if (z > val.back) { val.back = z; ext.back = i }
+      } else if (bi === B.HAND_L || bi === B.FARM_L) {
+        if (x < val.hl) { val.hl = x; ext.hl = i }
+      } else if (bi === B.HAND_R || bi === B.FARM_R) {
+        if (x > val.hr) { val.hr = x; ext.hr = i }
+      }
+    }
+    for (const k of ['top', 'left', 'right', 'front', 'back'] as const) if (ext[k] >= 0) roomHead.push(ext[k])
+    if (ext.hl >= 0) roomHand.push([ext.hl, 0])
+    if (ext.hr >= 0) roomHand.push([ext.hr, 1])
+  }
+  const roomInv = new THREE.Matrix4()
+  const roomP = new THREE.Vector3()
+  const roomQ = new THREE.Vector3()
+  const roomE = new THREE.Vector3()
+  const roomM3 = new THREE.Matrix3()
+  /** a skin vertex, posed, in the seat's frame */
+  const roomPoint = (i: number, out: THREE.Vector3) =>
+    mesh.getVertexPosition(i, out).applyMatrix4(mesh.matrixWorld).applyMatrix4(roomInv)
+  const keepInRoom = () => {
+    const seat = group.parent
+    if (!room || !seat) return
+    if (roomGeo !== mesh.geometry) findRoomPoints()
+    group.updateMatrixWorld(true)
+    roomInv.copy(seat.matrixWorld).invert()
+    // the head: the largest correction any of its extremes asks for, per
+    // axis, applied to the head bone in its parent's frame
+    roomE.set(0, 0, 0)
+    for (const i of roomHead) {
+      roomPoint(i, roomP)
+      roomQ.copy(roomP).clamp(room.min, room.max).sub(roomP)
+      if (Math.abs(roomQ.x) > Math.abs(roomE.x)) roomE.x = roomQ.x
+      if (Math.abs(roomQ.y) > Math.abs(roomE.y)) roomE.y = roomQ.y
+      if (Math.abs(roomQ.z) > Math.abs(roomE.z)) roomE.z = roomQ.z
+    }
+    if (roomE.lengthSq() > 1e-8) {
+      // seat frame -> world -> the torso's frame, as a displacement
+      roomE.applyMatrix3(roomM3.setFromMatrix4(seat.matrixWorld))
+      torso.getWorldPosition(roomP)
+      roomQ.copy(roomP).add(roomE)
+      torso.worldToLocal(roomP)
+      torso.worldToLocal(roomQ)
+      head.position.add(roomQ.sub(roomP))
+      group.updateMatrixWorld(true)
+    }
+    // the arms: one whose mitten is out is folded in toward the lap, a step a
+    // frame, until it is back in (the lap pose is inside any cabin a body fits)
+    for (const [i, side] of roomHand) {
+      // across only: a mitten ahead of the seat is on the controls, and the
+      // walls a flung arm goes through are the sides
+      roomPoint(i, roomP)
+      if (roomP.x >= room.min.x && roomP.x <= room.max.x) continue
+      const ua = side === 0 ? uarmL : uarmR
+      const fa = side === 0 ? farmL : farmR
+      const sgn = side === 0 ? 1 : -1
+      ua.rotation.x += (-0.55 - ua.rotation.x) * 0.5
+      ua.rotation.z += (0.1 * sgn - ua.rotation.z) * 0.5
+      fa.rotation.x += (-1.25 - fa.rotation.x) * 0.5
+      fa.rotation.z += (-0.35 * sgn - fa.rotation.z) * 0.5
+    }
+  }
+
   /** remember the posed bones, so the get-up can blend toward them */
   const captureBlendSource = () => {
     POSED.forEach((b, i) => capQ[i].copy(b.quaternion))
@@ -2137,6 +2249,110 @@ export function buildPlayerBody(
     return anchors[i].getWorldPosition(out)
   }
 
+  /** the seated fold itself: `sit` is this plus the cabin's say */
+  const seatFold = (fit: number, passenger: boolean) => {
+    /*
+      Seats differ in position, but the body shape is shared: hips on the
+      cushion, knees up and elbows folded forward, hands together near the
+      controls. CrtScene (or `net/avatars.ts`, for everyone else) parents
+      the group to the active seat after calling this, so pitch and roll
+      come from the machine itself.
+
+      The fold hangs from the *eye*, not the hips: the pelvis is placed so
+      the eye lands exactly on the group's origin, which is where a seat
+      node puts the face. That is the thing a seat is actually fitted to:
+      every cockpit lens in the fleet is authored at its own seat's face
+      height, and the sofa puts the camera there too. The squash (see
+      SIT_SQUASH) is what lets the rest of this body follow it in.
+    */
+    mode = 'up'
+    showHead(true)
+    pelvis.position.set(-SEAT_EYE_VEC.x, -SEAT_EYE_VEC.y, -SEAT_EYE_VEC.z).multiplyScalar(fit)
+    pelvis.rotation.set(0, 0, 0)
+    // squeezed in sideways too, more for a wide build, so two people on
+    // one bench sit side by side rather than one inside the other
+    const squeeze = 0.82 / Math.sqrt(persona.girth)
+    pelvis.scale.set(SIT_SPREAD * fit * squeeze, SIT_SQUASH * fit, SIT_SPREAD * fit)
+    torso.position.set(0, SIT_WAIST, 0)
+    torso.rotation.set(-SIT_SLOUCH, 0, 0)
+    torso.scale.set(1, 1, 1)
+    armInv.set(1, 1, 1)
+    head.position.set(0, SIT_NECK, 0)
+    head.rotation.set(SIT_SLOUCH, 0, 0)
+    head.scale.set(1 / SIT_SPREAD, 1 / SIT_SQUASH, 1 / SIT_SPREAD)
+    paint.setLid(1)
+    // the pom-pom lies back along the beanie rather than standing up
+    // through a roof
+    pom.quaternion.identity()
+    pack.position.copy(REST[B.PACK])
+    pack.rotation.set(0, 0, 0)
+
+    // tucked: thighs forward, knees together, shins folded well back under
+    // them, so the legs stay inside the footprint of the seat rather than
+    // reaching out through a door or under a fuselage
+    thighL.rotation.set(-1.4, 0, 0.06)
+    thighR.rotation.set(-1.4, 0, -0.06)
+    shinL.rotation.set(2.0, 0, 0)
+    shinR.rotation.set(2.0, 0, 0)
+    ankleL.position.copy(REST[B.FOOT_L])
+    ankleR.position.copy(REST[B.FOOT_R])
+    ankleL.rotation.set(-0.5, 0, 0)
+    ankleR.rotation.set(-0.5, 0, 0)
+
+    if (passenger && room) {
+      // a cabin with walls: both mittens in the lap, nothing over a door
+      uarmL.rotation.set(-0.55, 0, 0.1)
+      uarmR.rotation.set(-0.55, 0, -0.1)
+      farmL.rotation.set(-1.25, 0, -0.35)
+      farmR.rotation.set(-1.25, 0, 0.35)
+    } else if (passenger) {
+      // the passenger has nothing to hold: mittens dumped in the lap, one arm
+      // flopped out over the door side
+      uarmL.rotation.set(-0.35, 0, 0.7)
+      uarmR.rotation.set(-0.55, 0, -0.1)
+      farmL.rotation.set(-0.5, 0, 0)
+      farmR.rotation.set(-1.25, 0, 0.35)
+    } else {
+      // elbows in against the belly, mittens forward on the controls
+      uarmL.rotation.set(-0.7, 0, 0.12)
+      uarmR.rotation.set(-0.7, 0, -0.12)
+      farmL.rotation.set(-1.1, 0, -0.25)
+      farmR.rotation.set(-1.1, 0, 0.25)
+    }
+    handL.quaternion.identity()
+    handR.quaternion.identity()
+    // a slumped sitter with a lean and a gaze of its own, so two people in
+    // one car do not sit as one silhouette
+    seated = true
+    seatT = rnd() * 10
+    seatTilt = (passenger ? 0.16 : -0.08) + (rnd() - 0.5) * 0.1
+    seatLook = passenger ? 0.45 + rnd() * 0.2 : (rnd() - 0.5) * 0.2
+    // with walls round it, a passenger sits up and looks ahead rather than
+    // leaning its whole trunk into the door glass
+    if (room) {
+      seatTilt *= 0.25
+      seatLook *= 0.4
+    }
+    for (const j of JIGGLES) j.fresh = true
+    seatedPose(0)
+    followHelpers()
+  }
+
+  /** the highest the seated headgear reaches over the seat's eye, in the
+      seat's frame (the body hangs at the seat's origin), at the fold just
+      posed */
+  const seatedTop = () => {
+    if (roomGeo !== mesh.geometry) findRoomPoints()
+    group.updateMatrixWorld(true)
+    roomInv.copy(group.matrixWorld).invert()
+    let top = -Infinity
+    for (const i of roomHead) {
+      mesh.getVertexPosition(i, roomP).applyMatrix4(mesh.matrixWorld).applyMatrix4(roomInv)
+      top = Math.max(top, roomP.y)
+    }
+    return top
+  }
+
   const rig: PlayerRig = {
     group,
     mass: MASS,
@@ -2186,86 +2402,25 @@ export function buildPlayerBody(
       slideZ = z
       slideSet = true
     },
-    sit: (fit = 1, passenger = false) => {
-      /*
-        Seats differ in position, but the body shape is shared: hips on the
-        cushion, knees up and elbows folded forward, hands together near the
-        controls. CrtScene (or `net/avatars.ts`, for everyone else) parents
-        the group to the active seat after calling this, so pitch and roll
-        come from the machine itself.
-
-        The fold hangs from the *eye*, not the hips: the pelvis is placed so
-        the eye lands exactly on the group's origin, which is where a seat
-        node puts the face. That is the thing a seat is actually fitted to:
-        every cockpit lens in the fleet is authored at its own seat's face
-        height, and the sofa puts the camera there too. The squash (see
-        SIT_SQUASH) is what lets the rest of this body follow it in.
-      */
-      mode = 'up'
-      showHead(true)
-      pelvis.position.set(-SEAT_EYE_VEC.x, -SEAT_EYE_VEC.y, -SEAT_EYE_VEC.z).multiplyScalar(fit)
-      pelvis.rotation.set(0, 0, 0)
-      // squeezed in sideways too, more for a wide build, so two people on
-      // one bench sit side by side rather than one inside the other
-      const squeeze = 0.82 / Math.sqrt(persona.girth)
-      pelvis.scale.set(SIT_SPREAD * fit * squeeze, SIT_SQUASH * fit, SIT_SPREAD * fit)
-      torso.position.set(0, SIT_WAIST, 0)
-      torso.rotation.set(-SIT_SLOUCH, 0, 0)
-      torso.scale.set(1, 1, 1)
-      armInv.set(1, 1, 1)
-      head.position.set(0, SIT_NECK, 0)
-      head.rotation.set(SIT_SLOUCH, 0, 0)
-      head.scale.set(1 / SIT_SPREAD, 1 / SIT_SQUASH, 1 / SIT_SPREAD)
-      paint.setLid(1)
-      // the pom-pom lies back along the beanie rather than standing up
-      // through a roof
-      pom.quaternion.identity()
-      pack.position.copy(REST[B.PACK])
-      pack.rotation.set(0, 0, 0)
-
-      // tucked: thighs forward, knees together, shins folded well back under
-      // them, so the legs stay inside the footprint of the seat rather than
-      // reaching out through a door or under a fuselage
-      thighL.rotation.set(-1.4, 0, 0.06)
-      thighR.rotation.set(-1.4, 0, -0.06)
-      shinL.rotation.set(2.0, 0, 0)
-      shinR.rotation.set(2.0, 0, 0)
-      ankleL.position.copy(REST[B.FOOT_L])
-      ankleR.position.copy(REST[B.FOOT_R])
-      ankleL.rotation.set(-0.5, 0, 0)
-      ankleR.rotation.set(-0.5, 0, 0)
-
-      if (passenger) {
-        // the passenger has nothing to hold: mittens dumped in the lap, one arm
-        // flopped out over the door side
-        uarmL.rotation.set(-0.35, 0, 0.7)
-        uarmR.rotation.set(-0.55, 0, -0.1)
-        farmL.rotation.set(-0.5, 0, 0)
-        farmR.rotation.set(-1.25, 0, 0.35)
-      } else {
-        // elbows in against the belly, mittens forward on the controls
-        uarmL.rotation.set(-0.7, 0, 0.12)
-        uarmR.rotation.set(-0.7, 0, -0.12)
-        farmL.rotation.set(-1.1, 0, -0.25)
-        farmR.rotation.set(-1.1, 0, 0.25)
+    sit: (fit = 1, passenger = false, cabin = null) => {
+      room = cabin ?? null
+      seatFold(fit, passenger)
+      // a cabin with a roof folds a tall rider (a tall build, a party hat)
+      // just small enough that the top of its headgear clears it, rather
+      // than leaving the clamp to push the head down into the shoulders.
+      // Never below ROOM_FIT_MIN: past that a rider reads as a doll, and
+      // the clamp takes what is left
+      if (room) {
+        const top = seatedTop()
+        if (top > room.max.y) seatFold(Math.max(ROOM_FIT_MIN, (fit * room.max.y) / top), passenger)
       }
-      handL.quaternion.identity()
-      handR.quaternion.identity()
-      // a slumped sitter with a lean and a gaze of its own, so two people in
-      // one car do not sit as one silhouette
-      seated = true
-      seatT = rnd() * 10
-      seatTilt = (passenger ? 0.16 : -0.08) + (rnd() - 0.5) * 0.1
-      seatLook = passenger ? 0.45 + rnd() * 0.2 : (rnd() - 0.5) * 0.2
-      for (const j of JIGGLES) j.fresh = true
-      seatedPose(0)
-      followHelpers()
     },
     seatedTick: (dt) => {
       if (!seated) return
       seatT += dt
       seatedPose(dt)
       secondary(dt, 1)
+      keepInRoom()
     },
     flop: (vx, vy, vz) => {
       if (mode === 'up') {

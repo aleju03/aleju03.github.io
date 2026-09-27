@@ -460,6 +460,10 @@ const TAU = Math.PI * 2
 
 /* --------------------------------------------------------------------- build */
 
+/** the leaning post's face: far enough aft of the console that a seated
+    rider's knees stop short of its aft face (measure -- seats) */
+const HELM_Z = 2.25
+
 export interface BoatOpts {
   mats: VehicleMaterials
 }
@@ -642,7 +646,7 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     */
     const TOP_Y = 4.1
     const zf = CONSOLE_Z - 0.25
-    const za = 2.3
+    const za = HELM_Z + 0.95
     B.both(() => {
       for (const z of [zf, za]) {
         const sole = soleOf(sectionAt(z)).y
@@ -683,7 +687,7 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     B.add(slab(0.82, 0.6, 0.14, 0.06), 'seat', at(0, sole + lift + 0.34, z + back * 0.3, back * -0.16))
   }
   // the helm perch, aft of the console — the driver half sits on it
-  seatAt(1.75, 1, 0.87)
+  seatAt(HELM_Z + 0.13, 1, 0.87)
   // and a lower seat forward of it, over the tank, facing back into the boat
   seatAt(-0.35, -1, 0.6)
 
@@ -1017,13 +1021,18 @@ export function buildBoat(opts: BoatOpts): Vehicle {
   // same height by construction
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(0, 2.35, 1.62)
+  driverSeat.position.set(0, 2.35, HELM_Z)
+  // an open cockpit: the walls are the T-top's canvas overhead and the
+  // console ahead of the knees (the seat is aft of it by that much), and the
+  // sides are the gunwales
+  driverSeat.userData.room = new THREE.Box3(new THREE.Vector3(-1.9, -2.3, -1.6), new THREE.Vector3(1.9, 1.6, 2.2))
   root.add(driverSeat)
   // a leaning post is two-up. 0.95 to starboard keeps a seated body's
   // shoulders inside a 2.3 half-beam with the gunwale still outboard of them
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(0.95, 2.35, 1.62)
+  passengerSeat.position.set(0.95, 2.35, HELM_Z)
+  passengerSeat.userData.room = new THREE.Box3(new THREE.Vector3(-2.8, -2.3, -1.6), new THREE.Vector3(1.0, 1.6, 2.2))
   root.add(passengerSeat)
   markDynamic(root)
 
@@ -1531,8 +1540,8 @@ export function buildBoat(opts: BoatOpts): Vehicle {
       stretch: 4,
       fov: 64,
       anchor: new THREE.Vector3(0, 1.2, 0.6),
-      eye: new THREE.Vector3(0, 2.35, 1.3),
-      eye2: new THREE.Vector3(0.95, 2.35, 1.3),
+      eye: new THREE.Vector3(0, 2.35, HELM_Z - 0.32),
+      eye2: new THREE.Vector3(0.95, 2.35, HELM_Z - 0.32),
     },
     size: { halfX: 2.3, halfZ: 6.5, height: 2.6 },
     hull: HULL,
