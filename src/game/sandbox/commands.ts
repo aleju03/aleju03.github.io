@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { STEP_SETS, setStepSet, stepSet, type StepSet } from '../core/footsteps'
 import { labelIn, type History } from './history'
 import type { PropKind } from './kinds'
 import type { WorldRules } from './rules'
@@ -187,6 +188,9 @@ export interface Command {
   aliases?: string[]
   args?: ArgSpec[]
   help: Msg
+  /** runs when typed, but is left out of help and completion (a tuning
+      switch for the owner, not a feature for visitors) */
+  hidden?: boolean
   run: (ctx: CommandCtx) => void | Promise<void>
 }
 
@@ -207,7 +211,7 @@ export const unregisterCommand = (name: string) => {
   REGISTRY.delete(name)
 }
 export const commandList = (): Command[] =>
-  [...REGISTRY.values()].sort((a, b) => a.name.localeCompare(b.name))
+  [...REGISTRY.values()].filter((c) => !c.hidden).sort((a, b) => a.name.localeCompare(b.name))
 export const findCommand = (name: string): Command | undefined =>
   REGISTRY.get(name) ?? REGISTRY.get(ALIASES.get(name) ?? '')
 
@@ -318,7 +322,7 @@ export const complete = (raw: string, host: SandboxHost): Completion => {
     // an alias match lists the command it stands for
     for (const [alias, name] of ALIASES) {
       const c = REGISTRY.get(name)
-      if (alias.startsWith(stem) && c && !names.includes(c)) names.push(c)
+      if (alias.startsWith(stem) && c && !c.hidden && !names.includes(c)) names.push(c)
     }
     return {
       command: findCommand(stem) ?? null,
@@ -415,7 +419,7 @@ export const createConsole = (host: SandboxHost): Console => {
     }
     try {
       if (!cmd) {
-        const guess = nearest(name, [...REGISTRY.keys(), ...ALIASES.keys()])
+        const guess = nearest(name, [...commandList().map((c) => c.name), ...ALIASES.keys()])
         ctx.fail(guess
           ? msg(`no command "${name}". did you mean ${guess}?`, `no existe "${name}". ¿quisiste decir ${guess}?`)
           : msg(`no command "${name}". try help`, `no existe "${name}". prueba help`))
@@ -1122,6 +1126,28 @@ registerCommand({
     } else {
       ctx.ok(msg(`gravity x${fmt(ctx.host.rules.gravity)}`, `gravedad x${fmt(ctx.host.rules.gravity)}`))
     }
+  },
+})
+
+// which footsteps play: three sets to compare in game (core/footsteps.ts)
+registerCommand({
+  name: 'steps',
+  hidden: true,
+  args: [{ name: 'set', nameEs: 'juego', type: 'choice', optional: true, choices: [...STEP_SETS] }],
+  help: msg(
+    'which footsteps play: a synthesized, b recorded, c the bean',
+    'qué pasos suenan: a sintetizados, b grabados, c el frijol',
+  ),
+  run: (ctx) => {
+    const want = ctx.args[0]?.toLowerCase() as StepSet | undefined
+    if (want) setStepSet(want)
+    const now = stepSet()
+    const name = {
+      a: msg('synthesized', 'sintetizados'),
+      b: msg('recorded', 'grabados'),
+      c: msg('the bean', 'el frijol'),
+    }[now]
+    ctx.ok(msg(`footsteps: ${now} (${say(name, 'en')})`, `pasos: ${now} (${say(name, 'es')})`))
   },
 })
 

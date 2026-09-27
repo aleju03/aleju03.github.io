@@ -1,9 +1,10 @@
 /*
-  One-shot movement and interaction sounds. Footsteps are a filtered noise
-  scuff over a low heel thump, parameterized per surface so wood knocks,
-  grass swishes and the backrooms carpet swallows the step — synthesized
-  like sounds.ts and the backrooms hum, nothing shipped, nothing
-  copyrighted. The house doors are the one exception on the whole site: a
+  One-shot movement and interaction sounds, synthesized like sounds.ts and
+  the backrooms hum. Footsteps and landings are voiced in footsteps.ts
+  (three switchable sets, one of them recorded; this module only hands them
+  the context), and everything else here is built from the two primitives
+  below, a filtered noise burst and a pitched-down sine knock. The house
+  doors are the first recorded exception on the site: a
   hinge is stick-slip friction, and the sawtooth-through-a-tremolo version
   of that (still below, and still what you hear on a cold load) never
   stopped sounding like a synthesizer imitating a door. So they play nine
@@ -21,6 +22,8 @@
   Math.random() is deliberate: audio grain is cosmetic, not world state, so
   it stays outside the seeded determinism contract (core/rand.ts).
 */
+
+import { playLand, playStep } from './footsteps'
 
 let ac: AudioContext | null = null
 let noiseBuf: AudioBuffer | null = null
@@ -159,51 +162,20 @@ const thump = (a: AudioContext, at: number, f0: number, gain: number, dur: numbe
 export type StepSurface =
   | 'wood' | 'stone' | 'grass' | 'carpet'
   | 'sand' | 'snow' | 'asphalt' | 'water'
+  | 'regolith'
 
-/* per-surface voicing: bandpass center for the scuff, its width and length,
-   and how much tonal knock rides underneath. The four outdoor surfaces came
-   with the open world and are voiced against the original four rather than
-   from scratch: sand is grass with the knock taken out and the scuff pushed
-   down, snow is a shorter, duller sand (a squeak with no ring under it),
-   asphalt is stone with the top end filed off, and water is a wide, wet
-   splash — the widest bandpass here, and the only one whose scuff outweighs
-   everything else in the mix. */
-const STEP: Record<
-  StepSurface,
-  { bp: number; q: number; dur: number; scuff: number; knock: number; knockF: number }
-> = {
-  wood: { bp: 1300, q: 0.8, dur: 0.07, scuff: 0.028, knock: 0.05, knockF: 84 },
-  stone: { bp: 2300, q: 1.2, dur: 0.05, scuff: 0.034, knock: 0.024, knockF: 105 },
-  grass: { bp: 850, q: 0.5, dur: 0.11, scuff: 0.055, knock: 0.008, knockF: 66 },
-  carpet: { bp: 520, q: 0.5, dur: 0.09, scuff: 0.022, knock: 0.026, knockF: 58 },
-  sand: { bp: 720, q: 0.45, dur: 0.1, scuff: 0.046, knock: 0.004, knockF: 58 },
-  snow: { bp: 600, q: 0.7, dur: 0.07, scuff: 0.038, knock: 0.006, knockF: 52 },
-  asphalt: { bp: 1750, q: 1.0, dur: 0.055, scuff: 0.031, knock: 0.022, knockF: 96 },
-  water: { bp: 1150, q: 0.32, dur: 0.16, scuff: 0.07, knock: 0.005, knockF: 48 },
-}
-
-/** one sole landing; weight is the walk's gait (0..1), already crouch-scaled */
+/** one sole landing; weight is the walk's gait (0..1), already crouch-scaled.
+    The voicing, its three sets and the switch between them are footsteps.ts */
 export const footstep = (surface: StepSurface, weight: number, run: boolean) => {
   if (weight <= 0.05) return
   const a = audio()
-  if (!a) return
-  const p = STEP[surface]
-  const now = a.currentTime
-  // every step lands a little different: gain and pitch jitter per strike
-  const w = weight * (run ? 1.3 : 1) * (0.8 + Math.random() * 0.4)
-  const pitch = 0.88 + Math.random() * 0.24
-  burst(a, now, 'bandpass', p.bp * pitch, p.q, p.scuff * w, p.dur)
-  thump(a, now, p.knockF * pitch, p.knock * w, 0.08)
+  if (a) playStep(a, surface, weight, run)
 }
 
 /** a fall absorbed: k is 0..1 of how hard the touchdown hit */
 export const landThump = (surface: StepSurface, k: number) => {
   const a = audio()
-  if (!a) return
-  const p = STEP[surface]
-  const now = a.currentTime
-  thump(a, now, p.knockF * 0.8, 0.03 + 0.08 * k, 0.13)
-  burst(a, now, 'bandpass', p.bp * 0.8, p.q, p.scuff * (0.8 + k), p.dur * 1.4)
+  if (a) playLand(a, surface, k)
 }
 
 /**

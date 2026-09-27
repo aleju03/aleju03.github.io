@@ -35,8 +35,9 @@ import { sharedAudio } from '../core/sfx'
     PeriodicWave whose harmonics are stacked in phase, which makes a peaked
     pulse train — a thwop rather than a warble.
 
-  Levels are deliberately low and matched against the footsteps in core/sfx.ts
-  (scuffs peak around 0.055). An engine that runs continuously has to sit
+  Levels are deliberately low and were matched against the first footsteps
+  (scuffs peaking around 0.055; core/footsteps.ts has since moved the steps
+  further back, to about 0.015). An engine that runs continuously has to sit
   *under* the world, not over it, and the note in CLAUDE.md about normalised
   recordings running four times hotter than this mix applies twice over to
   something that never stops.

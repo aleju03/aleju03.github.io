@@ -11,6 +11,7 @@
     "film": "node scripts/film.mjs",
     "drive": "node scripts/sandbox-drive.mjs",
     "measure": "node scripts/measure.mjs",
+    "steps": "node scripts/steps.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -19,9 +19,14 @@ core/
   disposer.ts        createDisposer(): every texture/disposable checks in here
   input.ts           createRoamInput(): keys, mouse-look, pointer lock lifecycle
   sfx.ts             footstep()/landThump()/doorCreak()/doorLatch()/
-                     propSnap(): WebAudio one-shots, per-surface voicing,
-                     headless-safe. Doors also play recorded clips from
-                     public/os/sfx (synth fallback)
+                     propSnap(): WebAudio one-shots, headless-safe. Doors
+                     also play recorded clips from public/os/sfx (synth
+                     fallback)
+  footsteps.ts       the step and landing voices: three sets (a synthesized,
+                     b recorded CC0 with a as its cold-load fallback, c the
+                     bean), per-surface, round-robin variants, alternating
+                     feet; `steps a|b|c` in the console switches, and
+                     `npm run steps -- table|demo` measures and renders them
 physics/
   collision.ts       CollisionSet (Box3 list + bounds), resolveXZ(), supportY(),
                      addBoxFrom()/padXZ()/noStand(): height-aware solids, plus
