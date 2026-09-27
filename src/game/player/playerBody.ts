@@ -839,6 +839,8 @@ export function buildPlayerBody(
   }
   const jig = (): Jiggle => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), r: new THREE.Vector3(), fresh: true })
   const jHead = jig()
+  /** the head particle's slow mean offset, taken off its wobble (see secondary) */
+  const headBias = new THREE.Vector3()
   const jPom = jig()
   const jPack = jig()
   const jMitL = jig()
@@ -1047,6 +1049,13 @@ export function buildPlayerBody(
     vTmp2.subVectors(jHead.p, vRest)
     torso.getWorldQuaternion(qW)
     vTmp2.applyQuaternion(qW.invert()).multiplyScalar(1 / s)
+    // only the wobble, never a standing offset: at a run's cadence the
+    // particle settles about 0.09 ahead of its socket, and hung on the head
+    // that is a steady 10 degree nod, the top of the bean curled over the
+    // belly like a comma. The slow mean is taken off, so a stop or a
+    // swerve still nods and a steady run stays one straight capsule
+    headBias.lerp(vTmp2, 1 - Math.exp(-2.5 * dt))
+    vTmp2.sub(headBias)
     head.position.add(vTmp2)
     head.rotation.x += vTmp2.z * 1.8
     head.rotation.z -= vTmp2.x * 1.8
@@ -1242,15 +1251,19 @@ export function buildPlayerBody(
     // every bone here tilts its face DOWN for a positive rotation.x, so the
     // gaze target is the camera pitch negated. The head takes the bulk of a
     // gaze and the chest bends a little under it, so looking at the floor
-    // folds the upper body over rather than craning one joint
+    // folds the upper body over rather than craning one joint. Moving, the
+    // gaze mostly lets go of the camera's pitch: a chase camera looks down
+    // at the body, and a running bean that followed it tucked its face at
+    // the ground and humped its back. On the move a bean looks ahead
+    const gazeK = 1 - 0.85 * Math.min(1, gait * 1.6)
     const pitchLook = spring(
       16,
-      THREE.MathUtils.clamp(-pose.pitch * (pose.pitch > 0 ? 0.55 : 0.42), -0.75, 0.6) * show +
+      THREE.MathUtils.clamp(-pose.pitch * (pose.pitch > 0 ? 0.55 : 0.42), -0.75, 0.6) * show * gazeK +
         glancePitch * show + lookK * 0.5,
       90, 10, 0, dt,
     )
     const spineLook = spring(
-      18, THREE.MathUtils.clamp(-pose.pitch * 0.16, -0.24, 0.24) * show + lookK * 0.2, 70, 11, 0, dt,
+      18, THREE.MathUtils.clamp(-pose.pitch * 0.16, -0.24, 0.24) * show * gazeK + lookK * 0.2, 70, 11, 0, dt,
     )
 
     // landing spring: the touchdown kicks it, it argues its way back
@@ -1340,10 +1353,16 @@ export function buildPlayerBody(
     // lurch on a start or a stop, not a sprinter's pitch. The brawler before
     // it leaned 55 degrees at a full run and read as falling over its own
     // feet; `npm run measure -- body` prints the pitch, and a run should stay
-    // around ten degrees
+    // around ten degrees.
+    //
+    // And it is one rigid tilt, all of it on the pelvis, never a bend: split
+    // between the hips and the waist (and with the head nodding on top), the
+    // top of the bean curled over the belly like a comma and read as a
+    // hunch. Only the get-up keeps half its fold at the waist, because a
+    // body hauling itself off the ground does bend there
     const lean =
-      (THREE.MathUtils.clamp(fwdS * 0.006 + accF * 0.012, -0.12, 0.14) + pose.crouchK * 0.2 +
-        runK * gait * 0.01 + 0.02 + persona.lean * idleK) * show +
+      (THREE.MathUtils.clamp(fwdS * 0.009 + accF * 0.012, -0.12, 0.14) + pose.crouchK * 0.2 +
+        runK * gait * 0.025 + 0.02 + persona.lean * idleK) * show +
       riseFold * 0.55 - stretchK * 0.12
     // centripetal lean: bank into a turn only as fast as the feet are
     // actually carrying the body
@@ -1356,7 +1375,7 @@ export function buildPlayerBody(
     // and flying fast lays the whole body into the flight, legs trailing,
     // the way everyone in Garry's Mod crosses a map in noclip
     const flyLean = flyK * THREE.MathUtils.clamp(fwdS * 0.02, -0.25, 0.8)
-    pelvis.rotation.set(lean * 0.5 + flyLean, strafeYaw - stepS * 0.12 * gait, bank * 0.45 + waddleRoll)
+    pelvis.rotation.set(lean - riseFold * 0.275 + flyLean, strafeYaw - stepS * 0.12 * gait, bank * 0.45 + waddleRoll)
 
     // the chest is jelly on top of the hips: a roll spring that wants to
     // hold the shoulders level over the waddle, and so arrives late and
@@ -1367,7 +1386,7 @@ export function buildPlayerBody(
     )
     torso.position.copy(REST[B.TORSO])
     torso.rotation.set(
-      lean * 0.5 + airK * 0.12 * fallK + spineLook + jellyPitch * show +
+      riseFold * 0.275 + airK * 0.12 * fallK + spineLook + jellyPitch * show +
         // in the air the body lags its own flight: rising it tips back,
         // falling it pitches over, rather than stretching into a tube
         // a lunge, not a hop: in the air the body pitches into its travel
@@ -1405,8 +1424,8 @@ export function buildPlayerBody(
     // viewers only; under the first-person lens the head stays level
     head.rotation.set(
       // the chin lifts out of the get-up hunch
-      pitchLook + 0.06 * gait - airK * 0.12 + breathe * 0.02 - riseFold * 0.35 - stretchK * 0.3 -
-        lean * 0.5,
+      pitchLook - 0.04 * gait - airK * 0.12 + breathe * 0.02 - riseFold * 0.35 - stretchK * 0.3 -
+        (lean - riseFold * 0.55) * 0.2 - riseFold * 0.275,
       headLook - strafeYaw * 0.4 - stepS * 0.06 * gait,
       -bank * 0.3 - jellyRoll * 0.5 + persona.tilt * idleK * show,
     )

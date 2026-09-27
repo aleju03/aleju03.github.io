@@ -388,7 +388,7 @@ const ACTIONS: Record<string, {
   // other
   runside: {
     frames: [0.8, 0.835, 0.87, 0.905, 0.94, 0.975, 1.01, 1.045],
-    cam: [0, 10, 0.2],
+    cam: [0, 8.5, -0.7],
     run: (a, st) => tick(a, st.env, { speed: RUN, run: true }),
   },
   // a full run swerving hard left: the bank, the lean and what the arms do
