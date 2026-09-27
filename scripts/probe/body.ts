@@ -15,7 +15,8 @@ import { createVehicleMaterials } from '../../src/game/vehicles/materials'
 import { buildCar } from '../../src/game/vehicles/car'
 import { buildHeli } from '../../src/game/vehicles/heli'
 import { buildBoat } from '../../src/game/vehicles/boat'
-import { lightFor } from './probe'
+import { dressLook, lightFor } from './probe'
+import type { SkyState } from '../../src/game/levels/sky'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
 
 /*
@@ -32,6 +33,8 @@ import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook
                                           the lens line, beside the old eye-scaled size
     npm run shoot -- body:seat            seated in the car, the boat and the
                                           helicopter's real seat nodes
+    npm run shoot -- body:car [--tod 0.9] the car alone, five ways round, two
+                                          aboard; at night, lamps and beams on
     ... --pixel 3                          render at a third of the resolution,
                                           posterized and dithered, upscaled
                                           nearest: roughly the look the game is
@@ -91,6 +94,8 @@ interface Stage {
   gy: number
   x: number
   z: number
+  /** the sky's state at this stage's moment, for dressing the look */
+  sky: SkyState
 }
 
 let mats: ReturnType<typeof makeChunkMats> | null = null
@@ -100,7 +105,7 @@ const stage = (tod: number): Stage => {
   mats ??= makeChunkMats(() => {}, () => {})
   const scene = new THREE.Scene()
   const gy = terrainY(x, z)
-  lightFor(scene, tod, new THREE.Vector3(x, gy, z))
+  const sky = lightFor(scene, tod, new THREE.Vector3(x, gy, z))
   const chunks: Chunk[] = []
   const boxes: Solid[] = []
   const c0 = chunkX(x)
@@ -121,7 +126,7 @@ const stage = (tod: number): Stage => {
     groundAt: terrainY,
     collision: makeCollisionSet({ minX: -1e5, maxX: 1e5, minZ: -1e5, maxZ: 1e5 }, boxes),
   }
-  lastStage = { scene, chunks, env, gy, x, z }
+  lastStage = { scene, chunks, env, gy, x, z, sky }
   return lastStage
 }
 /** the stage the current run built, which is what its snapshots draw */
@@ -556,6 +561,56 @@ const seats = (spec: BodySpec, snap: Snap) => {
   })
 }
 
+/*
+  The car on its own, the way somebody meets it: three-quarter front, side,
+  three-quarter rear and a low front, with two beans in its seats, lit for
+  the stage's moment. At night the machine is told it is night, so the lamps
+  and both headlamp beams are on, and the look is dressed for the dark.
+*/
+const car = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  const vmats = createVehicleMaterials({ texture: (t) => t, add: (d) => d })
+  const v = buildCar({ mats: vmats })
+  v.root.position.set(st.x, terrainY(st.x, st.z), st.z)
+  // nose toward -x, so bearings below read as: pi/2 is the right flank
+  v.root.rotation.y = Math.PI / 2
+  st.scene.add(v.root)
+  vmats.setDay(st.sky.day, st.sky.night, st.sky.fogColor, st.sky.sunEl)
+  v.setDay(st.sky.day)
+  const riders: THREE.Object3D[] = []
+  for (const [seat, lk] of [[v.driverSeat, LOOKS[0]], [v.passengerSeat, LOOKS[1]]] as const) {
+    const rig = buildPlayerBody(EYE, GRAV, lk)
+    rig.sit(seat.userData.fit ?? CABIN_FIT, seat === v.passengerSeat)
+    seat.add(rig.group)
+    rig.group.position.set(0, 0, 0)
+    rig.group.rotation.set(0, Math.PI, 0)
+    riders.push(rig.group)
+  }
+  v.root.updateMatrixWorld(true)
+  // how the riders fit, in the car's own heights: the skinned extent of the
+  // seated body, crown (hat included) to the seat of the pants
+  const fit = riders.map((g) => {
+    const bx = new THREE.Box3().setFromObject(g, true)
+    const y0 = v.root.position.y
+    return `${(bx.min.y - y0).toFixed(2)}..${(bx.max.y - y0).toFixed(2)}`
+  }).join(', ')
+  const at = new THREE.Vector3(st.x, st.gy + 1.4, st.z)
+  const shots: Array<[string, number, number, number, number]> = [
+    ['three-quarter front', -Math.PI / 2 + 0.75, 15, 4.5, 34],
+    ['side', Math.PI, 16, 2.6, 34],
+    ['three-quarter rear', Math.PI / 2 + 0.8, 15, 4.5, 34],
+    ['low front', -Math.PI / 2 - 0.35, 12, 0.6, 34],
+    ['seated, from above', Math.PI - 0.5, 9, 6.5, 40],
+  ]
+  for (const [label, bearing, dist, up, fov] of shots) {
+    const cam = camAt(tw, th, at, bearing, dist, up, fov)
+    if (look) dressLook(look, st.scene, st.sky, cam, 'town', [], false)
+    snap(label === 'side' ? `car side (riders span y ${fit})` : `car ${label}`, cam)
+  }
+  st.scene.remove(v.root)
+}
+
 /** every headgear, one each, close, on a spread of builds, outfits and
     colours: the wardrobe in one sheet */
 const WARDROBE: PlayerLook[] = [0, 1, 2, 3, 4, 5, 6, 7].map((hat) => ({
@@ -681,6 +736,7 @@ export const shootBody = (spec: BodySpec) => {
     if (a.startsWith('strip')) return n + 8
     if (a === 'fp') return n + 5
     if (a === 'seat') return n + 9
+    if (a === 'car') return n + 5
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
     if (a === 'wardrobe') return n + WARDROBE.length
     return n
@@ -763,6 +819,7 @@ export const shootBody = (spec: BodySpec) => {
     else if (a.startsWith('strip:')) run((sp, s) => strip(sp, a.slice(6), s))
     else if (a === 'fp') run(firstPerson)
     else if (a === 'seat') run(seats)
+    else if (a === 'car') run(car)
     else if (a === 'wardrobe') run(wardrobe)
     else if (a.startsWith('folds')) run((sp, sn) => folds(sp, sn, Number(a.split(':')[1] ?? 0)))
     else throw new Error(`unknown body target "${a}"`)

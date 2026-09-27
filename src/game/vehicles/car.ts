@@ -1,20 +1,14 @@
 import * as THREE from 'three'
 import { noStand, type HullStation, type Solid } from '../physics/collision'
+import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
   at,
   createPartBuilder,
-  loft,
   markDynamic,
   revolve,
-  ringFloor,
-  ringFrom,
-  ringScale,
-  ringSuper,
-  slab,
   tube,
-  RING_N,
-  type Ring,
-  type Station,
+  type PartBuilder,
+  type Slot,
 } from './parts'
 import {
   SURFACE_FEEL,
@@ -32,187 +26,71 @@ import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 import type { VehicleMaterials } from './materials'
 
 /*
-  The car: a compact three-door hot hatch, the thing parked at the kerb
-  outside the house.
+  The car: a mid-2000s three-door hatch, the thing parked at the kerb
+  outside the house, of an age with the computer upstairs.
 
   ---------------------------------------------------------------- the shell
 
-  It is one lofted body and one lofted greenhouse, not a pile of boxes. The
-  body runs nose to tail as superelliptic cross-sections whose half-width,
-  crown and rocker all move with z: widest exactly over the wheel arches
-  (1.800 for the paint, which the arch flares then carry out to the car's
-  stated 1.875), tucked at the nose and tail, sills drawn in underneath by a
-  low `nDown` exponent so the car sits on a keel rather than on a slab. Every
-  one of those sections is generated from one control table, `SECTIONS`, and —
-  this is the part that pays for itself over and over — the same table is read
-  back by `flankX()` and `crownY()` when a bumper, a sill strip, a door
-  shut-line or a mirror stalk needs to know where the body's surface actually
-  *is* at some (z, y). Nothing here is positioned by eye against a shape
-  defined somewhere else, so the details sit on the paint instead of hovering
-  a centimetre off it or sinking into it.
+  It is drawn the way a car is drawn on paper, in side and plan view, and it
+  has to read at the pixel look's resolution, where the whole car is a few
+  hundred pixels wide. That settles the style before anything else: flat,
+  clearly separated planes with hard breaks between them, strong enough to
+  survive the posterize and to be picked out by the look's fold ink, and no
+  detail finer than a pixel or two. The loft this replaced was a smooth
+  superellipse body with a smooth greenhouse on top, and through the look it
+  read as a melted bar of soap: a lumpy bonnet, arches that were bulges, two
+  white blobs for headlamps and a black B-pillar tube standing up through
+  the side glass.
 
-  The flank crease is a radial bump inside the ring function rather than
-  `loft`'s `crease` flag. That flag duplicates a whole *station*, which makes
-  a hard ring around the car — a transverse fold, right for the shut-line at
-  the base of the windscreen and wrong for a feature line running lengthways.
-  A longitudinal crease has to live in the outline, so `bodyRing` pushes ring
-  indices 3 and 13 out by up to 3% (RING_N is 32, so those two land at exactly
-  33.75 degrees above the waistline on each side, and they are exactly mirrored
-  — the loft skins point j to point j, so a bump on a fixed index runs dead
-  straight down the flank instead of spiralling). Smooth normals turn that 3%
-  into a highlight line, which is what a pressed crease looks like in a photo.
-  One crease reads as a car; the temptation to add the second was resisted.
+  `SECTIONS` is the control table: at each station the half-width, the sill,
+  the beltline and the crown of the bonnet or boot lid. `profile(z)` turns a
+  station into the same eight-point half section every time (tucked rocker,
+  lower flank, bumper line, the flank's widest line, the shoulder, the deck
+  edge, the deck and the centreline), so ring point j is the same feature the
+  whole length of the car and skinning station to station draws the panels.
+  Normals are *creased* (`createFacets`, toCreasedNormals at CREASE): faces
+  meeting at more than about 34 degrees get a hard edge, anything gentler is
+  smoothed, so the shoulder, the bonnet's edges and the corners of the nose
+  and tail are crisp lines while the flank between them is one sheet of
+  paint. `flankX()` reads the same profile back, which is how the shut-lines,
+  the bumper joints, the handles and the mirrors land on the paint rather than
+  near it.
 
-  The greenhouse is a *glass* loft with painted parts laid over it, which is
-  the trick that makes the windows work without CSG. You cannot cut a hole in
-  a loft, so instead the whole canopy — windscreen, side glass and backlight
-  in one continuous surface — is skinned in the `glass` slot, and the roof
-  panel, the A-pillars, the blacked-out B-pillar and the C-pillars are separate
-  pieces standing 0.03..0.04 proud of it. That 0.035 is the reveal: glass flush
-  with paint is the single clearest tell of a toy car, and here the reveal is
-  structural rather than decorative.
+  Three things a closed section cannot be asked for, and all three are cut
+  into the profile rather than laid over it, which is the only place a hole
+  can come from without CSG. The **wheel arches** are circles about the hubs,
+  0.14 clear of the tyre at the top: where the circle is above the sill the
+  lower rows are lifted onto it, and a lip standing ARCH_LIP proud of the
+  flank finishes the edge, with a dark liner and an inboard wall behind it so
+  the opening reads as a well with a wheel in it. The **cabin** is open from
+  the scuttle to the rear bulkhead: there the deck rows drop to a floor, so
+  the top of the body is a tub with inner door walls (trim) and door tops
+  (paint), and a pair of stations a few centimetres apart at each end makes
+  the step a wall rather than a ramp. And the **ends** are flat faces, fanned
+  from their middles, because a flat face is where a real car's lamps, grille
+  and plates are set: the headlamps are a lens on the nose face that carries
+  on round the chamfered corner as cells of the body itself (the same for
+  the tail lamps), so they are shapes in the bodywork rather than things
+  stuck to it.
 
-  Every one of those pieces is placed by asking the canopy where its surface
-  is, and the shape of the question matters. The roof panel reads the canopy's
-  own *ring* and grows it (`ringScale` + `ringFloor`); the pillars read a
-  *fraction of its height* (`canopyRib`); the wiper reads its height at an x
-  (`canopyY`). What none of them may do is name an absolute y and ask
-  `canopyX` for the width there, because above that station's crown there is
-  no width and the honest answer is zero — the centreline. The A- and
-  C-pillars did exactly that, missed by four and nine thousandths
-  respectively, and drew a body-coloured roll hoop across the windscreen and
-  another across the backlight.
+  The greenhouse stands on the door tops, drawn in over them (tumblehome) to
+  a crowned roof. Glass and pillars are cells of one surface, split at
+  `COLUMNS`, each a (base z, roof z) pair so a pillar leans the way the glass
+  beside it does: A-pillar, door glass, a blacked-out B-pillar, the rear
+  quarter light and the broad C-pillar that makes a hatch a hatch. Cells
+  that share an edge cannot open a gap, and the opaque ones carry a trim
+  lining facing in, since from the driver's seat a pillar and the roof are
+  seen from behind. The windscreen and the tailgate glass are two panes each,
+  meeting on the centreline, so they follow the roof's crown. The glass is
+  flush with the pillars: at this resolution a reveal is less than a pixel,
+  and the fold between the screen and the roof is what the ink draws.
 
-  The canopy's two end stations are deliberately *below* the body's crown, so
-  the body swallows them. That is where the base of the windscreen and the
-  base of the tailgate glass come from: not from an authored edge but from the
-  intersection curve of two lofts, which is a curve no straight edge would
-  have given and which costs nothing. It also removes the problem that killed
-  the first attempt, where an authored screen-base ring 2.7 wide sprouted out
-  of a bonnet crown only 2.3 wide and the glass appeared to grow out of the
-  wings.
-
-  ---------------------------------------------- the three holes in the shell
-
-  Three things a car has that a loft cannot be asked for directly are a wheel
-  arch, a face, and a cabin. All three were first attempted as decoration laid
-  *over* a closed shell, and all three were invisible; all three are now cut
-  into the section table itself, which is the only place a hole can come from
-  without CSG.
-
-  **The arches are openings, not lips.** The first version drew a torus flare
-  on an unbroken flank and hoped: the rocker ran on under the wheel at y=0.45,
-  more than half of every tyre was inside the paint, and a lip that stood 0.02
-  proud of a 1.86 flank could not be seen at all. Now `archCutY()` lifts the
-  lower-outer part of every section near an axle onto an ellipse (1.10 tall,
-  0.98 long, springing from the sill line at y=0.36 and topping out at 1.46,
-  which is 0.14 clear of the tyre) — so the outline runs *inward* along the
-  arch roof, drops down the arch's inboard wall, and only then carries on
-  around the floor pan. The loft skins that outline like any other, and the
-  result is a genuine tunnel with the wheel standing in it.
-
-  That inboard wall is the part it is easy to get wrong twice. It is not a
-  vertical face at ARCH_IN: `bodyRing` can only lift the ring points it has,
-  so the wall is the chord between the last point inboard of ARCH_IN and the
-  first one outboard, and that chord leans *outward* as it climbs. At 1.26 it
-  ran from (0.988, 0.336) to (1.247, 1.46), which is already at x = 1.42 by
-  the height of the top of the tyre — outboard of the tyre's inner sidewall at
-  1.315, so the whole inner half of every wheel was inside the paint even
-  though the opening looked right from outside and every wheel *vertex* was
-  clear. Sampled on the surfaces rather than at their vertices: 50 of 144
-  inner-sidewall points and 9 of 72 rim-barrel points inside the shell. At
-  1.10 the wall is one ring index further in, the chord tops out at x = 1.215
-  where the tyre is, and a dense barycentric sweep of all four wheels against
-  the body loft — plus edge-versus-face tests in both directions — finds 0 of
-  11460 points inside and 0 crossings, closest approach 0.126.
-  The tunnel is now wider than the wheel, which is what a wheel well is.
-
-  The ellipse rather than a circle about the hub is what lets the opening close
-  smoothly onto the rocker at its fore and aft ends instead of a step. The
-  flare is then a `tube` swept along that *same* ellipse and the `dark` liner a
-  band across the *same* ellipse 0.03 smaller — and the thing that took two
-  goes is that neither may be held out at a constant x. Over the crown of the
-  opening the body genuinely is 1.79 wide, but at the ends of the ellipse the
-  section has tucked in to 1.12, so a flare parked at 1.800 finished as four
-  cut tube ends hanging half a unit clear of the sills and the liner as two
-  shelves of dark outside the paint. Both read `flankX` now, the flare's
-  radius fades to a third at the ends so the lip dies into the flank instead
-  of stopping, and FLARE_LIFT — the standoff that makes the widest vertex of
-  the sweep land on HALF_WIDE — is measured off the built tube rather than
-  computed, because a path that moves in x no longer lands a tube *face* on
-  the axis the way a planar one does.
-
-  The liner is wound so its faces look *inward* (the dark material is
-  FrontSide, and an outward-wound band is invisible from the only place it is
-  ever seen from) — which is also why the merged `dark` slot measures a
-  *negative* signed volume, -1.8: four open bands deliberately facing the
-  wrong way outweigh the closed chips around them, and it is the one slot on
-  this model where that is not a bug. (It was -1.3 before the tunnel wall
-  moved in and -2.2 before the bands stopped reaching past the flank, so the
-  number tracks ARCH_IN and the liner's outer edge both, and is not a constant
-  to check against.) The flat disc that used to sit behind each wheel is gone
-  — the arch's own inboard wall is what a low camera sees now, and a disc
-  buried in the floor pan was only ever hiding the absence of one.
-
-  **The cabin is an opening too, and for a long time it was not.** The body
-  loft ran closed straight over the passenger compartment at y = 2.00, which
-  put every piece of the interior — floor pan, dash, seats, the driver — under
-  a painted deck, and put a second, smaller, body-coloured car inside the
-  greenhouse where a cabin should be. `cabinCutY` is `archCutY` upside down:
-  it pushes the upper-inner outline *down* to a floor instead of lifting the
-  lower-outer one up, and what comes out is a tub. The cut is indexed on the
-  ring rather than thresholded on x for the reason ARCH_IN's comment gives, it
-  smoothsteps up into a scuttle and a rear bulkhead over stations of its own,
-  and it runs *before* the arch lift so the boot floor steps up over the rear
-  wheels rather than crossing the opening. See the block above `bodyRing`.
-
-  **The nose and the tail are the shell's open ends, dressed.** The body loft
-  used to run the full 9.4 and cap flat at each extremity, which made the nose
-  a solid 2.84 x 0.82 paint disc with the grille, its chrome mouth, the lower
-  intake and both headlamps buried behind it — a head-on ray hit paint at
-  z = -4.70 and the lamp slot was 92% dead. The shell now ends at z = -4.35
-  and z = +4.40 and the last 0.3 of each end is *furniture*: grille, chrome
-  bars, lamps, bumper bar, splitter at the front; tail lamps, number plate,
-  diffuser and the exhaust tip at the back. Every one of those pieces is
-  forward of the cap it sits against, so every one of them is the nearest
-  surface from straight ahead, and the paint that shows between them is the
-  nose panel — which is what a real car has there. The cap is still `flat` at
-  both ends rather than `none`: it is completely hidden by the furniture, and
-  keeping it means the shell stays a closed mesh whose signed volume can be
-  measured (the body loft comes to +23.3, and it would be -23.3 to the decimal
-  if the loft were inside out) instead of an open one whose winding nobody can
-  check.
-
-  Furniture that shares a face is furniture nobody authored, and there were
-  three of those. The exhaust tip's closing disc landed on z = 4.680000 and
-  the diffuser's rear face on 4.500 + 0.180 = 4.680000 — exactly coplanar, in
-  the middle of the chase camera's view; the tip cannot move back, because
-  4.70 is the bumper bar's and therefore the car's, so the diffuser moved
-  forward to 4.42 and the tip stands 0.08 clear. The headlamp lens was 0.95
-  long from x = 0.55 with an XYZ euler that swings its inboard end *forward*,
-  so that end crossed the grille panel; the grille is a slim 1.56 now — a wide
-  lower intake under a narrow upper one, which is the face a modern hatch has
-  — and the lens is 0.56 starting at x = 0.937, with 0.097 of clear air
-  between it and the chrome mouth's edge and zero surface samples or edge
-  crossings shared with any part of the grille. The tail lamp was splayed 0.30
-  across a tail panel that is *flat* out to x = 1.537, which does not wrap
-  anything: it lifts the inboard edge, and the standoff ran 0.244 inboard
-  against 0.177 outboard. At 0.08 of yaw and 0.66 of length it stands an even
-  0.096..0.116 off the panel all the way across and its outboard end reaches
-  the corner, where the body turns away under it.
-
-  The other half of that lesson is `wrapPath`'s `inset`, which must be
-  *smaller* than the tube radius it is used with or the bar it draws is inside
-  the paint. It was 0.18 against a 0.15 radius, which put both bumpers 0.03
-  under the flank all the way round and made 88% of the trim slot unreachable.
-  The inset is 0.07 against 0.13 now — but *not* a uniform 0.06 of standoff,
-  because BAR_R - BAR_SINK is not what a five-segment tube presents to the
-  flank (a face rather than a vertex, cos 36 = 0.809) and the radius tapers to
-  0.10 through the corner. Measured, the outer face stands 0.045..0.050 proud
-  along the front flank and 0.053..0.065 along the rear, and where the path
-  wraps the corner it dives up to 0.18 *inside* the nose panel and only the
-  tip re-emerges, in front of the cap. Sunk or proud, the pair of numbers
-  lives in one place so they cannot drift apart again.
+  The end faces carry flat decals a centimetre or two proud: lamp lenses in
+  dark surrounds, the grille with a chrome bar and badge, a wide lower intake
+  with fog lamps in its corners, the plates, and the bumper joint, which
+  runs on along both flanks to the arches and is what makes a bumper a
+  separate part. A floor pan closes the section underneath, narrow through
+  the arches and full width between them.
 
   --------------------------------------------------------------- the physics
 
@@ -407,29 +285,39 @@ import type { VehicleMaterials } from './materials'
   silent (it stops at 0.182 of spring length, and the 45-degree descent at
   0.276), and a genuine three-unit drop reporting exactly one impact of 13.8.
 
-  The whole model is 7315 vertices and 9580 triangles as drawn, 6899 and 9312
-  of them parked — the difference is the driver, who is `visible = false`
-  until somebody gets in. The four wheels are two builds cloned, because a
-  mirrored wheel needs its own winding and a negatively scaled one is inside
-  out. Measured bounding box 3.750 x 2.850 x 9.400, symmetric about x = 0 to
-  the last float; the width is set by the arch flares and the length by the
-  two bumper bars, which is where a real car is measured from too, and `SIZE`
-  reports exactly those half-extents rather than a rounded-up guess at them.
+  The whole model is 8517 vertices and 5388 triangles as drawn, wheels
+  included: fewer than the loft's 9580, because flat panels need no
+  tessellation to look flat. The four wheels are two builds cloned, because
+  a mirrored wheel needs its own winding and a negatively scaled one is
+  inside out. Measured bounding box 3.99 x 3.06 x 8.97, symmetric about
+  x = 0; the 3.99 is the mirrors, which stand outside the footprint the way
+  real ones do, so `SIZE` reports the arch lips (HALF_WIDE) and the plates
+  (HALF_LEN), which is where a collision should begin.
+
+  The two front seats are the seat nodes (SEAT_EYE_Y, SEAT_FIT). With the
+  bean at its crown-scaled size the fold is 0.8 about a face at 2.10, which
+  measures (`npm run shoot -- body:car`, whose side tile prints it) a rider
+  from 0.90, sunk into the cushion, to 2.92 at the top of a hat, under a
+  headliner at about 2.98 over the seats.
 */
 
 /* ------------------------------------------------------------------ scale --
 
    Everything below is in world units: 1 unit = 0.48 m, 2.08 units = 1 m.
-   The car is 9.4 x 3.75 x 2.85 units = 4.52 x 1.80 x 1.37 m, which is a
-   three-door hatch to within a few centimetres.                             */
+   The car is 9.0 x 3.7 x 3.02 units = 4.33 x 1.78 x 1.45 m, which is a
+   mid-2000s three-door hatch (a Golf of the time is 4.22 x 1.76 x 1.48). */
 
-const LENGTH = 9.4
-const HALF_LEN = LENGTH / 2 // 4.7: the bumper bars' tips, front and rear
-/** 1.80 m over the arch flares: the car's stated width. The paint shell's own
-    widest section is 1.800, and FLARE_LIFT is derived so that the flare swept
-    along the arch cut lands its widest vertex exactly here */
-const HALF_WIDE = 1.875
-const ROOF_Y = 2.85 // 1.37 m to the top of the roof panel
+const LENGTH = 9.0
+const HALF_LEN = LENGTH / 2 // 4.5: the plates and the exhaust, front and rear
+/** 1.84 m over the arch lips: the car's stated width, and the collision
+    footprint's. The body's own flank is BODY_HW; the lips stand ARCH_LIP
+    proud of it, and the mirrors are outside it the way real ones are */
+const BODY_HW = 1.79
+const ARCH_LIP = 0.055
+const HALF_WIDE = BODY_HW + ARCH_LIP
+const ROOF_Y = 3.06 // 1.47 m to the crown of the roof
+/** ...and to its edges over the side glass: the crown is the difference */
+const ROOF_EDGE_Y = 2.97
 const WHEELBASE = 5.4 // 2.60 m between the axles
 const AXLE_Z = WHEELBASE / 2 // front axle -2.7, rear +2.7
 const TRACK = 3.05 // 1.47 m between the tyre centrelines
@@ -437,589 +325,312 @@ const HALF_TRACK = TRACK / 2
 const WHEEL_R = 0.66 // a 16 inch rim in a 55-profile tyre
 const TYRE_HW = 0.21 // 0.42 wide, i.e. a 195-section tyre
 
-/** the height of the body's cross-section centreline. Every ring in SECTIONS
-    is drawn around this line, so `up` is the crown above it and `down` is the
-    rocker below it, and the sill lands at SECT_Y - down = 0.30 as specified */
-const SECT_Y = 1.05
+/** the flat faces the lamps, grille and plates are set into */
+const NOSE_Z = -4.46
+const TAIL_Z = 4.42
 
-/** the fixed underside of the greenhouse loft. It is buried inside the body
-    everywhere, which is the point: the visible bottom edge of the glass is
-    wherever the canopy happens to come out of the paint */
-const CANOPY_FLOOR = 1.2
+/* ----------------------------------------------------------- the section --
 
-/** where the paint shell stops at each end. The last 0.35 of the car is the
-    front and rear furniture, which stands proud of these caps rather than
-    hiding behind them — see the header */
-const NOSE_Z = -4.35
-const TAIL_Z = 4.40
-
-/* -------------------------------------------------------------- body loft -- */
-
+   The body is described the way a car is drawn in side and plan view: a
+   table of stations along its length, each giving the half-width, the sill,
+   the beltline and the bonnet (or boot lid) crown there. Every station is
+   turned into the same eight-point half profile (`profile`), so ring point j
+   is the same feature the whole length of the car: the tucked rocker, the
+   lower flank, the bumper line, the flank's widest line, the shoulder, the
+   deck edge, the deck and the centreline. Skinned station to station those
+   rows are the panels, and a row that turns a corner is a crease. */
 interface Sect {
   z: number
-  /** half-width at the section's own centreline */
   hw: number
-  /** crown height above SECT_Y, and rocker depth below it */
-  up: number
-  down: number
-  /** superellipse exponents. 2 is an ellipse, 5 a softly-cornered rectangle */
-  nUp: number
-  nDown: number
-  /** 0..1 strength of the flank crease at this station */
-  shoulder: number
+  sill: number
+  belt: number
+  /** bonnet or boot-lid crown on the centreline; unused where the cabin is
+      open, since there the deck is the cabin floor */
+  deck: number
 }
 
-/*
-  Thirteen control stations. The shape reads, front to back, as: a nose panel
-  the front-end furniture bolts to, a fast rise through the lamps into the
-  front arch where the car reaches its full width, a long bonnet climbing to
-  the cowl crease, a constant-section door area, a second full-width bulge
-  over the rear arch, and a short tail drawn in above the valance.
-
-  This is the *control* table, not the station list the loft is given: the
-  arches need stations of their own (see `BODY_Z`), and `sectionAt` blends
-  this table at any z so both the loft and every detail placement below read
-  one shape.
-*/
 const SECTIONS: Sect[] = [
-  { z: NOSE_Z, hw: 1.600, up: 0.50, down: 0.52, nUp: 3.6, nDown: 3.0, shoulder: 0 },
-  { z: -4.20, hw: 1.690, up: 0.62, down: 0.60, nUp: 4.0, nDown: 3.0, shoulder: 0.1 },
-  { z: -3.70, hw: 1.760, up: 0.72, down: 0.70, nUp: 4.4, nDown: 3.1, shoulder: 0.3 },
-  { z: -3.10, hw: 1.792, up: 0.80, down: 0.74, nUp: 4.8, nDown: 3.2, shoulder: 0.6 },
-  { z: -2.70, hw: 1.800, up: 0.84, down: 0.75, nUp: 5.0, nDown: 3.2, shoulder: 0.8 },
-  { z: -2.05, hw: 1.782, up: 0.88, down: 0.75, nUp: 5.2, nDown: 3.2, shoulder: 1 },
-  { z: -1.45, hw: 1.748, up: 0.93, down: 0.75, nUp: 5.4, nDown: 3.2, shoulder: 1 },
-  { z: -0.90, hw: 1.734, up: 0.95, down: 0.75, nUp: 5.4, nDown: 3.2, shoulder: 1 },
-  { z: 0.00, hw: 1.730, up: 0.95, down: 0.75, nUp: 5.4, nDown: 3.2, shoulder: 1 },
-  { z: 1.20, hw: 1.744, up: 0.95, down: 0.75, nUp: 5.4, nDown: 3.2, shoulder: 1 },
-  { z: 2.10, hw: 1.782, up: 0.94, down: 0.74, nUp: 5.2, nDown: 3.2, shoulder: 1 },
-  { z: 2.70, hw: 1.800, up: 0.92, down: 0.73, nUp: 5.0, nDown: 3.2, shoulder: 0.8 },
-  { z: 3.50, hw: 1.776, up: 0.90, down: 0.70, nUp: 4.8, nDown: 3.1, shoulder: 0.5 },
-  { z: 4.15, hw: 1.690, up: 0.86, down: 0.64, nUp: 4.4, nDown: 3.0, shoulder: 0.2 },
-  { z: TAIL_Z, hw: 1.610, up: 0.80, down: 0.58, nUp: 4.2, nDown: 3.0, shoulder: 0 },
+  { z: NOSE_Z, hw: 1.46, sill: 0.62, belt: 1.61, deck: 1.63 },
+  { z: -4.30, hw: 1.64, sill: 0.56, belt: 1.68, deck: 1.72 },
+  { z: -3.95, hw: 1.76, sill: 0.52, belt: 1.75, deck: 1.81 },
+  { z: -2.70, hw: BODY_HW, sill: 0.50, belt: 1.86, deck: 1.93 },
+  { z: -2.00, hw: BODY_HW, sill: 0.48, belt: 1.93, deck: 2.00 },
+  { z: 0.00, hw: BODY_HW, sill: 0.48, belt: 2.03, deck: 2.06 },
+  { z: 2.70, hw: BODY_HW, sill: 0.50, belt: 2.12, deck: 2.16 },
+  { z: 3.70, hw: 1.77, sill: 0.53, belt: 2.15, deck: 2.19 },
+  { z: 4.20, hw: 1.70, sill: 0.58, belt: 2.12, deck: 2.16 },
+  { z: TAIL_Z, hw: 1.50, sill: 0.64, belt: 2.05, deck: 2.09 },
 ]
 
-/* ------------------------------------------------------------ wheel arch --
-   The arch opening, as an ellipse in the (z, y) plane about each axle. It
-   springs from ARCH_Y — the sill line, so the opening closes onto the rocker
-   at its fore and aft ends instead of stopping in a step the way a circle
-   about the hub does — and reaches ARCH_H above it, which is 1.46, or 0.14
-   clear of a tyre topping out at 1.32.
-
-   ARCH_IN is where the tunnel's inboard wall starts, and it is *not* a
-   vertical wall at that x. `bodyRing` can only lift the ring points it has,
-   so the wall is the chord between the last point inboard of ARCH_IN and the
-   first one outboard of it — and that chord leans outward as it climbs. At
-   1.26 the lifted point was index 27, at x = 1.247 on the axle station, and
-   the chord ran from (0.988, 0.336) up to (1.247, 1.46): by the height of the
-   top of the tyre it had reached x = 1.423, well outboard of the tyre's inner
-   sidewall at 1.315, so the inner half of every wheel was inside the paint.
-   Sampled on the surface rather than at the vertices, 50 of 144 inner-sidewall
-   points and 9 of 72 rim-barrel points were inside the shell.
-
-   1.10 moves the wall in by one ring index. Index 27 measures 1.208..1.247
-   across the arch stations and index 26 measures 0.947..0.988, so 1.10 is the
-   only value with a real margin either side — anything closer flips an index
-   from station to station and the wall goes jagged. The chord is then
-   (0.988, 0.336) to (1.247, 1.46), which is at x = 1.215 at the top of the
-   tyre: 0.10 clear of it, everywhere, with the whole wheel outside the paint.
-   The tunnel is wider than the wheel, which is what a real wheel well is.   */
-const ARCH_Y = 0.36
-const ARCH_H = 1.10
-const ARCH_RZ = 0.98
-const ARCH_IN = 1.10
-
-/** the floor of the arch opening at this z, or -Infinity where there is no
-    arch. Read by `bodyRing` to lift the section's lower-outer outline, and by
-    nothing else — details ask `flankX`, which reports the uncut surface */
-const archCutY = (z: number) => {
-  let top = -Infinity
-  for (const az of [-AXLE_Z, AXLE_Z]) {
-    const u = (z - az) / ARCH_RZ
-    if (Math.abs(u) >= 1) continue
-    top = Math.max(top, ARCH_Y + ARCH_H * Math.sqrt(1 - u * u))
-  }
-  return top
-}
-
-/** stations that get a transverse hard fold: the cowl, where the bonnet's
-    trailing edge meets the base of the windscreen, and the tail's trailing
-    lip above the number plate. Both are real shut-lines on a real hatchback */
-const CREASE_Z = new Set([-1.45, 4.15])
-
-/** ring index the flank crease sits on, and how far out it pushes. Index 3 of
-    32 is 33.75 degrees above the waistline; index 13 is its mirror. 3% of the
-    half-width is ~0.054 units — enough to kick the smoothed normal by about
-    six degrees, which is a highlight line and not a ridge */
-const SHOULDER_I = 3
-const CREASE_OUT = 0.03
-
-/* --------------------------------------------------------- cabin opening --
-
-   The third hole in the shell, and the one that was missing. The body loft
-   ran closed right over the passenger compartment: its crown at the doors is
-   SECT_Y + 0.95 = 2.00, the greenhouse's glass floor is at 1.20, so the whole
-   cabin was a shallow glass box standing on a painted deck. Every piece of
-   the interior — a floor pan at 0.74, a dashboard at 1.72, seat cushions at
-   0.94 — was authored for a cabin that opens at the floor and was therefore
-   sealed underneath that deck and invisible, while what you actually saw
-   through the windscreen was body colour: a second, smaller car inside the
-   car. It is the same mistake the arches and the face were, in the one place
-   left that could still make it.
-
-   So the cabin is cut the same way the arches are: out of the section table,
-   because that is the only place a hole can come from without CSG. `archCutY`
-   lifts the lower-outer outline onto an ellipse; this pushes the upper-inner
-   outline down to a floor, which turns the top of the shell through the
-   cabin into a tub — flank, a near-vertical inner door wall, a floor, and
-   back up the other side.
-
-   The cut is indexed on the ring rather than thresholded on x, and that is
-   deliberate for the reason ARCH_IN's comment gives at length: a fixed x
-   flips which ring point it catches from station to station and the edge goes
-   jagged. Index 3 is the shoulder crease, so cutting indices 4..12 puts the
-   cut edge exactly on the crease — i.e. the belt line is the feature line,
-   which is where a real hatchback's door tops are. It also lands just
-   outboard of the greenhouse: at z = 0 the crease sits at (1.616, 1.814) and
-   the glass at that height is 1.543, so the painted door top shows and the
-   glass rises from inboard of it.
-
-   CABIN_ROOF is above every crown in the table, so the ramp starts as a
-   no-op and the smoothstep does the whole job of standing the scuttle and the
-   rear bulkhead up — with stations of their own in BODY_Z, or the loft draws
-   a 0.55-long ramp between the cowl and the first door section instead of a
-   wall. And the cut is applied *before* the arch lift, so where the two
-   overlap behind the rear axle the arch has the last word: the boot floor
-   steps up over the wheel instead of running across the opening, which is
-   both what a car does and what stops a red floor showing through the arch. */
-const CABIN_Z0 = -1.45 // the cowl crease: the base of the windscreen
-const CABIN_Z1 = 3.58 // the rear bulkhead, just forward of the tailgate glass
-const CABIN_RAMP = 0.34
-const CABIN_FLOOR = 0.68
-const CABIN_ROOF = 2.10 // above SECT_Y + max(up) = 2.00, so t = 0 does nothing
-/** the first ring index above the shoulder crease, and its mirror at
-    RING_N/2 - CABIN_I0. 4..12 of 32 */
-const CABIN_I0 = SHOULDER_I + 1
-
-/** the ceiling of the cabin opening at this z, or +Infinity where the shell
-    is closed. Read by `bodyRing` and by nothing else — details ask `flankX`,
-    which reports the uncut surface */
-const cabinCutY = (z: number) => {
-  if (z <= CABIN_Z0 || z >= CABIN_Z1) return Infinity
-  const t = clamp(Math.min(z - CABIN_Z0, CABIN_Z1 - z) / CABIN_RAMP, 0, 1)
-  const k = t * t * (3 - 2 * t)
-  return CABIN_ROOF - (CABIN_ROOF - CABIN_FLOOR) * k
-}
-
-const TAU = Math.PI * 2
-/** signed power, so a superellipse survives a negative cosine */
-const spow = (v: number, e: number) => Math.sign(v) * Math.pow(Math.abs(v), e)
-
-const bodyRing = (s: Sect): Ring => {
-  // in the ring's own frame, i.e. relative to SECT_Y
-  const cut = archCutY(s.z) - SECT_Y
-  const cab = cabinCutY(s.z) - SECT_Y
-  return ringFrom((t) => {
-    const i = t * RING_N
-    const a = t * TAU
-    const c = Math.cos(a)
-    const sn = Math.sin(a)
-    const upper = sn >= 0
-    const e = 2 / (upper ? s.nUp : s.nDown)
-    let x = s.hw * spow(c, e)
-    let y = (upper ? s.up : s.down) * spow(sn, e)
-    if (s.shoulder > 0) {
-      const d = Math.min(Math.abs(i - SHOULDER_I), Math.abs(i - (RING_N / 2 - SHOULDER_I)))
-      const k = 1 + CREASE_OUT * s.shoulder * Math.exp(-(d * d) / 1.7)
-      x *= k
-      y *= k
-    }
-    /*
-      The cabin. Mirror image of the arch below: every point above the
-      shoulder crease drops onto the cabin floor, which turns the upper-inner
-      part of the outline into an inner door wall running down and a floor
-      running across. Applied first, so the arch lift below wins wherever the
-      two overlap behind the rear axle.
-    */
-    if (i > CABIN_I0 - 0.5 && i < RING_N / 2 - CABIN_I0 + 0.5 && y > cab) y = cab
-    /*
-      The arch. Every point outboard of the tunnel wall is lifted onto the
-      arch ellipse, which turns the lower-outer quadrant of the outline into
-      an arch roof running inward and a near-vertical inboard wall dropping
-      back to the floor pan. The points only ever move up, so the outline
-      stays a simple counter-clockwise loop and `loft` skins it — and winds it
-      outward — exactly as it does an uncut one.
-    */
-    if (Math.abs(x) > ARCH_IN && y < cut) y = cut
-    return [x, y]
-  }, RING_N)
-}
-
-/*
-  The station list the body loft actually gets: the control table, plus enough
-  extra sections through each arch to draw the ellipse. The offsets are dense
-  where the arch curve is steep and sparse over its crown; the worst chord
-  error against the true ellipse is 0.033 units, which is under the flare tube
-  that covers that edge. Two of them (0.40 and 0.60) are chosen to land on
-  control stations that already exist, and anything landing within 0.05 of one
-  is dropped rather than crowding it — two rings a finger apart cost 64
-  vertices and buy a facet nobody can see.
-*/
-const ARCH_DZ = [-0.94, -0.80, -0.60, -0.40, 0, 0.40, 0.60, 0.80, 0.94]
-const BODY_Z: number[] = SECTIONS.map((s) => s.z)
-for (const az of [-AXLE_Z, AXLE_Z]) {
-  for (const d of ARCH_DZ) {
-    const z = az + d
-    if (BODY_Z.every((q) => Math.abs(q - z) > 0.05)) BODY_Z.push(z)
-  }
-}
-/* ...and the same for the cabin opening's two ends. `cabinCutY` smoothsteps
-   the scuttle and the rear bulkhead up over CABIN_RAMP, but a smoothstep the
-   loft has no stations inside is a straight line: without these the shell
-   ramps from the cowl to the first door section 0.55 away and the base of the
-   windscreen sits on a slope instead of on a wall. */
-const CABIN_DZ = [0, 0.09, 0.19, 0.29, 0.40]
-for (const [edge, dir] of [[CABIN_Z0, 1], [CABIN_Z1, -1]] as const) {
-  for (const d of CABIN_DZ) {
-    const z = edge + dir * d
-    if (BODY_Z.every((q) => Math.abs(q - z) > 0.05)) BODY_Z.push(z)
-  }
-}
-BODY_Z.sort((a, b) => a - b)
-
-/** linear blend of the section table at any z, so the detail placement below
-    reads exactly the surface the loft skinned */
 const sectionAt = (z: number): Sect => {
-  if (z <= SECTIONS[0].z) return SECTIONS[0]
+  if (z <= SECTIONS[0].z) return { ...SECTIONS[0], z }
   const last = SECTIONS[SECTIONS.length - 1]
-  if (z >= last.z) return last
+  if (z >= last.z) return { ...last, z }
   let i = 1
   while (SECTIONS[i].z < z) i++
   const a = SECTIONS[i - 1]
   const b = SECTIONS[i]
   const t = (z - a.z) / (b.z - a.z)
   const mix = (p: number, q: number) => p + (q - p) * t
-  return {
-    z,
-    hw: mix(a.hw, b.hw),
-    up: mix(a.up, b.up),
-    down: mix(a.down, b.down),
-    nUp: mix(a.nUp, b.nUp),
-    nDown: mix(a.nDown, b.nDown),
-    shoulder: mix(a.shoulder, b.shoulder),
+  return { z, hw: mix(a.hw, b.hw), sill: mix(a.sill, b.sill), belt: mix(a.belt, b.belt), deck: mix(a.deck, b.deck) }
+}
+
+/** the heights of the two rows that are the same everywhere: the bumper
+    line the headlamps sit on and the flank's widest line they reach up to */
+const LAMP_Y = 1.26
+const CREASE_Y = 1.56
+
+/* The wheel arches are a circle about each hub, 0.14 clear of the tyre at
+   the top, and the section's lower edge simply follows it: where the circle
+   is above the sill, the rocker, the lower flank and the bumper line are
+   lifted onto it and squeeze up under the crease. Below the hub the opening
+   drops straight to the sill, which is how a real arch meets a real rocker. */
+const ARCH_R = 0.8
+const archY = (z: number) => {
+  let y = -Infinity
+  for (const az of [-AXLE_Z, AXLE_Z]) {
+    const d = z - az
+    if (Math.abs(d) <= ARCH_R) y = Math.max(y, WHEEL_R + Math.sqrt(ARCH_R * ARCH_R - d * d))
+  }
+  return y
+}
+
+/* The cabin is open from the scuttle to the rear bulkhead: there the deck
+   rows drop to a floor instead of closing over the top, which turns the top
+   of the body into a tub with an inner door wall, and the greenhouse stands
+   on the door tops. Each end gets a pair of stations a few centimetres apart
+   so the step down is a wall (the scuttle under the windscreen, the bulkhead
+   under the tailgate glass), not a ramp. */
+const CABIN_Z0 = -1.94
+const CABIN_Z1 = 3.96
+const CABIN_FLOOR = 0.72
+/** the door's leading and trailing shut-lines */
+const DOOR_Z0 = -1.8
+const DOOR_Z1 = 1.16
+const cabinOpen = (z: number) => z > CABIN_Z0 - 1e-6 && z < CABIN_Z1 + 1e-6
+
+/** the eight-point half profile at z, bottom edge to centreline, as [x, y] */
+const profile = (z: number): Array<[number, number]> => {
+  const s = sectionAt(z)
+  const bottom = Math.max(s.sill, archY(z))
+  const hw = s.hw
+  const lower: Array<[number, number]> = [
+    [hw - 0.13, bottom],
+    [hw - 0.015, Math.max(0.86, bottom + 0.03)],
+    [hw, Math.max(LAMP_Y, bottom + 0.06)],
+    [hw, CREASE_Y],
+    [hw - 0.1, s.belt],
+  ]
+  if (cabinOpen(z)) {
+    return [...lower, [hw - 0.26, s.belt], [hw - 0.28, CABIN_FLOOR], [0, CABIN_FLOOR]]
+  }
+  return [...lower, [hw - 0.26, s.belt + 0.035], [hw * 0.55, s.deck - 0.01], [0, s.deck]]
+}
+const ROWS = 8
+
+/** the outside of the flank (rows 0..4) at (z, y): where a seam, a handle
+    or a bumper line has to lie to be on the paint */
+const flankX = (z: number, y: number) => {
+  const p = profile(z)
+  if (y <= p[0][1]) return p[0][0]
+  for (let i = 0; i < 4; i++) {
+    const [x0, y0] = p[i]
+    const [x1, y1] = p[i + 1]
+    if (y <= y1) return x0 + ((x1 - x0) * (y - y0)) / Math.max(1e-6, y1 - y0)
+  }
+  return p[4][0]
+}
+
+/* The stations the body is actually skinned on: the table, the two cabin
+   walls, and enough of each arch to draw its circle. */
+const BODY_Z: number[] = SECTIONS.map((s) => s.z)
+const addZ = (z: number) => {
+  if (BODY_Z.every((q) => Math.abs(q - z) > 0.004)) BODY_Z.push(z)
+}
+for (const az of [-AXLE_Z, AXLE_Z]) {
+  for (const k of [-1.0125, -1, -0.94, -0.8, -0.6, -0.36, 0, 0.36, 0.6, 0.8, 0.94, 1, 1.0125]) {
+    addZ(az + k * ARCH_R)
   }
 }
+for (const z of [CABIN_Z0 - 0.06, CABIN_Z0, CABIN_Z1, CABIN_Z1 + 0.06, DOOR_Z0, DOOR_Z1]) addZ(z)
+BODY_Z.sort((a, b) => a - b)
 
-/** invert |x/hw|^n + |y/h|^n = 1 for x, given y. The crease is deliberately
-    ignored: a detail should follow the base surface, not ride the highlight */
-const superX = (hw: number, h: number, n: number, dy: number) => {
-  const k = clamp(Math.abs(dy) / h, 0, 1)
-  const sa = Math.pow(k, n / 2)
-  const ca = Math.sqrt(Math.max(0, 1 - sa * sa))
-  return hw * Math.pow(ca, 2 / n)
-}
+/* ------------------------------------------------------------ greenhouse --
 
-/** ...and for y, given x */
-const superYAt = (hw: number, h: number, n: number, x: number) => {
-  const ca = Math.pow(clamp(Math.abs(x) / hw, 0, 1), n / 2)
-  const sa = Math.sqrt(Math.max(0, 1 - ca * ca))
-  return h * Math.pow(sa, 2 / n)
-}
-
-/** the body's half-width at (z, y): where to hang a mirror, a handle, a
-    shut-line or a sill strip so it touches the paint */
-const flankX = (z: number, y: number) => {
-  const s = sectionAt(z)
-  const dy = y - SECT_Y
-  return dy >= 0
-    ? superX(s.hw, s.up, s.nUp, dy)
-    : superX(s.hw, s.down, s.nDown, dy)
-}
-
-/** and the height of the body's crown at (z, x) */
-const crownY = (z: number, x: number) => {
-  const s = sectionAt(z)
-  return SECT_Y + superYAt(s.hw, s.up, s.nUp, x)
-}
-
-/* --------------------------------------------------------- greenhouse loft -- */
-
-interface Can {
-  z: number
-  hw: number
-  /** the top of the section; the bottom is always CANOPY_FLOOR */
-  top: number
-}
-
-/*
-  Twelve stations from under the bonnet to under the tailgate. The first and
-  last are below the body's crown at their own z and are therefore invisible —
-  they exist so the *body* decides where the glass starts, which gives a
-  curved screen base for free. Peak half-width 1.565, against a body flank
-  that has fallen to about 1.50 by the waistline the glass emerges at — the
-  greenhouse leans out over the shoulder rather than sitting inside it, and
-  the pillars stand 0.035 proud of the glass again on top of that.
-*/
-const CANOPY: Can[] = [
-  { z: -1.90, hw: 1.220, top: 1.720 },
-  { z: -1.55, hw: 1.320, top: 1.990 },
-  { z: -1.15, hw: 1.420, top: 2.300 },
-  { z: -0.62, hw: 1.510, top: 2.610 },
-  { z: -0.10, hw: 1.552, top: 2.760 },
-  { z: 0.60, hw: 1.565, top: 2.808 },
-  { z: 1.30, hw: 1.558, top: 2.808 },
-  { z: 1.90, hw: 1.528, top: 2.770 },
-  { z: 2.40, hw: 1.475, top: 2.660 },
-  { z: 2.95, hw: 1.395, top: 2.400 },
-  { z: 3.40, hw: 1.320, top: 2.100 },
-  { z: 3.70, hw: 1.260, top: 1.860 },
+   Five columns along each side, each a (base z, roof z) pair, so a pillar
+   leans the way the glass beside it does: the windscreen's edge, the
+   A-pillar's trailing edge, the B-pillar (blacked out) and the C-pillar, which
+   on a hatch is the widest panel on the car. The base runs on the door tops
+   a little inboard of the shoulder, the roof edge is drawn in over it (the
+   tumblehome), and the roof is crowned on the centreline. */
+const WS_BASE_Z = -1.96
+const WS_TOP_Z = 0.05
+const BL_TOP_Z = 3.0
+const BL_BASE_Z = 3.98
+const COLUMNS: Array<[number, number]> = [
+  [WS_BASE_Z, WS_TOP_Z],
+  [-1.76, 0.2],
+  [1.0, 0.9],
+  [1.24, 1.12],
+  [2.72, 2.4],
+  [BL_BASE_Z, BL_TOP_Z],
 ]
+/** the base line: on the door tops, 0.17 inboard of the flank */
+const glassBase = (z: number): THREE.Vector3 => {
+  const s = sectionAt(z)
+  return new THREE.Vector3(s.hw - 0.17, s.belt - (z < CABIN_Z0 ? 0.02 : 0), z)
+}
+/** the roof edge, drawn in over the base, falling a touch toward the tail */
+const roofEdge = (z: number): THREE.Vector3 => {
+  const t = clamp((z - WS_TOP_Z) / (BL_TOP_Z - WS_TOP_Z), 0, 1)
+  return new THREE.Vector3(1.36 - 0.03 * t, ROOF_EDGE_Y - 0.04 * t, z)
+}
+const roofCrown = (z: number): THREE.Vector3 => {
+  const e = roofEdge(z)
+  return new THREE.Vector3(0, e.y + (ROOF_Y - ROOF_EDGE_Y), z)
+}
 
-const CANOPY_N = 20 // flatter than the body, so it needs fewer points
-const CAN_UP = 4.6
-const CAN_DOWN = 2.6
-
-const canopyAt = (z: number): Can => {
-  if (z <= CANOPY[0].z) return CANOPY[0]
-  const last = CANOPY[CANOPY.length - 1]
-  if (z >= last.z) return last
-  let i = 1
-  while (CANOPY[i].z < z) i++
-  const a = CANOPY[i - 1]
-  const b = CANOPY[i]
-  const t = (z - a.z) / (b.z - a.z)
-  return { z, hw: a.hw + (b.hw - a.hw) * t, top: a.top + (b.top - a.top) * t }
+/** the top of the car at z along the centreline: bonnet, glass, roof, glass,
+    boot lid. Read by the collision profile, so a walker stands on the car
+    the car draws */
+const topAt = (z: number) => {
+  const s = sectionAt(z)
+  if (z <= WS_BASE_Z || z >= BL_BASE_Z) return s.deck
+  if (z < WS_TOP_Z) {
+    const t = (z - WS_BASE_Z) / (WS_TOP_Z - WS_BASE_Z)
+    return Math.max(s.deck, glassBase(WS_BASE_Z).y + (roofCrown(WS_TOP_Z).y - glassBase(WS_BASE_Z).y) * t)
+  }
+  if (z > BL_TOP_Z) {
+    const t = (z - BL_TOP_Z) / (BL_BASE_Z - BL_TOP_Z)
+    return Math.max(s.deck, roofCrown(BL_TOP_Z).y + (glassBase(BL_BASE_Z).y - roofCrown(BL_TOP_Z).y) * t)
+  }
+  return roofCrown(z).y
 }
 
 /* ------------------------------------------------------------- footprint --
 
-   What a walker actually collides with, read off the two tables above rather
-   than measured against them so it cannot drift from the paint. `hw` is the
-   shell's own half-width plus the 0.075 the arch flare stands proud of it,
-   which puts the widest station exactly on HALF_WIDE; `top` is whichever is
-   higher at that z, the body crown or the greenhouse. The bumper bars cap
-   each end — they are the only part of the car outside the shell's z range,
-   and the wrap round each tip is a rounded nose, so the cap is two stations
-   of taper rather than a square end.
-
-   Following the roofline rather than flattening it has a nice consequence:
-   the bonnet is a surface at bonnet height, low enough to hop onto (2.0
-   against a 2.08 apex), and the roof is a step up from there — where one flat
-   box top made the entire plan of the car standable at roof height, so you
-   could stand on thin air above the bonnet.                                 */
-const canopyTop = (z: number) =>
-  z <= CANOPY[0].z || z >= CANOPY[CANOPY.length - 1].z ? 0 : canopyAt(z).top
-
+   What a walker actually collides with, read off the same tables the paint
+   is skinned from so it cannot drift from it: the section's half-width plus
+   the arch lip, and the top of the car at that station. The windscreen and
+   the tailgate glass get stations of their own so the profile climbs the
+   glass instead of cutting the corner, and the bonnet is a surface at bonnet
+   height, low enough to hop onto, with the roof a step up from there. The
+   plates and bumper faces cap each end as two narrow stations. */
 const HULL: HullStation[] = [
-  { z: -HALF_LEN, hw: 0.40, top: 1.05 },
-  { z: -4.50, hw: 1.35, top: 1.05 },
-  ...SECTIONS.map((s) => ({
-    z: s.z,
-    hw: s.hw + 0.075,
-    top: Math.max(SECT_Y + s.up, canopyTop(s.z)),
-  })),
-  { z: 4.55, hw: 1.35, top: 1.05 },
-  { z: HALF_LEN, hw: 0.40, top: 1.05 },
+  { z: -HALF_LEN, hw: 1.3, top: 1.2 },
+  ...[...SECTIONS.map((s) => s.z), WS_BASE_Z, WS_TOP_Z, BL_TOP_Z, BL_BASE_Z]
+    .sort((a, b) => a - b)
+    .map((z) => ({ z, hw: sectionAt(z).hw + ARCH_LIP, top: topAt(z) })),
+  { z: HALF_LEN, hw: 1.3, top: 1.2 },
 ]
 
-/** the glass surface's half-width at (z, y) — where an A-pillar has to run if
-    it is to lie on the canopy rather than float beside it */
-const canopyX = (z: number, y: number) => {
-  const c = canopyAt(z)
-  const cy = (c.top + CANOPY_FLOOR) / 2
-  const h = (c.top - CANOPY_FLOOR) / 2
-  const dy = y - cy
-  return dy >= 0 ? superX(c.hw, h, CAN_UP, dy) : superX(c.hw, h, CAN_DOWN, dy)
-}
+/* ------------------------------------------------------------- mesh kit -- */
 
-/** ...and the height of the glass at (z, x): where a wiper has to lie if it is
-    to lie on the screen. The wiper used to be authored at three absolute
-    heights and its tip sat 0.10 above the roofline, which from outside is a
-    black spike sticking up out of the windscreen */
-const canopyY = (z: number, x: number) => {
-  const c = canopyAt(z)
-  const cy = (c.top + CANOPY_FLOOR) / 2
-  return cy + superYAt(c.hw, (c.top - CANOPY_FLOOR) / 2, CAN_UP, x)
-}
-
-/** one capsule ring: a section symmetric about its own centre, with the roof
-    exponent above and a softer one below */
-const capsuleStation = (z: number, hw: number, top: number, bottom: number): Station => {
-  const h = (top - bottom) / 2
-  return { z, ring: ringSuper(hw, h, h, CAN_UP, CAN_DOWN, CANOPY_N), y: (top + bottom) / 2 }
-}
-
-/* ------------------------------------------------------------- small parts -- */
-
-/** a plain box, for the dozens of tiny details where `slab`'s 122 vertices of
-    softened arris would be spent on something four pixels across */
+/** a plain box, for the dozens of small details where a bevel would be
+    spent on something four pixels across */
 const chip = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d)
 
-/*
-  A tube drawn with n radial segments has flat sides: wherever a face rather
-  than a vertex points outward its surface falls short of the nominal radius
-  by cos(pi/n). That is a rounding error on a door handle and it is not one on
-  a part the car's measured box comes from — the bumper bars set the 9.4 of
-  length — so the front tip corrects for it instead of landing four
-  millimetres inside the spec. (The arch flare sets the 3.75 of width and used
-  to correct the same way; it now measures its own tube instead, for the
-  reason FLARE_LIFT gives.)
-*/
-const FLAT_5 = Math.cos(Math.PI / 5)
-
-/** the arch ellipse itself, in the (z, y) plane about an axle at the origin,
-    optionally shrunk. One curve, read by the flare tube and the liner, so a
-    change to the opening carries both of them with it */
-const archCurve = (i: number, seg: number, shrink = 0) => {
-  const a = (Math.PI * i) / seg // 0 at the rear of the arch, pi at the front
-  return [
-    (ARCH_H - shrink) * Math.sin(a),
-    (ARCH_RZ - shrink) * Math.cos(a),
-  ] as const
-}
-
-/* The flare rides on the flank, not on a fixed x.
-
-   Held out at a constant 1.800 the whole way round — as it was — it is right
-   over the crown of the opening, where the body genuinely is that wide, and
-   wrong everywhere else: by the fore and aft ends of the ellipse the section
-   has tucked in to about 1.12 at y = 0.36, so the tube's last handspan stands
-   0.68 clear of the paint. Four stubs hanging in mid-air beside the sills,
-   which is exactly where the eye goes on a parked car.
-
-   FLARE_LIFT — how far proud of the flank the lip then stands — is measured
-   off the tube that actually gets built rather than computed from its radius,
-   because the reach of a six-sided tube along x depends on where its
-   parallel-transport frame happens to have put its vertices. That used to be
-   knowable: a path at constant x lies in a plane, the seed vector is parallel
-   to the first tangent so the frame falls back to (1,0,0), and a *face* ends
-   up on the axis — which is what FLAT_5 still corrects for on the bumper bar's
-   front tip, and what a FLAT_6 used to correct for here. A path that follows
-   the flank moves in all three
-   axes, the seed no longer degenerates, and the frame comes out a quarter
-   turn round with a *vertex* on the axis instead: the same nominal radius
-   reached 0.087 rather than 0.075 and the measured car was 3.773 wide.
-
-   Translating a path along x translates every vertex of its tube with it and
-   leaves the transport frame untouched, so one throwaway build at zero offset
-   gives the exact answer for any radius, any segment count and any path: the
-   widest vertex of the flare lands on HALF_WIDE, and nothing else on the car
-   is outside it. */
-const ARCH_SEG = 14
-/** the lip fades out as the opening closes onto the rocker, so it dies into
-    the flank instead of ending in a cut cylinder */
-const flareR = (t: number) => 0.075 * (0.3 + 0.7 * Math.pow(Math.sin(Math.PI * t), 0.4))
-
-const flarePath = (az: number, lift: number) =>
-  Array.from({ length: ARCH_SEG + 1 }, (_, i) => {
-    const [dy, dz] = archCurve(i, ARCH_SEG)
-    const y = ARCH_Y + dy
-    return new THREE.Vector3(flankX(az + dz, y) + lift, y, az + dz)
-  })
-
-const FLARE_LIFT = (() => {
-  let m = 0
-  for (const az of [-AXLE_Z, AXLE_Z]) {
-    const g = tube(flarePath(az, 0), flareR, 6)
-    const p = g.getAttribute('position')
-    for (let i = 0; i < p.count; i++) m = Math.max(m, p.getX(i))
-    g.dispose()
-  }
-  return HALF_WIDE - m
-})()
-
 /**
- * The inside of a wheel arch: a band swept along the arch ellipse whose faces
- * look *inward*. Wound the obvious way it is invisible — the `dark` material
- * is FrontSide and the only place this is ever seen from is inside the arc —
- * so both the winding and the explicit normals point at the opening.
- *
- * Its outer edge reads `flankX` at every station instead of standing at a
- * fixed 1.800. Over the crown of the opening the two are the same thing,
- * but by the fore and aft ends the section has tucked in to about 1.12 and a
- * band held out at 1.80 there is a shelf hanging outside the car. Authored in
- * car space rather than about the axle, because that is the only frame
- * `flankX` can be asked a question in.
+ * Loose triangles by slot, turned into geometry with *creased* normals: an
+ * edge between two faces meeting at more than CREASE is split, anything
+ * gentler is smoothed. That is what makes this body read as pressed panels
+ * with crisp breaks rather than as one soft bar of soap: the shoulder, the
+ * bonnet's edges, the corners of the nose and the tail are hard, and the
+ * flank between them is one smooth sheet.
  */
-const archLiner = (az: number, shrink: number, seg = 10) => {
-  const pos: number[] = []
-  const nrm: number[] = []
-  const idx: number[] = []
-  for (let i = 0; i <= seg; i++) {
-    const [dy, dz] = archCurve(i, seg, shrink)
-    const y = ARCH_Y + dy
-    const z = az + dz
-    const xOut = Math.max(ARCH_IN + 0.03, flankX(z, y))
-    // the ellipse's inward normal, which is not its radius vector
-    const n = new THREE.Vector2(-dz / (ARCH_RZ * ARCH_RZ), -dy / (ARCH_H * ARCH_H)).normalize()
-    pos.push(ARCH_IN, y, z, xOut, y, z)
-    nrm.push(0, n.y, n.x, 0, n.y, n.x)
+const CREASE = 0.6
+const createFacets = () => {
+  const by = new Map<Slot, number[]>()
+  const v = new THREE.Vector3()
+  const w = new THREE.Vector3()
+  const push = (slot: Slot, ...pts: THREE.Vector3[]) => {
+    let a = by.get(slot)
+    if (!a) by.set(slot, (a = []))
+    for (const p of pts) a.push(p.x, p.y, p.z)
   }
-  for (let i = 0; i < seg; i++) {
-    const b = i * 2
-    idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3)
+  const api = {
+    tri(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, slot: Slot) {
+      // a sliver with no area has no normal, and one NaN smooths a panel black
+      v.subVectors(b, a).cross(w.subVectors(c, a))
+      if (v.lengthSq() < 1e-12) return
+      push(slot, a, b, c)
+    },
+    /** a, b, c, d counter-clockwise seen from the side the face looks at */
+    quad(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot) {
+      api.tri(a, b, c, slot)
+      api.tri(a, c, d, slot)
+    },
+    /** the same, wound so its face looks along `out` whichever way the
+        corners were listed */
+    quadOut(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
+      v.subVectors(b, a).cross(w.subVectors(c, a))
+      if (v.dot(out) < 0) api.quad(a, d, c, b, slot)
+      else api.quad(a, b, c, d, slot)
+    },
+    /** ...and its mirror across x, which a mirror flips the winding of */
+    quadBoth(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
+      api.quadOut(a, b, c, d, slot, out)
+      const m = (p: THREE.Vector3) => new THREE.Vector3(-p.x, p.y, p.z)
+      api.quadOut(m(a), m(b), m(c), m(d), slot, new THREE.Vector3(-out.x, out.y, out.z))
+    },
+    /** one triangle facing along `out`, and its mirror */
+    triBoth(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
+      const m = (p: THREE.Vector3) => new THREE.Vector3(-p.x, p.y, p.z)
+      const one = (p: THREE.Vector3, q: THREE.Vector3, r: THREE.Vector3, o: THREE.Vector3) => {
+        v.subVectors(q, p).cross(w.subVectors(r, p))
+        if (v.dot(o) < 0) api.tri(p, r, q, slot)
+        else api.tri(p, q, r, slot)
+      }
+      one(a, b, c, out)
+      one(m(a), m(b), m(c), new THREE.Vector3(-out.x, out.y, out.z))
+    },
+    /** hand every slot to a part builder */
+    flush(b: PartBuilder) {
+      for (const [slot, pos] of by) {
+        const g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+        const n = toCreasedNormals(g, CREASE)
+        b.add(n, slot)
+        g.dispose()
+        n.dispose()
+      }
+      by.clear()
+    },
   }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
-  g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nrm), 3))
-  g.setIndex(idx)
-  return g
+  return api
 }
 
-/** a polyline hugging the body's flank at one z, from y0 up to y1 */
-const flankPath = (z: number, y0: number, y1: number, n: number, out = 0.015) => {
-  const p: THREE.Vector3[] = []
-  for (let i = 0; i <= n; i++) {
-    const y = y0 + ((y1 - y0) * i) / n
-    p.push(new THREE.Vector3(flankX(z, y) + out, y, z))
-  }
-  return p
+const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
+
+/** a flat decal on the nose or the tail face: a rectangle at z, facing
+    along `dir` (-1 forward, +1 back), standing `off` proud of the face */
+const facePanel = (
+  f: ReturnType<typeof createFacets>,
+  x0: number, x1: number, y0: number, y1: number,
+  z: number, dir: number, slot: Slot,
+) => {
+  f.quadOut(V(x0, y0, z), V(x1, y0, z), V(x1, y1, z), V(x0, y1, z), slot, V(0, 0, dir))
 }
 
-/** ...and one running over the crown at one z, left to right */
-const crownPath = (z: number, x0: number, x1: number, n: number, out = 0.012) => {
-  const p: THREE.Vector3[] = []
-  for (let i = 0; i <= n; i++) {
-    const x = x0 + ((x1 - x0) * i) / n
-    p.push(new THREE.Vector3(x, crownY(z, x) + out, z))
+/** a thin line lying on the flank from (z0, y0) to (z1, y1), `off` proud of
+    the paint: a shut-line, a bumper joint. Its width is across the line */
+const flankLine = (
+  f: ReturnType<typeof createFacets>,
+  pts: Array<[number, number]>, half: number, slot: Slot, off = 0.012,
+) => {
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [za, ya] = pts[i]
+    const [zb, yb] = pts[i + 1]
+    // across the line, in the (z, y) plane
+    const len = Math.hypot(zb - za, yb - ya) || 1
+    const nz = (-(yb - ya) / len) * half
+    const ny = ((zb - za) / len) * half
+    const at = (z: number, y: number) => V(flankX(z, y) + off, y, z)
+    f.quadBoth(at(za - nz, ya - ny), at(zb - nz, yb - ny), at(zb + nz, yb + ny), at(za + nz, ya + ny), slot, V(1, 0, 0))
   }
-  return p
 }
 
-/*
-  A path wrapping the nose or the tail at one height: down the left flank,
-  round a quarter-ellipse corner to the tip, and back up the right.
-
-  BAR_SINK sinks the path into the paint and BAR_R is the tube radius swept
-  along it, and the whole point of the pair is that the first is *smaller*
-  than the second: the bar's outer face lands BAR_R - BAR_SINK proud of the
-  flank. Sunk deeper than the radius — 0.18 against 0.15, as it was — the bar
-  is inside the body everywhere along the sides and behind the cap at the tip,
-  and 88% of the trim slot cannot be seen from any angle. Sunk not at all, the
-  tube's full radius is added to a flank already at 1.83 and the car is no
-  longer 3.75 wide. 0.07 against 0.13 is the pair that satisfies both.
-*/
-const BAR_SINK = 0.07
-const BAR_R = 0.13
-
-const wrapPath = (zs: number[], y: number, tipZ: number) => {
-  const p: THREE.Vector3[] = []
-  const hw = (z: number) => Math.max(0.05, flankX(z, y) - BAR_SINK)
-  // the corner: a quarter ellipse from the last flank station to the tip, so
-  // the bar rounds the end of the car instead of folding to a V at it
-  const zEnd = zs[zs.length - 1]
-  const xEnd = hw(zEnd)
-  const corner: Array<[number, number]> = []
-  for (let k = 1; k <= 3; k++) {
-    const a = (k / 3) * (Math.PI / 2)
-    corner.push([xEnd * Math.cos(a), zEnd + (tipZ - zEnd) * Math.sin(a)])
-  }
-  for (const z of zs) p.push(new THREE.Vector3(-hw(z), y, z))
-  for (const [x, z] of corner) p.push(new THREE.Vector3(-x, y, z))
-  for (let i = corner.length - 2; i >= 0; i--) p.push(new THREE.Vector3(corner[i][0], y, corner[i][1]))
-  for (let i = zs.length - 1; i >= 0; i--) p.push(new THREE.Vector3(hw(zs[i]), y, zs[i]))
-  return p
-}
+const TAU = Math.PI * 2
 
 /* ---------------------------------------------------------------- dynamics -- */
 
@@ -1149,14 +760,13 @@ export interface CarOpts {
 /** the seated face in either front seat, and how far `sit()` folds a body
     smaller about it (playerBody's CABIN_FIT). The face is in the side
     window, where somebody outside can see who is driving; the fold is what
-    keeps the beanie under the roof skin and the seat of the pants above the
-    floor at that height */
-const SEAT_EYE_Y = 2.12
-/** forward of the robot's 0.62, which put a round head behind the B-pillar */
-const SEAT_Z = 0.2
-/** 0.6 when the body was scaled onto its painted eyes; the same fold at the
-    body's crown-scaled size (playerBody's DESIGN_LENS) */
-const SEAT_FIT = 0.76
+    keeps the crown (and a hat) under the headliner and the seat of the
+    pants on the cushion at that height */
+const SEAT_EYE_Y = 2.1
+const SEAT_Z = 0.3
+const SEAT_FIT = 0.8
+/** the driver's centreline: left-hand drive */
+const DX = -0.78
 
 export function buildCar(opts: CarOpts): Vehicle {
   const { mats } = opts
@@ -1165,374 +775,262 @@ export function buildCar(opts: CarOpts): Vehicle {
   /* ------------------------------------------------------------ the shell -- */
 
   const b = createPartBuilder()
+  const f = createFacets()
 
-  // --- lower body -----------------------------------------------------------
-  const bodyStations: Station[] = BODY_Z.map((z) => ({
-    z,
-    ring: bodyRing(sectionAt(z)),
-    y: SECT_Y,
-    crease: CREASE_Z.has(z),
-  }))
-  b.add(loft(bodyStations, { capStart: 'flat', capEnd: 'flat' }), 'paint')
-
-  // --- greenhouse -----------------------------------------------------------
-  b.add(
-    loft(
-      CANOPY.map((c) => capsuleStation(c.z, c.hw, c.top, CANOPY_FLOOR)),
-      { capStart: 'flat', capEnd: 'flat' },
-    ),
-    'glass',
-  )
-
-  /*
-    The painted roof panel: the greenhouse's own outline, grown by a reveal
-    and floored at ROOF_FLOOR, so the loft's underside doubles as a headliner
-    and its lower rim stands out as a drip rail exactly where a real roof's
-    does.
-
-    It used to be built out of `capsuleStation` like the greenhouse itself,
-    with the same half-width and a floor of 2.42 — and a capsule 3.18 wide and
-    0.36 tall is a plank, not a roof. The greenhouse is only 2.77 across at
-    that height (it is a rounded rectangle: full width at the waist, drawn in
-    hard through the corner), so the panel stood 0.20 proud at its widest,
-    overhung the glass on both sides and along the front, and its lower rim
-    finished *inside* the cabin instead of on the drip line. The fix is to
-    stop authoring a second shape and read the first one: take the canopy's
-    own ring, scale it so the offset is the reveal at the crown and at the
-    waist alike, and let `ringFloor` cut it off at the roof line.
-  */
-  const ROOF_FLOOR = 2.42
-  const ROOF_REVEAL = 0.042
-  const roofZ = [-0.18, 0.16, 0.62, 1.12, 1.62, 2.06, 2.42]
-  b.add(
-    loft(
-      roofZ.map((z, i) => {
-        const c = canopyAt(z)
-        const cy = (c.top + CANOPY_FLOOR) / 2
-        const h = (c.top - CANOPY_FLOOR) / 2
-        // ...and faired in at the two ends, so the panel dies into the glass
-        // rather than stopping in a step over the header and the backlight
-        const e = ROOF_REVEAL * (0.3 + 0.7 * Math.pow(Math.sin((i / (roofZ.length - 1)) * Math.PI), 0.35))
-        const ring = ringScale(
-          ringSuper(c.hw, h, h, CAN_UP, CAN_DOWN, CANOPY_N),
-          1 + e / c.hw,
-          1 + e / h,
-        )
-        return { z, ring: ringFloor(ring, ROOF_FLOOR - cy), y: cy }
-      }),
-      { capStart: 'flat', capEnd: 'flat' },
-    ),
-    'paint',
-  )
-
-  // --- pillars --------------------------------------------------------------
-  /*
-    Pillars are ribs on the greenhouse, so they are placed by a *fraction of
-    the canopy's height* and not by a list of absolute heights.
-
-    That is the whole bug behind the two hoops. `canopyX(z, y)` inverts the
-    section for x, and it has nowhere to go for a y at or above that station's
-    crown, so it returns 0 — the centreline. The A-pillar's base asked for
-    y = 1.94 at z = -1.62, where the roofline has only climbed to 1.936, and
-    the C-pillar's top asked for 2.68 at z = 2.35, where it has already fallen
-    to 2.671. Both ends duly landed on x = 0.035, and what the mirrored pair
-    then drew was a pointed arch straight across the middle of the windscreen
-    and another across the backlight: a roll cage, in tube, in body colour,
-    over the two panes of glass you look through.
-
-    A fraction cannot do that. f < 1 is always somewhere on the flank, and
-    since dy/h = 2f - 1 is independent of z, a constant f traces a clean rib
-    at a constant angle around the section — so the pillar follows the
-    roofline up and over instead of cutting across it, and it is impossible
-    for it to reach the centreline however the CANOPY table is retuned.
-  */
-  const canopyRib = (z: number, f: number, bias = 0.03) => {
-    const c = canopyAt(z)
-    const y = CANOPY_FLOOR + f * (c.top - CANOPY_FLOOR)
-    return new THREE.Vector3(canopyX(z, y) + bias, y, z)
-  }
-  /** the shoulder the A- and C-pillars run on: high enough to be the corner
-      of the DLO, low enough that the tube half-sinks into the glass rather
-      than standing on the roof. Its top meets the roof panel's rim */
-  const PILLAR_F = 0.82
-
-  b.both(() => {
-    // A-pillar: cowl to header
-    b.add(
-      tube(
-        [-1.66, -1.44, -1.18, -0.88, -0.54, -0.06].map((z) => canopyRib(z, PILLAR_F, 0.035)),
-        0.1,
-        5,
-      ),
-      'paint',
-    )
-    // C-pillar: roof trailing edge down to the tailgate glass base
-    b.add(
-      tube(
-        [2.42, 2.68, 2.96, 3.24, 3.48, 3.68].map((z) => canopyRib(z, PILLAR_F, 0.03)),
-        0.095,
-        5,
-      ),
-      'paint',
-    )
-    // B-pillar: blacked out at the back of the door, the hot-hatch signature
-    b.add(
-      tube(
-        [0.42, 0.58, 0.72, 0.86].map((f) => canopyRib(1.02, f, 0.02)),
-        0.085,
-        6,
-      ),
-      'dark',
-    )
-    // window surround along the top of the door: the DLO's lower black band
-    b.add(
-      tube(
-        [-1.5, -1.0, -0.4, 0.2, 0.7, 1.05].map(
-          (z) => new THREE.Vector3(canopyX(z, 1.9) + 0.03, 1.9, z),
-        ),
-        0.045,
-        5,
-      ),
-      'dark',
-    )
+  // --- the body: every station's ring, both halves, skinned station to
+  // station. A ring runs from the left sill over the top to the right sill,
+  // so the section is open underneath (the floor pan closes it) and one
+  // winding faces every panel outward, and every cabin wall inward
+  const rings = BODY_Z.map((z) => {
+    const half = profile(z)
+    const ring: THREE.Vector3[] = []
+    for (let i = 0; i < ROWS; i++) ring.push(V(-half[i][0], half[i][1], z))
+    for (let i = ROWS - 2; i >= 0; i--) ring.push(V(half[i][0], half[i][1], z))
+    return ring
   })
+  /** which row pair a ring segment is, counted from the sill on either side */
+  const rowOf = (k: number) => (k < ROWS - 1 ? k : 2 * ROWS - 3 - k)
+  const SEGS = 2 * ROWS - 2
+  for (let s = 0; s < rings.length - 1; s++) {
+    const z0 = BODY_Z[s]
+    const z1 = BODY_Z[s + 1]
+    const zm = (z0 + z1) / 2
+    const open = cabinOpen(z0) && cabinOpen(z1)
+    for (let k = 0; k < SEGS; k++) {
+      const row = rowOf(k)
+      let slot: Slot = 'paint'
+      // the tub: inner door walls and floor are trim, the door tops paint
+      if (open && row >= 5) slot = 'trim'
+      // the lamps wrap the corners and sweep back along the wings, the way
+      // a mid-2000s car's do: between the bumper line and the crease at the
+      // nose, between the crease and the shoulder at the tail
+      if (z1 <= -3.95 + 1e-6 && row === 2) slot = 'lamp'
+      if (zm > 4.02 && row === 3) slot = 'lampRed'
+      f.quad(rings[s][k], rings[s + 1][k], rings[s + 1][k + 1], rings[s][k + 1], slot)
+    }
+  }
+  /* the two end faces, fanned from their middles. The nose face is where the
+     grille, the lamps, the intake and the plate go; the tail face carries the
+     lamps and the plate */
+  for (const [ring, dir] of [[rings[0], -1], [rings[rings.length - 1], 1]] as const) {
+    const zc = ring[0].z
+    const c = V(0, (ring[0].y + ring[ROWS - 1].y) / 2, zc)
+    for (let k = 0; k < ring.length; k++) {
+      const p = ring[k]
+      const q = ring[(k + 1) % ring.length]
+      if (dir < 0) f.tri(c, p, q, 'paint')
+      else f.tri(c, q, p, 'paint')
+    }
+  }
 
-  // --- wheel arches ---------------------------------------------------------
-  /*
-    The opening is already cut into the body loft (`archCutY`). What is left
-    to build is the flare that finishes its edge and the liner that darkens
-    the inside of it. Both are swept along the *same* ellipse and both now
-    ride on the flank rather than standing at a fixed x — see FLARE_LIFT for
-    what holding them out at 1.800 cost, which was four cut tube ends hanging
-    in mid-air beside the sills and two shelves of liner outside the paint.
-    The liner is that ellipse 0.03 smaller, spanning the tunnel from ARCH_IN
-    out to the flank, faces inward. It runs from ARCH_IN rather than from
-    where the paint roof actually starts (x = 1.208..1.247, depending on the
-    station) so its inboard edge finishes *behind* the wall instead of
-    stopping short of it: buried is invisible, and a gap between liner and
-    roof would not be. There is no blocker disc either — the arch's own
-    inboard wall is what a low camera sees now.
-  */
+  // --- greenhouse ------------------------------------------------------------
+  /* Glass and pillars are cells of one surface, so they meet without a gap:
+     a column pair per cell, base on the door top, top on the roof edge. The
+     opaque cells get a trim lining facing in, since from the driver's seat a
+     pillar is seen from behind and a front face alone would be a hole */
+  const colBase = COLUMNS.map(([zb]) => glassBase(zb))
+  const colTop = COLUMNS.map(([, zt]) => roofEdge(zt))
+  const CELL: Slot[] = ['paint', 'glass', 'dark', 'glass', 'paint']
+  const lining = (a: THREE.Vector3, b2: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, out: THREE.Vector3) => {
+    const k = -0.025
+    const s = out.clone().normalize().multiplyScalar(k)
+    f.quadBoth(a.clone().add(s), b2.clone().add(s), c.clone().add(s), d.clone().add(s), 'trim', out.clone().negate())
+  }
+  for (let i = 0; i < CELL.length; i++) {
+    const out = V(1, 0.3, 0)
+    f.quadBoth(colBase[i], colBase[i + 1], colTop[i + 1], colTop[i], CELL[i], out)
+    if (CELL[i] !== 'glass') lining(colBase[i], colBase[i + 1], colTop[i + 1], colTop[i], out)
+  }
+  // the roof: edge to crown on each side, over the column tops, so its edges
+  // are the side glass's own
+  const roofZ = COLUMNS.map(([, zt]) => zt)
+  for (let i = 0; i < roofZ.length - 1; i++) {
+    const a = roofEdge(roofZ[i])
+    const bb = roofEdge(roofZ[i + 1])
+    const ca = roofCrown(roofZ[i])
+    const cb = roofCrown(roofZ[i + 1])
+    f.quadBoth(a, bb, cb, ca, 'paint', V(0.2, 1, 0))
+    lining(a, bb, cb, ca, V(0.2, 1, 0))
+  }
+  // windscreen and tailgate glass: two panes meeting on the centreline, so
+  // the glass follows the roof's crown instead of leaving a slot under it
+  const wsC = V(0, glassBase(WS_BASE_Z).y, WS_BASE_Z)
+  f.quadBoth(wsC, colBase[0], colTop[0], roofCrown(WS_TOP_Z), 'glass', V(0, 0.6, -1))
+  const blC = V(0, glassBase(BL_BASE_Z).y, BL_BASE_Z)
+  f.quadBoth(blC, colBase[5], colTop[5], roofCrown(BL_TOP_Z), 'glass', V(0, 0.6, 1))
+  // the roof spoiler: the roof's trailing edge carried on and kicked up
+  {
+    const e0 = roofEdge(BL_TOP_Z)
+    const c0 = roofCrown(BL_TOP_Z)
+    const e1 = V(e0.x - 0.06, e0.y + 0.02, BL_TOP_Z + 0.34)
+    const c1 = V(0, c0.y - 0.02, BL_TOP_Z + 0.34)
+    const drop = (p: THREE.Vector3) => V(p.x, p.y - 0.09, p.z)
+    f.quadBoth(e0, e1, c1, c0, 'paint', V(0, 1, 0))
+    f.quadBoth(drop(e0), drop(e1), drop(c1), drop(c0), 'paint', V(0, -1, 0))
+    f.quadBoth(e1, drop(e1), drop(c1), c1, 'paint', V(0, 0, 1))
+    f.quadBoth(e0, drop(e0), drop(e1), e1, 'paint', V(1, 0, 0))
+  }
+
+  // --- wheel arches ----------------------------------------------------------
+  /* The opening is already in the section (the lower rows ride `archY`).
+     What finishes it is a lip standing ARCH_LIP proud of the flank round the
+     top of the circle and down both legs to the sill, its underside rolling
+     back into the opening, and a dark well behind it: a liner under the lip
+     and a wall inboard of the tyre, so the arch reads as a hole with a wheel
+     in it rather than as paint with a wheel stuck on */
+  const LIP_W = 0.13
   for (const az of [-AXLE_Z, AXLE_Z]) {
-    b.both(() => {
-      b.add(tube(flarePath(az, FLARE_LIFT), flareR, 6), 'paint')
-      b.add(archLiner(az, 0.03), 'dark')
-    })
+    // the path round the opening, rear leg first, as (dz, y) with its
+    // outward direction (away from the hub, or straight fore/aft on a leg)
+    const path: Array<[number, number, number, number]> = []
+    const sill = sectionAt(az).sill + 0.03
+    path.push([ARCH_R, sill, 1, 0], [ARCH_R, WHEEL_R, 1, 0])
+    for (let i = 1; i < 14; i++) {
+      const a = (i / 14) * Math.PI
+      path.push([ARCH_R * Math.cos(a), WHEEL_R + ARCH_R * Math.sin(a), Math.cos(a), Math.sin(a)])
+    }
+    path.push([-ARCH_R, WHEEL_R, -1, 0], [-ARCH_R, sill, -1, 0])
+    for (let i = 0; i < path.length - 1; i++) {
+      const pa = path[i]
+      const pb = path[i + 1]
+      const edge = (p: typeof pa, r: number) => {
+        const z = az + p[0] + p[2] * r
+        const y = p[1] + p[3] * r
+        return { z, y }
+      }
+      const ia = edge(pa, 0)
+      const ib = edge(pb, 0)
+      const oa = edge(pa, LIP_W)
+      const ob = edge(pb, LIP_W)
+      const hwA = sectionAt(ia.z).hw
+      const hwB = sectionAt(ib.z).hw
+      // the lip's face: out at the lip's edge, flush with the flank behind it
+      const lipA = V(hwA + ARCH_LIP, ia.y, ia.z)
+      const lipB = V(hwB + ARCH_LIP, ib.y, ib.z)
+      f.quadBoth(lipA, lipB, V(flankX(ob.z, ob.y), ob.y, ob.z), V(flankX(oa.z, oa.y), oa.y, oa.z), 'paint', V(1, 0, 0))
+      // its underside, rolling back to the body's tucked lower edge
+      const inA = V(hwA - 0.13, ia.y, ia.z)
+      const inB = V(hwB - 0.13, ib.y, ib.z)
+      // toward the hub, which is where the underside and the liner face
+      const down = V(0, WHEEL_R - (ia.y + ib.y) / 2, az - (ia.z + ib.z) / 2)
+      f.quadBoth(inA, inB, lipB, lipA, 'paint', down)
+      // the liner: the roof of the well, in from under the lip to the wall
+      f.quadBoth(V(1.1, ia.y, ia.z), V(1.1, ib.y, ib.z), inB, inA, 'dark', down)
+      // and the wall inboard of the tyre, fanned from the hub
+      f.triBoth(V(1.1, WHEEL_R, az), V(1.1, ib.y, ib.z), V(1.1, ia.y, ia.z), 'dark', V(1, 0, 0))
+    }
+    // the wall's bottom, from leg to leg under the hub
+    f.quadBoth(
+      V(1.1, sill - 0.08, az + ARCH_R), V(1.1, sill - 0.08, az - ARCH_R),
+      V(1.1, WHEEL_R, az - ARCH_R), V(1.1, WHEEL_R, az + ARCH_R), 'dark', V(1, 0, 0),
+    )
   }
 
-  // --- bumpers, valances, sills --------------------------------------------
-  // the tips are what makes the car 9.4 long; the shell stops 0.35 short of
-  // them at either end and everything below stands in that gap
-  const FRONT_Z = [-3.70, -4.05, -4.25, NOSE_Z]
-  const REAR_Z = [3.70, 4.05, 4.25, TAIL_Z]
-  const barR = (t: number) => BAR_R - 0.03 * Math.sin(t * Math.PI)
-  /* each tip sits at HALF_LEN minus the reach of the bar's own surface there,
-     so the bar's outer face — not its centreline — is what makes the car
-     exactly 9.4 long. The two ends need different numbers because the two
-     paths run opposite ways and `tube`'s parallel-transport frame therefore
-     lands a flat face on the axis at the nose and a vertex on it at the tail:
-     the same 0.10 radius reaches 0.081 forward and 0.100 back. */
-  b.add(tube(wrapPath(FRONT_Z, 0.95, -(HALF_LEN - barR(0.5) * FLAT_5)), barR, 5), 'trim')
-  b.add(tube(wrapPath(REAR_Z, 1.00, HALF_LEN - barR(0.5)), barR, 5), 'trim')
-  // splitter and diffuser: the dark strip under each bumper that stops the
-  // car looking like it is floating. Both sit forward of their end cap
-  b.add(chip(2.2, 0.15, 0.36), 'dark', at(0, 0.58, -4.50))
-  // the diffuser sits 0.08 further forward than the splitter does, and that
-  // asymmetry is the exhaust's: the tip's closing disc used to land on
-  // 4.680000 against a diffuser rear face of 4.500 + 0.180 = 4.680000, two
-  // coplanar surfaces in the middle of the chase camera's view. The tip
-  // cannot move back instead — 4.70 is the bumper bar's, and the car's
-  b.add(chip(2.2, 0.17, 0.36), 'dark', at(0, 0.62, 4.42))
-  b.both(() => {
-    // sill / side skirt, hugging the rocker between the two arch openings —
-    // it has to stop short of them or it hangs in the middle of the hole
-    b.add(
-      tube(
-        [-1.82, -1.2, -0.4, 0.4, 1.2, 1.82].map(
-          (z) => new THREE.Vector3(flankX(z, 0.58) + 0.01, 0.58, z),
-        ),
-        0.09,
-        5,
-      ),
-      'dark',
-    )
-  })
+  // --- the underside ----------------------------------------------------------
+  // the floor pan, narrow through the arches and full width between and
+  // beyond them, so a low camera sees a dark floor rather than into the shell
+  b.add(chip(2.2, 0.1, 8.7), 'dark', at(0, 0.5, 0))
+  b.add(chip(3.2, 0.08, 3.74), 'dark', at(0, 0.49, 0))
+  b.add(chip(2.9, 0.08, 0.86), 'dark', at(0, 0.6, -3.93))
+  b.add(chip(2.9, 0.08, 0.82), 'dark', at(0, 0.62, 3.93))
 
-  // --- front face -----------------------------------------------------------
-  /*
-    Everything here lives between NOSE_Z and the bumper tip, i.e. in front of
-    the shell's cap rather than behind it. The paint that shows between the
-    pieces is the nose panel, which is what a real car has above its grille.
-  */
-  /*
-    Grille and lamps share the width of the nose, and the grille used to take
-    all of it: 2.00 of dark panel in a 2.10 chrome mouth left the lamps
-    nowhere to go, so the lens was authored 0.95 long from x = 0.55 and its
-    inboard half was inside the grille — the XYZ euler swings that end forward
-    to z = -4.66 while the grille panel spans -4.56..-4.44, which is a lens
-    passing straight through a grille. A slim upper grille over a wide lower
-    intake is the face a modern hatch actually has, and it is also the one
-    that leaves the lamps a real place to sit: the mouth now stops at 0.84 and
-    the lens starts at 0.89, outboard of it with clear air between.
-  */
-  b.add(chip(1.56, 0.34, 0.12), 'dark', at(0, 1.28, -4.50))
-  b.add(chip(1.66, 0.07, 0.11), 'chrome', at(0, 1.47, -4.52))
-  b.add(chip(1.66, 0.07, 0.11), 'chrome', at(0, 1.09, -4.52))
-  b.both(() => {
-    b.add(chip(0.07, 0.34, 0.11), 'chrome', at(0.805, 1.28, -4.52))
-  })
-  b.add(chip(1.75, 0.24, 0.12), 'dark', at(0, 0.74, -4.52))
+  // --- the nose ----------------------------------------------------------------
+  const NF = NOSE_Z - 0.012
+  const NF2 = NOSE_Z - 0.02
+  const NHW = SECTIONS[0].hw
+  /* headlamp: a lens across the face that carries on round the corner and
+     back along the wing (the lamp cells of the body), in a dark surround.
+     It is a wedge, not a slab: shallow at its inboard end and full height
+     where it turns the corner, which is the swept-back lamp of the period
+     and what stops two pale rectangles reading as a pair of blobs. A dark
+     projector bowl at the inboard end gives it an inside */
+  const lampQuad = (x0: number, x1: number, lo0: number, hi0: number, lo1: number, hi1: number, z: number, slot: Slot) => {
+    f.quadBoth(V(x0, lo0, z), V(x1, lo1, z), V(x1, hi1, z), V(x0, hi0, z), slot, V(0, 0, -1))
+  }
+  lampQuad(0.68, NHW, 1.33, 1.58, 1.23, 1.59, NF, 'dark')
+  lampQuad(0.73, NHW, 1.37, 1.55, 1.27, 1.56, NF2, 'lamp')
+  lampQuad(0.8, 1.02, 1.39, 1.52, 1.37, 1.53, NF2 - 0.004, 'dark')
+  // grille between the lamps, a chrome bar across it and the badge
+  facePanel(f, -0.62, 0.62, 1.31, 1.52, NF, -1, 'dark')
+  facePanel(f, -0.62, 0.62, 1.4, 1.44, NF2, -1, 'chrome')
+  facePanel(f, -0.11, 0.11, 1.33, 1.5, NF2 - 0.004, -1, 'chrome')
+  // the bumper's joint with the wings, across the face and back along both
+  // flanks to the arch, which is what makes a bumper a separate part
+  facePanel(f, -NHW, NHW, 1.19, 1.23, NF, -1, 'dark')
+  flankLine(f, [[NOSE_Z, 1.21], [-4.3, 1.21], [-3.95, 1.21], [-AXLE_Z - ARCH_R - 0.02, 1.21]], 0.02, 'dark')
+  // plate over a wide lower intake
+  facePanel(f, -1.02, 1.02, 0.7, 0.96, NF, -1, 'dark')
+  facePanel(f, -0.5, 0.5, 0.99, 1.16, NF, -1, 'paint2')
+  facePanel(f, -1.1, 1.1, 0.62, 0.66, NF, -1, 'dark')
 
-  // headlamps: a shaped lens wrapping back around the corner — the rotation
-  // sweeps its outboard end rearward into the wing, which is the direction
-  // the nose's own plan view runs — with a dark shadow gap under it. Two
-  // spheres would read as a face; two swept wedges read as a car
-  b.both(() => {
-    b.add(slab(0.56, 0.30, 0.30, 0.10), 'lamp', at(1.22, 1.40, -4.44, 0.05, -0.24, 0.09))
-    b.add(chip(0.50, 0.10, 0.12), 'dark', at(1.22, 1.18, -4.40, 0, -0.24, 0))
-  })
-
-  // --- rear face ------------------------------------------------------------
-  b.both(() => {
-    /*
-      Tail lamps. The panel they sit on is the shell's flat cap at z = 4.40,
-      flat all the way out to x = 1.537 where the ring's edge is, so a lens
-      splayed hard across it does not wrap anything — it just lifts its
-      inboard edge off. At 0.30 of yaw the standoff ran 0.244 inboard against
-      0.177 outboard, which reads as a lens coming unstuck. It takes 0.08 to
-      follow the panel evenly and 0.66 of length to actually *reach* the
-      corner, where the last of it tucks behind the flank as the body turns
-      away. Standing them 0.27 proud of the flank instead read as a blister.
-    */
-    b.add(slab(0.66, 0.80, 0.26, 0.09), 'lampRed', at(1.22, 1.58, 4.375, 0, 0.08, 0))
-    // the dark housing the lens sits in. It used to be a chip smaller than
-    // that slab on all three axes and concentric with it, i.e. a part sealed
-    // inside another part; it is bigger than the lens now, so what shows is
-    // the gasket line around it — 0.04 of one, not the 0.07 it was, which at
-    // this size stopped reading as a gasket and started reading as a frame
-    b.add(chip(0.74, 0.88, 0.16), 'dark', at(1.22, 1.58, 4.38, 0, 0.08, 0))
-  })
-  // number plate on its own recessed dark panel, both forward of the cap and
-  // above the bumper bar rather than behind it. 1.64 wide, so its corners
-  // stop short of the lamps rather than sharing their volume
-  b.add(chip(1.64, 0.5, 0.06), 'dark', at(0, 1.38, 4.46))
-  b.add(chip(1.5, 0.40, 0.05), 'paint2', at(0, 1.38, 4.51))
-  // exhaust: one chromed can under the left of the valance, poking through it
+  // --- the tail ------------------------------------------------------------------
+  const TF = TAIL_Z + 0.012
+  const TF2 = TAIL_Z + 0.02
+  for (const s of [-1, 1]) {
+    const lo = (a: number, c: number) => (s > 0 ? [a, c] : [-c, -a]) as [number, number]
+    const [a0, a1] = lo(0.86, 1.5)
+    facePanel(f, a0, a1, 1.52, 2.0, TF, 1, 'dark')
+    const [l0, l1] = lo(0.9, 1.5)
+    facePanel(f, l0, l1, 1.56, 1.96, TF2, 1, 'lampRed')
+  }
+  // plate in its recess, the tailgate badge, the bumper joint, the diffuser
+  facePanel(f, -0.58, 0.58, 1.18, 1.5, TF, 1, 'dark')
+  facePanel(f, -0.52, 0.52, 1.22, 1.46, TF2, 1, 'paint2')
+  facePanel(f, -0.1, 0.1, 1.64, 1.76, TF2, 1, 'chrome')
+  facePanel(f, -1.5, 1.5, 1.08, 1.12, TF, 1, 'dark')
+  flankLine(f, [[TAIL_Z, 1.1], [4.2, 1.1], [3.7, 1.1], [AXLE_Z + ARCH_R + 0.02, 1.1]], 0.02, 'dark')
+  facePanel(f, -1.2, 1.2, 0.66, 0.84, TF, 1, 'dark')
+  // exhaust: one chromed can under the left of the bumper
   b.add(
-    revolve([[0, 0.0], [0.13, 0.0], [0.145, 0.42], [0.16, 0.46], [0, 0.46]], 10, { sharp: [2] }),
+    revolve([[0, 0.0], [0.1, 0.0], [0.11, 0.3], [0.12, 0.33], [0, 0.33]], 10, { sharp: [2] }),
     'chrome',
-    at(-0.85, 0.62, 4.22, Math.PI / 2, 0, 0),
-  )
-  /* Spoiler lip. It rides on the roofline rather than on three authored
-     heights: at a fixed y = 2.70 it used to be level while the roof fell away
-     under it, so from the side it was a bar floating over the tailgate with
-     daylight beneath. Sunk into the roof panel at its leading edge and lifting
-     0.09 clear of the glass by its trailing one, it reads as what it is — the
-     roof's own trailing edge, kicked up. */
-  b.add(
-    loft(
-      [[2.40, -0.03, 1.40, 0.05], [2.64, 0.04, 1.37, 0.06], [2.88, 0.09, 1.28, 0.045]].map(
-        ([z, dy, hw, h]) => ({
-          z,
-          ring: ringSuper(hw, h, h, 5, 5, 16),
-          y: canopyAt(z).top + dy,
-        }),
-      ),
-      { capStart: 'flat', capEnd: 'flat' },
-    ),
-    'paint',
+    at(-0.8, 0.68, TAIL_Z - 0.26, Math.PI / 2, 0, 0),
   )
 
-  // --- flank details --------------------------------------------------------
+  // --- the flanks -----------------------------------------------------------------
+  // the door: shut-lines at its leading and trailing edges, sill to belt
+  for (const z of [DOOR_Z0, DOOR_Z1]) {
+    const top = sectionAt(z).belt - 0.03
+    flankLine(f, [[z, 0.56], [z, 0.9], [z, LAMP_Y], [z, CREASE_Y], [z, top]], 0.018, 'dark')
+  }
+  flankLine(f, [[DOOR_Z0, 0.56], [DOOR_Z1, 0.56]], 0.018, 'dark')
+  f.flush(b)
   b.both(() => {
-    /* the two door shut-lines of a three-door: A-pillar base to the B-pillar.
-       They stop at the belt rather than at 1.92, which is above the cut edge
-       now that the cabin is open — `flankPath` reads the *uncut* flank, so the
-       last handspan of each line used to hang over the door aperture */
-    for (const z of [-1.52, 1.02]) b.add(tube(flankPath(z, 0.46, 1.80, 6), 0.022, 4), 'dark')
-    // handle, on the door skin. It runs fore-and-aft: 0.36 of length on the x
-    // axis instead put its outer face 0.01 past the car's stated width. At the
-    // 1.82 it sat at before it was level with the belt, which is not a place a
-    // handle goes — it read as a badge lying on top of the door
-    b.add(chip(0.10, 0.09, 0.36), 'chrome', at(flankX(0.3, 1.60) + 0.03, 1.60, 0.3))
-    /* Mirror on a stalk, growing out of the door's leading top corner. It used
-       to be centred at y = 2.06 — a quarter of a unit above the belt and
-       forward of the glass — so what it actually looked like was a small
-       painted box parked on the wing with a stalk that reached nothing. The
-       stalk now starts on the flank at the base of the A-pillar and the shell
-       sits just outboard of the door top. Its 0.15 half-width and two small
-       rotations put its outermost corner on 1.844: proud of the door, and
-       inside the width, which the arch flare owns. */
-    b.add(
-      tube(
-        [
-          new THREE.Vector3(flankX(-1.32, 1.78) - 0.02, 1.78, -1.32),
-          new THREE.Vector3(1.60, 1.87, -1.38),
-        ],
-        0.05,
-        5,
-      ),
-      'trim',
-    )
-    b.add(chip(0.30, 0.20, 0.13), 'paint', at(1.68, 1.90, -1.40, 0, 0.12, 0.05))
-    // ...and the glass in the back of it, on the housing's own rotated rear
-    // face rather than buried at its centre
-    b.add(chip(0.24, 0.15, 0.02), 'glass', at(1.687, 1.90, -1.341, 0, 0.12, 0.05))
-    // wiper: an arm and a blade lying on the screen, at the heights the screen
-    // actually has rather than at three authored ones
-    b.add(
-      tube(
-        ([[0.30, -1.53], [0.62, -1.32], [0.86, -1.03]] as const).map(
-          ([x, z]) => new THREE.Vector3(x, canopyY(z, x) + 0.02, z),
-        ),
-        0.028,
-        4,
-      ),
-      'dark',
-    )
+    // handle, on the door skin just under the crease
+    b.add(chip(0.06, 0.08, 0.34), 'chrome', at(flankX(0.84, 1.66) + 0.02, 1.66, 0.84))
+    // mirror: a stalk from the door's leading top corner to a housing that
+    // stands out past the arch lips, glass facing back
+    const MZ = DOOR_Z0 + 0.16
+    const my = sectionAt(MZ).belt
+    b.add(tube([V(1.62, my + 0.02, MZ), V(1.84, my + 0.1, MZ + 0.02)], 0.04, 5), 'trim')
+    b.add(chip(0.16, 0.22, 0.3), 'paint', at(1.9, my + 0.14, MZ, 0, 0.1, 0))
+    b.add(chip(0.12, 0.16, 0.02), 'dark', at(1.91, my + 0.14, MZ + 0.155, 0, 0.1, 0))
+    // wiper, parked along the base of the screen
+    const wy = (z: number) => glassBase(WS_BASE_Z).y + ((z - WS_BASE_Z) / (WS_TOP_Z - WS_BASE_Z)) * (roofCrown(WS_TOP_Z).y - glassBase(WS_BASE_Z).y) + 0.03
+    b.add(tube([V(0.12, wy(-1.86), -1.86), V(1.0, wy(-1.8), -1.8)], 0.028, 4), 'dark')
   })
-  // bonnet and tailgate shut-lines, following the crown across the car
-  b.add(tube(crownPath(-1.52, -1.24, 1.24, 7), 0.022, 4), 'dark')
-  b.add(tube(crownPath(4.12, -1.30, 1.30, 7), 0.022, 4), 'dark')
 
   /* --------------------------------------------------------- the interior -- */
-
-  /*
-    Seen through 62% opaque glass, so it is blocked in rather than detailed —
-    but an empty cabin is the other thing that makes a car read as a prop, and
-    until the shell was cut open above (`cabinCutY`) none of this was seen at
-    all: every piece here sat under a painted deck at y = 2.00. Which is also
-    why the sizes below now matter. The dashboard was 3.10 wide, which is
-    0.12 outside the windscreen at the height its top reaches — invisible
-    under the deck, a slab through the glass without it.
-
-    The floor pan stops short of both arch bands (|z| 1.76..3.64) rather than
-    being narrowed to ARCH_IN: the openings are a hole in the body, so a pan
-    that reaches into one shows its corner through the wheel arch, and the
-    seats need the width more than the boot needs the length. It is 0.06 above
-    CABIN_FLOOR, so the tub's own painted floor shows as an inner rocker
-    either side of it rather than the pan hovering over nothing.
-  */
-  b.add(chip(2.9, 0.06, 3.2), 'dark', at(0, 0.74, 0.05))
-  b.add(chip(0.52, 0.62, 1.7), 'trim', at(0, 1.06, -0.25))
-  // parcel shelf, long enough to close the boot off under the backlight
-  b.add(chip(2.4, 0.06, 1.7), 'trim', at(0, 1.98, 2.72))
-  b.add(chip(2.76, 0.50, 0.44), 'trim', at(0, 1.66, -1.10))
-  b.add(chip(0.72, 0.26, 0.14), 'dark', at(-0.78, 1.88, -1.24, 0.3, 0, 0))
+  /* Seen through tinted glass, so it is blocked in rather than detailed, but
+     an empty cabin is what makes a car read as a prop. The tub's own floor
+     and door walls are the section's (trim); these stand on them */
+  b.add(chip(3.0, 0.52, 0.66), 'trim', at(0, 1.66, -1.56))
+  b.add(chip(0.7, 0.2, 0.24), 'dark', at(DX, 1.98, -1.36))
+  b.add(chip(0.46, 0.5, 1.5), 'trim', at(0, 1.0, -0.4))
+  // parcel shelf over the boot, under the tailgate glass
+  b.add(chip(2.9, 0.05, 1.0), 'trim', at(0, 2.02, 3.45))
   b.both(() => {
-    // door card, lying on the tub's inner wall — which leans in as it drops,
-    // from 1.616 at the belt to 1.525 at the floor
-    b.add(chip(0.14, 0.70, 2.2), 'trim', at(1.52, 1.42, -0.30))
-    // seat: cushion, reclined back, headrest
-    b.add(chip(0.80, 0.20, 0.86), 'seat', at(0.78, 0.90, 0.28))
-    b.add(chip(0.76, 1.02, 0.20), 'seat', at(0.78, 1.52, 0.80, 0.16, 0, 0))
-    b.add(chip(0.42, 0.26, 0.16), 'seat', at(0.78, 2.10, 0.88))
+    // front seat: cushion, reclined back, headrest
+    b.add(chip(0.8, 0.22, 0.86), 'seat', at(-DX, 1.0, 0.35))
+    b.add(chip(0.76, 1.0, 0.2), 'seat', at(-DX, 1.6, 0.86, 0.16, 0, 0))
+    b.add(chip(0.44, 0.28, 0.16), 'seat', at(-DX, 2.26, 0.95, 0.1, 0, 0))
   })
-  // gear lever and handbrake, on the console between the seats
-  b.add(tube([new THREE.Vector3(0, 1.36, -0.62), new THREE.Vector3(0, 1.70, -0.68)], 0.035, 5), 'chrome')
-  b.add(chip(0.14, 0.12, 0.14), 'dark', at(0, 1.76, -0.69))
-  b.add(tube([new THREE.Vector3(0, 1.22, 0.08), new THREE.Vector3(0, 1.52, 0.42)], 0.04, 5), 'chrome')
-  b.add(chip(0.11, 0.10, 0.22), 'dark', at(0, 1.55, 0.48, -0.7, 0, 0))
+  // the rear bench
+  b.add(chip(2.7, 0.24, 0.8), 'seat', at(0, 1.0, 2.2))
+  b.add(chip(2.7, 0.9, 0.2), 'seat', at(0, 1.55, 2.66, 0.18, 0, 0))
+  // gear lever on the console
+  b.add(tube([V(0, 1.25, -0.5), V(0, 1.58, -0.56)], 0.035, 5), 'chrome')
+  b.add(chip(0.12, 0.12, 0.12), 'dark', at(0, 1.62, -0.57))
 
   const shell = b.build(slots, { cast: true, receive: true, name: 'shell' })
 
@@ -1635,76 +1133,6 @@ export function buildCar(opts: CarOpts): Vehicle {
   const wheelRight = makeWheel(false)
   const wheelLeft = makeWheel(true)
 
-  /* ---------------------------------------------------------- the driver -- */
-
-  /*
-    The original static service-robot approximation — cream shell, dark
-    plastic limbs, a black visor with two lit eyes — sitting in the left seat
-    with its hands at quarter to three. It borrows the vehicle slots rather
-    than making its own materials: paint2 for the cream, trim for the dark,
-    dark for the visor, chrome for the joints. The eyes take the `lamp` slot,
-    which means they come on with the headlights and are a pale grey by day.
-    That is a happy accident of sharing eleven materials across three
-    vehicles. It now stays hidden: CrtScene attaches the live articulated
-    player rig to `driverSeat`, so every vehicle carries the exact same avatar.
-  */
-  const dr = createPartBuilder()
-  const DX = -0.78 // the driver's seat centreline: left-hand drive
-  dr.add(chip(0.62, 0.30, 0.46), 'trim', at(DX, 1.12, 0.20))
-  dr.add(chip(0.72, 0.62, 0.50), 'paint2', at(DX, 1.58, 0.12, 0.14, 0, 0))
-  dr.add(chip(0.34, 0.24, 0.06), 'dark', at(DX, 1.55, -0.16, 0.14, 0, 0))
-  dr.add(chip(0.20, 0.14, 0.18), 'trim', at(DX, 1.90, 0.10))
-  dr.add(chip(0.50, 0.42, 0.44), 'paint2', at(DX, 2.13, 0.06))
-  dr.add(chip(0.36, 0.17, 0.06), 'dark', at(DX, 2.15, -0.15))
-  dr.add(chip(0.07, 0.09, 0.03), 'lamp', at(DX - 0.09, 2.15, -0.18))
-  dr.add(chip(0.07, 0.09, 0.03), 'lamp', at(DX + 0.09, 2.15, -0.18))
-  dr.add(chip(0.09, 0.13, 0.13), 'trim', at(DX - 0.27, 2.14, 0.06))
-  dr.add(chip(0.09, 0.13, 0.13), 'trim', at(DX + 0.27, 2.14, 0.06))
-  for (const s of [-1, 1]) {
-    const sh = DX + s * 0.38
-    const hand = DX + s * 0.33
-    dr.add(
-      tube(
-        [
-          new THREE.Vector3(sh, 1.82, 0.06),
-          new THREE.Vector3(sh + s * 0.03, 1.64, -0.44),
-          new THREE.Vector3(hand, 1.76, -0.86),
-        ],
-        0.095,
-        5,
-      ),
-      'trim',
-    )
-    dr.add(chip(0.14, 0.14, 0.12), 'paint2', at(hand, 1.78, -0.92))
-    dr.add(chip(0.13, 0.13, 0.13), 'chrome', at(sh, 1.82, 0.06))
-    dr.add(
-      tube(
-        [
-          new THREE.Vector3(DX + s * 0.22, 1.08, 0.26),
-          new THREE.Vector3(DX + s * 0.22, 1.04, -0.28),
-          new THREE.Vector3(DX + s * 0.22, 0.92, -0.52),
-        ],
-        0.135,
-        5,
-      ),
-      'trim',
-    )
-    dr.add(
-      tube(
-        [
-          new THREE.Vector3(DX + s * 0.22, 0.92, -0.54),
-          new THREE.Vector3(DX + s * 0.22, 0.80, -0.78),
-        ],
-        0.115,
-        5,
-      ),
-      'trim',
-    )
-  }
-  const driver = dr.build(slots, { cast: false, receive: false, name: 'driver' })
-  driver.name = 'driver'
-  driver.visible = false
-
   /* --------------------------------------------------- the steering wheel -- */
 
   const sw = createPartBuilder()
@@ -1717,7 +1145,7 @@ export function buildCar(opts: CarOpts): Vehicle {
     at(0, 0, 0, Math.PI / 2, 0, 0))
   const steerWheel = sw.build(slots, { cast: false, receive: false, name: 'steerWheel' })
   // the column lies back 26 degrees, so the rim's axis points up at the driver
-  steerWheel.position.set(DX, 1.80, -0.92)
+  steerWheel.position.set(DX, 1.84, -0.86)
   steerWheel.rotation.x = -0.45
 
   /* --------------------------------------------------------- the assembly -- */
@@ -1729,7 +1157,7 @@ export function buildCar(opts: CarOpts): Vehicle {
      upright while the body pitches and rolls over them — which is the whole
      visible product of the suspension */
   const body = new THREE.Group()
-  body.add(shell, driver, steerWheel)
+  body.add(shell, steerWheel)
   /* The real player rig is attached here while occupied. Unlike `root`, this
      group carries the suspension's pitch and roll, so the driver rides the
      body instead of staying uncannily level while the car moves underneath.
@@ -1807,7 +1235,7 @@ export function buildCar(opts: CarOpts): Vehicle {
   const beams: THREE.SpotLight[] = []
   for (const s of [-1, 1]) {
     const l = new THREE.SpotLight(0xfff0d2, 0, 52, 0.42, 0.55, 1.2)
-    l.position.set(s * 1.15, 1.40, -4.4)
+    l.position.set(s * 1.12, 1.41, NOSE_Z - 0.05)
     l.castShadow = false
     l.visible = false
     l.target.position.set(s * 1.6, -1.2, -26)
@@ -2423,8 +1851,8 @@ export function buildCar(opts: CarOpts): Vehicle {
       stretch: 3.5,
       fov: 62,
       anchor: new THREE.Vector3(0, 1.7, 0.2),
-      eye: new THREE.Vector3(-0.78, SEAT_EYE_Y, SEAT_Z - 0.2),
-      eye2: new THREE.Vector3(0.78, SEAT_EYE_Y, SEAT_Z - 0.2),
+      eye: new THREE.Vector3(DX, SEAT_EYE_Y, SEAT_Z - 0.2),
+      eye2: new THREE.Vector3(-DX, SEAT_EYE_Y, SEAT_Z - 0.2),
     },
     size: SIZE,
     hull: HULL,

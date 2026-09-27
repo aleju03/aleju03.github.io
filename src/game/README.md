@@ -148,8 +148,10 @@ vehicles/
                   they reflect, repainted off the sky's own numbers
   chassis.ts      what they share: the support probe, the oriented-footprint
                   sweep against the CollisionSet, the per-surface grip table
-  car.ts          land: a compact coupé. Four suspension raycasts driving
-                  real pitch and roll, five gears, a slip model, a handbrake
+  car.ts          land: a mid-2000s three-door hatch drawn in flat, creased
+                  panels from one section table (`npm run shoot -- body:car`
+                  to see it). Four suspension raycasts driving real pitch
+                  and roll, five gears, a slip model, a handbrake
   boat.ts         water: an open runabout. A V-bottom hull with a hard chine,
                   buoyancy on the drawn swell, and a planing transition
   heli.ts         air: a light two-seat piston helicopter. Thrust along the
