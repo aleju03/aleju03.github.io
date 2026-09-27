@@ -30,9 +30,17 @@
   synthesised the same way, from the frame the grounded bit comes back with
   downward speed behind it, because a one-frame impulse sent as sampled state
   would fall between packets more often than it survived.
+
+  Emotes and pointing ride the tuple's optional tail (see PoseTuple). An
+  emote is not interpolated but *aged*: the wire says how long it had been
+  playing when it was sent, and this turns that into how long it has been
+  playing at the playback instant, so `net/avatars.ts` can start a copy
+  halfway through a dance and land on the dancer's own beat. A point is a
+  direction, and turns between snapshots like the view does.
 */
 
 import { POSE, type PlayerId, type PoseTuple, type RosterEntry } from './protocol'
+import { unpackEmote } from '../player/emotes'
 
 interface Sample {
   /** local arrival time, ms */
@@ -44,6 +52,11 @@ interface Sample {
   pitch: number
   gait: number
   f: number
+  /** the packed emote, 0 for none */
+  e: number
+  /** the point direction, NaN when not pointing */
+  py: number
+  pp: number
 }
 
 export interface RemotePlayer {
@@ -80,6 +93,15 @@ export interface RemotePlayer {
   landing: number
   /** the body was placed rather than moved this frame: spawn, seam, teleport */
   snapped: boolean
+  /** the emote playing (`player/emotes.ts`'s id), 0 for none */
+  emote: number
+  /** how far into it the playback instant is, seconds */
+  emoteAge: number
+  /** the right arm held out along pointYaw/pointPitch (world, from the
+      shoulder, the view's convention) */
+  pointing: boolean
+  pointYaw: number
+  pointPitch: number
 }
 
 export interface RemoteWorld {
@@ -146,6 +168,11 @@ function makePlayer(entry: RosterEntry): RemotePlayer {
     held: false,
     landing: 0,
     snapped: true,
+    emote: 0,
+    emoteAge: 0,
+    pointing: false,
+    pointYaw: 0,
+    pointPitch: 0,
   }
 }
 
@@ -212,7 +239,7 @@ export function createRemoteWorld(): RemoteWorld {
 
     tick(list, now) {
       seen.clear()
-      for (const [id, x, y, z, yaw, pitch, gait, f] of list) {
+      for (const [id, x, y, z, yaw, pitch, gait, f, e, py, pp] of list) {
         if (id === you) continue
         seen.add(id)
         const entry = roster.get(id)
@@ -235,7 +262,13 @@ export function createRemoteWorld(): RemoteWorld {
           last !== undefined &&
           Math.abs(x - last.x) + Math.abs(y - last.y) + Math.abs(z - last.z) > SNAP_DIST
         if (jumped) buf.length = 0
-        buf.push({ at: now, x, y, z, yaw, pitch, gait, f })
+        const pointing = Number.isFinite(py) && Number.isFinite(pp)
+        buf.push({
+          at: now, x, y, z, yaw, pitch, gait, f,
+          e: Number.isInteger(e) ? (e as number) : 0,
+          py: pointing ? (py as number) : NaN,
+          pp: pointing ? (pp as number) : NaN,
+        })
         while (buf.length > 2 && now - buf[0].at > KEEP_MS) buf.shift()
       }
       // absent from a snapshot means "in another level", which is a departure
@@ -305,6 +338,19 @@ export function createRemoteWorld(): RemoteWorld {
         player.crouchK = wasHere
           ? player.crouchK + (crouchTo - player.crouchK) * ease
           : crouchTo
+
+        // the emote is the newest sample's, aged to the playback instant
+        // (which can sit a little before that sample arrived)
+        const em = unpackEmote(b.e)
+        player.emote = em.id
+        player.emoteAge = em.id ? Math.max(0, em.age + (target - b.at) / 1000) : 0
+        // a point turns with the snapshots while both ends have one
+        player.pointing = !Number.isNaN(b.py)
+        if (player.pointing) {
+          const both = !Number.isNaN(a.py)
+          player.pointYaw = both ? lerpAngle(a.py, b.py, k) : b.py
+          player.pointPitch = both ? a.pp + (b.pp - a.pp) * k : b.pp
+        }
 
         // first frame in view, or the buffer was thrown away by a teleport
         player.snapped = !wasHere || buf.length === 1

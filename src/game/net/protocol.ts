@@ -53,7 +53,16 @@ export const POSE = {
   held: 128,
 } as const
 
-/** [id, x, y, z, yaw, pitch, gait, poseBits] — y is the soles, not the eye */
+/** [id, x, y, z, yaw, pitch, gait, poseBits, emote?, pointYaw?, pointPitch?]
+    y is the soles, not the eye.
+
+    The tail is optional and only as long as it has to be: an emote rides as
+    one integer (`player/emotes.ts`'s `packEmote`: the id and how long it has
+    been playing, so a late arrival sees the same beat), present when either
+    an emote is playing or the player is pointing; the point is a world
+    direction from the right shoulder, present only while pointing. A tuple
+    of eight is somebody doing neither, which is also everything an older
+    server sends */
 export type PoseTuple = [
   PlayerId,
   number,
@@ -63,6 +72,9 @@ export type PoseTuple = [
   number,
   number,
   number,
+  number?,
+  number?,
+  number?,
 ]
 
 export interface RosterEntry {
@@ -285,6 +297,12 @@ export type WorldClientMessage =
       pitch: number
       gait: number
       f: number
+      /** the emote playing, packed (see PoseTuple); omitted is none */
+      e?: number
+      /** where the right arm points, a world yaw and pitch; both omitted
+          when it is not pointing */
+      py?: number
+      pp?: number
     }
   | { type: 'world-level'; level: string }
   | { type: 'world-chat'; text: string }

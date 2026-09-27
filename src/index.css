@@ -425,6 +425,26 @@ html[data-cursor-swap] * {
 .nudge-out {
   animation: nudge-out 0.4s ease-in both;
 }
+/* the emote wheel (os/EmoteWheel.tsx) is slapped onto the screen: a spinner
+   card that lands a shade big and a few degrees off, and settles */
+@keyframes emote-wheel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.86) rotate(-6deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.03) rotate(1deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.emote-wheel-in {
+  transform-origin: 50% 50%;
+  animation: emote-wheel-in 0.16s ease-out both;
+}
 @media (prefers-reduced-motion: reduce) {
   .chooser-in,
   .nudge-in,

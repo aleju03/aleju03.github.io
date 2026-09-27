@@ -7,6 +7,7 @@ import {
   type VoiceSignal,
   type WorldServerMessage,
 } from '../../game/net/protocol'
+import { packEmote } from '../../game/player/emotes'
 
 /*
   The socket the 3D world's shared walk runs on — the fourth on this server,
@@ -40,7 +41,9 @@ export interface WorldNet {
   /** the ICE servers the server handed over at join; the STUN/TURN set voice
       opens peers with. Empty until `world-welcome` lands */
   readonly ice: RTCIceServer[]
-  /** report the local player's pose; call every frame, it throttles itself */
+  /** report the local player's pose; call every frame, it throttles itself.
+      `emote` is the id playing (0 none) and `emoteAge` how long it has; the
+      point direction is NaN when not pointing (see protocol.ts's PoseTuple) */
   move: (
     x: number,
     y: number,
@@ -49,6 +52,10 @@ export interface WorldNet {
     pitch: number,
     gait: number,
     flags: number,
+    emote?: number,
+    emoteAge?: number,
+    pointYaw?: number,
+    pointPitch?: number,
   ) => void
   /** the local player stepped through a level seam */
   setLevel: (level: string) => void
@@ -157,6 +164,11 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   let spitch = NaN
   let sgait = NaN
   let sflags = -1
+  let semote = 0
+  let semoteFrom = 0
+  let spointing = false
+  let spy = NaN
+  let spp = NaN
   // and the same for the machines under us. A separate clock on purpose: the
   // drive frame reports both, and one shared throttle would drop every other
   // vehicle packet in favour of a pose that has not changed. And one clock
@@ -303,11 +315,20 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
       return ice
     },
 
-    move(x, y, z, yaw, pitch, gait, flags) {
+    move(x, y, z, yaw, pitch, gait, flags, emote = 0, emoteAge = 0, pointYaw = NaN, pointPitch = NaN) {
       if (!joined) return
       const now = performance.now()
       if (now - lastSent < SEND_MS) return
+      // an emote counts as a change when a different one starts or the same
+      // one is begun again (its start moves), not merely because it aged
+      const emoteFrom = emote ? now - emoteAge * 1000 : 0
+      const pointing = Number.isFinite(pointYaw) && Number.isFinite(pointPitch)
       const still =
+        emote === semote &&
+        Math.abs(emoteFrom - semoteFrom) < 150 &&
+        pointing === spointing &&
+        (!pointing ||
+          (Math.abs(pointYaw - spy) < TURN_EPS && Math.abs(pointPitch - spp) < TURN_EPS)) &&
         Math.abs(x - sx) < MOVE_EPS &&
         Math.abs(y - sy) < MOVE_EPS &&
         Math.abs(z - sz) < MOVE_EPS &&
@@ -324,7 +345,17 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
       spitch = pitch
       sgait = gait
       sflags = flags
-      raw({ type: 'world-move', x, y, z, yaw, pitch, gait, f: flags })
+      semote = emote
+      semoteFrom = emoteFrom
+      spointing = pointing
+      spy = pointYaw
+      spp = pointPitch
+      raw({
+        type: 'world-move', x, y, z, yaw, pitch, gait, f: flags,
+        // the tail only when there is one: most packets are neither
+        ...(emote ? { e: packEmote(emote, emoteAge) } : {}),
+        ...(pointing ? { py: +pointYaw.toFixed(3), pp: +pointPitch.toFixed(3) } : {}),
+      })
     },
 
     vehicle(v, x, y, z, yaw, pitch, roll) {

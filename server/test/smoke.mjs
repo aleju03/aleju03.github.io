@@ -515,6 +515,23 @@ async function main() {
   assert.ok(seen, 'the snapshot carries the walker that moved');
   assert.equal(seen[1], 12.35, 'positions are rounded to centimetres');
   assert.equal(seen[7], 3, 'pose flags survive the trip');
+  assert.equal(seen.length, 8, 'somebody neither emoting nor pointing sends no tail');
+
+  // an emote (one packed integer) and a point (a world yaw and pitch) ride
+  // the tuple's optional tail; junk in either is dropped, not relayed
+  w2.send({ type: 'world-move', x: 12.3456, y: 1.5, z: -8, yaw: 1.5708, pitch: 0, gait: 0, f: 1, e: 0x152, py: 0.5, pp: 0.25 });
+  let tail = null;
+  for (let i = 0; i < 5 && !(tail && tail.length === 11); i++) {
+    const t = await w1.nextOf('world-tick', 'snapshot after an emote and a point');
+    tail = t.players.find((p) => p[0] === welcome2.you);
+  }
+  assert.deepEqual(tail.slice(8), [0x152, 0.5, 0.25], 'the emote and the point survive the trip');
+  w2.send({ type: 'world-move', x: 12.3456, y: 1.5, z: -8, yaw: 1.5708, pitch: 0, gait: 0, f: 1, e: 'wave', py: 'up' });
+  for (let i = 0; i < 5 && tail.length !== 8; i++) {
+    const t = await w1.nextOf('world-tick', 'snapshot after a junk emote');
+    tail = t.players.find((p) => p[0] === welcome2.you);
+  }
+  assert.equal(tail.length, 8, 'a junk emote or point is dropped');
 
   // the noclip bit (64) is a pose flag like the others, so a flyer's body
   // floats on everyone else's screen instead of hanging mid-jump

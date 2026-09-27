@@ -9,6 +9,7 @@ import {
   tickBodyBuilds, SHOULDER_X, SHOULDER_OFF, UARM, FARM, GEAR_BEAVER, GEAR_PHONES,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
+import { emoteDef, emoteFrame, makeEmoteFrame } from './emotes'
 
 /*
   The player's body: a bean in the Fall Guys mould, one seamless soft
@@ -88,6 +89,16 @@ import { makeBodyMaterial } from './bodyMaterial'
   while does something (stretches, bounces, waves). All of it is procedural
   and all of it is spring targets, so an idle wave has the same weight as a
   running arm.
+
+  **The emotes.** On top of all of it sits one more layer, the emote wheel's
+  (`emotes.ts`): each frame an emote names where the hips go, what the trunk
+  and head add, whether the legs keep stepping or are posed, and where each
+  mitten should be, and this blends it in at its own weight, solving the
+  mittens with the same arm IK the physgun's grip uses. The springs, jiggle
+  and blink all keep running under it. A whole-body emote holds the facing
+  (so the camera can swing round to the front) and lets go the moment the
+  body moves. The point key is the last word on the right arm: held straight
+  along a world direction from its shoulder.
 
   The showy parts of that (lean, gaze-follow, glances, fidgets) scale with
   `pose.show`, so a chase camera or another player sees the full
@@ -180,6 +191,13 @@ export interface PlayerPose {
       the arms drift and the whole body bobs a little, the relaxed float of
       somebody with nowhere to land rather than the tuck of a jump */
   fly?: number
+  /** 0..1: the right arm held out straight at something (the point key).
+      Eased by the body; omitted is 0 */
+  point?: number
+  /** where it points, as a world direction from the right shoulder in the
+      same yaw/pitch convention as the view (yaw 0 is -Z, pitch + is up) */
+  pointYaw?: number
+  pointPitch?: number
 }
 
 /** a point on the body a physics world, a grab beam or a camera can use */
@@ -270,6 +288,17 @@ export interface PlayerRig {
   /** play one of the idle fidgets now, on purpose: a wave, a stretch, a
       bounce on the toes, a look at your own hands. Ignored while down */
   emote: (kind: Emote) => void
+  /** play an emote from the wheel (`emotes.ts`'s ids), `at` seconds in (a
+      remote copy picking one up halfway through); 0 lets go of whatever is
+      playing. Ignored while down or seated */
+  act: (id: number, at?: number) => void
+  /** the emote playing, 0 for none (a cancelled one still fading out is 0) */
+  readonly acting: number
+  /** seconds since it started */
+  readonly actAge: number
+  /** a whole-body emote is on screen, playing or still letting go: the
+      scene swings the camera out for it */
+  readonly actFull: boolean
 }
 
 export type Emote = 'stretch' | 'bounce' | 'wave' | 'look'
@@ -770,6 +799,29 @@ export function buildPlayerBody(
   let fidgetIn = 6 + rnd() * 5
   const FIDGET_LEN: Record<Fidget, number> = { stretch: 2.2, bounce: 1.3, wave: 2.0, look: 2.4 }
   let shakeT = -1 // the head-shake that ends a get-up
+  /*
+    The emote layer (`emotes.ts`): the one on screen, how long it has been
+    playing, whether it is still wanted (a cancelled or finished one keeps
+    being drawn while its weight lets go), and that weight. `actF` is this
+    frame's pose of it, written once at the top of animate and read by every
+    stage below. `pointK` is the point key's arm, eased the same way the
+    physgun's grip is.
+  */
+  const actF = makeEmoteFrame()
+  let actId = 0
+  let actT = 0
+  let actOn = false
+  let actW = 0
+  let actFullNow = false
+  let pointK = 0
+  const stopAct = () => {
+    actId = 0
+    actOn = false
+    actW = 0
+    actT = 0
+    actFullNow = false
+    actF.k = 0
+  }
 
   // scratch (per-frame math stays allocation-free)
   const jointW = Array.from({ length: P_COUNT }, () => new THREE.Vector3())
@@ -1170,6 +1222,20 @@ export function buildPlayerBody(
     idleT += dt
     const ease = (k: number) => 1 - Math.exp(-k * dt)
 
+    // the emote layer's weight for this frame, and its pose
+    let actDef = actId ? emoteDef(actId) : null
+    if (actDef) {
+      actT += dt
+      if (actOn && actDef.len > 0 && actT >= actDef.len) actOn = false
+      actW += ((actOn ? 1 : 0) - actW) * ease(actOn ? 40 : 9)
+      if (!actOn && (actW < 0.01 || (actDef.len > 0 && actT >= actDef.len))) {
+        stopAct()
+        actDef = null
+      } else emoteFrame(actId, actT, actF)
+    }
+    const wAct = actDef ? actW * actF.k : 0
+    actFullNow = !!actDef && actDef.full
+
     // local-space kinematics: forward/side speed, forward accel, yaw rate
     const fwd = pose.vx * -Math.sin(pose.yaw) + pose.vz * -Math.cos(pose.yaw)
     const side = pose.vx * Math.cos(pose.yaw) - pose.vz * Math.sin(pose.yaw)
@@ -1198,7 +1264,13 @@ export function buildPlayerBody(
     }
     const speedNow = Math.hypot(pose.vx, pose.vz)
     let dFace = Math.atan2(Math.sin(pose.yaw - facing), Math.cos(pose.yaw - facing))
-    if (speedNow > 0.5 || !pose.grounded) {
+    // an emote holds the body where it started (a whole-body one always, any
+    // other while it is not walking anywhere), so the camera can be swung
+    // round to watch it from the front
+    const actHold = actOn && (actFullNow || speedNow < 0.5)
+    if (actHold) {
+      turnActive = false
+    } else if (speedNow > 0.5 || !pose.grounded) {
       facing += dFace * ease(10)
       turnActive = false
     } else {
@@ -1213,6 +1285,8 @@ export function buildPlayerBody(
     // --- idle personality: glances, fidgets --------------------------------
     const moving = speedNow > 0.4 || !pose.grounded || pose.crouchK > 0.2
     stillT = moving ? 0 : stillT + dt
+    if (actOn && actFullNow && moving) actOn = false
+    if (actId) fidget = null
     const idleK = 1 - gait
     const watched = show > 0.5
     glanceIn -= dt
@@ -1239,7 +1313,7 @@ export function buildPlayerBody(
         fidgetForced = false
         fidgetIn = 7 + rnd() * 8
       }
-    } else if (watched && stillT > 3) {
+    } else if (watched && stillT > 3 && !actId) {
       fidgetIn -= dt
       if (fidgetIn <= 0) {
         const r = rnd()
@@ -1272,10 +1346,15 @@ export function buildPlayerBody(
 
     // the look-tracking rides springs: whip the mouse and the chest catches
     // up a beat late, the head a shade quicker, never a snap
-    const chestLook = spring(12, THREE.MathUtils.clamp(dFace * 0.35, -0.5, 0.5), 60, 10, 0, dt)
+    // an emote that owns the head (a facepalm, a laugh, a dance) takes it
+    // off the camera for as long as it plays
+    // (and one holding the body still takes the head off it entirely: the
+    // camera is swinging round to look at it, not being looked along)
+    const gazeOn = 1 - wAct * (actHold ? 1 : actF.mute)
+    const chestLook = spring(12, THREE.MathUtils.clamp(dFace * 0.35, -0.5, 0.5) * gazeOn, 60, 10, 0, dt)
     const headLook = spring(
       14,
-      THREE.MathUtils.clamp((dFace - chestLook) * 0.85 + glanceYaw * show, -1.0, 1.0) + shake,
+      THREE.MathUtils.clamp((dFace - chestLook) * 0.85 + glanceYaw * show, -1.0, 1.0) * gazeOn + shake,
       110, 10, 0, dt,
     )
     // every bone here tilts its face DOWN for a positive rotation.x, so the
@@ -1288,12 +1367,12 @@ export function buildPlayerBody(
     const gazeK = 1 - 0.85 * Math.min(1, gait * 1.6)
     const pitchLook = spring(
       16,
-      THREE.MathUtils.clamp(-pose.pitch * (pose.pitch > 0 ? 0.55 : 0.42), -0.75, 0.6) * show * gazeK +
+      THREE.MathUtils.clamp(-pose.pitch * (pose.pitch > 0 ? 0.55 : 0.42), -0.75, 0.6) * show * gazeK * gazeOn +
         glancePitch * show + lookK * 0.5,
       90, 10, 0, dt,
     )
     const spineLook = spring(
-      18, THREE.MathUtils.clamp(-pose.pitch * 0.16, -0.24, 0.24) * show * gazeK + lookK * 0.2, 70, 11, 0, dt,
+      18, THREE.MathUtils.clamp(-pose.pitch * 0.16, -0.24, 0.24) * show * gazeK * gazeOn + lookK * 0.2, 70, 11, 0, dt,
     )
 
     // landing spring: the touchdown kicks it, it argues its way back
@@ -1411,6 +1490,16 @@ export function buildPlayerBody(
     // the way everyone in Garry's Mod crosses a map in noclip
     const flyLean = flyK * THREE.MathUtils.clamp(fwdS * 0.02, -0.25, 0.8)
     pelvis.rotation.set(lean - riseFold * 0.275 + flyLean, strafeYaw - stepS * 0.12 * gait, bank * 0.45 + waddleRoll)
+    if (wAct > 0.001) {
+      // the emote's hips, before the legs are solved under them, so a bounce
+      // folds the knees and a hop carries the feet
+      pelvis.position.y += (actF.lift - actF.drop) * wAct
+      if (!Number.isNaN(actF.hipY)) pelvis.position.y += (actF.hipY - pelvis.position.y) * wAct
+      pelvis.position.x += actF.hipX * wAct
+      pelvis.rotation.x += actF.hipPitch * wAct
+      pelvis.rotation.y += actF.hipYaw * wAct
+      pelvis.rotation.z += actF.hipRoll * wAct
+    }
 
     // the chest is jelly on top of the hips: a roll spring kicked by
     // swerves and sidesteps, and a pitch spring kicked by starts, stops and
@@ -1435,6 +1524,11 @@ export function buildPlayerBody(
         Math.sin(idleT * 0.9 + 0.4) * 0.14 * idleK * show,
       bank * 0.55 + jellyRoll + (persona.roll + Math.sin(idleT * 0.61) * 0.05) * idleK * show,
     )
+    if (wAct > 0.001) {
+      torso.rotation.x += actF.torsoX * wAct
+      torso.rotation.y += actF.torsoY * wAct
+      torso.rotation.z += actF.torsoZ * wAct
+    }
     // squash on a landing, stretch on the way up, breathe standing still
     // the jelly wobble: the trunk's volume on its own spring, kicked by every
     // footfall, takeoff and landing, ringing a few times before it settles
@@ -1443,7 +1537,7 @@ export function buildPlayerBody(
     wobP = THREE.MathUtils.clamp(wobP + wobV * dt, -0.25, 0.25)
     const squash = THREE.MathUtils.clamp(
       1 + springP * 2.2 + airK * (1 - fallK) * 0.03 + breathe * 0.014 + stretchK * 0.07 +
-        Math.abs(stepS) * 0.03 * gait + wobP,
+        Math.abs(stepS) * 0.03 * gait + wobP + actF.squash * wAct,
       // never squashed so far that the small head disappears into the body
       0.8, 1.12,
     )
@@ -1465,6 +1559,11 @@ export function buildPlayerBody(
       headLook - strafeYaw * 0.4 - stepS * 0.06 * gait,
       -bank * 0.3 - jellyRoll * 0.5 + persona.tilt * idleK * show,
     )
+    if (wAct > 0.001) {
+      head.rotation.x += actF.headX * wAct
+      head.rotation.y += actF.headY * wAct
+      head.rotation.z += actF.headZ * wAct
+    }
     // counter the trunk's squash so the face stays round
     // the head keeps half of the squash: a landing flattens the whole body,
     // but a face squashed as hard as a belly stops reading as a face
@@ -1629,14 +1728,30 @@ export function buildPlayerBody(
     // solved over it lets go
     const toeOff = pose.grounded ? runK * gait * ramp(0.5, 0.95, stepFrac) * 0.12 : 0
     const swingingL = Math.floor(stepT) % 2 === 0
+    // an emote's hop carries both feet with the hips, and its stamps lift one
+    const actLiftL = (actF.lift + actF.liftL) * wAct
+    const actLiftR = (actF.lift + actF.liftR) * wAct
     solveLeg(
       thighL, shinL, ankleL, plantedL, 1,
-      lead > 0 ? leadThigh : trailThigh, lead > 0 ? leadShin : trailShin, swingingL ? 0 : toeOff,
+      lead > 0 ? leadThigh : trailThigh, lead > 0 ? leadShin : trailShin, (swingingL ? 0 : toeOff) + actLiftL,
     )
     solveLeg(
       thighR, shinR, ankleR, plantedR, -1,
-      lead < 0 ? leadThigh : trailThigh, lead < 0 ? leadShin : trailShin, swingingL ? toeOff : 0,
+      lead < 0 ? leadThigh : trailThigh, lead < 0 ? leadShin : trailShin, (swingingL ? toeOff : 0) + actLiftR,
     )
+    if (wAct > 0.001 && actF.legs) {
+      // posed legs (sitting): straight over the stepper's, which keeps its
+      // planted feet for when the emote lets go
+      for (let i = 0; i < 2; i++) {
+        const side = i === 0 ? 1 : -1
+        const th = i === 0 ? thighL : thighR
+        const sh = i === 0 ? shinL : shinR
+        const an = i === 0 ? ankleL : ankleR
+        th.quaternion.slerp(qAir.setFromEuler(eTmp.set(actF.thighX, 0, side * actF.thighZ)), wAct)
+        sh.quaternion.slerp(qAir.setFromEuler(eTmp.set(actF.shin, 0, 0)), wAct)
+        an.quaternion.slerp(qAir.setFromEuler(eTmp.set(-0.35, 0, 0)), wAct)
+      }
+    }
     wasGrounded = pose.grounded
 
     // arms: the targets say where the arms WANT to be (counter-swing along
@@ -1809,6 +1924,14 @@ export function buildPlayerBody(
     // a tool held in both hands, over whatever the swing was doing
     aimK += ((pose.aim ?? 0) - aimK) * (1 - Math.exp(-dt * 12))
     if (aimK > 0.01) holdTool(pose, dt)
+    // the emote's mittens, over the walk's arms (and over a tool's)
+    if (wAct > 0.001) {
+      if (actF.armL) solveArm(uarmL, farmL, 1, ikT2.set(actF.lx, actF.ly, actF.lz), wAct, actF.elbowOut)
+      if (actF.armR) solveArm(uarmR, farmR, -1, ikT2.set(actF.rx, actF.ry, actF.rz), wAct, actF.elbowOut)
+    }
+    // and the point key over all of it
+    pointK += ((pose.point ?? 0) - pointK) * ease(14)
+    if (pointK > 0.01) pointArm(pose)
   }
 
   /*
@@ -1837,7 +1960,10 @@ export function buildPlayerBody(
   const Y_AXIS = new THREE.Vector3(0, 1, 0)
   let loadK = 0
   /** solve one arm from its shoulder onto `target` (torso frame), blended */
-  const solveArm = (upper: THREE.Bone, lower: THREE.Bone, side: 1 | -1, target: THREE.Vector3) => {
+  const ikT2 = new THREE.Vector3()
+  const solveArm = (
+    upper: THREE.Bone, lower: THREE.Bone, side: 1 | -1, target: THREE.Vector3, k = aimK, out = 0,
+  ) => {
     const a = UARM
     const b = FARM + 0.1 // to the mitten, not the wrist
     ikS.set(side * SHOULDER_X, SHOULDER_OFF, 0)
@@ -1847,19 +1973,20 @@ export function buildPlayerBody(
     // the elbow's angle off the shoulder-to-hand line, law of cosines
     const cosA = THREE.MathUtils.clamp((a * a + d * d - b * b) / (2 * a * d), -1, 1)
     const sinA = Math.sqrt(1 - cosA * cosA)
-    // the pole: down and out, made perpendicular to the line
-    ikV.set(side * 0.7, -1, -0.2)
+    // the pole: down and out (further out and up for an emote's raised
+    // elbows), made perpendicular to the line
+    ikV.set(side * (0.7 + out), -1 + out * 0.6, -0.2)
     ikV.addScaledVector(ikU, -ikV.dot(ikU)).normalize()
     ikE.copy(ikS).addScaledVector(ikU, a * cosA).addScaledVector(ikV, a * sinA)
     // the upper arm hangs along -Y: turn -Y onto shoulder->elbow
     ikT.subVectors(ikE, ikS).normalize()
     ikQ.setFromUnitVectors(ikDown, ikT)
-    upper.quaternion.slerp(ikQ, aimK)
+    upper.quaternion.slerp(ikQ, k)
     // the forearm, in the upper arm's frame: -Y onto elbow->hand
     ikT.copy(ikU).multiplyScalar(d).add(ikS).sub(ikE).normalize()
       .applyQuaternion(ikQ2.copy(upper.quaternion).invert())
     ikQ.setFromUnitVectors(ikDown, ikT)
-    lower.quaternion.slerp(ikQ, aimK)
+    lower.quaternion.slerp(ikQ, k)
   }
   const holdTool = (pose: PlayerPose, dt: number) => {
     // lean back against a heavy load, eased
@@ -1881,6 +2008,41 @@ export function buildPlayerBody(
     ikL.y -= 0.05
     solveArm(uarmR, farmR, -1, ikR)
     solveArm(uarmL, farmL, 1, ikL)
+  }
+
+  /*
+    Pointing: the right arm held out straight along a world direction from
+    its shoulder, which is how a remote copy points at exactly what its owner
+    pointed at without the target itself ever travelling. The direction goes
+    into the torso's frame the way the physgun's aim does, the mitten's
+    target is the arm's full reach along it, and the same IK solves it with
+    the elbow barely bent. The mitten itself is straightened after the
+    secondary layer (`settleHands`).
+  */
+  const pointArm = (pose: PlayerPose) => {
+    const py = pose.pointYaw ?? pose.yaw
+    const pp = pose.pointPitch ?? pose.pitch
+    const cp = Math.cos(pp)
+    ikWorld.set(-Math.sin(py) * cp, Math.sin(pp), -Math.cos(py) * cp)
+    ikQ.setFromAxisAngle(Y_AXIS, facing + Math.PI).multiply(pelvis.quaternion).multiply(torso.quaternion).invert()
+    ikD.copy(ikWorld).applyQuaternion(ikQ).normalize()
+    ikT2.set(-SHOULDER_X, SHOULDER_OFF, 0).addScaledVector(ikD, UARM + FARM + 0.08)
+    solveArm(uarmR, farmR, -1, ikT2, pointK, 0.1)
+  }
+
+  /*
+    After the secondary layer has swung the mittens on their wrists: an emote
+    that places a mitten, or a point, wants it in line with the forearm (the
+    thumb then sits where the pose put it, which is the whole of a thumbs up)
+    rather than nodding, and some of them close the eyes.
+  */
+  const settleHands = () => {
+    const wAct = actId ? actW * actF.k : 0
+    const wl = actF.armL ? wAct : 0
+    const wr = Math.max(actF.armR ? wAct : 0, pointK)
+    if (wl > 0.01) handL.quaternion.slerp(qAir.identity(), wl)
+    if (wr > 0.01) handR.quaternion.slerp(qAir.identity(), wr)
+    if (wAct > 0.01 && actF.lid < 1) paint.setLid(1 + (actF.lid - 1) * wAct)
   }
 
   /** the seated trunk and head for this moment: a slump forward over the
@@ -2035,6 +2197,9 @@ export function buildPlayerBody(
     fling()
     wobV -= 2.5 // the blow itself sets the gummy wobbling
     downMotion = 0
+    // a body knocked flat stops whatever it was doing with its arms
+    stopAct()
+    pointK = 0
     mode = 'down'
     downTime = 0
     riseFold = 0
@@ -2254,6 +2419,8 @@ export function buildPlayerBody(
 
   /** the seated fold itself: `sit` is this plus the cabin's say */
   const seatFold = (fit: number, passenger: boolean) => {
+    stopAct()
+    pointK = 0
     /*
       Seats differ in position, but the body shape is shared: hips on the
       cushion, knees up and elbows folded forward, hands together near the
@@ -2377,7 +2544,9 @@ export function buildPlayerBody(
       Math.abs(springV) > 0.05 ||
       airK > 0.02 ||
       jiggleEnergy > 0.02 * S * S ||
-      fidget !== null,
+      fidget !== null ||
+      actId !== 0 ||
+      pointK > 0.01,
     get facing() {
       return facing
     },
@@ -2510,6 +2679,8 @@ export function buildPlayerBody(
       stillT = 0
       fidget = null
       shakeT = -1
+      stopAct()
+      pointK = 0
       restSprings()
       rag.drive(null)
       for (let i = 0; i < P_COUNT; i++) rag.pin(i, null)
@@ -2554,6 +2725,35 @@ export function buildPlayerBody(
       fidget = kind
       fidgetT = 0
       fidgetForced = true
+    },
+    act: (id, at = 0) => {
+      const def = emoteDef(id)
+      if (!def) {
+        // let go: the layer fades out from wherever it was
+        actOn = false
+        return
+      }
+      if (mode !== 'up' || seated) return
+      // (a copy asked to join one that has already finished has nothing to
+      // show)
+      if (def.len > 0 && at >= def.len) return
+      // a new emote over one still fading takes over from its weight, so a
+      // quick change of mind is a blend, not a snap
+      if (actId !== id) actW = actId ? actW * actF.k : 0
+      actId = id
+      actT = Math.max(0, at)
+      actOn = true
+      actFullNow = def.full
+      fidget = null
+    },
+    get acting() {
+      return actOn ? actId : 0
+    },
+    get actAge() {
+      return actOn ? actT : 0
+    },
+    get actFull() {
+      return actId !== 0 && actFullNow
     },
     limbPos,
     nearestLimb: (p) => {
@@ -2630,6 +2830,7 @@ export function buildPlayerBody(
         }
       }
       secondary(pose.dt, pose.show)
+      settleHands()
     },
   }
   return rig

@@ -3,6 +3,7 @@ import {
   CABIN_FIT, DESIGN_CROWN, DESIGN_EYE, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../player/playerBody'
 import { unpackLook } from '../player/look'
+import { emoteDef } from '../player/emotes'
 import type { RagdollEnv } from '../player/ragdoll'
 import { makeCollisionSet, type CollisionSet } from '../physics/collision'
 import { canvasTexture } from '../core/textures'
@@ -100,6 +101,9 @@ export interface RemoteAvatars {
 const CLAIM_TAIL_MS = 1500
 /** a body held by somebody else's beam follows the victim's chest this hard */
 const FOLLOW_K = 0.35
+/** a copy's emote this far off its owner's clock is restarted onto it: the
+    same emote begun again, or a copy that started late */
+const EMOTE_SLIP = 0.5
 
 /** past this a body is a pixel and a name plate is unreadable */
 const CULL_DIST = 190
@@ -487,6 +491,22 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
         pose.vy = player.vy
         pose.landing = player.landing
         pose.fly = player.flying ? 1 : 0
+        // pointing and emotes: the arm is a pose field like the rest; an
+        // emote is started once and left to the rig, and restarted only when
+        // the stream says a different one, or the same one begun again
+        pose.point = player.pointing ? 1 : 0
+        pose.pointYaw = player.pointYaw
+        pose.pointPitch = player.pointPitch
+        // (a whole-body one is never restarted under somebody on the move:
+        // the copy lets go of it by itself the moment they walk off, a beat
+        // before the stream says so)
+        const def = emoteDef(player.emote)
+        const want = def && !(def.full && (player.gait > 0.1 || !player.grounded)) ? def.id : 0
+        if (want !== a.rig.acting) {
+          a.rig.act(want, player.emoteAge)
+        } else if (want && Math.abs(a.rig.actAge - player.emoteAge) > EMOTE_SLIP) {
+          a.rig.act(want, player.emoteAge)
+        }
         env.groundY = worldEnv.groundAt(player.x, player.z)
         // a tumble follows the ground under each limb, like the local one
         env.groundAt = worldEnv.groundAt

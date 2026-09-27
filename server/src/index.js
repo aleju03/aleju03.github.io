@@ -916,6 +916,10 @@ const W_DOWN = 32;
 const W_FLY = 64; // noclip
 const W_HELD = 128; // hanging off somebody's physgun
 const W_FLAGS = W_GROUNDED | W_RUN | W_CROUCH | W_SWIM | W_SPEAKING | W_DOWN | W_FLY | W_HELD;
+// an emote rides a move as one integer the server never decodes (the id in
+// the low four bits, its age above them: src/game/player/emotes.ts), so all
+// it checks is that it is one, and small
+const W_EMOTE_MAX = 1 << 16;
 
 function allowWorld(map, ws, max, windowMs) {
   const now = Date.now();
@@ -1121,7 +1125,12 @@ function worldTick() {
   for (const [, list] of byLevel) {
     const players = list.map((ws) => {
       const p = ws.world;
-      return [p.id, r2(p.x), r2(p.y), r2(p.z), r3(p.yaw), r3(p.pitch), r2(p.gait), p.f];
+      const row = [p.id, r2(p.x), r2(p.y), r2(p.z), r3(p.yaw), r3(p.pitch), r2(p.gait), p.f];
+      // the optional tail (protocol.ts's PoseTuple): an emote, and where the
+      // arm points, only for somebody doing either
+      if (p.e || p.pt) row.push(p.e);
+      if (p.pt) row.push(r3(p.py), r3(p.pp));
+      return row;
     });
     const text = JSON.stringify(
       vehicles.length > 0
@@ -1173,7 +1182,10 @@ function handleWorldJoin(ws, msg) {
   // the join may carry a look, so nobody ever sees the wrong colours — not
   // even for the one tick between the world-enter and a world-look
   if (typeof msg.look === 'string' && WORLD_LOOK_RE.test(msg.look)) ws.look = msg.look;
-  ws.world = { id, slot, level, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED };
+  ws.world = {
+    id, slot, level, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED,
+    e: 0, pt: false, py: 0, pp: 0,
+  };
   worldPlayers.set(id, ws);
   const vehicles = worldVehicleRows();
   send(ws, {
@@ -1231,6 +1243,13 @@ function handleWorldMove(ws, msg) {
   w.pitch = msg.pitch;
   w.gait = finite(msg.gait) ? Math.max(0, Math.min(1, msg.gait)) : 0;
   w.f = Number.isInteger(msg.f) ? msg.f & W_FLAGS : 0;
+  // both optional, and absent from older clients: absence is "neither"
+  w.e = Number.isInteger(msg.e) && msg.e > 0 && msg.e < W_EMOTE_MAX ? msg.e : 0;
+  w.pt = finite(msg.py) && finite(msg.pp);
+  if (w.pt) {
+    w.py = msg.py;
+    w.pp = Math.max(-1.6, Math.min(1.6, msg.pp));
+  }
   worldDirty = true;
 }
 
