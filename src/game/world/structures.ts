@@ -3,7 +3,7 @@ import { seeded } from '../core/rand'
 import { SURF, type SurfaceId } from './surface'
 import {
   BALL, BOX, CONE12, CYL8, CYL12, DOME, GAMBREL, PRISM, SHED, TUBE12,
-  aabb, box, fork, keepOut, nudge, panel, pick, put, shaft, strut, taper, type BuildOut,
+  aabb, box, fork, keepOut, nudge, panel, pick, put, roofSolids, shaft, strut, taper, type BuildOut,
 } from './kitbash'
 import type { Landmark } from './landmarks'
 
@@ -193,6 +193,11 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
     }
   }
   out.boxes.push(noStand(aabb(lm.x, y - 2, lm.z, r0 * 1.18, topY, r0 * 1.18)))
+  // the gallery is a floor (the square inside its ring), the lantern a post
+  // on it, and the lantern's cap a steep perch over that
+  out.boxes.push(aabb(lm.x, y - 2, lm.z, r1 * 1.2, topY + 0.2, r1 * 1.2))
+  out.boxes.push(noStand(aabb(lm.x, topY, lm.z, r1 * 0.7, topY + 3.4, r1 * 0.7)))
+  roofSolids(out.boxes, PRISM, lm.x, topY + 3.45, lm.z, 0, 0.5, 1.9, r1 * 2.2)
 
   // the keeper's cottage, set back from the light and squared up to the world
   const c = site(lm, true)
@@ -203,6 +208,7 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
   boxL(out, c, '#6f6a61', cu, cv, y + 0.35, 8.8, 0.9, 6.8, SURF.paving)
   put(out.solid, PRISM, '#54423a', c.x(cu, cv), y + ch - 0.05, c.z(cu, cv),
     0, c.face, 0, 9.0, 2.8, 6.9, SURF.shingle)
+  roofSolids(out.boxes, PRISM, c.x(cu, cv), y + ch - 0.05, c.z(cu, cv), c.face, 9.0, 2.8, 6.9)
   boxL(out, c, '#41372f', cu + 2.6, cv - 1.6, y + ch + 3.2, 0.9, 3.4, 0.9, SURF.brick)
   if (out.detailed) {
     port(out, c, cu, cv + 3.3, y + 2.3, 1.5, 3.6, 0, 1, false)
@@ -228,7 +234,8 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
   boxL(out, c, '#6f6a61', ou, ov, y + 0.25, 3.7, 0.5, 3.5, SURF.paving)
   put(out.solid, SHED, '#54423a', c.x(ou, ov), y + 3.35, c.z(ou, ov),
     0, c.face + Math.PI, 0, 3.9, 0.9, 3.7, SURF.shingle)
-  solidL(out, c, ou, ov, 3.4, 3.2, y - 2, y + 3.6, false, 0.1)
+  roofSolids(out.boxes, SHED, c.x(ou, ov), y + 3.35, c.z(ou, ov), c.face + Math.PI, 3.9, 0.9, 3.7)
+  solidL(out, c, ou, ov, 3.4, 3.2, y - 2, y + 3.35, false, 0.1)
   if (out.detailed) {
     const dr = fork(rng)
     port(out, c, ou, ov + 1.6, y + 1.5, 1.2, 2.5, 0, 1, false)
@@ -307,7 +314,8 @@ const windmill = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => 
   boxL(out, b, '#8a7a60', bu, bv, y + 2.0, 5.6, 4.0, 3.6, SURF.plank)
   put(out.solid, SHED, ROOF_DARK, b.x(bu, bv), y + 3.9, b.z(bu, bv), 0, b.face + Math.PI, 0,
     6.0, 1.6, 4.0, SURF.shingle)
-  solidL(out, b, bu, bv, 5.6, 3.6, y - 1, y + 4.0, false, 0.1)
+  roofSolids(out.boxes, SHED, b.x(bu, bv), y + 3.9, b.z(bu, bv), b.face + Math.PI, 6.0, 1.6, 4.0)
+  solidL(out, b, bu, bv, 5.6, 3.6, y - 1, y + 3.9, false, 0.1)
 
   // the reefing gallery on raking struts
   const stageY = y + 0.8 + h * 0.4
@@ -445,6 +453,8 @@ const farm = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   boxL(out, s, '#6f6a61', bu, bv, y + 0.3, bw + 0.4, 0.8, bd + 0.4, SURF.paving)
   put(out.solid, GAMBREL, '#4e4a44', s.x(bu, bv), y + bh - 0.05, s.z(bu, bv),
     0, s.face, 0, bw * 1.05, bd * 0.52, bd * 1.08, SURF.shingle)
+  roofSolids(out.boxes, GAMBREL, s.x(bu, bv), y + bh - 0.05, s.z(bu, bv), s.face,
+    bw * 1.05, bd * 0.52, bd * 1.08)
   // the cupola on the ridge, with a vent in it
   boxL(out, s, red, bu, bv, y + bh + bd * 0.52 + 0.7, 1.7, 1.6, 1.7, SURF.plank)
   put(out.solid, CONE12, '#4e4a44', s.x(bu, bv), y + bh + bd * 0.52 + 2.2, s.z(bu, bv),
@@ -503,6 +513,7 @@ const farm = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   boxL(out, s, '#6f6a61', hu, hv, y + 0.3, 9.4, 0.8, 7.8, SURF.paving)
   put(out.solid, PRISM, '#4a3c33', s.x(hu, hv), y + fh - 0.05, s.z(hu, hv),
     0, s.face, 0, 9.4, 3.4, 7.8, SURF.shingle)
+  roofSolids(out.boxes, PRISM, s.x(hu, hv), y + fh - 0.05, s.z(hu, hv), s.face, 9.4, 3.4, 7.8)
   boxL(out, s, '#41372f', hu + 3.0, hv - 2.0, y + fh + 3.6, 0.9, 3.2, 0.9, SURF.brick)
   if (out.detailed) {
     // a porch across the front, because a farmhouse always has one
@@ -641,6 +652,7 @@ const mast = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
     boxL(out, s, '#b0aca0', hu, 0, y + 1.6, 4.4, 3.2, 3.4, SURF.panel)
     put(out.solid, SHED, METAL, s.x(hu, 0), y + 3.2, s.z(hu, 0), 0, s.face, 0,
       4.7, 0.6, 3.7, SURF.panel)
+    roofSolids(out.boxes, SHED, s.x(hu, 0), y + 3.2, s.z(hu, 0), s.face, 4.7, 0.6, 3.7)
     boxL(out, s, '#4a4640', hu, 1.75, y + 1.4, 1.2, 2.6, 0.14, SURF.panel)
     boxL(out, s, METAL, hu - 1.5, 1.75, y + 2.6, 1.0, 0.7, 0.14, SURF.panel)
     solidL(out, s, hu, 0, 4.4, 3.4, y - 1, y + 3.2, false, 0.15)
@@ -1077,6 +1089,8 @@ const cabin = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
     0, s.face + Math.PI / 2, 0, hv * 2 - 0.2, rise * 0.94, hu * 2 - 0.2, SURF.bark)
   put(out.solid, PRISM, ROOF_DARK, s.x(0, 0), gY - 0.1, s.z(0, 0),
     0, s.face + Math.PI / 2, 0, hv * 2.3, rise, hu * 2.4, SURF.plank)
+  roofSolids(out.boxes, PRISM, s.x(0, 0), gY - 0.1, s.z(0, 0), s.face + Math.PI / 2,
+    hv * 2.3, rise, hu * 2.4)
   // a stone chimney climbing one flank, past the ridge
   const ch = (rng() < 0.5 ? 1 : -1) * (hu + 0.55)
   // a stack a fifth of the cabin's width reads as a tower bolted to the side

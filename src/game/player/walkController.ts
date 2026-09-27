@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { CollisionSet } from '../physics/collision'
-import { resolveXZ, supportY } from '../physics/collision'
+import { resolveXZ, supportY, surfaceAbove } from '../physics/collision'
 import { axis, held } from '../sandbox/bindings'
 
 /*
@@ -51,7 +51,9 @@ import { axis, held } from '../sandbox/bindings'
   it off anywhere simply hands the flight's velocity to the walk as a fall,
   so letting go mid-air drops you with the momentum you had, and letting go
   underground puts you back on the surface, because the landing test finds
-  the feet already below the support.
+  the feet already below the support. Letting go inside a building (a roof
+  landed on a little too low, a wall flown into) stands you on top of it:
+  the first walk tick after a flight asks collision.ts's `surfaceAbove`.
 */
 
 export interface WalkTuning {
@@ -201,6 +203,9 @@ export function createWalkController(
   let bobT = 0
   let stride = 0 // which bob cycle the last voiced footfall belonged to
   let noclip = false
+  /** a flight just ended: on the next walk tick, feet found inside a solid
+      come out on top of it (collision.ts's surfaceAbove) */
+  let unstick = false
   let gravityScale = 1
   let flyScale = 1
   let bank = 0 // the flight's strafe roll, radians
@@ -344,6 +349,7 @@ export function createWalkController(
         fly.set(0, 0, 0)
         bank = 0
         rig.rotation.z = 0
+        unstick = true
       }
     },
     get gravityScale() {
@@ -365,6 +371,7 @@ export function createWalkController(
     },
     spawnAt: (x, z, yawTo, y) => {
       feetY = y
+      unstick = false
       vy = 0
       fly.set(0, 0, 0)
       grounded = true
@@ -380,6 +387,7 @@ export function createWalkController(
     },
     teleport: (x, z, y) => {
       feetY = y
+      unstick = false
       vy = 0
       fly.set(0, 0, 0)
       grounded = true
@@ -472,6 +480,17 @@ export function createWalkController(
       // a solid is only a wall where it overlaps the body: standing, ledges
       // up to tune.step are climbed through; airborne, nothing is, so a hop
       // has to clear a surface before it can carry over it
+      // the first tick after a flight: landed inside a building (a roof
+      // dipped into, a wall flown into), stand on top of it rather than be
+      // pushed out through the nearest wall to fall down the outside
+      if (unstick) {
+        unstick = false
+        const up = surfaceAbove(rig.position.x, rig.position.z, feetY, tune.eye, collision)
+        if (up !== null) {
+          feetY = up
+          if (vy < 0) vy = 0
+        }
+      }
       const stepUp = grounded ? tune.step : 0
       resolveXZ(rig.position, collision, feetY, feetY + tune.eye, stepUp)
       // a wall met mid-drift takes that axis of the drift away

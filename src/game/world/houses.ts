@@ -3,7 +3,7 @@ import { noStand } from '../physics/collision'
 import { SURF, type SurfaceId } from './surface'
 import {
   CONE4, CYL8, CYL12, GLASS_DARK, GLASS_LIT, HIP, PRISM, SHED, TUBE12,
-  aabb, box, fork, frameOf, nudge, panel, pick, put, strut, type BuildOut, type Lot,
+  aabb, box, fork, frameOf, nudge, panel, pick, put, roofSolids, strut, type BuildOut, type Lot,
 } from './kitbash'
 
 /*
@@ -50,7 +50,12 @@ import {
   and a canopy under 5.5 is something the player walks into. And a solid
   registers one collision box per mass, `noStand` wherever the roof is above
   the box top, because otherwise the eave line is a ledge you can stand on
-  and the roof is a wall you cannot. Anything low and flat (a drive, a path,
+  and the roof is a wall you cannot. The roof itself is a floor: every
+  `roof()` registers its slopes as ramps (kitbash.ts's `roofSolids`), so a
+  flight lands on the shingles and a walk goes up to the ridge, and a flat
+  roof (the townhouse's parapet slab, a carport deck) is a plain standable
+  top. The masses stop at the eaves so they never stand proud of a slope
+  they sit under. Anything low and flat (a drive, a path,
   a porch deck, a patio) also reports a footprint the grass keeps out of
   (world/interiors.ts), or blades half a metre tall grow straight up
   through it.
@@ -164,9 +169,15 @@ const context = (out: BuildOut, lot: Lot) => {
     geo: THREE.BufferGeometry, hex: string,
     u: number, v: number, eaveY: number,
     lu: number, rise: number, lv: number, cross = false,
-  ) => put(out.solid, geo, hex, wx(u, v), eaveY, wz(u, v),
-    0, lot.face + (cross ? Math.PI / 2 : 0), 0,
-    cross ? lv : lu, rise, cross ? lu : lv, SURF.shingle)
+  ) => {
+    const yaw = lot.face + (cross ? Math.PI / 2 : 0)
+    put(out.solid, geo, hex, wx(u, v), eaveY, wz(u, v), 0, yaw, 0,
+      cross ? lv : lu, rise, cross ? lu : lv, SURF.shingle)
+    // ...and its slopes as a floor (kitbash.ts's roofSolids): fly up and
+    // land on it, walk up to the ridge and sit there
+    roofSolids(out.boxes, geo, wx(u, v), eaveY, wz(u, v), yaw,
+      cross ? lv : lu, rise, cross ? lu : lv)
+  }
 
   /** a primitive in lot-local space with a local yaw on top of the lot's */
   const place = (
@@ -417,6 +428,8 @@ const porch = (
   deck(0, hv + 1.6, pw, 3.2)
   posts(-pw / 2 + 0.2, hv + 3.0, pw / 2 - 0.2, hv + 3.0, Math.max(2, Math.round(pw / 3.2)))
   c.place(SHED, roof, 0, y + 5.9, hv + 1.7, 0, Math.PI, 0, pw + 0.4, 0.8, 3.6, SURF.shingle)
+  roofSolids(c.out.boxes, SHED, c.wx(0, hv + 1.7), y + 5.9, c.wz(0, hv + 1.7),
+    c.lot.face + Math.PI * c.mir, pw + 0.4, 0.8, 3.6)
   c.b(c.fascia, 0, hv + 3.45, y + 5.95, pw + 0.4, 0.22, 0.12, SURF.plank)
   // a rail between the posts, open at the steps
   for (const s of [-1, 1]) {
@@ -435,6 +448,8 @@ const porch = (
     deck(fu, fv, 3.2, fl)
     posts(fu + side * 1.4, hv + 3.0, fu + side * 1.4, hv + 3.4 - fl, Math.max(1, Math.round(fl / 3.2)))
     c.place(SHED, roof, fu, y + 5.9, fv, 0, -side * Math.PI / 2, 0, fl + 0.2, 0.8, 3.6, SURF.shingle)
+    roofSolids(c.out.boxes, SHED, c.wx(fu, fv), y + 5.9, c.wz(fu, fv),
+      c.lot.face - side * Math.PI / 2 * c.mir, fl + 0.2, 0.8, 3.6)
   }
 }
 
@@ -981,7 +996,8 @@ const cottage = (c: Ctx): Home => {
   }
   porch(c, dr() < 0.5 ? 'hood' : 'none', 0, hv, y, hu, 1)
 
-  c.solid(0, 0, hu * 2 + 0.3, hv * 2 + 0.3, y - 2, y + h + 0.6, false, 0.25)
+  // up to the eaves and no further: the slopes over it are the floor
+  c.solid(0, 0, hu * 2 + 0.3, hv * 2 + 0.3, y - 2, y + h, false, 0.25)
   return { y, hu, hv, doorU: 0, side: -Math.sign(stack) }
 }
 
@@ -1058,7 +1074,7 @@ const ranch = (c: Ctx): Home => {
       const cu = s * (hu + 2.6)
       c.b(roofC, cu, hv * 0.2, y + 5.6, 5.4, 0.3, hv * 2.3, SURF.plank)
       for (const q of [-1, 1]) c.b(c.scheme.trim, cu + s * 2.2, hv * 0.2 + q * hv, y + 2.8, 0.26, 5.6, 0.26)
-      c.solid(cu, hv * 0.2, 5.4, hv * 2.3, y + 5.6, y + 5.9)
+      c.solid(cu, hv * 0.2, 5.4, hv * 2.3, y + 5.6, y + 5.9, true)
       garage = { u: cu, v: hv * 0.2 + hv, w: 5 }
     }
   }
@@ -1109,7 +1125,8 @@ const townhouse = (c: Ctx): Home => {
     }
   }
 
-  c.solid(0, 0, hu * 2, hv * 2, y - 2, y + h + 1.4, false, 0.25)
+  // the parapet slab is the flat roof, and a floor
+  c.solid(0, 0, hu * 2, hv * 2, y - 2, y + h + 1.4, true, 0.25)
   return { y, hu, hv, doorU: 0, side: 1, bare: true }
 }
 
@@ -1147,7 +1164,7 @@ const villa = (c: Ctx): Home => {
     for (const s of [-1, 1]) c.b('#cfc7b4', s * 2.4, hv + 1.6, y + 2.8, 0.34, 5.6, 0.34, SURF.plaster)
     for (let u = -2.5; u <= 2.5; u += 0.42) c.b('#d6cfbd', u, hv + 2.06, y + 6.3, 0.14, 1.1, 0.14)
     c.b('#d6cfbd', 0, hv + 2.06, y + 6.92, 5.3, 0.16, 0.3, SURF.paving)
-    c.solid(0, hv + 1.0, 5.4, 2.4, y - 1, y + 5.94)
+    c.solid(0, hv + 1.0, 5.4, 2.4, y - 1, y + 5.94, true)
     for (const s of [-1, 1]) {
       window_(c, s * hu * 0.6, hv, y + 3.2, 1.5, 2.6, 0, 1, litRate)
       window_(c, s * hu * 0.6, hv, y + 7.6, 1.5, 1.7, 0, 1, litRate)

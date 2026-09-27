@@ -104,6 +104,11 @@ export interface PropKind {
   rolling?: number
   /** how it sounds when it hits something; 'wood' when omitted */
   surface?: Surface
+  /** a hull whose corners the drawn ground holds up after every slice, on
+      top of the contact solver. For the heavy, fast things a slice's worth
+      of penetration is several units of (the fleet on the physgun thrown
+      at 150 u/s and up); see props.ts's `floor` */
+  floor?: boolean
   /** comes apart into gibs (models.ts's GIBS) on a hard enough blow */
   breaks?: BreakSpec
   /** goes off on a hard blow, in a blast, or after burning a while */

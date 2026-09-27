@@ -19,7 +19,14 @@ import { GROUPS, WORLD_FRICTION, type PhysicsWorld, type RBody, type RCollider }
   y maps one diagonal onto the other, so each chunk's heightfield is laid out
   rotated 90 degrees with its rows along world x and its columns running down
   world z. `npm run measure -- physics` raycasts it against `terrainY` at
-  random points to hold that honest.
+  random points to hold that honest. Each chunk's heights are laid down
+  twice where a hull needs it: once with Rapier's internal-edge fix (balls
+  roll across the cell seams without a bump) and once without it (convex
+  hulls, which that fix lets fall through the world); physics.ts's GROUPS
+  says who meets which, and `measure physics carry` throws the fleet at it.
+  The second one is built only under a hull-shaped prop, so a world with
+  none in it makes exactly the colliders, in exactly the order, it always
+  did, and every scenario's hash is what it was.
 
   The solids come from the walk's own CollisionSet (the house, its furniture,
   and the nine chunks around the player, which the streamer keeps topped up)
@@ -29,7 +36,10 @@ import { GROUPS, WORLD_FRICTION, type PhysicsWorld, type RBody, type RCollider }
   place: an open door collapses its blocker to a point (the cuboid is
   disabled), a felled tree empties its box (likewise), a closed door puts it
   back. `noStand` is irrelevant here: that flag is about where a *player* may
-  stand, and a crate may land on a wall top.
+  stand, and a crate may land on a wall top. A roof slope (a box with a `ramp`) is
+  mirrored as the wedge it is, a convex hull built once, rather than as its
+  bounding box, which would leave a crate floating at ridge height over the
+  eaves.
 
   Streaming follows the streamer's collision-shelf idea with one more reason
   to keep a chunk: the ring is the chunks around the player *plus* the chunks
@@ -73,8 +83,9 @@ export interface GroundOpts {
 
 export interface Ground {
   /** keep chunk (cx, cz)'s ground and solids alive this frame, building them
-      now if they are missing. Returns false only if it could not */
-  need: (cx: number, cz: number) => boolean
+      now if they are missing; `rough` also wants the heightfield a convex
+      hull meets. Returns false only if it could not */
+  need: (cx: number, cz: number, rough?: boolean) => boolean
   /** has this chunk got its ground */
   has: (cx: number, cz: number) => boolean
   /** retire what nobody needed and re-read the solids. Once a *slice*, not
@@ -111,7 +122,7 @@ const SOLIDS_PER_FRAME = 700
 export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts): Ground => {
   const lattice = (surface ?? TERRAIN_GROUND).lattice
   const { R, world } = pw
-  const chunks = new Map<number, { cx: number; cz: number; col: RCollider; seen: number }>()
+  const chunks = new Map<number, { cx: number; cz: number; col: RCollider; rough: RCollider | null; seen: number }>()
   const groundHandles = new Set<number>()
   let frame = 0
 
@@ -119,17 +130,15 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
   const QUARTER = { x: 0, y: Math.SQRT1_2, z: 0, w: Math.SQRT1_2 }
   const heights = new Float32Array((N + 1) * (N + 1))
 
-  const buildChunk = (cx: number, cz: number) => {
-    const i0 = cx * N
-    const j0 = cz * N
-    for (let c = 0; c <= N; c++)
-      for (let r = 0; r <= N; r++) heights[c * (N + 1) + r] = lattice(i0 + r, j0 + (N - c))
+  /** one of the chunk's two heightfields over `heights` (see physics.ts's
+      GROUPS on why there are two) */
+  const field = (cx: number, cz: number, smooth: boolean) => {
     const desc = R.ColliderDesc.heightfield(
-      N, N, heights, { x: CHUNK, y: 1, z: CHUNK }, R.HeightFieldFlags.FIX_INTERNAL_EDGES,
+      N, N, heights, { x: CHUNK, y: 1, z: CHUNK }, smooth ? R.HeightFieldFlags.FIX_INTERNAL_EDGES : undefined,
     )
       .setTranslation(originX(cx) + CHUNK / 2, 0, originZ(cz) + CHUNK / 2)
       .setRotation(QUARTER)
-      .setCollisionGroups(GROUPS.world)
+      .setCollisionGroups(smooth ? GROUPS.ground : GROUPS.groundRough)
       .setFriction(WORLD_FRICTION)
       .setRestitution(0.05)
     const col = world.createCollider(desc)
@@ -137,15 +146,24 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
     return col
   }
 
-  const need = (cx: number, cz: number) => {
+  const buildChunk = (cx: number, cz: number, smooth: boolean) => {
+    const i0 = cx * N
+    const j0 = cz * N
+    for (let c = 0; c <= N; c++)
+      for (let r = 0; r <= N; r++) heights[c * (N + 1) + r] = lattice(i0 + r, j0 + (N - c))
+    return field(cx, cz, smooth)
+  }
+
+  const need = (cx: number, cz: number, rough = false) => {
     const k = key(cx, cz)
-    const have = chunks.get(k)
-    if (have) {
-      have.seen = frame
-      return true
+    let have = chunks.get(k)
+    if (!have) {
+      have = { cx, cz, col: buildChunk(cx, cz, true), rough: null, seen: frame }
+      chunks.set(k, have)
+      solidsDirty = true
     }
-    chunks.set(k, { cx, cz, col: buildChunk(cx, cz), seen: frame })
-    solidsDirty = true
+    have.seen = frame
+    if (rough && !have.rough) have.rough = buildChunk(cx, cz, false)
     return true
   }
 
@@ -160,6 +178,8 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
     maxY: number
     maxZ: number
     on: boolean
+    /** a roof slope: a wedge built once from its box, never resized */
+    ramp: boolean
   }
   const mirrors = new Map<Solid, Mirror>()
   const byHandle = new Map<number, Solid>()
@@ -182,7 +202,7 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
     m.maxY = b.max.y
     m.maxZ = b.max.z
     const on = live(b)
-    if (on) {
+    if (on && !m.ramp) {
       m.col.setHalfExtents({
         x: (b.max.x - b.min.x) / 2,
         y: (b.max.y - b.min.y) / 2,
@@ -227,11 +247,29 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
   }
   const toWake: RBody[] = []
 
+  /** a roof slope's wedge, in world coordinates: the box's floor and its
+      sloped top (collision.ts's Ramp) */
+  const wedge = (b: Solid) => {
+    const r = b.ramp!
+    const pts: number[] = []
+    for (const e of [0, 1]) {
+      const top = e ? r.hi : r.lo
+      for (const o of [0, 1]) {
+        const x = r.axis === 'x' ? (e ? b.max.x : b.min.x) : (o ? b.max.x : b.min.x)
+        const z = r.axis === 'x' ? (o ? b.max.z : b.min.z) : (e ? b.max.z : b.min.z)
+        pts.push(x, b.min.y, z, x, Math.max(top, b.min.y + 0.05), z)
+      }
+    }
+    return R.ColliderDesc.convexHull(new Float32Array(pts))
+  }
+
   const addMirror = (b: Solid) => {
+    const desc = (b.ramp && live(b) && wedge(b)) || R.ColliderDesc.cuboid(0.5, 0.5, 0.5)
+    const ramp = desc.shape.type === R.ShapeType.ConvexPolyhedron
     const col = world.createCollider(
-      R.ColliderDesc.cuboid(0.5, 0.5, 0.5).setCollisionGroups(GROUPS.world).setFriction(WORLD_FRICTION * 0.875),
+      desc.setCollisionGroups(GROUPS.world).setFriction(WORLD_FRICTION * 0.875),
     )
-    const m: Mirror = { col, minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0, on: true }
+    const m: Mirror = { col, minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0, on: true, ramp }
     place(m, b)
     mirrors.set(b, m)
     byHandle.set(col.handle, b)
@@ -403,6 +441,10 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
       if (frame - c.seen <= KEEP_FRAMES) continue
       groundHandles.delete(c.col.handle)
       world.removeCollider(c.col, true)
+      if (c.rough) {
+        groundHandles.delete(c.rough.handle)
+        world.removeCollider(c.rough, true)
+      }
       chunks.delete(k)
       solidsDirty = true
     }
@@ -430,7 +472,10 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
     isVehicle: (c) => vehicleHandles.has(c.handle),
     stats,
     dispose: () => {
-      for (const c of chunks.values()) world.removeCollider(c.col, false)
+      for (const c of chunks.values()) {
+        world.removeCollider(c.col, false)
+        if (c.rough) world.removeCollider(c.rough, false)
+      }
       for (const m of mirrors.values()) world.removeCollider(m.col, false)
       for (const r of rigs.values()) world.removeRigidBody(r.body)
       chunks.clear()

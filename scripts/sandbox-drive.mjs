@@ -54,6 +54,17 @@
                                       standing and walking; links counted
                                       (must be 0). Shots to ~/.cache/overhaul/
                                       viewmodel (--vm-out <dir>)
+    npm run drive -- throw [--vehicle car,heli] [--at x,z]
+                                      every machine taken as a prop and thrown
+                                      at the ground at 20 to 900 u/s: must
+                                      never go a unit under it or be rescued
+    npm run drive -- roofs            flat and pitched roofs at home and
+                                      downtown landed on from noclip, dropped
+                                      and let go inside the building: the feet
+                                      must end on the roof (shots roofs-*.png)
+    npm run drive -- flycam           a third-person noclip flight, the body's
+                                      height against the lens every frame:
+                                      must never jump 0.1 in a frame
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -1654,6 +1665,294 @@ try {
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
     await evaluate('window.__tools.select(0)')
     console.log(`  ${await evaluate('window.__vLinks')} programs linked across the viewmodel shots`)
+  }
+
+  if (WHAT.includes('throw')) {
+    /*
+      A thrown machine must land on the ground and stay on top of it. Every
+      machine (or --vehicle a,b) is recalled beside you, taken as a prop,
+      stood eight units up in front of you and thrown at the ground at
+      several speeds and angles, up to far faster than any flick; then its
+      pose is sampled every frame for four seconds. It passes when the
+      machine's origin (its wheels, skids or keel) never goes more than a
+      unit under the drawn ground and the sandbox never had to lift it back
+      out (a rescue is the tunnel happening and being hidden).
+    */
+    console.log('throw')
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await goTo(flag('at', '10 -11.2').replace(',', ' '))
+    await sleep(1500)
+    await stand()
+    const ids = String(flag('vehicle', 'car,boat,heli,ship')).split(',')
+    // speed u/s, degrees below the horizon
+    const throws = [[20, 30], [60, 45], [150, 60], [300, 80], [600, 45], [900, 89]]
+    let bad = 0
+    for (const id of ids) {
+      for (const [speed, deg] of throws) {
+        const r = await evaluate(`(async () => {
+          const ID = ${JSON.stringify(id)}
+          const f = window.__fleet, sb = window.__sandbox, cam = window.__sandboxCamera.position
+          const next = () => new Promise((res) => requestAnimationFrame(res))
+          const v = f.all.find((m) => m.id === ID)
+          f.recall(ID, cam, window.__fleetEnv())
+          for (let i = 0; i < 20; i++) await next()
+          const prop = f.take(ID, sb)
+          if (!prop) return { err: 'not taken' }
+          const yaw = window.__sandboxWalk.yaw
+          const fx = -Math.sin(yaw), fz = -Math.cos(yaw)
+          const x = cam.x + fx * 14, z = cam.z + fz * 14
+          sb.setTransform(prop.id, { x, y: sb.groundY(x, z) + 8, z })
+          const a = ${deg} * Math.PI / 180
+          sb.setVelocity(prop.id, { x: fx * Math.cos(a) * ${speed}, y: -Math.sin(a) * ${speed}, z: fz * Math.cos(a) * ${speed} },
+            { x: 1.5, y: 0.5, z: -1 })
+          let worst = Infinity, rescued = 0, gone = false, frames = 0
+          const trace = []
+          const t0 = performance.now()
+          while (performance.now() - t0 < 4000) {
+            await next()
+            frames++
+            const p = v.root.position
+            const d = p.y - sb.groundY(p.x, p.z)
+            if (d < worst) worst = d
+            if (frames < 40 || frames % 10 === 0) {
+              const q = sb.get(prop.id), lv = { x: 0, y: 0, z: 0, set(a, b, c) { this.x = a; this.y = b; this.z = c } }
+              if (q) sb.getVelocity(prop.id, lv)
+              trace.push(frames + ': ' + [p.x, p.y, p.z, d, lv.y].map((n) => n.toFixed(2)).join(' ') + (q && q.lost ? ' lost' + q.lost : ''))
+            }
+            const q = sb.get(prop.id)
+            if (q) rescued = Math.max(rescued, q.lost)
+            else gone = true
+          }
+          const p = v.root.position
+          return { worst, rescued, gone, frames, end: p.y - sb.groundY(p.x, p.z), trace }
+        })()`)
+        if (r.err) {
+          console.log(`  ${id.padEnd(5)} ${r.err}`)
+          bad++
+          continue
+        }
+        const ok = r.worst > -1 && r.rescued === 0
+        if (!ok) bad++
+        if (!ok && has('trace')) console.log(r.trace.join('\n'))
+        console.log(`  ${id.padEnd(5)} ${String(speed).padStart(4)} u/s at ${String(deg).padStart(2)} deg: ` +
+          `deepest ${r.worst.toFixed(2)}, rests ${r.end.toFixed(2)} over the ground, ${r.rescued} rescues` +
+          `${r.gone ? ', prop given up on' : ''} (${r.frames} frames)  ${ok ? 'ok' : 'FAIL'}`)
+      }
+    }
+    console.log(`  ${bad === 0 ? 'PASS' : `FAIL: ${bad} throws went under the ground`}`)
+    if (bad) process.exitCode = 1
+  }
+
+  if (WHAT.includes('roofs')) {
+    /*
+      Flying up onto a building and letting go of noclip there, the way the
+      owner wants to sit on the town. At home and downtown, roofs are picked
+      off the live collision set by what they are (a flat roof: a standable
+      top eight or more units over the ground; a pitched one: a roof slope,
+      collision.ts's Ramp, including the house's own), and each is landed on
+      twice: dropped from five units over it, and let go of with the feet a
+      unit and a half *inside* the building (or, where the roof is over a room
+      rather than a solid mass, a hand under its surface), which used to push
+      the body out of the nearest wall and down to the street. It passes when, two
+      seconds after v, the feet stand on the roof at that spot (within 0.35
+      of its surface) every time. A third-person shot of each first landing
+      goes to --out as roofs-*.png.
+    */
+    console.log('roofs')
+    const host = 'window.__sandbox.console.host'
+    let bad = 0
+    const topFn = `const topAt = (b, x, z) => { const r = b.ramp; if (!r) return b.max.y;
+      const t = r.axis === 'x' ? (x - b.min.x) / (b.max.x - b.min.x) : (z - b.min.z) / (b.max.z - b.min.z);
+      return r.lo + (r.hi - r.lo) * Math.min(1, Math.max(0, t)) }`
+    for (const [where, kinds] of [['10 -11.2', ['home', 'pitched', 'pitched']], [flag('fly-at', '-32 -331').replace(',', ' '), ['flat', 'low', 'pitched']]]) {
+      await evaluate(`${host}.noclip(false)`)
+      await goTo(where)
+      await sleep(2500)
+      await stand()
+      // measured in first person: in third the lens is a boom away from the head
+      await evaluate(`${host}.thirdPerson(false)`)
+      const picks = await evaluate(`(() => {
+        ${topFn}
+        const L = window.__levels.current, c = window.__sandboxCamera.position
+        const boxes = L.collision.boxes
+        const g = (x, z) => L.groundYAt ? L.groundYAt(x, z) : 0
+        const out = [], used = new Set()
+        const kinds = ${JSON.stringify(kinds)}
+        for (const kind of kinds) {
+          let best = null, bestD = Infinity
+          for (const b of boxes) {
+            if (used.has(b) || b.hull || b.noStand || b.max.y <= b.min.y) continue
+            const sx = b.max.x - b.min.x, sz = b.max.z - b.min.z
+            const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2
+            const d = Math.hypot(cx - c.x, cz - c.z)
+            if (d > 110) continue
+            if (kind === 'flat' || kind === 'low') {
+              if (b.ramp || sx < 6 || sz < 6 || b.max.y - g(cx, cz) < 8) continue
+            } else if (kind === 'home') {
+              if (!b.ramp || Math.hypot(cx, cz - 11) > 16) continue
+            } else if (!b.ramp || b.max.y - g(cx, cz) < 4 || Math.min(sx, sz) < 2 || Math.hypot(cx, cz - 11) < 30) continue
+            // the tallest flat roof in reach and the lowest, the nearest slope
+            const score = kind === 'flat' ? -b.max.y : kind === 'low' ? b.max.y : d
+            if (score < bestD) { bestD = score; best = b }
+          }
+          if (!best) { out.push(null); continue }
+          used.add(best)
+          // a third of the way up a slope from its eave, or on a flat top the
+          // first spot nothing stands over (a setback's terrace has the next
+          // stage standing on most of it, a roof its bulkhead and tank)
+          const r = best.ramp
+          let x = (best.min.x + best.max.x) / 2, z = (best.min.z + best.max.z) / 2
+          if (r) {
+            const k = r.lo < r.hi ? 0.35 : 0.65
+            if (r.axis === 'x') x = best.min.x + (best.max.x - best.min.x) * k
+            else z = best.min.z + (best.max.z - best.min.z) * k
+          } else {
+            const covered = (px, pz) => boxes.some((o) => o !== best && o.max.y > o.min.y && !o.hull &&
+              px > o.min.x - 1 && px < o.max.x + 1 && pz > o.min.z - 1 && pz < o.max.z + 1 &&
+              topAt(o, px, pz) > best.max.y + 0.6 && o.min.y < best.max.y + 6)
+            search: for (let i = 0; i < 7; i++) for (let j = 0; j < 7; j++) {
+              const px = best.min.x + 1.5 + (best.max.x - best.min.x - 3) * (i / 6)
+              const pz = best.min.z + 1.5 + (best.max.z - best.min.z - 3) * (j / 6)
+              if (!covered(px, pz)) { x = px; z = pz; break search }
+            }
+          }
+          // what a landing there should stand on: the highest standable top
+          // at the spot under the drop (a stage over the one picked, say)
+          let top = topAt(best, x, z)
+          for (const b of boxes) {
+            if (b.hull || b.noStand || b.max.y <= b.min.y) continue
+            if (x < b.min.x || x > b.max.x || z < b.min.z || z > b.max.z) continue
+            const t = topAt(b, x, z)
+            if (t > top && t < top + 4.5) top = t
+          }
+          // is there solid building a unit and a half under the roof here, or
+          // a room (a garage, a porch under its canopy)? Letting go in a room
+          // rightly drops you into it, so there the test dips the feet just
+          // under the roof's own surface instead
+          const solid = boxes.some((b) => !b.hull && b.max.y > b.min.y && x > b.min.x && x < b.max.x &&
+            z > b.min.z && z < b.max.z && b.min.y <= top - 1.5 && topAt(b, x, z) > top - 1.5)
+          out.push({ kind, x, z, top, ground: g(x, z), dip: solid ? 1.5 : 0.2 })
+        }
+        return { picks: out, boxes: boxes.length, ramps: boxes.filter((b) => b.ramp).length }
+      })()`)
+      console.log(`  near ${where}: ${picks.boxes} boxes in the set, ${picks.ramps} of them roof slopes`)
+      for (const p of picks.picks) {
+        if (!p) {
+          console.log('  (no roof of that kind in reach)')
+          bad++
+          continue
+        }
+        for (const [how, dy] of [['dropped from 5 over', 5], [`let go ${p.dip} inside`, -p.dip]]) {
+          await evaluate(`${host}.noclip(true)`)
+          await sleep(200)
+          await evaluate(`${host}.teleport(${p.x}, ${p.z}, ${p.top + dy})`)
+          await sleep(500)
+          await evaluate(`${host}.noclip(false)`)
+          await sleep(2000)
+          const r = await evaluate(`(() => {
+            ${topFn}
+            const w = window.__sandboxWalk, c = window.__sandboxCamera.position
+            const L = window.__levels.current
+            let top = -Infinity
+            for (const b of L.collision.boxes) {
+              if (b.noStand || b.hull || b.max.y <= b.min.y) continue
+              if (c.x < b.min.x || c.x > b.max.x || c.z < b.min.z || c.z > b.max.z) continue
+              const t = topAt(b, c.x, c.z)
+              if (t <= w.feetY + 0.6 && t > top) top = t
+            }
+            return { feet: w.feetY, top, moved: Math.hypot(c.x - ${p.x}, c.z - ${p.z}), noclip: w.noclip }
+          })()`)
+          const ok = Math.abs(r.feet - p.top) < 0.35 && r.moved < 1.5
+          if (!ok) bad++
+          if (!ok && has('debug')) {
+            console.log(await evaluate(`(() => {
+              const L = window.__levels.current, x = ${p.x}, z = ${p.z}
+              return L.collision.boxes.filter((b) => x >= b.min.x && x <= b.max.x && z >= b.min.z && z <= b.max.z)
+                .map((b) => [b.min.y.toFixed(2), b.max.y.toFixed(2), b.noStand ? 'noStand' : '', b.ramp ? JSON.stringify(b.ramp) : '',
+                  [b.min.x, b.max.x, b.min.z, b.max.z].map((n) => n.toFixed(1)).join(',')].join(' ')).join('\\n')
+            })()`))
+          }
+          console.log(`  ${p.kind.padEnd(8)} roof ${(p.top - p.ground).toFixed(1).padStart(5)} over the ground, ` +
+            `${how.padEnd(20)}: feet ${(r.feet - p.top >= 0 ? '+' : '') + (r.feet - p.top).toFixed(2)} ` +
+            `from the roof, ${r.moved.toFixed(2)} from the spot  ${ok ? 'ok' : 'FAIL'}`)
+          if (how.startsWith('dropped')) {
+            await evaluate(`${host}.thirdPerson(true)`)
+            await sleep(700)
+            await shot(`roofs-${p.kind}-${Math.round(p.top - p.ground)}`)
+            await evaluate(`${host}.thirdPerson(false)`)
+            await sleep(300)
+          }
+        }
+      }
+    }
+    await evaluate(`${host}.thirdPerson(false)`)
+    console.log(`  ${bad === 0 ? 'PASS' : `FAIL: ${bad} landings did not end on the roof`}`)
+    if (bad) process.exitCode = 1
+  }
+
+  if (WHAT.includes('flycam')) {
+    /*
+      A steady noclip flight in third person, measured rather than filmed:
+      every rendered frame, the body's height against the lens's. A chase
+      camera that follows the body smoothly keeps that gap steady (it may
+      drift as the flight speeds up or slows, never jump), so the number is
+      the biggest change in it from one frame to the next, per leg of the
+      flight: straight up on space, up fast, a climb and a dive along the
+      view, level cruise and straight down on c. It passes under a tenth of
+      a unit a frame; the anchor that used to snap back to the head each
+      time it trailed by 1.2 units moved it by a whole unit at a time.
+    */
+    console.log('flycam')
+    await goTo(flag('fly-at', '-32 -331').replace(',', ' '))
+    await sleep(1200)
+    await stand()
+    await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+    await look(Math.PI / 2, 0)
+    await tap('KeyV')
+    await sleep(400)
+    const legs = [
+      { label: 'space: straight up', keys: ['Space'], pitch: 0 },
+      { label: 'shift + space: up fast', keys: ['Space', 'ShiftLeft'], pitch: 0 },
+      { label: 'w: climb along the view', keys: ['KeyW'], pitch: 0.6 },
+      { label: 'w: level cruise', keys: ['KeyW'], pitch: 0 },
+      { label: 'shift + w: dive', keys: ['KeyW', 'ShiftLeft'], pitch: -0.5 },
+      { label: 'c: straight down', keys: ['KeyC'], pitch: 0 },
+    ]
+    let bad = 0
+    for (const leg of legs) {
+      await look(null, leg.pitch)
+      for (const k of leg.keys) await down(k)
+      await sleep(500)
+      const r = await evaluate(`(async () => {
+        const cam = window.__sandboxCamera, body = window.__sandboxRig.group
+        const next = () => new Promise((res) => requestAnimationFrame(res))
+        const gaps = [], ys = []
+        const t0 = performance.now()
+        while (performance.now() - t0 < 1500) {
+          await next()
+          gaps.push(body.position.y - cam.position.y)
+          ys.push(cam.position.y)
+        }
+        let worst = 0, n = 0
+        for (let i = 1; i < gaps.length; i++) {
+          const d = Math.abs(gaps[i] - gaps[i - 1])
+          if (d > worst) worst = d
+          if (d > 0.1) n++
+        }
+        const vy = (ys[ys.length - 1] - ys[0]) / 1.5
+        return { worst, n, frames: gaps.length, vy, lo: Math.min(...gaps), hi: Math.max(...gaps) }
+      })()`)
+      for (const k of leg.keys) await up(k)
+      const ok = r.worst < 0.1
+      if (!ok) bad++
+      console.log(`  ${leg.label.padEnd(26)} climbing ${r.vy.toFixed(1).padStart(6)} u/s: body-to-lens gap ` +
+        `${r.lo.toFixed(2)}..${r.hi.toFixed(2)}, worst jump ${r.worst.toFixed(3)} a frame, ` +
+        `${r.n}/${r.frames} frames over 0.1  ${ok ? 'ok' : 'FAIL'}`)
+    }
+    await tap('KeyV')
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    console.log(`  ${bad === 0 ? 'PASS' : `FAIL: ${bad} legs jumped`}`)
+    if (bad) process.exitCode = 1
   }
 
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))

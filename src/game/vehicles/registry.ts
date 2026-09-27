@@ -106,7 +106,11 @@ import { registerKind, type PropKind } from '../sandbox/kinds'
   go and comes to rest the right way up (`handBack`: re-settled on its own
   springs at that spot and heading); a machine left frozen or on its roof
   stays a prop until it is grabbed again, and climbing into one rights it
-  where it is. Only an *empty* machine can be taken. On the wire the thrower
+  where it is. Being a hull, it stands on the plain ground rather than the
+  edge-fixed one, whose contacts let every convex hull through (physics.ts's
+  GROUPS), and its kind carries `floor`, so however hard it is thrown the
+  drawn ground holds its corners up (`npm run measure -- physics carry` and
+  `npm run drive -- throw`). Only an *empty* machine can be taken. On the wire the thrower
   is its authority through a server-arbitrated claim (`hand`, next to the
   seats, and it excludes them both ways), the transform is relayed like a
   driver's, and everybody else places it whole rather than driving it.
@@ -364,7 +368,7 @@ interface Carry {
     sounds like landing, and its shape (the hull's stations, closed under the
     machine down to `bottom`). Registered the first time one is taken */
 const carryKinds = new Map<VehicleId, PropKind>()
-const carryKind = (v: Vehicle): PropKind => {
+export const carryKind = (v: Vehicle): PropKind => {
   let k = carryKinds.get(v.id)
   if (k) return k
   const c = v.carry ?? { mass: 600, density: 1.1, bottom: 0.1 }
@@ -386,6 +390,7 @@ const carryKind = (v: Vehicle): PropKind => {
     linearDamping: 0.05,
     angularDamping: 0.4,
     surface: 'metal',
+    floor: true,
   })
   carryKinds.set(v.id, k)
   return k

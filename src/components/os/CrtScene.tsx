@@ -3782,6 +3782,8 @@ export default function CrtScene({
           // right) third of the frame and the crosshair stays dead centre,
           // clear of it (chaseCam.ts; the aim follows it in resolveAim)
           chaseEnv.shoulder = SHOULDER * shoulderSide
+          // the head's own climb or fall, which the boom follows rigidly
+          chaseEnv.vy = sitting ? 0 : step.vy
           chase.apply(camera, dt, chaseEnv)
           // the gun and the beam go where the lens ended up: in the hand of
           // the body when the boom is out, in front of the lens when it is not

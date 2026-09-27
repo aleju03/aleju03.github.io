@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { CollisionSet } from '../physics/collision'
+import type { CollisionSet, Solid } from '../physics/collision'
 
 /*
   The third-person boom, over the right shoulder.
@@ -36,7 +36,10 @@ import type { CollisionSet } from '../physics/collision'
   a frame; growing eases, so leaving a doorway is a glide back out. Turning
   is rigid about the head (the same yaw and pitch as the walk, no lag), and
   the anchor's height is smoothed a little so a stair's riser is a slope in
-  the lens rather than a step.
+  the lens rather than a step; only a riser, though: the vertical motion the
+  sim reports (`vy`: a flight, a jump, a fall) carries the anchor rigidly,
+  or a fast climb trails far enough to trip the teleport snap every few
+  frames (`npm run drive -- flycam`).
 
   While the body is ragdolling, a focus point (the chest particle) replaces
   the head: the camera orbits it from behind-and-above and looks at it,
@@ -55,6 +58,10 @@ export interface ChaseEnv {
   /** over-the-shoulder: how far to the lens's right the boom is offset
       (world units, eased; negative is the left shoulder) */
   shoulder?: number
+  /** the head's vertical velocity as the sim integrated it (a flight, a
+      jump, a fall; not a stair's eased riser), u/s. The anchor rides it
+      rigidly and smooths only what is left over */
+  vy?: number
 }
 
 export interface ChaseCam {
@@ -98,9 +105,24 @@ const MARGIN = 0.28 // how far the lens keeps off walls, floor, ceiling
 
 /** how far along o + d·t (t in [0, len]) the segment first enters box b grown
     by m; 0 when it starts inside, null when it never enters */
-const entry = (o: THREE.Vector3, d: THREE.Vector3, b: THREE.Box3, m: number, len: number) => {
+const entry = (o: THREE.Vector3, d: THREE.Vector3, b: Solid, m: number, len: number) => {
   let t0 = 0
   let t1 = len
+  // a roof slope is its box cut by the slope's plane (raised by the margin):
+  // the part of the segment under it is g(t) = g0 + g1·t <= 0, one more slab
+  const r = b.ramp
+  if (r) {
+    const x = r.axis === 'x'
+    const a0 = x ? b.min.x : b.min.z
+    const k = (r.hi - r.lo) / Math.max(1e-6, (x ? b.max.x : b.max.z) - a0)
+    const g0 = o.y - (r.lo + k * ((x ? o.x : o.z) - a0)) - m
+    const g1 = d.y - k * (x ? d.x : d.z)
+    if (Math.abs(g1) < 1e-9) {
+      if (g0 > 0) return null
+    } else if (g1 > 0) t1 = Math.min(t1, -g0 / g1)
+    else t0 = Math.max(t0, -g0 / g1)
+    if (t0 >= t1) return null
+  }
   for (let a = 0; a < 3; a++) {
     const oa = a === 0 ? o.x : a === 1 ? o.y : o.z
     const da = a === 0 ? d.x : a === 1 ? d.y : d.z
@@ -244,8 +266,15 @@ export function createChaseCam(): ChaseCam {
       // horizontal part to take it from when looking straight down)
       right.set(Math.cos(env.yaw), 0, -Math.sin(env.yaw))
       // a riser is a step for the feet and a slope for the lens; anything
-      // bigger than a stair (a teleport, a seat) is taken as it comes
+      // bigger than a stair (a teleport, a seat) is taken as it comes. What
+      // is smoothed is only the part of the head's rise the sim did not
+      // report as motion: the anchor is carried by `vy` first, so a flight
+      // or a fall is followed rigidly and only a step is eased. Chasing the
+      // head alone trailed a climb by vy/16, which past 19 u/s is more than
+      // the 1.2 the snap allows, and a noclip climb at 26 u/s snapped back
+      // to the head every few frames: the body jumped a unit in the frame
       const y = headPos.y + LIFT * k
+      if (!Number.isNaN(anchorY)) anchorY += (env.vy ?? 0) * dt
       anchorY = Number.isNaN(anchorY) || Math.abs(y - anchorY) > 1.2
         ? y
         : anchorY + (y - anchorY) * (1 - Math.exp(-16 * dt))

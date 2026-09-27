@@ -6,6 +6,8 @@
   claim the sandbox makes and the number that holds it to it:
 
     ground     the heightfields agree with terrainY (the drawn mesh)
+    carry      the fleet thrown as props (the physgun's stand-ins) at the
+               ground, lob to far past a flick: does any of it go under
     cost       ms per frame with 50 / 200 / 500 props awake
     stack      a 10-high crate stack stands still for 30 s of sim time
     tunnel     fast things do not pass through thin things or the ground
@@ -57,6 +59,12 @@ import '../../src/game/sandbox/tools/scenarios.ts'
 import '../../src/game/sandbox/contraption/scenarios.ts'
 import { contraptionOf } from '../../src/game/sandbox/contraption/contraption.ts'
 import { buildCar } from '../../src/game/sandbox/contraption/build.ts'
+import { createVehicleMaterials } from '../../src/game/vehicles/materials.ts'
+import { buildCar as buildCarVehicle } from '../../src/game/vehicles/car.ts'
+import { buildBoat } from '../../src/game/vehicles/boat.ts'
+import { buildHeli } from '../../src/game/vehicles/heli.ts'
+import { buildShip } from '../../src/game/vehicles/ship.ts'
+import { carryKind } from '../../src/game/vehicles/registry.ts'
 
 const only = process.argv[2]
 const want = (s) => !only || only === s
@@ -300,6 +308,70 @@ if (want('tunnel')) {
       return p.body.translation().y > fy - 0.5
     })
   }
+  sb.dispose()
+}
+
+/* -------------------------------------------------------------- carry -- */
+if (want('carry')) {
+  /*
+    The fleet's machines as props (the physgun's stand-ins, `carryKind`),
+    thrown at the real ground from eight up at every speed from a lob to far
+    past any flick, tumbling, at forty spots round the flat site (so chunk
+    seams and every cut of the lattice's cells get their turn). The number is
+    the deepest any corner of the hull went under the drawn ground, and a
+    throw fails past a unit, or if the sandbox had to lift it out (a rescue
+    is the tunnel, hidden).
+  */
+  const mats = createVehicleMaterials({ texture: (t) => t, add: (d) => d })
+  const { sb } = newSandbox(false, false)
+  await sb.whenReady
+  const q = new THREE.Quaternion()
+  const pt = new THREE.Vector3()
+  let fails = 0
+  for (const [id, build] of [['car', buildCarVehicle], ['boat', buildBoat], ['heli', buildHeli], ['ship', buildShip]]) {
+    const v = build({ mats })
+    const kind = carryKind(v)
+    const pts = kind.shape.points
+    const rows = []
+    for (const speed of [0, 25, 60, 150, 300, 600, 900]) {
+      let worst = 0
+      let bad = 0
+      for (let k = 0; k < 40; k++) {
+        sb.clear()
+        const x = flat.x - 60 + ((k * 37.3) % 120)
+        const z = flat.z - 60 + ((k * 53.9) % 120)
+        const a = (20 + ((k * 13) % 70)) * Math.PI / 180
+        const h = k * 2.4
+        const pid = sb.spawn(kind.id, { x, y: terrainY(x, z) + 8, z }, {
+          mesh: null,
+          quaternion: { x: 0, y: Math.sin(h / 2), z: 0, w: Math.cos(h / 2) },
+          velocity: { x: Math.cos(a) * Math.cos(h) * speed, y: -Math.sin(a) * speed, z: Math.cos(a) * Math.sin(h) * speed },
+          angular: { x: Math.sin(k) * 3, y: Math.cos(k * 1.3), z: Math.sin(k * 0.7) * 3 },
+        })
+        const p = sb.get(pid)
+        let deepest = Infinity
+        for (let f = 0; f < 240; f++) {
+          sb.tick({ dt: 1 / 60, active: true, focus: { x, y: fy, z } })
+          if (!sb.get(pid)) break
+          const t = p.body.translation()
+          const r = p.body.rotation()
+          q.set(r.x, r.y, r.z, r.w)
+          for (let i = 0; i < pts.length; i += 3) {
+            pt.set(pts[i], pts[i + 1], pts[i + 2]).applyQuaternion(q)
+            const d = t.y + pt.y - terrainY(t.x + pt.x, t.z + pt.z)
+            if (d < deepest) deepest = d
+          }
+        }
+        const lost = !sb.get(pid) || p.lost > 0
+        if (lost || deepest < -1) bad++
+        worst = Math.min(worst, lost ? -99 : deepest)
+      }
+      fails += bad
+      rows.push(`${String(speed).padStart(4)} u/s ${bad ? `${bad}/40 under` : 'held    '} (deepest ${worst === -99 ? 'lost' : worst.toFixed(2)})`)
+    }
+    console.log(`carry    ${pad(id, 5)} ${rows.join('  ')}`)
+  }
+  console.log(`carry    ${fails ? `<-- ${fails} throws went under the ground` : 'every throw landed on top of the ground'}`)
   sb.dispose()
 }
 
