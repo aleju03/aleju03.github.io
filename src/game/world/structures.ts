@@ -3,7 +3,7 @@ import { seeded } from '../core/rand'
 import { SURF, type SurfaceId } from './surface'
 import {
   BALL, BOX, CONE12, CYL12, DOME, GAMBREL, PRISM, SHED, TUBE12,
-  aabb, box, fork, panel, pick, put, shaft, strut, type BuildOut,
+  aabb, box, fork, keepOut, panel, pick, put, shaft, strut, type BuildOut,
 } from './kitbash'
 import type { Landmark } from './landmarks'
 
@@ -93,6 +93,11 @@ const solidL = (
     s.ex(lu, lv) / 2 + pad, y1, s.ez(lu, lv) / 2 + pad)
   out.boxes.push(stand ? b : noStand(b))
 }
+
+/** a flat footprint the grass keeps out of, in the frame (snapped frames
+    only, like `solidL`) */
+const keepL = (out: BuildOut, s: Site, u: number, v: number, lu: number, lv: number) =>
+  keepOut(out, s.x(u, v), s.z(u, v), s.ex(lu, lv) / 2, s.ez(lu, lv) / 2)
 
 /** a wall quad whose outward local normal is (du, dv) */
 const panelL = (
@@ -208,6 +213,7 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
     // the path from the cottage door to the tower foot
     boxL(out, c, '#9a948a', cu * 0.45, cv + 4.6, y + 0.05, Math.abs(cu) * 1.2, 0.1, 1.6,
       SURF.paving)
+    keepL(out, c, cu * 0.45, cv + 4.6, Math.abs(cu) * 1.2, 1.8)
   }
   solidL(out, c, cu, cv, 8.4, 6.4, y - 2, y + ch, false, 0.2)
 
@@ -416,6 +422,7 @@ const farm = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
       boxL(out, s, '#cfc7b4', hu + q * 3.4, hv + 5.6, y + 2.8, 0.22, 5.2, 0.22)
     }
     solidL(out, s, hu, hv + 4.6, 8.0, 2.6, y - 1, y + 0.4, true)
+    keepL(out, s, hu, hv + 4.6, 8.2, 2.8)
     boxL(out, s, '#3d5342', hu, hv + 3.8, y + 2.5, 1.5, 4.6, 0.16, SURF.plank)
     port(out, s, hu - 3.0, hv + 3.75, y + 3.4, 1.5, 1.5, 0, 1, true)
     port(out, s, hu + 3.0, hv + 3.75, y + 3.4, 1.5, 1.5, 0, 1, rng() < 0.6)
@@ -894,6 +901,7 @@ const cabin = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
     // the porch: a deck you step onto, two posts and the roof reaching over
     boxL(out, s, DARKWOOD, 0, hv + 1.5, y + 0.7, hu * 2, 0.3, 3.0, SURF.plank)
     solidL(out, s, 0, hv + 1.5, hu * 2, 3.0, y - 1, y + 0.85, true)
+    keepL(out, s, 0, hv + 1.5, hu * 2 + 0.2, 3.2)
     boxL(out, s, ROOF_DARK, 0, hv + 1.6, gY + 0.4, hu * 2.2, 0.24, 3.4, SURF.plank)
     for (const q of [-1, 1]) {
       boxL(out, s, log, q * (hu - 0.5), hv + 2.8, y + (gY + 0.4) / 2 + 0.42,

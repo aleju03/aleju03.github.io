@@ -14,6 +14,7 @@ import type { BiomeId } from '../../src/game/world/biomes'
 import { buildSky } from '../../src/game/levels/sky'
 import { buildHouse } from '../../src/game/levels/houseWorld'
 import { buildGrass } from '../../src/game/world/grass'
+import { registerInteriors } from '../../src/game/world/interiors'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
 import {
   BIOME_AIR, airForSky, lightsForSky, nearestLamps,
@@ -764,7 +765,13 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     tintWater(mats.water, sky.fogColor, sky.day)
     // the lattice is pinned under whatever it is updated at: the target, so
     // an orbit shot has turf where it is looking rather than under the lens
-    buildGrass({ parent: scene, trackDisposable: noop }).update(x, z)
+    // ...and the chunks' footprints registered *after* it has filled, the way
+    // the game's streamer usually delivers them, so a shot exercises the
+    // grass's late re-cull (world/interiors.ts) rather than skipping it
+    const grass = buildGrass({ parent: scene, trackDisposable: noop })
+    grass.update(x, z)
+    for (const c of chunks) registerInteriors(`${c.cx},${c.cz}`, c.interiors)
+    grass.update(x, z)
 
     // nothing generated stands on the property (grid.ts's RESERVED), so the
     // house has to be stood in it or `home` photographs an empty lawn. Architecture only: the furniture is ~35 downloaded GLBs,

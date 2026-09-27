@@ -327,10 +327,14 @@ world/
                   geometry here is cached forever and never disposed, so
                   anything parameterised is quantised and memoised or it
                   leaks one geometry per chunk rebuild
-  houses.ts       the suburb: five house *plans* (gabled with an optional
-                  cross wing, cottage, ranch, townhouse, villa) rather than
-                  one kit with a dozen booleans on it, because what breaks a
-                  street up is plan, not dressing
+  houses.ts       the suburb: eight house *plans* (gabled with an optional
+                  cross wing, cottage, ranch or L-ranch, cape, colonial,
+                  split-level, townhouse, villa) rather than one kit with a
+                  dozen booleans on it, because what breaks a street up is
+                  plan, not dressing; paint in coordinated schemes, and a
+                  `yard()` pass for garages, drives, cars, fences and the
+                  back garden. The lot is the footprint and every plan
+                  builds to whatever frontage and depth it is handed
   buildings.ts    the town and the city: walk-ups in three hands (tenement,
                   deco, sixties), mixed use, towers (setback with a lobby, a
                   skin and a crown, slab, round), enterable shopfronts, the
@@ -1650,7 +1654,12 @@ every one of them has a failure you can see in a harness shot.
   as a spec and `world/shopDoors.ts` animates, with the house doors'
   interaction contract and sounds (house doors on the generated *houses* are
   still painted on). Shop footprints feed `world/interiors.ts` so the grass
-  field and the scatterer stay out.
+  field and the scatterer stay out, and so does everything a kit lays flat
+  and lower than a blade (drives, paths, porch decks, stoops, aprons; kitbash
+  `keepOut`). The registry is bucketed on a 16-unit grid and tells the grass
+  when footprints *arrive*, because the field usually fills before the chunk
+  under it has streamed in, and a fill-time test alone left every shop built
+  after it with a lawn growing through its floor.
 - The world has no persistence. Nothing the player does out there survives a
   reload, because nothing writes: the whole thing is a pure function of
   coordinates. That is what makes the save-state story easy when it comes

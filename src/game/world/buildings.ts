@@ -5,7 +5,7 @@ import type { InteriorRect } from './interiors'
 import { SURF, type SurfaceId } from './surface'
 import {
   BARREL, BODY, BOX, CONE4, CONE12, CYL12, GAMBREL, GLASS_DARK, PLANE, PRISM, TOWER,
-  TUBE12, aabb, box, fork, panel, pick, put, shaft, strut, type BuildOut, type Lot,
+  TUBE12, aabb, box, fork, keepOut, panel, pick, put, shaft, strut, type BuildOut, type Lot,
 } from './kitbash'
 
 export type { BuildOut, Lot } from './kitbash'
@@ -303,6 +303,7 @@ const entrance = (out: BuildOut, lot: Lot, f: ReturnType<typeof front>, y: numbe
   const stepX = f.x(0, 0.8)
   const stepZ = f.z(0, 0.8)
   box(out.solid, '#8b867c', stepX, y + 0.09, stepZ, 4.4, 0.18, 1.6, lot.face, SURF.paving)
+  keepOut(out, stepX, stepZ, f.fx ? 0.9 : 2.3, f.fx ? 2.3 : 0.9)
   out.boxes.push(aabb(stepX, y - 1, stepZ,
     f.fx ? 0.8 : 2.2, y + 0.18, f.fx ? 2.2 : 0.8))
 }
@@ -595,6 +596,7 @@ export const mixedUse = (out: BuildOut, lot: Lot) => {
       SURF.plank)
     box(out.solid, '#8b867c', f.x(o, 0.7), y + 0.09, f.z(o, 0.7),
       2.6, 0.18, 1.3, lot.face, SURF.paving)
+    keepOut(out, f.x(o, 0.7), f.z(o, 0.7), f.fx ? 0.75 : 1.4, f.fx ? 1.4 : 0.75)
   }
 
   out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, w / 2 + 0.3, y + h + 0.8, d / 2 + 0.3)))
@@ -660,6 +662,7 @@ export const warehouse = (out: BuildOut, lot: Lot) => {
     }
     box(out.solid, '#83807a', f.x(0, 4.5), y + 0.05, f.z(0, 4.5),
       frontage * 0.9, 0.12, 9.0, lot.face, SURF.paving)
+    keepOut(out, f.x(0, 4.5), f.z(0, 4.5), f.fx ? 4.6 : frontage * 0.46, f.fx ? frontage * 0.46 : 4.6)
     // the dock: a ledge at truck-bed height with a step up onto it
     const dockX = f.x(frontage * 0.4, 1.3)
     const dockZ = f.z(frontage * 0.4, 1.3)
@@ -760,6 +763,7 @@ export const chapel = (out: BuildOut, lot: Lot) => {
       Math.PI / 2, lot.face, 0, 2.3, 0.1, 2.3)
     box(out.solid, '#8b867c', nx_(0, 2.4), y + 0.09, nz_(0, 2.4),
       4.0, 0.18, 4.4, lot.face, SURF.paving)
+    keepOut(out, nx_(0, 2.4), nz_(0, 2.4), 2.3, 2.3)
 
     // the churchyard: a low wall around the lot and a scatter of headstones
     const yw = (f.fx ? lot.w : lot.d) / 2
