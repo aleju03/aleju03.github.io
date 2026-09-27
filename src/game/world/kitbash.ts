@@ -46,7 +46,8 @@ export interface BuildOut {
   boxes: Solid[]
   /** interiors that want a light; kept tiny, the streamer caps how many burn */
   lamps: Array<{ x: number; y: number; z: number }>
-  /** walk-in footprints, for the interiors registry and the scatter keep-out */
+  /** footprints the grass, the flowers and the scatter keep out of: walk-in
+      floors, and anything flat laid lower than a blade (world/interiors.ts) */
   interiors: InteriorRect[]
   /** hinged leaves for world/shopDoors.ts; ids are assigned by the chunk */
   doors: ShopDoorSpec[]
@@ -152,6 +153,13 @@ export const TRIM = '#d8d2c4'
 export const GLASS_DARK = '#2e3a44'
 /** and what a lit one reads as after dusk */
 export const GLASS_LIT = '#ffd9a0'
+
+const tint = new THREE.Color()
+/** a colour nudged by `k` (a few percent either way), multiplicatively, so a
+    dark stone or a dark trim cannot clamp to black the way an additive
+    jitter would */
+export const nudge = (hex: string, k: number) =>
+  `#${tint.set(hex).multiplyScalar(k).getHexString()}`
 
 /** pick from a palette with one roll */
 export const pick = <T>(list: T[], r: number) => list[Math.min(list.length - 1, Math.floor(r * list.length))]
@@ -400,6 +408,14 @@ export const strut = (
 }
 
 /* ------------------------------------------------------------- collision -- */
+
+/** a footprint the grass and the scatter keep out of (world/interiors.ts):
+    anything a kit lays flat and lower than a blade, a step, an apron, a path,
+    reports one of these or the lawn grows straight up through it. `hx, hz`
+    are world-axis half-extents */
+export const keepOut = (out: BuildOut, x: number, z: number, hx: number, hz: number) => {
+  out.interiors.push({ minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz })
+}
 
 /** an axis-aligned collision box from a centre and half-extents. Callers hand
     it to `noStand()` themselves where the top of the box is thin air. */

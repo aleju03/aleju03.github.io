@@ -6,7 +6,7 @@ import { inYard, onHomeHardscape } from './grid'
 import { SEA_Y, biomeAt, groundColorAt, terrainY } from './terrain'
 import type { BiomeId } from './biomes'
 import { pavedAt, placeAt, roadAt } from './settlements'
-import { insideInterior } from './interiors'
+import { insideInterior, onInteriorsAdded, type InteriorRect } from './interiors'
 import { gfx } from './quality'
 import { applySway } from './wind'
 
@@ -282,12 +282,33 @@ const makeFlowerTexture = () =>
 /**
  * A scrolling lattice of instance slots. Slot (i, j) lives at a fixed world
  * position; the toroidal index means a scroll overwrites exactly the slots
- * that left the field. `fill` places or hides one slot.
+ * that left the field. `fill` places or hides one slot. `refill` hands
+ * `recheck` every live slot whose jittered position could fall inside a
+ * world rectangle, which is how a footprint that streamed in after the field
+ * had already filled (world/interiors.ts) takes its blades back out.
+ * `recheck` only ever hides: it reads the slot's stored position rather than
+ * re-deriving it, because re-running `fill` (terrain, biome and ground colour
+ * per slot) over a suburb chunk's worth of drives cost tens of milliseconds.
  */
-const makeLattice = (side: number, step: number, fill: (i: number, j: number) => void) => {
+const makeLattice = (
+  side: number, step: number,
+  fill: (i: number, j: number) => void,
+  recheck: (i: number, j: number) => boolean,
+) => {
   let originI = Number.POSITIVE_INFINITY
   let originJ = Number.POSITIVE_INFINITY
-  return (px: number, pz: number): boolean => {
+  const refill = (r: InteriorRect): boolean => {
+    if (!Number.isFinite(originI)) return false
+    // a slot's jitter reaches most of a step either way, and the tests pad
+    const i0 = Math.max(originI, Math.floor(r.minX / step) - 2)
+    const i1 = Math.min(originI + side - 1, Math.ceil(r.maxX / step) + 2)
+    const j0 = Math.max(originJ, Math.floor(r.minZ / step) - 2)
+    const j1 = Math.min(originJ + side - 1, Math.ceil(r.maxZ / step) + 2)
+    let hid = false
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) hid = recheck(i, j) || hid
+    return hid
+  }
+  const scroll = (px: number, pz: number): boolean => {
     const oi = Math.round(px / step) - side / 2
     const oj = Math.round(pz / step) - side / 2
     if (oi === originI && oj === originJ) return false
@@ -311,6 +332,7 @@ const makeLattice = (side: number, step: number, fill: (i: number, j: number) =>
     originJ = oj
     return true
   }
+  return { scroll, refill }
 }
 
 interface Opts {
@@ -577,11 +599,24 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
       tileBlade[tile].needsUpdate = true
     }
 
-    const scroll = makeLattice(side, step, fill)
+    /** take a standing slot back out if a footprint now covers it */
+    const recheck = (i: number, j: number) => {
+      const ii = ((i % side) + side) % side
+      const jj = ((j % side) + side) % side
+      const id = jj * side + ii
+      if (slotWH[id * 2 + 1] <= 0) return false
+      if (!insideInterior(slotPos[id * 3], slotPos[id * 3 + 2], 0.3)) return false
+      slotWH[id * 2 + 1] = 0
+      dirty[Math.floor(jj / T) * tiles + Math.floor(ii / T)] = 1
+      return true
+    }
+    const lattice = makeLattice(side, step, fill, recheck)
     return {
       group,
-      update: (px: number, pz: number) => {
-        if (!scroll(px, pz)) return
+      update: (px: number, pz: number, arrived: InteriorRect[]) => {
+        let moved = lattice.scroll(px, pz)
+        for (const r of arrived) moved = lattice.refill(r) || moved
+        if (!moved) return
         for (let t = 0; t < dirty.length; t++) {
           if (!dirty[t]) continue
           dirty[t] = 0
@@ -661,12 +696,32 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
     flowers.instanceColor!.setXYZ(id, c.r, c.g, c.b)
   }
 
-  const scrollFlowers = makeLattice(F_SIDE, F_STEP, fillFlower)
+  const flowerMat4 = flowers.instanceMatrix.array as Float32Array
+  const recheckFlower = (i: number, j: number) => {
+    const ii = ((i % F_SIDE) + F_SIDE) % F_SIDE
+    const jj = ((j % F_SIDE) + F_SIDE) % F_SIDE
+    const id = jj * F_SIDE + ii
+    const o = id * 16
+    if (flowerMat4[o] === 0 && flowerMat4[o + 2] === 0) return false
+    if (!insideInterior(flowerMat4[o + 12], flowerMat4[o + 14], 0.3)) return false
+    m.compose(hidden, q, s.set(0, 0, 0))
+    flowers.setMatrixAt(id, m)
+    return true
+  }
+  const flowerLattice = makeLattice(F_SIDE, F_STEP, fillFlower, recheckFlower)
+
+  // footprints that arrived since the last frame, re-culled on the next one
+  let arrived: InteriorRect[] = []
+  trackDisposable({ dispose: onInteriorsAdded((rects) => { arrived = arrived.concat(rects) }) })
 
   const update = (px: number, pz: number) => {
-    near.update(px, pz)
-    far.update(px, pz)
-    if (scrollFlowers(px, pz)) {
+    const fresh = arrived
+    if (fresh.length) arrived = []
+    near.update(px, pz, fresh)
+    far.update(px, pz, fresh)
+    let bloom = flowerLattice.scroll(px, pz)
+    for (const r of fresh) bloom = flowerLattice.refill(r) || bloom
+    if (bloom) {
       flowers.instanceMatrix.needsUpdate = true
       flowers.instanceColor!.needsUpdate = true
     }
