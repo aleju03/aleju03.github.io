@@ -7,7 +7,7 @@ import {
 } from './grid'
 import { SEA_Y, latticeGround, latticeHeight, terrainY } from './terrain'
 import { placeAt, roadAt, pavedAt, townsNear, ROAD_HALF, WALK_W } from './settlements'
-import { parcelsInChunk } from './streets'
+import { hit, liveOf, networkOf, parcelsInChunk, pieceNear, piecesIn, probe } from './streets'
 import { buildStreets, makeLayer, type Layer } from './streetMesh'
 import { lotStream, type Lot } from './kitbash'
 import { BIOMES, type BiomeId, type PropKind } from './biomes'
@@ -128,6 +128,28 @@ interface RotorSpec {
 /** the rotors the chunk being built has handed out, so recordStructure can
     tie each to the structure that stamped it (build is synchronous) */
 let rotorsMade: RotorSpec[] | null = null
+
+/**
+ * The street test a kit's `clear` asks (kitbash.ts's BuildOut): is a world
+ * rectangle clear of the carriageway and the pavement of every street drawn
+ * near (x, z)? Exact against the plan's own pieces rather than sampled, and
+ * a piece counts only where it is live (roadAt's rule), so a street the
+ * terrain faded out is not a wall to a garden fence.
+ */
+export const lotClear = (x: number, z: number) => {
+  const nets = townsNear(x, z).map(networkOf)
+  const pad = ROAD_HALF + WALK_W - 0.05
+  return (x0: number, z0: number, x1: number, z1: number) => {
+    for (const net of nets) {
+      for (const p of piecesIn(net, x0 - pad, z0 - pad, x1 + pad, z1 + pad)) {
+        if (!pieceNear(p, x0, z0, x1, z1, pad)) continue
+        probe(p, (x0 + x1) / 2, (z0 + z1) / 2)
+        if (liveOf(p, hit.t) > 0.3) return false
+      }
+    }
+    return true
+  }
+}
 
 /**
  * Stamp one building with the recorder running: its spans in both soups, the
@@ -564,8 +586,10 @@ const buildBlock = (
   const raise = (kind: BuildKind, lot: Lot) => {
     const hx = Math.round(lot.x * 2)
     const hz = Math.round(lot.z * 2)
+    out.clear = lotClear(lot.x, lot.z)
     recordStructure(out, `${cx},${cz}:B${hx},${hz}`, kind, lot.baseY,
       () => raiseKind(out, kind, lot))
+    out.clear = undefined
   }
 
   /** trees on a jittered lattice through a rectangle, this chunk's share:

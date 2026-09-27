@@ -35,6 +35,14 @@ import type { PortalView } from './portalView'
   every frame; the snapshot is a picture of a place you just left, which is
   what it has to show anyway, with no parallax up close.
 
+  **And back the other way**: on the Moon a shot at the Earth hanging in
+  its sky opens on the Earth, on a fixed spot rather than where the ray
+  would meet the painted globe: the left leaf of the house's garage door,
+  facing the street (the caller fits it there with the gun's own fit, so it
+  is flush and rides the leaf). Its view from the Moon is a snapshot taken
+  at once, the Earth's streamed ground shown for the one render
+  (`dressEarth`).
+
   **Going through** is a level change the walker never sees: `depart` takes
   the snapshot and fixes the Moon's frame for a portal arrival (the Earth low
   over the slab's shoulder, the Moon's own sun behind it), and the caller
@@ -49,6 +57,8 @@ export interface MoonLink {
   prepare: (x: number, z: number, ms: number) => boolean
   land: (earthDir: THREE.Vector3) => void
   dress: (cam: THREE.Vector3) => (() => void) | null
+  skyEarth: (out: THREE.Vector3) => number
+  dressEarth: () => (() => void) | null
   /** the Moon's ground height */
   ground: (x: number, z: number) => number
   /** the Moon level's box list */
@@ -72,6 +82,11 @@ export interface PortalMoon {
   /** the gun fired at nothing solid: if the ray is on the sky's Moon, open
       `color` on the Moon and say so */
   sky: (color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3) => boolean
+  /** on the Moon: is the ray on the Earth hanging in the sky */
+  onEarth: (dir: THREE.Vector3) => boolean
+  /** photograph the Earth's side out of `from` (a portal there) for the
+      Moon side's view, dressing the scene as the Earth if it is not */
+  snapshotFrom: (from: Portal, scene: THREE.Scene | null, gain?: number) => void
   /** once a frame: the far side made ready a slice at a time */
   tick: () => void
   /**
@@ -200,6 +215,9 @@ export function createPortalMoon(o: PortalMoonOpts): PortalMoon {
 
   const depart = (from: Portal, scene: THREE.Scene | null, gain = 1) => {
     link.land(PORTAL_EARTH_DIR)
+    snapshotFrom(from, scene, gain)
+  }
+  const snapshotFrom = (from: Portal, scene: THREE.Scene | null, gain = 1) => {
     snapGain = gain
     const r = o.renderer
     if (!r || !snapRT || !scene) return
@@ -227,7 +245,8 @@ export function createPortalMoon(o: PortalMoonOpts): PortalMoon {
   }
 
   const view: PortalMoon['view'] = (to, vcam) => {
-    if (to.site === 'moon') {
+    // any portal on the Moon is seen live, the scene dressed as the Moon
+    if (to.level === 'moon') {
       const restore = link.dress(vcam.position)
       return restore ? { restore, far: MOON_FAR } : null
     }
@@ -236,8 +255,20 @@ export function createPortalMoon(o: PortalMoonOpts): PortalMoon {
     return null
   }
 
+  const ed = new THREE.Vector3()
+  const onEarth = (dir: THREE.Vector3) => {
+    const rad = link.skyEarth(ed)
+    return rad > 0 && dir.clone().normalize().dot(ed) > Math.cos(rad * 1.05)
+  }
+
   return {
     sky,
+    onEarth,
+    snapshotFrom: (from, scene, gain) => {
+      const undress = link.dressEarth()
+      snapshotFrom(from, scene, gain)
+      undress?.()
+    },
     tick,
     view,
     depart,

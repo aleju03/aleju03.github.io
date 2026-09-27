@@ -77,6 +77,15 @@ export interface BuildOut {
   rotor?: (
     x: number, y: number, z: number, ax: number, ay: number, az: number, rate: number,
   ) => MeshBuilder
+  /**
+   * Is a world rectangle clear of every drawn street and its pavement
+   * (chunk.ts's lotClear)? A kit asks before it puts anything past its own
+   * walls toward a street: a lot is an axis-aligned box facing a cardinal,
+   * its street may curve or run up to thirty degrees off that cardinal, and
+   * a flank or a corner of the front yard can reach the carriageway. Absent,
+   * everything is taken to be clear.
+   */
+  clear?: (x0: number, z0: number, x1: number, z1: number) => boolean
 }
 
 /** a footprint to build on: where it is, how big, how tall it wants to be,

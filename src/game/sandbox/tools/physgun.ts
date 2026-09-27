@@ -86,6 +86,9 @@ import {
 
 /** how far the beam reaches, units (~65 m) */
 export const RANGE = 150
+/** the key your own body is offered under, and how fast it may be thrown */
+export const SELF_KEY = 'self'
+const SELF_CAP = 45
 /** the closest the wheel pulls a held thing */
 const MIN_DIST = 2.2
 /** the farthest it pushes it */
@@ -173,6 +176,9 @@ export interface PhysgunOpts {
   massOf?: (id: number) => number
   /** the fleet: parked machines the beam can take (types.ts's VehicleGrab) */
   vehicles?: VehicleGrab
+  /** your own body, offered only to an aim carried through a portal (you
+      can only see yourself through one); its throws are capped */
+  self?: () => RigEntry | null
 }
 
 export interface BeamView {
@@ -194,6 +200,8 @@ export interface Physgun {
   /** what the beam looks like this frame */
   readonly view: BeamView
   readonly holding: boolean
+  /** the beam holds your own body */
+  readonly holdsSelf: boolean
   /** E is turning the held prop, so mouse-look belongs to it */
   readonly capturesLook: boolean
   /** the held prop, if it is one */
@@ -313,8 +321,16 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     ray.dir.x = aim.dir.x
     ray.dir.y = aim.dir.y
     ray.dir.z = aim.dir.z
+    const near = aim.near ?? 0
+    if (near > 0) {
+      ray.origin.x += aim.dir.x * near
+      ray.origin.y += aim.dir.y * near
+      ray.origin.z += aim.dir.z * near
+    }
     // world and props, never the walker's own capsule or a vehicle hull
-    return pw.world.castRayAndGetNormal(ray, reach, true, undefined, ((0xffff << 16) | 3) >>> 0)
+    const h = pw.world.castRayAndGetNormal(ray, Math.max(0, reach - near), true, undefined, ((0xffff << 16) | 3) >>> 0)
+    if (!h) return null
+    return { collider: h.collider, timeOfImpact: h.timeOfImpact + near, normal: h.normal }
   }
 
   /** the nearest limb sphere along the ray, if any is nearer than `within` */
@@ -322,7 +338,10 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     let best: { key: string; rig: GrabRig; limb: number; t: number } | null = null
     if (!o.rigs) return best
     let bestT = within
-    for (const e of o.rigs()) {
+    const near = aim.near ?? 0
+    const self = aim.through ? o.self?.() ?? null : null
+    const all = self ? [...o.rigs(), self] : o.rigs()
+    for (const e of all) {
       const r = e.rig
       for (let i = 0; i < r.limbs.length; i++) {
         r.limbPos(i, va)
@@ -335,6 +354,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
         const d2 = vb.lengthSq() - along * along
         if (d2 > rad * rad) continue
         const t = along - Math.sqrt(rad * rad - d2)
+        if (t < near) continue
         if (t < bestT) {
           bestT = t
           best = { key: e.key, rig: r, limb: i, t: Math.max(0, t) }
@@ -437,6 +457,8 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
       }
       emit('release', view.end.x, view.end.y, view.end.z, thrown ? va.length() : 0)
     } else if (rig) {
+      // yourself, thrown: no faster than a fall you could walk away from
+      if (rigKey === SELF_KEY && targetVel.length() > SELF_CAP) targetVel.setLength(SELF_CAP)
       rig.grab(limb, null, undefined, thrown ? targetVel : undefined)
       emit('release', view.end.x, view.end.y, view.end.z, thrown ? targetVel.length() : 0)
     }
@@ -608,7 +630,8 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
         fresh = false
       }
       va.subVectors(target, targetPrev).divideScalar(dt)
-      if (va.lengthSq() > MAX_TARGET_SPEED * MAX_TARGET_SPEED) va.setLength(MAX_TARGET_SPEED)
+      const vCap = rigKey === SELF_KEY ? SELF_CAP : MAX_TARGET_SPEED
+      if (va.lengthSq() > vCap * vCap) va.setLength(vCap)
       targetVel.lerp(va, 1 - Math.exp(-dt * 120))
       targetPrev.copy(target)
       let dy = aim.yaw - yawPrev
@@ -759,6 +782,9 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
   return {
     hold,
     view,
+    get holdsSelf() {
+      return rigKey === SELF_KEY && !!rig
+    },
     get holding() {
       return prop !== null || rig !== null
     },
