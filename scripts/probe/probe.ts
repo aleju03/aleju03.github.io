@@ -766,9 +766,8 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     // an orbit shot has turf where it is looking rather than under the lens
     buildGrass({ parent: scene, trackDisposable: noop }).update(x, z)
 
-    // the property is a hole in the generated world (grid.ts's RESERVED), so
-    // the house has to be stood in it or `home` photographs the fog through
-    // a rectangle. Architecture only: the furniture is ~35 downloaded GLBs,
+    // nothing generated stands on the property (grid.ts's RESERVED), so the
+    // house has to be stood in it or `home` photographs an empty lawn. Architecture only: the furniture is ~35 downloaded GLBs,
     // and the lamp it clones onto each ceiling is an empty stand-in
     if (label === 'home') {
       const house = buildHouse({
@@ -781,6 +780,8 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
         trackTexture: noop, trackDisposable: noop,
       })
       house.setDay(sky.day)
+      // the chunks drawn round it already carry the property's ground
+      house.worldGround()
       // its spot lights hand-bake their maps (CrtScene does it under the
       // boot cover). A shadow sampler with no map behind it fails every lit
       // draw with INVALID_OPERATION, and the whole tile renders as fog

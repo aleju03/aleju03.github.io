@@ -60,6 +60,7 @@ import { createPixelLook, type PixelLook } from '../../game/render/pixelLook'
 import { texelateTree } from '../../game/render/texel'
 import { BIOME_AIR, airForSky, lightsForSky } from '../../game/render/atmosphere'
 import { GROUND_OFF } from '../../game/levels/space'
+import { createLampFader, WANT_MAX } from '../../game/render/lampFade'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
 import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
 import {
@@ -2444,14 +2445,25 @@ export default function CrtScene({
         const lampRadii = new Float32Array(16)
         const worldLamps = new Float32Array(16 * 3)
         const houseDist = new Float32Array(16)
-        let lampCount = 0
+        /*
+          What the look is actually handed: every lamp still showing, with
+          its fade. A lamp joining the nearest few comes up over a fraction
+          of a second and one leaving goes down, rather than each popping on
+          the frame the set is re-asked (render/lampFade.ts).
+        */
+        const lampFader = createLampFader()
+        const shownXyz = new Float32Array(16 * 3)
+        const shownR = new Float32Array(16)
+        const shownW = new Float32Array(16)
+        let fadeAt = performance.now()
         /*
           The house's own lamps join the streetlamps as pools, the nearest
           few to the lens first, so walking through the house at night finds
-          every lit room pooled on its floor. A dozen at most: the look shades
-          sixteen, and from the front door the street's lamps want the rest.
+          every lit room pooled on its floor. Eight at most: the look shades
+          sixteen, four are kept for lamps fading out, and from the front
+          door the street's lamps want the rest.
         */
-        const HOUSE_POOLS = 10
+        const HOUSE_POOLS = 8
         const gatherLamps = (p: THREE.Vector3) => {
           let n = 0
           const src = house.lamps
@@ -2476,7 +2488,7 @@ export default function CrtScene({
             lampBuf[j * 3 + 2] = lz
             lampRadii[j] = src[i * 4 + 3]
           }
-          const m = outside.nearLamps(p.x, p.z, worldLamps, 16 - n)
+          const m = outside.nearLamps(p.x, p.z, worldLamps, WANT_MAX - n)
           lampBuf.set(worldLamps.subarray(0, m * 3), n * 3)
           lampRadii.fill(8.5, n, n + m)
           return n + m
@@ -2503,8 +2515,11 @@ export default function CrtScene({
             airAskAge = 0
             const b = outside.biomeAt(p.x, p.z)
             airBiome = b ? BIOME_AIR[b] ?? 1 : 1
-            lampCount = air ? gatherLamps(p) : 0
+            lampFader.want(lampBuf, lampRadii, air ? gatherLamps(p) : 0)
           }
+          const now = performance.now()
+          const shown = lampFader.step((now - fadeAt) / 1000, p.x, p.y, p.z, shownXyz, shownR, shownW)
+          fadeAt = now
           airSun.subVectors(outside.sun.position, outside.sun.target.position).normalize()
           const ov = outside.view
           airForSky(
@@ -2560,7 +2575,7 @@ export default function CrtScene({
             look.air.skyAll *= thin
           }
           airAmb.copy(hemi.color).multiplyScalar(hemi.intensity)
-          lightsForSky(look.lights, sky, lampBuf, air ? lampCount : 0, airAmb, lampRadii)
+          lightsForSky(look.lights, sky, shownXyz, air ? shown : 0, airAmb, shownR, shownW)
           // the headlamp is yours: on while you are on your feet in the
           // overworld at night, off at the wheel (the car has its own) and
           // at the desk
@@ -3664,6 +3679,8 @@ export default function CrtScene({
             ])
             if (disposed || !scene) return
             sandboxMod = sbMod
+            // the world draws the yard's ground from here on
+            house.worldGround()
             // synchronous and cheap: Rapier itself downloads behind it and
             // nothing waits for it. Its material is in the scene now, so the
             // covered compile in warmForRoam links it with everything else.
@@ -3723,6 +3740,9 @@ export default function CrtScene({
                 __renderer: webgl,
                 // which level is live, for a drive that crosses a seam
                 __levels: levels,
+                // every solid the walk collides with, for a harness sweeping
+                // a door leaf through its swing against the furniture
+                __obstacles: obstacles,
               })
             }
             fleet = registry.buildFleet({

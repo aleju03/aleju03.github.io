@@ -22,12 +22,17 @@
                                       shots to ~/.cache/overhaul/space
                                       (--space-out <dir>); --dump-globe stops at
                                       orbit and writes the globe's painted map
+    npm run drive -- perf             frame cost (cpu, gpu, draw calls,
+                                      triangles) in the computer room, at
+                                      the front gate by day and night, and
+                                      downtown
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
                          physics harness's flat site, so nothing rolls away)
   --fly-at x,z | place   where the noclip films start (-32,-331: a street in
                          the home city's downtown, for rooftops to cross)
+  --cap n                the frame limiter for this run (roamPrefs' detents)
   --lang es              the Spanish copy; --out <dir> (shots/sandbox)
   --debug                print pointer-lock changes and key presses, which is
                          how an esc that paused the game got caught
@@ -47,7 +52,7 @@
   noclip-first / noclip-third (labelled eight-frame strips). Ports come from PROBE_PORT / PROBE_CDP like the other
   harnesses, and it kills only what it spawned (scripts/probe/cdp.mjs).
 */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -59,7 +64,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang'])
+const VALUED = new Set(['--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -90,6 +95,9 @@ const shim = `(() => {
     return real(q)
   }
   try { localStorage.setItem('portfolio-language', ${JSON.stringify(lang)}) } catch {}
+  // the profile outlives a run, so a cap one run set is cleared by the next
+  try { ${flag('cap', null) === null ? `localStorage.removeItem('alejos-roam-prefs')`
+    : `localStorage.setItem('alejos-roam-prefs', JSON.stringify({ cap: ${Number(flag('cap', 160))} }))`} } catch {}
 })()`
 
 const t0 = Date.now()
@@ -179,6 +187,283 @@ try {
 
   // first person, somewhere open: the harness's own countryside, or --at
   await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+  /*
+    Frame cost at the three places the owner's fans were compared: the
+    computer room (where /world stands up), the front gate looking at the car
+    and the street, and downtown. Every drawn frame's rAF callback is timed on
+    the CPU, and on the GPU through EXT_disjoint_timer_query_webgl2 when the
+    context has it; draw calls, triangles and program switches are counted by
+    wrapping the context's own entry points, so the numbers cover every pass
+    the look makes, not just the scene's. Frames the limiter drops draw
+    nothing and are not counted. Run it with
+    PROBE_CHROME_ARGS="--disable-gpu-vsync --disable-frame-rate-limit" to let
+    rAF outrun the panel, which is the only way the fps column says anything
+    about a cap.
+  */
+  const perf = async () => {
+    console.log('perf')
+    await evaluate(`(() => {
+      const c = [...document.querySelectorAll('canvas')].find((k) => k.width > 64 && k.getContext('webgl2'))
+      const gl = c.getContext('webgl2')
+      const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2')
+      const S = window.__perf = { frames: [], calls: 0, tris: 0, progs: 0, ext: !!ext, on: false, open: [] }
+      const wrap = (name, count, inst) => {
+        const real = gl[name].bind(gl)
+        gl[name] = (...a) => {
+          S.calls++
+          if (a[0] === gl.TRIANGLES) S.tris += (count(a) / 3) * (inst ? a[a.length - 1] : 1)
+          return real(...a)
+        }
+      }
+      wrap('drawElements', (a) => a[1])
+      wrap('drawArrays', (a) => a[2])
+      wrap('drawElementsInstanced', (a) => a[1], true)
+      wrap('drawArraysInstanced', (a) => a[2], true)
+      wrap('drawRangeElements', (a) => a[3])
+      const use = gl.useProgram.bind(gl)
+      gl.useProgram = (p) => { S.progs++; return use(p) }
+      // uploads and stalls: bytes pushed through buffer and texture calls,
+      // and any call that makes the CPU wait on the GPU
+      S.up = 0; S.upN = 0; S.stall = 0
+      const size = (v) => (v && v.byteLength !== undefined ? v.byteLength : v && v.width ? v.width * v.height * 4 : typeof v === 'number' ? v : 0)
+      for (const name of ['bufferData', 'bufferSubData']) {
+        const real = gl[name].bind(gl)
+        gl[name] = (...a) => { S.upN++; S.up += size(a[name === 'bufferData' ? 1 : 2]); return real(...a) }
+      }
+      for (const name of ['texImage2D', 'texSubImage2D', 'texImage3D', 'texSubImage3D']) {
+        const real = gl[name].bind(gl)
+        gl[name] = (...a) => { S.upN++; S.up += size(a[a.length - 1]) || size(a[a.length - 2]); return real(...a) }
+      }
+      for (const name of ['readPixels', 'getError', 'clientWaitSync', 'finish', 'getBufferSubData']) {
+        const real = gl[name].bind(gl)
+        gl[name] = (...a) => { S.stall++; return real(...a) }
+      }
+      const raf = window.requestAnimationFrame.bind(window)
+      const poll = () => {
+        S.open = S.open.filter((f) => {
+          if (!gl.getQueryParameter(f.q, gl.QUERY_RESULT_AVAILABLE)) return true
+          if (!gl.getParameter(ext.GPU_DISJOINT_EXT)) f.gpu = gl.getQueryParameter(f.q, gl.QUERY_RESULT) / 1e6
+          gl.deleteQuery(f.q)
+          f.q = null
+          return false
+        })
+      }
+      window.requestAnimationFrame = (cb) => raf((t) => {
+        if (!S.on) return cb(t)
+        S.calls = 0; S.tris = 0; S.progs = 0; S.up = 0; S.upN = 0; S.stall = 0
+        const q = ext && S.open.length < 8 ? gl.createQuery() : null
+        if (q) gl.beginQuery(ext.TIME_ELAPSED_EXT, q)
+        const t0 = performance.now()
+        try { cb(t) } finally {
+          const cpu = performance.now() - t0
+          if (q) gl.endQuery(ext.TIME_ELAPSED_EXT)
+          if (S.calls > 0) {
+            const f = { t, cpu, calls: S.calls, tris: S.tris, progs: S.progs, up: S.up, upN: S.upN, stall: S.stall, gpu: null, q }
+            S.frames.push(f)
+            if (q) S.open.push(f)
+          } else if (q) gl.deleteQuery(q)
+          if (ext) poll()
+        }
+      })
+      return S.ext
+    })()`).then((ok) => console.log(`  GPU timer query: ${ok ? 'yes' : 'no'}`))
+    // and the card's own view: board power and utilisation, sampled by the
+    // driver. Only comparable between runs made the same way: with vsync
+    // off, headless Chrome's own compositor spins the card at full clock
+    // whatever the page asks for, and the watts say more about that than
+    // about the frame
+    const smi = () => {
+      const out = []
+      let proc = null
+      try {
+        proc = spawn('nvidia-smi', ['--query-gpu=power.draw,utilization.gpu,clocks.gr', '--format=csv,noheader,nounits', '-lms', '250'])
+        proc.stdout.on('data', (d) => {
+          for (const line of String(d).trim().split('\n')) {
+            const v = line.split(',').map(Number)
+            if (v.length === 3 && v.every(Number.isFinite)) out.push(v)
+          }
+        })
+        proc.on('error', () => {})
+      } catch { /* no nvidia-smi: the column stays empty */ }
+      return () => {
+        proc?.kill()
+        const k = out.slice(2)
+        const avg = (i) => (k.length ? k.reduce((a, v) => a + v[i], 0) / k.length : null)
+        return { watts: avg(0), util: avg(1), clock: avg(2) }
+      }
+    }
+    const measure = async (label, secs = 5) => {
+      await evaluate('window.__perf.frames = []; window.__perf.on = true; true')
+      const stop = smi()
+      await sleep(secs * 1000)
+      const card = stop()
+      const r = await evaluate(`(() => {
+        const S = window.__perf; S.on = false
+        const f = S.frames.slice(5)
+        const med = (k) => { const v = f.map((x) => x[k]).filter((x) => x !== null).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null }
+        const p95 = (k) => { const v = f.map((x) => x[k]).filter((x) => x !== null).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length * 0.95)] : null }
+        const span = f.length > 1 ? (f[f.length - 1].t - f[0].t) / 1000 : 1
+        const gpuSum = f.reduce((s, x) => s + (x.gpu ?? 0), 0)
+        const gpuN = f.filter((x) => x.gpu !== null).length
+        return { n: f.length, fps: (f.length - 1) / span, cpu: med('cpu'), cpu95: p95('cpu'), gpu: med('gpu'), gpu95: p95('gpu'),
+          busy: gpuN ? (gpuSum / gpuN) * ((f.length - 1) / span) / 10 : null,
+          calls: med('calls'), tris: med('tris'), progs: med('progs'),
+          up: f.reduce((a, x) => a + x.up, 0) / Math.max(1, f.length), upN: f.reduce((a, x) => a + x.upN, 0) / Math.max(1, f.length),
+          stall: f.reduce((a, x) => a + x.stall, 0) / Math.max(1, f.length) }
+      })()`)
+      const n = (v, d = 2) => (v === null || v === undefined ? '-' : v.toFixed(d))
+      console.log(`  ${label.padEnd(26)} fps ${n(r.fps, 0).padStart(4)}  cpu ${n(r.cpu)} (p95 ${n(r.cpu95)}) ms  ` +
+        `gpu ${n(r.gpu)} (p95 ${n(r.gpu95)}) ms  gpu busy ${n(r.busy, 0)}%  calls ${r.calls}  tris ${Math.round(r.tris / 1000)}k  program switches ${r.progs}  ` +
+        `uploads ${n(r.upN, 1)}/frame ${n(r.up / 1024, 0)} kB  stalls ${n(r.stall, 1)}`)
+      if (card.watts !== null) console.log(`  ${''.padEnd(26)} card: ${n(card.watts, 1)} W  util ${n(card.util, 0)}%  ${n(card.clock, 0)} MHz`)
+      return r
+    }
+    /* --breakdown: what one frame drew, by the object that drew it. Every
+       mesh in the scene gets an onBeforeRender and an onBeforeShadow hook
+       for one frame, labelled by its nearest named ancestors, and the
+       triangles are totted up per label and per pass. */
+    const breakdown = async (label) => {
+      if (!has('breakdown')) return
+      const rows = await evaluate(`new Promise((done) => {
+        const has = (f) => ${JSON.stringify(argv)}.includes('--' + f)
+        const sc = window.__scene
+        const tally = new Map()
+        const name = (o) => {
+          const parts = []
+          for (let p = o; p && parts.length < 3; p = p.parent) if (p.name) parts.unshift(p.name)
+          const m = Array.isArray(o.material) ? o.material[0] : o.material
+          const kind = (m?.name || m?.type || '?') + (o.isInstancedMesh ? ' instanced' : '')
+          // an unnamed chunk mesh is told apart by its size, so the same
+          // draw across two frames still lands on one row
+          return (parts.join('/') || o.type) + ' [' + kind + ']' + (parts.length ? '' : ' #' + (o.geometry?.attributes.position?.count ?? 0))
+        }
+        const tris = (o) => {
+          const g = o.geometry
+          if (!g) return 0
+          const n = g.index ? g.index.count : g.attributes.position?.count ?? 0
+          const d = g.drawRange && g.drawRange.count !== Infinity ? Math.min(n, g.drawRange.count) : n
+          const inst = o.isInstancedMesh ? o.count : g.isInstancedBufferGeometry ? (g.instanceCount ?? 1) : 1
+          return (d / 3) * inst
+        }
+        const hooked = []
+        sc.traverse((o) => {
+          if (!o.isMesh && !o.isPoints && !o.isLine) return
+          // by the scene child it hangs off, so a frame is attributed to the
+          // house, the world, the fleet, the people... as well as per mesh
+          let top = o
+          while (top.parent && top.parent !== sc) top = top.parent
+          const key = has('byroot') ? (top.name || top.type) + ' (' + top.children.length + ')' : name(o)
+          const b = o.onBeforeRender, s = o.onBeforeShadow
+          o.onBeforeRender = function (...a) { const t = tally.get(key) ?? { main: 0, mainN: 0, shadow: 0, shadowN: 0 }; t.main += tris(o); t.mainN++; tally.set(key, t); return b.apply(this, a) }
+          o.onBeforeShadow = function (...a) { const t = tally.get(key) ?? { main: 0, mainN: 0, shadow: 0, shadowN: 0 }; t.shadow += tris(o); t.shadowN++; tally.set(key, t); return s.apply(this, a) }
+          hooked.push([o, b, s])
+        })
+        // two frames: the first may be one the limiter drops
+        requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+          for (const [o, b, s] of hooked) { o.onBeforeRender = b; o.onBeforeShadow = s }
+          done([...tally].map(([k, t]) => [k, t.main / 2, t.mainN / 2, t.shadow / 2, t.shadowN / 2])
+            .sort((a, b) => (b[1] + b[3]) - (a[1] + a[3])).slice(0, 14))
+        })))
+      })`)
+      console.log(`    ${label}: top drawers (per frame: main tris / draws, shadow tris / draws)`)
+      for (const [k, m, mn, sh, shn] of rows) {
+        console.log(`      ${k.slice(0, 64).padEnd(64)} ${String(Math.round(m / 1000)).padStart(5)}k / ${String(mn).padStart(3)}   ${String(Math.round(sh / 1000)).padStart(5)}k / ${String(shn).padStart(3)}`)
+      }
+    }
+    /* --ablate: the same spot measured again with one family of drawers
+       hidden at a time, which is how a frame's cost gets attributed on a
+       card whose timer only sees the whole frame */
+    const ablate = async (label) => {
+      if (!has('ablate')) return
+      const groups = {
+        grass: `o.isInstancedMesh && o.geometry.attributes.position.count === 24`,
+        'flowers': `o.isInstancedMesh && o.geometry.attributes.position.count === 8`,
+        people: `o.isSkinnedMesh && o.material.name === 'playerBody'`,
+        animals: `o.isSkinnedMesh && o.material.name !== 'playerBody'`,
+        'the car': `(() => { for (let p = o; p; p = p.parent) if (p.name === 'car') return true; return false })()`,
+      }
+      for (const [g, test] of Object.entries(groups)) {
+        // hidden by emptying the draw rather than by .visible, which the
+        // world re-asserts every frame for some of these (grass.setVisible)
+        await evaluate(`window.__hid = []; window.__scene.traverse((o) => { if ((o.isMesh || o.isPoints) && ${test}) {
+          // clones share a geometry (the car's wheels), so each is taken once
+          const g = o.geometry; if (window.__hid.some((h) => h[0] === g)) return
+          window.__hid.push([g, g.drawRange.count]); g.setDrawRange(0, 0) } }); window.__hid.length`)
+        await sleep(600)
+        await measure(`${label} - ${g}`, 3)
+        await evaluate(`for (const [g, n] of window.__hid) g.setDrawRange(0, n); true`)
+      }
+    }
+    await run('time 12:00')
+    await sleep(800)
+    // --spots room,gate,downtown: which of them, in that order. The
+    // headless GPU process degrades a minute or so into a session, so a
+    // spot measured late in a long run reads slow; measure one at a time
+    const SPOTS = flag('spots', 'room,gate,downtown').split(',')
+    if (SPOTS.includes('room')) {
+    // 1. the computer room, turned round from the desk to face the room
+    const yaw0 = await evaluate('window.__sandboxWalk.yaw')
+    await look(yaw0 + Math.PI, -0.15)
+    // the first seconds after /world stands are still streaming the ring
+    await sleep(6000)
+    await measure('computer room')
+    await breakdown('computer room')
+    await ablate('room')
+    if (has('shots')) await shot('perf-room')
+    }
+    if (SPOTS.includes('gate')) {
+    // 2. the front gate, looking at the car at the kerb and the street
+    await goTo('5.5 -2.6')
+    await sleep(5000)
+    await stand()
+    await look(0.94, -0.12)
+    await sleep(1500)
+    await measure('front gate, car')
+    await breakdown('front gate')
+    await ablate('gate')
+    if (has('shots')) await shot('perf-gate')
+    await down('KeyW')
+    await sleep(300)
+    await measure('front gate, walking out', 2)
+    await up('KeyW')
+    await goTo('5.5 -2.6')
+    await sleep(2500)
+    await stand()
+    await look(0.94, -0.12)
+    await sleep(1000)
+    await run('time 22:30')
+    await sleep(2500)
+    await measure('front gate, car, night')
+    if (has('shots')) await shot('perf-gate-night')
+    }
+    await run('time 12:00')
+    if (SPOTS.includes('downtown')) {
+    // 3. downtown, down the street
+    await goTo('-32 -331')
+    // a teleport this far streams a whole new ring, which takes a while
+    await sleep(20000)
+    await stand()
+    await look(Math.PI / 2, -0.05)
+    await sleep(1500)
+    await measure('downtown')
+    // and moving, which is how anybody actually spends time out there: the
+    // grass lattices scroll, chunks stream and the sun's map refreshes
+    await down('KeyW')
+    await sleep(500)
+    await measure('downtown, walking', 4)
+    await up('KeyW')
+    if (has('long')) {
+      for (let k = 0; k < 6; k++) {
+        await measure(`downtown +${(k + 1) * 5} s`)
+        if (has('shots')) await shot(`perf-downtown-${k}`)
+      }
+    }
+    await breakdown('downtown')
+    await ablate('downtown')
+    }
+    if (has('shots')) await shot('perf-downtown')
+  }
+
   const AT = flag('at', '5654 -844').replace(',', ' ')
   // a teleport races the tail of /world's stand-up and can be undone by it,
   // so go until the lens is actually there
@@ -199,8 +484,11 @@ try {
     }
     console.log(`  could not get to ${where}`)
   }
-  await goTo(AT)
-  await sleep(1000)
+  if (WHAT.includes('perf')) await perf()
+  if (WHAT.some((w) => w !== 'perf')) {
+    await goTo(AT)
+    await sleep(1000)
+  }
   await run('time 10:30')
   await stand()
   await look(Number(flag('yaw', 0.6)), 0)

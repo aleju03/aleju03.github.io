@@ -157,8 +157,10 @@ vehicles/
                   they reflect, repainted off the sky's own numbers
   chassis.ts      what they share: the support probe, the oriented-footprint
                   sweep against the CollisionSet, the per-surface grip table
-  car.ts          land: a compact coupé. Four suspension raycasts driving
-                  real pitch and roll, five gears, a slip model, a handbrake
+  car.ts          land: a mid-2000s three-door hatch drawn in flat, creased
+                  panels from one section table (`npm run shoot -- body:car`
+                  to see it). Four suspension raycasts driving real pitch
+                  and roll, five gears, a slip model, a handbrake
   boat.ts         water: an open runabout. A V-bottom hull with a hard chine,
                   buoyancy on the drawn swell, and a planing transition
   heli.ts         air: a light two-seat piston helicopter. Thrust along the
@@ -385,7 +387,11 @@ world/
                   between turf and scattered tufts) and a sparse far one
                   behind it, where only a blade's colour survives the
                   distance. Both tiers spend the same triangles the single
-                  sparse field used to; it was all being spent out of range
+                  sparse field used to; it was all being spent out of range.
+                  Each lattice is drawn as 4x4 tiles that are repacked
+                  (live clumps only) when a row scrolls into them and culled
+                  by the lens, which took the field from 1.8M triangles a
+                  frame, drawn whatever you faced, to what is in view
   wind.ts         one wind, shared by everything that sways, and the one
                   onBeforeCompile the chunk material gets, so surface.ts
                   rides along inside it. Also owns the trample: a live press
@@ -1027,6 +1033,15 @@ npm run film -- props:sounds           every prop sound's peak, next to a footst
 npm run film -- props:links            shader links on first spawn/break/blast
 npm run drive -- links                 the same count in the real /world: first
                                        spawn, a break, a fuse and a chain (0)
+npm run drive -- perf [--spots room,gate,downtown] [--breakdown] [--ablate] [--cap n]
+                                       frame cost in the computer room, at the
+                                       front gate and downtown: cpu and GPU-timer
+                                       ms, draw calls, triangles, uploads, and
+                                       with the flags who drew them and what
+                                       hiding each family saves. Run it with
+                                       PROBE_CHROME_ARGS="--disable-gpu-vsync
+                                       --disable-frame-rate-limit" to let the
+                                       limiter, not the panel, set the rate
 
 npm run film -- 'sandbox:physgun-*' --dense   the physgun films, 1p and 3p, + 10 fps sheets
 npm run film -- sandbox:bump           the walker leaning on, charging, landing on and
@@ -1508,8 +1523,14 @@ every one of them has a failure you can see in a harness shot.
   just under the lens down to the floor under a ceiling fixture (about seven
   units), and on nothing a storey below or above it, which is how the house
   lights its rooms at night without a light in the scene
-  (`levels/houseProps.ts`; CrtScene hands the nearest ten in ahead of the
+  (`levels/houseProps.ts`; CrtScene hands the nearest eight in ahead of the
   street's).
+- **A lamp fades, it never pops.** The look shades the nearest sixteen, and
+  which sixteen is re-asked every few units of travel, so every pool carries
+  a weight (`lights.weights`, the shader's `uPoolW`) that `render/lampFade.ts`
+  eases up when a lamp joins the set and down when it leaves (indoor lamps
+  also dim with distance before they can be swapped out). Ask it for at most
+  `WANT_MAX` lamps: the spare slots are where the leaving ones fade out.
 - **Light that comes and goes belongs in the look, not in the scene.** A
   PointLight appearing mid-walk changes `NUM_POINT_LIGHTS` and relinks every
   lit program. Lamps are pools (`lights.pools`, xyz and radius) and the
@@ -1580,6 +1601,12 @@ every one of them has a failure you can see in a harness shot.
   `userData.dynamic`.
 - Merge/instance geometry per chunk. Finish model-dependent shader variants
   under the boot cover; time-box later chunk streaming per frame.
+- An instanced pool that follows the camera must still be cullable: tile it
+  (grass.ts) and keep hidden slots out of the draw rather than scaled to
+  zero, because a zero-scale instance still runs its whole vertex shader.
+  And never leave `frustumCulled = false` on something that is only near the
+  camera most of the time: the herd was drawn through the house's walls
+  until it got a bind-pose sphere grown to cover its gallop.
 - Determinism is load-bearing: seed everything (`core/rand.ts`), so worlds
   regenerate identically. The future save-state and multiplayer story
   depends on it.

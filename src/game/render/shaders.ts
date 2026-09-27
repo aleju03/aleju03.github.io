@@ -82,8 +82,11 @@ export const GRADE_FRAG = /* glsl */ `
   uniform vec3 uDuskBand;
   uniform float uAirDim;
 
-  /** lamp pools: world xyz and radius; their count, colour*gain */
+  /** lamp pools: world xyz and radius; each one's fade (0..1, so a lamp
+      joining or leaving the nearest few comes up and goes down rather than
+      popping); their count, colour*gain */
   uniform vec4 uPools[${MAX_POOLS}];
+  uniform float uPoolW[${MAX_POOLS}];
   uniform int uPoolCount;
   uniform vec3 uPoolCol;
   /** how much a lamp lights the air around itself, and that halo's radius */
@@ -282,7 +285,7 @@ export const GRADE_FRAG = /* glsl */ `
           k *= L.w > 0.0
             ? smoothstep(-3.8, -5.2, d.y) * smoothstep(-9.0, -7.5, d.y)
             : (1.0 - smoothstep(-0.7, 0.1, d.y)) * smoothstep(-7.4, -6.6, d.y);
-          pool = max(pool, k * k);
+          pool = max(pool, k * k * uPoolW[i]);
         }
         pool = band(pool * up, 4.0, bayer(p + ivec2(2, 1)), 0.45);
         lit += uPoolCol * pool;
@@ -437,7 +440,7 @@ export const GRADE_FRAG = /* glsl */ `
         vec3 toL = uPools[i].xyz - uCamPos;
         float t = clamp(dot(toL, dirW), 0.0, reach);
         vec3 off = toL - dirW * t;
-        glow += exp(-dot(off, off) / (uHalo.y * uHalo.y));
+        glow += uPoolW[i] * exp(-dot(off, off) / (uHalo.y * uHalo.y));
       }
       // jittered like the pools, or a halo in the sky (which bands with no
       // dithered seam at all) posterizes into a stack of hard rings
