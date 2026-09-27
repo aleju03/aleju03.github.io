@@ -727,6 +727,14 @@ export const createFacets = () => {
 
 export const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
 
+/** any geometry with its normals creased the facets' way: a loft turned
+    from a smooth pebble into moulded panels */
+export const creased = (g: THREE.BufferGeometry) => {
+  const n = toCreasedNormals(g, CREASE)
+  g.dispose()
+  return n
+}
+
 /**
  * Skin a run of rings (all the same length, each a cross-section in order
  * round the body) station to station into `f`, asking `slot(s, k)` what

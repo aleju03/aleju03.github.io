@@ -161,7 +161,7 @@ vehicles/
                   panels from one section table (`npm run shoot -- body:car`
                   to see it). Four suspension raycasts driving real pitch
                   and roll, five gears, a slip model, a handbrake
-  boat.ts         water: an open runabout. A V-bottom hull with a hard chine,
+  boat.ts         water: a centre console with a T-top. A faceted V-bottom hull with a hard chine,
                   buoyancy on the drawn swell, and a planing transition
   heli.ts         air: a light utility (news) helicopter in faceted panels. Thrust along the
                   rotor disc normal, coordinated turns on two keys, auto-hover

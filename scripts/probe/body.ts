@@ -16,6 +16,7 @@ import { createVehicleMaterials } from '../../src/game/vehicles/materials'
 import { buildCar } from '../../src/game/vehicles/car'
 import { buildHeli } from '../../src/game/vehicles/heli'
 import { buildBoat } from '../../src/game/vehicles/boat'
+const buildShip = buildCar
 import { dressLook, lightFor } from './probe'
 import type { SkyState } from '../../src/game/levels/sky'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
@@ -604,13 +605,17 @@ const openSite = () => {
   }
   return { x: 300, z: 300 }
 }
-const machine = (build: typeof buildCar) => (spec: BodySpec, snap: Snap) => {
+const machine = (build: typeof buildCar, empty = false) => (spec: BodySpec, snap: Snap) => {
   const [tw, th] = spec.tile
   machineSite ??= openSite()
   const st = stage(spec.tod, machineSite)
   const vmats = createVehicleMaterials({ texture: (t) => t, add: (d) => d })
   const v = build({ mats: vmats })
-  v.root.position.set(st.x, terrainY(st.x, st.z), st.z)
+  // stood on its lowest point: a boat's origin is its waterline, so on the
+  // grass it would sit with its keel in the ground
+  v.root.updateMatrixWorld(true)
+  const low = Math.min(0, new THREE.Box3().setFromObject(v.root).min.y)
+  v.root.position.set(st.x, terrainY(st.x, st.z) - low, st.z)
   // nose toward -x, so bearings below read as: pi/2 is the right flank
   v.root.rotation.y = Math.PI / 2
   st.scene.add(v.root)
@@ -618,6 +623,7 @@ const machine = (build: typeof buildCar) => (spec: BodySpec, snap: Snap) => {
   v.setDay?.(st.sky.day, st.sky.night)
   const riders: THREE.Object3D[] = []
   for (const [seat, lk] of [[v.driverSeat, LOOKS[0]], [v.passengerSeat, LOOKS[1]]] as const) {
+    if (empty) break
     const rig = buildPlayerBody(EYE, GRAV, lk)
     rig.sit(seat.userData.fit ?? CABIN_FIT, seat === v.passengerSeat)
     seat.add(rig.group)
@@ -630,7 +636,7 @@ const machine = (build: typeof buildCar) => (spec: BodySpec, snap: Snap) => {
   // seated body, crown (hat included) to the seat of the pants
   const fit = riders.map((g) => {
     const bx = new THREE.Box3().setFromObject(g, true)
-    const y0 = v.root.position.y
+    const y0 = v.root.position.y + low
     return `${(bx.min.y - y0).toFixed(2)}..${(bx.max.y - y0).toFixed(2)}`
   }).join(', ')
   // framed off the machine's own size, so a helicopter fits its tiles too
@@ -776,7 +782,7 @@ export const shootBody = (spec: BodySpec) => {
     if (a.startsWith('strip')) return n + 8
     if (a === 'fp') return n + 5
     if (a === 'seat') return n + 9
-    if (a === 'car' || a === 'heli' || a === 'boat' || a === 'ship') return n + 5
+    if (/^(car|heli|boat|ship)(-empty)?$/.test(a)) return n + 5
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
     if (a === 'wardrobe') return n + WARDROBE.length
     return n
@@ -859,9 +865,11 @@ export const shootBody = (spec: BodySpec) => {
     else if (a.startsWith('strip:')) run((sp, s) => strip(sp, a.slice(6), s))
     else if (a === 'fp') run(firstPerson)
     else if (a === 'seat') run(seats)
-    else if (a === 'car') run(machine(buildCar))
-    else if (a === 'heli') run(machine(buildHeli))
-    else if (a === 'boat') run(machine(buildBoat))
+    else if (/^(car|heli|boat|ship)(-empty)?$/.test(a)) {
+      const which = a.replace('-empty', '')
+      const build = which === 'car' ? buildCar : which === 'heli' ? buildHeli : which === 'boat' ? buildBoat : buildShip
+      run(machine(build, a.endsWith('-empty')))
+    }
     else if (a === 'wardrobe') run(wardrobe)
     else if (a.startsWith('folds')) run((sp, sn) => folds(sp, sn, Number(a.split(':')[1] ?? 0)))
     else throw new Error(`unknown body target "${a}"`)
