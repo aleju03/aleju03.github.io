@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { seeded } from '../core/rand'
 import { canvasTexture, makeGlowTexture } from '../core/textures'
-import { noStand, padXZ } from '../physics/collision'
+import { noStand, padXZ, type Solid } from '../physics/collision'
 import { doorCreak, doorLatch, type StepSurface } from '../core/sfx'
 import { applyFixedSurface, SURF, type SurfaceId } from '../world/surface'
 import { buildKitTree } from '../world/treeMesh'
@@ -1240,8 +1240,20 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   solid(HOUSE.minX, CEIL_H, 10.5, HOUSE.maxX, UP, HOUSE.maxZ, true)
   solid(HOUSE.minX, CEIL_H, HOUSE.minZ, STAIR.x0, UP, 10.5, true)
   solid(STAIR.x0, CEIL_H, HOUSE.minZ, HOUSE.maxX, UP, STAIR.z0, true)
-  solid(HOUSE.minX - 0.8, EAVE_Y, HOUSE.minZ - 0.6, HOUSE.maxX + 0.8, RIDGE_Y, HOUSE.maxZ + 0.6)
-  solid(GARAGE.minX, CEIL_H, GARAGE.minZ - 0.5, GARAGE.maxX + 0.6, GARAGE_RIDGE_Y, GARAGE.maxZ + 0.5)
+  // The attic volumes are the roofs' own slopes (collision.ts's Ramp), one
+  // wedge a side from the eaves up to the ridge running front to back: what
+  // stops the boom over the top storey, and a floor on the outside, so a
+  // flight lands on the shingles and a walk goes up to the ridge. They were
+  // noStand boxes to the ridge, and landing on the roof pushed you off it
+  const gableSolid = (x0: number, cx: number, x1: number, eaveY: number, ridgeY: number, z0: number, z1: number) => {
+    for (const [a, b, lo, hi] of [[x0, cx, eaveY, ridgeY], [cx, x1, ridgeY, eaveY]] as const) {
+      const w = solid(a, eaveY - 0.25, z0, b, ridgeY, z1, true)
+      ;(w as Solid).ramp = { axis: 'x', lo, hi }
+    }
+  }
+  gableSolid(HOUSE.minX - 0.14, 0, HOUSE.maxX + 0.14, EAVE_Y, RIDGE_Y, HOUSE.minZ - 0.6, HOUSE.maxZ + 0.6)
+  gableSolid(HOUSE.maxX, (HOUSE.maxX + GARAGE.maxX + 0.28) / 2, GARAGE.maxX + 0.28,
+    CEIL_H, GARAGE_RIDGE_Y, GARAGE.minZ - 0.5, GARAGE.maxZ + 0.5)
 
   /*
     The stairs. Each step is a solid block from the floor to its tread, so

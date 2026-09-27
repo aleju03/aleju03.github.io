@@ -60,7 +60,9 @@ import { GROUPS, type PhysicsWorld, type RBody, type RCollider } from './physics
   is disabled where it is, keeping its transform, and wakes up when someone
   comes back. And a prop found well under the drawn ground (tunnelled, or
   left behind by a heightfield that was not there yet) is lifted back onto it
-  a few times before it is given up on and removed.
+  a few times before it is given up on and removed. A kind that says `floor`
+  (the fleet on the physgun) gets a third, tighter one: its hull's corners
+  are held on the ground after every slice (see `floor`).
 */
 
 export type PropId = number
@@ -199,6 +201,8 @@ interface Rec extends Prop {
       and never past `phaseMax`; -1 when solid */
   phaseUntil: number
   phaseMax: number
+  /** has a convex-hull collider, so it stands on the plain ground */
+  hull: boolean
 }
 
 /** props farther than this from the focus are parked */
@@ -433,6 +437,13 @@ export const createProps = (o: PropsOpts): Props => {
     return t ? t.clone() : null
   }
 
+  /** a convex hull meets the plain ground, everything else the edge-fixed
+      one (physics.ts's GROUPS says why), per collider, so a compound with
+      one hull part in it gets each part right */
+  const isHull = (c: RCollider) => c.shapeType() === R.ShapeType.ConvexPolyhedron
+  const solidGroups = (c: RCollider) => (isHull(c) ? GROUPS.propHull : GROUPS.prop)
+  const phasedGroups = (c: RCollider) => (isHull(c) ? GROUPS.propHullPhased : GROUPS.propPhased)
+
   const colliderDescs = (s: ShapeSpec, mass: number) => {
     const parts = s.type === 'compound' ? s.parts : [{ shape: s, at: undefined, rot: undefined, w: 1 }]
     // a part's share of the mass is its volume times its weight, which is how
@@ -507,10 +518,11 @@ export const createProps = (o: PropsOpts): Props => {
     const carried = ballast ? mass * ballast.share : 0
     for (const d of colliderDescs(shape, mass - carried)) {
       const c = world.createCollider(
-        d.setFriction(kind.friction).setRestitution(kind.restitution).setCollisionGroups(GROUPS.prop)
+        d.setFriction(kind.friction).setRestitution(kind.restitution)
           .setFrictionCombineRule(R.CoefficientCombineRule.Multiply),
         body,
       )
+      c.setCollisionGroups(solidGroups(c))
       colliders.push(c)
     }
     if (ballast && carried > 0) {
@@ -558,18 +570,19 @@ export const createProps = (o: PropsOpts): Props => {
       shape,
       phaseUntil: -1,
       phaseMax: -1,
+      hull: colliders.some(isHull),
     }
     if (opts.phase && opts.phase > 0) {
       r.phaseUntil = pw.time + opts.phase
       r.phaseMax = pw.time + Math.max(1, opts.phase)
-      for (const c of colliders) c.setCollisionGroups(GROUPS.propPhased)
+      for (const c of colliders) c.setCollisionGroups(phasedGroups(c))
       phasing.add(r)
     }
     body.userData = r
     recs.set(id, r)
     for (const c of colliders) byCollider.set(c.handle, r)
     // its floor must exist before its first slice
-    ground.need(chunkX(at.x), chunkZ(at.z))
+    ground.need(chunkX(at.x), chunkZ(at.z), r.hull)
     for (const fn of spawnFns) fn(r)
     return id
   }
@@ -671,7 +684,7 @@ export const createProps = (o: PropsOpts): Props => {
     const x1 = chunkX(x + e)
     const z0 = chunkZ(z - e)
     const z1 = chunkZ(z + e)
-    for (let cz = z0; cz <= z1; cz++) for (let cx = x0; cx <= x1; cx++) ground.need(cx, cz)
+    for (let cz = z0; cz <= z1; cz++) for (let cx = x0; cx <= x1; cx++) ground.need(cx, cz, r.hull)
   }
 
   /* -------------------------------------------------------------- water -- */
@@ -990,7 +1003,7 @@ export const createProps = (o: PropsOpts): Props => {
     for (const r of solidAgain) {
       r.phaseUntil = -1
       phasing.delete(r)
-      for (const c of r.colliders) c.setCollisionGroups(GROUPS.prop)
+      for (const c of r.colliders) c.setCollisionGroups(solidGroups(c))
     }
     solidAgain.length = 0
   }
@@ -1055,6 +1068,7 @@ export const createProps = (o: PropsOpts): Props => {
           r.vz = v.z * k
         }
       }
+      if (r.kind.floor) floor(r)
       // lost under the ground: lift it back, or give up on it
       const gy = o.groundAt(r.cur[0], r.cur[2])
       if (r.cur[1] < gy - Math.max(2, r.radius * LOST_DEPTH) || r.cur[1] < -2000) {
@@ -1069,6 +1083,38 @@ export const createProps = (o: PropsOpts): Props => {
         r.prev.set(r.cur)
       }
     }
+  }
+
+  /*
+    The drawn ground as a floor under a hull's corners, for the kinds that ask
+    (`PropKind.floor`: the fleet's stand-ins). The contact solver already
+    holds them up; what it does not bound is how far a 300 kg hull arriving
+    at a few hundred units a second is inside the ground before the soft
+    contact pushes it back out, which measured two to seven units for a frame
+    or three. So after each slice the corners are read against the ground
+    and, past a slop the solver is allowed, the body is lifted by the rest
+    and its fall into the ground is taken away. Translation and the vertical
+    only: the solver still owns the tumble and the friction.
+  */
+  const FLOOR_SLOP = 0.35
+  const floorQ = new THREE.Quaternion()
+  const floorP = new THREE.Vector3()
+  const floor = (r: Rec) => {
+    if (r.shape.type !== 'hull') return
+    const pts = r.shape.points
+    const c = r.cur
+    floorQ.set(c[3], c[4], c[5], c[6])
+    let depth = 0
+    for (let i = 0; i < pts.length; i += 3) {
+      floorP.set(pts[i], pts[i + 1], pts[i + 2]).applyQuaternion(floorQ)
+      const d = o.groundAt(c[0] + floorP.x, c[2] + floorP.z) - (c[1] + floorP.y)
+      if (d > depth) depth = d
+    }
+    if (depth <= FLOOR_SLOP) return
+    r.body.setTranslation({ x: c[0], y: c[1] + depth - FLOOR_SLOP, z: c[2] }, true)
+    const v = r.body.linvel()
+    if (v.y < 0) r.body.setLinvel({ x: v.x, y: 0, z: v.z }, true)
+    readPose(r, c)
   }
 
   const qa = new THREE.Quaternion()

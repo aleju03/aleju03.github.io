@@ -159,15 +159,46 @@ export const G_WORLD = 1
 export const G_PROP = 2
 export const G_PLAYER = 4
 export const G_VEHICLE = 8
+/** the ground as the hull-shaped props meet it (see ground.ts): its own
+    heightfield, without the internal-edge fix */
+export const G_ROUGH = 16
+/** carried by every prop that is not hull-shaped, and the only thing the
+    smooth (edge-fixed) ground's filter admits */
+export const G_ROUND = 32
 export const groups = (member: number, filter: number) => ((member & 0xffff) << 16) | (filter & 0xffff)
+/*
+  Why the ground comes in two. Rapier's FIX_INTERNAL_EDGES is what lets a
+  ball roll across the lattice's cell seams without a ghost bump at each one
+  (measured on a sloped, noisy field: 52 bumps in 3600 slices without it,
+  none with it), and the same flag drops the contacts of any *convex hull*
+  that lands on it: a hull's manifolds come back separating while it sinks,
+  and it falls out of the world. That is every machine on the physgun (a
+  hull of its stations), a demolition's rubble and the catalogue's few hull
+  kinds, and it did not take a hard throw: set down from three units up, a
+  car went through the ground two times in three. Measured the same in pure
+  Rapier, rotated or not, at any size. Boxes, balls, cylinders and cones
+  are unaffected either way. So each chunk carries both heightfields (the
+  same 289 heights), and a pair only touches when each is in the other's
+  filter: the smooth one admits only G_ROUND, which only non-hull props
+  carry, and only hull props list G_ROUGH.
+
+  The smooth one keeps G_WORLD membership, so every query that asks for
+  "the world" (the beam, the sandbox's raycast) still finds the ground.
+*/
 /** what each kind of collider is and what it meets */
 export const GROUPS = {
   world: groups(G_WORLD, G_PROP),
-  prop: groups(G_PROP, G_WORLD | G_PROP | G_PLAYER | G_VEHICLE),
+  /** the edge-fixed ground: everything but hulls */
+  ground: groups(G_WORLD, G_ROUND),
+  /** the plain ground: hulls only */
+  groundRough: groups(G_ROUGH, G_PROP),
+  prop: groups(G_PROP | G_ROUND, G_WORLD | G_PROP | G_PLAYER | G_VEHICLE),
+  propHull: groups(G_PROP, G_WORLD | G_ROUGH | G_PROP | G_PLAYER | G_VEHICLE),
   /** a prop passing through other props for a moment (a gib being born):
       still a prop, so queries and walkers see it, but its filter leaves
       props out, and a pair touches only when each is in the other's filter */
-  propPhased: groups(G_PROP, G_WORLD | G_PLAYER | G_VEHICLE),
+  propPhased: groups(G_PROP | G_ROUND, G_WORLD | G_PLAYER | G_VEHICLE),
+  propHullPhased: groups(G_PROP, G_WORLD | G_ROUGH | G_PLAYER | G_VEHICLE),
   player: groups(G_PLAYER, G_PROP),
   vehicle: groups(G_VEHICLE, G_PROP),
   /** a query that sees props only (the walker's questions) */

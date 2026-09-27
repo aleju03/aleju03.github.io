@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { CollisionSet } from '../physics/collision'
+import { topAt, type CollisionSet } from '../physics/collision'
 import { seeded } from '../core/rand'
 
 /*
@@ -231,7 +231,7 @@ export function createRagdoll(
             p.z > box.min.z - r &&
             p.z < box.max.z + r &&
             p.y > box.min.y - r &&
-            p.y < box.max.y + r
+            p.y < topAt(box, p.x, p.z) + r
           ) {
             // five exposed faces, nearest one wins, the top included, so a
             // body that lands on the sofa settles on it. There is no bottom
@@ -242,10 +242,12 @@ export function createRagdoll(
             const exitR = box.max.x + r - p.x
             const exitN = p.z - (box.min.z - r)
             const exitF = box.max.z + r - p.z
-            const exitT = box.max.y + r - p.y
+            // (a roof slope's top is its height here, not its ridge)
+            const top = topAt(box, p.x, p.z)
+            const exitT = top + r - p.y
             const m = Math.min(exitL, exitR, exitN, exitF, exitT)
             if (m === exitT) {
-              p.y = box.max.y + r
+              p.y = top + r
               if (q.y < p.y) q.y = p.y
               q.x += (p.x - q.x) * FLOOR_GRIP
               q.z += (p.z - q.z) * FLOOR_GRIP

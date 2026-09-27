@@ -6,7 +6,7 @@ import { suburbHouse } from './houses'
 import { SURF, type SurfaceId } from './surface'
 import {
   BARREL, BODY, BOX, CONE4, CONE12, CYL12, GAMBREL, GLASS_DARK, PLANE, PRISM, TOWER,
-  TUBE12, aabb, box, fork, keepOut, panel, pick, put, shaft, strut, type BuildOut, type Lot,
+  TUBE12, aabb, box, flatRoof, fork, keepOut, panel, pick, put, roofSolids, shaft, strut, type BuildOut, type Lot,
 } from './kitbash'
 
 export type { BuildOut, Lot } from './kitbash'
@@ -216,9 +216,15 @@ const rooftop = (
   const bz = z + sz * (hd - 1.8)
   box(out.solid, '#5b564e', bx, top + 1.5, bz, 3.2, 3.0, 3.6, 0, SURF.plaster)
   box(out.solid, '#3f3b36', bx, top + 3.12, bz, 3.7, 0.26, 4.1, 0, SURF.paving)
+  // the roof is a floor now (flatRoof), so what stands on it is solid: the
+  // bulkhead a box to climb, the tank one to walk round
+  out.boxes.push(aabb(bx, top - 0.5, bz, 1.7, top + 3.25, 1.9))
   if (rng() < tank) {
-    waterTank(out, x - sx * Math.max(0, hw - 2.2), top, z - sz * Math.max(0, hd - 2.2),
-      1.35 + rng() * 0.4, rng)
+    const tx = x - sx * Math.max(0, hw - 2.2)
+    const tz = z - sz * Math.max(0, hd - 2.2)
+    const tr = 1.35 + rng() * 0.4
+    waterTank(out, tx, top, tz, tr, rng)
+    out.boxes.push(noStand(aabb(tx, top - 0.5, tz, tr * 1.05, top + 3.6 + tr * 2.1, tr * 1.05)))
   }
   if (!out.detailed) return
   const units = 1 + Math.floor(dr() * 3)
@@ -226,6 +232,7 @@ const rooftop = (
     const ux = x + (dr() - 0.5) * hw
     const uz = z + (dr() - 0.5) * hd
     box(out.solid, '#999c98', ux, top + 0.6, uz, 1.8, 1.2, 1.3, 0, SURF.panel)
+    out.boxes.push(aabb(ux, top - 0.5, uz, 0.9, top + 1.2, 0.65))
     put(out.solid, PLANE, '#34383a', ux, top + 1.22, uz, -Math.PI / 2, 0, 0, 1.0, 1.0, 1)
   }
   if (dr() < 0.5) {
@@ -421,6 +428,7 @@ export const midriseBlock = (out: BuildOut, lot: Lot) => {
         lx, rise, lz, 0, SURF.plaster)
       box(out.solid, '#8f887c', f.x(0, -1.6), y + h + rise + 0.2, f.z(0, -1.6),
         lx + 0.4, 0.4, lz + 0.4, 0, SURF.paving)
+      out.boxes.push(aabb(f.x(0, -1.6), y + h, f.z(0, -1.6), lx / 2 + 0.2, y + h + rise + 0.4, lz / 2 + 0.2))
     }
     if (out.detailed) {
       for (const [nx, nz, span, yaw] of faces(w, d)) {
@@ -496,7 +504,8 @@ export const midriseBlock = (out: BuildOut, lot: Lot) => {
     rooftop(out, lot.x, lot.z, w, d, y + h + 0.6, rng, dr, 0.15)
   }
 
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, w / 2 + 0.25, y + h + 0.7, d / 2 + 0.25)))
+  // the top course is the roof: a floor to land on
+  flatRoof(out.boxes, lot.x, y - 2, lot.z, w / 2 + 0.25, y + h + 0.7, d / 2 + 0.25)
 }
 
 /** glyph-like marks on a sign board: a run of pale blocks of two sizes, so a
@@ -600,7 +609,7 @@ export const mixedUse = (out: BuildOut, lot: Lot) => {
     keepOut(out, f.x(o, 0.7), f.z(o, 0.7), f.fx ? 0.75 : 1.4, f.fx ? 1.4 : 0.75)
   }
 
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, w / 2 + 0.3, y + h + 0.8, d / 2 + 0.3)))
+  flatRoof(out.boxes, lot.x, y - 2, lot.z, w / 2 + 0.3, y + h + 0.8, d / 2 + 0.3)
 }
 
 /* ---------------------------------------------------------- block-scale -- */
@@ -634,6 +643,7 @@ export const warehouse = (out: BuildOut, lot: Lot) => {
   const geo = roll < 0.4 ? BARREL : roll < 0.7 ? GAMBREL : PRISM
   put(out.solid, geo, metal, lot.x, y + h - 0.05, lot.z,
     0, long ? 0 : Math.PI / 2, 0, run * 1.04, rise, span * 1.06, SURF.panel)
+  roofSolids(out.boxes, geo, lot.x, y + h - 0.05, lot.z, long ? 0 : Math.PI / 2, run * 1.04, rise, span * 1.06)
   // vents along the ridge, which is most of what says "industrial" at range
   const vents = Math.max(2, Math.round(run / 9))
   for (let i = 0; i < vents; i++) {
@@ -719,6 +729,7 @@ export const chapel = (out: BuildOut, lot: Lot) => {
   // across the nave and left most of the roof off the building
   put(out.solid, PRISM, roofC, cx, y + h - 0.05, cz, 0, f.fx ? 0 : Math.PI / 2, 0,
     naveL * 1.04, rise, naveW * 1.14, SURF.shingle)
+  roofSolids(out.boxes, PRISM, cx, y + h - 0.05, cz, f.fx ? 0 : Math.PI / 2, naveL * 1.04, rise, naveW * 1.14)
   out.boxes.push(noStand(aabb(cx, y - 2, cz, nw / 2 + 0.3, y + h, nd / 2 + 0.3)))
 
   // the tower, set at one end of the front elevation
@@ -732,6 +743,8 @@ export const chapel = (out: BuildOut, lot: Lot) => {
   put(out.solid, CONE4, roofC, tx, y + th + 0.6 + tw * 0.9, tz,
     0, lot.face, 0, tw * 1.15, tw * 1.8, tw * 1.15, SURF.shingle)
   out.boxes.push(noStand(aabb(tx, y - 2, tz, tw / 2 + 0.25, y + th, tw / 2 + 0.25)))
+  // the spire as a steep, short-ridged gable: a perch at the top of the town
+  roofSolids(out.boxes, PRISM, tx, y + th + 0.6, tz, 0, 0.5, tw * 1.8, tw * 1.15)
 
   if (out.detailed) {
     // the belfry: dark louvred openings on all four sides, one lit lamp
@@ -851,8 +864,9 @@ export const parkingDeck = (out: BuildOut, lot: Lot) => {
       (f.fx ? d : w) * 0.3, 1.2, 0.3, lot.face)
   }
 
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z,
-    w / 2 + 0.25, y + levels * lift + 2, d / 2 + 0.25)))
+  // the top deck is a floor, and the stair core stands two units proud of it
+  flatRoof(out.boxes, lot.x, y - 2, lot.z, w / 2 + 0.25, y + levels * lift + 0.6, d / 2 + 0.25)
+  out.boxes.push(aabb(cx, y - 2, cz, cw / 2 + 0.1, y + levels * lift + 2, cw / 2 + 0.1))
 }
 
 /* ------------------------------------------------------------ towers ---- */
@@ -879,6 +893,10 @@ const COPPER = '#5b7a6c'
  *   storey, the curtain wall of a later decade).
  * - **The crown** is a copper or slate pyramid, a stepped top with a spire,
  *   a drum and needle, or a flat roof with its plant and bulkhead on show.
+ *
+ * Each stage collides as its own standable box up to its cap, so every
+ * setback is a terrace a flight can land on, and the crown's parts are
+ * solid on top of the last one.
  */
 export const tower = (out: BuildOut, lot: Lot) => {
   const { rng } = lot
@@ -895,6 +913,9 @@ export const tower = (out: BuildOut, lot: Lot) => {
   let w = lot.w
   let d = lot.d
   const f = front(lot)
+  /** each stage's footprint and the top of its cap: the setbacks are
+      terraces you can land on, so each stage is its own standable box */
+  const tiers: Array<{ w: number; d: number; y0: number; y1: number }> = []
 
   for (let s = 0; s < stages; s++) {
     const share = s === stages - 1 ? 1 : 0.42 + rng() * 0.2
@@ -910,8 +931,6 @@ export const tower = (out: BuildOut, lot: Lot) => {
       box(out.solid, shade, lot.x, y + (lobbyH + h) / 2, lot.z, w, h - lobbyH, d, 0,
         SURF.panel)
       out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, cw / 2 + 0.2, y + lobbyH, cd / 2 + 0.2)))
-      out.boxes.push(noStand(aabb(lot.x, y + lobbyH, lot.z, w / 2 + 0.3, y + lot.height,
-        d / 2 + 0.3)))
       // columns round the perimeter, one every six or seven units
       for (const [nx, nz, span] of faces(w, d)) {
         const n = Math.max(2, Math.round(span / 6.5))
@@ -1025,11 +1044,15 @@ export const tower = (out: BuildOut, lot: Lot) => {
         }
       }
     }
+    tiers.push({ w, d, y0: ground && arcade ? y + lobbyH : ground ? y - 2 : bottom - 0.5, y1: bottom + h + 0.6 })
     bottom += h
     if (s < stages - 1) {
       w *= 0.74
       d *= 0.74
     }
+  }
+  for (const t of tiers) {
+    flatRoof(out.boxes, lot.x, t.y0, lot.z, t.w / 2 + 0.3, t.y1, t.d / 2 + 0.3)
   }
 
   // the crown, on the last stage's own footprint
@@ -1039,6 +1062,10 @@ export const tower = (out: BuildOut, lot: Lot) => {
     const rise = Math.min(w, d) * 0.45 + 2
     put(out.solid, CONE4, pick([COPPER, '#3a3f45', '#4a4038'], rng()),
       lot.x, top + rise / 2, lot.z, 0, 0, 0, w * 1.04, rise, d * 1.04, SURF.shingle)
+    // a pyramid read as a short-ridged gable: its middle is a slope to
+    // climb, and its corners fall back to the stage's own roof inside it
+    roofSolids(out.boxes, PRISM, lot.x, top, lot.z, w > d ? 0 : Math.PI / 2,
+      Math.abs(w - d) + 0.5, rise, Math.min(w, d) * 1.04)
     if (tall) shaft(out.solid, '#6a6f74', lot.x, top + rise - 0.4, lot.z, 0.2, 8, 0.06, 6)
   } else if (crown < 0.5) {
     // stepped: two shrinking storeys and a spire
@@ -1049,6 +1076,7 @@ export const tower = (out: BuildOut, lot: Lot) => {
       const sh = 4.4 - i
       box(out.solid, shade, lot.x, sy + sh / 2, lot.z, sw, sh, sd, 0, SURF.panel)
       course(out, lot.x, lot.z, sw, sd, sy + sh + 0.2, 0.4, 0.2, '#3f444a')
+      out.boxes.push(aabb(lot.x, sy - 0.5, lot.z, sw / 2 + 0.2, sy + sh + 0.4, sd / 2 + 0.2))
       sy += sh + 0.4
       sw *= 0.66
       sd *= 0.66
@@ -1060,11 +1088,15 @@ export const tower = (out: BuildOut, lot: Lot) => {
     const r = Math.min(w, d) * 0.3
     shaft(out.solid, shade, lot.x, top, lot.z, r, 5, r * 0.92, 12, 0, SURF.panel)
     shaft(out.solid, '#3f444a', lot.x, top + 5, lot.z, r * 1.08, 0.6, r * 1.08, 12)
+    // the drum's lid, as the square inside its circle, and the needle a post
+    out.boxes.push(aabb(lot.x, top - 0.5, lot.z, r * 0.72, top + 5.6, r * 0.72))
+    out.boxes.push(noStand(aabb(lot.x, top + 5.6, lot.z, r * 0.6, top + 5.6 + r * 3.2, r * 0.6)))
     put(out.solid, CONE12, '#6a6f74', lot.x, top + 5.6 + r * 1.6, lot.z, 0, 0, 0,
       r * 1.2, r * 3.2, r * 1.2, SURF.panel)
   } else {
     // flat, with the machinery on show
     box(out.solid, '#4a5054', lot.x, top + 2.2, lot.z, w * 0.46, 4.4, d * 0.4, 0, SURF.panel)
+    out.boxes.push(aabb(lot.x, top - 0.5, lot.z, w * 0.23, top + 4.4, d * 0.2))
     rooftop(out, lot.x, lot.z, w, d, top, rng, dr, 0)
     if (tall) {
       shaft(out.solid, '#6a6f74', lot.x, top + 4.4, lot.z, 0.22, 9, 0.1, 6)
@@ -1072,10 +1104,6 @@ export const tower = (out: BuildOut, lot: Lot) => {
     }
   }
 
-  if (!arcade) {
-    out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z,
-      lot.w / 2 + 0.3, y + lot.height, lot.d / 2 + 0.3)))
-  }
 }
 
 /**
@@ -1102,9 +1130,13 @@ export const slabTower = (out: BuildOut, lot: Lot) => {
   box(out.solid, '#3f444a', lot.x, y + h + 0.5, lot.z, w + 0.7, 1.0, d + 0.7, 0, SURF.paving)
   // rooftop plant and a mast, which is what a flat top needs to not read as a
   // block that ran out of budget
-  box(out.solid, '#4a5054', lot.x + (rng() - 0.5) * w * 0.3, y + h + 2.6,
-    lot.z + (rng() - 0.5) * d * 0.3, w * 0.34, 3.2, d * 0.6, 0, SURF.panel)
+  const px = lot.x + (rng() - 0.5) * w * 0.3
+  const pz = lot.z + (rng() - 0.5) * d * 0.3
+  box(out.solid, '#4a5054', px, y + h + 2.6, pz, w * 0.34, 3.2, d * 0.6, 0, SURF.panel)
   shaft(out.solid, '#6a6f74', lot.x, y + h + 4.2, lot.z, 0.22, 9, 0.1, 6)
+  // the cap is the roof, and the plant on it a box to climb
+  flatRoof(out.boxes, lot.x, y - 2, lot.z, w / 2 + 0.4, y + h + 1.0, d / 2 + 0.4)
+  out.boxes.push(aabb(px, y + h, pz, w * 0.17, y + h + 4.2, d * 0.3))
   box(out.solid, '#5a1e1e', lot.x, y + h + 13.4, lot.z, 0.7, 1.0, 0.7)
 
   if (out.detailed) {
@@ -1153,7 +1185,6 @@ export const slabTower = (out: BuildOut, lot: Lot) => {
     }
   }
 
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, w / 2 + 0.4, y + h, d / 2 + 0.4)))
 }
 
 /**
@@ -1204,6 +1235,10 @@ export const roundTower = (out: BuildOut, lot: Lot) => {
   box(out.solid, '#5a1e1e', lot.x, y + h + 12.0, lot.z, 0.6, 0.9, 0.6)
 
   out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, r + 0.3, y + h, r + 0.3)))
+  // the cap ring as the square most of it covers (its corners overhang a
+  // little air), so the round roof is somewhere to land; the plant drum on it
+  out.boxes.push(aabb(lot.x, y - 2, lot.z, rt * 0.9, y + h + 1.0, rt * 0.9))
+  out.boxes.push(aabb(lot.x, y + h, lot.z, rt * 0.5, y + h + 3.6, rt * 0.5))
 }
 
 /* --------------------------------------------------- enterable shop ---- */
@@ -1300,8 +1335,7 @@ export const shopFront = (out: BuildOut, lot: Lot) => {
     // the roof slab, so the shell's roofline is the detailed shop's
     box(out.solid, '#4a463f', lot.x, floorY + SHOP_H + 0.3, lot.z, W + 0.6, 0.6, D + 0.6, 0,
       SURF.paving)
-    out.boxes.push(noStand(aabb(lot.x, baseY - 2, lot.z,
-      W / 2 + 0.2, floorY + SHOP_H, D / 2 + 0.2)))
+    flatRoof(out.boxes, lot.x, baseY - 2, lot.z, W / 2 + 0.2, floorY + SHOP_H + 0.6, D / 2 + 0.2)
     return
   }
 
@@ -1318,13 +1352,13 @@ export const shopFront = (out: BuildOut, lot: Lot) => {
 
   // ceiling slab doubling as the flat roof, with a light lining underneath:
   // the slab's own underside is roof-dark, and a dark ceiling swallowed the
-  // whole room
+  // whole room. Its collision top is a floor: somewhere to land on a flight
   boxL('#4a463f', 0, 0, floorY + SHOP_H + 0.3,
     2 * halfU + 0.6, 0.6, 2 * halfV + 0.6, SURF.paving)
   boxL('#8d867a', 0, 0, floorY + SHOP_H - 0.05,
     2 * halfU - 2 * WALL_T + 0.2, 0.1, 2 * halfV - 2 * WALL_T + 0.2, SURF.plaster)
   solidL(0, 0, 2 * halfU + 0.6, 2 * halfV + 0.6,
-    floorY + SHOP_H, floorY + SHOP_H + 0.6)
+    floorY + SHOP_H, floorY + SHOP_H + 0.6, true)
 
   /* ---- walls, doorway facing the street ---- */
 

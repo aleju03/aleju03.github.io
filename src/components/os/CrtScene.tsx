@@ -4053,6 +4053,8 @@ export default function CrtScene({
           // clear of it (chaseCam.ts; the aim follows it in resolveAim)
           // an emote is watched square on, the body in the middle of the frame
           chaseEnv.shoulder = emoteCam ? 0 : SHOULDER * shoulderSide
+          // the head's own climb or fall, which the boom follows rigidly
+          chaseEnv.vy = sitting ? 0 : step.vy
           chase.apply(camera, dt, chaseEnv)
           // the gun and the beam go where the lens ended up: in the hand of
           // the body when the boom is out, in front of the lens when it is not
