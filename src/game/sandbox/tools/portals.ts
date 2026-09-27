@@ -10,19 +10,27 @@ import type { Prop, Sandbox } from '../sandbox'
   about how a portal is drawn (portalView.ts) or what the gun looks like
   (viewmodel.ts). The belt fires it; CrtScene asks it about the walker.
 
-  **Placing one** is a ray, then a fit. The ray is the walk's own world: the
-  level's collision boxes (the house, its furniture, every building in the
-  streamed ring), its ground (the terrain, marched and bisected), the props
-  (a shot that lands on a crate fizzles, the way Portal will not open a hole
-  in a cube) and the sea (likewise). The fit is Portal's: the whole oval has
-  to lie on the surface, so a dozen short rays down the normal from points
-  round its rim must all land on the plane of the hit. A shot near an edge
-  is nudged inward to the nearest place it fits, a shot at a wall a little
-  above the floor slides down until the oval stands on the floor (a doorway
-  you can walk through, not a window you have to jump at), and a shot that
-  cannot fit anywhere near fizzles. A floor or ceiling portal is turned so
-  its top points the way you were looking. On the terrain the fit tolerates
-  the ground's roll and lifts the oval clear of the highest bump under it.
+  **Placing one** is a ray, then a fit, and both answer to what is *drawn*.
+  The ray is cast against the walk's own world (the level's collision
+  boxes, its ground, the props, the sea) because that is cheap, but a
+  collision box is not a surface: lamp posts wear guard boxes, buildings
+  stand broad-phase boxes proud of their walls and past their corners, and a
+  portal fitted to one of those hung in the air. So the drawn meshes round
+  the hit are felt for along the ray (`soupAround`: the few hundred
+  triangles there, flattened once per shot), and a box with nothing drawn
+  near its face is set aside and the ray goes on. A prop or the sea fizzles
+  the shot, the way Portal will not open a hole in a cube. The fit is
+  Portal's: the whole oval has to lie on that drawn surface, so seventeen
+  short rays down the normal from its rim and middle must each meet a facet
+  facing the same way, and all of them one plane within four centimetres;
+  the oval then sits on that plane, two centimetres proud. A shot near an
+  edge is nudged inward to the nearest place it fits, a shot at a wall a
+  little above the floor slides down until the oval stands on the floor (a
+  doorway you can walk through, not a window you have to jump at), a floor
+  or ceiling portal is turned so its top points the way you were looking,
+  and anything that cannot fit near where it landed fizzles: a lamp post, a
+  corner, ground that rolls under it. Headless there is nothing drawn, and
+  the boxes and the ground function stand in for the surface.
 
   **The pair's transform** is the whole trick. Each portal is a frame: right,
   up and the normal out of the surface, at its centre. Going in one is going
@@ -324,12 +332,21 @@ const castWorld = (
  * The drawn triangles of a few meshes that lie within a box round a point
  * and face along `n`, flattened into world space once per shot, so the
  * fit's two dozen rays test a few hundred triangles rather than a merged
- * chunk's hundred thousand each. Returns a ray caster over them (distance
- * to the nearest, or null), or null when nothing drawn is there.
+ * chunk's hundred thousand each. `minCos` is how square to `n` a facet
+ * must face to be kept. Returns a ray caster over them (distance to the
+ * nearest, and that facet's normal turned toward `n`), or null when nothing
+ * drawn is there.
  */
+export interface Soup {
+  /** the distance to the nearest facet along a ray, within `max`, or null */
+  cast: (o: THREE.Vector3, d: THREE.Vector3, max: number) => number | null
+  /** the last facet `cast` met, its unit normal (either winding) */
+  readonly normal: THREE.Vector3
+}
+
 export const soupAround = (
-  meshes: readonly THREE.Mesh[], at: THREE.Vector3, r: number, n: THREE.Vector3,
-): ((o: THREE.Vector3, d: THREE.Vector3, max: number) => number | null) | null => {
+  meshes: readonly THREE.Mesh[], at: THREE.Vector3, r: number, n: THREE.Vector3, minCos = 0.85,
+): Soup | null => {
   const tris: number[] = []
   const a = new THREE.Vector3()
   const b = new THREE.Vector3()
@@ -373,7 +390,7 @@ export const soupAround = (
       fn.crossVectors(e1.subVectors(b, a), e2.subVectors(c, a))
       const len = fn.length()
       // facing the shot (either winding: a mesh may be drawn double-sided)
-      if (len < 1e-9 || Math.abs(fn.dot(n)) / len < 0.85) continue
+      if (len < 1e-9 || Math.abs(fn.dot(n)) / len < minCos) continue
       tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z)
     }
   }
@@ -382,8 +399,11 @@ export const soupAround = (
   const p = new THREE.Vector3()
   const q = new THREE.Vector3()
   const t0 = new THREE.Vector3()
-  return (o, d, max) => {
+  const normal = new THREE.Vector3()
+  let hitI = -1
+  const cast = (o: THREE.Vector3, d: THREE.Vector3, max: number) => {
     let best: number | null = null
+    hitI = -1
     for (let i = 0; i < T.length; i += 9) {
       // Moller-Trumbore, both windings
       e1.set(T[i + 3] - T[i], T[i + 4] - T[i + 1], T[i + 5] - T[i + 2])
@@ -401,9 +421,18 @@ export const soupAround = (
       const t = e2.dot(q) * inv
       if (t < 0 || t > max || (best !== null && t >= best)) continue
       best = t
+      hitI = i
+    }
+    if (hitI >= 0) {
+      const i = hitI
+      e1.set(T[i + 3] - T[i], T[i + 4] - T[i + 1], T[i + 5] - T[i + 2])
+      e2.set(T[i + 6] - T[i], T[i + 7] - T[i + 1], T[i + 8] - T[i + 2])
+      normal.crossVectors(e1, e2).normalize()
+      if (normal.dot(n) < 0) normal.negate()
     }
     return best
   }
+  return { cast, normal }
 }
 
 /* ----------------------------------------------------------- the module -- */
@@ -434,6 +463,10 @@ export function createPortals(): Portals {
   const back = new THREE.Vector3()
   const RIM = 12
   const FIT_OFF = 0.6
+  /** how far off the fitted plane any sample of the drawn surface may lie */
+  const FLUSH = 0.04
+  /** the drawn surface's facets must face within this of the oval's normal */
+  const FACING = Math.cos(THREE.MathUtils.degToRad(14))
   /** the samples: round the rim, and a few inside so a post in the middle
       of a wall is not bridged */
   const SAMPLES: [number, number][] = []
@@ -444,54 +477,107 @@ export function createPortals(): Portals {
   SAMPLES.push([0, 0], [0.5, 0], [-0.5, 0], [0, 0.55], [0, -0.55])
 
   interface Fit {
+    /** the drawn surface's plane, relative to the trial one: its offset
+        along the normal at the centre, and its rise per unit right and up */
+    off: number
+    a: number
+    b: number
+    /** the farthest any sample lies off that plane */
+    resid: number
+    /** headless: how far to lift the oval clear of the ground's highest bump */
     lift: number
     hosts: Set<Solid>
+    /** how far the collision surface stands in front of the plane */
+    inset: number
   }
   const fitHosts = new Set<Solid>()
-  const fitOut: Fit = { lift: 0, hosts: fitHosts }
+  const fitOut: Fit = { off: 0, a: 0, b: 0, resid: 0, lift: 0, hosts: fitHosts, inset: 0 }
+  /** the drawn surface round this shot (see `soupAround`), or null headless */
+  let drawn: Soup | null = null
+  const sx = new Float64Array(SAMPLES.length)
+  const sy = new Float64Array(SAMPLES.length)
+  const sd = new Float64Array(SAMPLES.length)
+
+  /** the boxes under the oval, and how far proud of it the nearest stands:
+      they are what the walker must be let into (they are not the surface) */
+  const collectHosts = (c: THREE.Vector3, n: THREE.Vector3, up: THREE.Vector3, right: THREE.Vector3, boxes: readonly Solid[]) => {
+    fitHosts.clear()
+    let inset = 0
+    back.copy(n).negate()
+    for (const [px, py] of SAMPLES) {
+      q.copy(c).addScaledVector(right, px * PORTAL_HW).addScaledVector(up, py * PORTAL_HH)
+      o.copy(q).addScaledVector(n, 3.2)
+      for (const b of boxes) {
+        if (b.hull) continue
+        const t = rayBox(o, back, b, bn)
+        if (t > 3.2 + 0.9) continue
+        fitHosts.add(b)
+        if (3.2 - t > inset) inset = 3.2 - t
+      }
+    }
+    return inset
+  }
+
   /**
-   * Does an oval centred on `c` lie on the surface? Every sample's ray from
-   * FIT_OFF off the plane must land on it, within a hair for a box and
-   * within the ground's roll for the terrain, facing the same way.
+   * Does an oval centred on `c` lie on a surface you can see? Every sample's
+   * ray from FIT_OFF off the plane must meet a drawn facet facing along the
+   * normal, and all of them must lie on one plane within FLUSH; that plane
+   * (which may lean a little off the trial one) is where the oval goes.
+   * Headless there is nothing drawn, and the collision boxes and the ground
+   * function stand in for it, as they did before anything was drawn.
    */
-  /** the drawn wall's own ray caster for this shot, and how far behind the
-      box face it stands where the shot hit (see `soupAround`) */
-  let drawn: ((o: THREE.Vector3, d: THREE.Vector3, max: number) => number | null) | null = null
-  let drawnDepth = 0
   const fits = (
     c: THREE.Vector3, n: THREE.Vector3, up: THREE.Vector3, right: THREE.Vector3,
     boxes: readonly Solid[], world: PortalWorld, onGround: boolean,
   ): Fit | null => {
+    back.copy(n).negate()
+    if (drawn) {
+      let k = 0
+      for (const [px, py] of SAMPLES) {
+        q.copy(c).addScaledVector(right, px * PORTAL_HW).addScaledVector(up, py * PORTAL_HH)
+        o.copy(q).addScaledVector(n, FIT_OFF)
+        const t = drawn.cast(o, back, FIT_OFF + 0.7)
+        if (t === null || drawn.normal.dot(n) < FACING) return null
+        sx[k] = px * PORTAL_HW
+        sy[k] = py * PORTAL_HH
+        sd[k] = FIT_OFF - t // + the surface stands proud of the trial plane
+        k++
+      }
+      // the plane through them: least squares on d = a x + b y + off
+      let Sxx = 0, Syy = 0, Sxy = 0, Sx = 0, Sy = 0, Sd = 0, Sxd = 0, Syd = 0
+      for (let i = 0; i < k; i++) {
+        Sxx += sx[i] * sx[i]; Syy += sy[i] * sy[i]; Sxy += sx[i] * sy[i]
+        Sx += sx[i]; Sy += sy[i]; Sd += sd[i]; Sxd += sx[i] * sd[i]; Syd += sy[i] * sd[i]
+      }
+      const m = new THREE.Matrix3().set(Sxx, Sxy, Sx, Sxy, Syy, Sy, Sx, Sy, k)
+      if (Math.abs(m.determinant()) < 1e-9) return null
+      const sol = new THREE.Vector3(Sxd, Syd, Sd).applyMatrix3(m.invert())
+      let resid = 0
+      for (let i = 0; i < k; i++) resid = Math.max(resid, Math.abs(sd[i] - (sol.x * sx[i] + sol.y * sy[i] + sol.z)))
+      if (resid > FLUSH || Math.abs(sol.x) > 0.25 || Math.abs(sol.y) > 0.25) return null
+      fitOut.a = sol.x
+      fitOut.b = sol.y
+      fitOut.off = sol.z
+      fitOut.resid = resid
+      fitOut.lift = 0
+      fitOut.inset = collectHosts(q.copy(c).addScaledVector(n, sol.z), n, up, right, boxes)
+      return fitOut
+    }
+    // headless: the boxes and the ground function are the surface
     fitHosts.clear()
     let lift = 0
-    back.copy(n).negate()
-    for (const [sx, sy] of SAMPLES) {
-      q.copy(c).addScaledVector(right, sx * PORTAL_HW).addScaledVector(up, sy * PORTAL_HH)
+    for (const [px, py] of SAMPLES) {
+      q.copy(c).addScaledVector(right, px * PORTAL_HW).addScaledVector(up, py * PORTAL_HH)
       o.copy(q).addScaledVector(n, FIT_OFF)
-      // the wall you can see must be there too, flat, at the depth it had
-      // where the shot landed: past a building's corner the box runs on and
-      // the wall does not
-      if (drawn) {
-        const tv = drawn(o, back, FIT_OFF + drawnDepth + 0.6)
-        if (tv === null || Math.abs(tv - FIT_OFF - drawnDepth) > 0.09) return null
-      }
       if (!castWorld(o, back, FIT_OFF + 0.9, boxes, world, hit)) return null
-      const dev = FIT_OFF - hit.t // + the surface stands proud of the plane here
-      if (hit.ground !== onGround) {
-        // a kerb or a slab lying on the ground under a ground portal (and
-        // the ground under a box portal) are one floor as long as they are
-        // flush with it
-        if (Math.abs(dev) > 0.08) return null
-      }
+      const dev = FIT_OFF - hit.t
       if (onGround) {
-        if (dev > 0.55 || dev < -0.4) return null
-        if (hit.normal.dot(n) < 0.75) return null
+        if (Math.abs(dev) > 0.12 || hit.normal.dot(n) < 0.9) return null
         if (dev > lift) lift = dev
-      } else {
-        if (Math.abs(dev) > 0.05 || hit.normal.dot(n) < 0.99) return null
-      }
+      } else if (Math.abs(dev) > 0.05 || hit.normal.dot(n) < 0.99) return null
       if (hit.box) fitHosts.add(hit.box)
     }
+    fitOut.a = fitOut.b = fitOut.off = fitOut.resid = fitOut.inset = 0
     fitOut.lift = lift
     return fitOut
   }
@@ -529,6 +615,20 @@ export function createPortals(): Portals {
   const C = new THREE.Vector3()
   const best = new THREE.Vector3()
   const WORLD_UP = new THREE.Vector3(0, 1, 0)
+  const skipped = new Set<Solid>()
+  const pass: Solid[] = []
+
+  /** the oval's frame on a surface facing `n`: a wall stands it upright, a
+      floor or a ceiling turns its top the way the shot was going */
+  const frame = (n: THREE.Vector3, dir: THREE.Vector3) => {
+    if (Math.abs(n.y) < 0.7) U.copy(WORLD_UP).addScaledVector(n, -n.y).normalize()
+    else {
+      U.copy(dir).addScaledVector(n, -dir.dot(n))
+      if (U.lengthSq() < 1e-6) U.set(0, 0, -1).addScaledVector(n, -n.z)
+      U.normalize()
+    }
+    R.crossVectors(U, n).normalize()
+  }
 
   const fire = (color: PortalColor, eye: THREE.Vector3, dirIn: THREE.Vector3, world: PortalWorld): PortalShot => {
     const dir = dirIn.clone().normalize()
@@ -536,59 +636,90 @@ export function createPortals(): Portals {
     // a prop in the way stops the shot there
     const sb = world.sandbox
     const ph = sb ? sb.raycast(eye, dir, max, { props: true, world: false }) : null
-    const boxes = world.collision.boxes
-    const got = castWorld(eye, dir, max, boxes, world, hit)
-    if (ph && (!got || ph.distance < hit.t)) {
-      return fail(color, 'prop', ph.point, ph.normal)
-    }
-    if (!got || hit.t <= 0) {
-      P.copy(eye).addScaledVector(dir, got ? 0 : max)
-      return fail(color, 'miss', P, WORLD_UP)
-    }
-    P.copy(eye).addScaledVector(dir, hit.t)
-    N.copy(hit.normal)
-    // the sea is no surface either
-    if (world.waterY !== undefined && P.y < world.waterY + 0.05 && eye.y > world.waterY) {
-      const tw = (world.waterY - eye.y) / dir.y
-      P.copy(eye).addScaledVector(dir, tw)
-      return fail(color, 'water', P, WORLD_UP)
-    }
-    const onGround = hit.ground
-    // the frame: a wall stands its oval upright; a floor or a ceiling turns
-    // its top the way the shot was going
-    if (Math.abs(N.y) < 0.7) U.copy(WORLD_UP).addScaledVector(N, -N.y).normalize()
-    else {
-      U.copy(dir).addScaledVector(N, -dir.dot(N))
-      if (U.lengthSq() < 1e-6) U.set(0, 0, -1).addScaledVector(N, -N.z)
-      U.normalize()
-    }
-    R.crossVectors(U, N).normalize()
-    const near = nearBoxes(world, P, PORTAL_HH + 4)
-    // the drawn wall behind a box: felt for once, at the hit
+    skipped.clear()
     drawn = null
-    drawnDepth = 0
-    if (!onGround && world.meshesNear) {
-      const soup = soupAround(world.meshesNear(P, PORTAL_HH + 3.5), P, PORTAL_HH + 3.5, N)
-      o.copy(P).addScaledVector(N, FIT_OFF)
-      back.copy(N).negate()
-      const t = soup ? soup(o, back, FIT_OFF + 1.5) : null
-      if (soup && t !== null) {
-        drawn = soup
-        drawnDepth = t - FIT_OFF
+    let onGround = false
+    /*
+      Where the shot lands on something you can see. The ray is cast against
+      the collision boxes and the ground (cheap, and what the walker lives
+      in), and then the drawn meshes are felt for along the ray round that
+      hit. A box with nothing drawn near its face (a guard round a lamp post,
+      a broad-phase box, one standing proud of its wall or running past a
+      building's corner) is no surface: it is set aside and the ray goes on.
+    */
+    for (let attempt = 0; ; attempt++) {
+      pass.length = 0
+      for (const b of world.collision.boxes) if (!skipped.has(b)) pass.push(b)
+      const got = castWorld(eye, dir, max, pass, world, hit)
+      if (ph && (!got || ph.distance < hit.t)) return fail(color, 'prop', ph.point, ph.normal)
+      if (!got || hit.t <= 0) {
+        P.copy(eye).addScaledVector(dir, got ? 0 : max)
+        return fail(color, 'miss', P, WORLD_UP)
       }
+      P.copy(eye).addScaledVector(dir, hit.t)
+      N.copy(hit.normal)
+      // the sea is no surface either
+      if (world.waterY !== undefined && P.y < world.waterY + 0.05 && eye.y > world.waterY) {
+        const tw = (world.waterY - eye.y) / dir.y
+        P.copy(eye).addScaledVector(dir, tw)
+        return fail(color, 'water', P, WORLD_UP)
+      }
+      onGround = hit.ground
+      if (!world.meshesNear) break
+      // the drawn surface along the ray, from a little before the hit to a
+      // little past it
+      const t0 = Math.max(0, hit.t - 1.5)
+      const t1 = hit.t + 3
+      C.copy(eye).addScaledVector(dir, (t0 + t1) / 2)
+      const along = soupAround(world.meshesNear(C, (t1 - t0) / 2 + 0.5), C, (t1 - t0) / 2 + 0.5, dir, 0.02)
+      o.copy(eye).addScaledVector(dir, t0)
+      const ta = along ? along.cast(o, dir, t1 - t0) : null
+      if (along && ta !== null) {
+        P.copy(o).addScaledVector(dir, ta)
+        N.copy(along.normal)
+        if (N.dot(dir) > 0) N.negate()
+        // a facet within a few degrees of square is square (a wall's own
+        // triangles lean by rounding, and the oval would lean with them)
+        for (let k = 0; k < 3; k++) {
+          const v = N.getComponent(k)
+          if (Math.abs(Math.abs(v) - 1) < 0.01) N.set(0, 0, 0).setComponent(k, Math.sign(v))
+        }
+        N.normalize()
+        break
+      }
+      if (hit.box && attempt < 4) {
+        skipped.add(hit.box)
+        continue
+      }
+      return fail(color, 'surface', P, N)
+    }
+    frame(N, dir)
+    const near = nearBoxes(world, P, PORTAL_HH + 4)
+    // the drawn surface round the landing, facing it, felt once per shot
+    if (world.meshesNear) {
+      drawn = soupAround(world.meshesNear(P, PORTAL_HH + 3.5), P, PORTAL_HH + 3.5, N, FACING)
+      if (!drawn) return fail(color, 'surface', P, N)
     }
     // where it fits: the hit itself, or the nearest spot round it
     let fit: Fit | null = null
-    let lift = 0
+    const keep = { off: 0, a: 0, b: 0, lift: 0, inset: 0, resid: 0 }
     const hosts: Solid[] = []
-    const tryAt = (c: THREE.Vector3) => {
-      const f = fits(c, N, U, R, near, world, onGround)
-      if (!f) return false
+    const take = (c: THREE.Vector3, f: Fit) => {
       best.copy(c)
-      lift = f.lift
+      keep.off = f.off
+      keep.a = f.a
+      keep.b = f.b
+      keep.lift = f.lift
+      keep.inset = f.inset
+      keep.resid = f.resid
       hosts.length = 0
       for (const h of f.hosts) hosts.push(h)
       fit = f
+    }
+    const tryAt = (c: THREE.Vector3) => {
+      const f = fits(c, N, U, R, near, world, onGround)
+      if (!f) return false
+      take(c, f)
       return true
     }
     if (!tryAt(P)) {
@@ -615,14 +746,16 @@ export function createPortals(): Portals {
         down = s
       }
       if (stopped && down > 0) {
-        best.copy(start).addScaledVector(U, -down)
-        const f = fits(best, N, U, R, near, world, onGround)
-        if (f) {
-          lift = f.lift
-          hosts.length = 0
-          for (const h of f.hosts) hosts.push(h)
-        }
+        C.copy(start).addScaledVector(U, -down)
+        const f = fits(C, N, U, R, near, world, onGround)
+        if (f) take(C, f)
       }
+    }
+    // onto the drawn plane itself: its offset, and its lean
+    best.addScaledVector(N, keep.off)
+    if (keep.a !== 0 || keep.b !== 0) {
+      N.addScaledVector(R, -keep.a).addScaledVector(U, -keep.b).normalize()
+      frame(N, dir)
     }
     // not on top of its partner
     const other = list[1 - color]
@@ -636,17 +769,17 @@ export function createPortals(): Portals {
         const need = 1.02 / Math.sqrt(Math.max(1e-6, sep))
         C.copy(other.pos).addScaledVector(R, dx * need).addScaledVector(U, dy * need)
         C.addScaledVector(N, tv.subVectors(best, C).dot(N))
-        if (Math.hypot(dx, dy) < 0.05 || !fits(C, N, U, R, near, world, onGround)) return fail(color, 'surface', P, N)
-        best.copy(C)
+        const f = Math.hypot(dx, dy) < 0.05 ? null : fits(C, N, U, R, near, world, onGround)
+        if (!f || Math.abs(f.off) > FLUSH) return fail(color, 'surface', P, N)
+        best.copy(C).addScaledVector(N, f.off)
       }
     }
-    // onto the wall you can see: a box stands its shoulder pad proud of it
-    const inset = drawn ? drawnDepth : 0
     drawn = null
-    best.addScaledVector(N, lift - inset + (onGround ? 0.04 : 0.025))
+    // flush, a hair proud so it never fights the surface for depth
+    best.addScaledVector(N, keep.lift + 0.02)
     const p = placeAt(color, world.level, best, N, U, null, hosts)
     p.ground = onGround
-    p.inset = Math.max(0, inset)
+    p.inset = Math.max(0, keep.inset)
     shot.ok = true
     shot.color = color
     shot.reason = undefined

@@ -1895,6 +1895,83 @@ try {
     const here = () => evaluate('window.__sandboxCamera.position.toArray()')
     const tpFeet = (x, z, y, yaw) => evaluate(`(window.__sandbox.console.host.teleport(${x}, ${z}, ${y}, ${yaw}), true)`)
     const f1 = (v) => v.map((n) => n.toFixed(1)).join(', ')
+    /* The drawn surface, felt for independently of the gun: a ray-triangle
+       test over every visible, non-instanced mesh under the house, the
+       streamed ground and the Moon, in world space. `window.__drawnHit(o, d,
+       max)` answers the distance to the nearest drawn facet (or -1). */
+    await evaluate(`(() => {
+      const V = window.__sandboxCamera.position.constructor
+      const roots = () => [window.__house?.root, window.__scene.getObjectByName('earth-ground'), window.__outside.moonPortal.root()].filter(Boolean)
+      const shown = (o) => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true }
+      const a = new V(), b = new V(), c = new V(), e1 = new V(), e2 = new V(), p = new V(), q = new V(), t0 = new V(), ctr = new V()
+      window.__drawnHit = (o, d, max) => {
+        let best = -1
+        for (const r of roots()) r.traverse((m) => {
+          if (!m.isMesh || m.isInstancedMesh || m.isSkinnedMesh || /^portal-(blue|orange)$/.test(m.name) || !shown(m)) return
+          const g = m.geometry; if (!g.boundingSphere) g.computeBoundingSphere()
+          ctr.copy(g.boundingSphere.center).applyMatrix4(m.matrixWorld)
+          const rad = g.boundingSphere.radius * m.matrixWorld.getMaxScaleOnAxis()
+          if (ctr.distanceTo(o) > rad + max) return
+          const pos = g.attributes.position, idx = g.index, n = idx ? idx.count : pos.count
+          for (let i = 0; i + 2 < n; i += 3) {
+            a.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(m.matrixWorld)
+            if (a.distanceTo(o) > max + 40) continue
+            b.fromBufferAttribute(pos, idx ? idx.getX(i + 1) : i + 1).applyMatrix4(m.matrixWorld)
+            c.fromBufferAttribute(pos, idx ? idx.getX(i + 2) : i + 2).applyMatrix4(m.matrixWorld)
+            e1.subVectors(b, a); e2.subVectors(c, a); p.crossVectors(d, e2)
+            const det = e1.dot(p); if (Math.abs(det) < 1e-9) continue
+            t0.subVectors(o, a); const u = t0.dot(p) / det; if (u < 0 || u > 1) continue
+            q.crossVectors(t0, e1); const v = d.dot(q) / det; if (v < 0 || u + v > 1) continue
+            const t = e2.dot(q) / det; if (t < 0 || t > max) continue
+            if (best < 0 || t < best) best = t
+          }
+        })
+        return best
+      }
+      // the largest gap between a portal's rim (and middle) and the drawn
+      // surface behind it, and how many samples found none
+      window.__rimGap = (color) => {
+        const P = window.__tools.portals.list[color]; if (!P) return null
+        const right = new V().crossVectors(P.up, P.n), d = P.n.clone().negate()
+        let worst = 0, miss = 0
+        const pts = [[0, 0]]
+        for (let i = 0; i < 12; i++) pts.push([Math.cos(i / 12 * Math.PI * 2) * 0.97, Math.sin(i / 12 * Math.PI * 2) * 0.97])
+        for (const [x, y] of pts) {
+          const o = P.pos.clone().addScaledVector(right, x * 1.45).addScaledVector(P.up, y * 2.45).addScaledVector(P.n, 0.5)
+          const t = window.__drawnHit(o, d, 1.5)
+          if (t < 0) { miss++; continue }
+          worst = Math.max(worst, Math.abs(t - 0.5))
+        }
+        return { worst, miss }
+      }
+      return true
+    })()`)
+    const rim = async (color, label) => {
+      const g = await evaluate(`window.__rimGap(${color})`)
+      if (!g) return console.log(`  ${label}: no portal`)
+      const ok = g.miss === 0 && g.worst < 0.05
+      console.log(`  ${label}: rim-to-drawn-surface max ${g.worst.toFixed(3)} u, ${g.miss} of 13 samples on nothing${ok ? '' : '  <-- WRONG'}`)
+    }
+    /** a portal photographed side-on: the lens ~70 degrees off its normal,
+        seven units out, so a portal standing off its surface shows the gap */
+    const sideOn = async (color, name) => {
+      const p = await evaluate(`(() => { const P = window.__tools.portals.list[${color}]; return P ? { pos: P.pos.toArray(), n: P.n.toArray(), up: P.up.toArray() } : null })()`)
+      if (!p) return
+      const floor = p.n[1] > 0.6
+      // across the surface: for a wall, sideways; for a floor, along its up
+      const r = floor ? p.up : [p.up[1] * p.n[2] - p.up[2] * p.n[1], 0, p.up[0] * p.n[1] - p.up[1] * p.n[0]]
+      const el = (floor ? 20 : 20) * Math.PI / 180
+      const off = [0, 1, 2].map((k) => p.n[k] * Math.sin(el) * 7 + r[k] * Math.cos(el) * 7)
+      const x = p.pos[0] + off[0]
+      const z = p.pos[2] + off[2]
+      const gy = await evaluate(`window.__levels.current.groundYAt(${x}, ${z})`)
+      await tpFeet(x, z, Math.max(gy, p.pos[1] + off[1] - 3.84) + 0.2, 0)
+      await sleep(1400)
+      const c = await here()
+      await look(Math.atan2(-(p.pos[0] - c[0]), -(p.pos[2] - c[2])), Math.atan2(p.pos[1] - c[1], Math.hypot(p.pos[0] - c[0], p.pos[2] - c[2])))
+      await sleep(900)
+      await pShot(name)
+    }
 
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
     await goTo(flag('at', '-32 -331').replace(',', ' '))
@@ -1954,6 +2031,12 @@ try {
     console.log(`  blue:   ${blue ? `${f1(blue.pos)}  facing ${f1(blue.n)}` : 'none  <-- WRONG'}`)
     if (!moonTrip) console.log(`  orange: ${orange ? `${f1(orange.pos)}  facing ${f1(orange.n)}` : 'none  <-- WRONG'}`)
     console.log('  a shot costs ' + await evaluate(`(() => { const v = window.__fireMs.slice().sort((a, b) => a - b); return v.length ? v[v.length >> 1].toFixed(1) + ' ms median, ' + v[v.length - 1].toFixed(1) + ' ms worst over ' + v.length : '-' })()`))
+    // flush on what is drawn, and seen from the side
+    await phase('flush')
+    if (blue) await rim(0, 'blue')
+    if (orange) await rim(1, 'orange')
+    if (blue) await sideOn(0, 'side-blue')
+    if (orange) await sideOn(1, 'side-orange')
     if (moonTrip && blue) {
       /* The Moon by portal: orange fired at the Moon in the night sky opens
          on the slab there; blue on its wall downtown is then looked
@@ -2021,6 +2104,8 @@ try {
         await look(null, 0.12)
         await sleep(900)
         await pShot('moon-2-arrived')
+        await rim(1, 'orange on the slab')
+        await sideOn(1, 'moon-side-slab')
         // turned round: the slab, and home through it
         const sp = await evaluate(`(() => { const p = window.__tools.portals.list[1]; return { pos: p.pos.toArray(), n: p.n.toArray() } })()`)
         await face(sp, 8, 'moon-3-home-through-the-slab')
@@ -2154,6 +2239,13 @@ try {
       const floor = await portalAt(0)
       console.log(`  blue on the ground: ${floor ? `${f1(floor.pos)}  facing ${f1(floor.n)}` : 'none'}`)
       if (floor && floor.n[1] > 0.6) {
+        await rim(0, 'blue on the ground')
+        const back = await here()
+        await sideOn(0, 'side-floor-blue')
+        await tpFeet(back[0], back[2], back[1] - 3.84, 0)
+        await sleep(800)
+      }
+      if (floor && floor.n[1] > 0.6) {
         const n1 = await evaluate('window.__portalWalk.last.count')
         await tpFeet(floor.pos[0], floor.pos[2], floor.pos[1] + 30, 0)
         await look(null, -1.3)
@@ -2185,6 +2277,65 @@ try {
         const cp = await evaluate(`(() => { const sb = window.__sandbox, v = window.__sandboxCamera.position.clone(); sb.getVelocity(window.__crate, v); const p = v.clone(); sb.getTransform(window.__crate, p); return [p.toArray(), v.toArray()] })()`)
         console.log(`  crate: ${await evaluate('window.__propPass')} pass(es), out at ${f1(cp[0])} moving ${f1(cp[1])}`)
       }
+    }
+    if (!moonTrip) {
+      /* Two shots that must not open anything: a lamp post (its guard box
+         is a collision face with a pole a few centimetres across drawn in
+         it), and a collision face with nothing drawn behind it. Each must
+         fizzle, or land on a real surface past it, flush */
+      await phase('fizzles')
+      await evaluate('window.__tools.portals.close(); window.__pEv.length = 0; true')
+      const c0 = await here()
+      const pole = await evaluate(`(() => { let best = null, bd = 1e9
+        for (const b of window.__obstacles) { const w = b.max.x - b.min.x, d = b.max.z - b.min.z, h = b.max.y - b.min.y
+          if (w > 0.9 || d > 0.9 || w < 0.05 || h < 4) continue
+          const x = (b.min.x + b.max.x) / 2, z = (b.min.z + b.max.z) / 2, dd = Math.hypot(x - ${c0[0]}, z - ${c0[2]})
+          if (dd < bd) { bd = dd; best = [x, b.min.y, z, b.max.y] } }
+        return best })()`)
+      const shootAt = async (tx, ty, tz, from, label) => {
+        const gy = await evaluate(`window.__levels.current.groundYAt(${from[0]}, ${from[1]})`)
+        await tpFeet(from[0], from[1], gy + 0.2, 0)
+        await sleep(1200)
+        const c = await here()
+        await look(Math.atan2(-(tx - c[0]), -(tz - c[2])), Math.atan2(ty - c[1], Math.hypot(tx - c[0], tz - c[2])))
+        await sleep(500)
+        await evaluate('window.__tools.portals.close(); window.__pEv.length = 0; true')
+        await click('Mouse0')
+        const ev = await evaluate('window.__pEv.join(" ")')
+        const p = await portalAt(0)
+        if (!p) console.log(`  ${label}: ${/fizzle/.test(ev) ? 'fizzled' : 'nothing opened'} (${ev || 'no event'})`)
+        else {
+          const g = await evaluate('window.__rimGap(0)')
+          const d = Math.hypot(p.pos[0] - tx, p.pos[2] - tz)
+          console.log(`  ${label}: opened ${d.toFixed(1)} u from the aim point, rim gap ${g.worst.toFixed(3)}, ${g.miss} misses` +
+            (g.miss === 0 && g.worst < 0.05 && d > 1 ? ' (a real surface behind it)' : '  <-- WRONG'))
+        }
+        await pShot(label.replace(/\W+/g, '-'))
+      }
+      if (!pole) console.log('  no lamp post near  <-- WRONG')
+      else await shootAt(pole[0], pole[1] + 2.4, pole[2], [pole[0] + 5, pole[2] + 0.5], 'fizzle-lamp-post')
+      // a box face with nothing drawn within three units behind it
+      const empty = await evaluate(`(() => { const V = window.__sandboxCamera.position.constructor, c = window.__sandboxCamera.position
+        const boxes = window.__obstacles.filter((b) => b.max.y - b.min.y > 2.5 && Math.hypot((b.min.x + b.max.x) / 2 - c.x, (b.min.z + b.max.z) / 2 - c.z) < 110)
+        boxes.sort((a, b) => Math.hypot((a.min.x + a.max.x) / 2 - c.x, (a.min.z + a.max.z) / 2 - c.z) - Math.hypot((b.min.x + b.max.x) / 2 - c.x, (b.min.z + b.max.z) / 2 - c.z))
+        for (const b of boxes.slice(0, 90)) {
+          const w = b.max.x - b.min.x, d = b.max.z - b.min.z
+          const faces = [[1, 0, b.max.x, (b.min.z + b.max.z) / 2, d], [-1, 0, b.min.x, (b.min.z + b.max.z) / 2, d], [0, 1, (b.min.x + b.max.x) / 2, b.max.z, w], [0, -1, (b.min.x + b.max.x) / 2, b.min.z, w]]
+          for (const [nx, nz, fx, fz, span] of faces) {
+            if (span < 3.2) continue
+            const y = Math.min(b.min.y + 2.6, b.max.y - 0.5)
+            const x = nx ? fx : fx, z = nz ? fz : fz
+            const o = new V(x + nx * 0.5, y, z + nz * 0.5)
+            if (window.__drawnHit(o, new V(-nx, 0, -nz), 3.5) >= 0) continue
+            return { x, y, z, nx, nz }
+          }
+        }
+        return null })()`)
+      // and the spot the owner saw an orange portal hanging over the
+      // pavement (before the fit answered to what is drawn), shot the same way
+      await shootAt(-15.7, 2.0, -272.4, [-15.7, -281.4], 'fizzle-or-flush-old-floating-spot')
+      if (!empty) console.log('  no empty collision face near (every box nearby has a drawn wall in it)')
+      else await shootAt(empty.x, empty.y, empty.z, [empty.x + empty.nx * 7, empty.z + empty.nz * 7], 'fizzle-empty-box-face')
     }
     const plinks = await evaluate('window.__pLinks')
     console.log(`  ${plinks.length} programs linked from the catalogue on${plinks.length ? ': ' + plinks.join(', ') : ''}`)
