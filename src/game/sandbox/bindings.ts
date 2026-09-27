@@ -37,6 +37,8 @@ export const BINDINGS = {
   /** third person. Moved off V when noclip took it (Garry's Mod's own key);
       if the owner wants V back for the camera, swap these two lines */
   camera: ['F5'],
+  /** in third person: look over the other shoulder */
+  shoulder: ['KeyH'],
   noclip: ['KeyV'],
   /** the cockpit/chase swap at the wheel. V there too, since there is no
       noclip in a car and the key was already learned for this */

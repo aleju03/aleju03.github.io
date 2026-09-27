@@ -15,12 +15,11 @@
   physgun's own states (holding, frozen) are two more entries in `TINT`.
 
   Pure presentation. What it is aimed at is decided by the scene (one
-  sandbox raycast a frame, mirrored here only when it changes), and so is
-  where it sits: dead centre in first person, and in third person wherever
-  the head's gaze actually lands, which the scene projects and moves this
-  with (see CrtScene's crosshair wrapper), hidden while that point is behind
-  your own body, because the middle of a chase view is the back of your head
-  and a mark drawn on it points at nothing.
+  sandbox raycast a frame, mirrored here only when it changes). It sits dead
+  centre in both views: in third person the lens stands over a shoulder
+  (player/chaseCam.ts), so the middle of the screen is clear of the body,
+  and the scene aims from the head at whatever is under this mark
+  (CrtScene's `resolveAim`), so what it covers is what you get.
 */
 
 export type CrosshairAim = 'none' | 'prop' | 'held' | 'frozen'
