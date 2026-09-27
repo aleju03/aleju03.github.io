@@ -453,7 +453,7 @@ export default function CrtScene({
   const [orders, setOrders] = useState<OrderLine[]>([])
   /** noclip, mirrored for the key hints */
   const [flying, setFlying] = useState(false)
-  // the emote wheel is up (g held); its arrow is driven through the api, not
+  // the emote wheel is up (b, until something is picked); its arrow is driven through the api, not
   // through state, so a mouse move is a style write rather than a render
   const [wheelOpen, setWheelOpen] = useState(false)
   const wheelApi = useRef<EmoteWheelApi>(null)
@@ -1250,7 +1250,7 @@ export default function CrtScene({
         }
         /*
           Emotes and the point key (game/player/emotes.ts; the poses are the
-          rig's). `wheel` is the cursor on the emote wheel while g is held:
+          rig's). `wheel` is the cursor on the emote wheel while it is up (b):
           the mouse drives it instead of the view (see onTurn). `emoteCam`
           swings the chase camera out for an emote and back when it ends,
           decided once as it starts. The point is aimed from the right
@@ -1259,6 +1259,10 @@ export default function CrtScene({
         */
         const wheel = { open: false, x: 0, y: 0 }
         let emoteCam = false
+        // the click (or right click) that closed the wheel, held down: not a
+        // shot until it comes back up
+        let wheelSwallow = false
+        const digitWas = new Array<boolean>(9).fill(false)
         let pointHudNow = false
         const POINT_REACH = 80
         const POINT_SKIP = 1.2
@@ -2227,7 +2231,7 @@ export default function CrtScene({
           // walk.turn it would silently spin the suspended walker's heading
           // and stand you down facing somewhere you never looked
           onTurn: (dx, dy, sign) => {
-            // g held: the mouse swings the emote wheel's arrow, not the view
+            // the emote wheel up: the mouse swings its arrow, not the view
             if (wheel.open && !fleet.riding) {
               wheel.x += dx
               wheel.y += dy
@@ -3579,21 +3583,28 @@ export default function CrtScene({
           toolsLive = !!tools && !!sandbox && !sitting && !rig.down && fps && !rig.acting
           if (tools && !pausedNow) {
             const k = input.keys
-            if (edges.pressed('slot1')) tools.select(0)
-            else if (edges.pressed('slot2')) tools.select(1)
-            else if (edges.pressed('slot3')) tools.select(2)
-            else if (edges.pressed('slot4')) tools.select(3)
+            // the number keys pick emotes while the wheel is up, and the click
+            // that played one is not also a shot (it is swallowed until the
+            // button comes up)
+            if (wheelSwallow && !held(k, 'grab') && !held(k, 'freeze')) wheelSwallow = false
+            const gunsOff = wheel.open || wheelSwallow
+            if (!wheel.open) {
+              if (edges.pressed('slot1')) tools.select(0)
+              else if (edges.pressed('slot2')) tools.select(1)
+              else if (edges.pressed('slot3')) tools.select(2)
+              else if (edges.pressed('slot4')) tools.select(3)
+            }
             toolAim.eye.copy(camera.position)
             // from the head, at whatever is under the crosshair (resolveAim)
             resolveAim(camera.position, camera.quaternion, camera.getWorldDirection(toolAim.dir))
             toolAim.yaw = walk.yaw
             toolIn.dt = dt
-            toolIn.fire = held(k, 'grab')
-            toolIn.alt = held(k, 'freeze')
-            toolIn.rotate = held(k, 'rotate')
+            toolIn.fire = held(k, 'grab') && !gunsOff
+            toolIn.alt = held(k, 'freeze') && !gunsOff
+            toolIn.rotate = held(k, 'rotate') && !gunsOff
             toolIn.snap = held(k, 'snap')
             toolIn.reload = held(k, 'unfreeze')
-            toolIn.wheel = input.takeWheel()
+            toolIn.wheel = gunsOff ? (input.takeWheel(), 0) : input.takeWheel()
             toolIn.lookX = toolLook.x
             toolIn.lookY = toolLook.y
             toolLook.x = toolLook.y = 0
@@ -3754,7 +3765,7 @@ export default function CrtScene({
             if (edges.pressed('spawnMenu') && !sitting) setMenu(!menuNow)
             if (edges.pressed('undo')) undoLast()
           }
-          // m arms the microphone, n swaps the talk mode, and b is held to
+          // m arms the microphone, n swaps the talk mode, and g is held to
           // push to talk
           if (edges.pressed('mic') && voice?.available) {
             const arming = !voice.enabled
@@ -3764,28 +3775,49 @@ export default function CrtScene({
           }
           if (edges.pressed('talkMode') && voice?.enabled) voice.cycleMode()
           voice?.setPushing(held(input.keys, 'pushToTalk'))
-          // g held: the emote wheel; letting go plays what its arrow points
-          // at, and its hub stops whatever is playing. Not from a seat, a heap
-          // or a level cut, and a pause shuts it without playing anything
+          // b: the emote wheel, which stays up until something is picked.
+          // The mouse swings its arrow and a click plays what it points at
+          // (the hub plays nothing and stops whatever is playing), 1-9 play a
+          // slice straight off, and b again, a right click or esc put it away
+          // with nothing played. Not from a seat, a heap or a level cut, and a
+          // pause puts it away too
           const actFree = !levels.frozen && !sitting && !rig.down && !pausedNow
-          if (edges.pressed('emote') && actFree && !wheel.open) {
-            wheel.open = true
-            wheel.x = wheel.y = 0
-            setWheelOpen(true)
-          } else if (wheel.open && (!held(input.keys, 'emote') || !actFree)) {
+          const closeWheel = () => {
             wheel.open = false
             setWheelOpen(false)
-            if (actFree) {
-              const slice = wheelSlice(wheel.x, wheel.y, WHEEL_DEAD)
-              if (slice < 0) rig.act(0)
-              else {
-                rig.act(EMOTES[slice].id)
-                // out to third person to watch it, unless it is an upper-body
-                // one begun on the move, where a swinging camera would only
-                // get in the way of the walk
-                emoteCam = EMOTES[slice].full || step.gait < 0.1
-              }
+          }
+          const playSlice = (slice: number) => {
+            closeWheel()
+            if (slice < 0) {
+              rig.act(0)
+              return
             }
+            rig.act(EMOTES[slice].id)
+            // out to third person to watch it, unless it is an upper-body one
+            // begun on the move, where a swinging camera would only get in the
+            // way of the walk
+            emoteCam = EMOTES[slice].full || step.gait < 0.1
+          }
+          let digit = -1
+          for (let i = 0; i < 9; i++) {
+            const down = input.keys.has(`Digit${i + 1}`)
+            if (down && !digitWas[i]) digit = i
+            digitWas[i] = down
+          }
+          if (!wheel.open) {
+            if (edges.pressed('emote') && actFree) {
+              wheel.open = true
+              wheel.x = wheel.y = 0
+              setWheelOpen(true)
+            }
+          } else if (!actFree || edges.pressed('emote') || edges.pressed('freeze')) {
+            closeWheel()
+            wheelSwallow = true
+          } else if (edges.pressed('grab')) {
+            playSlice(wheelSlice(wheel.x, wheel.y, WHEEL_DEAD))
+            wheelSwallow = true
+          } else if (digit >= 0 && digit < EMOTES.length) {
+            playSlice(digit)
           }
           // and back in when it ends, or once an upper-body one is walked on
           if (emoteCam && (!rig.acting || (!rig.actFull && step.gait > 0.15))) emoteCam = false
@@ -5226,9 +5258,14 @@ export default function CrtScene({
           {pointHud && <PointMark />}
         </div>
       )}
-      {/* the emote wheel, while g is held (EmoteWheel.tsx) */}
+      {/* the emote wheel, from b until something is picked (EmoteWheel.tsx) */}
       {roam && walking && !paused && !driving && !seated && wheelOpen && (
-        <EmoteWheel ref={wheelApi} labels={t.sandbox.emotes.names} hub={t.sandbox.emotes.hub} />
+        <EmoteWheel
+          ref={wheelApi}
+          labels={t.sandbox.emotes.names}
+          hub={t.sandbox.emotes.hub}
+          hint={keyHint(t.sandbox.emotes.hint, language)}
+        />
       )}
       {/* the nudge that exists so nobody walks a whole session as guest-08c9
           without ever learning there was a choice. Not a button: at this

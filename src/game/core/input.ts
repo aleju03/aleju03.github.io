@@ -17,9 +17,10 @@ import { BOUND_CODES, SWALLOWED_CODES } from '../sandbox/bindings'
 // which keys are tracked, and which have their browser default swallowed,
 // both come from the one key table (sandbox/bindings.ts): movement, sprint and
 // crouch, the flop, the camera, noclip, the console and spawn menu keys, the
-// emote wheel (g, held) and the point key (f or the middle button, held), the
-// multiplayer keys (m arms the microphone, n swaps the talk mode, b is the
-// push-to-talk key, the one the scene reads as a held state), and F9, the
+// emote wheel (b, a toggle, with 1-9 picking a slice while it is up) and the
+// point key (f or the middle button, held), the multiplayer keys (m arms the
+// microphone, n swaps the talk mode, g is the push-to-talk key, the one the
+// scene reads as a held state), and F9, the
 // collision wireframe (collisionDebug.ts), which lives here rather than
 // behind a build flag because the thing it diagnoses (a solid that disagrees
 // with the geometry it stands for) only ever shows up in a real walk. The

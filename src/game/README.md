@@ -70,12 +70,17 @@ player/
                      must fire when they arrive, not after they are drawn
                      inside somebody). Lean (push apart), charge, tackle,
                      stomp, trample, through one indexed `Bumpable` interface
-  emotes.ts          the emote wheel's nine emotes (g) as pose layers: per
+  emotes.ts          the emote wheel's nine emotes (b) as pose layers: per
                      moment, hips, trunk, head and mitten targets the rig
                      blends over its own pose and solves with the arm IK;
                      upper-body ones play while walking, whole-body ones
                      hold the facing and cancel on a step. Also the wire
                      packing (id and age in one integer) and wheelSlice()
+  selfContact.ts     how far a point is from a body's own surface (the bean
+                     for its build, and whatever it wears, sampled off the
+                     variant's own vertices): what keeps an emote's or a
+                     point's mittens out of the body wearing them.
+                     `npm run measure -- bodies reach` must never go below 0
   chaseCam.ts        createChaseCam(): the third-person boom (f5), over the
                      right shoulder (h swaps it), exactly clipped against the
                      level, folding onto the head when crushed; also frames

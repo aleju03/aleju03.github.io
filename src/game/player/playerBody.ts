@@ -10,6 +10,7 @@ import {
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
 import { emoteDef, emoteFrame, makeEmoteFrame } from './emotes'
+import { createSelfContact, type SelfContact } from './selfContact'
 
 /*
   The player's body: a bean in the Fall Guys mould, one seamless soft
@@ -299,6 +300,9 @@ export interface PlayerRig {
   /** a whole-body emote is on screen, playing or still letting go: the
       scene swings the camera out for it */
   readonly actFull: boolean
+  /** 0..1, how much of the emote layer is on the body right now (its own
+      envelope times the fade of a cancel) */
+  readonly actWeight: number
 }
 
 export type Emote = 'stretch' | 'bounce' | 'wave' | 'look'
@@ -1966,7 +1970,7 @@ export function buildPlayerBody(
   ) => {
     const a = UARM
     const b = FARM + 0.1 // to the mitten, not the wrist
-    ikS.set(side * SHOULDER_X, SHOULDER_OFF, 0)
+    ikS.copy(upper.position)
     ikU.subVectors(target, ikS)
     const d = THREE.MathUtils.clamp(ikU.length(), 0.05, a + b - 0.01)
     ikU.normalize()
@@ -2043,6 +2047,165 @@ export function buildPlayerBody(
     if (wl > 0.01) handL.quaternion.slerp(qAir.identity(), wl)
     if (wr > 0.01) handR.quaternion.slerp(qAir.identity(), wr)
     if (wAct > 0.01 && actF.lid < 1) paint.setLid(1 + (actF.lid - 1) * wAct)
+  }
+
+  /*
+    Keeping a body's own mittens out of it. An emote or a point names where a
+    mitten should be, and that place can be inside the body: a clap aimed in
+    front of a bean's chest is inside a chubby one's belly, a facepalm lands
+    in the face under a cap's brim, and a point across the body goes through
+    it. So after everything else, each arm an emote or the point key is
+    driving is sampled from the elbow to the tip of the mitten, every sample
+    measured against the body's own surface (`selfContact.ts`: the bean for
+    this build, and whatever it is wearing) at the arm's thickness there plus
+    a hair, and an arm found inside is solved again with its mitten moved
+    out to the surface: on it, not through it, so a facepalm rests on the
+    face and a clap meets in front of the belly. Where the arm cannot reach
+    the place it was pushed to (a short arm over a wide belly), the target is
+    walked back and forth between "outside the body" and "within reach of the
+    shoulder" until it is both, and an elbow that is the part inside is
+    swung out instead. The shoulder may slide forward round the flank to
+    reach (`PROTRACT`), which is what a real one does to clap. While an emote
+    plays both arms are kept out, the one it is not posing too, since a
+    trunk tipped into a laugh leans its hanging arm into itself; a body not
+    emoting or pointing pays nothing.
+  */
+  let contact: SelfContact | null = null
+  /** spheres standing in for an arm from above the elbow to the fingertips:
+      [bone (0 upper arm, 1 forearm, 2 hand), x, y, z in the bone's frame,
+      radius]. In the hand's frame x is through the palm, z out of the thumb
+      side, and the mitten is a paddle 0.085 thick, 0.13 long and 0.135 wide
+      with the thumb standing 0.16 proud of its middle (bodyShape's mitt) */
+  const ARM_SAMPLES: ReadonlyArray<readonly [0 | 1 | 2, number, number, number, number]> = [
+    // (the elbow's generous: a bent one's inner crease skins in toward the
+    // flank past the bone line)
+    [0, 0, -UARM * 0.8, 0, 0.18],
+    [1, 0, 0, 0, 0.2], // the elbow
+    // close enough together that nothing thin (a mic boom) fits between
+    // two of them: spheres further apart than their radius leave a waist
+    [1, 0, -FARM * 0.3, 0, 0.14],
+    [1, 0, -FARM * 0.6, 0, 0.13],
+    [1, 0, -FARM * 0.85, 0, 0.125],
+    [2, 0, 0, 0, 0.12], // the wrist
+    [2, 0, -0.1, 0.06, 0.09], // the mitten, thumb side
+    [2, 0, -0.1, -0.06, 0.09], // and the other edge
+    [2, 0, -0.1, 0.15, 0.05], // the thumb
+    [2, 0, -0.2, 0, 0.07], // the fingertips
+  ]
+  /** the samples that are the arm rather than the mitten: one of these
+      inside swings the elbow out */
+  const ARM_ONLY = 4
+  /** the mitten's reach round the point the IK aims */
+  const MITT_R = 0.13
+  const CONTACT_MARGIN = 0.04
+  /** how far a shoulder may slide forward round the flank to reach */
+  const PROTRACT = 0.3
+  const cTorsoInv = new THREE.Matrix4()
+  /** how far a mitten reaches from its shoulder, design units */
+  const REACH = UARM + FARM + 0.1 - 0.02
+  const cGroupInv = new THREE.Matrix4()
+  const cP = new THREE.Vector3()
+  const cN = new THREE.Vector3()
+  const cWorst = new THREE.Vector3()
+  const cT = new THREE.Vector3()
+  const cS = new THREE.Vector3()
+  /** a point on a bone, in the group's own frame */
+  const groupPoint = (bone: THREE.Object3D, y: number, out: THREE.Vector3, x = 0, z = 0) =>
+    bone.localToWorld(out.set(x, y, z)).applyMatrix4(cGroupInv)
+  /** the arm's deepest sample, (0 when clear) with its index in cWhich
+      and its outward direction in cWorst */
+  let cWhich = -1
+  const armWorst = (upper: THREE.Bone, lower: THREE.Bone, hand: THREE.Bone) => {
+    const c = contact!
+    upper.updateMatrixWorld(true)
+    let worst = 0
+    cWhich = -1
+    for (let i = 0; i < ARM_SAMPLES.length; i++) {
+      const [b, x, y, z, r] = ARM_SAMPLES[i]
+      groupPoint(b === 0 ? upper : b === 1 ? lower : hand, y, cP, x, z)
+      const d = c.distance(cP, cN, r + CONTACT_MARGIN) - r - CONTACT_MARGIN
+      if (d < worst) {
+        worst = d
+        cWhich = i
+        cWorst.copy(cN)
+      }
+    }
+    return worst
+  }
+  // the best arm any pass found: a pass can make it worse (an elbow swung
+  // wide the other way), and the last one tried is not always the one kept
+  const bestUp = new THREE.Quaternion()
+  const bestLow = new THREE.Quaternion()
+  const bestAt = new THREE.Vector3()
+  const keepArmOut = (upper: THREE.Bone, lower: THREE.Bone, hand: THREE.Bone, side: 1 | -1, out: number) => {
+    const c = contact!
+    const helper = bones[side === 1 ? B.SHOULDER_L : B.SHOULDER_R]
+    let pole = out
+    let best = -Infinity
+    for (let pass = 0; pass <= 6; pass++) {
+      const worst = armWorst(upper, lower, hand)
+      const which = cWhich
+      if (worst > best) {
+        best = worst
+        bestUp.copy(upper.quaternion)
+        bestLow.copy(lower.quaternion)
+        bestAt.copy(upper.position)
+      }
+      if (which < 0 || pass === 6) break
+      // the mitten's own point (what the IK aims), moved out by the worst
+      // sample's push; an elbow inside is swung wider as well
+      groupPoint(hand, -0.1, cT)
+      if (which <= ARM_ONLY && pass < 4) pole += 0.5
+      cT.addScaledVector(cWorst, -worst + 0.004)
+      // into the torso's frame, which is the one the IK and the shoulder's
+      // slide are worked out in
+      torso.worldToLocal(cT.applyMatrix4(group.matrixWorld))
+      const rest = side === 1 ? REST[B.UARM_L] : REST[B.UARM_R]
+      for (let k = 0; k < 8; k++) {
+        // outside the body, measured where the body is (the group's frame)
+        cP.copy(cT)
+        torso.localToWorld(cP).applyMatrix4(cGroupInv)
+        const d = c.distance(cP, cN, MITT_R + CONTACT_MARGIN) - MITT_R - CONTACT_MARGIN
+        if (d < 0) {
+          cN.transformDirection(group.matrixWorld)
+          cS.copy(cN).transformDirection(cTorsoInv.copy(torso.matrixWorld).invert())
+          cT.addScaledVector(cS, -d + 0.002)
+        }
+        // and within reach: past it, the shoulder slides round the flank
+        // toward the target (as far as PROTRACT), and what is still out of
+        // reach is pulled back in
+        cP.subVectors(cT, rest)
+        const L = cP.length()
+        const pro = Math.min(PROTRACT, Math.max(0, L - REACH + 0.04))
+        cS.set(cP.x, 0, cP.z)
+        if (cS.lengthSq() > 1e-8) cS.normalize()
+        upper.position.copy(rest).addScaledVector(cS, pro)
+        helper.position.copy(upper.position)
+        cP.subVectors(cT, upper.position)
+        const L2 = cP.length()
+        if (L2 > REACH) cT.copy(upper.position).addScaledVector(cP, REACH / L2)
+        else if (d >= 0) break
+      }
+      solveArm(upper, lower, side, cT, 1, pole)
+    }
+    upper.quaternion.copy(bestUp)
+    lower.quaternion.copy(bestLow)
+    upper.position.copy(bestAt)
+    helper.position.copy(bestAt)
+    upper.updateMatrixWorld(true)
+  }
+  const keepHandsOut = () => {
+    const wAct = actId ? actW * actF.k : 0
+    if (wAct < 0.01 && pointK < 0.01) return
+    contact ??= createSelfContact(group, mesh, () => buildNow)
+    group.updateMatrixWorld(true)
+    cGroupInv.copy(group.matrixWorld).invert()
+    contact.pose()
+    // both arms while an emote plays: one it is not posing still hangs off a
+    // trunk it is tipping, laughing or bouncing, and can be leaned into it
+    if (wAct >= 0.01) keepArmOut(uarmL, farmL, handL, 1, actF.armL ? actF.elbowOut : 0)
+    keepArmOut(uarmR, farmR, handR, -1, pointK > wAct ? 0.1 : actF.armR ? actF.elbowOut : 0)
+    followHelpers()
   }
 
   /** the seated trunk and head for this moment: a slump forward over the
@@ -2755,6 +2918,9 @@ export function buildPlayerBody(
     get actFull() {
       return actId !== 0 && actFullNow
     },
+    get actWeight() {
+      return actId ? actW * actF.k : 0
+    },
     limbPos,
     nearestLimb: (p) => {
       let best = 0
@@ -2783,6 +2949,12 @@ export function buildPlayerBody(
     },
     update: (pose, env) => {
       tickBodyBuilds()
+      // a shoulder slid forward for an emote goes home unless asked again
+      // this frame (keepHandsOut)
+      uarmL.position.copy(REST[B.UARM_L])
+      uarmR.position.copy(REST[B.UARM_R])
+      bones[B.SHOULDER_L].position.copy(REST[B.UARM_L])
+      bones[B.SHOULDER_R].position.copy(REST[B.UARM_R])
       if (geoPending) mesh.geometry = wear()
       seated = false
       lastVel.set(pose.vx, pose.vy, pose.vz)
@@ -2831,6 +3003,7 @@ export function buildPlayerBody(
       }
       secondary(pose.dt, pose.show)
       settleHands()
+      if (mode === 'up') keepHandsOut()
     },
   }
   return rig

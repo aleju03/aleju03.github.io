@@ -194,7 +194,7 @@ const dictionaries = {
         fly: 'flying · {flyUp} up · {flyDown} down · {flyFast} fast · {flySlow} slow · {emote} emotes · {point} point · {noclip} to land',
         grab: 'wasd to move · click to grab the mouse · esc to leave',
         pauses: 'esc pauses',
-        pauseNote: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {emote} emotes (hold) · {point} point (hold, or mmb) · {spawnMenu} props · {undo} undo · {chat} chat · {command} commands',
+        pauseNote: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {emote} emotes · {point} point (hold, or mmb) · {spawnMenu} props · {undo} undo · {chat} chat · {command} commands',
         voice: '{mic} mic',
         /** only in third person, where there is a shoulder to change */
         shoulder: '{shoulder} shoulder',
@@ -210,6 +210,8 @@ const dictionaries = {
       emotes: {
         names: ['wave', 'thumbs up', 'clap', 'laugh', 'dance', 'jump for joy', 'flex', 'facepalm', 'sit'],
         hub: 'nothing',
+        // pencilled along the bottom of the wheel
+        hint: 'click or 1-9 plays · {emote} or right click puts it away',
       },
       // the voice filter on the pause sheet (components/os/voiceFilters.ts),
       // in VOICE_FILTERS order
@@ -485,7 +487,7 @@ const dictionaries = {
         fly: 'volando · {flyUp} sube · {flyDown} baja · {flyFast} rápido · {flySlow} lento · {emote} gestos · {point} señalar · {noclip} para aterrizar',
         grab: 'wasd para moverse · clic para agarrar el mouse · esc para salir',
         pauses: 'esc pausa',
-        pauseNote: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {emote} gestos (mantén) · {point} señalar (mantén, o clic central) · {spawnMenu} objetos · {undo} deshacer · {chat} chat · {command} comandos',
+        pauseNote: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {emote} gestos · {point} señalar (mantén, o clic central) · {spawnMenu} objetos · {undo} deshacer · {chat} chat · {command} comandos',
         voice: '{mic} micro',
         shoulder: '{shoulder} hombro',
         seat: 'wasd conducir · {jump} propulsores y subir · {sprint} reversa y bajar · i/k u/j o/l flechas: teclas de piezas · {use} levantarte',
@@ -494,6 +496,7 @@ const dictionaries = {
       emotes: {
         names: ['saludar', 'pulgar arriba', 'aplaudir', 'reír', 'bailar', 'saltar de alegría', 'músculo', 'mano a la cara', 'sentarse'],
         hub: 'nada',
+        hint: 'clic o 1-9 lo hace · {emote} o clic derecho lo guarda',
       },
       voiceFx: {
         label: 'tu voz',

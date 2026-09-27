@@ -15,6 +15,10 @@
     emotes  a remote player's emotes and point key through the real store
             and the real avatars: the copy dances on the dancer's beat,
             waves, points its arm where they pointed, and lets go of both
+    reach   every emote and five points on every build, plain and in the
+            beaver, cap and headset: the closest the drawn mitten and
+            forearm (the skinned vertices themselves) ever come to the
+            body's own surface, which must never be below zero
 
   Nothing here draws. The picture is `npm run film -- sandbox:bump`.
 */
@@ -29,6 +33,9 @@ import { createRemoteWorld } from '../../src/game/net/remotePlayers.ts'
 import { createRemoteBumps, createShoveTaker } from '../../src/game/net/shove.ts'
 import { createRemoteAvatars } from '../../src/game/net/avatars.ts'
 import { EMOTES, packEmote } from '../../src/game/player/emotes.ts'
+import { createSelfContact } from '../../src/game/player/selfContact.ts'
+import { B, setBodyBuildSync } from '../../src/game/player/bodyShape.ts'
+import { DEFAULT_LOOK } from '../../src/game/player/look.ts'
 
 const only = process.argv[2]
 const want = (s) => !only || only === s
@@ -420,4 +427,94 @@ if (want('emotes')) {
   const bounce = Math.max(...pelvisYs) - Math.min(...pelvisYs)
   console.log(`         the copy's hips bounce ${f(bounce, 2)} units through the dance; pointing it held the arm within ` +
     `${f(at46?.point ?? NaN, 1)} deg of where the dancer pointed ${ok ? '(ok)' : '<-- FAILED'}`)
+}
+
+/* -------------------------------------------------------------- reach -- */
+/*
+  Mittens never inside the body wearing them. For each build, bare and in the
+  beaver with a cap and a headset (the widest things worn near a face), every
+  emote is played through from start to finish, and the point key is held at
+  five directions (ahead, across the body, down at the feet, straight up and
+  down across the belly, both as far across as a standing body lets the
+  view turn before it pivots after it). Every few frames each driven arm's own skinned
+  vertices (the forearm's and the mitten's, as drawn) are measured against the
+  body's surface, bean and gear, with a fresh `selfContact`. The number is the
+  worst over the whole emote, in design units; negative is a mitten through
+  the body.
+*/
+if (want('reach')) {
+  setBodyBuildSync(true)
+  const BUILDS = ['bean', 'chubby', 'slim', 'tall', 'stubby']
+  const pose = { dt: 1 / 60, gait: 0, crouchK: 0, grounded: true, run: false, yaw: 0, pitch: 0, vx: 0, vz: 0, vy: 0, landing: 0, show: 1 }
+  const env = { groundY: 0, collision: open() }
+  const HANDS = [[B.FARM_L, B.HAND_L], [B.FARM_R, B.HAND_R]]
+  // (across is as far across as a standing body lets the view get before
+  // it turns to face it: the lazy facing pivots past about 0.7)
+  const POINTS = [['ahead', 0, -0.1], ['across', 0.7, -0.1], ['feet', 0.2, -1.2], ['up', 0, 1.3], ['belly', 0.7, -0.7]]
+  const v = new THREE.Vector3()
+  const n = new THREE.Vector3()
+  let worstAll = Infinity
+  for (const dressed of [false, true]) {
+    for (let b = 0; b < BUILDS.length; b++) {
+      const look = dressed ? { ...DEFAULT_LOOK, hat: 1, build: b, costume: 5, phones: 1 } : { ...DEFAULT_LOOK, build: b }
+      const row = []
+      const run = (label, setup, frames, arms) => {
+        // REACH_ONLY=build,dressed,label runs one case, for chasing one down
+        if (process.env.REACH_ONLY && process.env.REACH_ONLY !== `${b},${dressed ? 1 : 0},${label}`) return
+        const rig = buildPlayerBody(EYE, 34, look)
+        rig.group.rotation.y = Math.PI
+        const mesh = rig.group.children.find((c) => c.isSkinnedMesh)
+        const contact = createSelfContact(rig.group, mesh, () => b)
+        for (let i = 0; i < 30; i++) rig.update(pose, env)
+        const p = { ...pose }
+        setup(rig, p)
+        // the driven arms' vertices, every third one
+        const geo = mesh.geometry
+        const si = geo.getAttribute('skinIndex')
+        const sw = geo.getAttribute('skinWeight')
+        const idx = []
+        for (let i = 0; i < si.count; i += 3) {
+          let bi = si.getX(i); let bw = sw.getX(i)
+          if (sw.getY(i) > bw) { bi = si.getY(i); bw = sw.getY(i) }
+          if (sw.getZ(i) > bw) { bi = si.getZ(i); bw = sw.getZ(i) }
+          if (sw.getW(i) > bw) bi = si.getW(i)
+          if (arms.some((a) => HANDS[a].includes(bi))) idx.push(i)
+        }
+        let worst = Infinity
+        let at = 0
+        for (let fr = 0; fr < frames; fr++) {
+          rig.update(p, env)
+          if (fr % 5 !== 4) continue
+          // while the emote is on the body (a finished one's last frames are
+          // the walk's own arms again, measured on their own below), and a
+          // point once the arm has come up
+          if (label === 'idle' ? false : label.startsWith('point') ? fr < 12 : rig.actWeight < 0.1) continue
+          if (mesh.geometry !== geo) throw new Error('the body changed geometry mid-emote')
+          rig.group.updateMatrixWorld(true)
+          contact.pose()
+          for (const i of idx) {
+            const d = contact.distance(mesh.getVertexPosition(i, v), n)
+            if (d < worst) {
+              worst = d
+              at = fr / 60
+            }
+          }
+        }
+        row.push([label, worst, at])
+        if (label !== 'idle') worstAll = Math.min(worstAll, worst)
+      }
+      for (const e of EMOTES) {
+        const arms = []
+        run(e.name, (rig) => rig.act(e.id), Math.round((e.len || 3) * 60), [0, 1])
+      }
+      // the walk's own arms standing about, for comparison: not an emote's
+      run('idle', () => {}, 120, [0, 1])
+      for (const [label, yaw, pitch] of POINTS) {
+        run(`point ${label}`, (rig, p) => { p.point = 1; p.pointYaw = yaw; p.pointPitch = pitch }, 60, [1])
+      }
+      console.log(`reach    ${(BUILDS[b] + (dressed ? ', beaver/cap/headset' : '')).padEnd(28)} ` +
+        row.map(([l, w, t]) => `${l} ${f(w, 3)}${w < 0 && l !== 'idle' ? '@' + f(t, 2) + '!' : ''}`).join('  '))
+    }
+  }
+  console.log(`         worst over everything: ${f(worstAll, 3)} ${worstAll >= 0 ? '(never inside the body)' : '<-- A MITTEN THROUGH THE BODY'}`)
 }
