@@ -33,14 +33,22 @@ import { makeBodyMaterial } from './bodyMaterial'
   acceleration and banks into turns, and a landing drops the hips on a damped
   spring in proportion to the impact.
 
-  A run is its own gait rather than a faster walk: long bounding strides
-  with a real flight between them (the planted leg toes off before the
-  swinging one lands, and the hips peak in the air rather than at the
-  footfall), the trunk nearly upright (about nine degrees at a full run,
-  where the brawler leaned fifty-five), the arms flung out and flailing,
-  heels kicking up behind. The arm swing in both gaits runs a little behind the
-  legs and out sideways as well as fore and aft, with the forearm later
-  still, and every footfall bounces the arms out.
+  A run is the Fall Guys scurry: quick short steps rather than long bounds
+  (a stub leg reaches about a third of a unit in front of its hip, so a long
+  stride only ever straightened it into a peg), a small bounce off every
+  footfall, a slight waddle, the trunk nearly upright (under ten degrees at
+  a full run, where the brawler leaned fifty-five), and the arms swinging
+  low and loose, fore and aft in time with the legs, the elbows bent a
+  little more than a walk's. The swing runs a little behind the legs, the
+  forearm later still, and every footfall nudges the arms out.
+
+  What the swing may never do is fly. A version of this run fed the swing's
+  size into the arms' *spread* as well and flung them "out and flailing":
+  at a full run that summed past two radians, one mitten thrown up over the
+  head and the other stuck out level, which the owner called almost scary.
+  So on the ground the shoulders are capped (forward to about sixty degrees,
+  back to fifty, out to about sixty) and only a jump, a fall, a get-up or
+  an emote lifts those caps.
 
   In the air the body is never a stick: a jump leaves out of a squashed
   crouch that springs into a stretch (the walker has no wind-up, so the
@@ -70,9 +78,9 @@ import { makeBodyMaterial } from './bodyMaterial'
   arms held a little out from the flanks, and weaves, twisting and leaning,
   so no two idle frames are symmetrical. Every body also stands its own way: a lean, a tip,
   a cocked head and a higher arm drawn from a hash of the player's look
-  (`persona`), so a group of them never matches. A walking arm swings big and out to the
-  side but is capped below the face; only a reach, a stretch, a wave, a jump
-  or a get-up takes an arm higher.
+  (`persona`), so a group of them never matches. A walking or running arm swings low
+  and fore and aft, capped well below the shoulder; only a reach, a stretch,
+  a wave, a jump or a get-up takes an arm higher.
 
   **The personality.** Standing still is not parked: the body breathes,
   shifts its weight from foot to foot, blinks, glances about, and after a
@@ -115,10 +123,9 @@ import { makeBodyMaterial } from './bodyMaterial'
   Everything is smoothed and allocation-free per frame; the whole body is
   one skinned draw call.
 
-  One number decides how big all of it is, and it is not a stature: see
-  DESIGN_EYE below. A body is scaled onto the eye height it is built for,
-  standing or seated, because the eye line is the only part of it a camera
-  has to agree with.
+  One number decides how big all of it is: the walker's eye height, landed on
+  the top of the bean (see DESIGN_LENS below), so a bean stands no taller
+  than the lens that looks out of it and reads small next to a door.
 
   Hooks for a sandbox (Rapier impacts, a physgun, a car), all on PlayerRig:
 
@@ -270,18 +277,32 @@ export type Emote = 'stretch' | 'bounce' | 'wave' | 'look'
   How big a body is.
 
   Every rig is the same drawing scaled by the standing eye height it is built
-  for, so the number it is scaled *onto* has to be where the eyes are in that
-  drawing, not how tall it is. A first-person lens rides at eye height, and
-  two people standing on the same ground have to meet each other's gaze.
-  (The robot this replaced was once scaled onto 3.5, a stature-ish number
-  with nothing under it, and everyone saw everyone else as a head shorter
-  than themselves.)
+  for (the walker's EYE, 3.84), and the question is which point of the
+  drawing that height lands on. It used to be the painted eyes (DESIGN_EYE),
+  on the rule that two players on the same ground should meet each other's
+  gaze. For a bean that made a giant: scale 1.75, the crown at 4.87 in the
+  bind pose and 4.7 standing, which is the doorways' own 4.7, and in the
+  upstairs room the chase camera saw little but yellow. A Fall Guys bean is
+  small in its world, so the height now lands on the *crown* (DESIGN_LENS):
+  scale 1.38, the top of the head at 3.84 in the bind pose and about 3.7
+  standing on its soft knees, the painted eyes near 2.9, and the whole bean
+  at four fifths of a door.
+
+  The price is the one the old rule was written to avoid: a first-person lens
+  looks slightly down onto another player's face rather than level into it.
+  That is the proportion asked for (you are a small thing peering over the
+  top of your own head), and it is the same for everyone, so nobody sees
+  anybody else as a different size. What must *not* happen is scaling by one
+  point and placing by another, so anything that converts between the lens
+  and the body goes through bodyScale / DESIGN_LENS, never DESIGN_EYE.
 */
+/** where the painted eyes are in the drawing (the seated fold hangs from it) */
 export const DESIGN_EYE = HIP_Y + WAIST_OFF + NECK_OFF + EYE_OFF // 2.19
 /** the top of the head and its band: what anything floating over a head clears */
-export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 2.67
-/** the group's scale for a given standing eye height */
-export const bodyScale = (eye: number) => eye / DESIGN_EYE
+export const DESIGN_CROWN = HIP_Y + WAIST_OFF + NECK_OFF + CROWN_OFF // 2.78
+/** the point of the drawing a standing lens height is scaled onto */
+export const DESIGN_LENS = DESIGN_CROWN
+export const bodyScale = (eye: number) => eye / DESIGN_LENS
 
 /*
   The seated fold, in the same units.
@@ -324,14 +345,15 @@ export const DESIGN_SEAT_BOTTOM = DESIGN_SEAT_EYE + (HIP_Y - BODY_Y0) * SIT_SQUA
   The fleet's cabins were drawn round the robot this body replaced, which sat
   about 1.35 world units from eye to seat. Even squashed, this one needs about
   1.7 (DESIGN_SEAT_BOTTOM x bodyScale), so in a car or a helicopter its seat
-  of the pants went through the sill and its boots hung under the fuselage.
-  Until the cabins are resized to the body (seat bottom at the eye less
-  DESIGN_SEAT_BOTTOM x scale, and DESIGN_CROWN - DESIGN_EYE of headroom over
-  the eye), a seated body in a machine is folded this much smaller about its
-  own eye, which leaves the face exactly on the seat node. Set it to 1 once
-  they are.
+  of the pants went through the sill and its boots hung under the fuselage,
+  so the cabins folded it smaller about its eye (`userData.fit` on a seat
+  node, this as the default), which leaves the face exactly on the seat node.
+  Scaled onto its crown instead of its eyes (see DESIGN_LENS) the body is
+  0.79 of that size, which is smaller than the boat's and the helicopter's
+  old folds already made it, so they sit at 1; only the car's side window
+  still asks for a fold (see car.ts).
 */
-export const CABIN_FIT = 0.86
+export const CABIN_FIT = 1
 
 // ragdoll particle indices. The first thirteen are the limbs a caller can
 // name; the belly and the back are collision only, so a body lying on
@@ -1269,7 +1291,10 @@ export function buildPlayerBody(
     // a run is a different gait, not a faster walk: bounding strides with a
     // flight between them, so fewer, longer steps rather than a scurry
     // stub legs take short quick steps: a jelly waddles rather than strides
-    strideNow += (0.72 + 0.6 * runK - strideNow) * ease(4)
+    // and a run is quick short steps rather than a stretched stride: a stub
+    // leg reaches ~0.36 in front of its hip, and the 1.3 this used to stride
+    // at a run left the planted leg straight as a peg for half of every step
+    strideNow += (0.76 + 0.14 * runK - strideNow) * ease(4)
     const prevStep = Math.floor(stepT)
     if (pose.grounded) {
       stepT += (speed * dt) / (strideNow * S)
@@ -1285,7 +1310,10 @@ export function buildPlayerBody(
     // soft knees always, softer standing about: a bean never locks them
     // (a stub leg has little to fold: the drop is what it can take, and
     // the rest of a crouch is the squash)
-    const drop = pose.crouchK * 0.3 + riseFold * 0.3 - springP * 0.7 + 0.06 + 0.04 * idleK
+    // a run sits a little lower on bent knees, which is most of what makes
+    // quick steps read as a scurry rather than a march
+    const drop = pose.crouchK * 0.3 + riseFold * 0.3 - springP * 0.7 + 0.06 + 0.04 * idleK +
+      0.05 * runK * gait
     const hipH = THREE.MathUtils.clamp(HIP_Y - drop, Math.abs(THIGH - SHIN) + 0.08, HIP_Y)
 
     // pelvis: root motion. A waddle: the hips ride over the stance foot and
@@ -1300,12 +1328,12 @@ export function buildPlayerBody(
     // a run's hips are lowest just after a foot lands and highest in the
     // flight before the next one does (see the toe-off in the feet below)
     const stepFrac = stepT - Math.floor(stepT)
-    const pop = runK * gait * (0.5 - 0.5 * Math.cos(2 * Math.PI * (stepFrac - 0.35))) * 0.2
+    const pop = runK * gait * (0.5 - 0.5 * Math.cos(2 * Math.PI * (stepFrac - 0.35))) * 0.06
     pelvis.position.set(
       waddleX, hipH + dip + pop + bounceY + breathe * 0.006 + Math.sin(idleT * 1.7) * 0.05 * flyK, 0,
     )
     // a walk waddles; a run is upright and bouncy, the roll mostly gone
-    const waddleRoll = stepS * (0.15 - 0.11 * runK) * moveK + shift * 1.2
+    const waddleRoll = stepS * (0.1 - 0.06 * runK) * moveK + shift * 1.2
     // the get-up hunch is not gated by pose.show: it is the shape of the
     // action, not flair, and the lens is off the head for the whole of it
     // A bean runs nearly upright: the lean is a hint of the speed and a
@@ -1314,14 +1342,16 @@ export function buildPlayerBody(
     // feet; `npm run measure -- body` prints the pitch, and a run should stay
     // around ten degrees
     const lean =
-      (THREE.MathUtils.clamp(fwdS * 0.009 + accF * 0.012, -0.12, 0.14) + pose.crouchK * 0.2 +
-        runK * gait * 0.05 + 0.02 + persona.lean * idleK) * show +
+      (THREE.MathUtils.clamp(fwdS * 0.006 + accF * 0.012, -0.12, 0.14) + pose.crouchK * 0.2 +
+        runK * gait * 0.01 + 0.02 + persona.lean * idleK) * show +
       riseFold * 0.55 - stretchK * 0.12
     // centripetal lean: bank into a turn only as fast as the feet are
     // actually carrying the body
+    // (capped at nine degrees: a bean tipped further than that on a turn
+    // reads as falling over, not as cornering)
     const bank = THREE.MathUtils.clamp(
-      -yawRateS * (0.02 + 0.04 * runK) * gait - sideS * 0.014,
-      -0.26, 0.26,
+      -yawRateS * (0.02 + 0.03 * runK) * gait - sideS * 0.012,
+      -0.16, 0.16,
     )
     // and flying fast lays the whole body into the flight, legs trailing,
     // the way everyone in Garry's Mod crosses a map in noclip
@@ -1331,7 +1361,7 @@ export function buildPlayerBody(
     // the chest is jelly on top of the hips: a roll spring that wants to
     // hold the shoulders level over the waddle, and so arrives late and
     // overshoots, and a pitch spring kicked by starts, stops and landings
-    const jellyRoll = spring(20, -waddleRoll * 0.9, 70, 3.5, -accS * 0.4 - yawRateS * 0.8 * gait, dt, -0.55, 0.55)
+    const jellyRoll = spring(20, -waddleRoll * 0.9, 70, 3.5, -accS * 0.3 - yawRateS * 0.6 * gait, dt, -0.3, 0.3)
     const jellyPitch = spring(
       22, 0, 110, 6.5, -accF * 0.18 + (pose.landing > 0 ? pose.landing * 2.6 : 0), dt, -0.5, 0.5,
     )
@@ -1443,10 +1473,8 @@ export function buildPlayerBody(
         // feet barely off the ground, and a run adds only a small heel kick.
         // The brawler's lifts, three times these, raised a stub leg's thigh
         // past the horizontal and folded the bottom of the bean over it
-        swingFoot.y += Math.sin(frac * Math.PI) * (0.1 + 0.04 * runK) * S * Math.min(1, speed) +
-          runK * Math.sin(Math.min(1, frac * 1.6) * Math.PI) * 0.08 * S +
-          // and it is still up late in the swing, so the flight has both feet
-          runK * Math.sin(Math.pow(frac, 1.4) * Math.PI) * 0.07 * S
+        swingFoot.y += Math.sin(frac * Math.PI) * (0.09 + 0.03 * runK) * S * Math.min(1, speed) +
+          runK * Math.sin(Math.min(1, frac * 1.6) * Math.PI) * 0.05 * S
       } else {
         // standing: a foot left far from its socket shuffles home; otherwise
         // feet stay put
@@ -1544,7 +1572,7 @@ export function buildPlayerBody(
     // swinging one lands, so every stride has a moment with both feet in the
     // air. The planted sole stays where it is in the world; only the leg
     // solved over it lets go
-    const toeOff = pose.grounded ? runK * gait * ramp(0.5, 0.95, stepFrac) * 0.34 : 0
+    const toeOff = pose.grounded ? runK * gait * ramp(0.5, 0.95, stepFrac) * 0.12 : 0
     const swingingL = Math.floor(stepT) % 2 === 0
     solveLeg(
       thighL, shinL, ankleL, plantedL, 1,
@@ -1585,15 +1613,17 @@ export function buildPlayerBody(
     // arms trail the stride the way a loose shoulder does, and it swings out
     // sideways as well as fore and aft, which is what makes it visible from
     // the side as well as from the front
-    const ampW = (1.2 + 0.35 * runK) * gait
+    // low and loose: about thirty degrees each way walking and forty at a run.
+    // The 1.55 radians this once swung at a run, plus the spread it fed,
+    // threw a mitten over the head on every other step
+    const ampW = (0.55 + 0.15 * runK) * gait
     const swingAt = (lag: number) => Math.sin(Math.PI * (stepT - lag)) * ampW
     const swingAmt = swingAt(0.12)
     const swingF = swingAmt * mCos
     const swingS = swingAmt * mSin * 0.7
-    // a swagger: the swing goes out as much as forward, below the face
-    // and a run flails: the arms thrown out wide as well as pumped, the way
-    // a bean runs with nothing to do with its hands
-    const swingOut = Math.abs(swingAmt) * (0.5 + 0.35 * runK)
+    // the arm swings a touch out as it swings through, so it clears the
+    // belly and reads from the front; a hint, not a flail
+    const swingOut = Math.abs(swingAmt) * 0.15
     // the forearm follows the upper arm later still, so it is bent coming
     // forward and trails open going back
     const lagEl = swingAt(0.32) * mCos
@@ -1601,13 +1631,13 @@ export function buildPlayerBody(
     // the guard: standing about, the long arms come up to a clumsy boxing
     // guard, mittens at chest height, never quite matched
     const guardK = idleK * (1 - airK) * (1 - riseFold)
-    const elbowBase = 0.3 + 0.5 * runK * gait + 0.1 * guardK
+    const elbowBase = 0.3 + 0.35 * runK * gait + 0.1 * guardK
     // held well out from the body, standing or not: a round belly and a
     // loose shoulder, never glued to the hips; a fall flings them wide
     // held clear of the body at rest, with a gap of air down each side: a
     // wider build holds them wider
     const spread =
-      0.62 + (persona.girth - 1) * 0.9 - 0.04 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.35 + swingOut
+      0.62 + (persona.girth - 1) * 0.9 - 0.04 * guardK + breathe * 0.05 + airK * (0.5 + fallK * 0.9) * (1 - 0.6 * flyK) + runK * gait * 0.08 + swingOut
     // airborne: flung up by the takeoff, then trailing, then up and out as
     // the body drops away under them. A flyer is not falling, so its arms
     // hang loose and a little forward and drift, out of step with the legs
@@ -1622,9 +1652,9 @@ export function buildPlayerBody(
     // standing about they hang heavy and swing a little from the shoulders,
     // a touch forward of the body and never level with each other
     const swayLX = (Math.sin(idleT * 1.1) * 0.1 + Math.sin(idleT * 0.53 + 1.3) * 0.07) * idleK -
-      0.15 - 0.35 * gait - persona.armL * 0.4 * guardK
+      0.15 - 0.15 * gait - persona.armL * 0.4 * guardK
     const swayRX = (Math.sin(idleT * 0.97 + 0.7) * 0.1 + Math.sin(idleT * 0.61 + 2.1) * 0.07) * idleK -
-      0.15 - 0.35 * gait - persona.armR * 0.4 * guardK
+      0.15 - 0.15 * gait - persona.armR * 0.4 * guardK
     const swayLZ = Math.sin(idleT * 1.13 + 0.4) * 0.06 * idleK
     const swayRZ = Math.sin(idleT * 1.31 + 2.6) * 0.06 * idleK
     // inertial forces on the springs
@@ -1634,15 +1664,15 @@ export function buildPlayerBody(
     const rock = -stepS * moveK * 0.9
     if (takeoff) {
       // arms thrown up and out with the jump
-      sprS[1] -= 7
-      sprS[7] -= 4
-      sprS[3] += 7
-      sprS[9] += 5
+      sprS[1] -= 5.5
+      sprS[7] -= 3.5
+      sprS[3] += 5
+      sprS[9] += 4
     }
     // every footfall bounces the arms out a little, like a loose sleeve
     if (pose.grounded && Math.floor(stepT) !== prevStep && gait > 0.25) {
-      sprS[3] += 2.2 * gait
-      sprS[9] += 2.2 * gait
+      sprS[3] += 0.7 * gait
+      sprS[9] += 0.7 * gait
       // and jiggles the jelly
       wobV -= (1.9 + 0.9 * runK) * gait
       jPack.v.y -= 3.6 * S * gait
@@ -1677,19 +1707,26 @@ export function buildPlayerBody(
     const wag = waveK * Math.sin(fidgetT * 11) * 0.55
     const look = lookK * 0.9 // both hands up in front, looked at
     // forearms pump with the upper arms when running, lag them walking
-    const pumpL = -Math.max(0, -lagEl) * (0.75 + 0.35 * runK)
-    const pumpR = -Math.max(0, lagEl * 0.93) * (0.75 + 0.35 * runK)
-    // a walking swing never comes past the face; only a reach, a stretch, a
-    // wave, a jump or a get-up may take an arm higher than that
-    const swingCap = -1.45 - 1.6 * Math.max(stretchK, waveK, airK, riseFold, lookK, push)
-    const clampX = (v: number) => THREE.MathUtils.clamp(v, Math.max(SH_X_LO, swingCap), SH_X_HI)
+    const pumpL = -Math.max(0, -lagEl) * (0.5 + 0.3 * runK)
+    const pumpR = -Math.max(0, lagEl * 0.93) * (0.5 + 0.3 * runK)
+    // on the ground an arm swings about sixty degrees forward, fifty back and
+    // sixty out at most, whatever the springs are doing; only a stretch, a
+    // wave, a look at the hands, a jump, a fall or a get-up lifts the caps.
+    // Everything that ever threw an arm overhead mid-run got past here
+    const freeK = Math.max(stretchK, waveK, airK, riseFold, lookK, push)
+    const swingCap = -1.05 - 2.0 * freeK
+    const backCap = 0.9 + 0.5 * freeK
+    const outCap = 1.05 + 1.85 * freeK
+    const clampX = (v: number) =>
+      THREE.MathUtils.clamp(v, Math.max(SH_X_LO, swingCap), Math.min(SH_X_HI, backCap))
+    const clampZ = (v: number) => Math.min(v, outCap)
     const shLX = clampX(
       spring(0, -airX + swayLX - push - upL - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) + swingF,
     )
-    const shLZ = spring(
+    const shLZ = clampZ(spring(
       2, spread + swingS + swayLZ + riseFold * 0.1 + stretchK * 0.25, KS, CS, slingZ + rock, dt,
       SH_Z_LO, SH_Z_HI,
-    )
+    ))
     const elL = spring(
       4, -(elbowBase + airK * 0.4 + riseFold * 0.4 + look * 1.3) * (1 - stretchK * 0.8) + pumpL,
       // the forearm lags its upper arm: swing the shoulder forward and the
@@ -1699,10 +1736,10 @@ export function buildPlayerBody(
     const shRX = clampX(
       spring(6, -airX + swayRX - push - upR - look, KS, CS, throwX, dt, SH_X_LO, SH_X_HI) - swingF * 0.93,
     )
-    const shRZ = spring(
+    const shRZ = clampZ(spring(
       8, spread - swingS + swayRZ + riseFold * 0.1 + stretchK * 0.25 + waveZ, KS, CS, -slingZ - rock, dt,
       SH_Z_LO, SH_Z_HI,
-    )
+    ))
     const elR = spring(
       10,
       -(elbowBase + 0.03 + airK * 0.4 + riseFold * 0.4 + look * 1.3) *

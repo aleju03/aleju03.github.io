@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import {
-  DESIGN_EYE, buildPlayerBody, type PlayerPose, type PlayerRig,
+  DESIGN_LENS, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../../game/player/playerBody'
 import { makeCollisionSet } from '../../game/physics/collision'
 import { makeGlowTexture } from '../../game/core/textures'
@@ -58,10 +58,10 @@ import { useI18n } from '../../i18n'
     rather than showing you a name nobody else will ever see.
 */
 
-/** the eye height the preview's body is built at: the rig's own design eye
-    line, so the group's scale comes out at exactly 1 and the camera framing
+/** the eye height the preview's body is built at: the rig's own design lens
+    point, so the group's scale comes out at exactly 1 and the camera framing
     below is in the same units the model was drawn in */
-const PREVIEW_EYE = DESIGN_EYE
+const PREVIEW_EYE = DESIGN_LENS
 /** the idle turn is a slow sway around the front rather than a full
     turntable: a character screen whose subject spends half its time facing
     away is a screen you cannot pick a face colour on. Drag still goes all the

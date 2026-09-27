@@ -1154,7 +1154,9 @@ export interface CarOpts {
 const SEAT_EYE_Y = 2.12
 /** forward of the robot's 0.62, which put a round head behind the B-pillar */
 const SEAT_Z = 0.2
-const SEAT_FIT = 0.6
+/** 0.6 when the body was scaled onto its painted eyes; the same fold at the
+    body's crown-scaled size (playerBody's DESIGN_LENS) */
+const SEAT_FIT = 0.76
 
 export function buildCar(opts: CarOpts): Vehicle {
   const { mats } = opts

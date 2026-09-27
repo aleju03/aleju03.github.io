@@ -1092,7 +1092,9 @@ const PROBES: Array<[number, number]> = [
 const SEAT_X = 0.7
 const SEAT_Y = 2.72
 const SEAT_Z = -0.5
-const SEAT_FIT = 0.78
+/** no fold: 0.78 when the body was scaled onto its painted eyes, which is
+    what scaling it onto its crown (playerBody's DESIGN_LENS) now does anyway */
+const SEAT_FIT = 1
 
 export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   const model = buildModel(opts.mats)

@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { DESIGN_EYE, DESIGN_SEAT_BOTTOM } from './playerBody'
+import { DESIGN_LENS, DESIGN_SEAT_BOTTOM } from './playerBody'
 
 /*
   Sitting down on the furniture.
@@ -79,7 +79,7 @@ export interface SeatingHandles {
     picked: the folded body's eye over the seat of its pants, less a little
     for the cushion to give. A soft body with a big trunk sits tall, which is
     why this is higher than the 0.46 the long-legged robot sat at. */
-const SEATED = (DESIGN_SEAT_BOTTOM - 0.05) / DESIGN_EYE
+const SEATED = (DESIGN_SEAT_BOTTOM - 0.05) / DESIGN_LENS
 /** how far the head turns either side of the seat's own facing, by default */
 const CONE = Math.PI * 0.62
 /** and how far it may look down: enough to see your own lap, not your chest */

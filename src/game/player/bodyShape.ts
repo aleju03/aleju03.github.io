@@ -86,8 +86,11 @@ export const UARM = 0.4
 export const FARM = 0.35
 /** head bone up to the eyes */
 export const EYE_OFF = 0.24
-/** head bone up to the top of the default bean */
-export const CROWN_OFF = 0.59
+/** head bone up to the top of the default bean: the egg's crown (c + b2 =
+    2.78, see BUILD_DEFS) less the head bone's 1.95. It read 0.59 for a long
+    time, a quarter unit short of the drawing, which is how a bean measured
+    as 2.54 tall stood as high as a door */
+export const CROWN_OFF = 0.83
 /** the A-pose the arms are drawn in, radians out from hanging. See the header */
 export const ARM_BIND = 0.85
 
@@ -141,9 +144,9 @@ export const HELPERS: ReadonlyArray<readonly [number, number, number]> = [
   a short, round bottom half (`b1` down to the seat) and a tall top half
   (`b2` up to the crown) whose exponent above two gives the dome its blunt,
   full shoulder instead of an ellipsoid's point. The eye line never moves,
-  because it is what every camera agrees with (see playerBody's DESIGN_EYE),
-  so "tall" is a dome that rises further over the eyes and "stubby" one that
-  barely clears them.
+  and every build is scaled the same (off the default bean's crown, see
+  playerBody's DESIGN_LENS), so "tall" is a dome that rises further over the
+  eyes and "stubby" one that barely clears them.
 
   The earlier bean was a round cone, the hull of two spheres: straight
   flanks, 2.3 times as tall as wide, and next to the reference it read as a
