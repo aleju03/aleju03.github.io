@@ -6,9 +6,12 @@
 import assert from 'node:assert/strict'
 import { createSandbox } from '../../src/game/sandbox/sandbox.ts'
 import { createPropNetwork } from '../../src/game/net/remoteProps.ts'
-import { createPropRegistry } from '../../server/src/props.js'
+import { CATALOGUE } from '../../src/game/sandbox/catalogue.ts'
+import { createPropRegistry, PROP_KINDS } from '../../server/src/props.js'
 import { makeCollisionSet } from '../../src/game/physics/collision.ts'
+import { historyOf } from '../../src/game/sandbox/history.ts'
 import { contraptionOf } from '../../src/game/sandbox/contraption/contraption.ts'
+assert.deepEqual([...PROP_KINDS].sort(), CATALOGUE.map(k=>k.id).sort(), 'server allowlist matches every catalogue kind')
 let time = 0
 const sent = []
 const players = new Map(), inbound = [], outbound = []
@@ -82,6 +85,33 @@ assert.equal(b.sb.isAuthority(target),false)
 a.sb.network.cleanup('mine');flush()
 assert.equal(props(b.sb).length,1,'cleanup leaves other owners intact')
 b.sb.network.cleanup('mine');flush()
+// A passenger's client drives the whole machine, then the owner's keys
+// can take it back after the seat releases its lock.
+const ca=contraptionOf(a.sb),cb=contraptionOf(b.sb)
+const plate=a.sb.spawn('plate_s',{x:20,y:10,z:0})
+const seat=a.sb.spawn('seat',{x:20,y:12,z:0})
+const thruster=a.sb.spawn('thruster',{x:20,y:14,z:0})
+ca.add('weld',plate,seat);ca.add('weld',plate,thruster);flush();step(10)
+const bs=props(b.sb).find(p=>p.kind.id==='seat')
+const bt=props(b.sb).find(p=>p.kind.id==='thruster')
+b.sb.network.claim(bs.id,'seat');flush()
+assert.ok(cb.linked(bs.id).every(id=>b.sb.isAuthority(id)))
+for(const id of cb.linked(bs.id))b.sb.setVelocity(id,{x:0,y:0,z:0},{x:0,y:0,z:0})
+cb.input(new Set(['Space','KeyW']),bs.id,100);step(20)
+assert.equal(cb.part(bt.id).fire,1)
+assert.ok(b.sb.get(bs.id).body.linvel().y>0,'seat drives its welded thruster')
+cb.input(new Set(),null);flush()
+ca.input(new Set(['KeyI']),null,100);flush();step(10)
+assert.ok(a.sb.isAuthority(thruster),'owner key claims back the released machine')
+assert.equal(ca.part(thruster).fire,1)
+ca.input(new Set(),null);flush()
+a.sb.network.cleanup('mine');flush()
+// Undo also works before the spawn acknowledgement crosses the wire.
+const history=historyOf(a.sb);history.me=1
+const undone=a.sb.spawn('crate',{x:0,y:4,z:0},{frozen:true})
+history.record({label:'crate',props:undone});history.undo();flush()
+assert.equal(a.sb.get(undone),undefined)
+assert.equal(props(b.sb).length,0)
 // Quiet bodies must produce no background traffic, independent of count.
 for(const c of [a,b])for(let i=0;i<100;i++)c.sb.spawn('barrel',{x:20+i%10*3,y:30,z:Math.floor(i/10)*3},{frozen:true})
 flush();step(30)

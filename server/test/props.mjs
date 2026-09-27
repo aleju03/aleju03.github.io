@@ -64,14 +64,28 @@ export async function propSmoke(url, connect) {
     tx(a, { type: 'world-prop-break', id: p.id, epoch: 1, how: 'break' });
     tx(b, { type: 'world-prop-break', id: p.id, epoch: 2, how: 'break' });
     assert.equal((await late.nextOf('world-prop-break', 'break')).id, p.id);
-    const p2 = await spawn(a, 3);
+    const p2 = await spawn(a, 3), p3 = await spawn(a, 4);
+    const frames = [0,0,0,0,0,0,0,0,0,1,1,0,0,1,0,0,1];
+    tx(a, { type: 'world-prop-joint', id: p2.id, b: p3.id, kind: 'weld', frames, nonce: 7 });
+    const joint = (await a.nextOf('world-prop-joint', 'joint accepted')).joint;
+    assert.equal((await b.nextOf('world-prop-joint', 'joint replicated')).joint.id, joint.id);
+    tx(a, { type: 'world-prop-meta', id: p2.id, epoch: 1, part: null, life: [0.7,-1,-1,1] });
+    let health;
+    do { health = (await a.nextOf('world-prop-state', 'health')).props.find(q => q.id === p2.id); } while (!health);
+    assert.equal(health.life[0], 0.7);
+    tx(a, { type: 'world-prop-explosion', at: [0,2,0], power: 99, radius: 999 });
+    const blast = await b.nextOf('world-prop-explosion', 'blast replicated');
+    assert.equal(blast.power, 4); assert.equal(blast.radius, 50);
+    tx(a, { type: 'world-prop-unjoint', id: joint.id });
+    assert.equal((await a.nextOf('world-prop-unjoint', 'joint removed')).id, joint.id);
     tx(a, { type: 'world-prop-cleanup', target: 'mine' });
     let gone;
     do { gone = await b.nextOf('world-prop-remove', 'own cleanup'); } while (!gone.ids.includes(p2.id));
     assert.ok(!gone.ids.includes(own.id));
     b.ws.close();
-    const elected = (await late.nextOf('world-prop-state', 'new simulator')).props;
-    assert.equal(elected.find((q) => q.id === own.id).authority, a.you);
+    let elected;
+    do { elected = (await late.nextOf('world-prop-state', 'new simulator')).props.find(q => q.id === own.id); } while (!elected);
+    assert.equal(elected.authority, a.you);
     // A level change snapshots its destination and leaves the old props behind.
     a.send({ type: 'world-level', level: 'prop-other' });
     assert.equal((await a.nextOf('world-prop-snapshot', 'other level')).props.length, 0);
@@ -88,6 +102,6 @@ export async function propSmoke(url, connect) {
     assert.equal((await a.nextOf('world-prop-denied', 'kind validation')).reason, 'invalid');
     tx(a, { type: 'world-prop-spawn', nonce: 100, kind: 'crate', pose: [0,1,0,0,0,0,0,0,0,0] });
     assert.equal((await a.nextOf('world-prop-denied', 'rotation validation')).reason, 'invalid');
-    console.log('props: spawn, move, revoke/ack/grant, epochs, break, cleanup, admin, validation, levels, late join and departure passed');
+    console.log('props: spawn, move, claims, epochs, joints, metadata, hits, break, blast, cleanup, limits, admin, levels and late join passed');
   } finally { for (const c of sockets) c.ws.close(); }
 }

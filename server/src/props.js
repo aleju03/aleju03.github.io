@@ -12,7 +12,7 @@
 export const PROP_CAP = 150;
 const LEVEL_CAP = 2000;
 const WORLD_CAP = 8000;
-const KINDS = new Set(`crate crate_small pallet plank barrel trashcan sawblade pipe hydrant cone ball bucket milk_crate lawn_chair wheelie_bin chair table couch bathtub mattress door tv melon bottle soda_can block barrier cinder sawhorse girder stop_sign tyre engine barrel_explosive gascan propane dumpster fridge vending streetlamp container plate_s plate_m plate_l beam_s beam_l thruster wheel hoverball seat`.split(' '));
+export const PROP_KINDS = new Set(`crate crate_small pallet plank barrel trashcan sawblade pipe hydrant cone ball bucket milk_crate lawn_chair wheelie_bin chair table couch bathtub mattress door tv melon bottle soda_can portal_panel block barrier cinder sawhorse girder stop_sign tyre engine barrel_explosive gascan propane dumpster fridge vending streetlamp container plate_s plate_m plate_l beam_s beam_l thruster wheel hoverball seat`.split(' '));
 const TYPES = new Set(['weld', 'axis', 'rope', 'nocollide']);
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const finite = (n) => typeof n === 'number' && Number.isFinite(n);
@@ -112,7 +112,7 @@ export function createPropRegistry({ players, send, now = Date.now }) {
       return;
     }
     if (m.type === 'world-prop-spawn') {
-      if (!idOK(m.nonce) || !KINDS.has(m.kind)) return deny(ws, m.type, 'invalid', m.nonce);
+      if (!idOK(m.nonce) || !PROP_KINDS.has(m.kind)) return deny(ws, m.type, 'invalid', m.nonce);
       let seen = spawns.get(ws);
       if (!seen) spawns.set(ws, seen = new Map());
       const key = `${w.level}:${m.nonce}`;

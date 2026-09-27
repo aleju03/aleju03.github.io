@@ -66,7 +66,8 @@ import { HOVER_R, KEY_PAIRS, partOf, SEAT_FLOOR, SEAT_TOP, THRUSTER, WHEEL, type
 
   Headless-safe: with no parent there are no rope meshes, and the sandbox's
   fx is a no-op, so the same machine is measured in Node and filmed in
-  Chrome. Local-only for now, like every prop: nothing here travels.
+  Chrome. The network carries these same local joint frames and part
+  settings, with the whole connected graph under one simulator.
 */
 
 export type ConstraintType = 'weld' | 'axis' | 'rope' | 'nocollide'

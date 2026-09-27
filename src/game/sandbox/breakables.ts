@@ -36,6 +36,10 @@ import type { Sandbox } from './sandbox'
   and are removed, unless another prop touches them (then they wait). The
   oldest go first if more than `MAX_GIBS` are about.
 
+  Online, the authority alone damages and breaks a prop. Health and fuses
+  survive a handoff through the data record; splinters use only the cosmetic
+  FX pools on all peers, so local debris cannot change shared physics.
+
   Every impact also makes its sound here (impactSounds.ts), because the one
   subscription already knows the surface, the blow and the mass.
 */

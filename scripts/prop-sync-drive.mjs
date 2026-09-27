@@ -30,6 +30,11 @@ const shim = `(() => {
   localStorage.setItem('portfolio-language', 'en')
   localStorage.setItem('alejos-roam-prefs', JSON.stringify({cap: 60}))
   window.__wire = { out:0, in:0, propOut:0, propIn:0, propFramedOut:0, propFramedIn:0, events:[], sent:[] }
+  window.__propLinks=0
+  for(const C of [window.WebGLRenderingContext,window.WebGL2RenderingContext]) {
+    if(!C)continue;const link=C.prototype.linkProgram
+    C.prototype.linkProgram=function(...a){window.__propLinks++;return link.apply(this,a)}
+  }
   const Native = window.WebSocket
   window.WebSocket = class extends Native {
     constructor(...args) { super(...args); this.addEventListener('message', e => {
@@ -76,6 +81,7 @@ try {
   const a = await chrome(0), b = await chrome(1)
   await run(a, 'tp -32 -331'); await run(b, 'tp -28 -331')
   await sleep(1500)
+  for(const c of [a,b])await c.evaluate('__propLinks=0')
   const id = await a.evaluate(`(() => {const s=__sandbox; return s.spawn('crate',{x:-32,y:s.restY('crate',-32,-326),z:-326},{frozen:true})})()`)
   const first = await waitFor(async () => (await state(a)).find(p => p.id === id), 80, 100, 'spawn ack')
   const remote = await waitFor(() => find(b, first.net), 80, 100, 'remote crate')
@@ -114,11 +120,14 @@ try {
   await waitFor(async () => !(await find(b,explosive.net)), 80,100,'remote break')
   assert.ok(await b.evaluate(`__wire.events.some(m=>m.type==='world-prop-explosion')`))
   console.log('explosive removed and explosion received on both clients')
+  const firstLinks=await Promise.all([a.evaluate('__propLinks'),b.evaluate('__propLinks')])
+  assert.deepEqual(firstLinks,[0,0]);console.log('local and remote shader links',firstLinks)
   // Rejoin in the same second process, with a new socket identity and a full snapshot.
   await b.evaluate('delete window.__sandbox')
   await b.send('Page.reload')
   await waitFor(() => b.evaluate('!!window.__sandbox?.ready && __sandbox.network?.online'), 360,250,'late join')
   await sleep(500)
+  await b.evaluate('__propLinks=0')
   assert.equal((await state(b)).length,(await state(a)).length)
   assert.ok(await b.evaluate(`import('/src/game/sandbox/contraption/contraption.ts').then(m=>m.contraptionOf(__sandbox).stats.constraints===1)`))
   console.log('late join reconstructs props and joint')
@@ -148,6 +157,7 @@ try {
   console.log('190 resting + 10 moving props, bytes/s A/B',await measure())
   await a.evaluate('clearInterval(__moving)')
   assert.deepEqual(a.errors,[]);assert.deepEqual(b.errors,[])
+  assert.deepEqual(await Promise.all([a.evaluate('__propLinks'),b.evaluate('__propLinks')]),[0,0])
   console.log('two-process browser checks passed')
 } finally {
   for(const s of sockets)s.close()

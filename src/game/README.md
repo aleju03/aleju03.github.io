@@ -1625,7 +1625,8 @@ stays on the React side, and only plain data crosses back.
 
 Nothing about the planet is ever sent. Every field out here is a pure function
 of (x, z), so both ends can recompute the world and the only things that cannot
-be recomputed are where the other people are, and where they left the car.
+be recomputed are where the other people are, and where they left their
+vehicles and sandbox props.
 
 - **Playback runs in the past.** Snapshots arrive ~15 times a second and frames
   are drawn four times faster, so `remotePlayers.ts` renders two server ticks
