@@ -2932,7 +2932,7 @@ export default function CrtScene({
             if (disposed) return
             const t = (performance.now() - o0) / 1000
             // hold on the dark glass briefly, then retreat into the room
-            const back = Math.min(1, Math.max(0, (t - 0.8) / 1.3))
+            const back = Math.min(1, Math.max(0, (t - 0.55) / 0.3))
             spill.intensity = Math.max(0, 1 - back * 2)
             camera.position.lerpVectors(from, camStart, EASE(back))
             camera.lookAt(front)
@@ -4317,15 +4317,15 @@ export default function CrtScene({
           // announce ourselves while the stand-up glide plays, so the roster
           // and the first snapshots have landed by the time the controls do
           joinWorld()
-          // push back from the desk and rise to standing height: kept short,
-          // lingering here made standing up feel mushy. The /world entrance
+          // push back from the desk and rise to standing height: a quarter
+          // second, because anything longer is a wait between you and the walk. The /world entrance
           // never sat down, so it opens standing instead of gliding up out
           // of a chair nobody watched it push back from
           const s0 = performance.now()
           const from = camera.position.clone()
           const standTick = () => {
             if (disposed || !roaming) return
-            const t = instant ? 1 : Math.min(1, (performance.now() - s0) / 620)
+            const t = instant ? 1 : Math.min(1, (performance.now() - s0) / 240)
             camera.position.lerpVectors(from, SPAWN, EASE(t))
             const aim = lookAngles(camera.position, front)
             camera.rotation.set(aim.pitch, aim.yaw, 0)
@@ -4442,9 +4442,10 @@ export default function CrtScene({
           const lookFrom = camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(3).add(from)
           const look = new THREE.Vector3()
           const fovFrom = camera.fov // a sprint into the chair leaves the lens wide
-          // quick: a slow sink into the chair felt wrong every single time
-          const delay = live ? 0.05 : 0.3
-          const dur = live ? 0.8 : 1.35
+          // a snap, not a glide: sitting down is a verb, and a second of camera
+          // flight every time you wanted the computer was time taken from you.
+          // The cold tube's flicker still plays, it just no longer holds the lens
+          const dur = 0.28
           const flyTick = () => {
             if (disposed) return
             const t = (performance.now() - f0) / 1000
@@ -4458,7 +4459,7 @@ export default function CrtScene({
                     ? 0.9
                     : 0.2
                   : 1.0
-            const zoom = Math.min(1, Math.max(0, (t - delay) / dur))
+            const zoom = Math.min(1, t / dur)
             camera.position.lerpVectors(from, camEnd, EASE(zoom))
             camera.lookAt(look.lerpVectors(lookFrom, front, EASE(zoom)))
             if (fovFrom !== FOV) {

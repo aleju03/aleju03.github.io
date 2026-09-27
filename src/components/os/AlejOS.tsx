@@ -813,6 +813,8 @@ export default function AlejOS({
   const [planeInRoom, setPlaneInRoom] = useState(false)
   const phaseRef = useRef(phase)
   const awayRef = useRef(away)
+  // a wake from the room runs the short boot (see `wake`), read once by the boot timer
+  const quickBootRef = useRef(false)
   const pendingAppRef = useRef<AppId | null>(null)
   const desktopRef = useRef<HTMLDivElement>(null)
   const marqueeOriginRef = useRef<{ x: number; y: number } | null>(null)
@@ -1023,9 +1025,9 @@ export default function AlejOS({
       setDownMsg(false)
       setPhase('down')
       // the picture collapses to a bright line first, then the farewell text;
-      // in 3D mode the camera retreat from the glass lands at ~2.1s, and the
-      // room phase must take over right then — any later is dead air spent
-      // staring at a frozen frame before the stand-up glide begins
+      // in 3D mode the camera retreat from the glass lands at ~0.85s, and the
+      // room phase must take over right then: any later is dead air spent
+      // staring at a frozen frame before the stand-up begins
       setTimeout(() => setDownMsg(true), 650)
       setTimeout(
         () => {
@@ -1041,18 +1043,24 @@ export default function AlejOS({
             returnToSite()
           }
         },
-        mode === '3d' ? 2150 : 2200,
+        mode === '3d' ? 900 : 2200,
       )
     },
     [mode, phase, returnToSite],
   )
 
-  /** interacted with the dark machine while roaming: boot it again */
+  /**
+   * interacted with the dark machine while roaming: boot it again. Somebody
+   * who walked up to the desk has already seen the BIOS once, or came for the
+   * room and wants the computer now, so this skips the POST and runs a short
+   * boot screen instead of the five and a half second one.
+   */
   const wake = useCallback(() => {
     if (phaseRef.current !== 'room') return
     sounds.click()
     warmDesktop()
-    setPhase('post')
+    quickBootRef.current = true
+    setPhase('boot')
   }, [warmDesktop])
 
   /** push back from the desk mid-session; the desktop stays on the tube */
@@ -1174,7 +1182,9 @@ export default function AlejOS({
 
   useEffect(() => {
     if (phase !== 'boot') return
-    const id = setTimeout(() => setPhase('login'), 2600)
+    const quick = quickBootRef.current
+    quickBootRef.current = false
+    const id = setTimeout(() => setPhase('login'), quick ? 1100 : 2600)
     return () => clearTimeout(id)
   }, [phase])
 
