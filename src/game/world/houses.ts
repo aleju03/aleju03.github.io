@@ -2,7 +2,7 @@ import { noStand } from '../physics/collision'
 import { SURF, type SurfaceId } from './surface'
 import {
   BODY, CONE4, GLASS_DARK, GLASS_LIT, HIP, LIME, PRISM, ROOFS, SHED, TRIM,
-  aabb, box, frameOf, panel, pick, put, type BuildOut, type Lot,
+  aabb, box, fork, frameOf, panel, pick, put, type BuildOut, type Lot,
 } from './kitbash'
 
 /*
@@ -40,6 +40,15 @@ export type HousePlan = 'gabled' | 'cottage' | 'ranch' | 'townhouse' | 'villa'
     row of houses reading as one material repeated */
 const skinOf = (r: number): SurfaceId => (r < 0.34 ? SURF.brick : SURF.plaster)
 
+/** window and door joinery: mostly the whites and creams a street is painted
+    in, and a third of the time a dark green, oxblood or navy, which is the
+    one colour on a house the eye picks out from the end of the road */
+const TRIMS = [TRIM, '#ece8de', '#e3d8bf', TRIM, '#ece8de', '#3f5242', '#5a2e2a', '#2f3b4a']
+/** front doors: the stained timbers, and the painted ones */
+const DOORS = ['#33261a', '#4a3322', '#6b2f2a', '#2f4a3a', '#2f3b55', '#b89a5e', '#3a3a3a']
+/** what a window box is planted with */
+const BLOOMS = ['#b8474a', '#d88a3a', '#c9a2c8', '#e0d060', '#d8d8d0']
+
 /**
  * Everything a plan needs to stamp itself: the lot's frame with `mir` already
  * folded in, the paint it drew, and local-space verbs for a box, a collision
@@ -50,6 +59,14 @@ const context = (out: BuildOut, lot: Lot) => {
   const { rng } = lot
   const f = frameOf(lot)
   const mir = rng() < 0.5 ? 1 : -1
+  const trim = pick(TRIMS, rng())
+  const door = pick(DOORS, rng())
+  /** the eave board: in the trim colour on half the street, dark on the rest */
+  const fascia = rng() < 0.5 ? trim : '#38322b'
+  /** the rolls only a detailed build makes (window lights, fences, the
+      porch), off their own stream so the outer ring and the near one agree
+      about everything that shows as a shape (kitbash.ts's `fork`) */
+  const dr = fork(rng)
   const wx = (u: number, v: number) => f.x(u * mir, v)
   const wz = (u: number, v: number) => f.z(u * mir, v)
 
@@ -86,7 +103,7 @@ const context = (out: BuildOut, lot: Lot) => {
     0, lot.face + (cross ? Math.PI / 2 : 0), 0,
     cross ? lv : lu, rise, cross ? lu : lv, SURF.shingle)
 
-  return { out, lot, rng, f, mir, wx, wz, b, solid, yawOf, roof }
+  return { out, lot, rng, dr, f, mir, trim, door, fascia, wx, wz, b, solid, yawOf, roof }
 }
 
 type Ctx = ReturnType<typeof context>
@@ -104,22 +121,23 @@ const window_ = (
   du: number, dv: number, litRate: number, shutters = false,
 ) => {
   const flank = du !== 0
-  c.b(TRIM, u, v, cy, flank ? 0.16 : w + 0.4, h + 0.4, flank ? w + 0.4 : 0.16,
+  c.b(c.trim, u, v, cy, flank ? 0.16 : w + 0.4, h + 0.4, flank ? w + 0.4 : 0.16,
     SURF.plaster)
   const yaw = c.yawOf(du, dv)
   panel(c.out.solid, GLASS_DARK,
     c.wx(u + du * 0.1, v + dv * 0.1), cy, c.wz(u + du * 0.1, v + dv * 0.1),
     w, h, yaw)
-  if (c.rng() < litRate) {
+  if (c.dr() < litRate) {
     panel(c.out.glass, GLASS_LIT,
       c.wx(u + du * 0.14, v + dv * 0.14), cy, c.wz(u + du * 0.14, v + dv * 0.14),
       w, h, yaw)
   }
   if (!shutters) return
-  // louvred boards either side, standing a little proud of the frame
+  // louvred boards either side, standing a little proud of the frame, in
+  // the front door's paint the way a house is painted as a scheme
   for (const s of [-1, 1]) {
     const o = (w / 2 + 0.3) * s
-    c.b('#4d5c52', u + (flank ? 0 : o), v + (flank ? o : 0), cy,
+    c.b(c.door, u + (flank ? 0 : o), v + (flank ? o : 0), cy,
       flank ? 0.1 : 0.5, h + 0.3, flank ? 0.5 : 0.1, SURF.plank)
   }
 }
@@ -127,9 +145,9 @@ const window_ = (
 /** the front door: a surround, a leaf, a threshold slab, and the path out to
     the kerbward edge of the lot */
 const frontDoor = (
-  c: Ctx, u: number, hv: number, y: number, hex = '#33261a', h = 5.2,
+  c: Ctx, u: number, hv: number, y: number, h = 5.2, hex = c.door,
 ) => {
-  c.b(TRIM, u, hv + 0.06, y + h / 2, 2.3, h + 0.2, 0.18, SURF.plaster)
+  c.b(c.trim, u, hv + 0.06, y + h / 2, 2.3, h + 0.2, 0.18, SURF.plaster)
   panel(c.out.solid, hex, c.wx(u, hv + 0.18), y + h / 2 - 0.12, c.wz(u, hv + 0.18),
     1.9, h - 0.3, c.yawOf(0, 1), SURF.plank)
   // a knob, because a plank with no ironwork on it reads as a panel
@@ -146,7 +164,8 @@ const chimney = (c: Ctx, u: number, v: number, fromY: number, topY: number) => {
 /** a low frontage boundary: hedge, picket fence or garden wall. Kept under
     1.2 tall and thin, so the hop arc clears it with time to spare */
 const frontage = (c: Ctx, hu: number, hv: number, y: number) => {
-  const r = c.rng()
+  if (c.dr() < 0.7) mailbox(c, -(hu * 0.75 + 0.5), hv + 4.0, y)
+  const r = c.dr()
   if (r > 0.62) return
   const span = hu * 1.5
   const v = hv + 3.2
@@ -174,14 +193,73 @@ const frontage = (c: Ctx, hu: number, hv: number, y: number) => {
 /** a back-garden shed, which is most of what makes a rear elevation read as
     lived in rather than as the blank side of a box */
 const gardenShed = (c: Ctx, hu: number, hv: number, y: number) => {
-  if (c.rng() > 0.4) return
-  const u = (hu - 1.6) * (c.rng() < 0.5 ? -1 : 1)
+  if (c.dr() > 0.4) return
+  const u = (hu - 1.6) * (c.dr() < 0.5 ? -1 : 1)
   const v = -(hv + 2.6)
   c.b('#6b5a44', u, v, y + 1.35, 2.6, 2.7, 2.2, SURF.plank)
   c.roof(SHED, '#3d3a33', u, v, y + 2.7, 2.9, 0.7, 2.5)
   panel(c.out.solid, '#4a3d30', c.wx(u, v - 1.12), y + 1.2, c.wz(u, v - 1.12),
     1.0, 2.1, c.yawOf(0, -1), SURF.plank)
   c.solid(u, v, 2.6, 2.2, y - 1, y + 2.7, false, 0.1)
+}
+
+/** a kerbside mailbox on a post, flag up or down: the smallest thing on a
+    street and the one that says *someone gets letters here* */
+const mailbox = (c: Ctx, u: number, v: number, y: number) => {
+  const paint = pick(['#3a3a3a', '#2f3b55', '#6b2f2a', '#d8d2c4', '#3f5242'], c.dr())
+  c.b('#4a3d30', u, v, y + 0.62, 0.14, 1.24, 0.14, SURF.plank)
+  c.b(paint, u, v, y + 1.42, 0.46, 0.46, 0.82)
+  c.b('#b8342a', u + 0.27, v + 0.12, y + (c.dr() < 0.5 ? 1.66 : 1.46), 0.04, 0.32, 0.12)
+  c.solid(u, v, 0.46, 0.82, y - 1, y + 1.65, false, 0.05)
+}
+
+/**
+ * A bay pushed out of the ground floor: a shallow box the full height of the
+ * storey's windows under its own little hip, glazed on its three faces. It is
+ * one mass and one roof, and it is the single change that most breaks the
+ * flat front of a workhorse house, because it throws a shadow and changes
+ * the eave line under the main one.
+ */
+const bayWindow = (
+  c: Ctx, u: number, hv: number, y: number, body: string, skin: SurfaceId,
+  roofC: string, litRate: number,
+) => {
+  const bw = 3.4
+  const bd = 1.15
+  const v = hv + bd / 2
+  c.b('#57514a', u, v, y + 0.4, bw + 0.2, 0.8, bd + 0.1, SURF.paving)
+  c.b(body, u, v, y + 2.4, bw, 3.9, bd, skin)
+  c.roof(HIP, roofC, u, v, y + 4.3, bw + 0.4, 0.95, bd + 0.5)
+  c.b(c.fascia, u, v, y + 4.32, bw + 0.4, 0.2, bd + 0.5, SURF.plank)
+  c.solid(u, v, bw, bd, y - 1, y + 4.4, false, 0.1)
+  if (!c.out.detailed) return
+  window_(c, u, hv + bd, y + 2.8, 2.2, 1.9, 0, 1, litRate)
+  for (const s of [-1, 1]) {
+    window_(c, u + s * (bw / 2), v, y + 2.8, 0.6, 1.9, s, 0, litRate)
+  }
+}
+
+/** a planter under a front window, and what is growing in it */
+const windowBox = (c: Ctx, u: number, v: number, sillY: number, w: number) => {
+  c.b('#5a4636', u, v + 0.22, sillY - 0.2, w + 0.2, 0.36, 0.42, SURF.plank)
+  c.b(pick(BLOOMS, c.dr()), u, v + 0.24, sillY + 0.04, w, 0.2, 0.34)
+}
+
+/**
+ * A dormer in a roof's front slope, seated so its face stands just proud of
+ * the slope and its back is buried in it. `slopeAt(v)` is the roof's height
+ * over the eave at depth `v`, which is what lets one routine seat a dormer in
+ * any pitch rather than in the one pitch it was tuned against.
+ */
+const dormer = (
+  c: Ctx, u: number, dv: number, eaveY: number, slopeAt: (v: number) => number,
+  body: string, roofC: string, litRate: number,
+) => {
+  const dd = 2.2
+  const dy = eaveY + slopeAt(dv + dd / 2) - 0.5
+  c.b(body, u, dv, dy + 0.9, 2.0, 1.8, dd, SURF.plaster)
+  c.roof(PRISM, roofC, u, dv, dy + 1.8, 2.4, 1.0, dd + 0.3, true)
+  if (c.out.detailed) window_(c, u, dv + dd / 2 + 0.02, dy + 0.95, 1.1, 1.0, 0, 1, litRate)
 }
 
 /** an attached garage on a wide enough lot */
@@ -209,10 +287,15 @@ const garage = (c: Ctx, hu: number, hv: number, y: number, side: number) => {
  * parapet, one or two storeys, and about a third of the time a cross wing
  * projecting toward the street with its own gable end. That wing is the
  * cheapest silhouette this module has, one extra mass and one extra roof, and
- * it is what makes a run of these stop reading as a row of shoeboxes.
+ * it is what makes a run of these stop reading as a row of shoeboxes. The
+ * rest of what separates two of them is rolled per house: the pitch (from a
+ * low forty-year-old ranch slope to a steep one), a bay window beside the
+ * door, dormers in a single storey's front slope, the trim and the door in
+ * their own paint, window boxes, a drive to the kerb where there is no
+ * garage, and a mailbox at the end of the path.
  */
 const gabled = (c: Ctx) => {
-  const { lot, rng, out } = c
+  const { lot, rng, dr, out } = c
   const y = lot.baseY
   const two = rng() < 0.34
   const h = two
@@ -232,19 +315,19 @@ const gabled = (c: Ctx) => {
   c.b(body, cu, 0, y + h / 2 - 0.6, hu * 2, h + 1.2, hv * 2, skin)
   c.b('#57514a', cu, 0, y + 0.35, hu * 2 + 0.34, 0.9, hv * 2 + 0.34, SURF.paving)
   if (two) {
-    c.b('#4e4840', cu, 0, y + h * 0.52, hu * 2 + 0.16, 0.32, hv * 2 + 0.16, SURF.plank)
+    c.b(c.fascia, cu, 0, y + h * 0.52, hu * 2 + 0.16, 0.32, hv * 2 + 0.16, SURF.plank)
   }
 
-  const rise = 2.2 + Math.min(hu, hv) * 0.26
+  const rise = (2.2 + Math.min(hu, hv) * 0.26) * (0.8 + rng() * 0.55)
   const roll = rng()
+  const cross = hv > hu
   /** where the chimney has to clear: the top of whatever roof was rolled */
   let ridgeY: number
   if (roll < 0.52) {
-    c.roof(PRISM, roofC, cu, 0, y + h - 0.05, hu * 2.14, rise * 1.15, hv * 2.14,
-      hv > hu)
+    c.roof(PRISM, roofC, cu, 0, y + h - 0.05, hu * 2.14, rise * 1.15, hv * 2.14, cross)
     ridgeY = y + h + rise * 1.15
   } else if (roll < 0.78) {
-    c.roof(HIP, roofC, cu, 0, y + h - 0.05, hu * 2.14, rise, hv * 2.14, hv > hu)
+    c.roof(HIP, roofC, cu, 0, y + h - 0.05, hu * 2.14, rise, hv * 2.14, cross)
     ridgeY = y + h + rise
   } else if (roll < 0.92) {
     put(out.solid, CONE4, roofC, c.wx(cu, 0), y + h + rise / 2 - 0.05, c.wz(cu, 0),
@@ -254,7 +337,7 @@ const gabled = (c: Ctx) => {
     c.b('#4c4740', cu, 0, y + h + 0.22, hu * 2 + 0.4, 0.5, hv * 2 + 0.4, SURF.paving)
     ridgeY = y + h + 0.5
   }
-  c.b('#38322b', cu, 0, y + h - 0.04, hu * 2.14, 0.34, hv * 2.14, SURF.plank)
+  c.b(c.fascia, cu, 0, y + h - 0.04, hu * 2.14, 0.34, hv * 2.14, SURF.plank)
 
   if (wing) {
     const wh = Math.min(h - 0.6, two ? 8.8 : h)
@@ -265,21 +348,43 @@ const gabled = (c: Ctx) => {
       wu * 2 + 0.3, 0.9, wv * 2 + hv * 0.68 + 0.3, SURF.paving)
     c.roof(PRISM, roofC, -hu, hv * 0.34, y + wh - 0.05,
       wu * 2.16, wRise, (wv * 2 + hv * 0.68) * 1.08, true)
-    c.b('#38322b', -hu, hv * 0.34, y + wh - 0.04,
+    c.b(c.fascia, -hu, hv * 0.34, y + wh - 0.04,
       wu * 2.16, 0.34, (wv * 2 + hv * 0.68) * 1.06, SURF.plank)
     c.solid(-hu, hv * 0.34, wu * 2, wv * 2 + hv * 0.68, y - 2, y + wh, false, 0.2)
   }
 
   const doorU = cu + (rng() - 0.5) * hu * 0.5
+  // the bay goes on the side of the door with more wall, if there is room
+  // for it clear of the corner and of the wing
+  const bayS = doorU > cu ? -1 : 1
+  const bayU = doorU + bayS * hu * 0.62
+  const bay = rng() < 0.45 && hu > 3.8 && Math.abs(bayU - cu) < hu - 2.0
+  if (bay) bayWindow(c, bayU, hv, y, body, skin, roofC, litRate)
+  // dormers light the attic of a single storey whose front slope faces the
+  // street: a gable with its ridge along the frontage
+  const dormers = !two && roll < 0.52 && !cross && hu > 4 ? (rng() < 0.5 ? 1 : 2) : 0
+  if (dormers) {
+    const R = rise * 1.15
+    const run = hv * 1.07
+    const slopeAt = (v: number) => R * (1 - v / run)
+    const us = dormers === 1 ? [cu] : [cu - hu * 0.45, cu + hu * 0.45]
+    for (const u of us) dormer(c, u, hv * 0.3, y + h - 0.05, slopeAt, body, roofC, litRate)
+  }
+  const hasGarage = rng() < 0.4 && c.f.hu > 4.8
+  const garageSide = doorU > cu ? -1 : 1
+
   if (out.detailed) {
     frontDoor(c, doorU, hv, y)
+    const boxes = dr() < 0.4
     const rows = two ? [3.3, h * 0.52 + 2.7] : [3.3]
     for (const [ri, wy] of rows.map((v, i) => [i, v] as const)) {
       for (const s of [-1, 1]) {
         const u = doorU + s * hu * 0.62
         if (Math.abs(u - cu) > hu - 1.4) continue
-        if (ri === 0 || rng() < 0.85) {
+        if (ri === 0 && bay && s === bayS) continue
+        if (ri === 0 || dr() < 0.85) {
           window_(c, u, hv, y + wy, 1.7, 1.5, 0, 1, litRate)
+          if (boxes && ri === 0) windowBox(c, u, hv, y + wy - 0.95, 1.7)
         }
       }
       // and one on each flank, so the house is not a facade with three blanks
@@ -292,19 +397,26 @@ const gabled = (c: Ctx) => {
     // a porch over the door, on posts. The canopy clears the door, and
     // therefore anyone walking under it: the first cut hung it at 3.35,
     // squarely at forehead height
-    if (rng() < 0.42) {
+    if (dr() < 0.42 && !(bay && Math.abs(bayU - doorU) < 4.0)) {
       c.b('#5a5148', doorU, hv + 1.1, y + 0.22, 4.0, 0.44, 2.2, SURF.plank)
       c.b(roofC, doorU, hv + 1.1, y + 5.85, 4.5, 0.24, 2.6, SURF.plank)
+      c.b(c.fascia, doorU, hv + 1.1, y + 5.66, 4.5, 0.18, 2.6, SURF.plank)
       for (const s of [-1, 1]) {
-        c.b(TRIM, doorU + s * 1.8, hv + 1.9, y + 3.1, 0.2, 5.3, 0.2)
+        c.b(c.trim, doorU + s * 1.8, hv + 1.9, y + 3.1, 0.2, 5.3, 0.2)
       }
       c.solid(doorU, hv + 1.1, 4.0, 2.2, y - 1, y + 0.44, true)
+    }
+    // a drive out to the kerb, on the side away from the wing, where there
+    // is no garage to have brought its own
+    if (!hasGarage && dr() < 0.6) {
+      const du = cu + hu + 1.9
+      c.b('#83807a', du, hv * 0.4 + 1.8, y + 0.04, 3.0, 0.09, hv * 1.2 + 3.6, SURF.paving)
     }
     frontage(c, hu, hv, y)
     gardenShed(c, hu, hv, y)
   }
 
-  if (rng() < 0.4 && c.f.hu > 4.8) garage(c, hu, hv, y, doorU > cu ? -1 : 1)
+  if (hasGarage) garage(c, hu, hv, y, garageSide)
   if (rng() < 0.5) chimney(c, cu + hu * 0.5, -hv * 0.4, y + h, ridgeY + 1.4)
 
   c.solid(cu, 0, hu * 2, hv * 2, y - 2, y + h, false, 0.3)
@@ -340,9 +452,11 @@ const cottage = (c: Ctx) => {
   c.b('#4c4740', stack, -hv * 0.2, y + h + rise + 2.6, 1.8, 0.3, 2.0, SURF.paving)
 
   if (out.detailed) {
-    frontDoor(c, 0, hv, y, '#3d5342', 4.9)
+    frontDoor(c, 0, hv, y, 4.9)
+    const boxes = c.dr() < 0.55
     for (const s of [-1, 1]) {
       window_(c, s * hu * 0.62, hv, y + 3.1, 1.4, 1.4, 0, 1, litRate, true)
+      if (boxes) windowBox(c, s * hu * 0.62, hv, y + 2.2, 1.4)
     }
     window_(c, hu, hv * 0.3, y + 3.1, 1.3, 1.3, 1, 0, litRate)
     window_(c, -hu, hv * 0.3, y + 3.1, 1.3, 1.3, -1, 0, litRate)
@@ -401,7 +515,7 @@ const ranch = (c: Ctx) => {
     const posts = Math.max(2, Math.round(hu / 2.6))
     for (let i = 0; i <= posts; i++) {
       const u = (i / posts - 0.5) * hu * 1.86
-      c.b(TRIM, u, pv + 1.3, y + 3.1, 0.22, 5.5, 0.22)
+      c.b(c.trim, u, pv + 1.3, y + 3.1, 0.22, 5.5, 0.22)
     }
     frontDoor(c, hu * 0.2, hv * 0.9, y + 0.36)
     // a picture window: the one wide pane a house like this always has
@@ -412,13 +526,13 @@ const ranch = (c: Ctx) => {
     window_(c, 0, -hv * 1.1, y + 3.3, 2.0, 1.4, 0, -1, litRate * 0.6)
 
     // the carport: two posts and a flat deck, open on three sides
-    if (rng() < 0.55) {
-      const s = rng() < 0.5 ? 1 : -1
+    if (c.dr() < 0.55) {
+      const s = c.dr() < 0.5 ? 1 : -1
       const cu = s * (hu + 2.6)
       c.b('#83807a', cu, hv * 0.2, y + 0.05, 5.0, 0.1, hv * 2.2, SURF.paving)
       c.b(roofC, cu, hv * 0.2, y + 5.2, 5.4, 0.3, hv * 2.3, SURF.plank)
       for (const q of [-1, 1]) {
-        c.b(TRIM, cu + s * 2.2, hv * 0.2 + q * hv, y + 2.6, 0.24, 5.2, 0.24)
+        c.b(c.trim, cu + s * 2.2, hv * 0.2 + q * hv, y + 2.6, 0.24, 5.2, 0.24)
       }
       c.solid(cu, hv * 0.2, 5.4, hv * 2.3, y + 5.2, y + 5.5)
     }
@@ -469,7 +583,7 @@ const townhouse = (c: Ctx) => {
     for (const s of [-1, 1]) {
       c.b('#6f695f', s * 1.6, hv + 1.1, y + 0.9, 0.36, 1.8, 2.6, SURF.paving)
     }
-    frontDoor(c, 0, hv, floorY, '#2f3a44', 4.7)
+    frontDoor(c, 0, hv, floorY, 4.7)
     for (let s = 0; s < storeys; s++) {
       const wy = floorY + 2.5 + s * 4.4
       for (const u of [-hu * 0.5, hu * 0.5]) {
@@ -515,7 +629,7 @@ const villa = (c: Ctx) => {
   }
 
   if (out.detailed) {
-    frontDoor(c, 0, hv, y, '#3a3129', 5.0)
+    frontDoor(c, 0, hv, y, 5.0)
     // the balcony: a slab on two columns, with a run of balusters on it
     c.b('#c6bda9', 0, hv + 1.0, y + 5.6, 5.4, 0.34, 2.4, SURF.paving)
     for (const s of [-1, 1]) {
@@ -537,8 +651,8 @@ const villa = (c: Ctx) => {
 
     // a pergola off one flank: four posts and a run of cross beams, which
     // reads as a terrace for the price of nine boxes
-    if (rng() < 0.5) {
-      const s = rng() < 0.5 ? 1 : -1
+    if (c.dr() < 0.5) {
+      const s = c.dr() < 0.5 ? 1 : -1
       const pu = s * (hu + 2.4)
       c.b('#a49a86', pu, 0, y + 0.06, 4.4, 0.12, hv * 1.6, SURF.paving)
       for (const a of [-1, 1])

@@ -3,7 +3,7 @@ import { seeded } from '../core/rand'
 import { SURF, type SurfaceId } from './surface'
 import {
   BALL, BOX, CONE12, CYL12, DOME, GAMBREL, PRISM, SHED, TUBE12,
-  aabb, box, panel, pick, put, shaft, strut, type BuildOut,
+  aabb, box, fork, panel, pick, put, shaft, strut, type BuildOut,
 } from './kitbash'
 import type { Landmark } from './landmarks'
 
@@ -132,7 +132,8 @@ const railing = (
 
 /**
  * A banded tower on a headland with a lit lantern in the top of it and the
- * keeper's cottage tucked in behind. The one structure out here that is
+ * keeper's cottage tucked in behind, an oil store across the yard, a flag,
+ * and a whitewashed wall closing the yard. The one structure out here that is
  * legible at night from further away than it is by day, which is the whole
  * argument for building it: the emissive pass already exists for city
  * windows, and one glowing ring on a dark coast is worth more of it than a
@@ -209,6 +210,51 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
       SURF.paving)
   }
   solidL(out, c, cu, cv, 8.4, 6.4, y - 2, y + ch, false, 0.2)
+
+  // The station round them, which is what turns a tower and a house into a
+  // light *station*: an oil store across the yard from the cottage, a flag
+  // on a mast, and a low whitewashed wall closing the yard, with the cottage
+  // itself standing in as the wall's back corner on its own side
+  const side = Math.sign(cu)
+  const ou = -side * 7.2
+  const ov = -5.8
+  boxL(out, c, WHITE, ou, ov, y + 1.6, 3.4, 3.6, 3.2, SURF.plaster)
+  boxL(out, c, '#6f6a61', ou, ov, y + 0.25, 3.7, 0.5, 3.5, SURF.paving)
+  put(out.solid, SHED, '#54423a', c.x(ou, ov), y + 3.35, c.z(ou, ov),
+    0, c.face + Math.PI, 0, 3.9, 0.9, 3.7, SURF.shingle)
+  solidL(out, c, ou, ov, 3.4, 3.2, y - 2, y + 3.6, false, 0.1)
+  if (out.detailed) {
+    const dr = fork(rng)
+    port(out, c, ou, ov + 1.6, y + 1.5, 1.2, 2.5, 0, 1, false)
+    boxL(out, c, '#3a2c1e', ou, ov + 1.66, y + 1.45, 1.1, 2.4, 0.12, SURF.plank)
+    // a hood over the cottage door
+    boxL(out, c, '#54423a', cu, cv + 3.9, y + 4.35, 2.6, 0.2, 1.3, SURF.plank)
+    // the flag
+    const fu = -side * 6.5
+    const fv = 3.2
+    shaft(out.solid, '#d8d2c4', c.x(fu, fv), y, c.z(fu, fv), 0.1, 9.5, 0.06, 6)
+    boxL(out, c, dr() < 0.5 ? LAMP_RED : '#2f3b55', fu + 0.8, fv, y + 8.8, 1.5, 0.9, 0.05)
+    out.boxes.push(noStand(aabb(c.x(fu, fv), y - 1, c.z(fu, fv), 0.2, y + 9.5, 0.2)))
+    // the wall: along the front with a gate in it, down the open flank and
+    // back to the oil store, and down the cottage's flank to its door
+    const wall = (u0: number, v0: number, u1: number, v1: number) => {
+      const lu = Math.abs(u1 - u0) + 0.5
+      const lv = Math.abs(v1 - v0) + 0.5
+      const mu = (u0 + u1) / 2
+      const mv = (v0 + v1) / 2
+      boxL(out, c, WHITE, mu, mv, y + 0.5, lu, 1.0, lv, SURF.plaster)
+      boxL(out, c, '#b8b09e', mu, mv, y + 1.06, lu + 0.1, 0.12, lv + 0.1, SURF.paving)
+      solidL(out, c, mu, mv, lu, lv, y - 1, y + 1.12, false, 0.05)
+    }
+    const fy = 6.5
+    wall(-10.6, fy, -1.3, fy)
+    wall(1.3, fy, 10.6, fy)
+    wall(-side * 10.6, fy, -side * 10.6, ov)
+    wall(side * 10.6, fy, side * 10.6, cv + 3.6)
+    for (const q of [-1, 1]) {
+      boxL(out, c, WHITE, q * 1.5, fy, y + 0.8, 0.8, 1.6, 0.8, SURF.plaster)
+    }
+  }
 }
 
 /* -------------------------------------------------------------- windmill -- */
@@ -508,95 +554,156 @@ const mast = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
 /* ---------------------------------------------------------------- ruins -- */
 
 /**
- * What is left of something: a rectangle of broken wall with the courses
- * stepping down toward the gaps, a doorway that still has its lintel, a
- * colonnade with most of its columns on the ground, and an altar in the
- * middle. Wall stubs under waist height register standable, because a ruin
- * you can climb about on is worth three you can only walk around.
+ * What is left of a church: the story a ruin needs is *what it was*, and a
+ * rectangle of broken wall of even height never told it. So this is an abbey
+ * with its roof gone. The west front still stands to its gable, a doorway at
+ * the foot and a tall lancet over it you can see the sky through; the nave's
+ * side walls run back from it as piers with the window openings between
+ * them, falling away toward the east end where the apse is a ring of stubs;
+ * a bell tower at one front corner has lost its top; the altar is where an
+ * altar goes, at the far end under where the east window was; and a few
+ * rafters still lean from the wall heads onto the floor, with ivy on the
+ * stone and graves in the grass round it. Low stubs register standable,
+ * because a ruin you can climb about on is worth three you can only walk
+ * around.
  */
 const ruins = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   const s = site(lm, true)
   const stone = rng() < 0.5 ? OLDSTONE : '#a89c86'
-  const hu = 7 + rng() * 3
-  const hv = 5.5 + rng() * 3
+  const dark = '#7d766a'
+  /** half the nave's width, and half its length */
+  const hw = 4.2 + rng() * 1.0
+  const hl = 6.4 + rng() * 1.6
+  /** the whole plan is shifted forward so the apse fits the pad too */
+  const vc = hw * 0.45
+  const front = hl + vc
+  const back = -hl + vc
+  const wallH = 7.6 + rng() * 1.2
+  const gable = rng() < 0.7
+  const towerS = rng() < 0.5 ? 1 : -1
+  const towerH = 10 + rng() * 3.5
+  const dr = fork(rng)
 
-  /** one run of wall, broken into segments of falling height with gaps in it */
-  const wall = (u0: number, v0: number, u1: number, v1: number, gate: boolean) => {
-    const len = Math.hypot(u1 - u0, v1 - v0)
-    const n = Math.max(3, Math.round(len / 1.9))
-    for (let i = 0; i < n; i++) {
-      const t = (i + 0.5) / n
-      if (gate && Math.abs(t - 0.5) < 0.14) continue
-      if (rng() < 0.22) continue
-      const u = u0 + (u1 - u0) * t
-      const v = v0 + (v1 - v0) * t
-      // taller in the middle of a run, gnawed away toward the ends
-      const k = 1 - Math.abs(t - 0.5) * 1.5
-      const h = (0.7 + k * 3.4) * (0.7 + rng() * 0.6)
-      const su = Math.abs(u1 - u0) / n + 0.7
-      const sv = Math.abs(v1 - v0) / n + 0.7
-      boxL(out, s, stone, u, v, y + h / 2, su, h, sv, SURF.brick)
-      solidL(out, s, u, v, su, sv, y - 1, y + h, h < 1.7, 0.05)
-    }
-    if (!gate) return
-    // the doorway that outlived the wall: two jambs and the lintel across
-    const mu = (u0 + u1) / 2
-    const mv = (v0 + v1) / 2
-    const du = (u1 - u0) / len
-    const dv = (v1 - v0) / len
-    for (const q of [-1, 1]) {
-      boxL(out, s, stone, mu + du * q * 1.5, mv + dv * q * 1.5, y + 2.4,
-        Math.abs(du) * 1.1 + 0.9, 4.8, Math.abs(dv) * 1.1 + 0.9, SURF.brick)
-      solidL(out, s, mu + du * q * 1.5, mv + dv * q * 1.5,
-        Math.abs(du) * 1.1 + 0.9, Math.abs(dv) * 1.1 + 0.9, y - 1, y + 4.8)
-    }
-    boxL(out, s, stone, mu, mv, y + 5.3,
-      Math.abs(du) * 4.4 + 1.0, 1.0, Math.abs(dv) * 4.4 + 1.0, SURF.brick)
-  }
-  wall(-hu, hv, hu, hv, true)
-  wall(-hu, -hv, hu, -hv, false)
-  wall(-hu, -hv, -hu, hv, false)
-  wall(hu, -hv, hu, hv, rng() < 0.4)
-
-  // the colonnade: a few still up, more of them in pieces on the floor
-  for (let i = 0; i < 5; i++) {
-    const u = -hu * 0.6 + (i / 4) * hu * 1.2
-    const v = -hv * 0.45
-    if (rng() < 0.45) {
-      const ch = 3.4 + rng() * 2.6
-      shaft(out.solid, stone, s.x(u, v), y, s.z(u, v), 0.62, ch, 0.55, 8, 0, SURF.paving)
-      boxL(out, s, stone, u, v, y + ch + 0.2, 1.6, 0.4, 1.6, SURF.paving)
-      out.boxes.push(noStand(aabb(s.x(u, v), y - 1, s.z(u, v), 0.75, y + ch, 0.75)))
-      continue
-    }
-    if (!out.detailed) continue
-    // toppled: two or three drums lying where they rolled
-    const a = rng() * Math.PI
-    for (let d = 0; d < 2 + Math.floor(rng() * 2); d++) {
-      const ox = Math.cos(a) * d * 1.5 + (rng() - 0.5)
-      const oz = Math.sin(a) * d * 1.5 + (rng() - 0.5)
-      put(out.solid, CYL12, stone, s.x(u, v) + ox, y + 0.6, s.z(u, v) + oz,
-        Math.PI / 2, a + (rng() - 0.5) * 0.4, 0, 1.2, 1.3, 1.2, SURF.paving)
-    }
+  /** a standing piece of wall, collided as what it is */
+  const piece = (u: number, v: number, lu: number, lv: number, y0: number, y1: number) => {
+    boxL(out, s, stone, u, v, (y0 + y1) / 2, lu, y1 - y0, lv, SURF.brick)
+    if (y0 < y + 0.5) solidL(out, s, u, v, lu, lv, y - 1, y1, y1 - y < 1.7, 0.05)
   }
 
-  // the altar, which is also the one thing in here you are meant to stand on
-  boxL(out, s, stone, 0, 0, y + 0.35, 3.2, 0.7, 2.2, SURF.paving)
-  boxL(out, s, '#b5ac9b', 0, 0, y + 0.82, 3.6, 0.26, 2.6, SURF.paving)
-  solidL(out, s, 0, 0, 3.6, 2.6, y - 1, y + 0.95, true)
+  // the west front: two leaves of wall either side of a centre strip, which
+  // holds the doorway, a lintel, a lancet opening and the gable over it all
+  const t = 0.9
+  const cw = 3.2
+  for (const q of [-1, 1]) {
+    piece(q * (hw + cw / 2) / 2, front, hw - cw / 2, t, y, y + wallH)
+  }
+  piece(0, front, cw, t, y + 4.6, y + 5.6)
+  for (const q of [-1, 1]) piece(q * 1.15, front, 0.9, t, y + 5.6, y + wallH)
+  if (gable) {
+    put(out.solid, PRISM, stone, s.x(0, front), y + wallH, s.z(0, front),
+      0, s.face, 0, hw * 2, hw * 0.95, t, SURF.brick)
+    // a cross on the apex, the one thing that says what this was from afar
+    boxL(out, s, dark, 0, front, y + wallH + hw * 0.95 + 0.8, 0.3, 1.6, 0.3)
+    boxL(out, s, dark, 0, front, y + wallH + hw * 0.95 + 1.1, 1.1, 0.3, 0.3)
+  } else {
+    // ...or the gable is down, and the wall head steps where it broke
+    piece(-hw * 0.5, front, hw, t, y + wallH, y + wallH + 1.4)
+    piece(-hw * 0.7, front, hw * 0.5, t, y + wallH + 1.4, y + wallH + 2.3)
+  }
+  // the jambs of the door stand proud of the front, the way a portal does
+  for (const q of [-1, 1]) {
+    boxL(out, s, dark, q * 1.25, front + 0.55, y + 2.4, 0.6, 4.8, 0.3, SURF.brick)
+  }
+
+  // the side walls: a pier every bay with a low sill between, gnawed
+  // lower toward the east, the odd bay gone altogether
+  const bays = Math.max(3, Math.round((hl * 2) / 3.2))
+  const bay = (hl * 2) / bays
+  for (const q of [-1, 1]) {
+    const u = q * hw
+    for (let i = 0; i < bays; i++) {
+      const v0 = front - i * bay
+      const decay = 1 - (i / bays) * (0.55 + rng() * 0.3)
+      if (i > 0 && rng() < 0.16) continue
+      const ph = Math.max(1.0, wallH * decay * (0.8 + rng() * 0.3))
+      piece(u, v0 - 0.55, t, 1.1, y, y + ph)
+      // the sill, and the window's head where the pier is tall enough
+      piece(u, v0 - bay / 2 - 0.3, t, bay - 1.1, y, y + 1.6 + rng() * 0.6)
+      if (ph > 6.2) piece(u, v0 - bay / 2 - 0.3, t, bay - 1.1, y + 5.2, y + ph - 0.2)
+    }
+  }
+
+  // the apse: a half ring of stubs round the east end
+  for (let i = 0; i <= 6; i++) {
+    const a = (i / 6) * Math.PI
+    const u = Math.cos(a) * hw * 0.9
+    const v = back - Math.sin(a) * hw * 0.9
+    const ph = 0.9 + rng() * 2.6
+    boxL(out, s, stone, u, v, y + ph / 2, 1.5, ph, 1.5, SURF.brick)
+    solidL(out, s, u, v, 1.5, 1.5, y - 1, y + ph, ph < 1.7, 0.05)
+  }
+
+  // the tower at a front corner, its top broken off unevenly
+  const tu = towerS * (hw + 1.6)
+  const tv = front - 2.0
+  boxL(out, s, stone, tu, tv, y + towerH / 2, 3.6, towerH, 3.6, SURF.brick)
+  boxL(out, s, stone, tu - towerS * 0.8, tv + 0.6, y + towerH + 0.9, 2.0, 1.8, 2.4, SURF.brick)
+  boxL(out, s, stone, tu + towerS * 0.9, tv - 0.9, y + towerH + 0.4, 1.8, 0.8, 1.8, SURF.brick)
+  solidL(out, s, tu, tv, 3.6, 3.6, y - 1, y + towerH)
+
+  // the altar at the east end, the one thing in here you are meant to stand on
+  const av = back + 1.8
+  boxL(out, s, stone, 0, av, y + 0.35, 3.2, 0.7, 2.0, SURF.paving)
+  boxL(out, s, '#b5ac9b', 0, av, y + 0.82, 3.6, 0.26, 2.4, SURF.paving)
+  solidL(out, s, 0, av, 3.6, 2.4, y - 1, y + 0.95, true)
 
   if (out.detailed) {
+    // the belfry's slit windows, dark, and the lancet's frame over the door
+    for (const q of [-1, 1]) {
+      panelL(out, s, 'solid', '#28303a', tu, tv + 1.8, y + towerH - 2.4 - q * 2.5, 0.5, 1.8, 0, 1)
+    }
+    // the floor it all stood on, still just about readable through the grass,
+    // with an aisle of paler slabs up the middle
+    boxL(out, s, '#93897a', 0, vc, y + 0.03, hw * 2, 0.08, hl * 2, SURF.paving)
+    boxL(out, s, '#a49a88', 0, vc, y + 0.06, 1.8, 0.08, hl * 2 - 1, SURF.paving)
+    // rafters that came down with the roof, leaning from a wall head
+    for (let i = 0; i < 3; i++) {
+      if (dr() < 0.3) continue
+      const q = dr() < 0.5 ? 1 : -1
+      const v = front - (1.5 + dr() * (hl * 0.8))
+      strut(out.solid, DARKWOOD,
+        s.x(q * (hw - 0.6), v), y + 3.6 + dr() * 1.5, s.z(q * (hw - 0.6), v),
+        s.x(-q * (hw * 0.2), v + (dr() - 0.5) * 2), y + 0.2, s.z(-q * (hw * 0.2), v),
+        0.36)
+    }
+    // ivy climbing the stone in a few places
+    for (let i = 0; i < 6; i++) {
+      const q = dr() < 0.5 ? 1 : -1
+      const v = front - dr() * hl * 1.6
+      const ih = 1.5 + dr() * 3.5
+      boxL(out, s, dr() < 0.5 ? '#48673a' : '#3d5a33', q * (hw + 0.5), v, y + ih / 2,
+        0.12, ih, 1.2 + dr() * 1.6)
+    }
     // rubble, thickest where the walls came down
-    for (let i = 0; i < 14; i++) {
-      const u = (rng() - 0.5) * hu * 2.4
-      const v = (rng() - 0.5) * hv * 2.4
-      const r = 0.3 + rng() * 0.6
+    for (let i = 0; i < 12; i++) {
+      const u = (dr() - 0.5) * hw * 2.6
+      const v = vc + (dr() - 0.5) * hl * 2.4
+      const r = 0.3 + dr() * 0.6
       put(out.solid, BOX, stone, s.x(u, v), y + r * 0.4, s.z(u, v),
-        (rng() - 0.5) * 0.5, rng() * 3, (rng() - 0.5) * 0.5, r * 2, r, r * 1.6,
+        (dr() - 0.5) * 0.5, dr() * 3, (dr() - 0.5) * 0.5, r * 2, r, r * 1.6,
         SURF.paving)
     }
-    // the floor it all stood on, still just about readable through the grass
-    boxL(out, s, '#93897a', 0, 0, y + 0.03, hu * 1.8, 0.08, hv * 1.8, SURF.paving)
+    // and the graves: a scatter of headstones in the grass, leaning
+    for (let i = 0; i < 7; i++) {
+      const q = dr() < 0.5 ? 1 : -1
+      const u = q * (hw + 3 + dr() * 2.5)
+      const v = vc + (dr() - 0.5) * hl * 1.6
+      if (Math.abs(u - tu) < 3 && Math.abs(v - tv) < 3) continue
+      const gh = 0.8 + dr() * 0.7
+      put(out.solid, BOX, '#9a948a', s.x(u, v), y + gh / 2 - 0.1, s.z(u, v),
+        (dr() - 0.5) * 0.3, s.face + Math.PI / 2 + (dr() - 0.5) * 0.3, 0,
+        0.7, gh, 0.22, SURF.paving)
+    }
   }
 }
 
@@ -765,11 +872,13 @@ const cabin = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
         SURF.bark)
     }
   }
-  // the gable ends filled in above the walls, and the roof over the lot
+  // the gable ends filled in above the walls, as a prism tucked just inside
+  // the roof: this was a box, and its top corners stood out through both
+  // slopes as a second little roof sitting on the first
   const gY = y + 0.6 + wallH
   const rise = hv * 1.05
-  boxL(out, s, log, 0, 0, gY + rise * 0.4, hu * 2 - 0.2, rise * 0.8, hv * 2 - 0.2,
-    SURF.bark)
+  put(out.solid, PRISM, log, s.x(0, 0), gY - 0.12, s.z(0, 0),
+    0, s.face + Math.PI / 2, 0, hv * 2 - 0.2, rise * 0.94, hu * 2 - 0.2, SURF.bark)
   put(out.solid, PRISM, ROOF_DARK, s.x(0, 0), gY - 0.1, s.z(0, 0),
     0, s.face + Math.PI / 2, 0, hv * 2.3, rise, hu * 2.4, SURF.plank)
   // a stone chimney climbing one flank, past the ridge
