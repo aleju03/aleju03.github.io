@@ -46,7 +46,16 @@ import { gradedAt, ROAD_HALF, townD, WALK_W } from './settlements'
     middle they are, then accepted greedily in priority order (plazas and
     parks first, main street next, then everything else) against the streets
     and each other. Towers cluster in the middle and fall away; so does
-    density, gradually, all the way to the rim.
+    density, gradually, all the way to the rim. Three things keep a street
+    full rather than gap-toothed, because a refused lot leaves its whole
+    frontage empty: a lot's depth is fitted to half the block behind it
+    before it is offered (the front garden gives way, never the back one,
+    where the yard's shed stands), a lot on a curve steps back off its own
+    street until its corners clear the pavement, and every lot carries
+    smaller versions of itself (shallower, narrower at either end) that are
+    tried in turn when the lot as drawn meets a street or a neighbour. Suburb
+    gaps are never narrower than the two side margins that meet in them.
+    Together they took a city's plat from about 530 lots to about 740.
 
   What the kits get is a Lot (kitbash.ts): a footprint, a height and a facing.
   Facing is snapped to a cardinal because the collision model is axis-aligned
@@ -1468,6 +1477,8 @@ const S_LOT = 0x4d27
 
 interface Cand extends Parcel {
   pri: number
+  /** smaller versions of the same lot, tried in order if it is refused */
+  alts?: Cand[]
 }
 
 /**
@@ -1553,9 +1564,13 @@ const walkSide = (net: Network, st: Street, side: number, out: Cand[]) => {
         fw = 9 + r2 * 4.5
         dp = 8.5 + r3 * 4
         set = baseSet + (rng() - 0.5) * 3 + (d > 0.85 ? 3 : 0)
-        gap = 1.5 + rng() * 4
+        // the margins either side of two neighbours meet in the gap between
+        // them, so a gap narrower than both margins is a lot refused for
+        // overlapping its neighbour (a third of them, when it was rolled
+        // from 1.5), which left twelve units of frontage empty instead
+        sideM = 1.2
+        gap = 2 * sideM + rng() * 1.8
         back = 4.5
-        sideM = 1.4
       }
       if (district !== 'suburb' || main) {
         // a core lot runs corner to corner: the last one on an edge takes
@@ -1564,23 +1579,24 @@ const walkSide = (net: Network, st: Street, side: number, out: Cand[]) => {
         if (left < 8) break
         if (fw > left || left - fw < 8) fw = left
       }
-      const mid = s + fw / 2
-      if (mid > to) break
-      const q2 = pointAt(st, mid)
-      // the lot's side of the street, and the cardinal it faces
-      const nx = -q2.uz * side
-      const nz = q2.ux * side
-      const fx = Math.abs(nx) > Math.abs(nz) ? -Math.sign(nx) : 0
-      const fz = fx === 0 ? -Math.sign(nz) : 0
-      const cos = -(nx * fx + nz * fz)
-      if (cos < 0.86) {
+      if (s + fw / 2 > to) break
+      // the lot's side of the street at its middle, the cardinal it faces,
+      // and how deep the block is behind it. A block is two rows of lots
+      // back to back, so a lot gets half of it; the suburbs used to plat
+      // their depth blind and lost two lots in five to the street behind
+      // (a crescent's inner loop, the next cul-de-sac) at acceptance
+      const q0 = pointAt(st, s + fw / 2)
+      const nx0 = -q0.uz * side
+      const nz0 = q0.ux * side
+      const fx0 = Math.abs(nx0) > Math.abs(nz0) ? -Math.sign(nx0) : 0
+      const fz0 = fx0 === 0 ? -Math.sign(nz0) : 0
+      if (-(nx0 * fx0 + nz0 * fz0) < 0.86) {
         s += 8
         continue
       }
-      const sin = Math.sqrt(Math.max(0, 1 - cos * cos))
-      // how deep the block is behind this frontage, for the lots that fill it
+      const avail = depthBehind(net, st, q0.x + nx0 * (ROAD_HALF + WALK_W),
+        q0.z + nz0 * (ROAD_HALF + WALK_W), -fx0, -fz0)
       if (district !== 'suburb' || use !== 'build') {
-        const avail = depthBehind(net, st, q2.x + nx * (ROAD_HALF + WALK_W), q2.z + nz * (ROAD_HALF + WALK_W), -fx, -fz)
         const room = avail - set - 0.6
         if (through && dp > room * 0.6) dp = room
         else dp = Math.min(dp, room / 2 - 0.4)
@@ -1590,34 +1606,100 @@ const walkSide = (net: Network, st: Street, side: number, out: Cand[]) => {
           s += 6
           continue
         }
+      } else {
+        // the front garden gives way first, down to a path's length, then
+        // the house. The back garden does not: the yard's shed, swing and
+        // trampoline stand in it (houses.ts), and two gardens squeezed back
+        // to back put one house's shed in the other's kitchen
+        const half = avail / 2 - 0.3
+        if (set + dp + back > half) set = Math.max(3, half - dp - back)
+        if (set + dp + back > half) dp = half - set - back
+        if (dp < 6.5) {
+          s += 6
+          continue
+        }
       }
-      // the front wall is set back from the kerb along the street's true
-      // normal, and pushed a little further on a bend so its near corner
-      // keeps the setback too
-      const push = ROAD_HALF + WALK_W + set + (fw / 2) * sin / Math.max(cos, 0.5)
-      const bx = q2.x + nx * push - fx * (dp / 2)
-      const bz = q2.z + nz * push - fz * (dp / 2)
-      const w = fx ? dp : fw
-      const dd = fx ? fw : dp
-      // the envelope: footprint plus setback toward the street, yard behind
-      // and a margin either side
-      const ex = fx ? back : sideM
-      const ez = fz ? back : sideM
-      let x0 = bx - w / 2 - ex
-      let x1 = bx + w / 2 + ex
-      let z0 = bz - dd / 2 - ez
-      let z1 = bz + dd / 2 + ez
-      // ...and the front side runs out to the pavement's edge
-      if (fx > 0) x1 = bx + w / 2 + set
-      if (fx < 0) x0 = bx - w / 2 - set
-      if (fz > 0) z1 = bz + dd / 2 + set
-      if (fz < 0) z0 = bz - dd / 2 - set
       const height = kind === 'house' ? 8 : heightAtD(t, dn) * (0.7 + rng() * 0.6)
-      out.push({
-        id: 0, x: bx, z: bz, w, d: dd, face: Math.atan2(fx, fz), use, kind, height,
-        district: main ? 'midrise' : district, x0, z0, x1, z1, cx: 0, cz: 0,
-        pri: (main ? 0 : district === 'downtown' ? 1 : district === 'midrise' ? 2 : 3) * 1e5 + d * 1e3,
-      })
+      const pri = (main ? 0 : district === 'downtown' ? 1 : district === 'midrise' ? 2 : 3) * 1e5 + d * 1e3
+      /** the lot `fwA` along the street from `at`, `dpA` deep, or null on a
+          bend too tight to face a cardinal */
+      const place = (at: number, fwA: number, dpA: number): Cand | null => {
+        const q2 = pointAt(st, at + fwA / 2)
+        const nx = -q2.uz * side
+        const nz = q2.ux * side
+        const fx = Math.abs(nx) > Math.abs(nz) ? -Math.sign(nx) : 0
+        const fz = fx === 0 ? -Math.sign(nz) : 0
+        const cos = -(nx * fx + nz * fz)
+        if (cos < 0.86) return null
+        const sin = Math.sqrt(Math.max(0, 1 - cos * cos))
+        const w = fx ? dpA : fwA
+        const dd = fx ? fwA : dpA
+        // the envelope: footprint plus setback toward the street, yard behind
+        // and a margin either side
+        const ex = fx ? back : sideM
+        const ez = fz ? back : sideM
+        const pad = ROAD_HALF + WALK_W - 0.1
+        let bx = 0
+        let bz = 0
+        let x0 = 0
+        let x1 = 0
+        let z0 = 0
+        let z1 = 0
+        // the front wall is set back from the kerb along the street's true
+        // normal, and pushed a little further on a bend so its near corner
+        // keeps the setback too. A square lot on a curving street still
+        // meets the pavement where the street bends toward it (a crescent's
+        // outer side, the lip of a turning circle), and those lots were most
+        // of what the suburbs lost at acceptance, so it steps back off its
+        // own street until it clears, a little at a time
+        for (const extra of [0, 0.8, 1.7, 2.8, 4.2]) {
+          const push = ROAD_HALF + WALK_W + set + extra + (fwA / 2) * sin / Math.max(cos, 0.5)
+          bx = q2.x + nx * push - fx * (dpA / 2)
+          bz = q2.z + nz * push - fz * (dpA / 2)
+          x0 = bx - w / 2 - ex
+          x1 = bx + w / 2 + ex
+          z0 = bz - dd / 2 - ez
+          z1 = bz + dd / 2 + ez
+          // ...and the front side runs out to the pavement's edge
+          if (fx > 0) x1 = bx + w / 2 + set + extra
+          if (fx < 0) x0 = bx - w / 2 - set - extra
+          if (fz > 0) z1 = bz + dd / 2 + set + extra
+          if (fz < 0) z0 = bz - dd / 2 - set - extra
+          let clear = true
+          for (const p of piecesIn(net, x0, z0, x1, z1)) {
+            if (p.street === st && pieceNear(p, x0, z0, x1, z1, pad)) {
+              clear = false
+              break
+            }
+          }
+          if (clear) break
+        }
+        return {
+          id: 0, x: bx, z: bz, w, d: dd, face: Math.atan2(fx, fz), use, kind, height,
+          district: main ? 'midrise' : district, x0, z0, x1, z1, cx: 0, cz: 0, pri,
+        }
+      }
+      const c = place(s, fw, dp)
+      if (c) {
+        // what to try when the lot as drawn meets a street or a lot taken
+        // first: a shallower one, then a narrower one pulled to either end.
+        // A refused lot used to leave its whole frontage empty, and at a
+        // block's corners that was most of them
+        const alts: Cand[] = []
+        const minW = 8
+        const minD = district === 'suburb' && !main ? 6.5 : 8
+        if (dp * 0.72 >= minD) alts.push(place(s, fw, dp * 0.72)!)
+        if (fw * 0.7 >= minW) {
+          for (const at of [s, s + fw * 0.3]) {
+            const n = place(at, fw * 0.7, dp)
+            if (n) alts.push(n)
+            const m = dp * 0.72 >= minD ? place(at, fw * 0.7, dp * 0.72) : null
+            if (m) alts.push(m)
+          }
+        }
+        c.alts = alts.filter(Boolean)
+        out.push(c)
+      }
       s += fw + gap
     }
   }
@@ -1709,41 +1791,49 @@ function* platJob(net: Network): Generator<void, void> {
   const taken = new Map<number, Parcel[]>()
   const out: Parcel[] = []
   const heli = { x: -9, z: 50 }
-  for (const c of cands) {
-    if ((++n & 31) === 0) yield
+  /** the streets near a candidate if it fits (clear of the house, of
+      every street's pavement and of every lot already taken), or null */
+  const fits = (c: Cand): Piece[] | null => {
     if (t.home) {
       if (c.x0 < RESERVED.maxX + 4 && c.x1 > RESERVED.minX - 4 &&
-        c.z0 < RESERVED.maxZ + 4 && c.z1 > RESERVED.minZ - 4) continue
-      if (pointRect(heli.x, heli.z, c.x0, c.z0, c.x1, c.z1) < 14) continue
+        c.z0 < RESERVED.maxZ + 4 && c.z1 > RESERVED.minZ - 4) return null
+      if (pointRect(heli.x, heli.z, c.x0, c.z0, c.x1, c.z1) < 14) return null
     }
-    // clear of every street's pavement
-    let ok = true
     const pad = ROAD_HALF + WALK_W - 0.1
     const near = piecesIn(net, c.x0, c.z0, c.x1, c.z1)
     for (const p of near) {
-      if (pieceNear(p, c.x0, c.z0, c.x1, c.z1, pad)) {
-        ok = false
-        break
-      }
+      if (pieceNear(p, c.x0, c.z0, c.x1, c.z1, pad)) return null
     }
-    if (!ok) continue
-    // and of every lot already taken
     const i0 = Math.floor(c.x0 / CELL)
     const i1 = Math.floor(c.x1 / CELL)
     const j0 = Math.floor(c.z0 / CELL)
     const j1 = Math.floor(c.z1 / CELL)
-    for (let j = j0; j <= j1 && ok; j++)
-      for (let i = i0; i <= i1 && ok; i++) {
+    for (let j = j0; j <= j1; j++)
+      for (let i = i0; i <= i1; i++) {
         const list = taken.get(cellKey(i, j))
         if (!list) continue
         for (const o of list) {
-          if (c.x0 < o.x1 && c.x1 > o.x0 && c.z0 < o.z1 && c.z1 > o.z0) {
-            ok = false
-            break
-          }
+          if (c.x0 < o.x1 && c.x1 > o.x0 && c.z0 < o.z1 && c.z1 > o.z0) return null
         }
       }
-    if (!ok) continue
+    return near
+  }
+  for (const c0 of cands) {
+    if ((++n & 31) === 0) yield
+    // the lot as drawn, or failing that the first of its smaller versions
+    // that fits
+    let c = c0
+    let near = fits(c)
+    for (const alt of c0.alts ?? []) {
+      if (near) break
+      c = alt
+      near = fits(c)
+    }
+    if (!near) continue
+    const i0 = Math.floor(c.x0 / CELL)
+    const i1 = Math.floor(c.x1 / CELL)
+    const j0 = Math.floor(c.z0 / CELL)
+    const j1 = Math.floor(c.z1 / CELL)
     const p: Parcel = {
       id: hash2(Math.round(c.x * 2), Math.round(c.z * 2), 0x7a3e),
       x: c.x, z: c.z, w: c.w, d: c.d, face: c.face, use: c.use, kind: c.kind,

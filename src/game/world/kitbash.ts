@@ -67,6 +67,16 @@ export interface BuildOut {
    * parapets still build, because those are the shape you actually read.
    */
   detailed: boolean
+  /**
+   * A part that turns (a windmill's sails). Stamp it, in world space, into
+   * the builder this hands back and the chunk hangs it as a mesh of its own
+   * spinning about the axis (ax, ay, az) through (x, y, z) at `rate` radians
+   * a second. Absent where nothing ticks (the far field's massing), and a kit
+   * then stamps the part into `solid`, stopped where it is.
+   */
+  rotor?: (
+    x: number, y: number, z: number, ax: number, ay: number, az: number, rate: number,
+  ) => MeshBuilder
 }
 
 /** a footprint to build on: where it is, how big, how tall it wants to be,

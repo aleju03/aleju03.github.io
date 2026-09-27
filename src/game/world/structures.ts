@@ -277,12 +277,13 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
  * The sails are the point of it and they are built the way real ones are:
  * two stocks through the poll end make four sails, each a whip with bars
  * across it and a hemlath along its outer edge, and on a mill that is
- * working the cloth is spread on two of them. They are stamped at the angle
- * they stopped at rather than turning, because the chunk soup is baked once
- * and a moving sail would be its own object with its own draw and its own
- * tick; what sells it instead is that the whole assembly is canted to the
- * yaw the site rolled and stopped at its own angle, so no two mills on a
- * plain are pointing the same way.
+ * working the cloth is spread on two of them. They turn: the sails and the
+ * poll end are stamped into the chunk's `rotor` builder rather than its
+ * soup, which hangs them as one small mesh of their own spinning about the
+ * windshaft (a draw and a quaternion a frame, for the one mill in sight),
+ * each mill at its own pace off its site seed so two on a plain are never in
+ * step. Where nothing ticks (no `rotor`), they are stamped into the soup at
+ * the angle they stopped at.
  */
 const windmill = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   const s = site(lm, false)
@@ -337,7 +338,10 @@ const windmill = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => 
   const hy = capY + r1 * 0.75
   put(out.solid, CYL12, DARKWOOD, lm.x + s.fx * hubOut * 0.6, hy - 0.15, lm.z + s.fz * hubOut * 0.6,
     Math.PI / 2 - 0.12, s.face, 0, 0.8, hubOut * 1.3, 0.8)
-  put(out.solid, BOX, '#3a322a', hx, hy, hz, 0, s.face, stop, 1.4, 1.4, 1.2)
+  // the sails and the poll end turn together about the windshaft
+  const rate = -(0.28 + ((lm.seed >>> 3) % 97) / 97 * 0.22)
+  const sail = out.rotor?.(hx, hy, hz, s.fx, 0, s.fz, rate) ?? out.solid
+  put(sail, BOX, '#3a322a', hx, hy, hz, 0, s.face, stop, 1.4, 1.4, 1.2)
 
   // the fantail out the back: a frame, and a six-bladed wheel on it
   const tx = lm.x - s.fx * (r1 * 2.2)
@@ -372,23 +376,23 @@ const windmill = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => 
       hx + dx * t + px * o + s.fx * n, hy + dy * t + py * o, hz + dz * t + pz * o + s.fz * n,
     ] as const
     const [wx, wy, wz] = at(L / 2, 0)
-    put(out.solid, BOX, DARKWOOD, wx, wy, wz, 0, s.face, -th, 0.36, L, 0.5, SURF.plank)
+    put(sail, BOX, DARKWOOD, wx, wy, wz, 0, s.face, -th, 0.36, L, 0.5, SURF.plank)
     const t0 = L * 0.22
     const [cx, cy, cz] = at((t0 + L) / 2, sw / 2 + 0.1, 0.12)
     if (clothOn && k % 2 === 0) {
-      put(out.solid, BOX, '#d8cfb8', cx, cy, cz, 0, s.face, -th, sw, L - t0, 0.05)
+      put(sail, BOX, '#d8cfb8', cx, cy, cz, 0, s.face, -th, sw, L - t0, 0.05)
     }
     if (!out.detailed) continue
     // the hemlath along the outer edge and the bars across
     const [ex, ey, ez] = at((t0 + L) / 2, sw + 0.1)
-    put(out.solid, BOX, TIMBER, ex, ey, ez, 0, s.face, -th, 0.14, L - t0, 0.14, SURF.plank)
+    put(sail, BOX, TIMBER, ex, ey, ez, 0, s.face, -th, 0.14, L - t0, 0.14, SURF.plank)
     for (let t = t0; t <= L + 1e-6; t += (L - t0) / 9) {
       const [bx, by, bz] = at(t, sw / 2 + 0.05)
-      put(out.solid, BOX, TIMBER, bx, by, bz, 0, s.face, -th, sw + 0.2, 0.09, 0.1, SURF.plank)
+      put(sail, BOX, TIMBER, bx, by, bz, 0, s.face, -th, sw + 0.2, 0.09, 0.1, SURF.plank)
     }
     // a leading board on the whip's other side
     const [lx, ly, lz] = at((t0 + L) / 2, -0.45)
-    put(out.solid, BOX, TIMBER, lx, ly, lz, 0, s.face, -th, 0.5, L - t0, 0.06, SURF.plank)
+    put(sail, BOX, TIMBER, lx, ly, lz, 0, s.face, -th, 0.5, L - t0, 0.06, SURF.plank)
   }
 
   if (out.detailed) {

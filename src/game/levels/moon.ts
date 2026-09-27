@@ -18,10 +18,12 @@ import { MOON_ORIGIN, MOON_R, MOON_WALK } from './space'
   no cut at all. Everything about the ground is a pure function of
   position, like the overworld's:
 
-  - **the height** is a gentle undulation plus five scales of crater, each
+  - **the height** is a gentle undulation plus six scales of crater, each
     a jittered grid of bowls with a raised rim and, in the bigger ones, a
     central peak, summed over the neighbouring cells. The biggest two are
-    basins you only see from space; the smallest are pits you step in.
+    basins you only see from space; the smallest are pits you step in. No
+    two are alike: each rolls its own depth and rim, and the youngest (the
+    deepest) throw bright rays of ejecta across the grey.
   - **the walkable square** (MOON_WALK either side of the origin) is the
     lattice the sandbox's heightfields and `groundYAt` both read, on the
     overworld's own GRID and origin, so a crate rests on the drawn triangle
@@ -36,7 +38,11 @@ import { MOON_ORIGIN, MOON_R, MOON_WALK } from './space'
     crater wall into streaks) and no seam cracks open onto the black sky.
   - **the regolith** is grey: the vertex colour carries the crater albedo,
     and the fragment shader adds a grain from world position in three
-    dimensions, so a crater wall is as fine as the floor.
+    dimensions, so a crater wall is as fine as the floor. The material also
+    takes most of the light's own colour back out before the look's grade,
+    because a low warm sun and space's blue ambient landed it brown in the
+    light and navy in the shade. That is a line in the one program the warm
+    stand-in already links under cover, so landing links nothing.
 
   The albedo is exported for the globe, which paints the Moon you fly
   toward from these same fields, so the landing site you see from orbit is
@@ -47,10 +53,12 @@ import { MOON_ORIGIN, MOON_R, MOON_WALK } from './space'
 /** crater scales: grid cell, chance of a crater per cell, depth/radius */
 const SCALES = [
   { cell: 4200, p: 0.55, depth: 0.05, salt: 0x51a1 },
-  { cell: 1300, p: 0.6, depth: 0.1, salt: 0x51b2 },
-  { cell: 380, p: 0.72, depth: 0.24, salt: 0x51c3 },
-  { cell: 110, p: 0.78, depth: 0.3, salt: 0x51d4 },
-  { cell: 34, p: 0.62, depth: 0.3, salt: 0x51e5 },
+  { cell: 1300, p: 0.62, depth: 0.1, salt: 0x51b2 },
+  { cell: 380, p: 0.78, depth: 0.24, salt: 0x51c3 },
+  { cell: 110, p: 0.86, depth: 0.3, salt: 0x51d4 },
+  { cell: 34, p: 0.78, depth: 0.3, salt: 0x51e5 },
+  // pits a stride or two across, the finest the walked lattice resolves
+  { cell: 15, p: 0.42, depth: 0.26, salt: 0x51f6 },
 ] as const
 
 /** how far the drawn patch reaches either side of the landing site: past it
@@ -82,8 +90,11 @@ const craters = (u: number, v: number, out: { rim: number; floor: number }) => {
         const reach = r * 1.9
         if (d2 > reach * reach) continue
         const t = Math.sqrt(d2) / r
-        const d = r * s.depth
-        const rh = d * 0.36
+        // no two alike: some shallow and soft-rimmed and old, some deep with
+        // a sharp high lip
+        const age = rand3(i, j, 5, s.salt)
+        const d = r * s.depth * (0.5 + 0.9 * age)
+        const rh = d * (0.22 + 0.3 * rand3(i, j, 6, s.salt))
         if (t < 1) {
           const t2 = t * t
           h += -d * (1 - t2) + rh * t2 * t2 * t2
@@ -98,6 +109,14 @@ const craters = (u: number, v: number, out: { rim: number; floor: number }) => {
         if (s.cell <= 380) {
           rim += Math.max(0, 1 - Math.abs(t - 1) * 2.2) * (0.6 + 0.4 * rand3(i, j, 4, s.salt))
           if (t < 0.8) floor += 1 - t / 0.8
+          // the youngest (the deepest) throw bright rays of ejecta out
+          // across the grey, the thing that makes a crater field read as a
+          // crater field from above rather than as a pitted plain
+          if (age > 0.78 && t > 0.9 && t < 2.6) {
+            const a = Math.atan2(dz, dx) * 5 + rand3(i, j, 7, s.salt) * 6.283
+            const ray = Math.max(0, Math.sin(a) * Math.sin(a * 0.6 + 1.3))
+            rim += ray * ray * (1 - (t - 0.9) / 1.7) * 0.9
+          }
         }
       }
     }
@@ -138,9 +157,9 @@ export const moonHeight = (x: number, z: number) => {
 export const moonAlbedo = (u: number, v: number) => {
   craters(u, v, rimOut)
   const mare = fbm(u / 2600 + 7, v / 2600 - 3, 0x6d3, 3)
-  let g = 0.5 - 0.17 * Math.min(1, Math.max(0, (0.52 - mare) * 5))
-  g += 0.16 * Math.min(1, rimOut.rim)
-  g -= 0.07 * Math.min(1, rimOut.floor)
+  let g = 0.56 - 0.14 * Math.min(1, Math.max(0, (0.52 - mare) * 5))
+  g += 0.17 * Math.min(1, rimOut.rim)
+  g -= 0.06 * Math.min(1, rimOut.floor)
   g += (noise2(u / 9, v / 9, 0x6d4) - 0.5) * 0.06
   return Math.min(0.85, Math.max(0.12, g))
 }
@@ -219,14 +238,22 @@ const moonMaterial = () => {
           float grain = mNoise(mp * 0.7) * 0.6 + mNoise(mp * 2.3) * 0.4;
           diffuseColor.rgb *= 0.82 + 0.36 * grain;
         }`)
+      // regolith is grey under any light: most of the colour a low warm sun
+      // and space's blue ambient put into it is taken back out here, before
+      // the look's grade, which then only warms it a touch. Without it the
+      // ground landed as brown in the sun and navy in the shade
+      .replace('#include <opaque_fragment>', `
+        outgoingLight = mix(vec3(dot(outgoingLight, vec3(0.2126, 0.7152, 0.0722))), outgoingLight, 0.3);
+        #include <opaque_fragment>`)
   }
-  m.customProgramCacheKey = () => 'moon-regolith-2'
+  m.customProgramCacheKey = () => 'moon-regolith-3'
   material = m
   return m
 }
 
-/** grey, a hair cool: the look's grade warms whatever it is given */
-const TINT = new THREE.Color('#aeb0b3')
+/** grey, a touch cool, because the look's grade warms whatever it is given
+    (the material takes the light's own colour back out, see moonMaterial) */
+const TINT = new THREE.Color('#a9adb3')
 
 export interface MoonHandles {
   /** everything drawn on the Moon; hidden while the Moon is not live */

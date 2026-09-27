@@ -427,6 +427,7 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
       if (!frac || !frac.detail) return null
       if (s.rec.det) collapse(dm.geometry, s.rec.det)
       if (s.rec.gl && gm) collapse(gm.geometry, s.rec.gl)
+      for (const r of s.rec.rotors ?? []) r.visible = false
       const hang = (geo: THREE.BufferGeometry | null, like: THREE.Mesh | null) => {
         if (!geo || !like) return null
         const m = new THREE.Mesh(geo, like.material)

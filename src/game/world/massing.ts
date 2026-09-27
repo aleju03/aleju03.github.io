@@ -114,9 +114,9 @@ export const massOf = (kind: BuildKind, lot: Omit<Lot, 'rng'>, minArea = 5): Mas
     const d = sz.length()
     const type = r.geo.type
     if (type === 'CylinderGeometry') {
-      // a shaft standing upright and wide enough to be a building rather
-      // than a mast, a leg or a water tank
-      if (Math.abs(sy.y) < h * 0.99 || w < 4) continue
+      // a shaft standing upright and either wide enough to be a building
+      // or tall enough to be a spire on one; not a mast, a leg or a tank
+      if (Math.abs(sy.y) < h * 0.99 || w < 1.5 || (w < 4 && h < 6)) continue
       const p = (r.geo as THREE.CylinderGeometry).parameters
       at.setFromMatrixPosition(r.m)
       shafts.push({

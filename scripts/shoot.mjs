@@ -55,6 +55,8 @@ targets
   landmark:<kind>      nearest lighthouse|windmill|farm|mast|ruins|watertower|
                        stones|cabin|wreck
   landmark:*           one of every landmark kind, as a contact sheet
+  moon:<dx>,<dz>       the Moon's ground (levels/moon.ts) that far off the
+                       landing site, under the sky with space turned up
   body:lineup          the player character: six looks front and back, and a
                        row of poses (wave, crouch, jump, sprint, heap, stretch)
   body:motion          filmstrips of every action below, one row each

@@ -77,6 +77,9 @@ export interface StructureRec {
   gmarks: Int32Array
   /** the solids it registered, emptied when it is rebuilt as pieces */
   boxes: Solid[]
+  /** its turning parts (a windmill's sails), meshes of their own that are
+      hidden when it is opened */
+  rotors?: Array<{ visible: boolean }>
 }
 
 /** storey heights, off the kits themselves (buildings.ts, houses.ts) */

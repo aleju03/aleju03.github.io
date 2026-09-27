@@ -353,7 +353,9 @@ world/
                   Then the lots: every street side walked junction to
                   junction and platted by distance from the middle (towers
                   clustered at the centre, shopfronts on the main street,
-                  corner shops), accepted greedily in priority order. A pure
+                  corner shops), accepted greedily in priority order, a
+                  refused lot trying its own shallower and narrower
+                  versions before it gives up its frontage. A pure
                   function of the town; a resumable job so the far field can
                   grow it in slices (prepareTown)
   streetMesh.ts   a chunk's share of the plan as geometry: mitred asphalt
@@ -401,6 +403,11 @@ world/
                   aerials), and the three
                   block-scale kits a lot is too small for (warehouse, chapel
                   and churchyard, parking deck)
+  plaza.ts        the town square the plan sets aside, furnished: trees
+                  kept to a border, a tiered fountain with benches facing
+                  it, rows of market stalls under striped awnings, a café's
+                  parasols and planters, each piece built by the chunk its
+                  centre is in and placed off the square's own rectangle
   structures.ts   the nine landmark kits: lighthouse, tower windmill,
                   farmstead, guyed radio mast, ruined abbey, water tower, standing
                   stones, log cabin, shipwreck
@@ -664,6 +671,15 @@ scattered, and no screenshot was ever going to say otherwise.
   props' ground) may be in view up there, which is also what made orbit
   cheap. The Moon stands at (0, 60000) in the scene; its gravity is a sixth,
   so a crate from 20 up lands in 2.72 s against the street's 1.10.
+- **What turns is its own mesh, on one clock.** A windmill's sails are the
+  one moving part a chunk builds: the kit stamps them into the builder
+  `BuildOut.rotor` hands it rather than into the soup, and the chunk hangs
+  that as a small mesh re-based on its pivot, `userData.dynamic` and
+  `matrixAutoUpdate` on, everything else in the chunk frozen as usual. Its
+  angle is `rate * t` off the wind's clock (`chunk.ts`'s `spin`, set by the
+  streamer every frame), never an accumulated delta, so a chunk rebuilt on
+  a tier change picks the sails up where the old one left them; and its
+  StructureRec lists it, so opening the mill into pieces hides it.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs

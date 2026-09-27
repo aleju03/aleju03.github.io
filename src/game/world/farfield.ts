@@ -546,6 +546,8 @@ const emitStamp = (s: Soup, level: number, st: Stamp, office: number, seed: numb
 /** a merged round tower: twelve walls with windows and a flat cap */
 const emitDrum = (s: Soup, level: number, dr: Drum, seed: number) => {
   const K = 12
+  // a spire or a needle is not glazed; a drum a storey wide is
+  const glazed = dr.r0 >= 3
   for (let k = 0; k < K; k++) {
     const a0 = (k / K) * Math.PI * 2
     const a1 = ((k + 1) / K) * Math.PI * 2
@@ -559,7 +561,7 @@ const emitDrum = (s: Soup, level: number, dr: Drum, seed: number) => {
       [dr.x + c0 * dr.r1, dr.y1, dr.z + s0 * dr.r1],
       [dr.x + c1 * dr.r1, dr.y1, dr.z + s1 * dr.r1],
       [dr.x + c1 * dr.r0, dr.y0, dr.z + s1 * dr.r0],
-    ], [Math.cos(am), 0, Math.sin(am)], dr.color, 1, level, 1, seed)
+    ], [Math.cos(am), 0, Math.sin(am)], dr.color, glazed ? 1 : 2, level, glazed ? 1 : 0, glazed ? seed : 0)
   }
   const o = s.count
   s.vert(dr.x, dr.y1, dr.z, 0, 1, 0, dr.color, 2, level, 0, 0)
