@@ -330,7 +330,7 @@ world/
                   block-scale kits a lot is too small for (warehouse, chapel
                   and churchyard, parking deck)
   structures.ts   the nine landmark kits: lighthouse, tower windmill,
-                  farmstead, guyed radio mast, ruins, water tower, standing
+                  farmstead, guyed radio mast, ruined abbey, water tower, standing
                   stones, log cabin, shipwreck
   surface.ts      the procedural surface pass: one aSurf float per stamp
                   picks brick, shingle, paving, bark... computed in the

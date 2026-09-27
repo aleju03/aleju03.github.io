@@ -526,11 +526,15 @@ const shapeOf = (kind: BuildKind, height: number, w: number, d: number) => {
 
 /**
  * A block's buildings as impostors, drawn off the same seeded sequence
- * `chunk.ts`'s buildBlock draws from. Everything up to the first `raise` is
- * the same number (the park roll, the whole-block kit and its footprint,
- * the lot count, the first lot); after that the kits consume draws this
- * cannot replay, so the rest of the block is the same grid at plausible
- * sizes. From where anyone sees these, that is the same skyline.
+ * `chunk.ts`'s buildBlock draws from: the park roll, the whole-block kit and
+ * its footprint, the lot count, and every lot's rolled kind, size, place and
+ * height. The kits themselves roll from a stream of their own seeded on the
+ * lot's centre (chunk.ts's `raise`), so they take nothing from the block's
+ * sequence and this replays the whole of it, lot for lot. Only the ground
+ * under a footprint is sampled differently (corners of the far terrain
+ * rather than the chunk's lattice), so a lot on a slope the chunk refuses
+ * can still stand here. From where anyone sees these, that is the same
+ * skyline.
  */
 const blockImpostors = (
   s: Soup, level: number, cx: number, cz: number, ground: (x: number, z: number) => number,
