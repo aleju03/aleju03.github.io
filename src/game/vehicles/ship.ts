@@ -677,6 +677,13 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
       writeTransform()
       fitSolid()
     },
+    shift: (dx, dy, dz) => {
+      pos.x += dx
+      pos.y += dy
+      pos.z += dz
+      writeTransform()
+      fitSolid()
+    },
     mount: () => {
       running = true
     },

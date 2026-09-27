@@ -3,7 +3,7 @@ import { GRID, OFF_X, OFF_Z } from '../world/grid'
 import { fbm, noise2, rand2, rand3 } from '../world/noise'
 import type { Solid } from '../physics/collision'
 import { noStand } from '../physics/collision'
-import { MOON_ORIGIN, MOON_WALK } from './space'
+import { MOON_ORIGIN, MOON_R, MOON_WALK } from './space'
 
 /*
   The Moon: grey regolith, craters inside craters, a black sky with the
@@ -24,11 +24,17 @@ import { MOON_ORIGIN, MOON_WALK } from './space'
     lattice the sandbox's heightfields and `groundYAt` both read, on the
     overworld's own GRID and origin, so a crate rests on the drawn triangle
     and the walker stands on it (the "mesh and collision agree" rule).
-  - **past it** the ground falls away on a curve, so the horizon is a
-    horizon and not the edge of a mesh: the Moon is small, and it looks it.
-  - **the mesh** is one tensor grid, four units a cell over the walkable
-    square and widening geometrically outward, so there are no T-junctions
-    to crack and the whole thing is one draw.
+  - **everywhere** the ground falls away on the Moon's own sphere (MOON_R),
+    exactly, so this patch is a piece of the ball you flew in over: from
+    space it sits on world/globe.ts's Moon, which carries on past its edge,
+    and the approach lands on it with no cut (levels/outsideWorld.ts).
+  - **the mesh** is four nested square rings of square cells (4, 8, 16 and
+    64 units), each ring's outer edge welded to the next one's vertices, so
+    no cell is ever stretched (a tensor grid of widening rows smeared every
+    crater wall into streaks) and no seam cracks open onto the black sky.
+  - **the regolith** is grey: the vertex colour carries the crater albedo,
+    and the fragment shader adds a grain from world position in three
+    dimensions, so a crater wall is as fine as the floor.
 
   The albedo is exported for the globe, which paints the Moon you fly
   toward from these same fields, so the landing site you see from orbit is
@@ -39,23 +45,24 @@ import { MOON_ORIGIN, MOON_WALK } from './space'
 /** crater scales: grid cell, chance of a crater per cell, depth/radius */
 const SCALES = [
   { cell: 4200, p: 0.55, depth: 0.05, salt: 0x51a1 },
-  { cell: 1300, p: 0.6, depth: 0.09, salt: 0x51b2 },
-  { cell: 380, p: 0.7, depth: 0.2, salt: 0x51c3 },
-  { cell: 110, p: 0.72, depth: 0.24, salt: 0x51d4 },
-  { cell: 34, p: 0.55, depth: 0.22, salt: 0x51e5 },
+  { cell: 1300, p: 0.6, depth: 0.1, salt: 0x51b2 },
+  { cell: 380, p: 0.72, depth: 0.24, salt: 0x51c3 },
+  { cell: 110, p: 0.78, depth: 0.3, salt: 0x51d4 },
+  { cell: 34, p: 0.62, depth: 0.3, salt: 0x51e5 },
 ] as const
 
-/** the curve past the walkable square: falls away as (d - FLAT)^2 / 2R */
-const FLAT = 800
-const CURVE_R = 6000
+/** how far the drawn patch reaches either side of the landing site: past it
+    the globe's Moon carries on (world/globe.ts takes this as its hole) */
+export const MOON_PATCH = 5120
 /** the pad the arrival lands over, flattened so a spawn stands level */
 const PAD = 26
 
 /** the sum of every crater near (u, v), moon-local; also how much fresh
     rim (bright ejecta) is under the point */
-const craters = (u: number, v: number, out: { rim: number }) => {
+const craters = (u: number, v: number, out: { rim: number; floor: number }) => {
   let h = 0
   let rim = 0
+  let floor = 0
   for (const s of SCALES) {
     const ci = Math.floor(u / s.cell)
     const cj = Math.floor(v / s.cell)
@@ -74,7 +81,7 @@ const craters = (u: number, v: number, out: { rim: number }) => {
         if (d2 > reach * reach) continue
         const t = Math.sqrt(d2) / r
         const d = r * s.depth
-        const rh = d * 0.3
+        const rh = d * 0.36
         if (t < 1) {
           const t2 = t * t
           h += -d * (1 - t2) + rh * t2 * t2 * t2
@@ -84,16 +91,21 @@ const craters = (u: number, v: number, out: { rim: number }) => {
           const e = (t - 1) / 0.35
           h += rh * Math.exp(-e * e)
         }
-        // young small craters are bright; the rim and the ejecta around it
-        if (s.cell <= 380) rim += Math.max(0, 1 - Math.abs(t - 1) * 2.2) * (0.6 + 0.4 * rand3(i, j, 4, s.salt))
+        // young small craters are bright; the rim and the ejecta around it,
+        // and their floors in shadow-grey fines
+        if (s.cell <= 380) {
+          rim += Math.max(0, 1 - Math.abs(t - 1) * 2.2) * (0.6 + 0.4 * rand3(i, j, 4, s.salt))
+          if (t < 0.8) floor += 1 - t / 0.8
+        }
       }
     }
   }
   out.rim = rim
+  out.floor = floor
   return h
 }
 
-const rimOut = { rim: 0 }
+const rimOut = { rim: 0, floor: 0 }
 
 /** the raw field before the pad and the curve, moon-local */
 const rawHeight = (u: number, v: number) =>
@@ -112,7 +124,10 @@ export const moonHeight = (x: number, z: number) => {
     const t = Math.min(1, Math.max(0, (d - PAD) / PAD))
     h = PAD_Y + (h - PAD_Y) * t * t * (3 - 2 * t)
   }
-  if (d > FLAT) h -= ((d - FLAT) * (d - FLAT)) / (2 * CURVE_R)
+  // the sphere's own fall, exactly (not a parabola), so the patch's edge
+  // meets the globe drawn past it
+  const dd = Math.min(d, MOON_R * 0.999)
+  h -= MOON_R - Math.sqrt(MOON_R * MOON_R - dd * dd)
   return h
 }
 
@@ -122,7 +137,8 @@ export const moonAlbedo = (u: number, v: number) => {
   craters(u, v, rimOut)
   const mare = fbm(u / 2600 + 7, v / 2600 - 3, 0x6d3, 3)
   let g = 0.5 - 0.17 * Math.min(1, Math.max(0, (0.52 - mare) * 5))
-  g += 0.12 * Math.min(1, rimOut.rim)
+  g += 0.16 * Math.min(1, rimOut.rim)
+  g -= 0.07 * Math.min(1, rimOut.floor)
   g += (noise2(u / 9, v / 9, 0x6d4) - 0.5) * 0.06
   return Math.min(0.85, Math.max(0.12, g))
 }
@@ -167,43 +183,48 @@ export const MOON_BOUNDS = {
   maxZ: MOON_ORIGIN.z + MOON_WALK,
 }
 
-/** one axis of the tensor grid: lattice-aligned GRID steps over the inner
-    run, then steps growing by `grow` out to `outer` either side */
-const axis = (centre: number, off: number, inner: number, outer: number, grow: number) => {
-  const out: number[] = []
-  const j0 = Math.ceil((centre - inner - off) / GRID)
-  const j1 = Math.floor((centre + inner - off) / GRID)
-  for (let j = j0; j <= j1; j++) out.push(off + j * GRID)
-  let step = GRID
-  let x = out[0]
-  const left: number[] = []
-  while (x > centre - outer) {
-    step *= grow
-    x -= step
-    left.push(x)
-  }
-  step = GRID
-  x = out[out.length - 1]
-  while (x < centre + outer) {
-    step *= grow
-    x += step
-    out.push(x)
-  }
-  return [...left.reverse(), ...out]
-}
-
 let material: THREE.MeshStandardMaterial | null = null
 /** the one regolith material: the mesh, the boulders and the warm stand-in */
 const moonMaterial = () => {
-  material ??= new THREE.MeshStandardMaterial({
+  if (material) return material
+  const m = new THREE.MeshStandardMaterial({
     vertexColors: true,
     roughness: 0.96,
     metalness: 0,
   })
-  return material
+  // a grain in three dimensions off world position, so a steep crater wall
+  // is as fine as the flat (the vertex colours are only the crater albedo)
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\n varying vec3 vMoonW;')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n vMoonW = (modelMatrix * vec4(transformed, 1.0)).xyz;')
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vMoonW;
+        float mHash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+        float mNoise(vec3 p) {
+          vec3 i = floor(p);
+          vec3 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(mix(mHash(i), mHash(i + vec3(1, 0, 0)), f.x), mix(mHash(i + vec3(0, 1, 0)), mHash(i + vec3(1, 1, 0)), f.x), f.y),
+            mix(mix(mHash(i + vec3(0, 0, 1)), mHash(i + vec3(1, 0, 1)), f.x), mix(mHash(i + vec3(0, 1, 1)), mHash(i + vec3(1, 1, 1)), f.x), f.y),
+            f.z);
+        }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec3 mp = fract(vMoonW / 4096.0) * 4096.0;
+          float grain = mNoise(mp * 0.7) * 0.6 + mNoise(mp * 2.3) * 0.4;
+          diffuseColor.rgb *= 0.82 + 0.36 * grain;
+        }`)
+  }
+  m.customProgramCacheKey = () => 'moon-regolith-2'
+  material = m
+  return m
 }
 
-const TINT = new THREE.Color('#d9d4c9')
+/** grey, a hair cool: the look's grade warms whatever it is given */
+const TINT = new THREE.Color('#aeb0b3')
 
 export interface MoonHandles {
   /** everything drawn on the Moon; hidden while the Moon is not live */
@@ -214,9 +235,13 @@ export interface MoonHandles {
   warm: THREE.Mesh
   /** the boulders' boxes: the Moon level's CollisionSet wraps this array */
   obstacles: Solid[]
-  /** build the ground if it is not built yet (the first arrival, under the
-      cut's blackout); cheap every time after */
+  /** build the ground if it is not built yet; cheap every time after. The
+      approach calls it well out, a few hundred milliseconds of work that
+      outsideWorld time-slices ahead of need */
   ensureBuilt: () => void
+  /** build for up to `ms` milliseconds; true once it is all there */
+  build: (ms: number) => boolean
+  readonly built: boolean
 }
 
 export const buildMoon = (opts: {
@@ -228,6 +253,7 @@ export const buildMoon = (opts: {
   const root = new THREE.Group()
   root.name = 'moon'
   root.visible = false
+  root.userData.dynamic = true
   opts.parent.add(root)
   const mat = moonMaterial()
   opts.trackDisposable(mat)
@@ -245,65 +271,106 @@ export const buildMoon = (opts: {
   const { obstacles } = opts
   let built = false
 
-  const buildGround = () => {
-    const xs = axis(MOON_ORIGIN.x, OFF_X, MOON_WALK + 80, 4300, 1.13)
-    const zs = axis(MOON_ORIGIN.z, OFF_Z, MOON_WALK + 80, 4300, 1.13)
-    const nx = xs.length
-    const nz = zs.length
-    const pos = new Float32Array(nx * nz * 3)
-    const col = new Float32Array(nx * nz * 3)
-    const inner = MOON_WALK + 80
-    for (let j = 0; j < nz; j++) {
-      for (let i = 0; i < nx; i++) {
-        const x = xs[i]
-        const z = zs[j]
-        const k = j * nx + i
-        const lat = Math.abs(x - MOON_ORIGIN.x) <= inner && Math.abs(z - MOON_ORIGIN.z) <= inner
-        // on the lattice exactly where anything can stand, so the drawn
-        // triangle is the one collision reads
-        pos[k * 3] = x
-        pos[k * 3 + 1] = lat
-          ? moonLattice(Math.round((x - OFF_X) / GRID), Math.round((z - OFF_Z) / GRID))
-          : moonHeight(x, z)
-        pos[k * 3 + 2] = z
-        const g = moonAlbedo(x - MOON_ORIGIN.x, z - MOON_ORIGIN.z)
-        col[k * 3] = g * TINT.r
-        col[k * 3 + 1] = g * TINT.g
-        col[k * 3 + 2] = g * TINT.b
+  /** rings of square cells about the landing site: cell edge, half-width */
+  const RINGS = [
+    { cell: 4, half: 640 },
+    { cell: 8, half: 1280 },
+    { cell: 16, half: 2560 },
+    { cell: 64, half: MOON_PATCH },
+  ]
+  // a generator, so the approach can build it a few milliseconds a frame
+  function* buildGround() {
+    // the centre on the world lattice, so the finest ring is the lattice
+    // itself and collision reads the drawn triangles
+    const cx = OFF_X + Math.round((MOON_ORIGIN.x - OFF_X) / GRID) * GRID
+    const cz = OFF_Z + Math.round((MOON_ORIGIN.z - OFF_Z) / GRID) * GRID
+    for (let k = 0; k < RINGS.length; k++) {
+      const { cell, half } = RINGS[k]
+      const hole = k > 0 ? RINGS[k - 1].half : 0
+      const n = Math.round(half / cell)
+      const side = n * 2 + 1
+      const pos = new Float32Array(side * side * 3)
+      const col = new Float32Array(side * side * 3)
+      const coarse = k + 1 < RINGS.length ? RINGS[k + 1].cell / cell : 1
+      for (let j = 0; j < side; j++) {
+        for (let i = 0; i < side; i++) {
+          const x = cx + (i - n) * cell
+          const z = cz + (j - n) * cell
+          const o = (j * side + i) * 3
+          pos[o] = x
+          pos[o + 2] = z
+          pos[o + 1] = k === 0
+            ? moonLattice(Math.round((x - OFF_X) / GRID), Math.round((z - OFF_Z) / GRID))
+            : moonHeight(x, z)
+          const g = moonAlbedo(x - MOON_ORIGIN.x, z - MOON_ORIGIN.z)
+          col[o] = g * TINT.r
+          col[o + 1] = g * TINT.g
+          col[o + 2] = g * TINT.b
+        }
+        if (j % 8 === 7) yield
       }
-    }
-    const idx = new Uint32Array((nx - 1) * (nz - 1) * 6)
-    let n = 0
-    for (let j = 0; j < nz - 1; j++) {
-      for (let i = 0; i < nx - 1; i++) {
-        const a = j * nx + i
-        const b = a + 1
-        const c = a + nx
-        const d = c + 1
-        // split along (0,0)-(1,1), the diagonal moonGroundY interpolates
-        idx[n++] = a
-        idx[n++] = c
-        idx[n++] = d
-        idx[n++] = a
-        idx[n++] = d
-        idx[n++] = b
+      // weld the outer edge to the coarser ring's vertices: every vertex the
+      // coarser ring does not have takes the height of the straight line
+      // between the two it does, so the edges are one polyline
+      if (coarse > 1) {
+        const edge = (i: number, j: number, di: number, dj: number) => {
+          const t = ((di ? i : j) % coarse) / coarse
+          if (t === 0) return
+          const i0 = di ? i - (i % coarse) : i
+          const j0 = dj ? j - (j % coarse) : j
+          const a = (j0 * side + i0) * 3 + 1
+          const b = ((j0 + dj * coarse) * side + (i0 + di * coarse)) * 3 + 1
+          pos[(j * side + i) * 3 + 1] = pos[a] + (pos[b] - pos[a]) * t
+        }
+        for (let q = 0; q < side; q++) {
+          edge(q, 0, 1, 0)
+          edge(q, side - 1, 1, 0)
+          edge(0, q, 0, 1)
+          edge(side - 1, q, 0, 1)
+        }
       }
+      const idx: number[] = []
+      for (let j = 0; j < side - 1; j++) {
+        for (let i = 0; i < side - 1; i++) {
+          const x0 = (i - n) * cell
+          const z0 = (j - n) * cell
+          if (hole && x0 >= -hole && x0 + cell <= hole && z0 >= -hole && z0 + cell <= hole) continue
+          const a = j * side + i
+          const b = a + 1
+          const c = a + side
+          const d = c + 1
+          // split along (0,0)-(1,1), the diagonal moonGroundY interpolates
+          idx.push(a, c, d, a, d, b)
+        }
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
+      geo.setIndex(idx)
+      geo.computeVertexNormals()
+      geo.computeBoundingSphere()
+      opts.trackDisposable(geo)
+      const mesh = new THREE.Mesh(geo, mat)
+      // the ground receives and does not cast, like the overworld's: the
+      // sun's map is a small box that follows you, and ground casting into it
+      // shaded the whole foreground and left only the horizon lit
+      mesh.castShadow = false
+      mesh.receiveShadow = true
+      mesh.name = k === 0 ? 'moon-ground' : `moon-ground-${k}`
+      root.add(mesh)
+      yield
     }
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-    geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
-    geo.setIndex(new THREE.BufferAttribute(idx, 1))
-    geo.computeVertexNormals()
-    geo.computeBoundingSphere()
-    opts.trackDisposable(geo)
-    const mesh = new THREE.Mesh(geo, mat)
-    // the ground receives and does not cast, like the overworld's: the sun's
-    // map is a small box that follows you, and ground casting into it shaded
-    // the whole foreground and left only the horizon lit
-    mesh.castShadow = false
-    mesh.receiveShadow = true
-    mesh.name = 'moon-ground'
-    root.add(mesh)
+  }
+  let steps: Generator<undefined, void> | null = null
+  const finish = () => {
+    buildBoulders()
+    root.updateMatrixWorld(true)
+    // the parts are still; the root is not, it is carried through space on
+    // the way in (outsideWorld places it on the Moon out there)
+    root.traverse((o) => {
+      if (o !== root) o.matrixAutoUpdate = false
+    })
+    built = true
   }
 
   /*
@@ -318,7 +385,7 @@ export const buildMoon = (opts: {
     const parts: THREE.BufferGeometry[] = []
     for (let k = 0; k < 46; k++) {
       const a = rand3(k, 7, 1, 0x6e1) * Math.PI * 2
-      const r = 40 + Math.sqrt(rand3(k, 7, 2, 0x6e1)) * (MOON_WALK - 60)
+      const r = 40 + Math.sqrt(rand3(k, 7, 2, 0x6e1)) * 560
       const x = MOON_ORIGIN.x + Math.cos(a) * r
       const z = MOON_ORIGIN.z + Math.sin(a) * r
       const s = 0.8 + Math.pow(rand3(k, 7, 3, 0x6e1), 2.2) * 5.5
@@ -391,13 +458,24 @@ export const buildMoon = (opts: {
     obstacles,
     ensureBuilt: () => {
       if (built) return
-      built = true
-      buildGround()
-      buildBoulders()
-      root.updateMatrixWorld(true)
-      root.traverse((o) => {
-        o.matrixAutoUpdate = false
-      })
+      steps ??= buildGround()
+      while (!steps.next().done) { /* all of it, now */ }
+      finish()
+    },
+    build: (ms) => {
+      if (built) return true
+      steps ??= buildGround()
+      const t0 = performance.now()
+      while (performance.now() - t0 < ms) {
+        if (steps.next().done) {
+          finish()
+          return true
+        }
+      }
+      return false
+    },
+    get built() {
+      return built
     },
   }
 }

@@ -47,23 +47,31 @@ export const CURVE_FROM = 300
 export const CURVE_TO = 3000
 export const THIN_FROM = 800
 export const THIN_TO = 11000
+/** above this the chunk ring, the house and the props' ground stop: they are
+    a few pixels under a whole far field, and nearly two thousand draw calls */
+export const NEAR_OFF = 2600
 export const GROUND_FADE = 12000
 export const GROUND_OFF = 20000
 
 /** the Moon is pinned once the climb passes this, and forgotten under the other */
 export const MOON_ANCHOR = 3000
 export const MOON_FORGET = 2000
-/** how close to its surface flying cuts to the Moon, and how high off it back */
-export const MOON_SEAM = 2600
-export const MOON_LEAVE = 2400
-/** how high over the ground you left from the way back arrives */
-export const EARTH_RETURN = 40000
+/** the approach: from SWING_FROM off the Moon's surface the whole of space
+    swings round you until, by SWING_TO, its landing site is straight
+    underfoot (outsideWorld's space frame); inside MOON_SEAM you are on the
+    Moon level, seamlessly, and past MOON_LEAVE back off it */
+export const SWING_FROM = 60000
+export const SWING_TO = 20000
+export const MOON_SEAM = 3000
+export const MOON_LEAVE = 4000
 
 /** where the Moon level sits in the scene: far enough off that the house,
     the fleet and the overworld's props are past its far plane */
 export const MOON_ORIGIN = { x: 0, z: 60000 }
-/** the Moon's walkable square, either side of its origin */
-export const MOON_WALK = 620
+/** the Moon's walkable square, either side of its origin: its whole drawn
+    ground (levels/moon.ts's patch, less a margin), because a seamless
+    landing puts you down wherever you flew in, not on a pad */
+export const MOON_WALK = 4800
 /** the Moon's own time of day: the sun a third of the way up, so the
     craters throw long shadows and the day never ends */
 export const MOON_TOD = 0.31

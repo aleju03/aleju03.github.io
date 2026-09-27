@@ -200,6 +200,9 @@ export interface Vehicle {
   /** put it in the air at a point, still and level, keeping whoever is
       aboard: a level cut flown through (the ship's Earth-Moon seams) */
   warp?: (x: number, y: number, z: number, yaw: number) => void
+  /** carry the machine by an offset with its motion and attitude kept (a
+      seamless level seam moves the frame under it) */
+  shift?: (dx: number, dy: number, dz: number) => void
   /** put it down here and let it settle: spawn, or a recall from the menu */
   placeAt: (x: number, z: number, yaw: number, env: DriveEnv) => void
   /** the player just got in */

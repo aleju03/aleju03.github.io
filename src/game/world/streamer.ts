@@ -15,6 +15,7 @@ import { makeLeafTexture } from './treeMesh'
 import { texelate } from '../render/texel'
 import { nearestLamps } from '../render/atmosphere'
 import { buildFarField } from './farfield'
+import { NEAR_OFF } from '../levels/space'
 import { FADE_S } from './fade'
 
 /*
@@ -489,6 +490,10 @@ export const tintWater = (mat: THREE.Material, sky: THREE.Color, sun: number) =>
   waterCel.value = 0.07 + sun * 0.75
 }
 
+/** above this the chunk ring is hidden and the far field alone draws the
+    ground (see chunksOn in buildWorld) */
+const CHUNKS_OFF = NEAR_OFF
+
 export function buildWorld(opts: Opts): WorldHandles {
   const { scene, obstacles, onNearDoors, onChunk, trackTexture, trackDisposable } = opts
   const root = new THREE.Group()
@@ -521,7 +526,16 @@ export function buildWorld(opts: Opts): WorldHandles {
     pendingSolid = Number.POSITIVE_INFINITY
     for (const t of solidAt.values()) if (t > now && t < pendingSolid) pendingSolid = t
   }
+  /*
+    From high up (CHUNKS_OFF) the chunk ring is a few pixels in the middle of
+    the far field and nearly two thousand draw calls: it is hidden, stops
+    streaming, and tells the far field nothing is built, so the far field
+    draws its own ground there instead. Coming back down it streams in again
+    where you are, fading in over the far field as it always does.
+  */
+  let chunksOn = true
   const chunkSolid = (cx: number, cz: number) => {
+    if (!chunksOn) return false
     const t = solidAt.get(key(cx, cz))
     return t !== undefined && windUniforms.uTime.value >= t
   }
@@ -582,6 +596,7 @@ export function buildWorld(opts: Opts): WorldHandles {
 
   const make = (cx: number, cz: number, tier: Tier, fade?: ChunkFade) => {
     const c = buildChunk(cx, cz, tier, mats, fade)
+    c.group.visible = chunksOn
     root.add(c.group)
     chunks.set(key(cx, cz), c)
     const solid = fade && fade.from === undefined ? fade.at + FADE_S : -Infinity
@@ -734,6 +749,17 @@ export function buildWorld(opts: Opts): WorldHandles {
     // it has the whole view covered; until then the old wide ring stands in
     // the fields fade into the chunk ground as the grass field fades out
     groundLookUniforms.uFieldK.value = Math.min(1, Math.max(0, (alt - 15) / 30))
+    const on = chunksOn ? alt < CHUNKS_OFF * 1.1 : alt < CHUNKS_OFF
+    if (on !== chunksOn) {
+      chunksOn = on
+      for (const c of chunks.values()) c.group.visible = on
+      solidEpoch++
+    }
+    if (!chunksOn) {
+      far.update(x, z, alt, chunkSolid, solidEpoch)
+      far.work(FAR_MS_AIR)
+      return
+    }
     tickSolid()
     far.update(x, z, alt, chunkSolid, solidEpoch)
     const high = far.complete ? RADIUS_FAR : RADIUS_HIGH

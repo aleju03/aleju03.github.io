@@ -1,5 +1,5 @@
 import type * as THREE from 'three'
-import type { Level, LevelSpawn } from './types'
+import type { Level, LevelShift, LevelSpawn } from './types'
 
 /*
   Which level is live, and the noclip cut that moves the player between
@@ -8,7 +8,10 @@ import type { Level, LevelSpawn } from './types'
   (fast cover); under the cover the worlds swap (leave/enter, collision
   set, spawn) at SWAP_MS; the card starts its slow fade at FADE_MS and the
   machine retires at DONE_MS. The scene owns the card itself and anything
-  renderer-side (shadow re-bakes) through the callbacks. reset() is the
+  renderer-side (shadow re-bakes) through the callbacks. A seam carrying a
+  `shift` is seamless: both levels draw the same picture at that moment, so
+  the swap happens on the spot with no card and no freeze, and the scene
+  carries the player across by the offset (onSeamless). reset() is the
   no-ceremony path home — sitting down or leaving the room mid-level snaps
   straight back to the home level's spawn with no cut.
 */
@@ -28,6 +31,8 @@ export interface LevelSystemOpts {
   /** the worlds swapped under the cover: place the player at `spawn`
       (the seam's own arrival point, or the level's default), re-bake shadows */
   onSwapped: (level: Level, spawn: LevelSpawn, from: Level) => void
+  /** a seamless seam crossed (see the header): carry the player by `shift` */
+  onSeamless?: (level: Level, shift: LevelShift, from: Level) => void
 }
 
 export interface LevelSystem {
@@ -84,6 +89,14 @@ export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
       if (seam) {
         const to = byId.get(seam.to)
         if (!to) return
+        if (seam.shift && opts.onSeamless) {
+          current.leave()
+          const from = current
+          current = to
+          current.enter()
+          opts.onSeamless(current, seam.shift, from)
+          return
+        }
         cut = { t0: now, to, spawn: seam.spawn ?? to.spawn, swapped: false, fading: false }
         opts.onCover(true)
         opts.onCutStart()
