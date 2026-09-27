@@ -9,6 +9,7 @@ import {
   CABIN_FIT, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../../src/game/player/playerBody'
 import type { RagdollEnv } from '../../src/game/player/ragdoll'
+import { setBodyBuildSync } from '../../src/game/player/bodyShape'
 import { DEFAULT_LOOK, type PlayerLook } from '../../src/game/player/look'
 import { createVehicleMaterials } from '../../src/game/vehicles/materials'
 import { buildCar } from '../../src/game/vehicles/car'
@@ -456,6 +457,11 @@ const firstPerson = (spec: BodySpec, snap: Snap) => {
     cam.rotation.order = 'YXZ'
     cam.rotation.set(pitch, 0, 0)
     snap(`fp pitch ${pitch}${speed ? ' walking' : ''}`, cam)
+    if (pitch === -1.3) {
+      // the same body as the lens draws it, seen from outside: what is kept
+      // of it under the first-person cut, and the cap over the cut
+      snap('fp body from outside', camAt(tw, th, new THREE.Vector3(a.x, a.y + 2.4, a.z), Math.PI - 0.9, 7, 3, 40))
+    }
     st.scene.remove(a.rig.group)
   }
 }
@@ -569,7 +575,7 @@ const foldOverlay = (rig: PlayerRig): THREE.Mesh => {
   return om
 }
 const FOLD_SHOTS: Array<[string, number]> = [
-  ['idle', 310], ['walk', 12], ['run', 8], ['crouch', 40], ['stretch', 54], ['ragdoll', 34], ['splay', 52], ['recover', 10 + 110],
+  ['idle', 310], ['walk', 12], ['run', 8], ['crouch', 40], ['stretch', 54], ['ragdoll', 34], ['splay', 70], ['recover', 54],
 ]
 const folds = (spec: BodySpec, snap: Snap, who = 0) => {
   const [tw, th] = spec.tile
@@ -600,6 +606,8 @@ let renderer: THREE.WebGLRenderer | null = null
 let look: PixelLook | null = null
 
 export const shootBody = (spec: BodySpec) => {
+  // every body here is photographed finished, never in a stand-in variant
+  setBodyBuildSync(true)
   const canvas = document.getElementById('c') as HTMLCanvasElement
   const [tw, th] = spec.tile
   // collect the snapshots first: each renders straight away, into its slot
@@ -612,7 +620,7 @@ export const shootBody = (spec: BodySpec) => {
     if (a === 'closeup') return n + 4
     if (a === 'motion') return n + 8 * Object.keys(ACTIONS).length
     if (a.startsWith('strip')) return n + 8
-    if (a === 'fp') return n + 4
+    if (a === 'fp') return n + 5
     if (a === 'seat') return n + 9
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
     if (a === 'wardrobe') return n + WARDROBE.length

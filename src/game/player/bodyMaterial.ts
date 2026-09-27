@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
-import { EYE_Y } from './bodyShape'
+import { B, boneRestWorld, faceWindow } from './bodyShape'
 
 /*
   The one material a body is drawn with, and the reason a repaint is free.
@@ -24,9 +24,15 @@ import { EYE_Y } from './bodyShape'
     painted this way is crisp at any mesh resolution, blinks by scaling one
     uniform, and costs no geometry variant: `uFace`, `uLid` and `uCostume`
     are per body;
-  - `uHideHead` discards the body's fragments in the colour pass. The camera
-    *is* the head in first person, and up close the body was the inside of
-    its own skull. The shadow pass draws with three's own depth material,
+  - `uHideHead` is the first-person lens. The lens rides inside the head,
+    so in the colour pass every vertex weighted to the head or an arm is
+    slid, before skinning, onto the neck or the shoulder it hangs from: the
+    skin folds shut into a smooth dome where the head was, and looking down
+    you see a closed bean, your own chest and belly. Cutting the top off
+    instead leaves the skin open, and from above an open skin is a hollow
+    cup with the road visible down each leg. The headgear is discarded. The
+    shadow pass draws with three's own depth material, which knows nothing
+    of any of this, so the body still casts whole. The shadow pass draws with three's own depth material,
     which knows nothing of the flag, so the body still casts.
 
   Every body builds its own instance (the palette is per body) but they all
@@ -63,6 +69,14 @@ const faceFor = (glow: string, out: THREE.Color) => {
   return out.set(lum > 0.35 ? FACE_DARK : FACE_LIGHT)
 }
 
+/** a bone's rest (bind) position as GLSL literal: the fold's pivots. The
+    head and the shoulders are not rotated in the bind pose, so rest and
+    bind positions agree for them */
+const v3 = (bone: number) => {
+  const p = boneRestWorld(bone, new THREE.Vector3())
+  return `${p.x.toFixed(4)}, ${p.y.toFixed(4)}, ${p.z.toFixed(4)}`
+}
+
 export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial {
   const pal = [FACE_LIGHT, look.shell, look.trim, look.accent, look.glow, INK, CHEEK, GLINT, HAIR].map(
     (c) => new THREE.Color(c),
@@ -78,7 +92,14 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
     uLid: { value: 1 },
     uCostume: { value: look.costume ?? 0 },
     uHat: { value: look.hat ?? 0 },
+    // the face window of this body's build: half-width, half-height, centre
+    uWin: { value: new THREE.Vector3() },
   }
+  const setWin = (build: number) => {
+    const w = faceWindow(build)
+    uniforms.uWin.value.set(w.w, w.h, w.y)
+  }
+  setWin(look.build ?? 0)
   // soft vinyl: a broad sheen, a touch glossier than dough, the way the
   // beans this is drawn after read under a sun
   const material = new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0 })
@@ -89,6 +110,7 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
       .replace(
         '#include <common>',
         `#include <common>
+uniform float uHideHead;
 attribute float aRole;
 attribute vec2 aPart;
 varying float vRole;
@@ -100,7 +122,23 @@ varying vec3 vBind;`,
         `#include <begin_vertex>
 vRole = aRole;
 vPart = aPart;
-vBind = position;`,
+vBind = position;
+// the first-person fold: see below
+if (uHideHead > 0.5) {
+  float wHead = 0.0;
+  float wArmL = 0.0;
+  float wArmR = 0.0;
+  for (int i = 0; i < 4; i++) {
+    int b = int(skinIndex[i] + 0.5);
+    float w = skinWeight[i];
+    if (b == ${B.HEAD} || b == ${B.EYES} || b == ${B.POM}) wHead += w;
+    if (b == ${B.UARM_L} || b == ${B.FARM_L} || b == ${B.HAND_L}) wArmL += w;
+    if (b == ${B.UARM_R} || b == ${B.FARM_R} || b == ${B.HAND_R}) wArmR += w;
+  }
+  transformed = mix(transformed, vec3(${v3(B.HEAD)}), wHead);
+  transformed = mix(transformed, vec3(${v3(B.UARM_L)}), wArmL);
+  transformed = mix(transformed, vec3(${v3(B.UARM_R)}), wArmR);
+}`,
       )
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -115,6 +153,7 @@ uniform float uFace;
 uniform float uLid;
 uniform float uCostume;
 uniform float uHat;
+uniform vec3 uWin;
 varying float vRole;
 varying vec2 vPart;
 varying vec3 vBind;
@@ -123,26 +162,29 @@ float bodyPill(vec2 q, float r, float h) {
   q.y = abs(q.y) - h;
   return length(vec2(q.x, max(q.y, 0.0))) - r;
 }
-float bodyEye(vec2 q, float side) {
+float bodyEye(vec2 q, float side, float w, float h) {
   // q is relative to the eye's centre, design units; side is +1 on the
-  // body's left (+x), -1 on its right
+  // body's left (+x), -1 on its right; w and h the face window's half-sizes,
+  // which every size here is a fraction of, so a wide bean has wide eyes
   float lid = max(uLid, 0.06);
   int kind = int(uFace + 0.5);
+  float r = 0.12 * w;
+  float hh = 0.2 * h;
   if (kind == 2) {
     // happy: an upturned arc, a closed smiling eye
-    vec2 c = q - vec2(0.0, -0.035);
-    float d = abs(length(c) - 0.048) - 0.017;
+    vec2 c = q - vec2(0.0, -0.1 * h);
+    float d = abs(length(c) - 1.3 * r) - 0.45 * r;
     return max(d, -c.y + 0.004);
   }
   if (kind == 3) {
     // surprised: wide round eyes
     q.y /= lid;
-    return length(q) - 0.058;
+    return length(q) - 1.45 * r;
   }
   q.y /= lid;
-  float d = bodyPill(q, 0.036, 0.056);
-  if (kind == 1) d = max(d, q.y - 0.012); // sleepy: the lids half down
-  if (kind == 4) d = max(d, dot(q, normalize(vec2(-side * 0.55, 1.0))) - 0.03); // determined
+  float d = bodyPill(q, r, hh);
+  if (kind == 1) d = max(d, q.y - 0.2 * hh); // sleepy: the lids half down
+  if (kind == 4) d = max(d, dot(q, normalize(vec2(-side * 0.55, 1.0))) - 0.5 * hh); // determined
   return d;
 }
 float aaStep(float d) {
@@ -153,10 +195,10 @@ float aaStep(float d) {
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-// under the first-person lens the whole body is left out of the colour
-// pass (it still casts)
-if (uHideHead > 0.5) discard;
 int role = int(vRole + 0.5);
+// under the first-person lens the headgear is left out of the colour pass
+// (it still casts), and the face is not painted on a head that is not there
+if (uHideHead > 0.5 && role != 1) discard;
 vec3 bodyCol = uPal[role];
 float facePanel = 0.0;
 if (role == 1) {
@@ -189,17 +231,26 @@ if (role == 1) {
   }
   bodyCol = mix(bodyCol, uPal[2], trimK);
 
-  // the face: a light panel set into the front of the bean's top, and the
-  // eyes on it, both painted from the bind position so they ride the head
-  vec2 fq = vec2(vBind.x, vBind.y - ${EYE_Y.toFixed(4)});
+  // the face: a light panel filling the window sunk into the front of the
+  // bean (bodyShape's FaceWindow), and the eyes on it, both painted from
+  // the bind position so they ride the head however it bends
+  vec2 fq = vec2(vBind.x, vBind.y - uWin.z);
   float front = step(0.05, vBind.z) * trunk;
-  float panelD = (length(vec2(fq.x / 0.27, (fq.y + 0.01) / 0.215)) - 1.0) * 0.215;
-  facePanel = aaStep(panelD) * front;
+  float e = length(fq / uWin.xy);
+  facePanel = aaStep((e - 0.9) * uWin.y) * front * (1.0 - uHideHead);
   bodyCol = mix(bodyCol, uPal[0], facePanel);
   float faceSide = sign(fq.x + 1e-5);
-  float eyeD = bodyEye(vec2(abs(fq.x) - 0.095, fq.y - 0.02), faceSide);
-  if (int(uFace + 0.5) == 3) eyeD = min(eyeD, length(vec2(fq.x, fq.y + 0.125)) - 0.028);
-  bodyCol = mix(bodyCol, uPal[4], aaStep(eyeD) * facePanel);
+  vec2 eq = vec2(abs(fq.x) - 0.33 * uWin.x, fq.y - 0.08 * uWin.y);
+  float eyeD = bodyEye(eq, faceSide, uWin.x, uWin.y);
+  int kind = int(uFace + 0.5);
+  if (kind == 3) eyeD = min(eyeD, length(vec2(fq.x, fq.y + 0.5 * uWin.y)) - 0.09 * uWin.x);
+  float eye = aaStep(eyeD) * facePanel;
+  bodyCol = mix(bodyCol, uPal[4], eye);
+  // and a wet glint high in each open eye
+  if (kind != 2) {
+    float g = length(eq - vec2(-0.035 * uWin.x * faceSide, 0.1 * uWin.y * max(uLid, 0.06))) - 0.035 * uWin.x;
+    bodyCol = mix(bodyCol, mix(uPal[7], uPal[0], 0.15), aaStep(g) * eye * step(0.4, uLid));
+  }
 }
 // the bandana is printed: dots of the detail colour on the cloth, which is
 // what tells it from a beanie across a street
@@ -224,7 +275,7 @@ totalEmissiveRadiance += diffuseColor.rgb * uFaceLift * (facePanel * (0.07 + 0.2
 totalEmissiveRadiance += diffuseColor.rgb * uGummy * (0.55 + 0.45 * (1.0 - rim));`,
       )
   }
-  material.customProgramCacheKey = () => 'playerBody-v4'
+  material.customProgramCacheKey = () => 'playerBody-v5'
 
   return {
     material,
@@ -236,6 +287,7 @@ totalEmissiveRadiance += diffuseColor.rgb * uGummy * (0.55 + 0.45 * (1.0 - rim))
       faceFor(next.glow, pal[0])
       uniforms.uCostume.value = next.costume ?? 0
       uniforms.uHat.value = next.hat ?? 0
+      setWin(next.build ?? 0)
     },
     setFace: (face) => {
       uniforms.uFace.value = face
