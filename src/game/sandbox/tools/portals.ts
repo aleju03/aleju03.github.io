@@ -196,6 +196,14 @@ export interface Portals {
   readonly version: number
   /** why the last shot fizzled, in a word or two (for a harness) */
   readonly why: string
+  /**
+   * The first open oval of `level` a ray meets, front side on, within
+   * `reach`: how far along it is, where, and the ray carried out of its
+   * partner (a point on the far side is `M * (eye + dir * t)` for any t
+   * past the oval). Null when no oval is on the ray.
+   */
+  rayEnters: (level: string, eye: THREE.Vector3, dir: THREE.Vector3, reach: number) =>
+    { t: number; at: THREE.Vector3; from: Portal; to: Portal; M: THREE.Matrix4 } | null
   /** once a frame: a portal riding a door or a prop is moved with it, and
       one whose prop has gone is closed */
   follow: () => void
@@ -1138,6 +1146,23 @@ export function createPortals(): Portals {
     },
     get why() {
       return why
+    },
+    rayEnters: (level, eye, dir, reach) => {
+      let best: { t: number; at: THREE.Vector3; from: Portal; to: Portal; M: THREE.Matrix4 } | null = null
+      for (const p of list) {
+        if (!p || p.level !== level) continue
+        const to = partner(p)
+        if (!to) continue
+        const dn = dir.dot(p.n)
+        if (dn >= -1e-4) continue
+        const t = tv.subVectors(p.pos, eye).dot(p.n) / dn
+        if (t < 0 || t > reach || (best && t >= best.t)) continue
+        const at = eye.clone().addScaledVector(dir, t)
+        toPortal(p, at, lp)
+        if (ovalR(lp.x, lp.y) >= 1) continue
+        best = { t, at, from: p, to, M: transform(p, new THREE.Matrix4()) }
+      }
+      return best
     },
     follow: () => {
       for (const p of list) {

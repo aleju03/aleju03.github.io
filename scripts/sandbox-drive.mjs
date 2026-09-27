@@ -102,6 +102,12 @@
                                       hole), and a catalogue portal panel
                                       carried on the physgun; shots house-*,
                                       grass-*, panel-* beside the others
+    npm run drive -- portalgrab       the physgun through a portal pair (two
+                                      panels face to face): a crate taken,
+                                      swung and thrown through it, then your
+                                      own body taken and pulled about and let
+                                      go; positions and speeds printed (no NaN,
+                                      capped). Shots grab-* beside the others
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -2799,6 +2805,143 @@ try {
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
     console.log(`  ${bad === 0 ? 'PASS' : `FAIL: ${bad} legs jumped`}`)
     if (bad) process.exitCode = 1
+  }
+
+  if (WHAT.includes('portalgrab')) {
+    /*
+      The physgun through a portal pair: two portal panels standing face to
+      face fourteen units apart on open ground, a portal on each, the player
+      between them facing the blue one (through it: the orange one's side,
+      which is the player's own back). A crate standing behind the player is
+      taken through the blue portal, swung and thrown; then the player's own
+      body is taken the same way, pulled about by turning the view, and let
+      go. Positions and speeds are printed; nothing may be NaN, and the
+      body's speed stays under the self-throw cap (45 u/s).
+    */
+    console.log('portalgrab')
+    const G_OUT = resolve(flag('portal-out', join(process.env.HOME ?? '.', '.cache/overhaul/portal')))
+    mkdirSync(G_OUT, { recursive: true })
+    const gShot = async (name) => {
+      const path = join(G_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    await evaluate(`(() => { window.__gLinks = []; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__gWrapped) continue; gl.__gWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__gLinks.push(1); real(p) } } return true })()`)
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const click = async (code) => {
+      await hold(code, true)
+      await sleep(90)
+      await hold(code, false)
+      await sleep(300)
+    }
+    const here = () => evaluate('window.__sandboxCamera.position.toArray()')
+    const f1 = (v) => v.map((n) => (Number.isFinite(n) ? n.toFixed(1) : 'NaN')).join(', ')
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await stand()
+    const c0 = await here()
+    const x0 = c0[0]
+    const z0 = c0[2]
+    // the two panels, facing each other across the player
+    await evaluate(`(() => { const sb = window.__sandbox, V = window.__sandboxCamera.position.constructor, Q = window.__sandboxCamera.quaternion.constructor
+      const put = (z, yaw) => { const id = sb.spawn('portal_panel', { x: ${x0}, y: sb.groundY(${x0}, z) + 2.63, z }); sb.setTransform(id, new V(${x0}, sb.groundY(${x0}, z) + 2.63, z), new Q().setFromAxisAngle(new V(0, 1, 0), yaw)); sb.freeze(id); return id }
+      window.__panA = put(${z0 - 8}, 0); window.__panB = put(${z0 + 8}, Math.PI); return true })()`)
+    await sleep(800)
+    await evaluate(`(() => { window.__tools.give('portalgun'); window.__tools.select(3); return true })()`)
+    await look(0, 0)
+    await sleep(500)
+    await click('Mouse0')
+    await look(Math.PI, 0)
+    await sleep(500)
+    await click('Mouse2')
+    const pair = await evaluate(`[0, 1].map((c) => { const p = window.__tools.portals.list[c]; return p ? p.pos.toArray().map((n) => +n.toFixed(2)) : null })`)
+    console.log(`  blue ${pair[0] ? f1(pair[0]) : 'none  <-- WRONG'}, orange ${pair[1] ? f1(pair[1]) : 'none  <-- WRONG'}`)
+    if (!pair[0] || !pair[1]) {
+      console.log('  (why: ' + await evaluate('window.__tools.portals.why') + ')')
+    } else {
+      // aim through the blue oval at a world point on the orange side
+      const aimThrough = (x, y, z) => evaluate(`(() => { const P = window.__tools.portals, b = P.list[0], M = P.transform(b, new (window.__sandboxCamera.matrix.constructor)())
+        const Mi = M.clone().invert(), c = window.__sandboxCamera.position
+        const t = new (c.constructor)(${x}, ${y}, ${z}).applyMatrix4(Mi).sub(c)
+        const w = window.__sandboxWalk; w.yaw = Math.atan2(-t.x, -t.z); w.pitch = Math.atan2(t.y, Math.hypot(t.x, t.z)); return true })()`)
+      await evaluate('window.__tools.select(1); true')
+      // 1. a crate behind the player, taken through the blue portal
+      await evaluate(`(() => { const sb = window.__sandbox; window.__gcrate = sb.spawn('crate', { x: ${x0 + 1.2}, y: sb.restY('crate', ${x0 + 1.2}, ${z0 + 4}), z: ${z0 + 4} }); return true })()`)
+      await sleep(1200)
+      const cp = await evaluate(`(() => { const v = window.__sandboxCamera.position.clone(); window.__sandbox.getTransform(window.__gcrate, v); return v.toArray() })()`)
+      await aimThrough(cp[0], cp[1], cp[2])
+      await sleep(400)
+      await hold('Mouse0', true)
+      await sleep(600)
+      const hc = await evaluate('[window.__tools.physgun.holding, window.__tools.physgun.prop?.id === window.__gcrate]')
+      console.log(`  the crate through the portal: ${hc[1] ? 'held' : hc[0] ? 'held something else  <-- WRONG' : 'not held  <-- WRONG'}`)
+      await evaluate('window.__sandboxWalk.pitch += 0.12; true')
+      await sleep(500)
+      await gShot('grab-1-crate-through-portal')
+      // a flick and let go
+      for (let i = 0; i < 4; i++) {
+        await evaluate('window.__sandboxWalk.yaw += 0.07; true')
+        await sleep(40)
+      }
+      await hold('Mouse0', false)
+      await sleep(120)
+      const cv = await evaluate(`(() => { const sb = window.__sandbox, v = window.__sandboxCamera.position.clone(), p = v.clone(); sb.getVelocity(window.__gcrate, v); sb.getTransform(window.__gcrate, p); return [p.toArray(), v.toArray()] })()`)
+      console.log(`  thrown: crate at ${f1(cv[0])} moving ${f1(cv[1])} (${Math.hypot(...cv[1]).toFixed(1)} u/s)`)
+      await sleep(1500)
+      // 2. yourself: the chest, seen through the blue portal
+      await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+      const chest = await evaluate(`(() => { const r = window.__sandboxRig, i = Math.max(0, r.limbs.findIndex((l) => l.name === 'chest')); return r.limbPos(i, window.__sandboxCamera.position.clone()).toArray() })()`)
+      await aimThrough(chest[0], chest[1], chest[2])
+      await sleep(300)
+      await hold('Mouse0', true)
+      await sleep(500)
+      const self = await evaluate('window.__tools.physgun.holdsSelf')
+      console.log(`  yourself through the portal: ${self ? 'held' : 'not held  <-- WRONG'}`)
+      const track = async (label, ms) => {
+        const out = []
+        const t0 = Date.now()
+        let last = null
+        let maxV = 0
+        let nan = false
+        while (Date.now() - t0 < ms) {
+          const p = await evaluate(`(() => { const r = window.__sandboxRig, i = Math.max(0, r.limbs.findIndex((l) => l.name === 'chest')); return [performance.now(), ...r.limbPos(i, window.__sandboxCamera.position.clone()).toArray()] })()`)
+          if (p.some((n) => !Number.isFinite(n))) nan = true
+          if (last) maxV = Math.max(maxV, Math.hypot(p[1] - last[1], p[2] - last[2], p[3] - last[3]) / Math.max(1e-3, (p[0] - last[0]) / 1000))
+          last = p
+          out.push(p)
+          await sleep(60)
+        }
+        console.log(`  ${label}: chest ${f1(out[0].slice(1))} -> ${f1(out[out.length - 1].slice(1))}, top speed ${maxV.toFixed(1)} u/s${nan ? '  NaN <-- WRONG' : ''}`)
+        return maxV
+      }
+      // pull: the view turns, the beam's far end moves, and so do you
+      const pulling = (async () => {
+        for (let i = 0; i < 10; i++) {
+          await evaluate('window.__sandboxWalk.pitch += 0.03; window.__sandboxWalk.yaw += 0.02; true')
+          await sleep(100)
+        }
+      })()
+      const v1 = await track('pulled about', 1100)
+      await pulling
+      await gShot('grab-2-yourself-through-portal')
+      // a flick and let go: thrown, capped
+      for (let i = 0; i < 4; i++) {
+        await evaluate('window.__sandboxWalk.yaw -= 0.1; true')
+        await sleep(40)
+      }
+      await hold('Mouse0', false)
+      const v2 = await track('thrown', 1500)
+      console.log(`  ${Math.max(v1, v2) <= 46 ? 'speed capped' : 'speed over the cap  <-- WRONG'}; still held: ${await evaluate('window.__tools.physgun.holding')}`)
+      // back on your feet
+      await sleep(1500)
+      await hold('KeyW', true)
+      await sleep(400)
+      await hold('KeyW', false)
+      await sleep(1500)
+      console.log(`  on your feet: ${!(await evaluate('window.__sandboxRig.down'))}, lens at ${f1(await here())}`)
+    }
+    console.log(`  ${(await evaluate('window.__gLinks')).length} programs linked`)
   }
 
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))

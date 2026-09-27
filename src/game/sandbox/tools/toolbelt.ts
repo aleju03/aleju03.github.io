@@ -1,9 +1,9 @@
 import * as THREE from 'three'
 import type { Sandbox } from '../sandbox'
 import { createBeam, type Beam } from './beam'
-import { createPhysgun, type Physgun } from './physgun'
+import { createPhysgun, RANGE, type Physgun } from './physgun'
 import { createPhysgunSfx, type PhysgunSfx } from './sfx'
-import type { RigEntry, ToolInput, VehicleGrab } from './types'
+import { emptyInput, type RigEntry, type ToolInput, type VehicleGrab } from './types'
 import { createViewmodel, type Viewmodel } from './viewmodel'
 import { createToolgun, toolgunScreen, type Toolgun } from './toolgun'
 import { contraptionOf, type Contraption } from '../contraption/contraption'
@@ -23,6 +23,15 @@ import { createPortalView, type PortalView } from './portalView'
   closes both. The wheel cycles slots while nothing is held, and belongs to
   the physgun's distance while something is. A slot with nothing in it, or a
   tool not yet given, is skipped.
+
+  The physgun's beam goes through them too: an aim whose ray meets an open
+  oval before anything solid is handed to the physgun carried out of the
+  partner (its eye mapped through the pair, the ray starting at the exit),
+  so what is seen through a portal can be taken, held and thrown through
+  it, your own body included (you can only see yourself through one). A
+  hold taken through keeps that pair's map while it lasts, and lets go if
+  either portal closes. The beam is drawn in two: a straight run into the
+  entry, and the ordinary curve out of the exit.
 
   The portals themselves outlive the gun being out: they stay open with any
   tool in hand, and the belt carries props through them after every fixed
@@ -79,6 +88,8 @@ export interface ToolbeltOpts {
   renderer?: THREE.WebGLRenderer | null
   /** the live level as the portal gun sees it (null: no portals here) */
   portalWorld?: () => PortalWorld | null
+  /** your own body, for the physgun through a portal */
+  self?: () => RigEntry | null
   /** a portal shot that hit nothing: open it somewhere else, or say no */
   portalElsewhere?: (color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3) => boolean
 }
@@ -161,6 +172,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     linked: o.linked ?? ((id) => con.linked(id)),
     massOf: (id) => con.massOf(id),
     vehicles: o.vehicles,
+    self: o.self,
   })
   const toolgun = createToolgun(sb)
   const portals = createPortals()
@@ -300,6 +312,66 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     }
   }
 
+  /* ---- the physgun through the portals ---- */
+  const vAim = { eye: new THREE.Vector3(), dir: new THREE.Vector3(0, 0, -1), yaw: 0, near: 0, through: true }
+  const vInput: ToolInput = { ...emptyInput(vAim), aim: vAim }
+  const holdM = new THREE.Matrix4()
+  let holdVia = -1
+  let viaNow = false
+  const entryAt = new THREE.Vector3()
+  const exitAt = new THREE.Vector3()
+  const exitDir = new THREE.Vector3()
+  /** the aim the physgun gets this frame: the real one, or carried through */
+  const beamAim = (input: ToolInput): ToolInput => {
+    viaNow = false
+    const w = o.portalWorld?.()
+    // a hold taken through a pair lets go if the pair changes
+    if (physgun.holding && holdVia >= 0 && holdVia !== portals.version) {
+      physgun.release(false)
+      holdVia = -1
+    }
+    if (!physgun.holding) holdVia = -1
+    let M: THREE.Matrix4 | null = null
+    let near = 0
+    if (w) {
+      const e = portals.rayEnters(w.level, input.aim.eye, input.aim.dir, RANGE)
+      // anything solid before the oval stops the beam there
+      const blk = e ? sb.raycast(input.aim.eye, input.aim.dir, e.t, { props: true, world: true }) : null
+      if (e && !(blk && blk.distance < e.t - 0.05)) {
+        M = e.M
+        near = e.t + 0.05
+        entryAt.copy(e.at)
+      }
+    }
+    if (physgun.holding) {
+      // a hold keeps the map it was taken through (and one taken straight
+      // stays straight), wherever the crosshair wanders meanwhile
+      if (holdVia < 0) return input
+      M = holdM
+      near = 0
+    }
+    if (!M) return input
+    Object.assign(vInput, input)
+    vInput.aim = vAim
+    vAim.eye.copy(input.aim.eye).applyMatrix4(M)
+    vAim.dir.copy(input.aim.dir).transformDirection(M)
+    vAim.yaw = Math.atan2(-vAim.dir.x, -vAim.dir.z)
+    vAim.near = near
+    vAim.through = true
+    if (M !== holdM) holdM.copy(M)
+    // where the beam goes in and comes out, for drawing it in two
+    exitAt.copy(entryAt).applyMatrix4(holdM)
+    exitDir.copy(vAim.dir)
+    viaNow = true
+    return vInput
+  }
+  /** after the physgun's update: did it take hold through the pair */
+  const noteHold = () => {
+    if (physgun.holding && holdVia < 0 && viaNow) holdVia = portals.version
+  }
+  /** the second run of the beam: the gun to the entry oval */
+  const beamIn = o.parent ? createBeam(o.parent) : null
+
   const select = (s: number) => {
     if (s < 0 || s >= SLOTS.length || !SLOTS[s] || s === slot) return
     if (!owned.has(SLOTS[s]!)) return
@@ -337,8 +409,13 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       cycle(input.wheel > 0 ? 1 : -1)
       input.wheel = 0
     }
-    if (SLOTS[slot] === 'physgun') physgun.update(input)
-    else if (physgun.holding) physgun.release(false)
+    if (SLOTS[slot] === 'physgun') {
+      physgun.update(beamAim(input))
+      noteHold()
+    } else {
+      viaNow = false
+      if (physgun.holding) physgun.release(false)
+    }
     if (SLOTS[slot] === 'toolgun') toolgun.update(input)
     if (SLOTS[slot] === 'portalgun') {
       // a click opens one; holding it down does not keep firing
@@ -356,6 +433,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   const present = (f: ToolFrame) => {
     if (vm) vm.root.visible = true
     if (beam) beam.root.visible = true
+    if (beamIn) beamIn.root.visible = true
     physgun.sync()
     // the machines' flames and ropes, every frame, whatever is in hand
     con.present(f.dt)
@@ -367,7 +445,9 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     portals.follow()
     portals.tick(f.dt)
     tracer = Math.max(0, tracer - f.dt)
-    if (physgun.holding) aimAt.copy(physgun.view.target)
+    // (through a portal the gun points into the entry, not at the far side)
+    if (viaNow && tool === 'physgun') aimAt.copy(entryAt)
+    else if (physgun.holding) aimAt.copy(physgun.view.target)
     else if (physgun.view.mode === 'miss') aimAt.copy(physgun.view.end)
     else aimAt.copy(aimDir).multiplyScalar(24).add(aimEye)
     if (vm) {
@@ -406,8 +486,16 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
         })
       } else {
         beam.holdHalo(shown ? physgun.prop?.mesh ?? null : null)
+        // through a portal: a straight run into the entry, and the beam
+        // proper out of the exit
+        const via = shown && viaNow && physgun.view.mode !== 'off'
+        beamIn?.update({
+          muzzle, forward, end: entryAt, target: entryAt, mode: via ? 'miss' : 'off',
+          strain: 0, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
+        })
         beam.update({
-          muzzle, forward, end: physgun.view.end, target: physgun.view.target, mode: shown ? physgun.view.mode : 'off',
+          muzzle: via ? exitAt : muzzle, forward: via ? exitDir : forward,
+          end: physgun.view.end, target: physgun.view.target, mode: shown ? physgun.view.mode : 'off',
           strain: physgun.view.strain, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
         })
       }
@@ -449,6 +537,10 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       toolgun.cancel()
       con.held = null
       if (vm) vm.root.visible = false
+      if (beamIn) {
+        beamIn.clear()
+        beamIn.root.visible = false
+      }
       if (beam) {
         beam.clear()
         beam.root.visible = false
@@ -478,11 +570,13 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     stage: (camera) => {
       vm?.stage(camera)
       beam?.stage(camera)
+      beamIn?.stage(camera)
       portalView?.stage(camera)
     },
     unstage: () => {
       vm?.unstage()
       beam?.unstage()
+      beamIn?.unstage()
       portalView?.unstage()
     },
     beam,
@@ -497,6 +591,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       toolgun.dispose()
       physgun.dispose()
       beam?.dispose()
+      beamIn?.dispose()
       vm?.dispose()
       sfx?.dispose()
     },

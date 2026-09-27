@@ -3656,7 +3656,8 @@ export default function CrtScene({
           // step, so this frame's slices already pull. Only on foot, out in
           // the world, standing: a seat, a heap on the floor and the pause
           // sheet all holster it
-          toolsLive = !!tools && !!sandbox && !sitting && !rig.down && fps && !rig.acting
+          // (a body on your own beam is down on purpose: the beam keeps it)
+          toolsLive = !!tools && !!sandbox && !sitting && (!rig.down || tools.physgun.holdsSelf) && fps && !rig.acting
           if (tools && !pausedNow) {
             const k = input.keys
             if (edges.pressed('slot1')) tools.select(0)
@@ -4342,6 +4343,9 @@ export default function CrtScene({
                 }
               },
               portalElsewhere: (color, eye, dir) => portalSky(color, eye, dir),
+              // your own body, which the physgun may take only through a
+              // portal (the one place you can see it from)
+              self: () => (seating.current || fleet.riding ? null : { key: 'self', rig }),
             })
             tools.setHandColor(lookRef.current.shell)
             portalWalk = toolsMod.createPortalWalk({

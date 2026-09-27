@@ -1364,6 +1364,15 @@ drawn through this world's machinery:
   frozen against the wall under the crosshair or standing on the ground
   facing you. The house's own beds (3.25 long) are shorter than the oval
   and refuse it, the way Portal refuses a surface too small.
+- **The physgun reaches through.** An aim whose ray meets an open oval
+  before anything solid is handed to the physgun carried out of the partner
+  (`rayEnters`; the eye mapped through the pair, the ray starting at the
+  exit via `Aim.near`), so a crate seen through a portal is taken, swung
+  and thrown through it, and a hold keeps the pair's map until it is let go
+  or either portal closes. Your own body is offered only to such an aim
+  (`PhysgunOpts.self`): it goes limp on the beam, turning the view hauls it
+  about, and letting go throws it, capped at 45 u/s. The beam is drawn in
+  two runs, into the entry and out of the exit. `drive -- portalgrab`.
 - **The grass steps aside.** An open floor portal cuts its oval (plus 0.3)
   out of the grass and the wildflowers: two holes' worth of uniforms that
   the trample's vertex shader always carries (`world/wind.ts`'s
