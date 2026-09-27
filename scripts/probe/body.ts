@@ -18,6 +18,14 @@ import { buildBoat } from '../../src/game/vehicles/boat'
 import { dressLook, lightFor } from './probe'
 import type { SkyState } from '../../src/game/levels/sky'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
+import { buildSky } from '../../src/game/levels/sky'
+import { buildMoon, moonGroundY } from '../../src/game/levels/moon'
+import { buildGlobes } from '../../src/game/world/globe'
+import { domeScaleFor } from '../../src/game/levels/altitude'
+import {
+  EARTH_IN_MOON_SKY, EARTH_R, EARTH_SKY_DIST, MOON_DIST, MOON_FAR, MOON_ORIGIN, MOON_TOD,
+} from '../../src/game/levels/space'
+import { HELMET_HAT, SPACESUIT } from '../../src/game/player/look'
 
 /*
   The player character, photographed and filmed without booting the site.
@@ -31,6 +39,10 @@ import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook
     npm run shoot -- body:size            how big a bean is: beside a house
                                           doorway in a storey-high wall, under
                                           the lens line, beside the old eye-scaled size
+    npm run shoot -- body:astronaut       the spacesuit and helmet in three
+                                          colourings, front, back and close
+    npm run shoot -- body:moon            astronauts on the Moon, the Earth
+                                          hanging in its sky
     npm run shoot -- body:seat            seated in the car, the boat and the
                                           helicopter's real seat nodes
     npm run shoot -- body:car [--tod 0.9] the car alone, five ways round, two
@@ -356,6 +368,102 @@ const size = (spec: BodySpec, snap: Snap) => {
   snap('size: old scale, now, now in a 4.7 door; red = lens 3.84', camAt(tw, th, at, Math.PI - 0.25, 17, 0.6, 34))
 }
 
+/** the astronaut in three colourings: body (the patch and the flag),
+    detail (stripes, rings, cuffs) and hat (the helmet's trim) all differ */
+const ASTRONAUTS: PlayerLook[] = [
+  { shell: '#2f6fcf', trim: '#d2452c', accent: '#c84028', glow: '#1c1a20', hat: HELMET_HAT, costume: SPACESUIT, build: 0 },
+  { shell: '#d9508f', trim: '#2f6fcc', accent: '#2860c8', glow: '#2b3a50', hat: HELMET_HAT, costume: SPACESUIT, build: 1 },
+  { shell: '#3f9a38', trim: '#e0a218', accent: '#e8b818', glow: '#1c1a20', hat: HELMET_HAT, costume: SPACESUIT, build: 2 },
+]
+const astronaut = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  const people = ASTRONAUTS.map((l, i) => actor(st, l, st.x + (i - 1) * 3.4, st.z, 0))
+  for (let f = 0; f < 150; f++) for (const p of people) tick(p, st.env)
+  const mid = new THREE.Vector3(st.x, st.gy + 1.9, st.z)
+  const shoot = (label: string, cam: THREE.PerspectiveCamera) => {
+    if (look) dressLook(look, st.scene, st.sky, cam, 'town', [], false)
+    snap(label, cam)
+  }
+  shoot('astronauts, front', camAt(tw, th, mid, Math.PI + 0.1, 15, 1.2))
+  shoot('astronauts, back', camAt(tw, th, mid, 0.5, 14, 3))
+  shoot('astronaut, close', camAt(tw, th, new THREE.Vector3(st.x - 3.4, st.gy + 2.4, st.z), Math.PI + 0.35, 6.5, 0.6, 34))
+}
+
+/** astronauts on the Moon: its own ground, a black sky, the harsh sun and
+    the Earth hung where the Moon level hangs it */
+const moonShot = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const scene = new THREE.Scene()
+  const noop = () => {}
+  const moon = buildMoon({ parent: scene, obstacles: [], trackDisposable: noop })
+  moon.ensureBuilt()
+  moon.root.visible = true
+  const x = MOON_ORIGIN.x + 6
+  const z = MOON_ORIGIN.z + 4
+  const gy = moonGroundY(x, z)
+  const camPos = new THREE.Vector3(x, gy + 2, z)
+  const sky = buildSky({ parent: scene, trackTexture: noop, trackDisposable: noop })
+  sky.setScale(domeScaleFor(MOON_FAR))
+  const st = sky.update(camPos, MOON_TOD, 1, false)
+  st.fogNear = 1e6
+  st.fogFar = 2e6
+  sky.sun.intensity *= 2.6
+  sky.sun.shadow.needsUpdate = true
+  const hemi = new THREE.HemisphereLight(st.hemiSky, st.hemiGround, 0.35)
+  scene.add(hemi)
+  scene.background = new THREE.Color('#000000')
+  const globes = buildGlobes({ parent: scene, trackDisposable: noop })
+  const earthDir = new THREE.Vector3(EARTH_IN_MOON_SKY.x, EARTH_IN_MOON_SKY.y, EARTH_IN_MOON_SKY.z)
+  globes.wantEarth(0, 0)
+  for (let i = 0; i < 400 && !globes.earthReady; i++) globes.work(50)
+  const sunDir = new THREE.Vector3().subVectors(sky.sun.position, sky.sun.target.position).normalize()
+  globes.setSun(sunDir, 0)
+  globes.hideMoon()
+  const env: RagdollEnv = {
+    groundY: gy,
+    groundAt: moonGroundY,
+    collision: makeCollisionSet({ minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6 }),
+  }
+  // the lens looks up at them against the Earth: stand them between the
+  // camera and the Earth's bearing
+  const toEarth = Math.atan2(earthDir.x, earthDir.z)
+  const rigs = ASTRONAUTS.map((l, i) => {
+    const rig = buildPlayerBody(EYE, GRAV / 6, l)
+    scene.add(rig.group)
+    const side = (i - 1) * 3.2
+    const px = x + Math.cos(toEarth) * side
+    const pz = z - Math.sin(toEarth) * side
+    // facing the lens, their backs to the Earth
+    rig.face(Math.atan2(Math.sin(toEarth), Math.cos(toEarth)) - (i - 1) * 0.35)
+    rig.group.position.set(px, moonGroundY(px, pz), pz)
+    rig.group.rotation.y = rig.facing + Math.PI
+    return rig
+  })
+  const pose: PlayerPose = {
+    dt: 1 / 60, gait: 0, crouchK: 0, grounded: true, run: false, yaw: 0, pitch: 0,
+    vx: 0, vz: 0, vy: 0, landing: 0, show: 1,
+  }
+  for (let f = 0; f < 150; f++) {
+    for (const r of rigs) {
+      pose.yaw = r.facing
+      env.groundY = r.group.position.y
+      r.update(pose, env)
+    }
+  }
+  const cam = new THREE.PerspectiveCamera(46, tw / th, 0.1, MOON_FAR)
+  cam.position.set(x - Math.sin(toEarth) * 11, gy + 1.1, z - Math.cos(toEarth) * 11)
+  cam.lookAt(x + Math.sin(toEarth) * 8, gy + 5.2, z + Math.cos(toEarth) * 8)
+  cam.updateMatrixWorld()
+  globes.earthInSky(cam.position, earthDir, EARTH_SKY_DIST, (EARTH_R * EARTH_SKY_DIST) / MOON_DIST)
+  sky.update(cam.position, MOON_TOD, 1, false)
+  scene.background = new THREE.Color('#000000')
+  scene.fog = null
+  lastStage = { scene, chunks: [], env, gy, x, z, sky: st }
+  if (look) dressLook(look, scene, st, cam, null, [], false)
+  snap('astronauts on the Moon', cam)
+}
+
 /** one body, close: front, three-quarter, side and back, where a face,
     the headband and the colour blocks can actually be judged */
 const closeup = (spec: BodySpec, snap: Snap) => {
@@ -625,14 +733,14 @@ const car = (spec: BodySpec, snap: Snap) => {
 
 /** every headgear, one each, close, on a spread of builds, outfits and
     colours: the wardrobe in one sheet */
-const WARDROBE: PlayerLook[] = [0, 1, 2, 3, 4, 5, 6, 7].map((hat) => ({
-  shell: ['#2f6fcf', '#d2452f', '#3f9a38', '#e0a21a', '#8a4fc8', '#d9508f', '#1f9a8a', '#e8e2d2'][hat],
-  trim: ['#f2eee0', '#f2eee0', '#e0a218', '#2f6fcc', '#1c1c20', '#3f9a38', '#d2452c', '#8a4fc8'][hat],
-  accent: ['#c84028', '#1c1c20', '#f0e8e0', '#e86810', '#e8b818', '#2860c8', '#c84028', '#e86810'][hat],
-  glow: ['#1c1a20', '#1c1a20', '#2b3a50', '#1c1a20', '#4a2e20', '#1c1a20', '#f4f1e0', '#1c1a20'][hat],
+const WARDROBE: PlayerLook[] = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((hat) => ({
+  shell: ['#2f6fcf', '#d2452f', '#3f9a38', '#e0a21a', '#8a4fc8', '#d9508f', '#1f9a8a', '#e8e2d2', '#2f6fcf'][hat],
+  trim: ['#f2eee0', '#f2eee0', '#e0a218', '#2f6fcc', '#1c1c20', '#3f9a38', '#d2452c', '#8a4fc8', '#d2452c'][hat],
+  accent: ['#c84028', '#1c1c20', '#f0e8e0', '#e86810', '#e8b818', '#2860c8', '#c84028', '#e86810', '#c84028'][hat],
+  glow: ['#1c1a20', '#1c1a20', '#2b3a50', '#1c1a20', '#4a2e20', '#1c1a20', '#f4f1e0', '#1c1a20', '#1c1a20'][hat],
   hat,
-  costume: [0, 2, 1, 0, 3, 0, 1, 2][hat],
-  build: [0, 1, 2, 3, 4, 0, 1, 2][hat],
+  costume: [0, 2, 1, 0, 3, 0, 1, 2, 4][hat],
+  build: [0, 1, 2, 3, 4, 0, 1, 2, 0][hat],
 }))
 const wardrobe = (spec: BodySpec, snap: Snap) => {
   const [tw, th] = spec.tile
@@ -744,6 +852,8 @@ export const shootBody = (spec: BodySpec) => {
     if (a === 'lineup') return n + 3
     if (a === 'closeup') return n + 4
     if (a === 'size') return n + 1
+    if (a === 'astronaut') return n + 3
+    if (a === 'moon') return n + 1
     if (a === 'motion') return n + 8 * Object.keys(ACTIONS).length
     if (a.startsWith('strip')) return n + 8
     if (a === 'fp') return n + 5
@@ -827,6 +937,8 @@ export const shootBody = (spec: BodySpec) => {
     if (a === 'lineup') run(lineup)
     else if (a === 'closeup') run(closeup)
     else if (a === 'size') run(size)
+    else if (a === 'astronaut') run(astronaut)
+    else if (a === 'moon') run(moonShot)
     else if (a === 'motion') for (const n of Object.keys(ACTIONS)) run((sp, s) => strip(sp, n, s))
     else if (a.startsWith('strip:')) run((sp, s) => strip(sp, a.slice(6), s))
     else if (a === 'fp') run(firstPerson)

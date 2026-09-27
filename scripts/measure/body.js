@@ -44,7 +44,7 @@ const meshOf = (r) => {
 /* ------------------------------------------------------------ variants -- */
 if (want('variants')) {
   console.log('variants (headgear x build): verts, tris, ms to build from nothing')
-  const names = ['band', 'cap', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood']
+  const names = ['band', 'cap', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood', 'helmet']
   let worstMs = 0
   let allClosed = true
   for (let h = 0; h < HAT_COUNT; h++) {

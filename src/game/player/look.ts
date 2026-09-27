@@ -6,11 +6,12 @@
   vertex names the paint it wears (`bodyShape.ts`), and four of those paints
   are the player's: the body itself, the headgear, the detail (the outfit's
   pattern and the headgear's trim), and the eyes. Plus three choices that are
-  not colours: which headgear out of eight (a knotted headband, a cap, a
-  bucket hat, a party hat, a hard hat, a printed bandana, nothing, or a hood),
-  which of five builds (bean, chubby, slim, tall, stubby) and which outfit
-  (none, spots, stripes, overalls), the outfits being printed on the one
-  surface by the material rather than modelled. The expression is hashed
+  not colours: which headgear out of nine (a knotted headband, a cap, a
+  bucket hat, a party hat, a hard hat, a printed bandana, nothing, a hood, or
+  a space helmet with its life-support pack), which of five builds (bean,
+  chubby, slim, tall, stubby) and which outfit (none, spots, stripes,
+  overalls, a spacesuit), the outfits being printed on the one surface by the
+  material rather than modelled. The expression is hashed
   from the whole look (see playerBody's persona), which is why it needs no
   field of its own.
 
@@ -28,6 +29,15 @@
   colour (`glow`), by exactly the same trick. The bean kept this format
   exactly: the indices mean new things (a mask became a cap, a cape spots),
   but every pack an old client sends still decodes to some bean.
+
+  **The astronaut overflowed that, and rides in two more spare bits.** Eight
+  hats fill three bits and four outfits two, so the ninth hat (the helmet)
+  and the fifth outfit (the spacesuit) each carry one extension bit in the
+  low two bits of the headgear colour's *green* byte: bit 0 adds eight to
+  the hat, bit 1 adds four to the outfit. Every headgear swatch has those
+  two bits clear, so every pack sent before the astronaut decodes exactly as
+  it did, and a client that predates it reads an astronaut as a headband and
+  a plain bean, a green channel off by at most 3/255.
 
   The four field names are older than this body (they were a robot's shell,
   trim, accent joints and eye glow) and they stay, because they are the wire
@@ -70,11 +80,15 @@ export interface PlayerLook {
 }
 
 /** the headgear, in wire order (see the header: the index rides in the low
-    bits of `accent`). No beanies */
-export const HATS = ['band', 'cap', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood'] as const
+    bits of `accent`, the helmet in an extension bit). No beanies */
+export const HATS = ['band', 'cap', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood', 'helmet'] as const
 export type HatKind = (typeof HATS)[number]
-/** the outfits, in wire order: they ride in the low two bits of `trim` */
-export const COSTUMES = ['none', 'spots', 'stripes', 'overalls'] as const
+/** the outfits, in wire order: they ride in the low two bits of `trim`, the
+    spacesuit in an extension bit of `accent` */
+export const COSTUMES = ['none', 'spots', 'stripes', 'overalls', 'spacesuit'] as const
+/** the astronaut, both halves: what "suit up" puts on */
+export const HELMET_HAT = 8
+export const SPACESUIT = 4
 /** the body shapes, in wire order: they ride in the low three bits of `glow` */
 export const BUILDS = ['bean', 'chubby', 'slim', 'tall', 'stubby'] as const
 
@@ -108,8 +122,9 @@ export const TRIM_SWATCHES = [
   '#2f6fcc', '#3f9a38', '#8a4fc8', '#e06a18',
 ] as const
 
-/** every headgear colour has the low three bits of its blue byte clear: that
-    is where the hat index goes (see the header) */
+/** every headgear colour has the low three bits of its blue byte clear (that
+    is where the hat index goes) and the low two of its green byte (the
+    extension bits: see the header) */
 export const ACCENT_SWATCHES = [
   '#c84028', '#e8b818', '#2860c8', '#f0e8e0',
   '#1c1c20', '#38a038', '#e86810', '#9048c8',
@@ -144,6 +159,12 @@ const withLowBlue = (hex: string, bits: number, width = 3) => {
   return hex.slice(0, 4) + b.toString(16).padStart(2, '0')
 }
 const lowBlue = (hex: string, width: number) => parseInt(hex.slice(-2), 16) & ((1 << width) - 1)
+/** the same two tricks on the green byte, for the extension bits */
+const withLowGreen = (hex: string, bits: number) => {
+  const g = (parseInt(hex.slice(2, 4), 16) & ~3) | (bits & 3)
+  return hex.slice(0, 2) + g.toString(16).padStart(2, '0') + hex.slice(4)
+}
+const lowGreen = (hex: string) => parseInt(hex.slice(2, 4), 16) & 3
 const clampIdx = (v: unknown, n: number) =>
   typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(n - 1, Math.floor(v))) : null
 
@@ -155,8 +176,8 @@ export function packLook(look: PlayerLook): string {
   const build = clampIdx(look.build, BUILDS.length) ?? 0
   return FIELDS.map((f) => {
     const hex = hex6(look[f]) ?? hex6(DEFAULT_LOOK[f])!
-    if (f === 'accent') return withLowBlue(hex, hat)
-    if (f === 'trim') return withLowBlue(hex, costume, 2)
+    if (f === 'accent') return withLowGreen(withLowBlue(hex, hat & 7), (hat >> 3) | ((costume >> 2) << 1))
+    if (f === 'trim') return withLowBlue(hex, costume & 3, 2)
     if (f === 'glow') return withLowBlue(hex, build)
     return hex
   }).join('')
@@ -173,9 +194,10 @@ export function unpackLook(packed: unknown): PlayerLook {
     out[f] = `#${packed.slice(i * 6, i * 6 + 6)}`
   })
   const bits = parseInt(out.accent.slice(5, 7), 16) & 7
-  out.hat = Math.min(bits, HATS.length - 1)
-  out.accent = `#${withLowBlue(out.accent.slice(1), 0)}`
-  out.costume = lowBlue(out.trim, 2) % COSTUMES.length
+  const ext = lowGreen(out.accent.slice(1))
+  out.hat = Math.min(bits + 8 * (ext & 1), HATS.length - 1)
+  out.accent = `#${withLowGreen(withLowBlue(out.accent.slice(1), 0), 0)}`
+  out.costume = Math.min(lowBlue(out.trim, 2) + 4 * (ext >> 1), COSTUMES.length - 1)
   out.trim = `#${withLowBlue(out.trim.slice(1), 0, 2)}`
   out.build = lowBlue(out.glow, 3) % BUILDS.length
   out.glow = `#${withLowBlue(out.glow.slice(1), 0)}`
@@ -190,7 +212,7 @@ export function sanitizeLook(raw: unknown): PlayerLook {
     const hex = hex6(src[f])
     out[f] = hex ? `#${hex}` : DEFAULT_LOOK[f]
   }
-  out.accent = `#${withLowBlue(out.accent.slice(1), 0)}`
+  out.accent = `#${withLowGreen(withLowBlue(out.accent.slice(1), 0), 0)}`
   out.trim = `#${withLowBlue(out.trim.slice(1), 0, 2)}`
   out.glow = `#${withLowBlue(out.glow.slice(1), 0)}`
   out.hat = clampHat(src.hat) ?? DEFAULT_LOOK.hat

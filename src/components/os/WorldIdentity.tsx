@@ -14,6 +14,8 @@ import {
   SHELL_SWATCHES,
   TRIM_SWATCHES,
   randomLook,
+  HELMET_HAT,
+  SPACESUIT,
   type PlayerLook,
 } from '../../game/player/look'
 import { useI18n } from '../../i18n'
@@ -513,6 +515,17 @@ export default function WorldIdentity({
               surprise me
             </button>
           </div>
+          {/* the astronaut in one tap: both halves of it, over your own
+              colours. Offered, never forced, on the Moon or anywhere */}
+          <button
+            type="button"
+            aria-pressed={look.hat === HELMET_HAT && look.costume === SPACESUIT}
+            onClick={() => onLook({ ...look, hat: HELMET_HAT, costume: SPACESUIT })}
+            className="font-display -mt-1 cursor-pointer self-end text-[17px] uppercase underline decoration-dotted underline-offset-4"
+            style={{ color: INK_SOFT }}
+          >
+            {t.look.suitUp}
+          </button>
           <Hats
             label={t.look.hat}
             names={t.look.hats}

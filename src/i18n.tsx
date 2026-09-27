@@ -215,11 +215,13 @@ const dictionaries = {
       glow: 'eyes',
       hat: 'wear',
       // in look.ts's HATS order
-      hats: ['headband', 'cap', 'bucket hat', 'party hat', 'hard hat', 'bandana', 'nothing', 'hood'],
+      hats: ['headband', 'cap', 'bucket hat', 'party hat', 'hard hat', 'bandana', 'nothing', 'hood', 'space helmet'],
       shape: 'shape',
       builds: ['bean', 'chubby', 'slim', 'tall', 'stubby'],
       outfit: 'outfit',
-      costumes: ['none', 'spots', 'stripes', 'overalls'],
+      costumes: ['none', 'spots', 'stripes', 'overalls', 'spacesuit'],
+      // one tap into the helmet and the spacesuit, keeping your colours
+      suitUp: 'suit up',
     },
   },
   es: {
@@ -417,11 +419,12 @@ const dictionaries = {
       accent: 'gorro',
       glow: 'ojos',
       hat: 'lleva',
-      hats: ['cinta', 'gorra', 'pescador', 'de fiesta', 'casco', 'pañuelo', 'nada', 'capucha'],
+      hats: ['cinta', 'gorra', 'pescador', 'de fiesta', 'casco', 'pañuelo', 'nada', 'capucha', 'escafandra'],
       shape: 'forma',
       builds: ['frijol', 'gordito', 'flaco', 'alto', 'rechoncho'],
       outfit: 'traje',
-      costumes: ['nada', 'lunares', 'rayas', 'overol'],
+      costumes: ['nada', 'lunares', 'rayas', 'overol', 'traje espacial'],
+      suitUp: 'a la luna',
     },
   },
 }

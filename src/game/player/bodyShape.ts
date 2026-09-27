@@ -261,6 +261,10 @@ export const ROLE = {
   CHEEK: 6,
   GLINT: 7,
   HAIR: 8,
+  /** the spacesuit's white: the helmet shell */
+  WHITE: 9,
+  /** the spacesuit's grey: the life-support pack */
+  GREY: 10,
 } as const
 /** no longer stamped on any vertex (the lens hides the whole body), kept so
     the role layout is stable */
@@ -887,7 +891,7 @@ const nearestOn = (p: Piece): Near => {
 }
 
 /** the headgear, in `look.ts`'s HATS order */
-export const HAT_COUNT = 8
+export const HAT_COUNT = 9
 const BAND = 0
 const CAP = 1
 const BUCKET = 2
@@ -895,6 +899,7 @@ const PARTY = 3
 const HARDHAT = 4
 const BANDANA = 5
 const HOOD = 7
+const HELMET = 8
 
 /** a ring hugging the bean's section at a height (optionally tilted by a
     plane), with an elliptical tube `rt` thick out and `ry` tall */
@@ -1087,6 +1092,75 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
         gearPiece(fr, (x, y, z) => Math.min(cords[0](x, y, z), cords[1](x, y, z)), [-0.4, yBot - 0.4, 0], [0.4, yBot + 0.2, 0.8], T),
       ]
     }
+    case HELMET: {
+      /*
+        The space helmet, and the life-support pack that goes with it. A
+        bubble a little proud of the whole dome, cut off at a neck ring above
+        the shoulders, with a big visor opening over the face window: the
+        face panel sunk into the bean behind it is the visor glass (the
+        material tints it gold when this hat is on, eyes still showing
+        through), which is how a Fall Guys bean in a helmet still has a
+        face. The rim of that opening, the neck ring, an antenna and the
+        pack's trim take the hat colour; the shell and the pack are the
+        suit's white and the pack its grey; a lamp on the other temple is
+        the glint white.
+      */
+      const W = ROLE.WHITE
+      const yBot = HIP_Y + WAIST_OFF + SHOULDER_OFF + 0.2
+      const { w, h, y: fy } = fr.face
+      const hr = fr.rx(fy)
+      // rounder than the dome under it, so it reads as a bowl worn over the
+      // head rather than as the bean's own top painted white
+      const bubble = ellipsoid(0, fy + 0.06, 0.02, hr + 0.2, crown - fy + 0.13, hr * zs + 0.2)
+      const dome: Field = (x, y, z) => smin(fr.bean(x, y, z) - 0.085, bubble(x, y, z), 0.12)
+      const vw = w + 0.09
+      const vh = h + 0.07
+      const fz = hr * zs
+      const hole = ellipsoid(0, fy, fz + 0.12, vw, vh, 0.5)
+      const shell: Field = (x, y, z) => smax(smax(dome(x, y, z), yBot - y, 0.03), -hole(x, y, z), 0.03)
+      // the visor's rim: a tube running round the opening on the shell
+      const rim: Field = (x, y, z) => {
+        const e = len(x / vw, (y - fy) / vh)
+        const along = (e - 1) * Math.min(vw, vh)
+        return len(along, dome(x, y, z)) - 0.04 + Math.max(0, 0.05 - z) * 2
+      }
+      const neck = bandField(fr, yBot + 0.02, 0, 0, 0.1, 0.075, 0.055)
+      const aBase = new THREE.Vector3(hr * 0.72, crown - 0.02, -0.1)
+      const antenna = roundCone(aBase.x, aBase.y, aBase.z, aBase.x + 0.08, aBase.y + 0.36, aBase.z - 0.04, 0.03, 0.016)
+      const ball = ellipsoid(aBase.x + 0.08, aBase.y + 0.39, aBase.z - 0.04, 0.045, 0.045, 0.045)
+      const lampAt = new THREE.Vector3(-(hr + 0.1) * 0.93, fy + 0.2, (hr * zs + 0.1) * 0.35)
+      const lampHousing = roundCone(lampAt.x + 0.04, lampAt.y, lampAt.z - 0.02, lampAt.x - 0.03, lampAt.y, lampAt.z + 0.03, 0.075, 0.07)
+      const lamp = ellipsoid(lampAt.x - 0.06, lampAt.y, lampAt.z + 0.05, 0.03, 0.05, 0.05)
+      // the pack: a rounded slab on the back, below the helmet
+      const py0 = HIP_Y + WAIST_OFF + 0.05
+      const py1 = yBot - 0.02
+      const pyc = (py0 + py1) / 2
+      const backZ = -fr.rx(pyc) * zs
+      const pack: Field = (x, y, z) => {
+        const qx = Math.abs(x) - 0.32
+        const qy = Math.abs(y - pyc) - ((py1 - py0) / 2 - 0.08)
+        const qz = Math.abs(z - (backZ - 0.13)) - 0.1
+        return Math.min(Math.max(qx, qy, qz), 0) + len(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0)) - 0.08
+      }
+      // two hoses from the pack's shoulders round to the neck ring, and a
+      // stripe across the pack in the hat colour
+      const hoses: Field[] = [1, -1].map((sx) =>
+        roundCone(sx * 0.22, py1 - 0.02, backZ - 0.12, sx * 0.34, yBot + 0.02, -0.15, 0.035, 0.035))
+      const band: Field = (x, y, z) => smax(pack(x, y, z) - 0.018, Math.abs(y - (pyc + 0.12)) - 0.045, 0.01)
+      const [lo, hi] = box(0.32, yBot - 0.15, crown + 0.22)
+      const packLo: [number, number, number] = [-0.52, py0 - 0.12, backZ - 0.42]
+      const packHi: [number, number, number] = [0.5, yBot + 0.2, 0.05]
+      return [
+        // the shell is big and smooth, so it is drawn a size coarser than
+        // other headgear: the finer grid tripled this variant for nothing
+        gearPiece(fr, shell, [lo[0] - 0.05, lo[1], lo[2] - 0.05], [hi[0] + 0.05, hi[1], hi[2] + 0.1], W, undefined, 0.045),
+        gearPiece(fr, (x, y, z) => Math.min(rim(x, y, z), neck(x, y, z), antenna(x, y, z), ball(x, y, z), lampHousing(x, y, z)),
+          [lo[0] - 0.05, lo[1] - 0.1, lo[2] - 0.05], [hi[0] + 0.05, crown + 0.5, hi[2] + 0.12], A, undefined, 0.032),
+        gearPiece(fr, lamp, [lampAt.x - 0.2, lampAt.y - 0.12, lampAt.z - 0.1], [lampAt.x + 0.1, lampAt.y + 0.12, lampAt.z + 0.2], ROLE.GLINT, undefined, 0.02),
+        gearPiece(fr, (x, y, z) => Math.min(pack(x, y, z), hoses[0](x, y, z), hoses[1](x, y, z)), packLo, packHi, ROLE.GREY, undefined, 0.04),
+        gearPiece(fr, band, packLo, packHi, A),
+      ]
+    }
     default:
       return [] // bare-headed
   }
@@ -1096,7 +1170,7 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
 
 /** the outfits (`look.ts`'s COSTUMES) and the faces are painted by the
     material from uniforms, not drawn: see bodyMaterial.ts */
-export const COSTUME_COUNT = 4
+export const COSTUME_COUNT = 5
 export const FACE_COUNT = 5
 
 /** one geometry per (headgear, build), built on first use and shared by
