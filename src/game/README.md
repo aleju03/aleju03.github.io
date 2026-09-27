@@ -163,7 +163,7 @@ vehicles/
                   and roll, five gears, a slip model, a handbrake
   boat.ts         water: an open runabout. A V-bottom hull with a hard chine,
                   buoyancy on the drawn swell, and a planing transition
-  heli.ts         air: a light two-seat piston helicopter. Thrust along the
+  heli.ts         air: a light utility (news) helicopter in faceted panels. Thrust along the
                   rotor disc normal, coordinated turns on two keys, auto-hover
   driveCam.ts     the boom that follows the heading rather than the mouse,
                   leans on the drift, and stretches with speed

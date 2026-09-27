@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { noStand, type HullStation, type Solid } from '../physics/collision'
 import {
-  at, blade, createPartBuilder, loft, markDynamic, revolve, ringSuper, slab, tube,
+  V, at, blade, capRing, createFacets, createPartBuilder, loft, markDynamic, revolve, ringSuper,
+  skinRings, slab, tube,
 } from './parts'
 import type { VehicleMaterials } from './materials'
 import {
@@ -11,7 +12,8 @@ import {
 import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 
 /*
-  The helicopter: a two-seat piston machine, and the reason the far side of
+  The helicopter: a light utility machine of the mid-2000s, the kind a
+  local news station leases, and the reason the far side of
   the continent is worth building.
 
   The world out there is a planet with a coast two and a half kilometres from
@@ -24,76 +26,38 @@ import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 
   It is small on purpose. The largest clear disc anywhere near the house is
   11.3 units (registry.ts's HOME, probed rather than guessed), so the rotor
-  is 7.6 units of radius — a Robinson R22 / Schweizer 300 sized thing, a
-  bubble canopy over two seats with an open tubular tail boom behind it. Every
-  dimension below follows from that one number.
+  is 7.6 units of radius, about the disc of a light turbine single, and the
+  cabin, the boom and the fin are drawn to that. Every dimension below
+  follows from that one number.
 
   ## The shape
 
-  The cabin is not a box with a windscreen; it is a *teardrop with a hole cut
-  in it*. All of it — the opaque shell, the glazing and the roof — is skinned
-  from the same twelve authored cross-sections (`SECTIONS`, graded into
-  `CABIN`), and each section carries one extra number, `belly`: the half-width,
-  in turns, of the opaque arc centred on the section's lowest point. The shell
-  strip covers that arc; a second strip covers the complement, in glass as far
-  as the door post and in paint from there aft, where it closes over the crown
-  and becomes the roof. Because every strip is sampled from the same parametric
-  section they share their edges exactly, to the float — there is no seam to
-  line up and no gap to close, and the glazed area can therefore *change shape
-  along the body*, which is what the real aeroplane does and what a
-  closed-loft-plus-a-window-decal cannot. At the nose `belly` is 0.03, so the
-  chin is glass to within a hand's width of the keel and you can see the
-  ground between your feet; by the door post it has opened to 0.135 (the sill
-  sits about 48 degrees below the horizontal); a little further aft it is 0.44
-  and the roof has closed over, which is where the mast comes through. That
-  curved chin is the single feature that makes people read "helicopter"
-  instead of "flying car", and the glazing costs 231 vertices.
+  It is drawn the way the car is (car.ts's header, and parts.ts's
+  `createFacets`): flat panels with creased normals, which is what reads
+  through the pixel look, where the smooth bubble it replaced read as a
+  blue blob with a stick out of the back. The cabin is a table of stations
+  (`SECTIONS`), each a closed five-point half profile (keel, chine, belt,
+  roof edge, crown), so every ring segment is the same panel the whole
+  length: the dark belly, the lower flank, the stripe band, the window band
+  and the roof. Each cell is told what it is made of by its panel and its
+  bay (`skinRings`), which is how glass and paint share edges exactly with
+  no CSG: the first three bays are the nose, a faceted glass bubble above a
+  white keel strip (windscreen, chin windows and the roof's leading edge in
+  one run); aft of it the window band is glass door by door, with the door
+  posts as bays of their own left in paint; and the operator's livery is a
+  red stripe down the flank and a band round the boom on a white body.
 
-  Everything aft of the firewall is a tapering tube with things hung off it,
-  because that is literally what it is: an R22's tail boom is a monocoque with
-  a driveshaft cover along the top, a stabiliser, a fin and a gearbox.
+  On the roof sits the engine and transmission fairing, one faceted
+  housing with an intake either side and an exhaust stack out of its tail,
+  and the mast comes out of its top to a hub raised to clear it. The boom is
+  a flat-sided octagon tapering aft with the driveshaft cover on its spine,
+  and carries the stabiliser, the fin and the tail rotor on the port side.
+  The skids are tubes, because a skid is a tube.
 
-  Four things about that shell cost more to get wrong than anything else here,
-  and all four did. Every one of them is invisible to the tests you reach for
-  first — a bounding box, a vertex-by-vertex containment check, an eyeball at
-  the render — which is why the note under each of them is longer than the fix.
-
-  The first is winding. `skin()` is this file's own private loft, and it
-  inherited loft()'s inward-facing strip order — see the note on the function.
-  An open strip has no end caps to visibly contradict it, so instead of the
-  usual "the model didn't load", the cabin and the canopy just drew from the
-  inside under a FrontSide material, with every computed normal aimed into the
-  hull while the BoxGeometry parts merged into the same 'paint' mesh stayed
-  outward. What that looks like is bad lighting, so it survives review.
-
-  The second is that a section is not a bounding box. `belly` and `hw` describe
-  a body 3.4 wide at the shoulder, but CABIN's lower halves are near-elliptical
-  over a 1.1-1.2 reach, so the same body is under two units wide at the floor
-  pan's underside and nothing at all a tenth below that: the last stretch above
-  the keel is a narrow V. Every part down there has to be sized against its own
-  height, and three of them were not — a 2.9-wide floor pan at y = 1.2 that
-  stuck a black slab out of both flanks below the keel line, the outer rudder
-  pedals, and the foot of the collective. All three came out through the
-  *glazing*, which is the one surface here that does not hide what is behind it.
-
-  The third is that a section is not the surface either. What gets emitted is a
-  ruled strip between two rows of samples, and where the two rows disagree
-  about where their columns sit — which is exactly what `belly` changing does —
-  the straight line between them cuts the corner. Across the one-bay step at
-  the door post that cut ran nearly half a unit deep, and the seat cushions and
-  the collective both stood in the hollow it left. `graded()` is the fix and
-  the note there is the argument; the rule to carry away is that *the surface
-  to measure against is the one the builder emits*. Sample it densely over each
-  triangle, not at its corners: three of the four faults this shell has had put
-  every vertex safely inside and came out through the middle of a face.
-
-  The fourth is that an open strip does not close itself. Where `belly` reaches
-  half a turn the shell's two edges arrive at the same point, but they are
-  still two columns of a strip that has no wrap-around quad, and forward of
-  that they are genuinely apart. Nothing was drawn over the crown between the
-  door post and the station behind it: three quarters of a square unit of open
-  sky straight down onto the seat backs, printed twice into the machine's own
-  ground shadow. The complement strip (`CROWN_END`) is what covers it now.
+  The interior (floor pan, console, panel, seats, the cyclic, the collective
+  and four pedals) was fitted to the old shell and stands inside this one
+  with room to spare: the full section is 1.55 wide at the belt and the
+  seated bean's hat reaches 3.74 under a roof at 3.9 to 4.05.
 
   ## The flight model, and what it deliberately is not
 
@@ -198,15 +162,13 @@ import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 
 const TAU = Math.PI * 2
 const DEG = Math.PI / 180
-/** signed power — the superellipse has to survive a negative cosine */
-const spow = (v: number, e: number) => Math.sign(v) * Math.pow(Math.abs(v), e)
 
 /* ------------------------------------------------------------ dimensions -- */
 
 /** 1 world unit = 0.48 m. Every number below is in units unless it says so */
 const ROTOR_R = 7.6
 /** rotor hub height. The mast is exposed above the cabin roof, R22 fashion */
-const HUB_Y = 5.3
+const HUB_Y = 5.66
 /** the mast stands just aft of the seat backs, over the centre of gravity —
     far enough back that the roof has closed over the skylight by then, far
     enough forward that the disc still overhangs the nose by 0.35 */
@@ -329,100 +291,73 @@ const TOP_SPEED = 78
 /** the anti-collision beacon: one flash every 1.18 s */
 const BEACON_W = 5.34
 
-const SIZE = { halfX: 1.7, halfZ: 9.0, height: 5.9 }
+const SIZE = { halfX: 1.7, halfZ: 9.0, height: 6.1 }
 
 /* ------------------------------------------------------- the cabin shell -- */
 
 /**
- * One cross-section of the cabin.
- *
- * `hw`/`up`/`down` are the section's half-width and its reach above and below
- * its own centreline `y`; `nUp`/`nDown` are the superellipse exponents (2 is
- * an ellipse, 3 is the softened rectangle a cabin floor pan actually is).
- * `belly` is the half-width, in turns, of the *opaque* arc centred on the
- * section's lowest point — everything outside it is glazed. See the module
- * header: this one number is what lets a chin window turn into a door sill
- * and then into a roof, along one continuous surface.
+ * One station of the cabin, as a closed five-point half profile: the keel,
+ * the chine, the belt (the widest line, where the side glass starts), the
+ * roof edge and the crown. Every station is turned into the same ring, so
+ * ring segment k is the same panel the whole length of the cabin: the belly,
+ * the lower flank, the stripe band, the window band and the roof.
  */
 interface Sect {
   z: number
-  y: number
+  /** keel half-width and height */
+  kw: number
+  yk: number
+  /** belt half-width, and the chine's and the belt's heights */
   hw: number
-  up: number
-  down: number
-  nUp: number
-  nDown: number
-  belly: number
+  yc: number
+  yb: number
+  /** roof edge half-width and height, and the crown's height */
+  rw: number
+  yr: number
+  yt: number
 }
 
-/** the authored sections. `graded()` turns these into the ones actually
-    skinned — read CABIN, not this, for anything about the built surface */
+const cabinSect = (z: number, kw: number, yk: number, hw: number, yc: number, yb: number, rw: number, yr: number, yt: number): Sect =>
+  ({ z, kw, yk, hw, yc, yb, rw, yr, yt })
+
+/** the station the cabin is full size at, repeated through the doors so the
+    door posts can be stations of their own */
+const FULL = (z: number) => cabinSect(z, 0.6, 1.15, 1.55, 1.35, 2.35, 1.3, 3.9, 4.05)
+
+/* The cabin, nose to where it necks into the boom. The first four stations
+   are the glass nose: a bubble that closes from the full section down to a
+   point low on the centreline, so the windscreen, the chin windows and the
+   roof's leading edge are all one run of faceted glass. Then the doors,
+   whose posts get a pair of stations each; then the aft cabin tapers and
+   climbs into the boom, which is its own loft. */
 const SECTIONS: Sect[] = [
-  { z: -6.50, y: 2.06, hw: 0.10, up: 0.10, down: 0.09, nUp: 2.0, nDown: 2.0, belly: 0.030 },
-  { z: -6.05, y: 2.10, hw: 0.52, up: 0.48, down: 0.42, nUp: 2.1, nDown: 2.0, belly: 0.040 },
-  { z: -5.35, y: 2.14, hw: 0.94, up: 0.86, down: 0.76, nUp: 2.2, nDown: 2.0, belly: 0.050 },
-  { z: -4.40, y: 2.20, hw: 1.30, up: 1.16, down: 1.00, nUp: 2.4, nDown: 2.1, belly: 0.065 },
-  { z: -3.20, y: 2.27, hw: 1.55, up: 1.38, down: 1.10, nUp: 2.6, nDown: 2.3, belly: 0.085 },
-  { z: -1.80, y: 2.33, hw: 1.68, up: 1.52, down: 1.17, nUp: 2.9, nDown: 2.6, belly: 0.110 },
-  { z: -0.40, y: 2.35, hw: 1.70, up: 1.55, down: 1.20, nUp: 3.0, nDown: 2.9, belly: 0.135 },
-  { z: 0.30, y: 2.37, hw: 1.66, up: 1.50, down: 1.19, nUp: 3.0, nDown: 3.0, belly: 0.440 },
-  { z: 1.20, y: 2.44, hw: 1.48, up: 1.34, down: 1.10, nUp: 3.0, nDown: 3.0, belly: 0.500 },
-  { z: 2.10, y: 2.54, hw: 1.16, up: 1.06, down: 0.92, nUp: 2.8, nDown: 2.8, belly: 0.500 },
-  { z: 2.80, y: 2.66, hw: 0.86, up: 0.80, down: 0.70, nUp: 2.6, nDown: 2.6, belly: 0.500 },
-  { z: 3.40, y: 2.80, hw: 0.52, up: 0.50, down: 0.46, nUp: 2.3, nDown: 2.3, belly: 0.500 },
+  cabinSect(-6.5, 0.08, 1.98, 0.22, 2.02, 2.24, 0.12, 2.44, 2.5),
+  cabinSect(-6.1, 0.34, 1.55, 0.82, 1.7, 2.3, 0.56, 2.96, 3.02),
+  cabinSect(-5.4, 0.5, 1.3, 1.22, 1.45, 2.32, 0.96, 3.46, 3.58),
+  cabinSect(-4.6, 0.56, 1.2, 1.46, 1.38, 2.34, 1.2, 3.8, 3.95),
+  FULL(-3.3),
+  FULL(-3.1),
+  FULL(-1.2),
+  FULL(-1.0),
+  FULL(0.3),
+  cabinSect(1.2, 0.5, 1.3, 1.45, 1.5, 2.45, 1.2, 3.85, 4.0),
+  cabinSect(2.0, 0.34, 2.0, 0.95, 2.2, 2.8, 0.75, 3.6, 3.7),
+  cabinSect(2.7, 0.28, 2.38, 0.62, 2.5, 2.9, 0.44, 3.28, 3.34),
 ]
 
-/** the most a section's opaque arc may grow in one bay of a ruled strip */
-const BELLY_STEP = 0.08
-
-/**
- * Fill in intermediate sections wherever `belly` steps further than that.
- *
- * A strip is *ruled*: column j of one row is joined straight to column j of
- * the next, and the columns are spread evenly over each row's own arc. So when
- * the arc changes size the columns slide around the section, and the straight
- * line between two of them chords across the inside of the body. At the door
- * post the authored `belly` steps 0.135 -> 0.44 in one 0.7-unit bay: the
- * shell's arc nearly quadruples, the glazing's collapses from 0.73 of a turn
- * to 0.12, and the outermost pair of columns ends up 110 degrees apart. At the
- * seat cushions' height the strip emitted across that bay ran 1.18 to 1.30
- * half-wide between two sections that are 1.56 and 1.52 there — a hollow a
- * third of a unit deep, running the length of the door shoulder. That is not a
- * cosmetic problem: it is the hole the seat cushions and the collective were
- * coming out through, and the same skew is what left back-facing vertex
- * normals on 2% of the shell, which reads as a hull lit from inside.
- *
- * Graded over four bays instead of one it costs three rows of 21 vertices and
- * the same stretch runs 1.50 to 1.53. The lesson generalises: the surface this
- * file has to keep its furniture inside is the one `skin()` emits, not the one
- * `sectPoint()` describes.
- */
-const graded = (secs: Sect[]): Sect[] => {
-  const out: Sect[] = [secs[0]]
-  for (let i = 1; i < secs.length; i++) {
-    const a = secs[i - 1]
-    const b = secs[i]
-    const bays = Math.max(1, Math.ceil(Math.abs(b.belly - a.belly) / BELLY_STEP))
-    for (let k = 1; k < bays; k++) {
-      const t = k / bays
-      const mix = (u: number, v: number) => u + (v - u) * t
-      out.push({
-        z: mix(a.z, b.z),
-        y: mix(a.y, b.y),
-        hw: mix(a.hw, b.hw),
-        up: mix(a.up, b.up),
-        down: mix(a.down, b.down),
-        nUp: mix(a.nUp, b.nUp),
-        nDown: mix(a.nDown, b.nDown),
-        belly: mix(a.belly, b.belly),
-      })
-    }
-    out.push(b)
-  }
-  return out
+/** the ring at a station: left keel, over the top, to the right keel; the
+    ring is closed, so its last segment is the belly */
+const ringOf = (s: Sect) => {
+  const half: Array<[number, number]> = [[s.kw, s.yk], [s.hw * 0.9, s.yc], [s.hw, s.yb], [s.rw, s.yr]]
+  const r: THREE.Vector3[] = []
+  for (const [x, y] of half) r.push(new THREE.Vector3(-x, y, s.z))
+  r.push(new THREE.Vector3(0, s.yt, s.z))
+  for (let i = half.length - 1; i >= 0; i--) r.push(new THREE.Vector3(half[i][0], half[i][1], s.z))
+  return r
 }
 
-const CABIN: Sect[] = graded(SECTIONS)
+/** ring segment k's panel, counted from the keel up on either side */
+const panelOf = (k: number) => (k === 8 ? -1 : k < 4 ? k : 7 - k)
 
 /* ------------------------------------------------------------- footprint --
 
@@ -447,110 +382,9 @@ const CABIN: Sect[] = graded(SECTIONS)
 const BOOM_STATIONS = [4.6, 6.0, 7.4, 8.8, BOOM_Z1]
 
 const HULL: HullStation[] = [
-  ...SECTIONS.map((s) => ({ z: s.z, hw: s.hw, top: s.y + s.up })),
+  ...SECTIONS.map((s) => ({ z: s.z, hw: s.hw, top: s.yt })),
   ...BOOM_STATIONS.map((z) => ({ z, hw: boomR(z), top: boomY(z) + boomR(z) })),
 ]
-
-/** where the aft door post is. The glazing runs from the nose to here and
-    stops; found by z rather than by index because `graded()` inserts rows */
-const POST_Z = 0.30
-const GLAZED = CABIN.findIndex((s) => s.z >= POST_Z) + 1
-/** ...and aft of the post the glazing's own arc carries on in paint, closing
-    to a point at the section where `belly` reaches half a turn. That patch is
-    the roof. Without it there is nothing at all over the crown between those
-    two stations: the shell strip's first and last columns only meet once the
-    arc is a whole turn, and `skin()` — which knows nothing about where a strip
-    came from — has no wrap-around quad to join them before then. The hole was
-    0.76 square units of open sky over the seat backs, two slots of it not even
-    under the mast fairing, and it printed into the machine's own shadow */
-const CROWN_END = CABIN.findIndex((s) => s.belly >= 0.5) + 1
-
-/** a point on a section, at `t` turns round it: 0 is the right flank, 0.25
-    the crown, 0.5 the left flank, 0.75 the keel */
-const sectPoint = (s: Sect, t: number): [number, number] => {
-  const a = t * TAU
-  const c = Math.cos(a)
-  const v = Math.sin(a)
-  const e = 2 / (v >= 0 ? s.nUp : s.nDown)
-  return [s.hw * spow(c, e), s.y + (v >= 0 ? s.up : s.down) * spow(v, e)]
-}
-
-/**
- * Skin an open strip across a run of sections: one row per section, `cols`
- * columns spread evenly over that section's own [t0, t1] arc.
- *
- * The arc is per-row, which is the entire reason this exists instead of
- * `loft()`. Two strips whose ranges are complements of each other tile the
- * body exactly, and the boundary between them can wander from the keel to the
- * roof along the length without either surface knowing about the other.
- *
- * It emits exactly the strip it is handed and nothing else. In particular a
- * row whose arc happens to be a whole turn puts its first and last columns on
- * the same *point* but not on the same *vertex*, and there is no wrap-around
- * quad joining them: a strip is open by definition and a strip that closes for
- * some of its rows and not others has no honest wrap to emit. Closing a body
- * is therefore the caller's job — here it is the complement strip that runs
- * from the door post to `CROWN_END`. Adding the wrap here instead would have
- * roofed over the door windows, because the shell strip is short of a whole
- * turn along the entire cabin forward of the post.
- *
- * Winding is loft()'s, and wrong for the same reason it was wrong there. Rows
- * run counter-clockwise in the section plane and stations advance along +z, so
- * the obvious triple — prev_j, cur_j, cur_j+1 — has a normal of AB x AC =
- * (0,0,dz) x (dx,dy,dz) = (-dz·dy, dz·dx, 0), which points at the section's
- * own centreline rather than away from it. This strip carried that bug for a
- * while, and it is the worst kind to carry: an open strip has no end caps to
- * visibly disagree with it, so nothing looked broken — the cabin shell and the
- * canopy simply drew from the inside, back-faced under a FrontSide material
- * and lit by normals pointing into the hull, while the BoxGeometry parts
- * merged into the same 'paint' mesh stayed outward. A mixed-orientation mesh
- * is the proof; the reveal is that a hull lit from within reads as bad shading
- * rather than as a winding error, so nobody goes looking for the index order.
- * Both triples are reversed below, which is the whole fix; there are no caps
- * here to leave alone, and computeVertexNormals follows the index order.
- */
-const skin = (
-  secs: Sect[],
-  t0: (s: Sect) => number,
-  t1: (s: Sect) => number,
-  cols: number,
-) => {
-  const pos: number[] = []
-  const idx: number[] = []
-  for (let i = 0; i < secs.length; i++) {
-    const s = secs[i]
-    const a = t0(s)
-    const b = t1(s)
-    const base = pos.length / 3
-    for (let j = 0; j < cols; j++) {
-      const [x, y] = sectPoint(s, a + ((b - a) * j) / (cols - 1))
-      pos.push(x, y, s.z)
-    }
-    if (i > 0) {
-      const prev = base - cols
-      for (let j = 0; j < cols - 1; j++) {
-        idx.push(prev + j, base + j + 1, base + j, prev + j, prev + j + 1, base + j + 1)
-      }
-    }
-  }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
-  g.setIndex(idx)
-  g.computeVertexNormals()
-  return g
-}
-
-/** a tube run along one parametric line of the sections — the door sill and
-    windscreen frame, which is what stops the glazing looking like a decal */
-const sectEdge = (secs: Sect[], t: (s: Sect) => number, r: number) =>
-  tube(
-    secs.map((s) => {
-      const [x, y] = sectPoint(s, t(s))
-      return new THREE.Vector3(x, y, s.z)
-    }),
-    r,
-    6,
-  )
 
 /** a plain box. 24 vertices, and nobody ever sees the arris on a rudder pedal */
 const box = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d)
@@ -602,66 +436,92 @@ const buildModel = (mats: VehicleMaterials): HeliModel => {
   /* ------------------------------------------------------------- body -- */
 
   const b = createPartBuilder()
+  const f = createFacets()
 
-  // The shell, the glazing and the roof are three strips over the same
-  // sections. sillR/sillL are the two edges of the opaque belly arc, starboard
-  // and port; the shell runs between them under the keel, and the other two
-  // run between them the long way round — glass as far as the door post, paint
-  // from there to where the arc closes over the crown.
-  const sillR = (s: Sect) => 0.75 + s.belly
-  const sillL = (s: Sect) => 1.75 - s.belly
-  b.add(skin(CABIN, (s) => 0.75 - s.belly, sillR, 21), 'paint')
-  b.add(skin(CABIN.slice(GLAZED - 1, CROWN_END), sillR, sillL, 21), 'paint')
-  const glazed = CABIN.slice(0, GLAZED)
-  b.add(skin(glazed, sillR, sillL, 21), 'glass')
-  // the sill/windscreen frame down the boundary, and the aft door post
-  b.both(() => {
-    b.add(sectEdge(glazed, sillR, 0.055), 'metal')
-  })
-  // ...and it is authored on one flank only, so it has to be mirrored like the
-  // sill above it. The arc runs t 1.19 -> 0.81, which is entirely x > 0: left
-  // to itself the machine has a door frame on the right and an open hole on
-  // the left. That asymmetry survived an x-symmetry check on the model's
-  // bounding box, because the post reaches 1.703 against a body already 1.700
-  // wide — a bbox cannot see a missing part that fits inside it
-  b.both(() => {
-    const post = CABIN[GLAZED - 1]
-    const arc: THREE.Vector3[] = []
-    for (let i = 0; i <= 6; i++) {
-      const [x, y] = sectPoint(post, 0.75 + post.belly + ((0.5 - post.belly * 2) * i) / 6)
-      arc.push(new THREE.Vector3(x, y, post.z))
-    }
-    b.add(tube(arc, 0.05, 6), 'metal')
-  })
+  /*
+    The cabin: the stations' rings skinned into panels, each cell told what
+    it is made of by the panel it sits in and the bay it spans. The nose
+    bubble is glass above the keel strip (windscreen, chin windows and the
+    roof's front edge in one), the window band aft of it is glass door by
+    door with the posts left in paint between, and the rest is a white body
+    with the operator's red stripe along the flank and a dark belly.
+  */
+  const rings = SECTIONS.map(ringOf)
+  const NOSE_BAYS = 3 // bays forward of the first full station: the bubble
+  // the front door, the rear door and the quarter light; the bays between
+  // them are the door posts
+  const glassBay = (s: number) => s === 3 || s === 5 || s === 7
+  skinRings(f, rings, (s, k) => {
+    const panel = panelOf(k)
+    if (panel === -1) return 'trim'
+    if (s < NOSE_BAYS) return panel >= 1 ? 'glass' : 'paint2'
+    if (panel === 2 && glassBay(s)) return 'glass'
+    if (panel === 1 && s < 9) return 'paint'
+    return 'paint2'
+  }, true)
+  capRing(f, rings[0], -1, 'paint2')
+  capRing(f, rings[rings.length - 1], 1, 'paint2')
 
-  // tail boom: a tapering tube of circular sections, capped where the fin
-  // structure closes it off
+  // tail boom: a flat-sided octagon tapering aft, so it takes a highlight on
+  // its top facets and a clean edge against the sky; and the driveshaft
+  // cover along its spine
   {
-    const zs = [BOOM_Z0, 3.6, 5.0, 6.5, 8.0, 9.4, BOOM_Z1]
-    b.add(
-      loft(
-        zs.map((z) => ({
-          z,
-          y: boomY(z),
-          ring: ringSuper(boomR(z), boomR(z), boomR(z), 2, 2, 14),
-        })),
-        { capEnd: 'flat' },
-      ),
-      'paint',
-    )
-    // the driveshaft cover along the spine
-    b.add(
-      loft(
-        [3.0, 5.2, 7.4, 9.6].map((z) => ({
-          z,
-          y: boomY(z) + boomR(z) * 0.78,
-          ring: ringSuper(0.17, 0.12, 0.14, 2.6, 2.0, 10),
-        })),
-        { capStart: 'flat', capEnd: 'flat' },
-      ),
-      'metal',
-    )
+    const zs = [2.4, 3.6, 5.0, 6.5, 8.0, 9.4, BOOM_Z1]
+    const oct = (z: number) => {
+      const r = boomR(z)
+      const y = boomY(z)
+      const ring: THREE.Vector3[] = []
+      // left to right over the top, then back under: the same winding as the cabin
+      for (let i = 0; i < 8; i++) {
+        const a = Math.PI + Math.PI / 8 - (i / 8) * Math.PI * 2
+        ring.push(V(Math.cos(a) * r, y + Math.sin(a) * r, z))
+      }
+      return ring
+    }
+    const boom = zs.map(oct)
+    skinRings(f, boom, () => 'paint2', true)
+    capRing(f, boom[boom.length - 1], 1, 'paint2')
+    // a red band round the boom behind the cabin, the operator's other mark
+    const grow = (p: THREE.Vector3) => V(p.x * 1.03, boomY(p.z) + (p.y - boomY(p.z)) * 1.03, p.z)
+    const band = [oct(4.2), oct(4.9)].map((r) => r.map(grow))
+    skinRings(f, band, () => 'paint', true)
   }
+  b.add(
+    loft(
+      [3.0, 5.2, 7.4, 9.6].map((z) => ({
+        z,
+        y: boomY(z) + boomR(z) * 0.86,
+        ring: ringSuper(0.16, 0.1, 0.12, 4, 2.0, 8),
+      })),
+      { capStart: 'flat', capEnd: 'flat' },
+    ),
+    'metal',
+  )
+
+  /*
+    The engine and transmission fairing on the roof: the turbine a utility
+    machine of the period carries up top, as one faceted housing with an
+    intake grille either side, and an exhaust stack out of its tail.
+  */
+  {
+    const fair = (z: number, w: number, h: number) => [
+      V(-w, 3.9, z), V(-w * 0.92, 3.9 + h * 0.8, z), V(0, 3.9 + h, z), V(w * 0.92, 3.9 + h * 0.8, z), V(w, 3.9, z),
+    ]
+    const hs = [fair(-1.5, 0.55, 0.28), fair(-0.9, 0.78, 0.78), fair(1.9, 0.78, 0.78), fair(2.7, 0.5, 0.42)]
+    skinRings(f, hs, () => 'paint2')
+    capRing(f, hs[hs.length - 1], 1, 'paint2')
+    for (const side of [-1, 1]) {
+      f.quadOut(
+        V(side * 0.785, 4.0, -0.4), V(side * 0.785, 4.0, 0.7), V(side * 0.785, 4.42, 0.7), V(side * 0.785, 4.42, -0.4),
+        'dark', V(side, 0, 0),
+      )
+    }
+  }
+  b.add(
+    tube([new THREE.Vector3(0.3, 4.4, 2.3), new THREE.Vector3(0.4, 4.85, 2.9)], 0.16, 8, { caps: true }),
+    'chrome',
+  )
+  f.flush(b)
 
   // fin, ventral fin and horizontal stabiliser. blade() runs out along +x, so
   // a quarter turn about z stands it up without touching the chord axis — and
@@ -696,70 +556,18 @@ const buildModel = (mats: VehicleMaterials): HeliModel => {
   )
   b.add(box(0.5, 0.72, 0.46), 'paint2', at(-0.3, 3.68, 10.48))
 
-  // engine bay: a cowl over the aft deck, a cooling grille either side, an
-  // exhaust stub out to starboard, and the two side fuel tanks
-  b.add(
-    loft(
-      [
-        { z: 0.6, ring: ringSuper(1.14, 0.6, 0.54, 3, 3, 14) },
-        { z: 1.5, ring: ringSuper(1.2, 0.68, 0.6, 3, 3, 14) },
-        { z: 2.4, ring: ringSuper(0.98, 0.56, 0.5, 3, 3, 14) },
-        { z: 2.95, ring: ringSuper(0.66, 0.38, 0.36, 2.6, 2.6, 14) },
-      ],
-      { capStart: 'flat', capEnd: 'flat' },
-    ),
-    'trim',
-    at(0, 3.24, 0),
-  )
-  b.both(() => {
-    // the cooling louvre. It used to sit at x 1.16 amidships, which is inside
-    // the tank fairing below — all 24 of its vertices buried, 48 that could
-    // never render. The only stretch of cowl flank the tanks do not cover is
-    // aft of their cap at z 2.3, and the cowl is tapering hard there, so the
-    // panel is yawed to lie along the taper and stood a couple of hundredths
-    // proud rather than let the corners sink back inside
-    b.add(box(0.05, 0.34, 0.5), 'dark', at(0.823, 3.24, 2.669, 0, -0.527, 0))
-    b.add(
-      loft(
-        [
-          { z: -0.2, ring: ringSuper(0.3, 0.36, 0.36, 2.4, 2.4, 12) },
-          { z: 0.6, ring: ringSuper(0.44, 0.52, 0.52, 2.6, 2.6, 12) },
-          { z: 1.6, ring: ringSuper(0.44, 0.52, 0.52, 2.6, 2.6, 12) },
-          { z: 2.3, ring: ringSuper(0.26, 0.32, 0.32, 2.4, 2.4, 12) },
-        ],
-        { capStart: 'flat', capEnd: 'flat' },
-      ),
-      'paint2',
-      at(1.22, 3.26, 0),
-    )
-  })
-  b.add(
-    tube(
-      [
-        new THREE.Vector3(0.5, 2.86, 2.1),
-        new THREE.Vector3(0.78, 2.8, 2.7),
-        new THREE.Vector3(0.96, 2.74, 3.3),
-      ],
-      0.14,
-      8,
-      { caps: true },
-    ),
-    'chrome',
-  )
-
-  // the mast, its fairing where it leaves the roof, the stationary half of
-  // the swashplate and the control rods that run down into the roof
-  b.add(box(0.72, 0.34, 1.0), 'paint', at(0, 3.9, MAST_Z))
-  b.add(revolve([[0.16, 0], [0.15, 0.34], [0.13, 1.12], [0.13, 1.4]], 12), 'chrome', at(0, 3.9, MAST_Z))
+  // the mast out of the top of the fairing, the stationary half of the
+  // swashplate and the control rods that run down into it
+  b.add(revolve([[0.2, 0], [0.17, 0.3], [0.13, 1.2], [0.13, 1.56]], 12), 'chrome', at(0, 4.1, MAST_Z))
   b.add(
     revolve([[0.28, 0], [0.46, -0.02], [0.47, 0.06], [0.29, 0.08]], 14),
     'metal',
-    at(0, 4.5, MAST_Z),
+    at(0, 4.86, MAST_Z),
   )
   b.both(() => {
     b.add(
       tube(
-        [new THREE.Vector3(0.34, 4.48, MAST_Z + 0.22), new THREE.Vector3(0.29, 3.9, MAST_Z + 0.1)],
+        [new THREE.Vector3(0.34, 4.84, MAST_Z + 0.22), new THREE.Vector3(0.29, 4.6, MAST_Z + 0.1)],
         0.04,
         6,
       ),
@@ -812,32 +620,13 @@ const buildModel = (mats: VehicleMaterials): HeliModel => {
 
   /*
     The interior, all of it visible through that canopy and therefore worth the
-    vertices: floor pan, console, panel, dials, seats, the R22's T-bar cyclic,
+    vertices: floor pan, console, panel, dials, seats, a T-bar cyclic,
     the collective at the pilot's left hand, and four pedals.
 
-    Every one of them has to be measured against the *built* surface, and the
-    difference is enormous down here. CABIN's lower halves are near-elliptical
-    (nDown 2.0-3.0 over a 1.1-1.2 reach), so the last two tenths of a unit
-    above the keel is a narrow V: the body is 3.4 wide at the shoulder, 1.65 to
-    1.97 wide along the floor pan's underside, and pinched to nothing a tenth
-    below it. The floor pan was a 2.9-wide, 3.9-long slab at y = 1.2 — twice the
-    width the hull has there, and its underside below the keel line along the
-    whole length, so a black plank stuck out of both flanks and read, from
-    every angle, as geometry driven through the fuselage.
-
-    So: the pan is 1.56 wide and rides at 1.27-1.35, which is where the section
-    first opens out enough to carry a floor, and it reaches z -2.68 so that all
-    four pedals stand on it rather than off the front of it. The console is
-    seated into the pan (1.31 is inside the pan's own slab) instead of hanging
-    0.02 through its underside. And the seat cushions are 0.96 wide on centres
-    of 0.74 — which is a real R22's 0.46 m seat — where at 1.16 on 0.80 they
-    reached x 1.38 against a built skin that is 1.46 at its narrowest: fine
-    against the *section*, but the strip that was actually emitted necked in to
-    1.18, and 212 rays from an ordinary chase angle found upholstery in front
-    of the paint. Grading the sections (see `graded`) is what gave that width
-    back; the cushions came in as well, because a tenth of clearance on a part
-    this visible is not a margin, and because the collective has to get past
-    their outboard edge to reach the pilot's hand.
+    The keel is a flat strip 1.2 wide at 1.15, so the floor pan (1.56 wide
+    at 1.27-1.35) rests on the chine rather than hanging through the belly,
+    the pedals stand on the pan, and the cushions (0.96 wide on centres of
+    0.74) are well inside a cabin 3.1 wide at the belt.
   */
   b.add(box(1.56, 0.08, 2.88), 'trim', at(0, 1.31, -1.24))
   b.add(box(0.5, 0.56, 1.3), 'trim', at(0, 1.59, -0.45))
@@ -1111,10 +900,8 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
   driverSeat.position.set(SEAT_X * -1, SEAT_Y, SEAT_Z)
   driverSeat.userData.fit = SEAT_FIT
   root.add(driverSeat)
-  // the right-hand seat. This was always a two-seat piston machine — the
-  // rotor was sized for one (see registry.ts on the clear disc at home) —
-  // so the copilot's chair is the mirror of the pilot's and nothing else
-  // about the cabin has to change to hold somebody
+  // the right-hand seat, the mirror of the pilot's: nothing else about the
+  // cabin has to change to hold somebody
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
   passengerSeat.position.set(SEAT_X, SEAT_Y, SEAT_Z)
@@ -1497,6 +1284,9 @@ export function buildHeli(opts: { mats: VehicleMaterials }): Vehicle {
     },
     solid,
     reach: 5,
+    // a turbine single is heavy for its size; on the physgun it drags like a
+    // car and floats a while, nose down, if you drop it in the sea
+    carry: { mass: 320, density: 0.8, bottom: 0.02 },
     placeAt,
     mount: () => {
       running = true

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js'
 
 /*
   The modelling kit the vehicles are shaped from.
@@ -648,3 +649,120 @@ export const slab = (w: number, h: number, d: number, r = 0.05) => {
     { capStart: 'flat', capEnd: 'flat' },
   )
 }
+
+/* -------------------------------------------------------------- facets -- */
+
+/**
+ * Loose triangles by slot, turned into geometry with *creased* normals: an
+ * edge between two faces meeting at more than CREASE is split, anything
+ * gentler is smoothed. That is what makes this body read as pressed panels
+ * with crisp breaks rather than as one soft bar of soap: a car's shoulder,
+ * its bonnet's edges, the corners of its nose and tail are hard, and the
+ * flank between them is one smooth sheet. It is the pixel look's kit: flat,
+ * separated planes are what survive the posterize and what the fold ink
+ * draws, where a smooth loft reads as melted (README's "The look").
+ */
+const CREASE = 0.6
+export type Facets = ReturnType<typeof createFacets>
+export const createFacets = () => {
+  const by = new Map<Slot, number[]>()
+  const v = new THREE.Vector3()
+  const w = new THREE.Vector3()
+  const push = (slot: Slot, ...pts: THREE.Vector3[]) => {
+    let a = by.get(slot)
+    if (!a) by.set(slot, (a = []))
+    for (const p of pts) a.push(p.x, p.y, p.z)
+  }
+  const api = {
+    tri(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, slot: Slot) {
+      // a sliver with no area has no normal, and one NaN smooths a panel black
+      v.subVectors(b, a).cross(w.subVectors(c, a))
+      if (v.lengthSq() < 1e-12) return
+      push(slot, a, b, c)
+    },
+    /** a, b, c, d counter-clockwise seen from the side the face looks at */
+    quad(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot) {
+      api.tri(a, b, c, slot)
+      api.tri(a, c, d, slot)
+    },
+    /** the same, wound so its face looks along `out` whichever way the
+        corners were listed */
+    quadOut(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
+      v.subVectors(b, a).cross(w.subVectors(c, a))
+      if (v.dot(out) < 0) api.quad(a, d, c, b, slot)
+      else api.quad(a, b, c, d, slot)
+    },
+    /** ...and its mirror across x, which a mirror flips the winding of */
+    quadBoth(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
+      api.quadOut(a, b, c, d, slot, out)
+      const m = (p: THREE.Vector3) => new THREE.Vector3(-p.x, p.y, p.z)
+      api.quadOut(m(a), m(b), m(c), m(d), slot, new THREE.Vector3(-out.x, out.y, out.z))
+    },
+    /** one triangle facing along `out`, and its mirror */
+    triBoth(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
+      const m = (p: THREE.Vector3) => new THREE.Vector3(-p.x, p.y, p.z)
+      const one = (p: THREE.Vector3, q: THREE.Vector3, r: THREE.Vector3, o: THREE.Vector3) => {
+        v.subVectors(q, p).cross(w.subVectors(r, p))
+        if (v.dot(o) < 0) api.tri(p, r, q, slot)
+        else api.tri(p, q, r, slot)
+      }
+      one(a, b, c, out)
+      one(m(a), m(b), m(c), new THREE.Vector3(-out.x, out.y, out.z))
+    },
+    /** hand every slot to a part builder */
+    flush(b: PartBuilder) {
+      for (const [slot, pos] of by) {
+        const g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+        const n = toCreasedNormals(g, CREASE)
+        b.add(n, slot)
+        g.dispose()
+        n.dispose()
+      }
+      by.clear()
+    },
+  }
+  return api
+}
+
+export const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
+
+/**
+ * Skin a run of rings (all the same length, each a cross-section in order
+ * round the body) station to station into `f`, asking `slot(s, k)` what
+ * each cell between ring s and s+1, segment k to k+1, is made of (null for
+ * a hole). `closed` joins each ring's last point back to its first. The
+ * winding is the car's: rings running left to right over the top with the
+ * stations advancing along +z face outward.
+ */
+export const skinRings = (
+  f: Facets,
+  rings: THREE.Vector3[][],
+  slot: (s: number, k: number) => Slot | null,
+  closed = false,
+) => {
+  const n = rings[0].length
+  const segs = closed ? n : n - 1
+  for (let s = 0; s < rings.length - 1; s++) {
+    for (let k = 0; k < segs; k++) {
+      const sl = slot(s, k)
+      if (!sl) continue
+      const k1 = (k + 1) % n
+      f.quad(rings[s][k], rings[s + 1][k], rings[s + 1][k1], rings[s][k1], sl)
+    }
+  }
+}
+
+/** a ring's end closed as a fan from its middle, facing along `dir` z */
+export const capRing = (f: Facets, ring: THREE.Vector3[], dir: number, slot: Slot) => {
+  const c = new THREE.Vector3()
+  for (const p of ring) c.add(p)
+  c.divideScalar(ring.length)
+  for (let k = 0; k < ring.length; k++) {
+    const p = ring[k]
+    const q = ring[(k + 1) % ring.length]
+    if (dir < 0) f.tri(c, p, q, slot)
+    else f.tri(c, q, p, slot)
+  }
+}
+
