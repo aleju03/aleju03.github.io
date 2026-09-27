@@ -10,6 +10,8 @@ import { CIRCLED, INK, INK_SOFT, MARK } from './paper'
 import { Note, Rule } from './PaperMarks'
 import {
   ACCENT_SWATCHES,
+  BEAVER,
+  FUR_SWATCHES,
   GLOW_SWATCHES,
   SHELL_SWATCHES,
   TRIM_SWATCHES,
@@ -269,7 +271,7 @@ function Hats({
 }) {
   return (
     <div className="flex items-start gap-4">
-      <p className="font-display w-16 shrink-0 text-[17px] uppercase" style={{ color: INK_SOFT }}>
+      <p className="font-display w-[5.5rem] shrink-0 text-[17px] uppercase" style={{ color: INK_SOFT }}>
         {label}
       </p>
       <div className="flex flex-wrap gap-x-4 gap-y-1.5">
@@ -311,7 +313,7 @@ function Swatches({
 }) {
   return (
     <div className="flex items-center gap-4">
-      <p className="font-display w-16 shrink-0 text-[17px] uppercase" style={{ color: INK_SOFT }}>
+      <p className="font-display w-[5.5rem] shrink-0 text-[17px] uppercase" style={{ color: INK_SOFT }}>
         {label}
       </p>
       <div className="flex flex-wrap gap-2.5">
@@ -532,6 +534,14 @@ export default function WorldIdentity({
             value={look.hat}
             onPick={(hat) => onLook({ ...look, hat })}
           />
+          {/* worn over whatever the row above picked: not a hat of its own,
+              so a cap and a headset go together (the helmet leaves them off) */}
+          <Hats
+            label={t.look.phones}
+            names={t.look.phonesKinds}
+            value={look.phones}
+            onPick={(phones) => onLook({ ...look, phones })}
+          />
           <Hats
             label={t.look.shape}
             names={t.look.builds}
@@ -544,6 +554,16 @@ export default function WorldIdentity({
             value={look.costume}
             onPick={(costume) => onLook({ ...look, costume })}
           />
+          {/* the beaver's fur, only while the beaver is on: the pots are the
+              three browns it comes in, and the pick is an index on the wire */}
+          {look.costume === BEAVER && (
+            <Swatches
+              label={t.look.fur}
+              options={FUR_SWATCHES}
+              value={FUR_SWATCHES[look.fur] ?? FUR_SWATCHES[0]}
+              onPick={(hex) => onLook({ ...look, fur: Math.max(0, FUR_SWATCHES.indexOf(hex as (typeof FUR_SWATCHES)[number])) })}
+            />
+          )}
           <Swatches
             label={t.look.suit}
             options={SHELL_SWATCHES}

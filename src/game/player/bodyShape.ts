@@ -52,10 +52,12 @@ import {
   What is *not* geometry: the face, the costume's pattern and the blink are
   painted in the fragment shader (`bodyMaterial.ts`) from the vertex's bind
   position, because a painted shape on a smooth surface is crisp at any
-  resolution and costs no variant. A variant is a (headgear, build) pair;
-  the headgear pieces are their own closed fields polygonized at a finer
-  step and concatenated into the same buffer, so a body is still one draw
-  call whatever it wears.
+  resolution and costs no variant. A variant is a (headgear, build, gear)
+  triple, gear being the two things worn with any hat (the beaver's tail,
+  ears and snout, and the headphones: see GEAR_BEAVER); the headgear and
+  gear pieces are their own closed fields polygonized at a finer step and
+  concatenated into the same buffer, so a body is still one draw call
+  whatever it wears.
 
   Everything here is in *design units*, feet at y = 0, facing +Z. Headless:
   plain arithmetic, typed arrays and a BufferGeometry, nothing that needs a
@@ -265,6 +267,16 @@ export const ROLE = {
   WHITE: 9,
   /** the spacesuit's grey: the life-support pack */
   GREY: 10,
+  /** the beaver's fur (its ears), in the look's fur shade */
+  FUR: 11,
+  /** the beaver's cream: its snout and the inside of its ears */
+  CREAM: 12,
+  /** the beaver's tail, printed with its scales */
+  TAIL: 13,
+  /** the headphones' black: band, cushions, cups and the boom mic */
+  PHONES: 14,
+  /** the headphones' metal: forks, sliders, the rings and logos on the cups */
+  PHONES_METAL: 15,
 } as const
 /** no longer stamped on any vertex (the lens hides the whole body), kept so
     the role layout is stable */
@@ -783,6 +795,9 @@ const gearPiece = (
   fr: Frame, f: Field, lo: [number, number, number], hi: [number, number, number], role: number,
   tails?: THREE.Vector3,
   step = GEAR_STEP,
+  /** a bone every vertex is weighted to outright, for something rigid
+      that only rides the head (the headphones), rather than the skin */
+  rigid?: number,
 ): PieceJob => function* () {
   // a generous Lipschitz allowance: flattened ellipsoids and a drooped brim
   // overstate their distances, and a block wrongly skipped as far is a
@@ -802,6 +817,11 @@ const gearPiece = (
     const y = m.pos[v * 3 + 1]
     const z = m.pos[v * 3 + 2]
     acc.fill(0)
+    if (rigid !== undefined) {
+      acc[rigid] = 1
+      pick4(si, sw, v * 4)
+      continue
+    }
     // headgear moves with the skin it sits on: the weights of the nearest
     // points of the bean, blended by inverse distance so they ramp the way
     // the skin under them does, or the bean's own chain for anything well
@@ -930,7 +950,20 @@ const knotAndTails = (fr: Frame, at: THREE.Vector3, role: number, long: number):
   return [gearPiece(fr, f, [at.x - 0.3, at.y - long - 0.12, at.z - 0.35], [at.x + 0.3, at.y + 0.15, at.z + 0.14], role, at)]
 }
 
-const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
+/** a headgear, built: its pieces, and what anything worn over it must
+    clear (`hug`: the bean and the hat's own shell, brims and all, never
+    its tails or cords), or null when nothing can be worn over it (the
+    helmet). `bandZ` is where a headband crossing the top goes: over the
+    middle of the head, except behind a party hat */
+interface HatBuild {
+  jobs: PieceJob[]
+  hug: Field | null
+  bandZ: number
+}
+
+const hatBuild = (fr: Frame, kind: number): HatBuild => {
+  const H = (jobs: PieceJob[], hug: Field | null, bandZ = -0.02): HatBuild => ({ jobs, hug, bandZ })
+  const bean = fr.bean
   const { bd, crown } = fr
   const zs = bd.zs
   const A = ROLE.ACCENT
@@ -960,23 +993,27 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
       const f = bandField(fr, y0, 0.05, 0.03, -0.012, 0.045, 0.085)
       const back = new THREE.Vector3(0, y0 - 0.03 * fr.rx(y0) * zs, -fr.rx(y0) * zs - 0.015)
       const [lo, hi] = box(0.12, y0 - 0.2, y0 + 0.2)
-      return [gearPiece(fr, f, lo, hi, A), ...knotAndTails(fr, back, A, 0.42)]
+      return H([gearPiece(fr, f, lo, hi, A), ...knotAndTails(fr, back, A, 0.42)], (x, y, z) => Math.min(bean(x, y, z), f(x, y, z)))
     }
     case CAP: {
-      // a baseball cap: a soft crown hugging the dome, a stiff peak out
-      // front in the detail colour and a button on top
+      // a baseball cap: a soft crown hugging the dome and a long stiff peak
+      // out front, both in the hat colour, and a button on top in the
+      // detail colour. The peak was the detail colour once, and in the
+      // default cream it vanished against the face panel under it: a cap
+      // with no visible peak reads as a skullcap
       const yc = above
       const shell: Field = (x, y, z) => smax(fr.bean(x, y, z) - 0.04, yc - y, 0.02)
       const fz = fr.rx(yc) * zs
-      const tilt = 0.22
-      const brim = ellipsoid(0, yc + 0.015, fz + 0.13, 0.27, 0.036, 0.21,
+      const tilt = 0.14
+      const brim = ellipsoid(0, yc + 0.01, fz + 0.17, 0.3, 0.036, 0.27,
         [1, 0, 0, 0, Math.cos(tilt), -Math.sin(tilt), 0, Math.sin(tilt), Math.cos(tilt)])
       const button = ellipsoid(0, crown + 0.045, 0, 0.055, 0.035, 0.055)
       const [lo, hi] = box(0.1, yc - 0.05, crown + 0.12)
-      return [
-        gearPiece(fr, (x, y, z) => Math.min(shell(x, y, z), button(x, y, z)), lo, hi, A),
-        gearPiece(fr, brim, [-0.32, yc - 0.12, fz - 0.12], [0.32, yc + 0.14, fz + 0.4], T, undefined, 0.02),
-      ]
+      return H([
+        gearPiece(fr, shell, lo, hi, A),
+        gearPiece(fr, button, [-0.1, crown - 0.05, -0.1], [0.1, crown + 0.12, 0.1], T, undefined, 0.02),
+        gearPiece(fr, brim, [-0.35, yc - 0.12, fz - 0.14], [0.35, yc + 0.14, fz + 0.5], A, undefined, 0.02),
+      ], (x, y, z) => Math.min(bean(x, y, z), shell(x, y, z), button(x, y, z)))
     }
     case BUCKET: {
       // a bucket hat: a soft crown and a floppy brim tipped down all round,
@@ -997,13 +1034,13 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
       }
       const band = bandField(fr, yc + 0.06, 0, 0, 0.055, 0.035, 0.045)
       const [lo, hi] = box(0.36, yc - 0.2, crown + 0.1)
-      return [
+      return H([
         // the crown on the ordinary grid and only the thin brim on the fine
         // one: the two overlap where they meet, which nobody can see
         gearPiece(fr, top, [lo[0] + 0.2, lo[1] + 0.12, lo[2] + 0.2], [hi[0] - 0.2, hi[1], hi[2] - 0.2], A),
         gearPiece(fr, brim, lo, [hi[0], yc + 0.08, hi[2]], A),
         gearPiece(fr, band, lo, [hi[0], yc + 0.2, hi[2]], T),
-      ]
+      ], (x, y, z) => Math.min(bean(x, y, z), top(x, y, z), brim(x, y, z), band(x, y, z)))
     }
     case PARTY: {
       // a party hat perched off-true on the crown, two rings and a pom
@@ -1030,10 +1067,11 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
       // it cut the cone open underneath
       const lo: [number, number, number] = [-0.4, crown - 0.45, -0.4]
       const hi: [number, number, number] = [0.5, crown + 0.7, 0.4]
-      return [
+      // a headband goes behind the cone, not up and over it
+      return H([
         gearPiece(fr, cone, lo, hi, A),
         gearPiece(fr, (x, y, z) => Math.min(r1(x, y, z), r2(x, y, z), pom(x, y, z)), lo, hi, T, undefined, 0.022),
-      ]
+      ], (x, y, z) => Math.min(bean(x, y, z), cone(x, y, z)), -0.3)
     }
     case HARDHAT: {
       // a hard hat a size too big: a stiff shell with a rim all round, a
@@ -1053,10 +1091,10 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
       const ridge: Field = (x, y, z) =>
         smax(smax(fr.bean(x, y, z) - 0.125, Math.abs(x) - 0.045, 0.015), yc + 0.03 - y, 0.01)
       const [lo, hi] = box(0.3, yc - 0.1, crown + 0.2)
-      return [
+      return H([
         gearPiece(fr, (x, y, z) => smin(shell(x, y, z), rim(x, y, z), 0.03), lo, hi, A),
         gearPiece(fr, ridge, lo, hi, T),
-      ]
+      ], (x, y, z) => Math.min(bean(x, y, z), smin(shell(x, y, z), rim(x, y, z), 0.03), ridge(x, y, z)))
     }
     case BANDANA: {
       // cloth tied tight over the top, down lower at the back, knotted
@@ -1067,7 +1105,7 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
         smax(fr.bean(x, y, z) - 0.025, yc - 0.16 * smooth(0.1, -0.9, z / (r * zs)) - y, 0.02)
       const back = new THREE.Vector3(0, yc - 0.08, -fr.rx(yc - 0.08) * zs - 0.02)
       const [lo, hi] = box(0.1, yc - 0.3, crown + 0.08)
-      return [gearPiece(fr, shell, lo, hi, A), ...knotAndTails(fr, back, T, 0.36)]
+      return H([gearPiece(fr, shell, lo, hi, A), ...knotAndTails(fr, back, T, 0.36)], (x, y, z) => Math.min(bean(x, y, z), shell(x, y, z)))
     }
     case HOOD: {
       // a hood up over the head and down onto the shoulders, the face
@@ -1087,10 +1125,10 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
         return roundCone(s * cx, yBot + 0.04, z0 + 0.05, s * (cx + 0.02), yBot - 0.3, z0 + 0.1, 0.035, 0.035)
       })
       const [lo, hi] = box(0.18, yBot - 0.08, crown + 0.1)
-      return [
+      return H([
         gearPiece(fr, shell, [lo[0] - 0.1, lo[1], lo[2] - 0.1], [hi[0] + 0.1, hi[1], hi[2] + 0.1], A),
         gearPiece(fr, (x, y, z) => Math.min(cords[0](x, y, z), cords[1](x, y, z)), [-0.4, yBot - 0.4, 0], [0.4, yBot + 0.2, 0.8], T),
-      ]
+      ], (x, y, z) => Math.min(bean(x, y, z), shell(x, y, z)))
     }
     case HELMET: {
       /*
@@ -1150,7 +1188,9 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
       const [lo, hi] = box(0.32, yBot - 0.15, crown + 0.22)
       const packLo: [number, number, number] = [-0.52, py0 - 0.12, backZ - 0.42]
       const packHi: [number, number, number] = [0.5, yBot + 0.2, 0.05]
-      return [
+      // nothing is worn over the helmet: headphones on a bubble would clip
+      // its antenna and lamp, and nobody hears anything in space anyway
+      return H([
         // the shell is big and smooth, so it is drawn a size coarser than
         // other headgear: the finer grid tripled this variant for nothing
         gearPiece(fr, shell, [lo[0] - 0.05, lo[1], lo[2] - 0.05], [hi[0] + 0.05, hi[1], hi[2] + 0.1], W, undefined, 0.045),
@@ -1159,37 +1199,491 @@ const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
         gearPiece(fr, lamp, [lampAt.x - 0.2, lampAt.y - 0.12, lampAt.z - 0.1], [lampAt.x + 0.1, lampAt.y + 0.12, lampAt.z + 0.2], ROLE.GLINT, undefined, 0.02),
         gearPiece(fr, (x, y, z) => Math.min(pack(x, y, z), hoses[0](x, y, z), hoses[1](x, y, z)), packLo, packHi, ROLE.GREY, undefined, 0.04),
         gearPiece(fr, band, packLo, packHi, A),
-      ]
+      ], null)
     }
     default:
-      return [] // bare-headed
+      return H([], bean) // bare-headed
   }
+}
+
+/* -------------------------------------------------- worn with any hat -- */
+
+/** what a variant wears besides its headgear, as bits: the beaver's
+    modelled parts and the headphones. Both go with any hat, which is why
+    they are not hats */
+export const GEAR_BEAVER = 1
+export const GEAR_PHONES = 2
+export const GEAR_COUNT = 4
+
+/** how far along a ray from o (direction d, unit) the outermost inside of
+    a field lies, marching in from `far` and then bisecting: the outside of
+    a hat, brim and all, where a strap laid over it rests. 0 on a miss */
+const outermost = (
+  f: Field, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, far = 1.8,
+): number => {
+  const at = (r: number) => f(ox + dx * r, oy + dy * r, oz + dz * r)
+  const STEP = 0.015
+  let r = far
+  while (r > 0 && at(r) >= 0) r -= STEP
+  if (r <= 0) return 0
+  let lo = r
+  let hi = r + STEP
+  for (let k = 0; k < 7; k++) {
+    const mid = (lo + hi) / 2
+    if (at(mid) < 0) lo = mid
+    else hi = mid
+  }
+  return lo
+}
+
+/** a field's gradient, normalized: which way is out */
+const gradOf = (f: Field, x: number, y: number, z: number, out: THREE.Vector3): THREE.Vector3 => {
+  const e = 0.008
+  return out.set(
+    f(x + e, y, z) - f(x - e, y, z), f(x, y + e, z) - f(x, y - e, z), f(x, y, z + e) - f(x, y, z - e),
+  ).normalize()
+}
+
+/** a rounded disc whose axis is x: radius `r`, from x0 to x1, its edges
+    rounded by `rr`. A cushion, a cup */
+const discX = (cy: number, cz: number, r: number, x0: number, x1: number, rr: number): Field => {
+  const cx = (x0 + x1) / 2
+  const ht = (x1 - x0) / 2
+  return (x, y, z) => {
+    const a = len(y - cy, z - cz) - (r - rr)
+    const b = Math.abs(x - cx) - (ht - rr)
+    return Math.min(Math.max(a, b), 0) + len(Math.max(a, 0), Math.max(b, 0)) - rr
+  }
+}
+
+/** a ring round the x axis at x = cx: radius `r`, tube `t` */
+const ringX = (cx: number, cy: number, cz: number, r: number, t: number): Field =>
+  (x, y, z) => len(len(y - cy, z - cz) - r, x - cx) - t
+
+/** a flat strap laid along a polyline in the plane z = z0: `ht` thick
+    across the line and `hw` wide along z, its edges rounded by `rr` */
+const strap = (pts: Array<[number, number]>, z0: number, ht: number, hw: number, rr: number): Field => {
+  const n = pts.length
+  return (x, y, z) => {
+    let d2 = Infinity
+    for (let i = 0; i + 1 < n; i++) {
+      const [ax, ay] = pts[i]
+      const [bx, by] = pts[i + 1]
+      const ex = bx - ax
+      const ey = by - ay
+      let t = ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey)
+      t = t < 0 ? 0 : t > 1 ? 1 : t
+      const qx = x - ax - ex * t
+      const qy = y - ay - ey * t
+      const q = qx * qx + qy * qy
+      if (q < d2) d2 = q
+    }
+    const a = Math.sqrt(d2) - (ht - rr)
+    const b = Math.abs(z - z0) - (hw - rr)
+    return Math.min(Math.max(a, b), 0) + len(Math.max(a, 0), Math.max(b, 0)) - rr
+  }
+}
+
+/** a tube along a 3D polyline */
+const tube = (pts: THREE.Vector3[], r: number): Field => (x, y, z) => {
+  let d = Infinity
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i]
+    const b = pts[i + 1]
+    d = Math.min(d, segDist(x, y, z, a.x, a.y, a.z, b.x, b.y, b.z))
+  }
+  return d - r
+}
+
+type Box = [[number, number, number], [number, number, number]]
+/** the box round a set of points, padded */
+const boxOf = (pts: ReadonlyArray<{ x: number; y: number; z: number }>, pad: number): Box => {
+  const lo: [number, number, number] = [Infinity, Infinity, Infinity]
+  const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity]
+  for (const p of pts) {
+    lo[0] = Math.min(lo[0], p.x - pad)
+    lo[1] = Math.min(lo[1], p.y - pad)
+    lo[2] = Math.min(lo[2], p.z - pad)
+    hi[0] = Math.max(hi[0], p.x + pad)
+    hi[1] = Math.max(hi[1], p.y + pad)
+    hi[2] = Math.max(hi[2], p.z + pad)
+  }
+  return [lo, hi]
+}
+
+/** the convex hull of 2D points (Andrew's monotone chain), counter-clockwise */
+const hull2 = (src: Array<[number, number]>): Array<[number, number]> => {
+  const p = [...src].sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+  const lower: Array<[number, number]> = []
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop()
+    lower.push(q)
+  }
+  const upper: Array<[number, number]> = []
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i]
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop()
+    upper.push(q)
+  }
+  lower.pop()
+  upper.pop()
+  return lower.concat(upper)
+}
+
+/** how far a ray from the origin travels before leaving a convex polygon
+    that contains it */
+const rayOut = (poly: Array<[number, number]>, dx: number, dy: number): number => {
+  let best = 0
+  for (let i = 0; i < poly.length; i++) {
+    const [px, py] = poly[i]
+    const [qx, qy] = poly[(i + 1) % poly.length]
+    const ex = qx - px
+    const ey = qy - py
+    const den = dx * ey - dy * ex
+    if (Math.abs(den) < 1e-9) continue
+    const t = (px * ey - py * ex) / den
+    const u = (px * dy - py * dx) / den
+    if (u >= -1e-6 && u <= 1 + 1e-6 && t > best) best = t
+  }
+  return best
+}
+
+const EMPTY_PIECE: Piece = {
+  pos: new Float32Array(0), nrm: new Float32Array(0), si: new Uint16Array(0), sw: new Float32Array(0),
+  part: new Float32Array(0), role: 0, idx: new Uint32Array(0),
+}
+
+/** `count` jobs sharing one setup (a few thousand field samples, where a
+    strap or an ear lands), which is paid inside the first of them a slice
+    at a time rather than when the job list is drawn up: a variant is built
+    in 2.5 ms slices mid-walk, and a setup run eagerly would be one slice
+    of ten */
+const lazyJobs = <T>(
+  count: number, setup: () => Generator<void, T, void>, make: (s: T, i: number) => PieceJob | null,
+): PieceJob[] => {
+  let done: { v: T } | null = null
+  const get = function* (): Generator<void, T, void> {
+    if (!done) done = { v: yield* setup() }
+    return done.v
+  }
+  return Array.from({ length: count }, (_, i) => function* () {
+    const job = make(yield* get(), i)
+    return job ? yield* job() : EMPTY_PIECE
+  })
+}
+
+/*
+  The beaver onesie. The fur, the cream belly and the paws are printed on
+  the bean by the material (costume 5, in the look's fur shade); what is
+  modelled is what a print cannot do: a flat paddle of a tail hanging off
+  the seat, printed with its scales (role TAIL), two small round ears, and
+  a snout low in the face window: two cream cheeks, a dark nose and two big
+  front teeth. The ears are found on whatever the head is wearing (`hug`:
+  the hood's outside when the hood is up), low on the back of the skull:
+  under the line where a cap, a hard hat or a bucket hat's brim starts, and
+  behind where a pair of headphones' forks come down, so all three can be
+  worn at once. Under the space helmet (`hug` null) there are no ears and
+  no snout, since the bubble would cut them and the visor covers the face.
+*/
+const beaverPieces = (fr: Frame, hug: Field | null): PieceJob[] => {
+  const zs = fr.bd.zs
+  const jobs: PieceJob[] = []
+  // the tail: a short root out of the seat, then the paddle hanging back
+  // and down at forty-odd degrees, its broad face to the back
+  const yR = 0.8
+  const backZ = -fr.rx(yR) * zs
+  const L = new THREE.Vector3(0, -0.72, -0.69).normalize()
+  const N = new THREE.Vector3(0, 0.69, -0.72).normalize()
+  const root = new THREE.Vector3(0, yR, backZ + 0.05)
+  const mid = root.clone().addScaledVector(L, 0.44)
+  const paddle = ellipsoid(mid.x, mid.y, mid.z, 0.25, 0.05, 0.33, [1, 0, 0, N.x, N.y, N.z, L.x, L.y, L.z])
+  const neck = root.clone().addScaledVector(L, 0.16)
+  const stem = roundCone(root.x, root.y, root.z, neck.x, neck.y, neck.z, 0.12, 0.07)
+  const tail: Field = (x, y, z) => smin(stem(x, y, z), paddle(x, y, z), 0.06)
+  const tip = mid.clone().addScaledVector(L, 0.36)
+  const [tlo, thi] = boxOf([root, tip, mid.clone().addScaledVector(N, 0.1)], 0.3)
+  jobs.push(gearPiece(fr, tail, tlo, thi, ROLE.TAIL, undefined, 0.03))
+  if (!hug) return jobs
+
+  const { h, y: fy } = fr.face
+  // the front of the face at a point of the window, which is sunk into the bean
+  const front = (x: number, y: number) => outermost(fr.bean, x, y, 0, 0, 0, 1, 1.2)
+  // the snout: two cheeks, a nose on them and the teeth under them, low in
+  // the window so the eyes above it still read
+  const cy = fy - 0.52 * h
+  const cheeks: Field[] = [1, -1].map((s) => {
+    const x = s * 0.078
+    return ellipsoid(x, cy, front(x, cy) + 0.02, 0.092, 0.07, 0.06)
+  })
+  const ny = cy + 0.055
+  const nose = ellipsoid(0, ny, front(0, ny) + 0.068, 0.055, 0.036, 0.036)
+  const ty = cy - 0.085
+  const tz = front(0, ty) + 0.05
+  const teeth: Field[] = [1, -1].map((s) => {
+    const cx = s * 0.029
+    return (x, y, z) => {
+      const qx = Math.abs(x - cx) - 0.013
+      const qy = Math.abs(y - ty) - 0.038
+      const qz = Math.abs(z - tz) - 0.004
+      return Math.min(Math.max(qx, qy, qz), 0) + len(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0)) - 0.012
+    }
+  })
+  const snoutLo: [number, number, number] = [-0.25, ty - 0.12, 0.1]
+  const snoutHi: [number, number, number] = [0.25, ny + 0.1, 0.9]
+  jobs.push(
+    gearPiece(fr, (x, y, z) => smin(cheeks[0](x, y, z), cheeks[1](x, y, z), 0.03), snoutLo, snoutHi, ROLE.CREAM, undefined, 0.022),
+    gearPiece(fr, nose, snoutLo, snoutHi, ROLE.INK, undefined, 0.02),
+    gearPiece(fr, (x, y, z) => Math.min(teeth[0](x, y, z), teeth[1](x, y, z)), snoutLo, snoutHi, ROLE.WHITE, undefined, 0.012),
+  )
+
+  // the ears, each a fur disc with a cream one set into its front face
+  jobs.push(...lazyJobs(4, function* () {
+    const out: Array<{ f: Field; box: Box }> = []
+    const yE = EYE_Y + 0.21
+    const creams: Array<{ f: Field; box: Box }> = []
+    for (const s of [1, -1]) {
+      yield
+      const th = s * 2.0
+      const dx = Math.sin(th)
+      const dz = Math.cos(th)
+      const r = outermost(hug, 0, yE, 0, dx, 0, dz)
+      const P = new THREE.Vector3(dx * r, yE, dz * r)
+      const n = gradOf(hug, P.x, P.y, P.z, new THREE.Vector3())
+      const up = new THREE.Vector3(0, 1, 0).addScaledVector(n, -n.y).normalize()
+      // the ear's face turns forward
+      const t = new THREE.Vector3().crossVectors(n, up)
+      if (t.z < 0) t.negate()
+      const C = P.clone().addScaledVector(n, 0.04).addScaledVector(up, 0.01)
+      const basis = [n.x, n.y, n.z, up.x, up.y, up.z, t.x, t.y, t.z]
+      const I = C.clone().addScaledVector(t, 0.027).addScaledVector(n, 0.016)
+      out.push({ f: ellipsoid(C.x, C.y, C.z, 0.105, 0.1, 0.04, basis), box: boxOf([C], 0.16) })
+      creams.push({ f: ellipsoid(I.x, I.y, I.z, 0.062, 0.058, 0.018, basis), box: boxOf([I], 0.1) })
+    }
+    return out.concat(creams)
+  }, (ears, i) => gearPiece(fr, ears[i].f, ears[i].box[0], ears[i].box[1], i < 2 ? ROLE.FUR : ROLE.CREAM, undefined, 0.02)))
+  return jobs
+}
+
+/*
+  The headphones: a closed-back gaming headset, drawn after a HyperX Cloud
+  Alpha. A black padded band with a stripe of the accent down its spine,
+  the accent's metal sliders and forks holding two big round black cups,
+  each a leather cushion against the head and a shell with a ring and a
+  small logo of the accent on its outer face, and a black boom mic with a
+  foam tip off the left cup (the body's left, +x). Black and red unless the
+  look says otherwise (`phones` in look.ts), which is a palette entry, not
+  geometry.
+
+  They are worn over whatever is on the head, and that is the whole
+  problem, so nothing here is placed by hand. `hug` is the bean and the
+  hat's own outside (brims and all, never tails or cords); the cups sit
+  against its widest point over their footprint at ear height, and the
+  band is the convex hull of its outline in the band's plane, laid a strap's
+  thickness off it: over a cap it crosses the cap's crown and button, over a
+  hood the hood, over a bucket hat it rides out over the brim, and behind a
+  party hat (`bandZ`) rather than up round the cone. The mic's path is
+  pushed out of the same field so it never goes through a hood's rim.
+
+  Every vertex is weighted to the head bone outright: a headset is rigid,
+  and skinned to the neck under its lower rim the cups sheared on a nod.
+*/
+const phonesPieces = (fr: Frame, hug: Field, bandZ: number): PieceJob[] => {
+  const yC = EYE_Y - 0.03
+  const zC = -0.02
+  /** the cups' radius */
+  const R = 0.2
+  /** how far the band's middle lies off whatever it rests on */
+  const CLEAR = 0.04
+  const K = 40
+  const H = B.HEAD
+  interface Rig {
+    band: Field
+    stripe: Field
+    bandBox: Box
+    sliders: Field
+    sliderBox: Box
+    xin: number
+    xo: number
+    xm: number
+    Ry: number
+    mic: Field
+    micBox: Box
+  }
+  return lazyJobs<Rig>(8, function* () {
+    // the cups' inner face: the widest the head (and hat) get over their footprint
+    let xin = 0
+    for (let i = -2; i <= 2; i++) {
+      for (let j = -2; j <= 2; j++) {
+        const dy = (i / 2) * R * 0.85
+        const dz = (j / 2) * R * 0.85
+        if (dy * dy + dz * dz > (R * 0.9) ** 2) continue
+        for (const sx of [1, -1]) xin = Math.max(xin, outermost(hug, 0, yC + dy, zC + dz, sx, 0, 0, 1.4))
+      }
+      yield
+    }
+    xin += 0.012
+    const xo = xin + 0.17
+    const xm = xin + 0.11
+    const Ry = R + 0.032
+    const Ty = yC + Ry
+    // the outline of the head and hat in the band's plane, over the top
+    const pts: Array<[number, number]> = []
+    for (let a = -84; a <= 84; a += 4) {
+      const ph = (a * Math.PI) / 180
+      const dx = Math.sin(ph)
+      const dy = Math.cos(ph)
+      let r = 0
+      for (const dz of [-0.07, 0, 0.07]) r = Math.max(r, outermost(hug, 0, yC, bandZ + dz, dx, dy, 0))
+      pts.push([dx * r, dy * r])
+      if (a % 16 === 0) yield
+    }
+    // the band comes down to just over each fork, and the hull closes under
+    // the centre so the centre is inside it
+    const Ax = xm - CLEAR
+    const Ay = Ty + 0.09 - yC
+    pts.push([Ax, Ay], [-Ax, Ay], [0, -0.3])
+    const hull = hull2(pts)
+    const phA = Math.atan2(Ax, Ay)
+    const rs: number[] = []
+    const phs: number[] = []
+    for (let k = 0; k <= K; k++) {
+      const ph = -phA + (2 * phA * k) / K
+      phs.push(ph)
+      rs.push(rayOut(hull, Math.sin(ph), Math.cos(ph)) + CLEAR)
+    }
+    // a light smoothing that may only move the band outward
+    const sm = rs.map((r, k) => {
+      let s = 0
+      let n = 0
+      for (let q = -2; q <= 2; q++) {
+        const i = k + q
+        if (i < 0 || i > K) continue
+        s += rs[i]
+        n++
+      }
+      return Math.max(r, s / n)
+    })
+    const line = phs.map((ph, k): [number, number] => [Math.sin(ph) * sm[k], yC + Math.cos(ph) * sm[k]])
+    const spine = phs
+      .map((ph, k): [number, number] => [Math.sin(ph) * (sm[k] + 0.03), yC + Math.cos(ph) * (sm[k] + 0.03)])
+      .slice(Math.round(K * 0.14), Math.round(K * 0.86) + 1)
+    const band = strap(line, bandZ, 0.036, 0.078, 0.026)
+    const stripe = strap(spine, bandZ, 0.012, 0.022, 0.01)
+    const topY = Math.max(...line.map((p) => p[1]))
+    const bx = Math.max(...line.map((p) => Math.abs(p[0])))
+    const bandBox: Box = [[-bx - 0.12, yC - 0.05, bandZ - 0.14], [bx + 0.12, topY + 0.1, bandZ + 0.14]]
+    // the sliders, from each end of the band down to the top of its fork,
+    // with a block where they leave the band
+    const ends = [line[0], line[K]].map(([x, y]) => new THREE.Vector3(x, y, bandZ))
+    const tops = ends.map((e) => new THREE.Vector3(Math.sign(e.x) * xm, Ty, zC))
+    const rods = ends.map((e, i) => roundCone(e.x, e.y + 0.02, e.z, tops[i].x, tops[i].y, tops[i].z, 0.026, 0.024))
+    const blocks = ends.map((e) => ellipsoid(e.x, e.y, e.z, 0.045, 0.055, 0.052))
+    const sliders: Field = (x, y, z) =>
+      Math.min(rods[0](x, y, z), rods[1](x, y, z), blocks[0](x, y, z), blocks[1](x, y, z))
+    const sliderBox = boxOf([...ends, ...tops], 0.1)
+    yield
+    // the boom: out of the front of the left cup, down and forward to the
+    // corner of the mouth, pushed clear of anything it would pass through
+    const tipY = yC - 0.19
+    const tipX = 0.3
+    const tip = new THREE.Vector3(tipX, tipY, outermost(hug, tipX, tipY, 0, 0, 0, 1, 1.4) + 0.11)
+    const P0 = new THREE.Vector3(xin + 0.12, yC - 0.09, zC + 0.1)
+    const P1 = new THREE.Vector3(xo + 0.03, yC - 0.3, zC + 0.3)
+    const path: THREE.Vector3[] = []
+    const g = new THREE.Vector3()
+    for (let k = 0; k <= 10; k++) {
+      const t = k / 10
+      const p = new THREE.Vector3()
+        .addScaledVector(P0, (1 - t) * (1 - t)).addScaledVector(P1, 2 * t * (1 - t)).addScaledVector(tip, t * t)
+      if (k > 1) {
+        for (let it = 0; it < 4; it++) {
+          const d = hug(p.x, p.y, p.z)
+          if (d >= 0.05) break
+          p.addScaledVector(gradOf(hug, p.x, p.y, p.z, g), 0.05 - d)
+        }
+      }
+      path.push(p)
+    }
+    const end = path[path.length - 1]
+    const boom = tube(path, 0.02)
+    const foam = ellipsoid(end.x, end.y, end.z, 0.055, 0.05, 0.058)
+    const mic: Field = (x, y, z) => smin(boom(x, y, z), foam(x, y, z), 0.02)
+    return { band, stripe, bandBox, sliders, sliderBox, xin, xo, xm, Ry, mic, micBox: boxOf(path, 0.1) }
+  }, (r, i) => {
+    const cupBox = (s: number): Box => {
+      const x0 = r.xin - 0.04
+      const x1 = r.xo + 0.04
+      return [
+        [s > 0 ? x0 : -x1, yC - r.Ry - 0.08, zC - r.Ry - 0.08],
+        [s > 0 ? x1 : -x0, yC + r.Ry + 0.08, zC + r.Ry + 0.08],
+      ]
+    }
+    // one side's cup, drawn for +x; the other side reads it mirrored
+    const cushion = discX(yC, zC, R, r.xin, r.xin + 0.08, 0.035)
+    const shell = discX(yC, zC, R - 0.018, r.xin + 0.06, r.xo, 0.05)
+    const black: Field = (x, y, z) => Math.min(cushion(x, y, z), shell(x, y, z))
+    const ring = ringX(r.xo - 0.008, yC, zC, 0.128, 0.018)
+    const logo = ellipsoid(r.xo - 0.004, yC, zC, 0.016, 0.042, 0.03)
+    const arc: Field = (x, y, z) =>
+      smax(len(len(y - yC, z - zC) - r.Ry, x - r.xm) - 0.022, yC - 0.005 - y, 0.01)
+    const pivots = [1, -1].map((s) => ellipsoid(r.xm, yC, zC + s * r.Ry, 0.034, 0.034, 0.034))
+    const metal: Field = (x, y, z) =>
+      Math.min(ring(x, y, z), logo(x, y, z), arc(x, y, z), pivots[0](x, y, z), pivots[1](x, y, z))
+    const M = ROLE.PHONES_METAL
+    const P = ROLE.PHONES
+    switch (i) {
+      case 0: return gearPiece(fr, r.band, r.bandBox[0], r.bandBox[1], P, undefined, 0.026, H)
+      case 1: return gearPiece(fr, r.stripe, r.bandBox[0], r.bandBox[1], M, undefined, 0.012, H)
+      case 2: return gearPiece(fr, r.sliders, r.sliderBox[0], r.sliderBox[1], M, undefined, 0.018, H)
+      case 3: return gearPiece(fr, black, ...cupBox(1), P, undefined, 0.026, H)
+      case 4: return gearPiece(fr, (x, y, z) => black(-x, y, z), ...cupBox(-1), P, undefined, 0.026, H)
+      case 5: return gearPiece(fr, metal, ...cupBox(1), M, undefined, 0.015, H)
+      case 6: return gearPiece(fr, (x, y, z) => metal(-x, y, z), ...cupBox(-1), M, undefined, 0.015, H)
+      default: return gearPiece(fr, r.mic, r.micBox[0], r.micBox[1], P, undefined, 0.016, H)
+    }
+  })
 }
 
 /* ------------------------------------------------------------ variants -- */
 
 /** the outfits (`look.ts`'s COSTUMES) and the faces are painted by the
     material from uniforms, not drawn: see bodyMaterial.ts */
-export const COSTUME_COUNT = 5
+export const COSTUME_COUNT = 6
 export const FACE_COUNT = 5
 
-/** one geometry per (headgear, build), built on first use and shared by
-    every body wearing it. A body changes by swapping `mesh.geometry`
+/** one geometry per (headgear, build, gear), built on first use and shared
+    by every body wearing it. A body changes by swapping `mesh.geometry`
     between these: same attribute layout, same material, so a swap is a
-    buffer rebind and never a relink. Never dispose them: module state */
-const SHARED: Array<THREE.BufferGeometry | null> = new Array(HAT_COUNT * BUILD_COUNT).fill(null)
+    buffer rebind and never a relink. Never dispose them: module state.
+    The first HAT_COUNT * BUILD_COUNT slots are gear 0, the ones the idle
+    warm-up builds; a beaver or a headset is built when somebody wears one */
+const SHARED: Array<THREE.BufferGeometry | null> = new Array(HAT_COUNT * BUILD_COUNT * GEAR_COUNT).fill(null)
+/** the helmet takes no headphones, so its phones variants are its bare ones */
+const gearFor = (kind: number, gear: number) =>
+  (kind === HELMET ? gear & ~GEAR_PHONES : gear) & (GEAR_COUNT - 1)
+const keyOf = (kind: number, b: number, gear: number) => (gearFor(kind, gear) * HAT_COUNT + kind) * BUILD_COUNT + b
 /** how long the last variant took to build, ms (the measure prints it) */
 export let lastBuildMs = 0
 
-/** one variant, as steps: its build's bean, each piece of its headgear,
-    then the concatenation. Returns the shared geometry */
-function* variantSteps(kind: number, b: number): Generator<void, THREE.BufferGeometry, void> {
-  const key = kind * BUILD_COUNT + b
+/** one variant, as steps: its build's bean, each piece of its headgear
+    and of whatever it wears with it, then the concatenation. Returns the
+    shared geometry */
+function* variantSteps(kind: number, b: number, gear = 0): Generator<void, THREE.BufferGeometry, void> {
+  const key = keyOf(kind, b, gear)
   const cached = SHARED[key]
   if (cached) return cached
   const fr = frameFor(b)
   const pieces = [yield* bodySurfaceSteps(b)]
-  for (const job of hatPieces(fr, kind)) pieces.push(yield* job())
+  const hat = hatBuild(fr, kind)
+  const jobs = [...hat.jobs]
+  if (gear & GEAR_BEAVER) jobs.push(...beaverPieces(fr, hat.hug))
+  if (gear & GEAR_PHONES && hat.hug) jobs.push(...phonesPieces(fr, hat.hug, hat.bandZ))
+  for (const job of jobs) {
+    const piece = yield* job()
+    if (piece.idx.length) pieces.push(piece)
+  }
   yield
   let V = 0
   let I = 0
@@ -1238,13 +1732,9 @@ const clampHat = (hat: number) => Math.max(0, Math.min(HAT_COUNT - 1, Math.floor
 /** a variant, built on the spot if it is not built yet. What Node, the
     probes and the very first body of a session use; everything that can
     wait uses `requestBodyGeometry` */
-export const bodyGeometry = (
-  hat = 0, buildIndex = 0, costumeIndex = 0, faceIndex = 0,
-): THREE.BufferGeometry => {
-  void costumeIndex
-  void faceIndex
+export const bodyGeometry = (hat = 0, buildIndex = 0, gear = 0): THREE.BufferGeometry => {
   const t0 = typeof performance !== 'undefined' ? performance.now() : 0
-  const g = drain(variantSteps(clampHat(hat), clampBuild(buildIndex)))
+  const g = drain(variantSteps(clampHat(hat), clampBuild(buildIndex), gear))
   lastBuildMs = (typeof performance !== 'undefined' ? performance.now() : 0) - t0
   warmLater()
   return g
@@ -1276,26 +1766,28 @@ interface BuildJob {
 }
 const queue: BuildJob[] = []
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
-const enqueue = (kind: number, b: number) => {
-  const key = kind * BUILD_COUNT + b
+const enqueue = (kind: number, b: number, gear = 0) => {
+  const key = keyOf(kind, b, gear)
   if (SHARED[key] || queue.some((j) => j.key === key)) return
-  queue.push({ key, gen: variantSteps(kind, b) })
+  queue.push({ key, gen: variantSteps(kind, b, gear) })
 }
-/** the variant, if it is built; otherwise it is queued and this is null */
-export const requestBodyGeometry = (hat: number, buildIndex: number): THREE.BufferGeometry | null => {
+/** the variant, if it is built; otherwise it is queued and this is null.
+    `gear` is GEAR_BEAVER | GEAR_PHONES */
+export const requestBodyGeometry = (hat: number, buildIndex: number, gear = 0): THREE.BufferGeometry | null => {
   const kind = clampHat(hat)
   const b = clampBuild(buildIndex)
-  const cached = SHARED[kind * BUILD_COUNT + b]
+  const cached = SHARED[keyOf(kind, b, gear)]
   if (cached) return cached
-  if (syncBuilds || !SHARED.some((g) => g)) return bodyGeometry(kind, b)
-  enqueue(kind, b)
+  if (syncBuilds || !SHARED.some((g) => g)) return bodyGeometry(kind, b, gear)
+  enqueue(kind, b, gear)
   return null
 }
 /** something already built to wear while a variant is queued: the same
-    build bare-headed, or failing that anything */
-export const fallbackBodyGeometry = (buildIndex: number): THREE.BufferGeometry => {
+    headgear without the extras, the same build bare-headed, or failing
+    that anything */
+export const fallbackBodyGeometry = (buildIndex: number, hat = 6): THREE.BufferGeometry => {
   const b = clampBuild(buildIndex)
-  return SHARED[6 * BUILD_COUNT + b] ?? SHARED.find((g) => g) ?? bodyGeometry(6, b)
+  return SHARED[keyOf(clampHat(hat), b, 0)] ?? SHARED[6 * BUILD_COUNT + b] ?? SHARED.find((g) => g) ?? bodyGeometry(6, b)
 }
 /** work the queue for up to `budgetMs`. Returns whether anything is left */
 export const pumpBodyBuilds = (budgetMs: number): boolean => {
@@ -1338,7 +1830,7 @@ const warmLater = () => {
     // every build's bare bean first (the fallback everything else wears),
     // then every headgear on every build
     for (let b = 0; b < BUILD_COUNT; b++) if (!SHARED[6 * BUILD_COUNT + b]) return enqueue(6, b)
-    for (let k = 0; k < SHARED.length; k++) {
+    for (let k = 0; k < HAT_COUNT * BUILD_COUNT; k++) {
       if (!SHARED[k]) return enqueue(Math.floor(k / BUILD_COUNT), k % BUILD_COUNT)
     }
   }
@@ -1361,15 +1853,15 @@ export const bodyField = (buildIndex: number): Field => frameFor(clampBuild(buil
     milliseconds, without touching the cache anybody is drawing from: what
     `npm run measure -- body` prints as the cost of meeting a stranger in a
     new hat */
-export const timeVariant = (hat: number, buildIndex: number): number => {
+export const timeVariant = (hat: number, buildIndex: number, gear = 0): number => {
   const b = clampBuild(buildIndex)
-  const key = Math.max(0, Math.min(HAT_COUNT - 1, Math.floor(hat))) * BUILD_COUNT + b
+  const key = keyOf(clampHat(hat), b, gear)
   const keep = [SHARED[key], BODY_SURF[b], FRAMES[b]] as const
   SHARED[key] = null
   BODY_SURF[b] = null
   FRAMES[b] = null
   const t0 = performance.now()
-  bodyGeometry(hat, b)
+  bodyGeometry(hat, b, gear)
   const ms = performance.now() - t0
   SHARED[key] = keep[0]
   BODY_SURF[b] = keep[1]

@@ -2,11 +2,11 @@ import * as THREE from 'three'
 import { createRagdoll, type RagdollEnv } from './ragdoll'
 import { supportY } from '../physics/collision'
 import { seeded } from '../core/rand'
-import { DEFAULT_LOOK, type PlayerLook } from './look'
+import { BEAVER, DEFAULT_LOOK, type PlayerLook } from './look'
 import {
   B, BODY_Y0, BONE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HELPERS, HIP_X, HIP_Y,
   NECK_OFF, SHIN, THIGH, WAIST_OFF, bindMatrixWorld, fallbackBodyGeometry, requestBodyGeometry,
-  tickBodyBuilds, SHOULDER_X, SHOULDER_OFF, UARM, FARM,
+  tickBodyBuilds, SHOULDER_X, SHOULDER_OFF, UARM, FARM, GEAR_BEAVER, GEAR_PHONES,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
 
@@ -532,19 +532,22 @@ export function buildPlayerBody(
 
   // --- the mesh -------------------------------------------------------------
   const paint = makeBodyMaterial(look)
-  // the geometry is the one for this body's headgear; a repaint that changes
-  // hat swaps it (see setLook)
+  // the geometry is the one for this body's headgear, build and gear (the
+  // beaver's modelled parts, the headphones); a repaint that changes any of
+  // them swaps it (see setLook)
+  const gearOf = (l: PlayerLook) => (l.costume === BEAVER ? GEAR_BEAVER : 0) | ((l.phones ?? 0) > 0 ? GEAR_PHONES : 0)
   let hatNow = look.hat ?? 0
   let buildNow = look.build ?? 0
+  let gearNow = gearOf(look)
   paint.setFace(persona.face)
   // a variant not built yet is queued and the body wears a built one until
   // it lands (see bodyShape's tickBodyBuilds): building it on the spot is a
   // dropped frame whenever a stranger in a new hat walks into view
   let geoPending = false
   const wear = () => {
-    const g = requestBodyGeometry(hatNow, buildNow)
+    const g = requestBodyGeometry(hatNow, buildNow, gearNow)
     geoPending = !g
-    return g ?? fallbackBodyGeometry(buildNow)
+    return g ?? fallbackBodyGeometry(buildNow, hatNow)
   }
   const mesh = new THREE.SkinnedMesh(wear(), paint.material)
   mesh.castShadow = true
@@ -2530,15 +2533,18 @@ export function buildPlayerBody(
     },
     setLook: (next) => {
       personaFor(next)
-      // the outfit, the face and the colours are uniforms; only the
-      // headgear and the build are geometry
+      // the outfit's print, the face and the colours are uniforms; the
+      // headgear, the build and the gear (the beaver's tail, ears and snout,
+      // the headphones) are geometry
       paint.setLook(next)
       paint.setFace(persona.face)
       const hat = next.hat ?? 0
       const b = next.build ?? 0
-      if (hat !== hatNow || b !== buildNow) {
+      const gear = gearOf(next)
+      if (hat !== hatNow || b !== buildNow || gear !== gearNow) {
         hatNow = hat
         buildNow = b
+        gearNow = gear
         mesh.geometry = wear()
       }
     },

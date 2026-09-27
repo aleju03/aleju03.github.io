@@ -43,14 +43,21 @@ const meshOf = (r) => {
 
 /* ------------------------------------------------------------ variants -- */
 if (want('variants')) {
-  console.log('variants (headgear x build): verts, tris, ms to build from nothing')
+  console.log('variants (headgear x build): verts, tris, ms to build from nothing;')
+  console.log('then every headgear with the beaver (+b), the headphones (+p) and both (+bp), on the bean')
   const names = ['band', 'cap', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood', 'helmet']
+  const builds = Array.from({ length: BUILD_COUNT }, (_, b) => b)
+  const rows = []
+  for (let h = 0; h < HAT_COUNT; h++) rows.push({ h, gear: 0, label: names[h], builds })
+  for (const [gear, tag] of [[1, '+b'], [2, '+p'], [3, '+bp']]) {
+    for (let h = 0; h < HAT_COUNT; h++) rows.push({ h, gear, label: names[h] + tag, builds: [0] })
+  }
   let worstMs = 0
   let allClosed = true
-  for (let h = 0; h < HAT_COUNT; h++) {
+  for (const { h, gear, label, builds: bs } of rows) {
     const row = []
-    for (let b = 0; b < BUILD_COUNT; b++) {
-      const g = bodyGeometry(h, b)
+    for (const b of bs) {
+      const g = bodyGeometry(h, b, gear)
       const P = g.getAttribute('position'), N = g.getAttribute('normal'), I = g.getIndex()
       let bad = 0
       for (let i = 0; i < P.count * 3; i++) if (!Number.isFinite(P.array[i]) || !Number.isFinite(N.array[i])) bad++
@@ -83,13 +90,13 @@ if (want('variants')) {
         if (c.dot(n) < 0) against++
       }
       // twice, keep the faster: the first build of anything pays the JIT
-      const ms = Math.min(timeVariant(h, b), timeVariant(h, b))
+      const ms = Math.min(timeVariant(h, b, gear), timeVariant(h, b, gear))
       worstMs = Math.max(worstMs, ms)
       if (open) allClosed = false
       row.push(`${P.count}v/${I.count / 3}t ${ms.toFixed(1)}ms` + (bad ? ` NONFINITE ${bad}` : '') +
         (open ? ` HOLES ${open}` : '') + (over ? ` nonmanifold ${over}` : '') + (against ? ` AGAINST ${against}` : ''))
     }
-    console.log('  ' + names[h].padEnd(8) + row.join('  '))
+    console.log('  ' + label.padEnd(11) + row.join('  '))
   }
   console.log('  worst variant ' + worstMs.toFixed(1) + ' ms; ' + (allClosed ? 'every skin closed (no edge with one triangle)' : 'SOME SKINS HAVE HOLES'))
 }
