@@ -6,7 +6,7 @@ import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
   B, BODY_Y0, BONE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HELPERS, HIP_X, HIP_Y,
   NECK_OFF, SHIN, THIGH, WAIST_OFF, bindMatrixWorld, fallbackBodyGeometry, requestBodyGeometry,
-  tickBodyBuilds,
+  tickBodyBuilds, SHOULDER_X, SHOULDER_OFF, UARM, FARM,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
 
@@ -156,9 +156,13 @@ export interface PlayerPose {
   vy: number
   /** downward speed absorbed by a touchdown this tick, else 0 */
   landing: number
-  /** 0..1: the right arm held out along the view, carrying a tool (the
-      physgun). Eased in and out by the body; omitted is 0 */
+  /** 0..1: a two-handed tool (the physgun) held out along the view, the
+      right hand on its grip and the left under its barrel, both arms solved
+      onto them. Eased in and out by the body; omitted is 0 */
   aim?: number
+  /** 0..1: how hard the held thing is pulling (the physgun's strain): the
+      trunk leans back against it */
+  aimLoad?: number
   /** 0 under the first-person lens .. 1 watched from outside. Scales the
       cinematic layer (speed lean, gaze-follow, glances, fidgets), which
       reads great from a chase camera or another player but, with the lens
@@ -1705,18 +1709,86 @@ export function buildPlayerBody(
         (1 - stretchK * 0.8) - waveK * 0.9 + wag + pumpR,
       KE, CE, -sprS[7] * 6, dt, EL_LO, EL_HI,
     )
-    // a tool in the right hand: the arm comes up along the view and the
-    // elbow nearly straightens, over whatever the swing was doing
-    aimK += ((pose.aim ?? 0) - aimK) * (1 - Math.exp(-dt * 12))
-    const aimX = clampX(-(1.5 + pose.pitch * 0.85))
-    const rX = shRX + (aimX - shRX) * aimK
-    const rZ = shRZ + (0.12 - shRZ) * aimK
-    const eR = elR + (-0.2 - elR) * aimK
     // shoulder z: positive spreads each arm outward, whichever side it is on
     uarmL.rotation.set(shLX, 0, shLZ)
     farmL.rotation.set(elL, 0, 0)
-    uarmR.rotation.set(rX, 0, -rZ)
-    farmR.rotation.set(eR, 0, 0)
+    uarmR.rotation.set(shRX, 0, -shRZ)
+    farmR.rotation.set(elR, 0, 0)
+    // a tool held in both hands, over whatever the swing was doing
+    aimK += ((pose.aim ?? 0) - aimK) * (1 - Math.exp(-dt * 12))
+    if (aimK > 0.01) holdTool(pose, dt)
+  }
+
+  /*
+    Holding the physgun. The view's direction is carried into the torso's
+    frame (the group turns by facing + a half turn, then the pelvis and the
+    torso turn under it), the right hand's target is a grip point in front of
+    the chest and a little out along the aim, the left hand's is under the
+    barrel further out along it, and each arm is solved onto its target by a
+    two-bone IK with the elbow falling down and out. The result is blended
+    over the walk's own arms by aimK. The gun is then placed off the two
+    hands (the tool belt reads limbPos for both), so the gun, the arms and
+    the beam always agree. A heavy load leans the trunk back against it.
+  */
+  const ikWorld = new THREE.Vector3()
+  const ikQ = new THREE.Quaternion()
+  const ikQ2 = new THREE.Quaternion()
+  const ikD = new THREE.Vector3()
+  const ikR = new THREE.Vector3()
+  const ikL = new THREE.Vector3()
+  const ikS = new THREE.Vector3()
+  const ikU = new THREE.Vector3()
+  const ikV = new THREE.Vector3()
+  const ikE = new THREE.Vector3()
+  const ikT = new THREE.Vector3()
+  const ikDown = new THREE.Vector3(0, -1, 0)
+  const Y_AXIS = new THREE.Vector3(0, 1, 0)
+  let loadK = 0
+  /** solve one arm from its shoulder onto `target` (torso frame), blended */
+  const solveArm = (upper: THREE.Bone, lower: THREE.Bone, side: 1 | -1, target: THREE.Vector3) => {
+    const a = UARM
+    const b = FARM + 0.1 // to the mitten, not the wrist
+    ikS.set(side * SHOULDER_X, SHOULDER_OFF, 0)
+    ikU.subVectors(target, ikS)
+    const d = THREE.MathUtils.clamp(ikU.length(), 0.05, a + b - 0.01)
+    ikU.normalize()
+    // the elbow's angle off the shoulder-to-hand line, law of cosines
+    const cosA = THREE.MathUtils.clamp((a * a + d * d - b * b) / (2 * a * d), -1, 1)
+    const sinA = Math.sqrt(1 - cosA * cosA)
+    // the pole: down and out, made perpendicular to the line
+    ikV.set(side * 0.7, -1, -0.2)
+    ikV.addScaledVector(ikU, -ikV.dot(ikU)).normalize()
+    ikE.copy(ikS).addScaledVector(ikU, a * cosA).addScaledVector(ikV, a * sinA)
+    // the upper arm hangs along -Y: turn -Y onto shoulder->elbow
+    ikT.subVectors(ikE, ikS).normalize()
+    ikQ.setFromUnitVectors(ikDown, ikT)
+    upper.quaternion.slerp(ikQ, aimK)
+    // the forearm, in the upper arm's frame: -Y onto elbow->hand
+    ikT.copy(ikU).multiplyScalar(d).add(ikS).sub(ikE).normalize()
+      .applyQuaternion(ikQ2.copy(upper.quaternion).invert())
+    ikQ.setFromUnitVectors(ikDown, ikT)
+    lower.quaternion.slerp(ikQ, aimK)
+  }
+  const holdTool = (pose: PlayerPose, dt: number) => {
+    // lean back against a heavy load, eased
+    loadK += ((pose.aimLoad ?? 0) - loadK) * (1 - Math.exp(-dt * 6))
+    torso.rotation.x -= loadK * 0.28 * aimK
+    torso.updateMatrix()
+    // the aim, world, then into the torso's frame
+    const cp = Math.cos(pose.pitch)
+    ikWorld.set(-Math.sin(pose.yaw) * cp, Math.sin(pose.pitch), -Math.cos(pose.yaw) * cp)
+    ikQ.setFromAxisAngle(Y_AXIS, facing + Math.PI).multiply(pelvis.quaternion).multiply(torso.quaternion).invert()
+    ikD.copy(ikWorld).applyQuaternion(ikQ).normalize()
+    // the grip in front of the chest, a little right and out along the aim;
+    // the foregrip under the barrel, further out
+    // (the bean's arms are short and its shoulders wide, so both points sit
+    // close in: further out and the left hand could not reach the barrel)
+    ikR.set(-0.06, SHOULDER_OFF - 0.32, 0.2).addScaledVector(ikD, 0.15)
+    ikL.copy(ikR).addScaledVector(ikD, 0.2)
+    ikL.x += 0.04
+    ikL.y -= 0.05
+    solveArm(uarmR, farmR, -1, ikR)
+    solveArm(uarmL, farmL, 1, ikL)
   }
 
   /** the seated trunk and head for this moment: a slump forward over the

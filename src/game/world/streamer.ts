@@ -888,7 +888,9 @@ export function buildWorld(opts: Opts): WorldHandles {
     },
     nearLamps,
     setNight: (night) => {
-      glassMat.opacity = night
+      // windows come on through the dusk, well before full dark: a dusk
+      // town with every window black read as abandoned
+      glassMat.opacity = Math.min(1, night * 1.6)
       far.setNight(night)
     },
     setWaterTint: (sky, sun) => tintWater(waterMat, sky, sun),

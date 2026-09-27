@@ -88,8 +88,8 @@ const BLAST_FUSE = 0.5
 const BLAST_FUSE_JITTER = 1.1
 /** an explosive right beside a blast and lofted by it goes this long after
     it (plus up to the jitter), at about the top of its arc... */
-const BLAST_DELAY = 0.55
-const BLAST_DELAY_JITTER = 0.5
+const BLAST_DELAY = 0.9
+const BLAST_DELAY_JITTER = 0.7
 /** ...or, for one the blast threw low rather than lofting (explosion.ts
     decides), sooner, while it is still among the crates beside it */
 const LOW_DELAY = 0.25
@@ -193,9 +193,12 @@ export const createLife = (
       const spin = new THREE.Vector3().crossVectors(ang, r)
       // a kick outward from the middle, and away from whatever broke it
       const out = r.lengthSq() > 1e-4 ? r.clone().normalize() : new THREE.Vector3(0, 1, 0)
-      const kick = 2.5 + sb.random() * 3
+      // (a crate's boards burst apart and turn over each other; with the
+      // gentler kick they left in formation, one flat sheet of planks
+      // sliding down a wall together)
+      const kick = 3.5 + sb.random() * 5
       const v = lin.clone().add(spin).addScaledVector(out, kick)
-      v.y += 1.5 + sb.random() * 2
+      v.y += 2 + sb.random() * 3
       if (from) v.add(new THREE.Vector3(pos.x - from.x, 0, pos.z - from.z).normalize().multiplyScalar(2))
       tq.copy(quat)
       if (g.rot) tq.multiply(new THREE.Quaternion().setFromEuler(te.set(g.rot[0], g.rot[1], g.rot[2])))
@@ -203,7 +206,7 @@ export const createLife = (
       const id = sb.spawn(kindId, tmp, {
         quaternion: { x: tq.x, y: tq.y, z: tq.z, w: tq.w },
         velocity: v,
-        angular: { x: ang.x + (sb.random() - 0.5) * 8, y: ang.y + (sb.random() - 0.5) * 8, z: ang.z + (sb.random() - 0.5) * 8 },
+        angular: { x: ang.x + (sb.random() - 0.5) * 16, y: ang.y + (sb.random() - 0.5) * 16, z: ang.z + (sb.random() - 0.5) * 16 },
         shape: { type: 'box', hx: g.half[0], hy: g.half[1], hz: g.half[2] },
         mass: Math.max(0.1, p.mass * g.share),
         mesh,

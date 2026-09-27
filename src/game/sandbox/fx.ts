@@ -218,11 +218,14 @@ const banded = <M extends THREE.Material>(m: M, key: string, bands: [number, num
     core (additive, writes GLOW_ALPHA): the same glow's inner disc, marked
       as a light so the look leaves it out of the grade, the outline ink
       and the lamp light (pixelLook's GLOW_ALPHA, the physgun beam's trick);
-    smoke (premultiplied over): soft, translucent air in three stepped
-      bands of opacity with a dithered seam between them, lit by the scene's
-      ambient (`uShade`, set from the look each frame), so a column of it
-      darkens by night and never glows. It is transparent through blending,
-      never through alpha in the target, so it is not a hole.
+    smoke (over, by its transmittance): soft, translucent air in four
+      stepped bands of opacity, lit by the scene's ambient (`uShade`, set
+      from the look each frame), so a column of it darkens by night and
+      never glows. Colour is laid over what is behind by the blend; alpha
+      keeps the least transmittance any puff wrote (a MIN blend), which the
+      look reads as a veil (0.2 to 0.99) and takes the ink off whatever the
+      smoke covers. Without it, boards and crates flying inside a cloud drew
+      as grey line art over it. It never goes low enough to read as a hole.
 
   The quads are billboarded in the vertex shader from the instance matrix's
   translation and its x and y scales, so a flattened instance is a lens of
@@ -315,10 +318,14 @@ void main() {
     float edge = 0.62 + 0.36 * n;
     if (d > edge) discard;
     float q = d / edge;
-    float a = (q < 0.4 ? 0.85 : q < 0.65 ? 0.6 : q < 0.85 ? 0.36 : 0.16) * vA;
+    float a = min(0.75, (q < 0.4 ? 0.85 : q < 0.65 ? 0.6 : q < 0.85 ? 0.36 : 0.16) * vA);
     // a lit crown and a shaded belly, as a puff lit from above
     float lit = vUv.y > 0.35 ? 1.16 : vUv.y < -0.45 ? 0.82 : 1.0;
-    gl_FragColor = vec4(vCol * lit * uShade * a, a);
+    // colour premultiplied by the cover; alpha is the transmittance, which
+    // the blend lays over what is behind (dst * srcAlpha) and keeps the
+    // smallest of in the target: the look reads that as a veil and takes
+    // the ink off whatever the smoke covers (shaders.ts)
+    gl_FragColor = vec4(vCol * lit * uShade * a, 1.0 - a);
   } else {
     // flame: one tongue of a fireball, a teardrop narrowing upward whose
     // edge is value noise scrolling up through it, so it licks and never
@@ -360,12 +367,15 @@ const spriteMaterial = (mode: 0 | 1 | 2 | 3) => {
   m.blendEquation = THREE.AddEquation
   m.blendEquationAlpha = THREE.AddEquation
   m.blendSrc = THREE.OneFactor
-  m.blendDst = mode >= 2 ? THREE.OneMinusSrcAlphaFactor : THREE.OneFactor
+  m.blendDst = mode === 2 ? THREE.SrcAlphaFactor : mode === 3 ? THREE.OneMinusSrcAlphaFactor : THREE.OneFactor
   // the core and the flames replace alpha with the light mark; the rest
   // keep the scene's
   const marks = mode === 1 || mode === 3
   m.blendSrcAlpha = marks ? THREE.OneFactor : THREE.ZeroFactor
   m.blendDstAlpha = marks ? THREE.ZeroFactor : THREE.OneFactor
+  // smoke keeps the least transmittance any layer of it wrote (a MIN blend
+  // ignores the factors): the veil, never low enough to read as a hole
+  if (mode === 2) m.blendEquationAlpha = THREE.MinEquation
   m.name = ['sandbox-glow', 'sandbox-core', 'sandbox-smoke', 'sandbox-flame'][mode]
   return m
 }
@@ -417,22 +427,34 @@ const decalTexture = (paint: (ctx: CanvasRenderingContext2D) => void) => {
 
 /** a ragged blotch on the texel grid: a disc with noise at its rim */
 const blotch = (ctx: CanvasRenderingContext2D, seed: number, inner: string, outer: string, spikes: boolean) => {
+  /*
+    A ragged blotch on the texel grid that fades out at its edge: dense in
+    the middle, then two thinner steps, with its rim broken up texel by
+    texel, and lobed and spiked all round so no two read as a disc. A solid
+    black disc of the same size, alpha-tested, read as a hole in the lawn.
+  */
   let s = seed
   const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
-  const lobes = Array.from({ length: 9 }, () => 0.75 + rnd() * 0.35)
+  const lobes = Array.from({ length: 11 }, () => 0.55 + rnd() * 0.5)
   for (let y = 0; y < 32; y++)
     for (let x = 0; x < 32; x++) {
       const dx = x + 0.5 - 16
       const dy = y + 0.5 - 16
       const r = Math.hypot(dx, dy) / 15
-      const a = (Math.atan2(dy, dx) / (Math.PI * 2) + 1) * 9
-      const i = Math.floor(a) % 9
-      const lobe = lobes[i] + (lobes[(i + 1) % 9] - lobes[i]) * (a - Math.floor(a))
-      const edge = lobe * (spikes && rnd() < 0.06 ? 1.25 : 1) + (rnd() - 0.5) * 0.12
+      const a = (Math.atan2(dy, dx) / (Math.PI * 2) + 1) * 11
+      const i = Math.floor(a) % 11
+      const lobe = lobes[i] + (lobes[(i + 1) % 11] - lobes[i]) * (a - Math.floor(a))
+      const edge = lobe * (spikes && rnd() < 0.08 ? 1.3 : 1) + (rnd() - 0.5) * 0.14
       if (r > edge) continue
-      ctx.fillStyle = r < edge * 0.55 ? inner : outer
+      const q = r / edge
+      // the outer steps are broken up: some texels of the rim are missing
+      if (q > 0.72 && rnd() < (q - 0.72) * 1.6) continue
+      const alpha = q < 0.4 ? 0.88 : q < 0.72 ? 0.62 : 0.34
+      ctx.globalAlpha = alpha
+      ctx.fillStyle = q < 0.55 ? inner : outer
       ctx.fillRect(x, y, 1, 1)
     }
+  ctx.globalAlpha = 1
 }
 
 /* ------------------------------------------------------------- create -- */
@@ -511,11 +533,20 @@ export const createFx = (o: FxOpts): Fx => {
   // the look's lamp and flash light then divide by the dusk's ambient to
   // recover an albedo from, and at dusk the scorch came out as a bright
   // orange ring on the asphalt
+  // and see-through at its rim, blended over the ground by colour only:
+  // the target's alpha is the look's (holes, lights, veils), so it is left
+  // as the road wrote it
   const mkDecalMat = (tex: THREE.Texture) => {
     const m = new THREE.MeshLambertMaterial({
-      map: tex, alphaTest: 0.5, transparent: false,
+      map: tex, transparent: true, depthWrite: false,
       polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
     })
+    m.blending = THREE.CustomBlending
+    m.blendEquation = THREE.AddEquation
+    m.blendSrc = THREE.SrcAlphaFactor
+    m.blendDst = THREE.OneMinusSrcAlphaFactor
+    m.blendSrcAlpha = THREE.ZeroFactor
+    m.blendDstAlpha = THREE.OneFactor
     return m
   }
   const scorchMat = mkDecalMat(decalTexture((c) => blotch(c, 7, '#1c1916', '#3b342d', true)))
@@ -785,7 +816,7 @@ export const createFx = (o: FxOpts): Fx => {
       if (Math.random() < 0.55) {
         const s = rnd(0.35, 0.7) * (0.6 + k)
         emit(fire, at.x + rnd(-0.25, 0.25), at.y, at.z + rnd(-0.25, 0.25), rnd(-0.6, 0.6), rnd(3, 6), rnd(-0.6, 0.6),
-          rnd(0.25, 0.45), s, s, s, rnd(0.7, 0.95), 0, 0, { grow: 1.3, drag: 0.5 })
+          rnd(0.25, 0.45), s, s * 1.2, s, rnd(1.0, 1.15), 0, 0, { grow: 1.3, drag: 0.5 })
       }
       if (Math.random() < 0.12) {
         const s = rnd(0.4, 0.8)
@@ -950,6 +981,15 @@ export const createFx = (o: FxOpts): Fx => {
         P.life[i] = 0
         m4.makeScale(0, 0, 0)
         P.mesh.setMatrixAt(i, m4)
+        // a tongue of flame does not simply stop in mid-air: the bigger
+        // ones hand on to a puff of smoke that keeps climbing, so a fire
+        // that went up in the air feeds a column instead of hanging there
+        if (P === fire && P.s[i3] > 0.55 && Math.random() < 0.55) {
+          const sz = P.s[i3] * 1.1
+          const g = 0.12 + Math.random() * 0.06
+          emit(puffs, P.p[i3], P.p[i3 + 1], P.p[i3 + 2], P.v[i3] * 0.3, 3 + Math.random() * 3, P.v[i3 + 2] * 0.3,
+            1.4 + Math.random() * 0.8, sz, sz, 1, g, g * 0.95, g * 0.9, { grow: 2, drag: 0.8, spin: 0, fadeAt: 0.25 })
+        }
         continue
       }
       hi = i + 1

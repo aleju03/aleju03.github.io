@@ -45,8 +45,8 @@ const RUBBER = '#1e2128'
 
 // the glow, linear and HDR: the look's ACES takes the hot one to a pale
 // cyan and leaves the idle one a clear blue
-const CORE_IDLE = new THREE.Color(0.02, 0.4, 1.6)
-const CORE_HOT = new THREE.Color(0.2, 1.7, 3.8)
+const CORE_IDLE = new THREE.Color(0.04, 0.8, 2.4)
+const CORE_HOT = new THREE.Color(0.3, 2.3, 4.4)
 
 /** where the gun sits in the camera's frame, first person, and its size
     there: the bottom-right corner, a quarter of the frame, the claw about
@@ -60,9 +60,7 @@ const FP_SCALE = 0.34
 const FP_REF_TAN = Math.tan(THREE.MathUtils.degToRad(74) / 2)
 /** the gun in the body's hand, world units per model unit: a body is ~4.5
     tall and its forearm short, so the gun is drawn big enough to read */
-const TP_SCALE = 3.2
-/** how far under the aim the body's gun points, radians */
-const TP_HIP = 0.12
+const TP_SCALE = 2.2
 /** the first-person gun's own turn in the frame (pitch, yaw, roll): yawed
     in so its flank shows and the claw points at the crosshair */
 const FP_TURN = new THREE.Euler(0.03, 0.3, -0.3, 'YXZ')
@@ -188,7 +186,7 @@ const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
   // dark bands, so the light shows through the gaps between them, and an
   // inner ring of fins that spins with the load
   add(g.drum(0.15, 0.32, 8), mats.core, 0, 0.13, -0.24)
-  for (const z of [-0.09, -0.19, -0.29, -0.39]) add(g.drum(0.185, 0.04, 8), mats.dark, 0, 0.13, z)
+  for (const z of [-0.09, -0.24, -0.39]) add(g.drum(0.18, 0.03, 8), mats.dark, 0, 0.13, z)
   const spinner = new THREE.Group()
   spinner.position.set(0, 0.13, -0.24)
   root.add(spinner)
@@ -205,13 +203,15 @@ const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
     add(g.box(0.045, 0.05, 0.05), mats.dark, s * 0.125, 0.0, -0.01)
     add(g.box(0.045, 0.05, 0.05), mats.dark, s * 0.125, 0.0, -0.4)
   }
-  // a low spine over the top, and a steel fin on it
+  // a low spine over the top, with a light strip along it
   add(g.box(0.05, 0.05, 0.36), mats.dark, 0, 0.33, -0.24)
-  add(g.box(0.025, 0.07, 0.18), mats.steel, 0, 0.38, -0.2)
+  add(g.box(0.03, 0.03, 0.3), mats.core, 0, 0.365, -0.24)
   // barrel, emitter collar and the lens the beam comes out of
   add(g.drum(0.085, 0.2, 8, 0.1), mats.slate, 0, 0.12, -0.5)
   add(g.drum(0.12, 0.05, 8), mats.dark, 0, 0.12, -0.6)
-  add(g.drum(0.07, 0.03, 8), mats.lens, 0, 0.12, -0.63)
+  // a glowing ring round the emitter, and the lens the beam comes out of
+  add(g.drum(0.1, 0.025, 8), mats.core, 0, 0.12, -0.635)
+  add(g.drum(0.07, 0.03, 8), mats.lens, 0, 0.12, -0.65)
   const muzzle = new THREE.Object3D()
   muzzle.position.set(0, 0.12, -0.74)
   root.add(muzzle)
@@ -228,8 +228,10 @@ const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
     const tip = add(g.box(0.04, 0.035, 0.1), mats.ochre, 0, -0.025, -0.23, hinge)
     tip.rotation.x = -0.55
     // a glowing pad on the inside of each hook: the claw lights with the core
-    const pad = add(g.box(0.026, 0.02, 0.05), mats.core, 0, -0.05, -0.25, hinge)
+    const pad = add(g.box(0.03, 0.022, 0.08), mats.core, 0, -0.05, -0.25, hinge)
     pad.rotation.x = -0.55
+    // and a light strip down the inside of each prong
+    add(g.box(0.026, 0.02, 0.16), mats.core, 0, -0.03, -0.1, hinge)
     add(g.box(0.05, 0.05, 0.05), mats.dark, 0, 0, 0, hinge)
     prongs.push(hinge)
   }
@@ -273,6 +275,8 @@ export interface ViewFrame {
   firstPerson: boolean
   /** third person: where the body's right hand is (world), and the aim */
   hand?: THREE.Vector3 | null
+  /** third person: the body's left hand, on the foregrip */
+  handL?: THREE.Vector3 | null
   aim?: THREE.Vector3 | null
   /** the point the gun points at (the held thing's target, or far down the
       view): the barrel is aimed at it, so the beam leaves along the barrel */
@@ -341,7 +345,6 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   const tmp = new THREE.Vector3()
   const m4 = new THREE.Matrix4()
   const aimQ = new THREE.Quaternion()
-  const xAxis = new THREE.Vector3(1, 0, 0)
   const camUp = new THREE.Vector3()
   const tmp2 = new THREE.Vector3()
   let aimed = false
@@ -440,17 +443,22 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       fp.quaternion.multiply(q.setFromEuler(eul))
     }
     if (tp.visible && f.hand) {
+      // in the body's hands: both arms are solved onto the aim
+      // (playerBody's holdTool), the grip sits between the two mittens read
+      // off the posed rig every frame, and the barrel points along the same
+      // aim the arms were solved onto, so the gun cannot point one way while
+      // the arms point another. A matrix's lookAt points its +z from the
+      // target back at the eye, so looking from the origin along the aim
+      // leaves -z, the gun's forward, on it
       tp.position.copy(f.hand)
-      // a matrix's lookAt points its +z from the target back at the eye, so
-      // looking from the hand at the aim point leaves -z, the gun's forward,
-      // on it
-      if (f.aimAt) m4.lookAt(f.hand, f.aimAt, up)
-      else m4.lookAt(tmp.set(0, 0, 0), f.aim ?? tmp2.set(0, 0, -1).applyQuaternion(cam.quaternion), up)
+      if (f.handL) {
+        // the grip between the two mittens, a little toward the right one
+        tp.position.lerp(f.handL, 0.35)
+      }
+      if (f.aim) m4.lookAt(tmp.set(0, 0, 0), f.aim, up)
+      else if (f.aimAt) m4.lookAt(tp.position, f.aimAt, up)
+      else m4.lookAt(tmp.set(0, 0, 0), tmp2.set(0, 0, -1).applyQuaternion(cam.quaternion), up)
       tp.quaternion.setFromRotationMatrix(m4)
-      // held from the hip, a little under the aim: the beam leaves the
-      // barrel low and arcs up to what it holds, which is what reads as a
-      // beam and not a rod from over the shoulder
-      tp.quaternion.multiply(q.setFromAxisAngle(xAxis, -TP_HIP))
     }
   }
 

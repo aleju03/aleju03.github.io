@@ -866,9 +866,13 @@ takes a position takes any `{x, y, z}`. In dev, CrtScene puts the facade on
   write depth, so they sort with each other and with whatever flies
   through them; the hot ones are drawn a little forward so the white-yellow
   heart shows through the orange rind, the way additive fire would; and smoke is
-  premultiplied *over*, translucent
-  through blending in three stepped opacities, lit by the look's ambient
-  (`uShade`, from `lightLook`) so it darkens at night. Ground dust is a
+  laid *over* by its transmittance, translucent through blending in four
+  stepped opacities, lit by the look's ambient (`uShade`, from
+  `lightLook`) so it darkens at night. Its alpha is the one thing that
+  writes the look's **veil** band (0.2 to 0.99, kept by a MIN blend so
+  layers never sink to a hole): the grade pass takes the silhouette and
+  fold ink off whatever a veil covers, because inked through a cloud the
+  debris inside it drew as grey line art. Ground dust is a
   flattened sprite, or it reads as a stone.
 - **A bang is a light before it is a ball.** For three frames the look's
   `lights.flash` is hard and wide (1.5x the blast radius), lighting the
@@ -944,7 +948,7 @@ npm run film -- --list
 
 npm run film -- sandbox:catalogue      every prop on a town street
 npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 4    barrels going up in a row
-npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 3.3 --from -40.5,2.5,-349 --to -31,1.6,-326 --fov 64
+npm run film -- sandbox:chain --rings 4 --start 0.3 --duration 4.8 --from -40.5,2.5,-349 --to -31,5,-326 --fov 66
                                        ...the same from a walker's eye
 npm run film -- sandbox:smash          crates, melons, bottles into a shopfront
 npm run film -- sandbox:crowd [--nobatch]   300 props: draw calls and ms
@@ -1407,7 +1411,9 @@ every one of them has a failure you can see in a harness shot.
   edge is a clean line and anything standing in front of it still covers it.
   A new window onto live DOM must be registered there or it will render as a
   bezel-coloured blank. Anything else translucent must blend rather than
-  write alpha.
+  write alpha. Alpha has three codes in the scene target: under 0.2 a
+  hole, 0.2 to 0.99 a **veil** (air over something solid: its ink is taken
+  off, see the sandbox's smoke), 254/255 a light (`GLOW_ALPHA`).
 - **Lamp pools lie on the ground.** A pool lights only up-facing surfaces
   five to eight units under its lens, cut into four flat bands with a
   dithered seam; a fixture whose lens is not about six units over the ground
