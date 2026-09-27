@@ -656,6 +656,16 @@ scattered, and no screenshot was ever going to say otherwise.
   props' ground) may be in view up there, which is also what made orbit
   cheap. The Moon stands at (0, 60000) in the scene; its gravity is a sixth,
   so a crate from 20 up lands in 2.72 s against the street's 1.10.
+- **The portal gun is the other way there** (`sandbox/tools/portalMoon.ts`).
+  A shot at the sky's Moon by night opens on a fixed spot on the Moon (a dark
+  slab on the landing pad, facing the Earth); going through is the level
+  system's `cross`, the same swap as a seamless seam with nobody moved,
+  because the portal places the walker in the Moon level's own coordinates.
+  Looking through from the Earth dresses the scene as the Moon for one pass
+  (`outsideWorld.moonPortal.dress`: its ground at the level's origin, the
+  Earth's ground put away, the Moon's sun, the Earth hung low in its black
+  sky, no air) and undresses it after; looking back from the Moon shows a
+  snapshot of the Earth's side taken as you stepped through.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs
@@ -825,6 +835,9 @@ sandbox/
                   the lens carried through the pair, oblique near plane,
                   cropped to the oval, sampled in screen space so the look
                   grades it with everything else
+    portalMoon.ts the Moon by portal: the sky shot, the slab, the far side
+                  made ready a slice a frame, the dressed view there and
+                  the snapshot of the Earth's side for the view back
     portalSfx.ts  its shot, opening, fizzle and whoosh
     portalThumb.ts  its catalogue plate, painted cell by cell
   destruction.ts  buildings coming down: damage from blasts, impacts, cars
@@ -1316,6 +1329,15 @@ drawn through this world's machinery:
   every oval shows its closed swirl. Measured downtown on an RTX-class card,
   one on-screen portal costs about 1 to 3.5 ms a frame depending on what is
   behind the exit; a shot costs about a millisecond.
+- **The Moon is one shot away at night.** Fire at the Moon in the sky and
+  that portal opens on a slab on the Moon (see "Leaving the planet"); its
+  oval swirls shut until the Moon's ground and the Earth in its sky have been
+  made, a few seconds of a two-millisecond slice a frame. The view from the
+  Earth is live (about 0.7 ms a frame, measured) and written with the look's
+  light code, since it is another level's daylight: this level's night grade
+  and its headlamp leave it alone (the headlamp read the sunlit regolith as
+  albedo and burned it white). The view back from the Moon is a snapshot,
+  lifted by how dark the night it was taken in was.
 - **Local only.** Portals are not on the wire; each player's pair is their
   own.
 

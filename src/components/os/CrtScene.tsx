@@ -42,9 +42,9 @@ import { footstep, landThump, spawnPop } from '../../game/core/sfx'
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { Sandbox } from '../../game/sandbox/sandbox'
-import type { PortalWalk, Toolbelt } from '../../game/sandbox/tools/toolbelt'
+import type { PortalMoon, PortalWalk, Toolbelt } from '../../game/sandbox/tools/toolbelt'
 import type { PortalHooks } from '../../game/sandbox/tools/portalView'
-import type { Portal, PortalColor } from '../../game/sandbox/tools/portals'
+import type { Portal, PortalColor, PortalCrossing } from '../../game/sandbox/tools/portals'
 import type { ToolInput } from '../../game/sandbox/tools/types'
 import { createEdges, held, keyHint } from '../../game/sandbox/bindings'
 import {
@@ -811,8 +811,10 @@ export default function CrtScene({
         // with the sandbox. 1 and 2 pick the slot; the belt starts on hands,
         // so a walk that never presses 2 is the walk it always was
         let tools: Toolbelt | null = null
-        /** the walker's side of the portals (built with the belt) */
+        /** the walker's side of the portals, and their way to the Moon
+            (built with the belt) */
         let portalWalk: PortalWalk | null = null
+        let portalMoon: PortalMoon | null = null
         /** mouse movement the belt has taken from the view (E turning a prop) */
         const toolLook = { x: 0, y: 0 }
         const toolAim = { eye: new THREE.Vector3(), dir: new THREE.Vector3(), yaw: 0 }
@@ -2547,23 +2549,76 @@ export default function CrtScene({
           if (earthGround && levels.current.outdoors) visit(earthGround)
           return nearMeshes
         }
-        /** a portal shot into the open sky: nowhere to open it (yet) */
+        /** a portal shot into the open sky: the Moon, if it is under the ray
+            (sandbox/tools/portalMoon.ts) */
         const portalSky = (color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3): boolean => {
-          void color
-          void eye
-          void dir
-          return false
+          if (!portalMoon?.sky(color, eye, dir)) return false
+          pushFeed({ tone: 'ok', text: bilingual('a portal on the Moon', 'un portal en la Luna') })
+          return true
         }
-        /** a pair spanning two levels: carried across by a seamless change */
-        const portalLevel = (to: string): boolean => {
-          void to
-          return false
+        /** a pair spanning two levels: the Earth's side photographed on the
+            way out, then the seamless swap, with nobody moved (the portal
+            places the walker in the new level's own coordinates) */
+        const portalLevel = (to: string, c: PortalCrossing): boolean => {
+          if (to === 'moon' && portalMoon) {
+            // the snapshot is taken from the Earth portal's own face, which
+            // is where the walker is standing: no body, no gun in it
+            const vm = tools?.viewmodel
+            const fpWas = !!vm?.fp.visible
+            const bodyWas = body.visible
+            if (vm) vm.fp.visible = false
+            body.visible = false
+            // (lifted for the Moon's day grade by how dark the night it is
+            // taken in is: the night grade shows a street brighter than raw)
+            portalMoon.depart(c.from, scene, 1 + 3 * (lastSky?.night ?? 0))
+            if (vm) vm.fp.visible = fpWas
+            body.visible = bodyWas
+          }
+          return levels.cross(to)
         }
-        /** the view through a pair spanning two levels */
+        /** the view through a pair spanning two levels: the Moon, dressed for
+            one pass (the light rig and the air are the scene's own, so they
+            are dressed here and the rest by outsideWorld), or the snapshot */
+        const portalAir = { near: 0, far: 0, color: new THREE.Color(), bg: new THREE.Color(), sky: new THREE.Color(),
+          ground: new THREE.Color(), hemi: 0, moon: 0 }
+        const SPACE_HEMI = new THREE.Color('#1c2130')
         const portalCross = (to: Portal, vcam: THREE.PerspectiveCamera): ReturnType<NonNullable<PortalHooks['cross']>> => {
-          void to
-          void vcam
-          return null
+          const got = portalMoon?.view(to, vcam) ?? null
+          if (!got || 'snapshot' in got || !scene) return got
+          const fog = scene.fog as THREE.Fog
+          const bg = scene.background as THREE.Color
+          const A = portalAir
+          A.near = fog.near
+          A.far = fog.far
+          A.color.copy(fog.color)
+          A.bg.copy(bg)
+          A.sky.copy(hemi.color)
+          A.ground.copy(hemi.groundColor)
+          A.hemi = hemi.intensity
+          A.moon = moon.intensity
+          // the Moon level's air: none, and a black sky that fills nothing in
+          fog.near = 1e6
+          fog.far = 2e6
+          fog.color.set(0, 0, 0)
+          bg.set(0, 0, 0)
+          hemi.color.copy(SPACE_HEMI)
+          hemi.groundColor.copy(SPACE_HEMI)
+          hemi.intensity = HEMI_ROAM * 0.8 * 0.35
+          moon.intensity = 0
+          return {
+            far: got.far,
+            restore: () => {
+              got.restore()
+              fog.near = A.near
+              fog.far = A.far
+              fog.color.copy(A.color)
+              bg.copy(A.bg)
+              hemi.color.copy(A.sky)
+              hemi.groundColor.copy(A.ground)
+              hemi.intensity = A.hemi
+              moon.intensity = A.moon
+            },
+          }
         }
         /*
           The catalogue's Vehicles section. There is one of each machine, shared
@@ -2962,6 +3017,7 @@ export default function CrtScene({
         const renderPortals = () => {
           const pv = tools?.portalView
           if (!pv || !webgl || !scene || !roaming) return
+          portalMoon?.tick()
           const it = look.fitNow()
           pv.render(webgl, scene, camera, it.w, it.h, levels.current.id, performance.now() / 1000, portalHooks)
         }
@@ -4095,7 +4151,7 @@ export default function CrtScene({
               walk,
               eye: camera.position,
               level: () => levels.current,
-              changeLevel: (to) => portalLevel(to),
+              changeLevel: (to, c) => portalLevel(to, c),
               carried: () => {
                 // this frame's lens is the carried one, not last step's turn
                 camera.rotation.set(walk.pitch, walk.yaw, 0)
@@ -4104,6 +4160,14 @@ export default function CrtScene({
                 rig.face(walk.yaw)
                 headPos.copy(camera.position)
               },
+            })
+            portalMoon = toolsMod.createPortalMoon({
+              portals: tools.portals,
+              link: { ...outside.moonPortal, ground: outside.moon.groundYAt, obstacles: outside.moon.obstacles },
+              view: tools.portalView,
+              material: toolsMod.portalWorldMaterial('#34373d', 0.9, 0.05),
+              renderer: webgl,
+              onSolids: () => sandboxes.get('moon')?.sb.solidsChanged(),
             })
             switchSandboxTo(levels.current)
             // the catalogue's data, off the same lazily loaded kind table
@@ -4150,6 +4214,7 @@ export default function CrtScene({
                 __sandboxRig: rig,
                 __tools: tools,
                 __portalWalk: portalWalk,
+                __portalMoon: portalMoon,
                 // scripted contraptions (a car, a rocket, a hovercraft), through
                 // the app's own module graph so they share its contraptions
                 __contraptionBuild: () => import('../../game/sandbox/contraption/build'),

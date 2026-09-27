@@ -501,5 +501,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   }
 }
 
-// the walker's side of the portals, for the scene that owns the walk
+// the walker's side of the portals and their way to the Moon, for the scene
+// that owns the walk and the levels
 export { createPortalWalk, type PortalWalk } from './portalWalk'
+export { createPortalMoon, type PortalMoon } from './portalMoon'
+export { portalWorldMaterial } from './viewmodel'

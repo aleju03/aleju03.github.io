@@ -11,7 +11,8 @@ import type { Level, LevelShift, LevelSpawn } from './types'
   renderer-side (shadow re-bakes) through the callbacks. A seam carrying a
   `shift` is seamless: both levels draw the same picture at that moment, so
   the swap happens on the spot with no card and no freeze, and the scene
-  carries the player across by the offset (onSeamless). reset() is the
+  carries the player across by the offset (onSeamless); `cross` is the same
+  swap with no offset, for a portal that places the player itself. reset() is the
   no-ceremony path home — sitting down or leaving the room mid-level snaps
   straight back to the home level's spawn with no cut.
 */
@@ -48,6 +49,10 @@ export interface LevelSystem {
       console's escape hatch): false if one is already running or the level
       is unknown */
   goTo: (id: string, spawn?: LevelSpawn) => boolean
+  /** make a level live on the spot, the way a seamless seam does but with
+      nobody moved (a portal carries the walker itself, in the new level's
+      coordinates): false if a cut is running or the level is unknown */
+  cross: (id: string) => boolean
 }
 
 export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
@@ -112,6 +117,17 @@ export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
       cut = { t0: performance.now(), to, spawn: spawn ?? to.spawn, swapped: false, fading: false }
       opts.onCover(true)
       opts.onCutStart()
+      return true
+    },
+    cross: (id) => {
+      const to = byId.get(id)
+      if (!to || cut) return false
+      if (to === current) return true
+      current.leave()
+      const from = current
+      current = to
+      current.enter()
+      opts.onSeamless?.(current, { x: 0, y: 0, z: 0 }, from)
       return true
     },
     reset: () => {

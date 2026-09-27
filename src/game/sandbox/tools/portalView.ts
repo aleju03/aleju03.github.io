@@ -44,7 +44,10 @@ import { ovalR, PORTAL_HH, PORTAL_HW, toPortal, type Portal, type Portals } from
   render target per colour, compiled under the boot cover by `stage()` with
   the belt's other parts. A pair that spans two levels (the Moon) renders
   through `hooks.cross`, which dresses the scene as the far level for the
-  one pass and undresses it after, or shows the snapshot it hands back.
+  one pass and undresses it after, or shows the snapshot it hands back. A
+  dressed view is written with the look's light code, so the grade and the
+  night's fake lamps of the level you stand in leave another level's
+  daylight alone.
 */
 
 /** the rim, as a share of the oval past the opening */
@@ -77,6 +80,7 @@ uniform float uOpen;
 uniform float uMode;
 uniform float uTime;
 uniform float uFull;
+uniform float uEmit;
 uniform vec4 uSnap;
 uniform mat4 uSnapM;
 varying vec2 vE;
@@ -102,7 +106,7 @@ void main() {
     // oval (a level too far to redraw every frame)
     vec4 c = uSnapM * vec4(gl_FragCoord.xy / uRes * 2.0 - 1.0, 1.0, 1.0);
     vec2 uv = c.xy / c.w * 0.5 + 0.5;
-    col = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
+    col = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb * uSnap.x;
     float t = step(0.9 * R, r) * 0.5 + step(0.95 * R, r) * 0.5;
     col = mix(col, uColor * 0.3, t * 0.45);
   } else if (uMode > 0.5) {
@@ -116,7 +120,10 @@ void main() {
     float k = 0.28 + 0.2 * step(0.2, s) + 0.35 * step(0.72, r / max(R, 0.001));
     col = uColor * 0.42 * k;
   }
-  gl_FragColor = vec4(col, 1.0);
+  // another level's light is its own: written as a light, the look leaves
+  // it out of this level's grade and its lamps (the night's headlamp read
+  // the Moon's sunlit ground as albedo and burned it white)
+  gl_FragColor = vec4(col, uEmit > 0.5 ? ${GLOW_ALPHA.toFixed(6)} : 1.0);
 }`
 
 export interface PortalHooks {
@@ -130,8 +137,8 @@ export interface PortalHooks {
    * closed swirl. Or hand back `{ snapshot }` to draw a stored picture.
    */
   cross?: (to: Portal, vcam: THREE.PerspectiveCamera) =>
-    | { restore: () => void }
-    | { snapshot: THREE.Texture; viewProj: THREE.Matrix4 }
+    | { restore: () => void; far?: number }
+    | { snapshot: THREE.Texture; viewProj: THREE.Matrix4; gain?: number }
     | null
 }
 
@@ -190,6 +197,7 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
         uMode: { value: 0 },
         uTime: { value: 0 },
         uFull: { value: 0 },
+        uEmit: { value: 0 },
         uSnap: { value: new THREE.Vector4() },
         uSnapM: { value: new THREE.Matrix4() },
       },
@@ -212,6 +220,7 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
   const parents: (THREE.Object3D | null)[] = [null, null]
 
   const vcam = new THREE.PerspectiveCamera()
+  const lens = new THREE.PerspectiveCamera()
   vcam.matrixAutoUpdate = false
   vcam.matrixWorldAutoUpdate = false
   const M = new THREE.Matrix4()
@@ -359,6 +368,7 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
       u.uTime.value = time
       u.uRes.value.set(w, h)
       u.uFull.value = 0
+      u.uEmit.value = 0
       mesh.frustumCulled = true
       const to = portals.partner(p)
       u.uMode.value = 0
@@ -394,13 +404,8 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
       vcam.matrixWorld.multiplyMatrices(M, camera.matrixWorld)
       vcam.matrixWorld.decompose(vcam.position, vcam.quaternion, scl)
       vcam.matrixWorldInverse.copy(vcam.matrixWorld).invert()
-      vcam.near = camera.near
-      vcam.far = camera.far
-      crop(camera.projectionMatrix, r, w, h, P)
-      oblique(P, vcam.matrixWorldInverse, to.n, to.pos)
-      vcam.projectionMatrix.copy(P)
-      vcam.projectionMatrixInverse.copy(P).invert()
       let restore: (() => void) | null = null
+      let far = camera.far
       if (to.level !== p.level) {
         const got = hooks?.cross?.(to, vcam) ?? null
         if (!got) continue
@@ -410,17 +415,33 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
           const u = mats[i].uniforms
           rot.extractRotation(vcam.matrixWorld)
           u.uSnapM.value.multiplyMatrices(got.viewProj, rot).multiply(camera.projectionMatrixInverse)
+          u.uSnap.value.x = got.gain ?? 1
           modes[k] = 2
           mats[i].userData.snap = got.snapshot
           continue
         }
         restore = got.restore
+        far = got.far ?? far
       }
+      // the lens's own projection (its far plane moved out for a far side
+      // that wants one), narrowed to the oval, its near plane bent onto the exit
+      if (far !== camera.far) {
+        lens.copy(camera)
+        lens.far = far
+        lens.updateProjectionMatrix()
+        crop(lens.projectionMatrix, r, w, h, P)
+      } else crop(camera.projectionMatrix, r, w, h, P)
+      oblique(P, vcam.matrixWorldInverse, to.n, to.pos)
+      vcam.near = camera.near
+      vcam.far = far
+      vcam.projectionMatrix.copy(P)
+      vcam.projectionMatrixInverse.copy(P).invert()
       rt.viewport.set(r.x, r.y, r.w, r.h)
       rt.scissor.set(r.x, r.y, r.w, r.h)
       rr.setRenderTarget(rt)
       rr.render(scene, vcam)
       restore?.()
+      if (restore) mats[i].uniforms.uEmit.value = 1
       modes[k] = 1
       stats.passes++
       stats.pixels += r.w * r.h

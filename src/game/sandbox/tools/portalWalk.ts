@@ -48,8 +48,9 @@ export interface PortalWalkEnv {
   /** the lens: the walker's eye, read and written in place */
   eye: THREE.Vector3
   level: () => PortalWalkLevel
-  /** the pair spans two levels: make `to` live now, seamlessly, or say no */
-  changeLevel?: (to: string) => boolean
+  /** the pair spans two levels: make `to` live now, seamlessly, or say no
+      (the crossing is handed over for anything the trip has to take along) */
+  changeLevel?: (to: string, c: PortalCrossing) => boolean
   /** after a carry: re-pose the body, drop the chase boom, play the sound */
   carried?: (c: PortalCrossing) => void
 }
@@ -116,7 +117,7 @@ export function createPortalWalk(env: PortalWalkEnv): PortalWalk {
       d.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp).applyQuaternion(q)
       v.set(vx, vy, vz).applyQuaternion(q)
       curC.applyMatrix4(M)
-      if (to.level !== from.level && !env.changeLevel?.(to.level)) return null
+      if (to.level !== from.level && !env.changeLevel?.(to.level, c)) return null
       const nl = env.level()
       let feet = curC.y - PORTAL_BODY_MID
       if (to.n.y < 0.45) {

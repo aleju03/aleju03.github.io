@@ -66,6 +66,14 @@
                                       links counted from the catalogue on
                                       (must be 0). Shots to
                                       ~/.cache/overhaul/portal (--portal-out)
+    npm run drive -- portalmoon       the Moon by portal, at night: blue on a
+                                      wall downtown, orange fired at the Moon
+                                      in the sky, the Moon looked at through
+                                      blue (and its cost), walked through to
+                                      the Moon, home looked at through the
+                                      slab, and walked back; links counted
+                                      (must be 0). Shots moon-* beside the
+                                      portal ones
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -1668,7 +1676,8 @@ try {
     console.log(`  ${await evaluate('window.__vLinks')} programs linked across the viewmodel shots`)
   }
 
-  if (WHAT.includes('portal')) {
+  if (WHAT.includes('portal') || WHAT.includes('portalmoon')) {
+    const moonTrip = WHAT.includes('portalmoon')
     /*
       The portal gun in the real game (see the header). Walls are found by
       sweeping the view round and firing until a portal lands upright a
@@ -1684,8 +1693,12 @@ try {
     }
     await evaluate(`(() => { window.__pLinks = []; for (const c of document.querySelectorAll('canvas')) {
       const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__pWrapped) continue; gl.__pWrapped = true
-      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__pLinks.push(window.__pPhase || '?'); real(p) } } return true })()`)
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => {
+        const src = (gl.getAttachedShaders(p) ?? []).map((sh) => gl.getShaderSource(sh) ?? '').join('\\n')
+        const name = /#define SHADER_NAME ([^\\s]+)/.exec(src)?.[1] ?? /#define SHADER_TYPE ([^\\s]+)/.exec(src)?.[1] ?? 'raw'
+        window.__pLinks.push((window.__pPhase || '?') + ' (' + name + ')'); real(p) } } return true })()`)
     const phase = (name) => evaluate(`window.__pPhase = ${JSON.stringify(name)}; true`)
+    await phase(moonTrip ? 'setup (to the street, night)' : 'setup (to the street)')
     const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
     const click = async (code) => {
       await hold(code, true)
@@ -1701,13 +1714,18 @@ try {
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
     await goTo(flag('at', '-32 -331').replace(',', ' '))
     await sleep(6000)
-    await run('time 10:30')
+    await phase(moonTrip ? 'setup (night falls)' : 'setup (morning)')
+    await run(moonTrip ? 'time 22:30' : 'time 10:30')
+    await sleep(1500)
+    await phase('setup (standing)')
     await stand()
     await look(Math.PI / 2, -0.05)
     await sleep(800)
 
     // 1. the gun, out of the catalogue's tools tab
     await phase('catalogue')
+    if (moonTrip) await evaluate(`(() => { window.__tools.give('portalgun'); window.__tools.select(3); return true })()`)
+    else {
     await tap('KeyQ')
     await sleep(400)
     await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 4`), 60, 250, 'the catalogue icons')
@@ -1719,8 +1737,9 @@ try {
     await sleep(500)
     await tap('Escape')
     await sleep(1200)
+    }
     console.log(`  in hand: ${await evaluate('window.__tools.tool')}`)
-    await pShot('2-gun-in-hand')
+    if (!moonTrip) await pShot('2-gun-in-hand')
 
     // 2. a wall for each colour
     await phase('open')
@@ -1746,10 +1765,121 @@ try {
       return null
     }
     const blue = await findWall(0, null)
-    const orange = blue ? await findWall(1, blue) : null
+    const orange = blue && !moonTrip ? await findWall(1, blue) : null
     console.log(`  blue:   ${blue ? `${f1(blue.pos)}  facing ${f1(blue.n)}` : 'none  <-- WRONG'}`)
-    console.log(`  orange: ${orange ? `${f1(orange.pos)}  facing ${f1(orange.n)}` : 'none  <-- WRONG'}`)
+    if (!moonTrip) console.log(`  orange: ${orange ? `${f1(orange.pos)}  facing ${f1(orange.n)}` : 'none  <-- WRONG'}`)
     console.log('  a shot costs ' + await evaluate(`(() => { const v = window.__fireMs.slice().sort((a, b) => a - b); return v.length ? v[v.length >> 1].toFixed(1) + ' ms median, ' + v[v.length - 1].toFixed(1) + ' ms worst over ' + v.length : '-' })()`))
+    if (moonTrip && blue) {
+      /* The Moon by portal: orange fired at the Moon in the night sky opens
+         on the slab there; blue on its wall downtown is then looked
+         through (the Moon's ground, the Earth low in its sky) and costed,
+         walked through to the Moon, looked back through (the snapshot of
+         the street), and walked back through home */
+      await phase('moon: open')
+      const md = await evaluate(`(() => { const v = window.__sandboxCamera.position.clone(); return window.__outside.moonPortal.skyMoon(v) ? v.toArray() : null })()`)
+      if (!md) console.log('  no Moon in the sky  <-- WRONG')
+      else {
+        await look(Math.atan2(-md[0], -md[2]), Math.asin(md[1]))
+        await sleep(400)
+        await pShot('moon-0-aim')
+        await click('Mouse2')
+        const o = await evaluate(`(() => { const p = window.__tools.portals.list[1]; return p ? [p.level, p.site, p.ready] : null })()`)
+        console.log(`  orange: ${o ? o.join(', ') : 'none  <-- WRONG'}`)
+        const t0 = Date.now()
+        await waitFor(() => evaluate('window.__tools.portals.list[1]?.ready'), 400, 100, 'the Moon made ready').catch(() => {})
+        console.log(`  the far side ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`)
+        const face = async (p, back, name) => {
+          const x = p.pos[0] + p.n[0] * back
+          const z = p.pos[2] + p.n[2] * back
+          const gy = await evaluate(`window.__levels.current.groundYAt(${x}, ${z})`)
+          await tpFeet(x, z, gy + 0.2, Math.atan2(p.n[0], p.n[2]))
+          await sleep(1600)
+          const c = await here()
+          await look(Math.atan2(-(p.pos[0] - c[0]), -(p.pos[2] - c[2])), Math.atan2(p.pos[1] + 0.8 - c[1], back))
+          await sleep(900)
+          if (name) await pShot(name)
+        }
+        await phase('moon: look through')
+        await face(blue, 7, 'moon-1-the-moon-through-blue')
+        const cost = async (label) => {
+          const r = await evaluate(`(async () => {
+            const gl = window.__renderer.getContext()
+            const raf = window.requestAnimationFrame
+            const t = []; let passes = 0, n = 0
+            window.requestAnimationFrame = (cb) => raf((ts) => {
+              const t0 = performance.now(); cb(ts); gl.finish(); const dt = performance.now() - t0
+              if (dt > 0.4) { t.push(dt); passes += window.__tools.portalView.stats.passes; n++ }
+            })
+            await new Promise((r) => setTimeout(r, 3000))
+            window.requestAnimationFrame = raf
+            t.sort((a, b) => a - b)
+            return { mean: t.reduce((a, b) => a + b, 0) / Math.max(1, t.length), med: t[t.length >> 1] ?? 0, n: t.length, passes: passes / Math.max(1, n) }
+          })()`)
+          console.log(`  ${label.padEnd(34)} ${r.mean.toFixed(2)} ms mean, ${r.med.toFixed(2)} median over ${r.n} frames; ${r.passes.toFixed(2)} views/frame`)
+          return r
+        }
+        const withMoon = await cost('the Moon through blue')
+        await look(null, -1.2)
+        await sleep(600)
+        const without = await cost('same spot, looking down')
+        console.log(`  the Moon's view costs ${(withMoon.mean - without.mean).toFixed(2)} ms a frame (mean)`)
+        await face(blue, 5, null)
+        await phase('moon: the trip')
+        const n0 = await evaluate('window.__portalWalk.last.count')
+        await hold('KeyW', true)
+        await waitFor(() => evaluate(`window.__portalWalk.last.count > ${n0}`), 80, 100, 'into blue').catch(() => {})
+        await hold('KeyW', false)
+        await sleep(1500)
+        const lv = await evaluate('window.__levels.current.id')
+        const c = await here()
+        console.log(`  through: level ${lv}, at ${f1(c)}`)
+        await look(null, 0.12)
+        await sleep(900)
+        await pShot('moon-2-arrived')
+        // turned round: the slab, and home through it
+        const sp = await evaluate(`(() => { const p = window.__tools.portals.list[1]; return { pos: p.pos.toArray(), n: p.n.toArray() } })()`)
+        await face(sp, 8, 'moon-3-home-through-the-slab')
+        console.log('  ' + await evaluate(`(() => { const s = window.__tools.portalView.stats; return 'moon side: ' + s.passes + ' live views' })()`))
+        if (has('debug')) {
+          const b64 = await evaluate(`(() => {
+            const rt = window.__portalMoon.snapshot; if (!rt) return ''
+            const r = window.__renderer, w = rt.width, h = rt.height, px = new Uint16Array(w * h * 4)
+            r.readRenderTargetPixels(rt, 0, 0, w, h, px)
+            const f = (u) => { const e = (u >> 10) & 31, m = u & 1023; const v = e === 0 ? m / 1024 * 2 ** -14 : e === 31 ? 65504 : (1 + m / 1024) * 2 ** (e - 15); return (u & 0x8000) ? -v : v }
+            const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); const img = g.createImageData(w, h)
+            for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = ((h - 1 - y) * w + x) * 4, j = (y * w + x) * 4
+              for (let k = 0; k < 3; k++) img.data[j + k] = Math.min(255, Math.pow(Math.max(0, f(px[i + k])), 1 / 2.2) * 255 * 2)
+              img.data[j + 3] = 255 }
+            g.putImageData(img, 0, 0); return c.toDataURL('image/png').split(',')[1] })()`)
+          if (b64) writeFileSync(join(P_OUT, 'debug-snapshot.png'), Buffer.from(b64, 'base64'))
+          console.log('    snapshot: ' + await evaluate(`(() => {
+            const rt = window.__portalMoon.snapshot; if (!rt) return 'none'
+            const r = window.__renderer, w = rt.width, px = new Uint16Array(4)
+            const probe = (x, y) => { r.readRenderTargetPixels(rt, x, y, 1, 1, px); return Array.from(px).map((v) => v.toString(16)).join('/') }
+            const m = window.__scene.getObjectByName('portal-orange')?.material ?? window.__scene.getObjectByName('portal-blue')?.material
+            const M = m.uniforms.uSnapM.value, V = window.__sandboxCamera.position.constructor
+            const c = [[0, 0], [0.5, 0], [0, 0.5]].map(([x, y]) => { const e = M.elements
+              const v = [x, y, 1, 1].map((_, r) => e[r] * x + e[4 + r] * y + e[8 + r] + e[12 + r])
+              return (v[0] / v[3] * 0.5 + 0.5).toFixed(2) + ',' + (v[1] / v[3] * 0.5 + 0.5).toFixed(2) + ' w' + v[3].toExponential(1) })
+            return 'centre ' + probe(w >> 1, w >> 1) + ' low ' + probe(w >> 1, w >> 3) + ' mode ' + m?.uniforms.uMode.value +
+              ' uv ' + c.join('  ') + ' map ' + (m.uniforms.uMap.value === rt.texture) + ' res ' + m.uniforms.uRes.value.toArray()
+          })()`))
+        }
+        await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+        await sleep(1200)
+        await pShot('moon-3b-slab-third-person')
+        await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+        await face(sp, 5, null)
+        await phase('moon: home')
+        const n1 = await evaluate('window.__portalWalk.last.count')
+        await hold('KeyW', true)
+        await waitFor(() => evaluate(`window.__portalWalk.last.count > ${n1}`), 80, 100, 'into orange').catch(() => {})
+        await hold('KeyW', false)
+        await sleep(1500)
+        console.log(`  home: level ${await evaluate('window.__levels.current.id')}, at ${f1(await here())}`)
+        await pShot('moon-4-home')
+      }
+    }
     if (blue && orange) {
       // 3. each looked through from nine units out
       const faceIt = async (p, name, back = 9) => {
