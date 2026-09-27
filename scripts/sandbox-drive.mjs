@@ -45,6 +45,13 @@
                                       its thrusters; links counted (must be
                                       0). Four shots to ~/.cache/overhaul/
                                       contraptions (--parts-out <dir>)
+    npm run drive -- viewmodel        the guns in hand: the tool gun's screen
+                                      in two modes, the physgun's mitten, the
+                                      tool gun from the chase camera, and the
+                                      gun's frame-to-frame turn in the lens
+                                      standing and walking; links counted
+                                      (must be 0). Shots to ~/.cache/overhaul/
+                                      viewmodel (--vm-out <dir>)
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -83,7 +90,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--parts-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
+const VALUED = new Set(['--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -1543,6 +1550,99 @@ try {
     const links = await evaluate('window.__cLinks')
     console.log(`  ${links.length} programs linked from the catalogue to the rocket${links.length ? ': ' + links.join(', ') : ''}`)
     await run('cleanup')
+  }
+
+  if (WHAT.includes('viewmodel')) {
+    /*
+      The guns in your hand, framed on their own: the tool gun in first
+      person in two modes (a short name and the longest), the physgun and
+      its mitten, and the tool gun in the body's hands from the chase
+      camera. Between the shots the first-person gun's turn relative to the
+      lens is sampled every frame, standing still over a grazing view and
+      then walking, and printed as degrees per frame (a gun that vibrates
+      shows a big total against a small net). Shader links are counted from
+      the first draw on (must be 0). Shots to ~/.cache/overhaul/viewmodel
+      (--vm-out <dir>).
+    */
+    console.log('viewmodel')
+    const VM_OUT = resolve(flag('vm-out', join(process.env.HOME ?? '.', '.cache/overhaul/viewmodel')))
+    mkdirSync(VM_OUT, { recursive: true })
+    const vmShot = async (name) => {
+      const path = join(VM_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    await evaluate(`(() => { window.__vLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__vWrapped) continue; gl.__vWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__vLinks++; real(p) } } return true })()`)
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    // the gun's turn in the lens's frame, frame to frame, for `ms`
+    const wobble = async (label, ms) => {
+      const r = await evaluate(`new Promise((done) => {
+        const vm = window.__tools.viewmodel, cam = window.__sandboxCamera
+        const Q = cam.quaternion.constructor
+        const rel = new Q(), last = new Q(), first = new Q(); let n = 0, sum = 0, max = 0, have = false
+        const t0 = performance.now()
+        const step = () => {
+          rel.copy(cam.quaternion).invert().multiply(vm.fp.quaternion)
+          if (have) { const d = rel.angleTo(last) * 180 / Math.PI; sum += d; max = Math.max(max, d); n++ } else first.copy(rel)
+          last.copy(rel); have = true
+          if (performance.now() - t0 < ${ms}) requestAnimationFrame(step)
+          else done({ n, mean: sum / Math.max(1, n), max, total: sum, net: rel.angleTo(first) * 180 / Math.PI })
+        }
+        requestAnimationFrame(step)
+      })`)
+      console.log(`  ${label}: ${r.n} frames, mean ${r.mean.toFixed(3)} deg/frame, max ${r.max.toFixed(3)}, ` +
+        `total ${r.total.toFixed(2)} deg against a net ${r.net.toFixed(2)}`)
+    }
+    await stand()
+    await look(0.6, -0.12)
+    await evaluate('window.__tools.select(2)')
+    await evaluate(`window.__tools.toolgun.setMode('weld')`)
+    await sleep(900)
+    await vmShot('toolgun-weld')
+    await wobble('tool gun, standing, grazing view', 1500)
+    await hold('KeyW', true)
+    await wobble('tool gun, walking', 1500)
+    await hold('KeyW', false)
+    await sleep(600)
+    await evaluate(`window.__tools.toolgun.setMode('nocollide')`)
+    await sleep(500)
+    await vmShot('toolgun-nocollide')
+    await evaluate('window.__tools.select(1)')
+    await sleep(900)
+    await vmShot('physgun')
+    await wobble('physgun, standing, grazing view', 1500)
+    await evaluate('window.__tools.select(2)')
+    await evaluate(`window.__tools.toolgun.setMode('weld')`)
+    await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+    // looking down, so the chase camera rises and sees over the shoulder
+    await look(null, -0.55)
+    await sleep(1200)
+    await vmShot('toolgun-third')
+    await look(null, -0.12)
+    await sleep(800)
+    // the chase camera sits right behind the body, which hides most of the
+    // gun in its hands, so the body's copy is also shot from off its right
+    // shoulder, level with the aim: one frame drawn through the look from a
+    // borrowed lens, read back off the canvas in the same task, before the
+    // loop draws over it
+    const side = await evaluate(`(() => {
+      const v = window.__tools.viewmodel, cam = window.__sandboxCamera, yaw = window.__sandboxWalk.yaw
+      const p = v.tp.getWorldPosition(cam.position.clone())
+      const fx = -Math.sin(yaw), fz = -Math.cos(yaw), rx = Math.cos(yaw), rz = -Math.sin(yaw)
+      const c = cam.clone()
+      c.position.set(p.x + rx * 3.6 - fx * 0.6, p.y + 1.4, p.z + rz * 3.6 - fz * 0.6)
+      c.lookAt(p.x + fx * 0.3, p.y + 0.2, p.z + fz * 0.3)
+      c.updateMatrixWorld()
+      window.__look.render(window.__scene, c)
+      return window.__renderer.domElement.toDataURL('image/png').split(',')[1]
+    })()`)
+    writeFileSync(join(VM_OUT, 'toolgun-third-side.png'), Buffer.from(side, 'base64'))
+    console.log(`  wrote ${join(VM_OUT, 'toolgun-third-side.png')}`)
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await evaluate('window.__tools.select(0)')
+    console.log(`  ${await evaluate('window.__vLinks')} programs linked across the viewmodel shots`)
   }
 
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))

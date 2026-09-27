@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { GLOW_ALPHA } from '../../render/pixelLook'
+import { buildGripMitten } from './viewHand'
 
 /*
   The physgun you hold: a chunky procedural gun at the bottom right of the
@@ -33,10 +34,35 @@ import { GLOW_ALPHA } from '../../render/pixelLook'
   **The tool gun** (slot 3) is a second model in the same two copies, built
   from the *same* materials, so it costs no program the physgun did not
   already link: a boxy body with a long thin barrel and a glowing tip, and a
-  small screen on its back facing you that says which mode it is in (a
-  canvas, redrawn only when the mode or its step changes, on one glowing
-  material per copy, which `stage()` compiles with the rest). The belt says
-  which of the two is out; the springs, the bob and the draw are shared.
+  screen that says which mode it is in (a canvas,
+  redrawn only when the mode or its step changes, on one glowing material
+  per copy, which `stage()` compiles with the rest). The screen is sized for
+  the look, not for a monitor: at render scale 1 the look draws about 400
+  lines, and the panel lands on roughly 58 by 36 of them, so the canvas is
+  about that many texels and the words are set in a hand-drawn bitmap font
+  at two texels a pixel (`GLYPHS`) rather than in a system font, whose
+  antialiased strokes the look's posterize turned into a grey smear. In
+  first person the panel's mount is solved once against the gun's resting
+  pose so it faces the eye square and upright (`faceTheEye`), on a post above
+  the back of the body; in the body's hands the back of the gun is inside
+  the bean, so it is a smaller panel on the right flank, turned back toward
+  the chase camera over that shoulder. The belt says which of the two
+  guns is out; the springs, the bob and the draw are shared.
+
+  **The hand** is `viewHand.ts`: one smooth surface drawn the way the body is
+  drawn, a mitten closed round the grip with a stub of forearm leaving the
+  frame, in the body's colour and its vinyl sheen. Both guns' first-person
+  copies share it; in third person the body's own mittens hold the gun.
+
+  **Aim.** The first-person gun is aimed in the lens's own frame, at a point
+  down the crosshair, and only the physgun's *hold* pulls it off that, toward
+  the held thing, through a low-pass. Aiming it at whatever the view ray
+  happened to hit made it shake: at a grazing angle the hit hops between the
+  ground a few units off and the far field, and a quarter-unit offset from
+  the lens turns that into a degree or more of barrel every few frames. The
+  turn is also built from scratch each frame: it used to be slerped from
+  the last frame's, which already carried the gun's own roll, so the roll
+  fed back into the aim and the gun shivered even standing still.
 
   **Motion** is springs on a few numbers, all integrated semi-implicitly:
   sway (the gun lags the view and rolls into turns), bob (a figure eight off
@@ -69,9 +95,22 @@ const FP_REF_TAN = Math.tan(THREE.MathUtils.degToRad(74) / 2)
 /** the gun in the body's hand, world units per model unit: a body is ~4.5
     tall and its forearm short, so the gun is drawn big enough to read */
 const TP_SCALE = 2.2
-/** the first-person gun's own turn in the frame (pitch, yaw, roll): yawed
-    in so its flank shows and the claw points at the crosshair */
-const FP_TURN = new THREE.Euler(0.03, 0.3, -0.3, 'YXZ')
+/** the first-person physgun's own turn in the frame (pitch, yaw, roll) on
+    top of its aim: rolled so its flank shows */
+const FP_TURN = new THREE.Euler(0.03, 0, -0.3, 'YXZ')
+/** the tool gun's: nearly level, and yawed a little so its left flank and
+    barrel show past the screen (which faces the eye whatever this is) */
+const TOOL_TURN = new THREE.Euler(0.04, 0.16, -0.08, 'YXZ')
+/** where a first-person gun points when nothing pulls it: this far down the
+    crosshair, in the lens's frame */
+const CONVERGE = new THREE.Vector3(0, 0, -16)
+/** how fast the first-person aim follows its goal, per second: a held thing
+    dragged across the view leads the barrel by a few frames, and nothing
+    that hops can shake it */
+const AIM_RATE = 10
+
+/** the body's own faint light (bodyMaterial's uGummy), on the mitten */
+const HAND_GUMMY = 0.035
 
 const VM_KEY = 'physgun-vm-depth'
 
@@ -126,8 +165,16 @@ const makeMats = (fp: boolean): Mats => {
     steel: std(STEEL, 0.5, 0.45),
     ochre: std(OCHRE, 0.45, 0.55),
     rubber: std(RUBBER, 0.9, 0),
-    // the jelly: smooth-shaded, a little glossy, in the body's own colour
-    hand: vmMaterial(new THREE.MeshStandardMaterial({ color: '#4d8fe0', roughness: 0.38, metalness: 0 }), fp),
+    // the jelly: smooth-shaded, in the body's own colour and its own soft
+    // vinyl (bodyMaterial's roughness), with the trace of light of its own
+    // the body carries (its uGummy) as emissive, set with the colour
+    hand: vmMaterial(
+      new THREE.MeshStandardMaterial({
+        color: '#4d8fe0', roughness: 0.62, metalness: 0,
+        emissive: new THREE.Color('#4d8fe0').multiplyScalar(HAND_GUMMY),
+      }),
+      fp,
+    ),
     core: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
     lens: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
   }
@@ -138,8 +185,8 @@ interface Geos {
   list: THREE.BufferGeometry[]
   box: (w: number, h: number, d: number) => THREE.BufferGeometry
   drum: (r: number, len: number, seg?: number, r2?: number) => THREE.BufferGeometry
-  /** a unit ball, scaled into a lump by its mesh */
-  blob: (detail: number) => THREE.BufferGeometry
+  /** a flat face toward +z */
+  plane: (w: number, h: number) => THREE.BufferGeometry
 }
 const makeGeos = (): Geos => {
   const list: THREE.BufferGeometry[] = []
@@ -159,7 +206,7 @@ const makeGeos = (): Geos => {
     // a cylinder lying along z
     drum: (r, len, seg = 8, r2 = r) =>
       keep(`d${r},${len},${seg},${r2}`, () => new THREE.CylinderGeometry(r2, r, len, seg).rotateX(Math.PI / 2)),
-    blob: (detail) => keep(`s${detail}`, () => new THREE.IcosahedronGeometry(1, detail)),
+    plane: (w, h) => keep(`p${w},${h}`, () => new THREE.PlaneGeometry(w, h)),
   }
 }
 
@@ -169,11 +216,10 @@ interface Gun {
   prongs: THREE.Group[]
   spinner: THREE.Object3D
   muzzle: THREE.Object3D
-  hand: THREE.Object3D
 }
 
 /** the model: origin at the grip, forward is -z, a little over a unit long */
-const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
+const buildGun = (g: Geos, mats: Mats, hand: THREE.BufferGeometry | null): Gun => {
   const root = new THREE.Group()
   const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number, parent: THREE.Object3D = root) => {
     const mesh = new THREE.Mesh(geo, m)
@@ -248,35 +294,22 @@ const buildGun = (g: Geos, mats: Mats, withHand: boolean): Gun => {
   grip.rotation.x = -0.28
   add(g.box(0.025, 0.06, 0.03), mats.dark, 0, -0.03, -0.05)
   add(g.box(0.03, 0.02, 0.14), mats.dark, 0, -0.07, -0.04)
-  // the hand: a jelly fist round the grip in the body's own colour. The
-  // body is hidden in first person, so the fist *is* the player there: a
-  // soft round lump closed over the grip, a thumb over the top, and a stub
-  // of wrist leaving the frame. No arm, no sleeve
-  const hand = new THREE.Group()
-  root.add(hand)
-  if (withHand) {
-    const fist = add(g.blob(1), mats.hand, 0.01, -0.09, 0.07, hand)
-    fist.scale.set(0.12, 0.13, 0.13)
-    fist.rotation.x = -0.28
-    const knuckles = add(g.blob(1), mats.hand, -0.02, -0.03, -0.01, hand)
-    knuckles.scale.set(0.1, 0.075, 0.085)
-    const thumb = add(g.blob(1), mats.hand, -0.07, 0.0, 0.05, hand)
-    thumb.scale.set(0.05, 0.045, 0.08)
-    thumb.rotation.x = -0.3
-    const wrist = add(g.blob(1), mats.hand, 0.03, -0.2, 0.2, hand)
-    wrist.scale.set(0.1, 0.11, 0.16)
-    wrist.rotation.x = 0.6
-  }
-  return { root, mats, prongs, spinner, muzzle, hand }
+  // the hand (first person only): the body is hidden there, so the mitten
+  // *is* the player, closed over the grip (viewHand.ts)
+  if (hand) add(hand, mats.hand, 0, 0, 0)
+  return { root, mats, prongs, spinner, muzzle }
 }
 
 interface Tool {
   root: THREE.Group
   muzzle: THREE.Object3D
+  /** the screen's mount: its centre is the panel's, its +z the panel's face */
+  bezel: THREE.Object3D
 }
 
-/** the tool gun: origin at the grip, forward -z, the physgun's materials */
-const buildToolgun = (g: Geos, mats: Mats, withHand: boolean, screen: THREE.Material): Tool => {
+/** the tool gun: origin at the grip, forward -z, the physgun's materials.
+    `hand` is the first-person copy's mitten, null for the body's copy */
+const buildToolgun = (g: Geos, mats: Mats, hand: THREE.BufferGeometry | null, screen: THREE.Material): Tool => {
   const root = new THREE.Group()
   const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number, parent: THREE.Object3D = root) => {
     const mesh = new THREE.Mesh(geo, m)
@@ -299,41 +332,109 @@ const buildToolgun = (g: Geos, mats: Mats, withHand: boolean, screen: THREE.Mate
   const muzzle = new THREE.Object3D()
   muzzle.position.set(0, 0.1, -0.9)
   root.add(muzzle)
-  // the screen on its back, tilted up at the holder: a dark bezel and the
-  // lit face drawn by the belt
-  const bezel = add(g.box(0.3, 0.2, 0.03), mats.dark, -0.03, 0.3, 0.16)
-  bezel.rotation.set(-0.5, -0.25, 0)
-  const face = new THREE.Mesh(g.box(0.27, 0.17, 0.005), screen)
-  face.position.set(0, 0, 0.017)
+  // the screen, a dark bezel and the lit face drawn by the belt. In first
+  // person it stands on a post above the back of the body and is turned to
+  // face the eye (faceTheEye). In the body's hands the back of the gun is
+  // inside the bean, so there it is a smaller panel on the right flank,
+  // upright and turned back toward the chase camera over that shoulder
+  let bezel: THREE.Mesh
+  if (hand) {
+    add(g.box(0.07, 0.12, 0.07), mats.dark, -0.04, 0.24, 0.13)
+    bezel = add(g.box(SCREEN_PANEL_W + 0.05, SCREEN_PANEL_H + 0.05, 0.035), mats.dark, SCREEN_AT.x, SCREEN_AT.y, SCREEN_AT.z)
+  } else {
+    bezel = add(g.box(SCREEN_PANEL_W + 0.05, SCREEN_PANEL_H + 0.05, 0.035), mats.dark, 0.15, 0.14, -0.2)
+    bezel.rotation.set(-0.12, 1.1, 0, 'YXZ')
+    bezel.scale.setScalar(0.62)
+  }
+  const face = new THREE.Mesh(g.plane(SCREEN_PANEL_W, SCREEN_PANEL_H), screen)
+  face.position.set(0, 0, 0.0185)
   bezel.add(face)
-  // grip, trigger, guard, and the fist on it (first person only)
+  // grip, trigger, guard, and the mitten on it (first person only)
   const grip = add(g.box(0.08, 0.26, 0.11), mats.rubber, 0, -0.1, 0.06)
   grip.rotation.x = -0.28
   add(g.box(0.025, 0.06, 0.03), mats.dark, 0, -0.03, -0.05)
   add(g.box(0.03, 0.02, 0.14), mats.dark, 0, -0.07, -0.04)
-  if (withHand) {
-    const fist = add(g.blob(1), mats.hand, 0.01, -0.09, 0.07)
-    fist.scale.set(0.12, 0.13, 0.13)
-    fist.rotation.x = -0.28
-    const knuckles = add(g.blob(1), mats.hand, -0.02, -0.03, -0.01)
-    knuckles.scale.set(0.1, 0.075, 0.085)
-    const thumb = add(g.blob(1), mats.hand, -0.07, 0.0, 0.05)
-    thumb.scale.set(0.05, 0.045, 0.08)
-    thumb.rotation.x = -0.3
-    const wrist = add(g.blob(1), mats.hand, 0.03, -0.2, 0.2)
-    wrist.scale.set(0.1, 0.11, 0.16)
-    wrist.rotation.x = 0.6
-  }
+  if (hand) add(hand, mats.hand, 0, 0, 0)
   root.traverse((o) => {
     o.castShadow = false
     o.receiveShadow = false
   })
-  return { root, muzzle }
+  return { root, muzzle, bezel }
 }
 
-/** the screen's picture: a 64x32 canvas, two lines of text on dark glass */
-const SCREEN_W = 64
-const SCREEN_H = 32
+/*
+  The screen's picture. The look draws about 400 lines at render scale 1 and
+  the panel lands on roughly 58 by 36 of them in first person, so the canvas
+  is about that many texels and a letter is a 7-pixel-tall bitmap glyph drawn
+  two texels a pixel: 14 texels tall, a third of the panel. A system font at
+  that size is antialiased mush that the posterize then quantizes into a
+  grey smear; these are solid blocks, which survive the downscale whole.
+  Minified it is mipmapped, so a lower render scale softens the letters
+  rather than dropping strokes from them; magnified it stays nearest, so a
+  higher one keeps them square.
+*/
+const SCREEN_W = 72
+const SCREEN_H = 44
+/** the lit face on the gun, in model units, at the canvas's aspect */
+const SCREEN_PANEL_W = 0.38
+const SCREEN_PANEL_H = (SCREEN_PANEL_W * SCREEN_H) / SCREEN_W
+/** its centre on the gun: on a post above the back of the body */
+const SCREEN_AT = new THREE.Vector3(-0.05, 0.38, 0.17)
+
+/** a 7-row bitmap font, proportional, uppercase: each glyph's rows as
+    strings, '#' lit. Anything missing draws as '?' */
+const GLYPHS: Record<string, readonly string[]> = {
+  A: ['.##.', '#..#', '#..#', '####', '#..#', '#..#', '#..#'],
+  B: ['###.', '#..#', '#..#', '###.', '#..#', '#..#', '###.'],
+  C: ['.###', '#...', '#...', '#...', '#...', '#...', '.###'],
+  D: ['###.', '#..#', '#..#', '#..#', '#..#', '#..#', '###.'],
+  E: ['####', '#...', '#...', '###.', '#...', '#...', '####'],
+  F: ['####', '#...', '#...', '###.', '#...', '#...', '#...'],
+  G: ['.###', '#...', '#...', '#.##', '#..#', '#..#', '.###'],
+  H: ['#..#', '#..#', '#..#', '####', '#..#', '#..#', '#..#'],
+  I: ['###', '.#.', '.#.', '.#.', '.#.', '.#.', '###'],
+  J: ['..##', '...#', '...#', '...#', '...#', '#..#', '.##.'],
+  K: ['#..#', '#..#', '#.#.', '##..', '#.#.', '#..#', '#..#'],
+  L: ['#...', '#...', '#...', '#...', '#...', '#...', '####'],
+  M: ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
+  N: ['#..#', '##.#', '##.#', '#.##', '#.##', '#..#', '#..#'],
+  O: ['.##.', '#..#', '#..#', '#..#', '#..#', '#..#', '.##.'],
+  P: ['###.', '#..#', '#..#', '###.', '#...', '#...', '#...'],
+  Q: ['.##.', '#..#', '#..#', '#..#', '#..#', '#.#.', '.#.#'],
+  R: ['###.', '#..#', '#..#', '###.', '#.#.', '#..#', '#..#'],
+  S: ['.###', '#...', '#...', '.##.', '...#', '...#', '###.'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  U: ['#..#', '#..#', '#..#', '#..#', '#..#', '#..#', '.##.'],
+  V: ['#...#', '#...#', '#...#', '#...#', '.#.#.', '.#.#.', '..#..'],
+  W: ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '##.##', '#...#'],
+  X: ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'],
+  Y: ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
+  Z: ['####', '...#', '..#.', '.##.', '.#..', '#...', '####'],
+  '0': ['.##.', '#..#', '#.##', '##.#', '#..#', '#..#', '.##.'],
+  '1': ['.#.', '##.', '.#.', '.#.', '.#.', '.#.', '###'],
+  '2': ['.##.', '#..#', '...#', '..#.', '.#..', '#...', '####'],
+  '3': ['###.', '...#', '...#', '.##.', '...#', '...#', '###.'],
+  '4': ['#..#', '#..#', '#..#', '####', '...#', '...#', '...#'],
+  '5': ['####', '#...', '###.', '...#', '...#', '#..#', '.##.'],
+  '6': ['.##.', '#...', '#...', '###.', '#..#', '#..#', '.##.'],
+  '7': ['####', '...#', '..#.', '..#.', '.#..', '.#..', '.#..'],
+  '8': ['.##.', '#..#', '#..#', '.##.', '#..#', '#..#', '.##.'],
+  '9': ['.##.', '#..#', '#..#', '.###', '...#', '...#', '.##.'],
+  '-': ['...', '...', '...', '###', '...', '...', '...'],
+  '/': ['..#', '..#', '.#.', '.#.', '.#.', '#..', '#..'],
+  '.': ['.', '.', '.', '.', '.', '.', '#'],
+  '?': ['.##.', '#..#', '...#', '..#.', '.#..', '....', '.#..'],
+  ' ': ['..', '..', '..', '..', '..', '..', '..'],
+}
+/** a glyph, falling back through the letter under an accent to '?' */
+const glyph = (c: string) => GLYPHS[c] ?? GLYPHS[c.normalize('NFD')[0]] ?? GLYPHS['?']
+/** a line's width in texels at `s` texels a font pixel */
+const textWidth = (t: string, s: number) => {
+  let w = 0
+  for (const c of t) w += (glyph(c)[0].length + 1) * s
+  return Math.max(0, w - s)
+}
+
 const makeScreen = () => {
   const canvas = typeof document !== 'undefined' ? document.createElement('canvas') : null
   if (canvas) {
@@ -342,36 +443,69 @@ const makeScreen = () => {
   }
   const tex = canvas ? new THREE.CanvasTexture(canvas) : new THREE.Texture()
   tex.magFilter = THREE.NearestFilter
-  tex.minFilter = THREE.NearestFilter
-  tex.generateMipmaps = false
+  tex.minFilter = THREE.LinearMipmapLinearFilter
+  tex.generateMipmaps = true
   tex.colorSpace = THREE.SRGBColorSpace
   let last = ''
+  /** a line at `s` texels a font pixel, centred unless given an `x` */
+  const text = (ctx: CanvasRenderingContext2D, t: string, s: number, y: number, at?: number) => {
+    let x = at ?? Math.round((SCREEN_W - textWidth(t, s)) / 2)
+    for (const c of t) {
+      const g = glyph(c)
+      for (let r = 0; r < g.length; r++)
+        for (let k = 0; k < g[r].length; k++) if (g[r][k] === '#') ctx.fillRect(x + k * s, y + r * s, s, s)
+      x += (g[0].length + 1) * s
+    }
+  }
+  const fits = (t: string, s: number) => textWidth(t, s) <= SCREEN_W - 4
+  /** the name on one line at two texels a pixel if it fits, else broken at
+      its space or hyphen onto two */
+  const lines = (a: string): string[] => {
+    if (fits(a, 2)) return [a]
+    const cut = a.search(/[ -]/)
+    if (cut < 0) return [a]
+    return [a.slice(0, a[cut] === '-' ? cut + 1 : cut), a.slice(cut + 1)]
+  }
   const draw = (a: string, b: string) => {
     const key = `${a}|${b}`
     if (!canvas || key === last) return
     last = key
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    ctx.imageSmoothingEnabled = false
-    ctx.fillStyle = '#0b1a22'
+    ctx.fillStyle = '#0a1820'
     ctx.fillRect(0, 0, SCREEN_W, SCREEN_H)
-    ctx.fillStyle = '#123040'
-    for (let y = 0; y < SCREEN_H; y += 2) ctx.fillRect(0, y, SCREEN_W, 1)
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
+    // a lit rim a texel in, so the glass reads as a display and not a hole
+    ctx.fillStyle = '#1d4a5c'
+    ctx.fillRect(1, 1, SCREEN_W - 2, 1)
+    ctx.fillRect(1, SCREEN_H - 2, SCREEN_W - 2, 1)
+    ctx.fillRect(1, 1, 1, SCREEN_H - 2)
+    ctx.fillRect(SCREEN_W - 2, 1, 1, SCREEN_H - 2)
+    const name = lines(a)
+    // the step: big on its own line under a one-line name; under a
+    // two-line name, big after its first line if it fits there, else small
+    // underneath
+    const beside = !!b && name.length === 2 && textWidth(`${name[0]} ${b}`, 2) <= SCREEN_W - 4
+    const sb = !b || beside ? 0 : name.length === 1 && fits(b, 2) ? 2 : 1
+    const gap = 3
+    const h = name.length * 14 + (name.length - 1) * 2 + (sb ? gap + 7 * sb : 0)
+    let y = Math.round((SCREEN_H - h) / 2)
     ctx.fillStyle = '#8ff0ff'
-    // shrink a long name to fit rather than clip it
-    let size = 14
-    ctx.font = `bold ${size}px monospace`
-    while (size > 8 && ctx.measureText(a).width > SCREEN_W - 4) {
-      size--
-      ctx.font = `bold ${size}px monospace`
+    for (const [i, l] of name.entries()) {
+      const s = fits(l, 2) ? 2 : 1
+      if (i === 0 && beside) {
+        // the pair centred as one line, the step in its own colour
+        const w = textWidth(`${l} ${b}`, 2)
+        const x0 = Math.round((SCREEN_W - w) / 2)
+        text(ctx, l, 2, y, x0)
+        ctx.fillStyle = '#ffd27a'
+        text(ctx, b, 2, y, x0 + w - textWidth(b, 2))
+        ctx.fillStyle = '#8ff0ff'
+      } else text(ctx, l, s, y)
+      y += 16
     }
-    ctx.fillText(a, SCREEN_W / 2, b ? 11 : 16)
-    if (b) {
+    if (sb) {
       ctx.fillStyle = '#ffd27a'
-      ctx.font = 'bold 10px monospace'
-      ctx.fillText(b, SCREEN_W / 2, 24)
+      text(ctx, b, sb, y - 2 + gap)
     }
     tex.needsUpdate = true
   }
@@ -423,14 +557,41 @@ export interface Viewmodel {
   dispose: () => void
 }
 
+/** the first-person gun's resting turn in the lens's frame (no sway): its
+    aim at CONVERGE, then its own turn on top. `out` is returned */
+const restTurn = (turn: THREE.Euler, out: THREE.Quaternion) => {
+  const dir = CONVERGE.clone().sub(FP_OFFSET).normalize()
+  const m = new THREE.Matrix4().lookAt(new THREE.Vector3(), dir, new THREE.Vector3(0, 1, 0))
+  return out.setFromRotationMatrix(m).multiply(new THREE.Quaternion().setFromEuler(turn))
+}
+
+/**
+ * Turn the first-person tool gun's screen mount so that, with the gun at
+ * rest, the panel faces the eye square and stands upright in the view. Solved
+ * once, in the lens's frame, and stored as the mount's own turn on the gun,
+ * so the screen still rides the gun's sway and bob like any other part.
+ */
+const faceTheEye = (bezel: THREE.Object3D) => {
+  const rest = restTurn(TOOL_TURN, new THREE.Quaternion())
+  // the panel's centre in the lens's frame, and the way back to the eye
+  const at = bezel.position.clone().multiplyScalar(FP_SCALE).applyQuaternion(rest).add(FP_OFFSET)
+  const n = at.clone().negate().normalize()
+  const u = new THREE.Vector3(0, 1, 0).addScaledVector(n, -n.y).normalize()
+  const x = new THREE.Vector3().crossVectors(u, n)
+  const face = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, u, n))
+  bezel.quaternion.copy(rest.invert().multiply(face))
+}
+
 export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   const root = new THREE.Group()
   root.name = 'physgun-viewmodel'
   root.userData.dynamic = true
   parent.add(root)
   const geos = makeGeos()
-  const fpGun = buildGun(geos, makeMats(true), true)
-  const tpGun = buildGun(geos, makeMats(false), false)
+  // the mitten, one surface shared by both guns' first-person copies
+  const mitten = buildGripMitten()
+  const fpGun = buildGun(geos, makeMats(true), mitten)
+  const tpGun = buildGun(geos, makeMats(false), null)
   // the tool gun, in the same materials, and its screen (one glowing
   // material per copy, since the first-person depth squeeze is per material)
   const screen = makeScreen()
@@ -438,8 +599,9 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     vmMaterial(glowing(new THREE.MeshBasicMaterial({ map: screen.tex, color: 0xffffff })), fpCopy)
   const fpScreen = screenMat(true)
   const tpScreen = screenMat(false)
-  const fpTool = buildToolgun(geos, fpGun.mats, true, fpScreen)
-  const tpTool = buildToolgun(geos, tpGun.mats, false, tpScreen)
+  const fpTool = buildToolgun(geos, fpGun.mats, mitten, fpScreen)
+  const tpTool = buildToolgun(geos, tpGun.mats, null, tpScreen)
+  faceTheEye(fpTool.bezel)
   screen.draw('WELD', 'A')
   // each copy is a holder for both guns; the belt says which is out
   const fp = new THREE.Group()
@@ -479,8 +641,12 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   const tmp = new THREE.Vector3()
   const m4 = new THREE.Matrix4()
   const aimQ = new THREE.Quaternion()
-  const camUp = new THREE.Vector3()
+  const m4b = new THREE.Matrix4()
   const tmp2 = new THREE.Vector3()
+  /** the first-person aim in the lens's frame (smoothed) and its goal */
+  const aimDir = new THREE.Vector3(0, 0, -1)
+  const aimGoal = new THREE.Vector3()
+  const origin = new THREE.Vector3()
   let aimed = false
   const up = new THREE.Vector3(0, 1, 0)
   let usingFp = true
@@ -562,23 +728,29 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       fp.position.copy(FP_OFFSET).add(off)
       fp.position.x *= k
       fp.position.y *= k
+      // the aim, in the lens's frame: down the crosshair, or toward what
+      // the physgun holds, low-passed either way so a target that hops
+      // cannot shake the gun. (The quaternion this frame is built from
+      // scratch, never slerped from last frame's: that one carried the
+      // turn below, and chasing it fed the turn back into the aim.)
+      if (which === 'physgun' && f.holding && f.aimAt) {
+        m4b.copy(cam.matrixWorld).invert()
+        aimGoal.copy(f.aimAt).applyMatrix4(m4b).sub(fp.position)
+        if (aimGoal.lengthSq() < 1e-6) aimGoal.copy(CONVERGE).sub(fp.position)
+      } else aimGoal.copy(CONVERGE).sub(fp.position)
+      aimGoal.normalize()
+      if (!aimed) aimDir.copy(aimGoal)
+      else aimDir.lerp(aimGoal, 1 - Math.exp(-dt * AIM_RATE)).normalize()
+      aimed = true
+      m4.lookAt(origin, aimDir, up)
+      aimQ.setFromRotationMatrix(m4)
       fp.position.applyMatrix4(cam.matrixWorld)
-      // the barrel points at what the beam is aimed at; then the roll and
-      // the springs' sway on top
-      if (f.aimAt) {
-        camUp.set(0, 1, 0).applyQuaternion(cam.quaternion)
-        m4.lookAt(fp.position, f.aimAt, camUp)
-        aimQ.setFromRotationMatrix(m4)
-        fp.quaternion.slerp(aimQ, aimed ? 1 - Math.exp(-dt * 30) : 1)
-        aimed = true
-      } else {
-        fp.quaternion.copy(cam.quaternion)
-        fp.quaternion.multiply(q.setFromEuler(eul.set(0, FP_TURN.y, 0, 'YXZ')))
-        aimed = false
-      }
-      eul.set(FP_TURN.x + rot.x, rot.y, FP_TURN.z + rot.z, 'YXZ')
+      fp.quaternion.copy(cam.quaternion).multiply(aimQ)
+      // then the gun's own turn, and the springs' sway on top
+      const turn = which === 'toolgun' ? TOOL_TURN : FP_TURN
+      eul.set(turn.x + rot.x, turn.y + rot.y, turn.z + rot.z, 'YXZ')
       fp.quaternion.multiply(q.setFromEuler(eul))
-    }
+    } else aimed = false
     if (tp.visible && f.hand) {
       // in the body's hands: both arms are solved onto the aim
       // (playerBody's holdTool), the grip sits between the two mittens read
@@ -640,8 +812,11 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     muzzle,
     kick,
     setHandColor: (c) => {
-      fpGun.mats.hand.color.set(c)
-      tpGun.mats.hand.color.set(c)
+      for (const gun of [fpGun, tpGun]) {
+        gun.mats.hand.color.set(c)
+        // the body's own trace of light (bodyMaterial's uGummy)
+        gun.mats.hand.emissive.copy(gun.mats.hand.color).multiplyScalar(HAND_GUMMY)
+      }
     },
     setScreen: (a, b) => screen.draw(a, b),
     stage,
@@ -649,6 +824,7 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     dispose: () => {
       root.removeFromParent()
       for (const g of geos.list) g.dispose()
+      mitten.dispose()
       for (const gun of [fpGun, tpGun]) for (const m of Object.values(gun.mats)) (m as THREE.Material).dispose()
       fpScreen.dispose()
       tpScreen.dispose()
