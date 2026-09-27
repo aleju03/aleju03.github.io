@@ -1407,6 +1407,8 @@ try {
     const c = await evaluate('window.__sandboxCamera.position.toArray()')
     console.log(`  car from ${before.map((n) => n.toFixed(0)).join(', ')} to ${after.map((n) => n.toFixed(0)).join(', ')}, ${Math.hypot(after[0] - c[0], after[2] - c[2]).toFixed(1)} from you`)
     await shot('order-car-delivered')
+  }
+
   if (WHAT.includes('contraption')) {
     /*
       Contraptions in the real game: the catalogue open on its parts tab, the
