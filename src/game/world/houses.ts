@@ -42,7 +42,14 @@ import {
   and lets its extras reach at most `room` past each flank, a few units past
   the front for the path, the fence and the mailbox, and one yard's depth
   behind. That contract is what lets the street layout hand this any size of
-  lot at any of the four facings.
+  lot at any of the four facings. It is not enough on its own, because the
+  lot is a cardinal box and its street is not: on a curve, a cul-de-sac's
+  bulb or a corner, the pavement cuts across a corner of the front yard or
+  runs down a flank. So everything that goes out past the walls (a garage,
+  a wing, a carport, the drive, the path, a porch, the front fence, the
+  bins, the mailbox, a parked car) asks the chunk's street test first
+  (`c.clearL`, BuildOut.clear) and is pulled in, shrunk, moved to another
+  spot or left out. A pair of wheelie bins used to stand in the lane.
 
   Two measurements everything here is tuned against. The eye is at 3.84
   units (about 1.55 m, so a unit is about 0.4 m: a car is nine long, a door
@@ -157,6 +164,17 @@ const context = (out: BuildOut, lot: Lot) => {
     out.interiors.push({ minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz })
   }
 
+  /** is a lot-local rectangle clear of every street and its pavement
+      (BuildOut.clear): asked before anything goes out toward the kerb */
+  const clearL = (u: number, v: number, lu: number, lv: number) => {
+    if (!out.clear) return true
+    const x = wx(u, v)
+    const z = wz(u, v)
+    const hx = f.ex(lu, lv) / 2
+    const hz = f.ez(lu, lv) / 2
+    return out.clear(x - hx, z - hz, x + hx, z + hz)
+  }
+
   /** the yaw of a wall whose outward local normal is (du, dv) */
   const yawOf = (du: number, dv: number) =>
     dv > 0 ? lot.face
@@ -189,7 +207,7 @@ const context = (out: BuildOut, lot: Lot) => {
 
   return {
     out, lot, rng, dr, f, mir, scheme, fascia, room,
-    wx, wz, b, solid, keep, yawOf, roof, place,
+    wx, wz, b, solid, keep, clearL, yawOf, roof, place,
   }
 }
 
@@ -257,7 +275,9 @@ const frontDoor = (c: Ctx, u: number, hv: number, y: number, h = 5.2, pathTo = h
   panel(c.out.solid, c.scheme.door, c.wx(u, hv + 0.18), y + h / 2 - 0.12, c.wz(u, hv + 0.18),
     1.9, h - 0.3, c.yawOf(0, 1), SURF.plank)
   c.b('#c8ac63', u + 0.68, hv + 0.24, y + 2.3, 0.14, 0.14, 0.1)
-  const len = pathTo - hv
+  let len = pathTo - hv
+  // it stops at the pavement's edge, wherever the street actually is
+  while (len > 0.4 && !c.clearL(u, hv + len / 2 + 0.2, 1.5, len)) len -= 0.5
   if (len > 0.4) {
     c.b('#8b867c', u, hv + len / 2 + 0.2, c.lot.baseY + 0.05, 1.5, 0.1, len, SURF.paving)
     c.keep(u, hv + len / 2 + 0.2, 1.7, len)
@@ -272,7 +292,12 @@ const chimney = (c: Ctx, u: number, v: number, fromY: number, topY: number, w = 
 
 /** a kerbside mailbox on a post, flag up or down: the smallest thing on a
     street and the one that says *someone gets letters here* */
-const mailbox = (c: Ctx, u: number, v: number, y: number) => {
+const mailbox = (c: Ctx, u: number, v0: number, y: number, back: number) => {
+  // at the kerb, but on the lot's side of it: stepped back off a pavement
+  // that curves or runs askew into the corner of the yard, or not at all
+  let v = v0
+  while (v > back && !c.clearL(u, v, 1.0, 1.7)) v -= 0.5
+  if (v <= back) return
   const paint = pick(['#3a3a3a', '#2f3b55', '#6b2f2a', '#d8d2c4', '#3f5242'], c.dr())
   c.b('#4a3d30', u, v, y + 1.2, 0.26, 2.4, 0.26, SURF.plank)
   c.b(paint, u, v, y + 2.65, 0.8, 0.8, 1.5)
@@ -290,7 +315,10 @@ const frontage = (c: Ctx, hu: number, hv: number, y: number, gaps: Array<[number
   const r = c.dr()
   const v = hv + 3.2
   const span = hu * 2 + 1.0
-  const open = (u: number) => gaps.some(([a, b]) => u > a - 0.2 && u < b + 0.2)
+  // the line is broken wherever the street comes nearer than it: a lot on a
+  // curve or at a corner has a yard corner the pavement cuts across
+  const open = (u: number) => gaps.some(([a, b]) => u > a - 0.2 && u < b + 0.2) ||
+    !c.clearL(u, v, 0.6, 1.0)
   /** the runs of the line between the gaps, each built by `run` */
   const runs = (step: number, run: (u0: number, u1: number) => void) => {
     let start: number | null = null
@@ -387,6 +415,14 @@ const porch = (
   c: Ctx, kind: PorchKind, u: number, hv: number, y: number, hu: number, side: number,
 ) => {
   if (kind === 'none' || !c.out.detailed) return
+  // a porch too big for the yard in front of it (a street curving in, a
+  // corner lot's side street) shrinks to a hood, and a hood to nothing
+  if ((kind === 'veranda' || kind === 'wrap') && (!c.clearL(0, hv + 1.8, hu * 2, 3.6) ||
+    (kind === 'wrap' && !c.clearL(side * (hu + 1.6), hv + 1.6 - hv * 0.8, 3.4, hv * 1.6 + 3.4)))) {
+    kind = 'hood'
+  }
+  if (kind === 'portico' && !c.clearL(u, hv + 1.5, 5.4, 3.2)) kind = 'hood'
+  if ((kind === 'hood' || kind === 'stoop') && !c.clearL(u, hv + 1.0, 3.4, 2.0)) return
   const { trim, roof } = c.scheme
   if (kind === 'hood' || kind === 'stoop') {
     c.b('#8b867c', u, hv + 0.9, y + 0.25, 3.2, 0.5, 1.8, SURF.paving)
@@ -570,34 +606,62 @@ const yard = (c: Ctx, h: Home) => {
     driveU = h.garage.u
     driveFrom = h.garage.v
   } else if (!h.bare) {
+    // what goes down the flank must clear the street as well as the house:
+    // on a corner lot the flank *is* the side street, and a garage rolled
+    // there stood in its lane. Each option is tried in the order rolled and
+    // the first that clears is built; a drive needs a car's length of it
     const r = rng()
-    if (r < 0.4 && c.room >= 3.2) {
+    /** a drive of width 5.4 down local u from v `from` to the front */
+    const driveClear = (u: number, from: number) => c.clearL(u, (from + front) / 2, 5.4, front - from) ||
+      c.clearL(u, (from + hv + 1.4) / 2, 5.4, hv + 1.4 - from)
+    const attached = () => {
       const gw = Math.min(6.8, Math.max(5.0, c.room * 1.6))
       const gd = Math.min(hv * 1.7, 10)
       const gu = side * (hu + gw / 2 - 0.05)
+      if (!c.clearL(gu, hv - gd / 2 - 0.8, gw + 0.3, gd + 0.5) || !driveClear(gu, hv - 0.8)) return false
       garageBox(c, gu, hv - gd / 2 - 0.8, y, gw, gd)
       driveU = gu
       driveFrom = hv - 0.8
-    } else if (r < 0.62 && c.room >= 3.6) {
-      // detached, at the back, down a drive along the flank
+      return true
+    }
+    const detached = () => {
+      // at the back, down a drive along the flank
       const gw = 6.4
       const gd = 7.0
       const gu = side * (hu + 2.9)
       const gv = -(hv + gd / 2 + 1.2)
+      if (!c.clearL(gu, gv, gw + 0.6, gd + 0.5) || !driveClear(gu, gv + gd / 2)) return false
       garageBox(c, gu, gv, y, gw, gd)
       driveU = gu
       driveFrom = gv + gd / 2
-    } else if (r < 0.8) {
+      return true
+    }
+    const drive = () => {
       // no garage, a drive to park on beside the house
+      if (!driveClear(side * (hu + 2.9), -hv * 0.4)) return false
       driveU = side * (hu + 2.9)
       driveFrom = -hv * 0.4
+      return true
+    }
+    if (r < 0.4 && c.room >= 3.2) {
+      if (!attached()) drive()
+    } else if (r < 0.62 && c.room >= 3.6) {
+      if (!detached()) drive()
+    } else if (r < 0.8) {
+      drive()
     }
   }
 
   const gaps: Array<[number, number]> = [[h.doorU - 1.0, h.doorU + 1.0]]
+  /** where the drive meets the pavement: its street end, pulled in off a
+      pavement that cuts across the yard's corner */
+  let driveEnd = front
   if (driveU !== null) {
     const dw = 5.4
-    const len = front - driveFrom
+    while (driveEnd > hv + 1.4 && !c.clearL(driveU, (driveFrom + driveEnd) / 2, dw, driveEnd - driveFrom)) {
+      driveEnd -= 0.5
+    }
+    const len = driveEnd - driveFrom
     if (out.detailed) {
       c.b('#83807a', driveU, driveFrom + len / 2, y + 0.04, dw, 0.09, len, SURF.paving)
     }
@@ -608,17 +672,38 @@ const yard = (c: Ctx, h: Home) => {
       // own front line: the pavement starts not far past it
       const lo = driveFrom + 4.8
       const hi = hv - 2.2
-      if (hi >= lo && dr() < 0.55) car(c, driveU, lo + dr() * (hi - lo), y)
-      if (dr() < 0.6) bins(c, driveU + side * (dw / 2 + 1.9), hv + 1.6, y)
+      if (hi >= lo && dr() < 0.55) {
+        const cv = lo + dr() * (hi - lo)
+        if (c.clearL(driveU, cv, 4.2, 9.0)) car(c, driveU, cv, y)
+      }
+      if (dr() < 0.6) {
+        // the bins stand beside the end of the drive, on the lot: outside
+        // the drive if the verge there is clear, else between the drive and
+        // the house, else by the path, else nowhere. Never on the drive's
+        // mouth and never past the pavement
+        const du = driveU
+        const spots: Array<[number, number]> = [
+          [du + side * (dw / 2 + 1.9), Math.min(hv + 1.6, driveEnd - 1.2)],
+          [du - side * (dw / 2 + 1.9), Math.min(hv + 1.6, driveEnd - 1.2)],
+          [h.doorU - side * 2.8, hv + 1.4],
+        ]
+        const spot = spots.find(([u, v]) => Math.abs(u - du) >= dw / 2 + 1.7 &&
+          Math.abs(u - h.doorU) >= 2.5 && c.clearL(u, v, 3.4, 1.9))
+        if (spot) bins(c, spot[0], spot[1], y)
+      }
       if (h.garage === undefined && driveFrom > 0 && dr() < 0.2) {
-        hoop(c, driveU + side * (dw / 2 + 0.4), driveFrom + 0.6, y)
+        const hu2 = driveU + side * (dw / 2 + 0.4)
+        if (c.clearL(hu2, driveFrom + 0.6, 1.2, 1.2)) hoop(c, hu2, driveFrom + 0.6, y)
       }
     }
   }
   if (!out.detailed) return
 
   frontage(c, hu, hv, y, gaps)
-  if (dr() < 0.7) mailbox(c, driveU !== null ? driveU - side * 3.6 : h.doorU - 2.6, front - 1.0, y)
+  if (dr() < 0.7) {
+    mailbox(c, driveU !== null ? driveU - side * 3.6 : h.doorU - 2.6,
+      (driveU !== null ? driveEnd : front) - 1.0, y, hv + 0.8)
+  }
 
   // the back garden: at most two things, one each side of the middle
   const back = -(hv + 4.2)
@@ -785,7 +870,10 @@ const colonial = (c: Ctx): Home => {
   const wingR = rng()
   const wingS = -chimS
   let garage: Home['garage']
-  if (wingR < 0.5 && c.room >= 3) {
+  // a wing on a flank that is a side street is not built
+  const wingW = Math.min(6.4, c.room * 1.6)
+  if (wingR < 0.5 && c.room >= 3 &&
+    c.clearL(wingS * (hu + wingW / 2), -hv * 0.2, wingW + 0.5, hv * 1.5 + 0.5)) {
     const ww = Math.min(6.4, c.room * 1.6)
     const wd = hv * 1.5
     const wu = wingS * (hu + ww / 2 - 0.05)
@@ -862,8 +950,11 @@ const cape = (c: Ctx): Home => {
   chimney(c, stackS * hu * 0.55, -hv * 0.1, y + h, y + h + rise + 1.0, 1.2)
 
   let garage: Home['garage']
-  if (rng() < 0.35 && c.room >= 4) {
-    // a breezeway, and a garage at the end of it
+  const reach = 3.0 + Math.min(6.2, c.room * 1.5)
+  if (rng() < 0.35 && c.room >= 4 &&
+    c.clearL(-stackS * (hu + reach / 2), -hv * 0.2, reach + 0.6, hv * 1.5 + 0.5)) {
+    // a breezeway, and a garage at the end of it, where the flank is not a
+    // side street
     const bw = 3.0
     c.b(body, -stackS * (hu + bw / 2), -hv * 0.3, y + 2.4, bw, 4.8, hv * 1.0, skin)
     c.roof(SHED, roofC, -stackS * (hu + bw / 2), -hv * 0.3, y + 4.75, bw + 0.3, 0.8, hv * 1.1)
@@ -1070,13 +1161,15 @@ const ranch = (c: Ctx): Home => {
       c.b(c.scheme.trim, u, hv * 0.9 + 2.8, y + 3.2, 0.26, 5.4, 0.26)
     }
   }
-  if (carport) {
+  const cs = -Math.sign(doorU || 1)
+  if (carport && c.clearL(cs * (hu + 2.6), hv * 0.2, 5.6, hv * 2.3 + 0.4)) {
     // a carport at the free end: posts and a flat deck. It is a shape, and
     // it decides whether the yard adds a garage, so it is rolled off the
     // lot's own stream and built at every tier: rolled off the dressing
     // stream inside the detailed build, a ranch had a carport up close and a
-    // detached garage at the back from the outer ring
-    const s = -Math.sign(doorU || 1)
+    // detached garage at the back from the outer ring. Where the free end is
+    // a side street, there is none
+    const s = cs
     const cu = s * (hu + 2.6)
     c.b(roofC, cu, hv * 0.2, y + 5.6, 5.4, 0.3, hv * 2.3, SURF.plank)
     for (const q of [-1, 1]) c.b(c.scheme.trim, cu + s * 2.2, hv * 0.2 + q * hv, y + 2.8, 0.26, 5.6, 0.26)
