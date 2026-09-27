@@ -100,7 +100,7 @@ export type VehicleTuple = [number, number, number, number, number, number, numb
     hands), since ids start at 1. The hand is whoever has an *empty* machine
     on their physgun, or is letting one settle after it: its authority, the
     way a driver is, and the server keeps the two apart. The whole table is
-    resent on any change — it is a dozen numbers, and a per-seat delta would
+    resent on any change: it is a dozen numbers, and a per-seat delta would
     be more protocol than the thing it describes */
 export type SeatTuple = [number, PlayerId, PlayerId, PlayerId]
 

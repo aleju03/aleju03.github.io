@@ -897,7 +897,7 @@ let worldDirty = false;
 // settle after one), and is its authority exactly as a driver is, which is
 // why the two exclude each other; `set` says whether anyone has ever moved
 // this machine, and until they have the server has no opinion about where it
-// is — every client's own spawn puts it on the same probed home spot, so
+// is: every client's own spawn puts it on the same probed home spot, so
 // silence is the correct answer.
 const worldFleet = Array.from({ length: WORLD_FLEET }, () => ({
   seats: new Array(WORLD_SEATS).fill(0),
