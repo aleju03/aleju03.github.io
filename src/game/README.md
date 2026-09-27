@@ -814,6 +814,19 @@ sandbox/
                   clicks, R steps the mode), each joint one undo entry
     toolgunText.ts  its words in both languages, import-free for the scene
     scenarios.ts  the films: swing, rotate, heavy, throw, ragdoll, each -3p
+    portals.ts    slot 4, the portal gun's world: placing a portal (a ray,
+                  then a fit to the box and to the drawn wall), the pair's
+                  transform, the walls that step aside for the walker, the
+                  hole in the terrain, the crossing, and props carried
+                  through by touch. Headless
+    portalWalk.ts the walker's two calls round its step (before: aperture
+                  and hole; after: the carry, gaze and velocity turned)
+    portalView.ts the ovals and the view through each: the scene again from
+                  the lens carried through the pair, oblique near plane,
+                  cropped to the oval, sampled in screen space so the look
+                  grades it with everything else
+    portalSfx.ts  its shot, opening, fizzle and whoosh
+    portalThumb.ts  its catalogue plate, painted cell by cell
   destruction.ts  buildings coming down: damage from blasts, impacts, cars
                 and the console; storeys failing under their load; rubble
                 that breaks up level by level as it lands; the budget
@@ -1261,6 +1274,50 @@ npm run measure -- physics contraptions all three headless, twice for the
 npm run drive -- contraption            the real game: parts tab, tool gun,
                                         the car from its seat, the rocket
 ```
+
+### The portals
+
+The catalogue's Tools tab hands over a portal gun (slot 4, `4` draws it):
+left click opens the blue portal and right click the orange on whatever
+surface is under the crosshair, and R closes both. It is Portal's rules
+drawn through this world's machinery:
+
+- **A portal has to fit.** The shot is a ray against the level's collision
+  boxes, its ground and its props (a prop or the sea fizzles it); then the
+  oval must lie flat on the surface, which is a dozen short rays down the
+  normal from points round its rim, against the boxes *and* against the
+  drawn wall (`soupAround`: the few hundred triangles near the hit that face
+  the shot), because a box stands a shoulder's width proud of its wall and
+  can run past the building's corner. A shot near an edge is nudged inward,
+  a wall shot a little above a floor slides down to stand on it, and a
+  floor or ceiling portal turns its top the way you were looking.
+- **One matrix carries everything.** Going in one is coming out of the
+  other turned half round its up axis, so `orange * flip * blue^-1` maps the
+  walker's centre, its gaze and its velocity alike, and a fall into a floor
+  portal at 46 u/s leaves a wall portal at 46 u/s. The walker comes out
+  upright (it never rolls) and flung (`walk.fling`: the run takes what a
+  run can hold, the rest is drift that only air and a landing take away).
+- **The wall steps aside.** The walk is a point among boxes, so while its
+  centre is in front of an open oval the boxes the portal lies on are
+  `through` (collision.ts skips them) and the terrain under a floor portal
+  is a hole; the crossing is the centre or the eye passing the plane inside
+  the oval between two steps.
+- **Props go through by touch.** A Rapier body cannot enter the wall, so a
+  prop over an oval, moving into it (or resting on a floor portal) and
+  closer than its own half-depth is moved out of the partner with its pose,
+  velocity and spin turned. Held, frozen and parked props stay put.
+- **The view is the scene again.** Each visible portal with a partner
+  renders the scene from the lens carried through the pair into a target
+  the size of the look's own, with an oblique near plane on the exit (a
+  projection, not a clipping plane, which would relink every material) and
+  the frustum cropped to the oval's rectangle on screen; the oval samples it
+  at `gl_FragCoord`, so the far side goes through the grade, the posterize
+  and the outlines with everything else. No recursion: during the passes
+  every oval shows its closed swirl. Measured downtown on an RTX-class card,
+  one on-screen portal costs about 1 to 3.5 ms a frame depending on what is
+  behind the exit; a shot costs about a millisecond.
+- **Local only.** Portals are not on the wire; each player's pair is their
+  own.
 
 ### The console, the keys and undo
 
