@@ -152,11 +152,13 @@ export const airForSky = (
  * intensity, and `head` says whether and where the headlamp is on. `radii`,
  * when given, is each lamp's pool radius; a negative one marks an indoor
  * lamp, whose pool the look lays on the floor under it at any height
- * (shaders.ts), where a streetlamp's lies five to nine units down.
+ * (shaders.ts), where a streetlamp's lies five to nine units down. `weights`,
+ * when given, is each lamp's fade (render/lampFade.ts), so a lamp comes into
+ * the nearest few and leaves them gradually; without it every lamp is full.
  */
 export const lightsForSky = (
   lights: FakeLights, s: SkyNumbers, lamps: Float32Array, count: number,
-  ambient: THREE.Color, radii?: Float32Array,
+  ambient: THREE.Color, radii?: Float32Array, weights?: Float32Array,
 ) => {
   const n = Math.min(MAX_POOLS, count)
   for (let i = 0; i < n; i++) {
@@ -165,6 +167,7 @@ export const lightsForSky = (
     lights.pools[i * 4 + 2] = lamps[i * 3 + 2]
     // a streetlamp six units up lights a pool about eight across
     lights.pools[i * 4 + 3] = radii ? radii[i] : 8.5
+    lights.weights[i] = weights ? weights[i] : 1
   }
   lights.count = n
   const k = LAMP_GAIN * Math.min(1, s.night * 1.4)

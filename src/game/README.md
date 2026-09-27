@@ -1448,8 +1448,14 @@ every one of them has a failure you can see in a harness shot.
   just under the lens down to the floor under a ceiling fixture (about seven
   units), and on nothing a storey below or above it, which is how the house
   lights its rooms at night without a light in the scene
-  (`levels/houseProps.ts`; CrtScene hands the nearest ten in ahead of the
+  (`levels/houseProps.ts`; CrtScene hands the nearest eight in ahead of the
   street's).
+- **A lamp fades, it never pops.** The look shades the nearest sixteen, and
+  which sixteen is re-asked every few units of travel, so every pool carries
+  a weight (`lights.weights`, the shader's `uPoolW`) that `render/lampFade.ts`
+  eases up when a lamp joins the set and down when it leaves (indoor lamps
+  also dim with distance before they can be swapped out). Ask it for at most
+  `WANT_MAX` lamps: the spare slots are where the leaving ones fade out.
 - **Light that comes and goes belongs in the look, not in the scene.** A
   PointLight appearing mid-walk changes `NUM_POINT_LIGHTS` and relinks every
   lit program. Lamps are pools (`lights.pools`, xyz and radius) and the
