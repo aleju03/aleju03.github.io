@@ -102,8 +102,9 @@ export interface SandboxHost {
   here?: () => { x: number; y: number; z: number; yaw: number }
   /** put the feet at x/z (and y, else on whatever is there), facing yaw */
   teleport?: (x: number, z: number, y?: number, yaw?: number) => void
-  /** the authored spawn */
-  home?: () => { x: number; z: number; yaw?: number }
+  /** the authored spawn, where `tp home` goes; `y` is the feet, because home is upstairs and
+      a teleport left to find the ground would land under it */
+  home?: () => { x: number; z: number; y?: number; yaw?: number }
   noclip?: (on?: boolean) => boolean
   god?: (on?: boolean) => boolean
   thirdPerson?: (on?: boolean) => boolean
@@ -957,7 +958,7 @@ registerCommand({
     if (want === 'home' || want === 'spawn') {
       const h = host.home?.()
       if (!h) ctx.fail(msg('no home here', 'aquí no hay casa'))
-      host.teleport!(h!.x, h!.z, undefined, h!.yaw)
+      host.teleport!(h!.x, h!.z, h!.y, h!.yaw)
       ctx.ok(msg('home', 'a casa'))
       return
     }

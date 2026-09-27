@@ -74,7 +74,12 @@ levels/
   types.ts           the Level contract (collision, spawn, seams, ground, water)
   levelSystem.ts     createLevelSystem(): which level is live + the noclip cut
   homeLevels.ts      the two shipped levels: 'overworld' and 'backrooms'
-  houseWorld.ts      procedural house + yard; owns the property line inward
+  houseWorld.ts      the house + yard, two storeys (walls, stairs, slab, roof,
+                     doors, furniture placement); owns the property line
+                     inward. The computer room is upstairs, at UP
+  houseProps.ts      the family's clutter, kitbashed into two merged draws
+                     (lit and glowing), the router's blink, the fridge's
+                     paper, and every lamp as the look's indoor pool
   fittings.ts        buildFittings(): the furniture that works. Hinges the
                      GLBs' own door/drawer nodes, builds the interior behind
                      each one, and answers the same interact key as a door
@@ -1438,7 +1443,13 @@ every one of them has a failure you can see in a harness shot.
 - **Lamp pools lie on the ground.** A pool lights only up-facing surfaces
   five to eight units under its lens, cut into four flat bands with a
   dithered seam; a fixture whose lens is not about six units over the ground
-  it lights needs its own height in the pool test.
+  it lights needs its own height in the pool test. An indoor lamp is that
+  case, and says so with a negative radius: its pool lies on anything from
+  just under the lens down to the floor under a ceiling fixture (about seven
+  units), and on nothing a storey below or above it, which is how the house
+  lights its rooms at night without a light in the scene
+  (`levels/houseProps.ts`; CrtScene hands the nearest ten in ahead of the
+  street's).
 - **Light that comes and goes belongs in the look, not in the scene.** A
   PointLight appearing mid-walk changes `NUM_POINT_LIGHTS` and relinks every
   lit program. Lamps are pools (`lights.pools`, xyz and radius) and the
