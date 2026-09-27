@@ -59,7 +59,7 @@ import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/qua
 import { createPixelLook, type PixelLook } from '../../game/render/pixelLook'
 import { texelateTree } from '../../game/render/texel'
 import { BIOME_AIR, airForSky, lightsForSky } from '../../game/render/atmosphere'
-import { GROUND_OFF } from '../../game/levels/space'
+import { NEAR_OFF } from '../../game/levels/space'
 import { createLampFader, WANT_MAX } from '../../game/render/lampFade'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
 import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
@@ -2434,7 +2434,46 @@ export default function CrtScene({
         // the two levels and the noclip cut between them; the scene's share
         // of a swap is the blackout card and the shadow-map hygiene
         const homeLevels = makeHomeLevels(house, outside, backrooms, obstacles)
+        /*
+          Where the props' ground is streamed around when nobody is walking.
+          From high up it stays where it was: flying at orbital speed over
+          ground nobody can reach, the sandbox built nine heightfields of cold
+          terrain lookups a frame, which was the lag in orbit
+        */
+        const sbFocus = new THREE.Vector3(Number.NaN, 0, 0)
+        const sandboxFocus = (at: THREE.Vector3) => {
+          if (outside.view.alt < NEAR_OFF || !Number.isFinite(sbFocus.x)) sbFocus.copy(at)
+          return sbFocus
+        }
+        const globeSun = new THREE.Color()
+        const globeAmb = new THREE.Color()
         const levels = createLevelSystem({
+          /*
+            A seamless seam (flying onto the Moon and off it, and the re-base
+            of the scene onto space on the way home): the two sides draw the
+            same picture, so nothing resets. The walker and whatever it is
+            flying are carried by the offset with their motion kept, and only
+            what a level change must do is done: the new level's gravity, its
+            sandbox, and the roster.
+          */
+          onSeamless: (level, shift, from) => {
+            walk.shift(shift.x, shift.y, shift.z)
+            headPos.x += shift.x
+            headPos.y += shift.y
+            headPos.z += shift.z
+            const craft = fleet.riding
+            if (craft?.spacecraft) fleet.shiftRiding(shift.x, shift.y, shift.z)
+            if (rig.ragdolling) rig.reset()
+            if (level === from) return
+            net?.setLevel(level.id)
+            // the server frees a chair at a level change: take it back
+            if (craft?.spacecraft) {
+              const idx = WIRE_VEHICLES.indexOf(craft.id)
+              if (idx >= 0) net?.seat(idx, fleet.seat)
+            }
+            walk.gravityScale = rules.gravity * gravityOf(level)
+            switchSandboxTo(level)
+          },
           levels: homeLevels,
           home: 'overworld',
           onCover: (on) => {
@@ -2550,6 +2589,11 @@ export default function CrtScene({
           look.setMood(sky.night * (1 - sky.twilight))
           dressAir(sky)
           levels.current.overrideLight?.(lightRig)
+          // the globes light themselves the way the ground under them is lit,
+          // so the planet from orbit and the far field over it agree
+          globeSun.copy(outside.sun.color).multiplyScalar(outside.sun.intensity)
+          globeAmb.copy(hemi.color).multiplyScalar(hemi.intensity)
+          outside.lightGlobes(globeSun, globeAmb)
         }
 
         /*
@@ -2652,11 +2696,11 @@ export default function CrtScene({
           const wantFar = open ? ov.far : 900
           const wantNear = open ? ov.near : 0.1
           // from orbit the house is a speck under a whole planet, and a
-          // thousand draw calls: its drawables go with the streamed ground
-          // (levels/space.ts's GROUND_OFF). Its drawables, not its root: the
+          // thousand draw calls: its drawables go with the streamed chunk ring
+          // (levels/space.ts's NEAR_OFF). Its drawables, not its root: the
           // root carries the house's PointLights, and a light leaving the
           // scene changes NUM_POINT_LIGHTS and relinks every lit program
-          const houseAway = open && ov.alt >= GROUND_OFF
+          const houseAway = open && ov.alt >= NEAR_OFF
           if (houseAway !== !!houseHidden) {
             if (houseAway) {
               houseHidden = []
@@ -2889,7 +2933,7 @@ export default function CrtScene({
           const level = levels.current
           // the cut state machine still has to run — but no seam may fire at
           // the wheel, except in a spacecraft: the ship is how you get to
-          // the Moon, and onSwapped carries it (and us) across the cut
+          // the Moon, and onSeamless carries it (and us) across the seam
           seamPt.set(v.root.position.x, v.root.position.y, v.root.position.z)
           levels.tick(now, seamPt, !!v.spacecraft)
           // park the walker on the machine (see the header) — and do it *here*,
@@ -2934,7 +2978,7 @@ export default function CrtScene({
               dt,
               active: !pausedNow,
               walker: null,
-              focus: v.root.position,
+              focus: sandboxFocus(v.root.position),
             })
             if (sbf.moving && level.outdoors) followSunShadow(v.root.position, now)
           }
@@ -3238,7 +3282,7 @@ export default function CrtScene({
                     step: EYE * 0.12,
                   }
                 : null,
-              focus: camera.position,
+              focus: sandboxFocus(camera.position),
             })
             if (sbf.moving && level.outdoors) followSunShadow(camera.position, now)
           }

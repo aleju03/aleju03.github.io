@@ -34,6 +34,18 @@ export interface LevelSpawn {
 }
 
 /**
+ * A seamless seam: no cut, no card, no stop. The two levels draw the same
+ * picture across it (flying onto the Moon, the Moon's own ground has been in
+ * view the whole way down), and crossing is carrying the player, and whatever
+ * they are flying, by this offset into the new level's coordinates.
+ */
+export interface LevelShift {
+  x: number
+  y: number
+  z: number
+}
+
+/**
  * What a props sandbox needs from the level it runs in. One sandbox per level
  * that declares one, created the first time the player arrives, so props
  * dropped on the Moon stay on the Moon and the street's stay in the street.
@@ -99,7 +111,7 @@ export interface Level {
   /** which level the player's position just crossed into, if any. The
       arrival point belongs to the seam, not the level: a seam that lands
       somewhere other than the level's default spawn carries its own. */
-  seamTo: (p: THREE.Vector3) => { to: string; spawn?: LevelSpawn } | null
+  seamTo: (p: THREE.Vector3) => { to: string; spawn?: LevelSpawn; shift?: LevelShift } | null
   /** impose the level's own light mood after the shared sky pass */
   overrideLight?: (rig: LevelLightRig) => void
 

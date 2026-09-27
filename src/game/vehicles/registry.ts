@@ -271,6 +271,9 @@ export interface VehicleFleet {
   /** carry the machine we are in through a level cut: put it in the air at
       the seam's arrival, still, with us aboard (spacecraft only) */
   warpRiding: (x: number, y: number, z: number, yaw: number) => boolean
+  /** carry the machine we are in across a seamless seam: the same offset the
+      walker is carried by, with its motion kept (spacecraft only) */
+  shiftRiding: (dx: number, dy: number, dz: number) => boolean
   /** climb out, from anywhere: on the ground beside the door, or (in the
       air, in space) an ejection the scene turns into a float. Null only when
       not riding anything */
@@ -1347,6 +1350,12 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       const v = active?.v
       if (!v?.warp) return false
       v.warp(x, y, z, yaw)
+      return true
+    },
+    shiftRiding: (dx, dy, dz) => {
+      const v = active?.v
+      if (!v?.shift) return false
+      v.shift(dx, dy, dz)
       return true
     },
     leave,

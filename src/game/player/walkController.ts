@@ -151,6 +151,10 @@ export interface WalkController {
       came to rest); feetY is absolute, so a body that settled on the sofa
       stands up on the sofa */
   teleport: (x: number, z: number, feetY: number) => void
+  /** carry the walker by an offset with everything else kept: velocity,
+      heading, flight. A seamless level seam (flying onto the Moon) moves the
+      whole frame under you, and a teleport's full stop would show */
+  shift: (dx: number, dy: number, dz: number) => void
   /** a shove from outside the walk: a bump off another body, the bounce
       off a head you landed on, somebody else's shoulder arriving over the
       network. Planar velocity the walk's own control does not eat (it
@@ -367,6 +371,12 @@ export function createWalkController(
       rig.position.set(x, y + tune.eye, z)
       yaw = yawTo
       pitch = 0
+    },
+    shift: (dx, dy, dz) => {
+      feetY += dy
+      rig.position.x += dx
+      rig.position.y += dy
+      rig.position.z += dz
     },
     teleport: (x, z, y) => {
       feetY = y

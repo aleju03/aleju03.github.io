@@ -48,8 +48,11 @@ import { EARTH_R, MOON_R } from '../levels/space'
     already uses; `warm(true)` shows all of it for the covered compile at
     world attach, so the first climb links nothing.
 
-  Lit by its own sun uniform (the sky's), with clouds, a terminator, the
-  towns lit on the night side and a blue rim, all in the fragment shader.
+  Lit by the scene's own sun and sky light (`setLights`), the way the far
+  field and the regolith under it are lit, so where one fades over the other
+  there is no step, with clouds, a terminator, the towns lit on the night
+  side and a blue rim, all in the fragment shader. The Moon leaves a hole
+  where the Moon level's ground is drawn on it (levels/moon.ts's patch).
   Colours are linear, and the look (render/pixelLook.ts) grades and
   posterizes it like everything else; its alpha is the look's veil code, so
   it takes no outline ink, because a depth buffer thousands of units deep
@@ -66,6 +69,10 @@ const SEGS = 128
     The map is uniform, so this is only about keeping the far edge of the
     visible hemisphere on the map: half the planet's arc is the limit */
 const REBAKE = 20000
+/** a bake in flight is thrown away only past this drift: abandoning at
+    REBAKE, a fast ship never let a single bake finish, and flew over the
+    old map's clamped rim, a planet of stripes */
+const ABANDON = 55000
 
 const VERT = /* glsl */ `
   attribute vec2 aPolar;
@@ -110,6 +117,9 @@ const FRAG = /* glsl */ `
   uniform float uClouds;
   uniform float uRim;
   uniform float uTime;
+  uniform vec3 uSunC;
+  uniform vec3 uAmb;
+  uniform vec3 uTint;
   varying vec2 vSample;
   varying float vS;
   varying vec3 vN;
@@ -143,13 +153,17 @@ const FRAG = /* glsl */ `
     float ndl = dot(n, uSun);
     vec3 col;
     if (uKind < 0.5) {
-      col = alb * (0.035 + 1.3 * max(ndl, 0.0));
+      // lit the way the far field under it is (a Lambert surface under the
+      // scene's own sun and sky light), so where one dithers out over the
+      // other the two are the same colour, day or dusk
+      vec3 light = (uAmb + uSunC * max(ndl, 0.0)) * 0.3183;
+      col = alb * uTint * light;
       // weather: two octaves of drifting value noise over the map's own
       // coordinates, so a cloud stays over the same coast as you circle
       vec2 cp = vSample / 7000.0 + vec2(uTime * 0.004, uTime * 0.0017);
       float cn = gNoise(cp) * 0.62 + gNoise(cp * 2.3 + 7.1) * 0.38;
       float cov = smoothstep(0.56, 0.68, cn) * uClouds;
-      col = mix(col, vec3(0.95, 0.97, 1.0) * (0.03 + 1.25 * max(ndl, 0.0)), cov * 0.9);
+      col = mix(col, vec3(0.95, 0.97, 1.0) * light, cov * 0.9);
       // the towns, lit, on the night side
       float dark = 1.0 - smoothstep(-0.22, 0.06, ndl);
       col += tex.a * dark * vec3(1.9, 1.2, 0.55) * (1.0 - cov * 0.8);
@@ -157,7 +171,7 @@ const FRAG = /* glsl */ `
       float rim = pow(1.0 - max(dot(n, v), 0.0), 4.0);
       col += vec3(0.16, 0.34, 0.8) * rim * (0.1 + 0.9 * smoothstep(-0.35, 0.35, ndl)) * uRim;
     } else {
-      col = alb * (0.015 + 1.45 * max(ndl, 0.0));
+      col = alb * uTint * (uAmb + uSunC * max(ndl, 0.0)) * 0.3183;
     }
     // written as a veil (render/shaders.ts's alpha codes): solid, but with
     // no ink. From orbit the depth buffer cannot resolve the surface's
@@ -252,10 +266,12 @@ const earthTexel = (x: number, z: number, out: Uint8Array, o: number) => {
 
 /** one texel of the Moon, moon-local (its anchor is the landing site) */
 const moonTexel = (u: number, v: number, out: Uint8Array, o: number) => {
-  const g = Math.sqrt(moonAlbedo(u, v))
-  out[o] = Math.round(g * 0.99 * 255)
-  out[o + 1] = Math.round(g * 0.97 * 255)
-  out[o + 2] = Math.round(g * 0.94 * 255)
+  // neutral: the tint is the regolith's own (uTint), the same one the drawn
+  // ground carries, so the two meet without a seam
+  const g = Math.round(Math.sqrt(moonAlbedo(u, v)) * 255)
+  out[o] = g
+  out[o + 1] = g
+  out[o + 2] = g
   out[o + 3] = 0
 }
 
@@ -305,9 +321,13 @@ const bakeRow = (b: Bake) => {
       b.row = 0
     }
   } else if (b.pass === 1) {
+    // from the middle outward: the rows under you first, where the coarse
+    // pass's blocks are the only thing on screen as the ground dithers away
+    const k = b.row
+    const jj = (res >> 1) + (k % 2 === 0 ? k >> 1 : -((k + 1) >> 1))
     for (let i = 0; i < res; i++) {
-      const [x, z] = texel(i, j)
-      b.sample(x, z, data, (j * res + i) * 4)
+      const [x, z] = texel(i, jj)
+      b.sample(x, z, data, (jj * res + i) * 4)
     }
     b.row += 1
     if (b.row >= res) b.pass = 2
@@ -347,15 +367,27 @@ export interface Globes {
   /** the Earth under the camera, pole straight down, bent to `curvR` */
   earthBelow: (o: {
     cam: THREE.Vector3; poleY: number; curvR: number; hole: number; fade: number
+    /** the space frame's turn about the lens (levels/outsideWorld.ts):
+        "below" is this times straight down. `pole` is the map's point under
+        you, and `alt` your height over the sea */
+    q: THREE.Quaternion; pole: THREE.Vector2; alt: number
     /** sink under the far field (it is still drawn) */
     offset: boolean; clouds: number; rim: number; halo: number
   }) => void
   /** the Earth as a body in the sky: centred `dist` along `dir` from the
       camera at `rad`, its anchor (where you left) turned toward you */
-  earthInSky: (cam: THREE.Vector3, dir: THREE.Vector3, dist: number, rad: number) => void
+  earthInSky: (
+    cam: THREE.Vector3, dir: THREE.Vector3, dist: number, rad: number,
+    turn?: THREE.Quaternion, pole?: THREE.Vector2,
+  ) => void
   /** the Moon, its centre and radius in the scene, its landing site facing
       `pole` (unit, from its centre) */
-  moonAt: (centre: THREE.Vector3, rad: number, pole: THREE.Vector3, fade: number) => void
+  /** the Moon: its centre, radius, and the rotation that takes the landing
+      site's frame (+y up at the site, x and z the Moon level's own axes)
+      into the scene. `hole` is the arc the Moon's drawn ground covers there */
+  moonAt: (centre: THREE.Vector3, rad: number, rot: THREE.Quaternion, fade: number, hole: number) => void
+  /** the scene's sun (colour times intensity) and sky light, once a frame */
+  setLights: (sun: THREE.Color, ambient: THREE.Color) => void
   hideEarth: () => void
   hideMoon: () => void
   /** the sun's direction and the clock, once a frame */
@@ -373,6 +405,9 @@ export const buildGlobes = (opts: {
   trackDisposable(grid)
 
   const sunWorld = new THREE.Vector3(0, 1, 0)
+  // the scene's sun and sky light, as the far field and the regolith see them
+  const sunC = { value: new THREE.Color(2.3, 2.2, 2.0) }
+  const amb = { value: new THREE.Color(0.4, 0.45, 0.5) }
   const time = { value: 0 }
   const makeMat = (map: THREE.Texture, kind: number) => {
     const m = new THREE.ShaderMaterial({
@@ -393,6 +428,9 @@ export const buildGlobes = (opts: {
         uClouds: { value: 0 },
         uRim: { value: 1 },
         uTime: time,
+        uSunC: sunC,
+        uAmb: amb,
+        uTint: { value: new THREE.Color(kind === 1 ? '#aeb0b3' : '#e0e0e0') },
       },
       fog: false,
       lights: false,
@@ -460,17 +498,15 @@ export const buildGlobes = (opts: {
     }
   }
 
-  const q = new THREE.Quaternion()
   const up = new THREE.Vector3(0, 1, 0)
   const tv = new THREE.Vector3()
   const tc = new THREE.Vector3()
-
 
   return {
     wantEarth: (x, z) => {
       // a bake for somewhere you have since flown away from is abandoned
       // rather than finished: the map you need is the one under you now
-      if (bake && Math.hypot(x - bake.ax, z - bake.az) > REBAKE) bake = null
+      if (bake && Math.hypot(x - bake.ax, z - bake.az) > ABANDON) bake = null
       if (bake) return
       if (front < 0 || Math.hypot(x - anchors[front].x, z - anchors[front].y) > REBAKE) startEarth(x, z)
     },
@@ -482,13 +518,17 @@ export const buildGlobes = (opts: {
       }
     },
     work: (ms) => {
+      // a map far behind where you are is spent on harder
+      if (bake && front >= 0 && Math.hypot(bake.ax - anchors[front].x, bake.az - anchors[front].y) > 40000) ms *= 2.5
       const t0 = performance.now()
       while (performance.now() - t0 < ms) {
         const b = bake ?? moonBake
         if (!b) return
         const passWas = b.pass
         bakeRow(b)
-        const rowsUp = b.pass !== passWas || (b.pass === 1 && b.row % 128 === 0)
+        // uploaded when a pass completes, and during the fine pass every few
+        // seconds' worth of rows (a band from the middle out each time)
+        const rowsUp = b.pass !== passWas || (b.pass === 1 && b.row % 160 === 0)
         if (b === bake) {
           // the coarse pass finished: it is a whole planet, so show it now
           // and refine in place
@@ -519,10 +559,12 @@ export const buildGlobes = (opts: {
       }
       const u = earthMat.uniforms
       earth.visible = o.fade > 0.001
-      earth.position.set(o.cam.x, o.poleY, o.cam.z)
-      earth.quaternion.identity()
+      // straight down, turned by the space frame
+      tv.set(0, -1, 0).applyQuaternion(o.q)
+      earth.position.copy(o.cam).addScaledVector(tv, o.alt)
+      earth.quaternion.copy(o.q)
       earth.updateMatrixWorld()
-      u.uPole.value.set(o.cam.x, o.cam.z)
+      u.uPole.value.copy(o.pole)
       u.uArc.value = Math.PI * EARTH_R
       u.uCurvR.value = o.curvR
       u.uRad.value = o.curvR
@@ -533,14 +575,13 @@ export const buildGlobes = (opts: {
       u.uRim.value = o.rim
       // the halo: a ring at the limb, on a sprite just behind the limb's
       // distance so the globe's own depth hides its inside
-      const h = Math.max(1, o.cam.y - (o.poleY - 0))
+      const h = Math.max(1, o.alt)
       const d = o.curvR + h
       const limb = Math.sqrt(Math.max(1, d * d - o.curvR * o.curvR))
       const ang = Math.asin(Math.min(0.9999, o.curvR / d))
       const L = limb * 1.02
       halo.visible = o.halo > 0.01 && earth.visible
       if (halo.visible) {
-        tv.set(0, -1, 0)
         halo.position.copy(o.cam).addScaledVector(tv, L)
         halo.scale.setScalar((L * Math.tan(Math.min(1.45, ang))) / HALO_LIMB)
         halo.lookAt(o.cam)
@@ -548,7 +589,7 @@ export const buildGlobes = (opts: {
         haloMat.opacity = o.halo
       }
     },
-    earthInSky: (cam, dir, dist, rad) => {
+    earthInSky: (cam, dir, dist, rad, turn, pole) => {
       if (front < 0) {
         earth.visible = false
         halo.visible = false
@@ -559,11 +600,12 @@ export const buildGlobes = (opts: {
       // the pole (where you left) turned to face the camera
       tc.copy(cam).addScaledVector(dir, dist - rad)
       earth.position.copy(tc)
-      tv.copy(dir).negate()
-      q.setFromUnitVectors(up, tv)
-      earth.quaternion.copy(q)
+      // turned exactly as it was drawn below you on the way out (`turn`), so
+      // the continents do not twist at the seam; else just facing you
+      if (turn) earth.quaternion.copy(turn)
+      else earth.quaternion.setFromUnitVectors(up, tv.copy(dir).negate())
       earth.updateMatrixWorld()
-      u.uPole.value.copy(anchors[front])
+      u.uPole.value.copy(pole ?? anchors[front])
       u.uArc.value = Math.PI * EARTH_R
       u.uCurvR.value = EARTH_R
       u.uRad.value = rad
@@ -580,14 +622,17 @@ export const buildGlobes = (opts: {
       halo.updateMatrixWorld()
       haloMat.opacity = 1
     },
-    moonAt: (centre, rad, pole, fade) => {
+    moonAt: (centre, rad, rot, fade, hole) => {
       moon.visible = moonReady && fade > 0.001
       if (!moon.visible) return
       const u = moonMat.uniforms
-      moon.position.copy(centre).addScaledVector(pole, rad)
-      q.setFromUnitVectors(up, pole)
-      moon.quaternion.copy(q)
+      tv.set(0, rad, 0).applyQuaternion(rot)
+      moon.position.copy(centre).add(tv)
+      moon.quaternion.copy(rot)
       moon.updateMatrixWorld()
+      u.uHole.value = hole
+      // a hair under the drawn ground where the two overlap, never through it
+      u.uSink.value = hole > 0 ? 0.004 : 0
       u.uPole.value.set(0, 0)
       u.uAnchor.value.set(0, 0)
       u.uRad.value = rad
@@ -601,6 +646,10 @@ export const buildGlobes = (opts: {
     },
     hideMoon: () => {
       moon.visible = false
+    },
+    setLights: (sun, ambient) => {
+      sunC.value.copy(sun)
+      amb.value.copy(ambient)
     },
     setSun: (dir, t) => {
       sunWorld.copy(dir)

@@ -23,17 +23,22 @@
     through them), then the day dome to dark blue and black, the fog
     goes black, the look's air drains away and the stars come out in
     daylight (sky.ts, CrtScene's dressAir).
-  - GROUND_FADE..GROUND_OFF the streamed ground dithers out over the globe
-    under it, and above GROUND_OFF it is hidden and stops streaming, so an
-    orbit costs a globe, a Moon and the sky and nothing else.
+  - from NEAR_OFF the chunk ring, the house's meshes and the props' ground
+    stop (a few pixels under a whole far field, and most of the draw calls),
+    and GROUND_FADE..GROUND_OFF the far field dithers out over the globe
+    under it, hidden and unstreamed above, so an orbit costs a globe, a Moon
+    and the sky and nothing else.
 
   The Moon is a real object once you are up there: when the climb passes
   MOON_ANCHOR it is pinned MOON_DIST away along the sky moon's bearing (or a
-  bearing high in the sky, by day, when the sky's moon is set), and flying
-  within MOON_SEAM of its surface cuts to the 'moon' level. Leaving the Moon
-  upward past MOON_LEAVE cuts back to the overworld EARTH_RETURN over the
-  point you climbed from. Pure numbers and no imports, like altitude.ts, so
-  the room tier can hold them before the world has loaded.
+  bearing high in the sky, by day, when the sky's moon is set). Flying at it
+  there is no cut anywhere: from SWING_FROM off its surface space swings
+  round you until its landing site is underfoot by SWING_TO, its drawn
+  ground rides on it from well out, and inside MOON_SEAM the 'moon' level
+  takes over by a seamless seam (levels/outsideWorld.ts has the frame).
+  Leaving upward past MOON_LEAVE is the same seam the other way, and far out
+  the frame swings back until the Earth is below again. Pure numbers and no
+  imports, like altitude.ts, so the room tier can hold them.
 */
 
 /** the globe's radius, world units: the curve the far field bends onto */
@@ -47,23 +52,31 @@ export const CURVE_FROM = 300
 export const CURVE_TO = 3000
 export const THIN_FROM = 800
 export const THIN_TO = 11000
+/** above this the chunk ring, the house and the props' ground stop: they are
+    a few pixels under a whole far field, and nearly two thousand draw calls */
+export const NEAR_OFF = 2600
 export const GROUND_FADE = 12000
 export const GROUND_OFF = 20000
 
 /** the Moon is pinned once the climb passes this, and forgotten under the other */
 export const MOON_ANCHOR = 3000
 export const MOON_FORGET = 2000
-/** how close to its surface flying cuts to the Moon, and how high off it back */
-export const MOON_SEAM = 2600
-export const MOON_LEAVE = 2400
-/** how high over the ground you left from the way back arrives */
-export const EARTH_RETURN = 40000
+/** the approach: from SWING_FROM off the Moon's surface the whole of space
+    swings round you until, by SWING_TO, its landing site is straight
+    underfoot (outsideWorld's space frame); inside MOON_SEAM you are on the
+    Moon level, seamlessly, and past MOON_LEAVE back off it */
+export const SWING_FROM = 60000
+export const SWING_TO = 20000
+export const MOON_SEAM = 3000
+export const MOON_LEAVE = 4000
 
 /** where the Moon level sits in the scene: far enough off that the house,
     the fleet and the overworld's props are past its far plane */
 export const MOON_ORIGIN = { x: 0, z: 60000 }
-/** the Moon's walkable square, either side of its origin */
-export const MOON_WALK = 620
+/** the Moon's walkable square, either side of its origin: its whole drawn
+    ground (levels/moon.ts's patch, less a margin), because a seamless
+    landing puts you down wherever you flew in, not on a pad */
+export const MOON_WALK = 4800
 /** the Moon's own time of day: the sun a third of the way up, so the
     craters throw long shadows and the day never ends */
 export const MOON_TOD = 0.31

@@ -634,19 +634,28 @@ scattered, and no screenshot was ever going to say otherwise.
   counter-clockwise seen from above the pole: the other way round, back-face
   culling keeps the far hemisphere's inside and the planet is drawn inside
   out, lit backwards, with the map's clamped rim as spokes round the nadir.
-- **The Moon is a level, reached by flying at it.** Past 3000 up the Moon is
-  pinned 300000 units off along the sky moon's bearing (or high in the sky
-  by day), drawn by the same globe program painted from `levels/moon.ts`'s
-  albedo, so the landing site you see from orbit is where you land. Within
-  2600 of its surface the overworld's seam (`outsideWorld.moonSeam`) cuts to
-  'moon', arriving 260 over the landing pad facing the Earth; flying 2400 up
-  off it cuts back, 40000 over the point the climb began. The Moon stands at
-  (0, 60000) in the scene so the house, the fleet and the overworld's props
-  are past its far plane; its sky is the same sky with the air taken out and
-  the Earth hung in it (drawn nearer and smaller at the same angular size, so
-  the depth buffer holds); its sun keeps its own low time of day and is the
-  only light; and its gravity is a sixth, so a crate from 20 up lands in
-  2.72 s against the street's 1.10.
+- **The Moon is a level, and you fly onto it with no cut.** Past 3000 up the
+  Moon is pinned 300000 units off along the sky moon's bearing (or high in
+  the sky by day). From there the Earth and the Moon live in *space*
+  coordinates drawn relative to you (`outsideWorld.ts`'s space frame: `ps`
+  is you in space, carried each frame by however far the scene moved you,
+  turned by `q`). From 60000 off the Moon's surface `q` swings the whole of
+  space round you until, by 20000, the landing site is straight underfoot:
+  the walk's down becomes the Moon's down without the walker's up ever
+  changing, and the sky, the stars and the sun (eased to a low morning over
+  the site) turn with it. The Moon level's own meshes ride on the Moon from
+  well out, so inside 3000 the level change is a *seamless seam*: the levels
+  draw the same picture, and crossing is carrying the walker and the ship by
+  one offset (`LevelShift`, `walk.shift`, `fleet.shiftRiding`, the level
+  system's `onSeamless`). Up off it past 4000 is the same seam back, and far
+  out the scene is re-based onto space. Three rules keep it seamless: the
+  Earth keeps the turn it was drawn with below you when it is hung in the
+  Moon's sky, or the continents twist at the seam; the Moon's ground is an
+  exact piece of its sphere, or the patch's edge steps off the globe past
+  it; and nothing anchored to the scene (the chunk ring, the house, the
+  props' ground) may be in view up there, which is also what made orbit
+  cheap. The Moon stands at (0, 60000) in the scene; its gravity is a sixth,
+  so a crate from 20 up lands in 2.72 s against the street's 1.10.
 - **A road follows the lattice, it does not float over it.** Decks are quad
   strips sampling `terrainY` at their own corners. A flat slab crossed the
   ground somewhere in the middle of every segment on any road that runs

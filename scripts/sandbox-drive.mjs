@@ -794,7 +794,15 @@ try {
       const gl = document.querySelector('canvas').getContext('webgl2')
       const real = look.render
       const times = []
+      const cpu = []
       let calls = 0, tris = 0
+      // the whole frame too: every animation-frame callback timed end to end
+      const realRaf = window.requestAnimationFrame
+      window.requestAnimationFrame = (cb) => realRaf((t) => {
+        const t0 = performance.now()
+        cb(t)
+        cpu.push(performance.now() - t0)
+      })
       const info = window.__renderer?.info
       if (info) info.autoReset = false
       look.render = (s, c) => {
@@ -807,11 +815,13 @@ try {
       }
       await new Promise((r) => setTimeout(r, ${ms}))
       look.render = real
+      window.requestAnimationFrame = realRaf
       if (info) info.autoReset = true
+      const frame = cpu.length ? cpu.reduce((a, b) => a + b, 0) / cpu.length : 0
       times.sort((a, b) => a - b)
       const n = times.length || 1
       const mean = times.reduce((a, b) => a + b, 0) / n
-      return ${JSON.stringify(label)}.padEnd(22) + ' ' + mean.toFixed(2) + ' ms mean, ' +
+      return ${JSON.stringify(label)}.padEnd(22) + ' frame ' + frame.toFixed(2) + ' ms, render ' + mean.toFixed(2) + ' ms mean, ' +
         times[Math.floor(n * 0.95)]?.toFixed(2) + ' ms p95 over ' + times.length + ' frames, ' +
         Math.round(calls / n) + ' draws, ' + Math.round(tris / n / 1000) + 'k tris'
     })()`)
@@ -844,7 +854,7 @@ try {
     const phase = (name) => evaluate(`window.__spacePhase = ${JSON.stringify(name)}; true`)
     const where = () => evaluate(`(() => { const c = window.__sandboxCamera.position, v = window.__outside.view;
       return { x: c.x, y: c.y, z: c.z, alt: v.alt, space: v.space, level: window.__levels.current.id,
-        moon: v.moon ? [v.moon.x, v.moon.y, v.moon.z] : null } })()`)
+        moon: v.moon ? [v.moon.x, v.moon.y, v.moon.z] : null, surf: v.surf } })()`)
 
     /* A crate dropped from a known height ahead, timed in the sandbox's own
        clock from release to its first touch of the ground, against
@@ -890,6 +900,10 @@ try {
     const t1 = Date.now()
     await climbTo(5200, '2-stratosphere', -0.25)
     await climbTo(9000, '3-curve', -0.35)
+    // the band where the streamed ground dithers out over the globe, looking
+    // straight down at the seam, and what a frame costs there
+    await climbTo(15500, '3b-fade', -1.3)
+    console.log('  ' + await cost('fade band'))
     await climbTo(34000, '4-orbit', -1.05)
     console.log(`  street to orbit in ${((Date.now() - t1) / 1000).toFixed(1)} s, shots included`)
     if (has('dump-globe')) {
@@ -916,6 +930,16 @@ try {
     }
     await sleep(2500)
     console.log('  ' + await cost('orbit'))
+    // ...and flying across it flat out, which is what a flight is: the map
+    // re-anchors and bakes under you the whole way
+    await look(null, 0)
+    await down('KeyW')
+    await down('ShiftLeft')
+    await sleep(600)
+    console.log('  ' + await cost('orbit, flying'))
+    await up('KeyW')
+    await up('ShiftLeft')
+    await sleep(1500)
 
     // at the Moon: aim at its centre and fly, shift held, until the cut.
     // The clock is let go first: the Moon keeps its own time of day
@@ -928,25 +952,52 @@ try {
         const w = await where()
         if (!w.moon) return w
         const dx = w.moon[0] - w.x, dy = w.moon[1] - w.y, dz = w.moon[2] - w.z
-        await evaluate(`(() => { const k = window.__sandboxWalk; k.yaw = ${Math.atan2(-dx, -dz)}; k.pitch = ${Math.atan2(dy, Math.hypot(dx, dz))} })()`)
+        // never steeper than this: looking straight down, first person, you
+        // look at your own body
+        const pitch = Math.max(-0.95, Math.atan2(dy, Math.hypot(dx, dz)))
+        await evaluate(`(() => { const k = window.__sandboxWalk; k.yaw = ${Math.atan2(-dx, -dz)}; k.pitch = ${pitch} })()`)
         return { ...w, d: Math.hypot(dx, dy, dz) }
+      }
+      /*
+        The approach, with no cut: a strip of frames from well out to the
+        ground, each labelled with the level it was drawn in. It must read
+        as one flight, the level changing under it without a frame of black
+      */
+      const STRIP = resolve(flag('strip-out', join(process.env.HOME ?? '.', '.cache/overhaul/space2')))
+      mkdirSync(STRIP, { recursive: true })
+      const stripShot = async (name, w) => {
+        const path = join(STRIP, `${name}.png`)
+        writeFileSync(path, await probe.screenshot(W, H))
+        console.log(`  strip ${name}: ${w.level}, ${Math.round(w.surf ?? -1)} off the Moon`)
       }
       await aim()
       await down('KeyW')
       await down('ShiftLeft')
-      let shotApproach = false
+      const marks = [[120000, 'a-120k'], [45000, 'b-45k'], [20000, 'c-20k'], [8000, 'd-8k'], [3400, 'e-3k']]
+      let measured = false
       await waitFor(async () => {
         const w = await aim()
-        if (!shotApproach && w.d && w.d < 26000) {
-          shotApproach = true
-          await spaceShot('5-moon-approach')
+        if (!measured && w.surf < 30000) {
+          measured = true
+          await up('KeyW')
+          await up('ShiftLeft')
+          await sleep(800)
+          console.log('  ' + await cost('approach'))
+          await down('KeyW')
+          await down('ShiftLeft')
+        }
+        while (marks.length && w.surf < marks[0][0]) {
+          const [, name] = marks.shift()
+          await stripShot(name, w)
         }
         return w.level === 'moon'
-      }, 600, 100, 'the Moon')
+      }, 900, 60, 'the Moon, flown onto')
       await up('KeyW')
       await up('ShiftLeft')
       await phase('moon')
-      await sleep(2500)
+      await look(null, -0.35)
+      await sleep(600)
+      await stripShot('f-on-the-moon', await where())
       const m = await where()
       const mg = await evaluate(`window.__levels.current.groundYAt(${m.x}, ${m.z})`)
       console.log(`  on the Moon: ${Math.round(m.y - mg)} over its ground, at ${Math.round(m.x)}, ${Math.round(m.z)}`)
@@ -960,12 +1011,17 @@ try {
       await sleep(2500)
       await evaluate('window.__sandbox.console.host.thirdPerson(true)')
       // over the shoulder toward the Earth (the arrival faces it)
-      await look(0.6, 0.3)
+      await sleep(1500)
+      await stripShot('g-standing', await where())
+      // over the shoulder toward the Earth, wherever it hangs
+      await evaluate(`(() => { const e = window.__scene.getObjectByName('globe-earth').position, c = window.__sandboxCamera.position
+        const dx = e.x - c.x, dy = e.y - c.y, dz = e.z - c.z
+        window.__sandboxWalk.yaw = Math.atan2(-dx, -dz); window.__sandboxWalk.pitch = Math.max(-0.2, Math.atan2(dy, Math.hypot(dx, dz)) - 0.35); return true })()`)
       await sleep(1500)
       await spaceShot('6-moon-surface')
       console.log('  ' + await cost('moon'))
       await evaluate('window.__sandbox.console.host.thirdPerson(false)')
-      await look(0.6, 0.12)
+      await look(null, 0.05)
       const moonDrop = await drop(20)
       console.log(`  a crate from 20 up, Moon:   ${moonDrop.t.toFixed(2)} s (g ${moonDrop.g.toFixed(1)}, sqrt(2h/g) ${moonDrop.theory.toFixed(2)} s)`)
       if (earthDrop.t > 0 && moonDrop.t > 0) {
@@ -977,18 +1033,20 @@ try {
         sb.spawn('barrel', { x, y: sb.restY('barrel', x, z) + 14, z }); return true })()`)
       await sleep(1100)
       await spaceShot('7-moon-prop')
-      // and home: straight up off the Moon until the cut
+      // and home: straight up off the Moon, through the seam back onto the
+      // Earth's side, and on until the frame has swung back and the Earth is
+      // below again
       await phase('home')
       await evaluate('window.__sandbox.console.host.noclip(true)')
       await down('Space')
       await down('ShiftLeft')
-      await waitFor(async () => (await where()).level === 'overworld', 600, 100, 'the Earth').catch(() => {})
+      await waitFor(async () => (await where()).level === 'overworld', 600, 100, 'off the Moon').catch(() => {})
+      await waitFor(async () => ((await where()).surf ?? 0) > 70000, 600, 100, 'clear of the Moon').catch(() => {})
       await up('Space')
       await up('ShiftLeft')
       await sleep(2500)
       const h = await where()
-      console.log(`  home: level ${h.level}, ${Math.round(h.alt)} over the ground at ${Math.round(h.x)}, ${Math.round(h.z)}` +
-        ` (left from ${Math.round(w0.x)}, ${Math.round(w0.z)})`)
+      console.log(`  home: level ${h.level}, ${Math.round(h.alt)} over the ground, ${Math.round(h.surf)} off the Moon`)
       await look(null, -1.4)
       await sleep(1500)
       await spaceShot('8-home-from-above')

@@ -83,6 +83,7 @@ export interface SkyHandles {
       hides the sky's own moon (you are standing on it) */
   update: (
     camPos: THREE.Vector3, todOverride?: number, space?: number, moonDisc?: boolean, dip?: number,
+    frame?: SkyFrame | null,
   ) => SkyState
   /** the world's one moving shadow caster. Its castShadow flag is stable;
       strength and explicit map updates handle indoor/night transitions */
@@ -99,6 +100,20 @@ export interface SkyHandles {
   setScale: (k: number) => void
   /** the unit direction the sky's moon is drawn in at the last update */
   moonDir: (out: THREE.Vector3) => THREE.Vector3
+  /** ...and the sun's, in the unturned sky (a frame turns it for the scene) */
+  sunDir: (out: THREE.Vector3) => THREE.Vector3
+}
+
+/**
+ * The sky turned about the lens, for space (levels/outsideWorld.ts): flying at
+ * the Moon, the whole of space swings round you until the Moon is underfoot,
+ * and the stars and the sun swing with it. `sun`, when given, is where the
+ * sun is in the unturned sky (space's own sun, eased toward the Moon's
+ * morning as you come in to land), and there it is always full day.
+ */
+export interface SkyFrame {
+  q: THREE.Quaternion
+  sun?: THREE.Vector3
 }
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
@@ -764,7 +779,12 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   const SPACE_FOG = new THREE.Color('#000000')
   const SPACE_HEMI = new THREE.Color('#1c2130')
 
-  const update = (camPos: THREE.Vector3, todOverride?: number, space = 0, moonDisc = true, dip = 0) => {
+  const sunWant = new THREE.Vector3()
+  const lastSunDir = new THREE.Vector3()
+  const update = (
+    camPos: THREE.Vector3, todOverride?: number, space = 0, moonDisc = true, dip = 0,
+    frame: SkyFrame | null = null,
+  ) => {
     const now = performance.now()
     const tod = todOverride !== undefined
       ? todOverride
@@ -863,9 +883,14 @@ export function buildSky(opts: BuildOpts): SkyHandles {
 
     // sun and moon ride inside the camera-parked dome now, so their positions
     // are offsets, not world coordinates; lookAt still wants world space
-    sun.visible = sunEl > -0.14
+    if (frame) dome.quaternion.copy(frame.q)
+    else if (dome.quaternion.w !== 1) dome.quaternion.identity()
+    const sunUp = frame?.sun ? frame.sun.y : sunEl
+    sun.visible = sunUp > -0.14 || !!frame
     if (sun.visible) {
-      sun.position.set(Math.cos(a) * 380, sunEl * 380, 80)
+      if (frame?.sun) sun.position.copy(frame.sun).multiplyScalar(380)
+      else sun.position.set(Math.cos(a) * 380, sunEl * 380, 80)
+      dome.updateMatrixWorld()
       sun.lookAt(camPos.x, camPos.y, camPos.z + 8)
     }
     moon.visible = moonEl > -0.14 && moonDisc && space < 0.12
@@ -873,25 +898,39 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       moon.position.set(-Math.cos(a) * 380, moonEl * 380, 80)
       moon.lookAt(camPos.x, camPos.y, camPos.z + 8)
     }
-    sunLight.position.set(
-      camPos.x + Math.cos(a) * 60, camPos.y + Math.max(0.02, sunEl) * 60, camPos.z + 12.6)
-    sunLight.target.position.set(camPos.x, camPos.y, camPos.z + 10)
+    if (frame) {
+      // the light follows the turned sky: its offset is the sun's direction
+      // turned by the frame, from a target parked on the lens as always
+      if (frame.sun) sunWant.copy(frame.sun)
+      else sunWant.set(Math.cos(a) * 60, Math.max(0.02, sunEl) * 60, 2.6)
+      sunWant.normalize().applyQuaternion(frame.q)
+      sunLight.target.position.set(camPos.x, camPos.y, camPos.z + 10)
+      sunLight.position.copy(sunLight.target.position).addScaledVector(sunWant, 60)
+      if (sunWant.dot(lastSunDir) < 0.9995) {
+        sunLight.shadow.needsUpdate = true
+        lastSunDir.copy(sunWant)
+      }
+    } else {
+      sunLight.position.set(
+        camPos.x + Math.cos(a) * 60, camPos.y + Math.max(0.02, sunEl) * 60, camPos.z + 12.6)
+      sunLight.target.position.set(camPos.x, camPos.y, camPos.z + 10)
+    }
     // the twilight term keeps a low sun burning: on the bare elevation curve
     // alone, golden hour was the greyest moment of the day instead of the one
     // everything else in the scene is warmest at
     sunLight.intensity =
       // the below-horizon share is the afterglow's warm key on whatever
       // faces the set sun: without it a dusk town was one flat blue-grey
-      (2.3 * Math.pow(Math.max(0, sunEl), 0.65) + twilight * 0.9 * (sunEl > 0 ? 1 : 0.7)) *
+      (frame?.sun ? 2.3 : 2.3 * Math.pow(Math.max(0, sunEl), 0.65) + twilight * 0.9 * (sunEl > 0 ? 1 : 0.7)) *
       (1 - 0.88 * indoor)
-    sunLight.color.lerpColors(SUN_LOW, SUN_HIGH, clamp01(sunEl * 1.6))
+    sunLight.color.lerpColors(SUN_LOW, SUN_HIGH, clamp01((frame?.sun ? 1 : sunEl) * 1.6))
     // `castShadow` stays true forever so the door cannot change shader
     // variants. Fade the uniform contribution instead, and only ask for a map
     // refresh after enough travel / solar motion to matter. A grazing sun is
     // faded too: a near-horizontal ortho box smears one texel row across half
     // the world, which reads worse than no shadow at all.
     const shadowStrength =
-      smooth01((sunEl - 0.04) / 0.1) * (1 - smooth01((indoor - 0.72) / 0.18))
+      (frame?.sun ? 1 : smooth01((sunEl - 0.04) / 0.1)) * (1 - smooth01((indoor - 0.72) / 0.18))
     sunLight.shadow.intensity = shadowStrength
     if (shadowStrength > 0.001) {
       const moved = !Number.isFinite(shadowAnchor.x) || shadowAnchor.distanceTo(camPos) >= SHADOW_TRAVEL
@@ -906,6 +945,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     }
 
     dayMat.opacity = day * (1 - space)
+    // out there the night's painted gradient goes too: space is black, with
+    // stars in it, below the horizon as much as above
+    starMat.color.setScalar(1 - 0.92 * space)
     // the whole painted sky leans amber as the sun grazes the horizon; the
     // basic material's colour multiplies its map, so this is free
     // lightly: tinting the whole dome amber took the blue out of the zenith,
@@ -958,5 +1000,6 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       if (dome.scale.x !== k) dome.scale.setScalar(k)
     },
     moonDir: (out) => out.set(-Math.cos(lastA) * 380, -Math.sin(lastA) * 380, 80).normalize(),
+    sunDir: (out) => out.set(Math.cos(lastA) * 60, Math.max(0.02, Math.sin(lastA)) * 60, 2.6).normalize(),
   }
 }
