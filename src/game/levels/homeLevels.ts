@@ -76,7 +76,7 @@ export function makeHomeLevels(
     },
     leave: () => {},
     update: (dt, p) => {
-      house.update(dt) // doors easing, fireflies drifting
+      house.update(dt, p) // doors easing (clear of the player), fireflies drifting
       backrooms.update(dt, p, false) // the seam's whisper from below
     },
     // the backrooms' doctored wall, or the Moon from orbit
