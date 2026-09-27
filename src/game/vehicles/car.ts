@@ -1867,6 +1867,9 @@ export function buildCar(opts: CarOpts): Vehicle {
     },
     solid,
     reach: 4.2,
+    // light for a hatchback, heavy for a prop: the beam drags it round a
+    // swing and a flick throws it a few car lengths. It sinks, slowly
+    carry: { mass: 350, density: 1.3, bottom: 0.02 },
 
     placeAt: (x, z, y0, env) => {
       pos.set(x, 0, z)

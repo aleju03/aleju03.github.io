@@ -245,6 +245,20 @@ vehicles/
   box's extent folded onto the body's axes and its centre tested against the
   grown rectangle, one comparison per solid rather than six, and only solids
   bigger than the body are still sampled.
+- **The physgun takes a parked machine by standing a prop in for it.** A
+  vehicle is not a Rapier body; it runs its own integrator and is mirrored
+  into the sandbox only as a kinematic hull. So `registry.ts`'s `pick` finds
+  one along the beam and `take` spawns a dynamic body (a convex hull of the
+  same stations the walker meets, at the machine's `carry` weight and
+  density) where it stands, and the beam holds that like a crate: lift, spin,
+  throw, freeze. The machine rides it whole (`root` placed from the prop's
+  drawn pose, its own integrator idle, its own kinematic mirror emptied so
+  the two never shove each other) until it is let go and settles the right
+  way up, when it is re-settled on its own springs there. Frozen or on its
+  roof it stays a prop; climbing in rights it. Only an empty machine can be
+  taken, and on the wire the thrower holds it through a server claim (`hand`
+  in the seat table, exclusive with both chairs) and relays it like a driver,
+  while everyone else places it whole. `npm run drive -- carry` films it.
 - **Integrate in fixed slices.** The walk loop's dt is clamped to 50 ms, and
   50 ms of explicit Euler through a spring stiff enough to hold a car up is not
   a suspension. `registry.ts` substeps at 1/120, which also makes the machines

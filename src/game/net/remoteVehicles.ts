@@ -25,6 +25,13 @@
   The handoff between the last two is the interesting edge, and it belongs to
   the registry rather than here — this module only says *who* owns what.
 
+  There is a fourth owner, the **hand**: somebody has an empty machine on
+  their physgun, or is letting it settle after one. The server keeps it
+  apart from the driver (a machine with anybody in it cannot be grabbed, and
+  a grabbed one cannot be boarded), and to everyone else it is "theirs" like
+  a driven one, with one difference the registry needs told: `held`, since a
+  car hanging off a beam upside down is placed whole rather than driven.
+
   Seats are not interpolated, buffered or timed. They are six small integers
   that the server resends in full on every change, and the last table to
   arrive is the truth.
@@ -69,8 +76,14 @@ export interface RemoteVehicle {
   /** who is in it; 0 is an empty chair */
   driver: PlayerId | 0
   passenger: PlayerId | 0
-  /** somebody else has the wheel: the local sim must keep its hands off */
+  /** whoever has it on their physgun (or is letting it settle); 0 nobody */
+  hand: PlayerId | 0
+  /** somebody else has the wheel, or has it on their physgun: the local sim
+      must keep its hands off */
   netDriven: boolean
+  /** ...and it is the physgun: place it whole, tumbling included, rather
+      than drive it */
+  held: boolean
   // --- resolved by sample(), world space
   x: number
   y: number
@@ -123,7 +136,9 @@ function makeVehicle(id: WireVehicle): RemoteVehicle {
     known: false,
     driver: 0,
     passenger: 0,
+    hand: 0,
     netDriven: false,
+    held: false,
     x: 0, y: 0, z: 0,
     yaw: 0, pitch: 0, roll: 0,
     vx: 0, vy: 0, vz: 0,
@@ -138,7 +153,10 @@ export function createRemoteFleet(): RemoteFleet {
   const buffers: Sample[][] = WIRE_VEHICLES.map(() => [])
 
   const syncOwners = () => {
-    for (const v of vehicles) v.netDriven = v.driver !== 0 && v.driver !== you
+    for (const v of vehicles) {
+      v.held = v.driver === 0 && v.hand !== 0 && v.hand !== you
+      v.netDriven = (v.driver !== 0 && v.driver !== you) || v.held
+    }
   }
 
   /** drop a machine's history. Called when it changes hands, because the
@@ -188,12 +206,13 @@ export function createRemoteFleet(): RemoteFleet {
     },
 
     seats(list) {
-      for (const [vid, driver, passenger] of list) {
+      for (const [vid, driver, passenger, hand = 0] of list) {
         const v = vehicles[vid]
         if (!v) continue
-        const handover = v.driver !== driver
+        const handover = v.driver !== driver || v.hand !== hand
         v.driver = driver
         v.passenger = passenger
+        v.hand = hand
         if (handover) forget(vid)
       }
       syncOwners()
@@ -287,7 +306,9 @@ export function createRemoteFleet(): RemoteFleet {
         v.known = false
         v.driver = 0
         v.passenger = 0
+        v.hand = 0
         v.netDriven = false
+        v.held = false
         forget(i)
       }
     },

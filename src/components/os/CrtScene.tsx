@@ -1269,7 +1269,18 @@ export default function CrtScene({
         */
         const netDriven: Array<NetPose | null> = WIRE_VEHICLES.map(() => null)
         const netTaken: Array<[boolean, boolean]> = WIRE_VEHICLES.map(() => [false, false])
-        const fleetNetState = { driven: netDriven, taken: netTaken }
+        // who has an empty machine on a physgun (0 nobody, 1 us, 2 somebody
+        // else), and the two verbs the fleet needs for it: the claim, and the
+        // relay of a machine we hold, the same packet a driver sends
+        const netHand: number[] = WIRE_VEHICLES.map(() => 0)
+        const fleetNetState = {
+          driven: netDriven,
+          taken: netTaken,
+          hand: netHand,
+          claim: (i: number, on: boolean) => net?.hold(i, on),
+          send: (i: number, x: number, y: number, z: number, yaw: number, pitch: number, roll: number) =>
+            net?.vehicle(i, x, y, z, yaw, pitch, roll),
+        }
 
         const syncFleetNet = (now: number) => {
           if (!net) {
@@ -1281,6 +1292,7 @@ export default function CrtScene({
           for (let i = 0; i < WIRE_VEHICLES.length; i++) {
             const v = fleetNet.vehicles[i]
             netDriven[i] = v.netDriven ? v : null
+            netHand[i] = v.hand === 0 ? 0 : v.hand === me ? 1 : 2
             netTaken[i] = [
               v.driver !== 0 && v.driver !== me,
               v.passenger !== 0 && v.passenger !== me,
@@ -3706,6 +3718,12 @@ export default function CrtScene({
                 yield* outside.people()
                 if (net) yield* remoteGrabs.rigs()
               },
+              // the parked machines: read through the binding, so the real
+              // fleet, built a few lines down, is the one the beam asks
+              vehicles: {
+                pick: (eye, dir, within) => fleet.pick(eye, dir, within),
+                take: (key, sb) => fleet.take(key, sb),
+              },
             })
             tools.setHandColor(lookRef.current.shell)
             switchSandboxTo(levels.current)
@@ -3749,7 +3767,11 @@ export default function CrtScene({
                 // every solid the walk collides with, for a harness sweeping
                 // a door leaf through its swing against the furniture
                 __obstacles: obstacles,
+                // the fleet's world, for a harness recalling a machine
+                __fleetEnv: () => aimFleetEnv(fleetLevel()),
               })
+              // the fleet through its binding: the real one is built below
+              Object.defineProperty(window, '__fleet', { get: () => fleet, configurable: true })
             }
             fleet = registry.buildFleet({
               scene,

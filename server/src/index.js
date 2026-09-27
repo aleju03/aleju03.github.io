@@ -893,11 +893,15 @@ let worldTicker = null;
 let worldDirty = false;
 
 // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
-// `set` says whether anyone has ever moved this machine, and until they have
-// the server has no opinion about where it is — every client's own spawn puts
-// it on the same probed home spot, so silence is the correct answer.
+// `hand` is whoever has an *empty* machine on their physgun (or is letting it
+// settle after one), and is its authority exactly as a driver is, which is
+// why the two exclude each other; `set` says whether anyone has ever moved
+// this machine, and until they have the server has no opinion about where it
+// is — every client's own spawn puts it on the same probed home spot, so
+// silence is the correct answer.
 const worldFleet = Array.from({ length: WORLD_FLEET }, () => ({
   seats: new Array(WORLD_SEATS).fill(0),
+  hand: 0,
   set: false,
   x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
 }));
@@ -965,7 +969,7 @@ function worldBroadcast(payload, except = null) {
 /* -------------------------------------------------------------- the fleet */
 
 function worldSeatTable() {
-  return worldFleet.map((v, i) => [i, v.seats[0], v.seats[1]]);
+  return worldFleet.map((v, i) => [i, v.seats[0], v.seats[1], v.hand]);
 }
 
 /** the machines anyone has actually moved. An untouched fleet sends nothing */
@@ -989,6 +993,10 @@ function announceSeats() {
 function clearSeatsOf(id) {
   let changed = false;
   for (const v of worldFleet) {
+    if (v.hand === id) {
+      v.hand = 0;
+      changed = true;
+    }
     for (let s = 0; s < v.seats.length; s++) {
       if (v.seats[s] === id) {
         v.seats[s] = 0;
@@ -1013,7 +1021,8 @@ function handleWorldSeat(ws, msg) {
   }
   const v = worldFleet[msg.v];
   const holder = v.seats[msg.seat];
-  if (holder !== 0 && holder !== w.id) {
+  // a machine on somebody else's physgun is not a machine you can climb into
+  if ((holder !== 0 && holder !== w.id) || (v.hand !== 0 && v.hand !== w.id)) {
     // somebody beat them to the door by a round trip
     send(ws, { type: 'world-seat-denied', v: msg.v, seat: msg.seat });
     return;
@@ -1031,6 +1040,32 @@ function handleWorldUnseat(ws) {
   if (clearSeatsOf(w.id)) announceSeats();
 }
 
+/** take an empty machine on the physgun, or let it go. One authority per
+    machine: refused (in silence, the table simply does not name you) while
+    anybody is sitting in it or somebody else already has it */
+function handleWorldHold(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (!allowWorld(worldSeatRate, ws, WORLD_SEAT_RATE_MAX, WORLD_SEAT_RATE_WINDOW_MS)) return;
+  if (!Number.isInteger(msg.v) || msg.v < 0 || msg.v >= WORLD_FLEET || typeof msg.on !== 'boolean') {
+    strike(ws);
+    return;
+  }
+  const v = worldFleet[msg.v];
+  if (msg.on) {
+    if (v.hand === w.id) return;
+    if (v.hand !== 0 || v.seats.some((s) => s !== 0)) {
+      send(ws, { type: 'world-hold-denied', v: msg.v });
+      return;
+    }
+    v.hand = w.id;
+  } else {
+    if (v.hand !== w.id) return;
+    v.hand = 0;
+  }
+  announceSeats();
+}
+
 function handleWorldVehicle(ws, msg) {
   const w = ws.world;
   if (!w) return;
@@ -1043,8 +1078,9 @@ function handleWorldVehicle(ws, msg) {
   }
   const v = worldFleet[msg.v];
   // the entirety of the server's opinion about physics: you may move the
-  // machine you are holding the wheel of, and no other
-  if (v.seats[0] !== w.id) return;
+  // machine you are holding the wheel of, or the empty one on your physgun,
+  // and no other
+  if (v.seats[0] !== w.id && !(v.seats[0] === 0 && v.hand === w.id)) return;
   if (!finite(msg.x) || !finite(msg.y) || !finite(msg.z)) {
     strike(ws);
     return;
@@ -1725,6 +1761,9 @@ function handleMessage(ws, msg) {
       return;
     case 'world-vehicle':
       handleWorldVehicle(ws, msg);
+      return;
+    case 'world-hold':
+      handleWorldHold(ws, msg);
       return;
     case 'world-look':
       handleWorldLook(ws, msg);

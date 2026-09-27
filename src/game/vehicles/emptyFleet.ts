@@ -56,6 +56,8 @@ export function emptyFleet(): VehicleFleet {
     puff: () => {},
     turn: () => {},
     nearest: () => null,
+    pick: () => null,
+    take: () => null,
     enter: () => {},
     takeSeat: () => {},
     leave: () => null,

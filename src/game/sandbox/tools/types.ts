@@ -1,3 +1,4 @@
+import type { Sandbox, Prop } from '../sandbox'
 import type * as THREE from 'three'
 
 /*
@@ -114,6 +115,24 @@ export interface GrabRig {
   /** false once this body can no longer be held (its player left, sat
       down, took off, or the hold ran past its cap): the beam lets go */
   alive?: () => boolean
+}
+
+/**
+ * The fleet, as the beam sees it. A parked machine is not a prop: it runs its
+ * own integrator and is mirrored into Rapier only as a kinematic hull. So the
+ * beam asks the fleet whether its ray found one, and then asks for it *as* a
+ * prop: the fleet stands a dynamic body in for the machine (vehicles/carry.ts)
+ * and the beam holds that exactly as it holds a crate. `take` may say no
+ * (somebody is sitting in it, somebody else has it) or not yet (the server
+ * has not answered the claim); the beam keeps sweeping while the trigger is
+ * held, so a claim granted a round trip later is taken on that frame.
+ */
+export interface VehicleGrab {
+  /** the nearest machine along the ray, nearer than `within`, or null */
+  pick: (eye: THREE.Vector3, dir: THREE.Vector3, within: number) => { key: string; t: number } | null
+  /** the machine as a prop in this sandbox, for the beam to hold; null for
+      "not this frame" */
+  take: (key: string, sb: Sandbox) => Prop | null
 }
 
 /** a rig, with a stable name the hold record can carry */

@@ -181,6 +181,11 @@ export interface Vehicle {
   solid: Solid
   /** how close a walker must be to the door to be offered the prompt */
   reach: number
+  /** what it weighs and how it floats when the physgun has it (the fleet
+      stands a Rapier body in for it: registry.ts's `take`), and how far
+      under its origin the hull that body is made of closes. Defaults suit a
+      car */
+  carry?: { mass: number; density: number; bottom: number }
   /** put it down here and let it settle: spawn, or a recall from the menu */
   placeAt: (x: number, z: number, yaw: number, env: DriveEnv) => void
   /** the player just got in */
