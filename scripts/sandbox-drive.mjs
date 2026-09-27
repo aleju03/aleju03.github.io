@@ -452,6 +452,55 @@ try {
     await run('cleanup')
   }
 
+  if (WHAT.includes('space')) {
+    console.log('space')
+    const SPACE_OUT = resolve(flag('space-out', join(process.env.HOME ?? '.', '.cache/overhaul/space')))
+    mkdirSync(SPACE_OUT, { recursive: true })
+    const spaceShot = async (name) => {
+      const path = join(SPACE_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    /* What a frame costs where the lens is now: the look's render with a
+       gl.finish() behind it, so the GPU's share is inside the number, and
+       the draw calls and triangles three reports for the same frames. The
+       limiter is lifted for the window, since a capped loop measures the cap */
+    const cost = (label, ms = 2500) => evaluate(`(async () => {
+      const look = window.__look
+      const gl = document.querySelector('canvas').getContext('webgl2')
+      const real = look.render
+      const times = []
+      let calls = 0, tris = 0
+      const info = window.__renderer?.info
+      if (info) info.autoReset = false
+      look.render = (s, c) => {
+        info?.reset()
+        const t = performance.now()
+        real(s, c)
+        gl.finish()
+        times.push(performance.now() - t)
+        if (info) { calls += info.render.calls; tris += info.render.triangles }
+      }
+      await new Promise((r) => setTimeout(r, ${ms}))
+      look.render = real
+      if (info) info.autoReset = true
+      times.sort((a, b) => a - b)
+      const n = times.length || 1
+      const mean = times.reduce((a, b) => a + b, 0) / n
+      return ${JSON.stringify(label)}.padEnd(22) + ' ' + mean.toFixed(2) + ' ms mean, ' +
+        times[Math.floor(n * 0.95)]?.toFixed(2) + ' ms p95 over ' + times.length + ' frames, ' +
+        Math.round(calls / n) + ' draws, ' + Math.round(tris / n / 1000) + 'k tris'
+    })()`)
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await goTo(flag('at', '-32 -331').replace(',', ' '))
+    await sleep(1500)
+    await run('time 10:30')
+    await stand()
+    await look(Number(flag('yaw', Math.PI)), 0.05)
+    await sleep(1500)
+    console.log('  ' + await cost('ground'))
+  }
+
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))
   if (probe.errors.length) {
     console.log(`\npage errors (${probe.errors.length}):`)

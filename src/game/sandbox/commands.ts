@@ -90,10 +90,13 @@ export interface PlayerInfo {
  * absent says so instead of failing.
  */
 export interface SandboxHost {
-  /** null until the world (and Rapier) have arrived */
+  /** null until the world (and Rapier) have arrived, and in a level that has
+      no props at all */
   sandbox: () => Sandbox | null
   history: () => History | null
   rules: WorldRules
+  /** the world has arrived, so a missing sandbox is the level's doing */
+  worldLoaded?: () => boolean
   /** connected to the shared world */
   online?: () => boolean
   /** the head and where it is looking, unit length */
@@ -394,10 +397,12 @@ export const createConsole = (host: SandboxHost): Console => {
       needSandbox: () => {
         const sb = host.sandbox()
         if (!sb) {
-          return ctx.fail(msg(
-            'props come with the world. step outside first',
-            'los objetos llegan con el mundo. sal de la casa primero',
-          ))
+          return ctx.fail(host.worldLoaded?.()
+            ? msg('there are no props on this level', 'en este nivel no hay objetos')
+            : msg(
+              'props come with the world. step outside first',
+              'los objetos llegan con el mundo. sal de la casa primero',
+            ))
         }
         return sb
       },

@@ -72,6 +72,8 @@ player/
                      freezes and the lens drops, and that is the whole of it
 levels/
   types.ts           the Level contract (collision, spawn, seams, ground, water)
+                     and what a level has: gravity, a sandbox and its ground,
+                     the fleet, the crowd, the house, sky, air, footsteps
   levelSystem.ts     createLevelSystem(): which level is live + the noclip cut
   homeLevels.ts      the two shipped levels: 'overworld' and 'backrooms'
   houseWorld.ts      the house + yard, two storeys (walls, stairs, slab, roof,
@@ -672,7 +674,8 @@ sandbox/
 ### The contract
 
 ```ts
-const sb = createSandbox({ parent, collision, waterY, waveAt, splash, chunkSolids })
+const sb = createSandbox({ parent, collision, waterY, waveAt, splash, chunkSolids, ground })
+// ground: { lattice(i, j), heightAt(x, z) }, the level's own (default: the terrain)
 await sb.whenReady                      // optional: spawns before it are queued
 sb.tick({ dt, active, walker, focus })  // once a frame; returns { steps, awake, moving, ms }
 
@@ -1476,7 +1479,17 @@ every one of them has a failure you can see in a harness shot.
   (freeze → blackout → swap → fade) comes for free. Solids must register in your CollisionSet or the
   player walks through them; the backrooms entrance works by deliberately
   not registering one. Give each one `noStand()` unless its box top is
-  somewhere a player could plausibly stand. See the debts below.
+  somewhere a player could plausibly stand. Then say what the level *has*:
+  the scene never asks which level is live, it reads `gravity` (the walker's
+  and the props' both, as a share of the overworld's), `sandbox` (props run
+  here; its `ground` is the level's own height lattice on `world/grid.ts`'s
+  GRID if it is not the overworld's terrain), `vehicles`, `crowd`, `house`,
+  `outdoors` (the sun's shadow follows you), `air` (the look's aerial
+  perspective, lamp pools and headlamp) and `surfaceAt` (footsteps). All of
+  them default to none, so a new level inherits nothing it did not ask for.
+  A level with a sandbox gets its own, made on first arrival and kept for
+  the session, and the tool belt, the undo stack and `window.__sandbox`
+  follow the live one across a cut. See the debts below.
 - **A new world builder**: follow the existing contract: a
   `build*(opts) → Handles` function taking `{ scene, obstacles?,
   trackTexture, trackDisposable }` and returning `{ root, update(dt),

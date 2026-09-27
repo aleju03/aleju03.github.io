@@ -71,6 +71,24 @@ export function makeHomeLevels(
       backrooms.update(dt, p, false) // the seam's whisper from below
     },
     seamTo: (p) => (backrooms.overEntry(p) ? { to: 'backrooms' } : null),
+    // everything: the one level that has the lot
+    gravity: 1,
+    sandbox: {
+      waterY: () => outside.waterY,
+      waveAt: outside.waveAt,
+      splash: outside.splash,
+      chunkSolids: outside.chunkSolids,
+      ruins: outside.ruins,
+    },
+    vehicles: true,
+    crowd: true,
+    house: true,
+    outdoors: true,
+    air: true,
+    // the property answers for its own lawn, porch and planks; the open
+    // world for everything past the fence
+    surfaceAt: (x, z, feetY, wet) =>
+      wet > 0.12 ? 'water' : outside.onProperty(x, z) ? house.surfaceAt(x, z, feetY) : outside.surfaceAt(x, z),
   }
 
   const level0: Level = {
@@ -102,6 +120,8 @@ export function makeHomeLevels(
       backrooms.update(dt, p, true) // chunk streaming, flicker and hum
     },
     seamTo: (p) => (backrooms.overExit(p) ? { to: 'overworld' } : null),
+    // carpet wall to wall, and nothing else: no props, no machines, no sky
+    surfaceAt: () => 'carpet',
     // level 0 brings its own light rig (inside its root); kill the sky,
     // moon and window spills, pin the fog close and sour
     overrideLight: (rig) => {

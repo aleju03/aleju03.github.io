@@ -196,6 +196,9 @@ export interface Physgun {
   release: (thrown?: boolean) => void
   /** thaw what the ray finds (and anything welded to it); true if it did */
   unfreezeAt: (aim: Aim) => boolean
+  /** point the gun at another sandbox (a level cut): whatever was held or
+      pinned is let go first, since it belongs to the level being left */
+  retarget: (next: Sandbox) => void
   on: (fn: (e: PhysgunEvent) => void) => () => void
   /** the controller's last numbers, for tests */
   readonly debug: { err: number; speed: number; saturated: boolean }
@@ -203,7 +206,8 @@ export interface Physgun {
 }
 
 export function createPhysgun(o: PhysgunOpts): Physgun {
-  const { sb } = o
+  // a let: the gun follows the player into whichever level's sandbox is live
+  let sb = o.sb
   const hold = emptyHold(o.holder ?? 'local')
   const view: BeamView = {
     mode: 'off', end: new THREE.Vector3(), target: new THREE.Vector3(),
@@ -691,7 +695,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     debug.speed = Math.hypot(lv.x, lv.y, lv.z)
     debug.saturated = saturated
   }
-  const offSlice = sb.onBeforeSlice(beforeSlice)
+  let offSlice = sb.onBeforeSlice(beforeSlice)
 
   /* ------------------------------------------------ after the draw -- */
 
@@ -740,6 +744,15 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     sync,
     release,
     unfreezeAt,
+    retarget: (next) => {
+      if (next === sb) return
+      if (prop || rig) release(false)
+      for (const pin of pins) pin.rig.grab(pin.limb, null)
+      pins.length = 0
+      offSlice()
+      sb = next
+      offSlice = sb.onBeforeSlice(beforeSlice)
+    },
     on: (fn) => {
       listeners.add(fn)
       return () => listeners.delete(fn)

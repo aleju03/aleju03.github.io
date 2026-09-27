@@ -86,6 +86,9 @@ export interface Toolbelt {
   readonly capturesLook: boolean
   /** E belongs to the tool (something is held), not to doors and seats */
   readonly capturesUse: boolean
+  /** the sandbox the belt works in: the live level's own. Drops whatever
+      the physgun held in the old one */
+  setSandbox: (sb: Sandbox) => void
   /** hand colour for the first-person mitten, off the body's look */
   setHandColor: (c: THREE.ColorRepresentation) => void
   /** the parts, for the covered compile */
@@ -97,7 +100,9 @@ export interface Toolbelt {
 }
 
 export function createToolbelt(o: ToolbeltOpts): Toolbelt {
-  const physgun = createPhysgun({ sb: o.sb, rigs: o.rigs, linked: o.linked })
+  // the live level's sandbox, re-pointed on a level cut (setSandbox)
+  let sb = o.sb
+  const physgun = createPhysgun({ sb, rigs: o.rigs, linked: o.linked })
   const beam = o.parent ? createBeam(o.parent) : null
   const vm = o.parent ? createViewmodel(o.parent) : null
   const sfx: PhysgunSfx | null = (o.sound ?? !!o.parent) ? createPhysgunSfx() : null
@@ -131,14 +136,14 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
         sfx?.freeze()
         vm?.kick(0.7)
         flashAt.set(e.x, e.y, e.z)
-        const p = e.prop >= 0 ? o.sb.get(e.prop) : undefined
+        const p = e.prop >= 0 ? sb.get(e.prop) : undefined
         beam?.flash(p?.mesh ?? null, flashAt)
         break
       }
       case 'unfreeze': {
         sfx?.unfreeze()
         flashAt.set(e.x, e.y, e.z)
-        const p = e.prop >= 0 ? o.sb.get(e.prop) : undefined
+        const p = e.prop >= 0 ? sb.get(e.prop) : undefined
         if (p?.mesh) beam?.flash(p.mesh, flashAt)
         break
       }
@@ -239,6 +244,13 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     },
     get capturesUse() {
       return physgun.holding
+    },
+    setSandbox: (next) => {
+      if (next === sb) return
+      beam?.holdHalo(null)
+      beam?.clear()
+      sb = next
+      physgun.retarget(next)
     },
     setHandColor: (c) => vm?.setHandColor(c),
     stage: (camera) => {
