@@ -953,7 +953,7 @@ function* infill(P: Plan): Generator<void, void> {
       const d = townD(t, x, z)
       if (d < SHELF - 0.03 && d > 0.3 && !inCore(t, x, z)) {
         for (const side of [1, -1]) {
-          if (sub() > 0.9) continue
+          if (sub() > 0.94) continue
           const nx = -uz * side
           const nz = ux * side
           const roll = sub()
@@ -996,7 +996,7 @@ function* infill(P: Plan): Generator<void, void> {
           stub(P, x + nx * 2, z + nz * 2, 44 + sub() * 70, sub, [nx, nz])
         }
       }
-      s += 44 + sub() * 36
+      s += 36 + sub() * 30
       yield
     }
   }
@@ -1542,7 +1542,7 @@ const walkSide = (net: Network, st: Street, side: number, out: Cand[]) => {
         gap = district === 'downtown' ? r3 * 1.5 : r3 < 0.3 ? 2 + r1 * 4 : 0.2
       } else {
         // the suburbs thin out toward the rim, a lot at a time
-        if (rng() < 0.03 + smoothstep(0.78, 1.0, d) * 0.5) {
+        if (rng() < 0.03 + smoothstep(0.86, 1.0, d) * 0.5) {
           s += 10 + rng() * 10
           continue
         }
@@ -1553,7 +1553,7 @@ const walkSide = (net: Network, st: Street, side: number, out: Cand[]) => {
         fw = 9 + r2 * 4.5
         dp = 8.5 + r3 * 4
         set = baseSet + (rng() - 0.5) * 3 + (d > 0.85 ? 3 : 0)
-        gap = 2 + rng() * 5
+        gap = 1.5 + rng() * 4
         back = 4.5
         sideM = 1.4
       }
@@ -1777,7 +1777,9 @@ function* platJob(net: Network): Generator<void, void> {
   // filed by every chunk the envelope touches: the owner builds it, the
   // others keep their trees out of it
   const byChunk = new Map<number, Parcel[]>()
-  for (const p of out) {
+  yield
+  for (const [n, p] of out.entries()) {
+    if ((n & 255) === 255) yield
     for (let j = chunkZ(p.z0); j <= chunkZ(p.z1); j++)
       for (let i = chunkX(p.x0); i <= chunkX(p.x1); i++) {
         const k = cellKey(i, j)

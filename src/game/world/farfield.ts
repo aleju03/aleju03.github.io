@@ -356,6 +356,15 @@ const FAR_FRAG_COLOR = /* glsl */ `
       // is one lit slab
       float on = step(farHash(floor(wv) + vFar.w), 0.34);
       farLit = uNight * mix(share * 0.035, win * on, detail);
+    } else if (abs(vFar.z) > 0.001) {
+      // a street strip (townRoads): z runs -1..1 across it and w is the arc
+      // length along it, so the night's lamps are a dot every 24 units at
+      // the kerb, the dots a town is made of from the air after dark
+      float wlamp = 0.6 + px * 0.5;
+      float kerb = (1.0 - abs(vFar.z)) * 3.4;
+      float lamp = (1.0 - smoothstep(0.0, wlamp, abs(mod(vFar.w, 24.0) - 12.0))) *
+        (1.0 - smoothstep(0.0, wlamp, kerb));
+      farLit += uNight * lamp * 1.3;
     }
   }
 `
@@ -659,10 +668,13 @@ function* townRoads(
         const ya = Math.max(ground(ax, az), SEA_Y + 0.3) + lift
         const yb = Math.max(ground(ex, ez), SEA_Y + 0.3) + lift
         const o = s.count
-        s.vert(ax - nx, ya, az - nz, 0, 1, 0, ASPHALT, 2, level, 0, 0)
-        s.vert(ax + nx, ya, az + nz, 0, 1, 0, ASPHALT, 2, level, 0, 0)
-        s.vert(ex - nx, yb, ez - nz, 0, 1, 0, ASPHALT, 2, level, 0, 0)
-        s.vert(ex + nx, yb, ez + nz, 0, 1, 0, ASPHALT, 2, level, 0, 0)
+        // across (-1..1) and arc length ride along for the night's lamps
+        const sa = p.street.s[p.i] + p.len * f0
+        const sb = p.street.s[p.i] + p.len * f1
+        s.vert(ax - nx, ya, az - nz, 0, 1, 0, ASPHALT, 2, level, -1, sa)
+        s.vert(ax + nx, ya, az + nz, 0, 1, 0, ASPHALT, 2, level, 1, sa)
+        s.vert(ex - nx, yb, ez - nz, 0, 1, 0, ASPHALT, 2, level, -1, sb)
+        s.vert(ex + nx, yb, ez + nz, 0, 1, 0, ASPHALT, 2, level, 1, sb)
         // wound to face up whichever way the street runs
         s.idx.push(o, o + 1, o + 3, o, o + 3, o + 2)
       }
