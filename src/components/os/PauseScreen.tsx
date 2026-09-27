@@ -707,6 +707,35 @@ export default function PauseScreen({
                   />
                 </div>
 
+                {/* The soundtrack and the world under it, apart, because
+                    the useful answer to "too much music" is rarely "less
+                    wind" (game/music) */}
+                <div className="grid gap-x-10 gap-y-7 sm:col-span-2 sm:grid-cols-2">
+                  <Dial
+                    label={tp.music}
+                    value={prefs.musicVol}
+                    min={VOL_MIN}
+                    max={VOL_MAX}
+                    step={0.05}
+                    display={volWord(prefs.musicVol)}
+                    onChange={(v) =>
+                      onPrefs((p) => ({ ...p, musicVol: Math.round(v * 100) / 100 }))
+                    }
+                  />
+                  <Dial
+                    label={tp.ambience}
+                    hint={tp.ambienceHint}
+                    value={prefs.ambVol}
+                    min={VOL_MIN}
+                    max={VOL_MAX}
+                    step={0.05}
+                    display={volWord(prefs.ambVol)}
+                    onChange={(v) =>
+                      onPrefs((p) => ({ ...p, ambVol: Math.round(v * 100) / 100 }))
+                    }
+                  />
+                </div>
+
                 {/* One dial per direction, and no per-person mixer: the mesh
                     is proximity-mixed, so whose voice is loud is already
                     answered by where they are standing. 100% is a working

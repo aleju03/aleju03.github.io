@@ -85,6 +85,7 @@ import { track } from '../../analytics'
 import { EmoteWheel, PointMark, type EmoteWheelApi } from './EmoteWheel'
 import { EMOTES, WHEEL_DEAD, WHEEL_REACH, wheelSlice } from '../../game/player/emotes'
 import { OS_SCENE_READY_EVENT } from '../../events'
+import { stopMusic, updateMusic } from '../../game/music'
 
 /*
   The physical machine, for real this time: a WebGL night-desk scene and a
@@ -2943,6 +2944,10 @@ export default function CrtScene({
         }
         /** the house's drawables put away from orbit (see dressAir) */
         let houseHidden: THREE.Object3D[] | null = null
+        /** what game/music is told about the ground, refreshed twice a second */
+        let musicAsk = 0
+        let musicBiome: string | null = null
+        let musicShore = 0
         let airBiome = 1
         let airAskX = Number.NaN
         let airAskZ = 0
@@ -3956,6 +3961,47 @@ export default function CrtScene({
           // taken here while the camera is still the head rather than after
           // the boom has borrowed it
           tv?.update(camera.position)
+          // the soundtrack and the world's own sound (game/music), read off
+          // facts this frame already has. The two samples of the ground are
+          // the expensive part, so they are taken twice a second
+          musicAsk -= dtWall
+          if (musicAsk <= 0) {
+            musicAsk = 0.5
+            const p = camera.position
+            const earth = levels.current.id === 'overworld' && outside.hasWorld()
+            musicBiome = earth ? outside.biomeAt(p.x, p.z) : null
+            let wet = 0
+            if (earth) {
+              for (let k = 0; k < 8; k++) {
+                const a = (k / 8) * Math.PI * 2
+                if (outside.groundYAt(p.x + Math.cos(a) * 28, p.z + Math.sin(a) * 28) < outside.waterY) wet++
+              }
+            }
+            musicShore = wet / 8
+          }
+          {
+            const sk = lastSky as OutsideState | null
+            const indoor = sk?.indoor ?? 1
+            updateMusic({
+              level: levels.current.id,
+              indoor,
+              day: sk?.day ?? 1,
+              night: sk?.night ?? 0,
+              twilight: sk?.twilight ?? 0,
+              biome: musicBiome,
+              alt: outside.view.alt,
+              space: outside.view.space,
+              // widened: an early return above narrows the live binding
+              vehicle: ((fleet as VehicleFleet).driving ?? (fleet as VehicleFleet).riding)?.id ?? null,
+              shore: musicShore,
+              underwater: levels.current.id === 'overworld' && outside.hasWorld() && camera.position.y < outside.waterY - 0.3,
+              paused: pausedNow,
+              musicVol: prefsRef.current.musicVol,
+              ambVol: prefsRef.current.ambVol,
+              // a television playing in the room gets the room
+              duck: tv?.on && indoor > 0.5 ? 1 : 0,
+            }, dtWall)
+          }
           // close to the tube and facing it: offer the interact prompt
           toScreen.subVectors(gCenter, camera.position)
           const dist = toScreen.length()
@@ -4731,6 +4777,8 @@ export default function CrtScene({
 
         const stopRoam = () => {
           roaming = false
+          // the desktop has its own sounds; the walk's score leaves with the walk
+          stopMusic()
           fps = false
           setPauseNow(false)
           // sitting back down leaves the world: the socket closes, the bodies
@@ -5082,6 +5130,7 @@ export default function CrtScene({
 
     return () => {
       disposed = true
+      stopMusic()
       clearTimeout(bail)
       cancelAnimationFrame(raf)
       outroRef.current = null

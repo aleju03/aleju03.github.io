@@ -20,7 +20,9 @@
   next load. The menu is the one place that difference is visible, so the menu
   is where it has to be said out loud rather than papered over.
 
-  The two voice dials, and the voice filter beside them, are here for the
+  The music and ambience dials ride here for the same reason: the pause
+  sheet moves them and `game/music` reads them every frame. The two voice
+  dials, and the voice filter beside them, are here for the
   same reason the rest is: the pause sheet moves them and `proximityVoice`
   reads them off the live record every frame, and neither of those two
   modules is a place for a third copy of what a sane volume is. The filter is
@@ -81,6 +83,9 @@ export interface RoamPrefs {
   /** and how loud everyone else comes back. Not per person: the mesh is
       proximity-mixed, so the useful knob is the whole room's */
   voiceVol: number
+  /** the soundtrack (game/music), and the world's own sound under it */
+  musicVol: number
+  ambVol: number
   /** what everybody else hears you through: none, or one of the silly ones.
       Applied on the sending side, live */
   voiceFx: VoiceFilter
@@ -124,7 +129,7 @@ const CAP_DEFAULT_KEY = 'alejos-roam-cap-default'
 const OLD_CAP_DEFAULT = 160
 const PREFS_DEFAULT: RoamPrefs = {
   fov: 60, sens: 1, third: false, cap: 120, detail: 'auto', scale: 1,
-  pixels: 'medium', micVol: 1, voiceVol: 1, voiceFx: 'none',
+  pixels: 'medium', micVol: 1, voiceVol: 1, musicVol: 1, ambVol: 1, voiceFx: 'none',
 }
 
 /** a stored volume, which may be a 0 somebody meant: `Number(x) || d` would
@@ -148,6 +153,8 @@ export const loadPrefs = (): RoamPrefs => {
         third: p.third === true,
         micVol: vol(p.micVol, PREFS_DEFAULT.micVol),
         voiceVol: vol(p.voiceVol, PREFS_DEFAULT.voiceVol),
+        musicVol: vol(p.musicVol, PREFS_DEFAULT.musicVol),
+        ambVol: vol(p.ambVol, PREFS_DEFAULT.ambVol),
         voiceFx: VOICE_FILTERS.includes(p.voiceFx as VoiceFilter)
           ? (p.voiceFx as VoiceFilter)
           : PREFS_DEFAULT.voiceFx,

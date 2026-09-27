@@ -51,10 +51,10 @@ PITCHED = {
     'violins': ('VSCO', 'Strings/Violin Section/susVib', rf'VlnEns_susVib_{NOTE}_v1\.wav', 'C2', 'C7', 2, 5.5),
     'violas': ('VSCO', 'Strings/Viola Section/susvib', rf'ViolaEns_susvib_{NOTE}_v1_1\.wav', 'C1', 'C6', 2, 5.5),
     'celli': ('VSCO', 'Strings/Cello Section/susvib', rf'susvib_{NOTE}_v1_1\.wav', 'C0', 'C5', 2, 5.5),
-    'horn': ('VSCO', 'Brass/F Horn/sus', rf'MOHorn_sus_{NOTE}_v1_1\.wav', 'C0', 'C5', 2, 4.5),
+    'horn': ('VSCO', 'Brass/F Horn/sus', rf'MOHorn_sus_{NOTE}_v1_1\.wav', 'C0', 'F5', 2, 4.5),
     'vibes': ('VCSL', 'Idiophones/Struck Idiophones/Vibraphone/Soft Mallets', rf'Vibes_soft_{NOTE}_v1_rr\d_Main\.wav', 'C2', 'C7', 2, 4.0),
     'marimba': ('VCSL', 'Idiophones/Struck Idiophones/Marimba', rf'Marimba_hit_Outrigger_{NOTE}_soft_01\.wav', 'C1', 'C7', 2, 1.6),
-    'chimes': ('VCSL', 'Idiophones/Struck Idiophones/Hand Chimes', rf'sus_{NOTE}_r01_main\.wav', 'C3', 'C7', 2, 5.0),
+    'chimes': ('VCSL', 'Idiophones/Struck Idiophones/Hand Chimes', rf'sus_{NOTE}_r01_main\.wav', 'C3', 'C7', 3, 5.0),
 }
 
 # name: (repo, folder, [files], max seconds): unpitched, played by index
@@ -130,6 +130,37 @@ def pitch(x):
     return SR / (lo + k + d)
 
 
+def cents_of(x, midi):
+    """how far a note sits off true pitch, from the spectrum: the strongest
+    peak within 80 cents of the fundamental (or of the 2nd/3rd harmonic when
+    the fundamental is weak, as on low strings and the horn). None when the
+    recording has next to no energy at its labelled pitch at all, which
+    means the label is wrong and the note is dropped"""
+    a = int(0.1 * SR)
+    w = x[a:a + int(0.5 * SR)]
+    if len(w) < 8192:
+        w = x[: int(0.5 * SR)]
+    n = 1 << 18
+    spec = np.abs(np.fft.rfft(w * np.hanning(len(w)), n))
+    fr = np.fft.rfftfreq(n, 1 / SR)
+    top = spec.max() + 1e-12
+    f0 = 440 * 2 ** ((midi - 69) / 12)
+    found = []
+    for h in (1, 2, 3):
+        sel = (fr > f0 * h * 2 ** (-0.8 / 12)) & (fr < f0 * h * 2 ** (0.8 / 12))
+        if not sel.any():
+            continue
+        i = int(np.argmax(np.where(sel, spec, 0)))
+        found.append((h, 1200 * np.log2(fr[i] / (f0 * h)), spec[i] / top))
+    if not found:
+        return None
+    first = found[0]
+    if first[0] == 1 and first[2] >= 0.1:
+        return float(first[1])
+    h, c, rel = max(found, key=lambda f: f[2])
+    return float(c) if rel >= 0.05 else None
+
+
 def shape(x, max_s):
     peak = np.abs(x).max() + 1e-12
     onset = int(np.argmax(np.abs(x) > 0.02 * peak))
@@ -197,12 +228,11 @@ def main(only):
         shutil.rmtree(os.path.join(OUT, name), ignore_errors=True)
         notes, cents = [], []
         for m in keep:
-            x, detected = real[m]
-            c = (detected - m) * 100
-            # a mallet's autocorrelation can lock onto a partial; trust the
-            # name there rather than retune a note by a fifth
-            if abs(c) > 45:
-                c = 0.0
+            x, _ = real[m]
+            c = cents_of(x, m)
+            if c is None:
+                print(f'  {name} {m}: no energy at its labelled pitch, dropped')
+                continue
             y = shape(x, max_s)
             encode(y, os.path.join(OUT, name, f'{m}.mp3'))
             notes.append(m)
