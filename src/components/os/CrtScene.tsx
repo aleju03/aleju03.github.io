@@ -2841,7 +2841,7 @@ export default function CrtScene({
           const level = levels.current
           // the cut state machine still has to run — but no seam may fire at
           // the wheel, except in a spacecraft: the ship is how you get to
-          // the Moon, and onSwapped carries it (and us) across the cut
+          // the Moon, and onSeamless carries it (and us) across the seam
           seamPt.set(v.root.position.x, v.root.position.y, v.root.position.z)
           levels.tick(now, seamPt, !!v.spacecraft)
           // park the walker on the machine (see the header) — and do it *here*,

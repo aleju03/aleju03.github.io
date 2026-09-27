@@ -48,8 +48,11 @@ import { EARTH_R, MOON_R } from '../levels/space'
     already uses; `warm(true)` shows all of it for the covered compile at
     world attach, so the first climb links nothing.
 
-  Lit by its own sun uniform (the sky's), with clouds, a terminator, the
-  towns lit on the night side and a blue rim, all in the fragment shader.
+  Lit by the scene's own sun and sky light (`setLights`), the way the far
+  field and the regolith under it are lit, so where one fades over the other
+  there is no step, with clouds, a terminator, the towns lit on the night
+  side and a blue rim, all in the fragment shader. The Moon leaves a hole
+  where the Moon level's ground is drawn on it (levels/moon.ts's patch).
   Colours are linear, and the look (render/pixelLook.ts) grades and
   posterizes it like everything else; its alpha is the look's veil code, so
   it takes no outline ink, because a depth buffer thousands of units deep

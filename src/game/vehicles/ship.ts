@@ -59,7 +59,8 @@ import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
   The level cuts (Earth to Moon and back) are CrtScene's: while this
   machine is flown the level system is allowed to fire a seam, and the
   arrival places the ship where the seam lands (`warp`) with its rider still
-  aboard. Nothing in here knows which level it is on beyond the air and the
+  aboard, or, across a seamless seam (flying onto the Moon), carries it by
+  the seam's offset with its motion and attitude kept (`shift`). Nothing in here knows which level it is on beyond the air and the
   gravity its env says.
 */
 

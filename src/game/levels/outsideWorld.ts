@@ -50,11 +50,15 @@ import {
     planet's curve, the globe (world/globe.ts) takes over past its rim, the
     sky thins (sky.ts's `space`) and the streamed ground dithers out and
     stops streaming, all on levels/space.ts's bands of height. Past
-    MOON_ANCHOR the Moon is pinned out there as a body you can fly to, and
-    `moonSeam` is the overworld's seam onto the 'moon' level. On the Moon
-    (`setVenue('moon')`) this same module draws its sky: no ground of the
-    Earth's, the Moon's own terrain (levels/moon.ts), black air, and the
-    globe hung in the sky with the place you left turned toward you.
+    MOON_ANCHOR the Moon is pinned out there as a body you can fly to, in the
+    space frame (see "the way up" below): the Earth and the Moon are drawn
+    relative to you, and coming in to land the whole of space swings round
+    you until the Moon is underfoot, with the Moon level's own ground riding
+    on it, so `moonSeam` and `earthSeam` are seamless (a shift, no card). On
+    the Moon (`setVenue('moon')`) this same module draws its sky: no ground
+    of the Earth's, the Moon's terrain in its own coordinates and the globe's
+    Moon past it, black air, and the Earth hung where it was when you came
+    in.
 
   The one thing the room tier cannot skip is *something to see out of the
   windows*. Past the yard fence the streamed terrain is simply absent, which

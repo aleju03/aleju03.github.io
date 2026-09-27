@@ -23,17 +23,22 @@
     through them), then the day dome to dark blue and black, the fog
     goes black, the look's air drains away and the stars come out in
     daylight (sky.ts, CrtScene's dressAir).
-  - GROUND_FADE..GROUND_OFF the streamed ground dithers out over the globe
-    under it, and above GROUND_OFF it is hidden and stops streaming, so an
-    orbit costs a globe, a Moon and the sky and nothing else.
+  - from NEAR_OFF the chunk ring, the house's meshes and the props' ground
+    stop (a few pixels under a whole far field, and most of the draw calls),
+    and GROUND_FADE..GROUND_OFF the far field dithers out over the globe
+    under it, hidden and unstreamed above, so an orbit costs a globe, a Moon
+    and the sky and nothing else.
 
   The Moon is a real object once you are up there: when the climb passes
   MOON_ANCHOR it is pinned MOON_DIST away along the sky moon's bearing (or a
-  bearing high in the sky, by day, when the sky's moon is set), and flying
-  within MOON_SEAM of its surface cuts to the 'moon' level. Leaving the Moon
-  upward past MOON_LEAVE cuts back to the overworld EARTH_RETURN over the
-  point you climbed from. Pure numbers and no imports, like altitude.ts, so
-  the room tier can hold them before the world has loaded.
+  bearing high in the sky, by day, when the sky's moon is set). Flying at it
+  there is no cut anywhere: from SWING_FROM off its surface space swings
+  round you until its landing site is underfoot by SWING_TO, its drawn
+  ground rides on it from well out, and inside MOON_SEAM the 'moon' level
+  takes over by a seamless seam (levels/outsideWorld.ts has the frame).
+  Leaving upward past MOON_LEAVE is the same seam the other way, and far out
+  the frame swings back until the Earth is below again. Pure numbers and no
+  imports, like altitude.ts, so the room tier can hold them.
 */
 
 /** the globe's radius, world units: the curve the far field bends onto */

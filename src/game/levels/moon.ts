@@ -12,9 +12,11 @@ import { MOON_ORIGIN, MOON_R, MOON_WALK } from './space'
 
   It is a level of its own ('moon', in homeLevels.ts) standing at
   MOON_ORIGIN in the scene, far enough from the house that everything of
-  the overworld's is past its far plane, and it is built the first time
-  somebody arrives, under the level cut's blackout. Everything about the
-  ground is a pure function of position, like the overworld's:
+  the overworld's is past its far plane. It is built a millisecond or two a
+  frame while you fly at it, and from well out the same meshes ride on the
+  Moon out there (levels/outsideWorld.ts places this root), so landing is
+  no cut at all. Everything about the ground is a pure function of
+  position, like the overworld's:
 
   - **the height** is a gentle undulation plus five scales of crater, each
     a jittered grid of bowls with a raised rim and, in the bigger ones, a
