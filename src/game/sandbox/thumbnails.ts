@@ -19,7 +19,7 @@ import { propMaterial } from './art'
   the scene's, so on the game's renderer every icon would link a program
   variant the boot cover never saw; in a private context the programs die
   with it and the game's cache never hears of them. The cost is one context
-  and forty-one tiny draws, once, whenever the menu first opens (or at idle).
+  and forty-two tiny draws, once, whenever the menu first opens (or at idle).
 
   Browser only; headless it returns an empty map.
 */

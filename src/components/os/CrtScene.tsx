@@ -2548,6 +2548,7 @@ export default function CrtScene({
         spawnRef.current = (kind) => {
           if (kind.startsWith(FLEET_PREFIX)) orderVehicle(kind.slice(FLEET_PREFIX.length) as VehicleId)
           else if (kind === `${TOOL_PREFIX}portalgun`) givePortalGun()
+          else if (kind === 'portal_panel') void spawnPanel()
           else void sbConsole.run(`spawn ${kind}`, { quiet: true })
         }
         /*
@@ -2575,8 +2576,7 @@ export default function CrtScene({
         const nearSphere = new THREE.Sphere()
         const nearMeshes: THREE.Mesh[] = []
         let earthGround: THREE.Object3D | null = null
-        const portalMeshes = (at: THREE.Vector3, r: number): readonly THREE.Mesh[] => {
-          earthGround ??= scene?.getObjectByName('earth-ground') ?? null
+        const meshesUnder = (roots: THREE.Object3D[], at: THREE.Vector3, r: number): readonly THREE.Mesh[] => {
           nearMeshes.length = 0
           const visit = (obj: THREE.Object3D) => {
             if (!obj.visible) return
@@ -2593,19 +2593,120 @@ export default function CrtScene({
             }
             for (const c of obj.children) visit(c)
           }
-          // (a hidden root is skipped by `visit`: the Moon's ground is only
-          // there to shoot at while you stand on it)
-          if (levels.current.house) visit(house.root)
-          if (earthGround && levels.current.outdoors) visit(earthGround)
-          const moonGround = outside.moonPortal.root()
-          if (moonGround && levels.current.outdoors) visit(moonGround)
+          for (const root of roots) visit(root)
           return nearMeshes
+        }
+        const portalMeshes = (at: THREE.Vector3, r: number): readonly THREE.Mesh[] => {
+          earthGround ??= scene?.getObjectByName('earth-ground') ?? null
+          // (a hidden root is skipped: the Moon's ground is only there to
+          // shoot at while you stand on it)
+          const roots: THREE.Object3D[] = []
+          if (levels.current.house) roots.push(house.root)
+          if (earthGround && levels.current.outdoors) roots.push(earthGround)
+          const moonGround = outside.moonPortal.root()
+          if (moonGround && levels.current.outdoors) roots.push(moonGround)
+          return meshesUnder(roots, at, r)
+        }
+        /*
+          The furnished house's own meshes along a portal shot (its doors,
+          beds and cupboards have no collision face to be found by): the
+          first drawn, visible mesh the ray meets, with the face's normal in
+          the world. A portal fitted there rides that mesh (portals.ts's
+          anchor), so one on a door swings with the door.
+        */
+        const houseRay = new THREE.Raycaster()
+        const houseHits: THREE.Intersection[] = []
+        const shownChain = (o: THREE.Object3D) => {
+          for (let q: THREE.Object3D | null = o; q; q = q.parent) if (!q.visible) return false
+          return true
+        }
+        const portalHouseHit = (o: THREE.Vector3, d: THREE.Vector3, max: number) =>
+          levels.current.house ? houseHitAny(o, d, max) : null
+        const houseHitAny = (o: THREE.Vector3, d: THREE.Vector3, max: number) => {
+          houseRay.set(o, d)
+          houseRay.near = 0
+          houseRay.far = max
+          houseRay.camera = camera
+          houseHits.length = 0
+          houseRay.intersectObject(house.root, true, houseHits)
+          for (const h of houseHits) {
+            const m = h.object as THREE.Mesh
+            if (!m.isMesh || (m as THREE.SkinnedMesh).isSkinnedMesh || !h.face || !shownChain(m)) continue
+            const n = h.face.normal.clone().transformDirection(m.matrixWorld)
+            return { t: h.distance, normal: n, object: m as THREE.Object3D }
+          }
+          return null
+        }
+        /*
+          The catalogue's portal panel is set down to be used: against the
+          wall under the crosshair, facing out, or standing upright on the
+          ground turned to face you, and frozen either way (the physgun still
+          takes it). It goes through the console's own spawn, so Z undoes it.
+        */
+        const spawnPanel = async () => {
+          const sb = sandbox
+          const a = host.aim?.()
+          if (!sb || !a) return
+          let id = -1
+          const off = sb.onSpawn((p) => {
+            if (p.kind.id === 'portal_panel') id = p.id
+          })
+          await sbConsole.run('spawn portal_panel', { quiet: true })
+          off()
+          if (id < 0) return
+          const HY = 2.6
+          const HZ = 0.08
+          const hit = sb.raycast(a.origin, a.dir, 60, { props: false, world: true })
+          const at = new THREE.Vector3()
+          let yaw: number
+          if (hit && Math.abs(hit.normal.y) < 0.5) {
+            // flat against the wall, standing on whatever is under it
+            const n = hit.normal.clone().setY(0).normalize()
+            at.copy(hit.point).addScaledVector(n, HZ + 0.04)
+            yaw = Math.atan2(n.x, n.z)
+          } else {
+            if (hit) at.copy(hit.point)
+            else at.copy(a.origin).addScaledVector(a.dir, 12)
+            yaw = Math.atan2(camera.position.x - at.x, camera.position.z - at.z)
+          }
+          // on the floor at the height you stand at (upstairs is upstairs)
+          at.y = spawnY(levels.current, at.x, at.z, walk.feetY) + HY + 0.03
+          sb.setTransform(id, at, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw))
+          sb.freeze(id)
         }
         /** a portal shot into the open sky: the Moon, if it is under the ray
             (sandbox/tools/portalMoon.ts) */
         const portalSky = (color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3): boolean => {
+          // from the Moon, the Earth hanging in its sky
+          if (portalMoon?.onEarth(dir)) return portalEarthShot(color)
           if (!portalMoon?.sky(color, eye, dir)) return false
           pushFeed({ tone: 'ok', text: bilingual('a portal on the Moon', 'un portal en la Luna') })
+          return true
+        }
+        /*
+          A shot at the Earth from the Moon opens on the Earth at a fixed
+          spot, the left leaf of the garage door at home, fitted by the gun's
+          own fit against the house (which stands in the scene whichever
+          level is live), then photographed for the Moon side's view.
+        */
+        const EARTH_SPOT_EYE = new THREE.Vector3(9.25, 3.84, -9)
+        const EARTH_SPOT_AT = new THREE.Vector3(9.25, 2.35, -1.75)
+        const portalEarthShot = (color: PortalColor): boolean => {
+          const earth = homeLevels.find((l) => l.house)
+          if (!tools || !portalMoon || !earth) return false
+          const dir = EARTH_SPOT_AT.clone().sub(EARTH_SPOT_EYE).normalize()
+          const shot = tools.portals.fire(color, EARTH_SPOT_EYE, dir, {
+            level: earth.id, collision: earth.collision, groundAt: earth.groundYAt, groundY: earth.groundY,
+            waterY: earth.waterY, sandbox: sandboxes.get(earth.id)?.sb ?? null,
+            meshesNear: (at, r) => meshesUnder([house.root], at, r),
+            drawnHit: (o, d, max) => houseHitAny(o, d, max),
+          })
+          const p = tools.portals.list[color]
+          if (!shot.ok || !p) return false
+          // (taken from the Moon, the Earth's side is lit by the Moon's sun:
+          // no lift, whatever time it is at home)
+          portalMoon.snapshotFrom(p, scene, 1)
+          pushFeed({ tone: 'ok', text: bilingual('a portal on the Earth: the garage door at home', 'un portal en la Tierra: la puerta del garaje de casa') })
           return true
         }
         /** a pair spanning two levels: the Earth's side photographed on the
@@ -3071,10 +3172,23 @@ export default function CrtScene({
           },
           cross: (to, vcam) => portalCross(to, vcam),
         }
+        let portalHolesKey = ''
         const renderPortals = () => {
           const pv = tools?.portalView
           if (!pv || !webgl || !scene || !roaming) return
           portalMoon?.tick()
+          // an open floor portal cuts its oval out of the grass and the
+          // wildflowers (world/wind.ts's holes), and they grow back when it closes
+          const holesKey = `${tools!.portals.version}:${levels.current.id}`
+          if (holesKey !== portalHolesKey) {
+            portalHolesKey = holesKey
+            const holes: { c: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[] = []
+            for (const p of tools!.portals.list) {
+              if (!p || p.level !== levels.current.id || p.n.y < 0.6) continue
+              holes.push({ c: p.pos, a: p.right.clone().multiplyScalar(tools!.portals.hw), b: p.up.clone().multiplyScalar(tools!.portals.hh) })
+            }
+            outside.groundHoles(holes)
+          }
           const it = look.fitNow()
           pv.render(webgl, scene, camera, it.w, it.h, levels.current.id, performance.now() / 1000, portalHooks)
         }
@@ -3580,7 +3694,8 @@ export default function CrtScene({
           // step, so this frame's slices already pull. Only on foot, out in
           // the world, standing: a seat, a heap on the floor and the pause
           // sheet all holster it
-          toolsLive = !!tools && !!sandbox && !sitting && !rig.down && fps && !rig.acting
+          // (a body on your own beam is down on purpose: the beam keeps it)
+          toolsLive = !!tools && !!sandbox && !sitting && (!rig.down || tools.physgun.holdsSelf) && fps && !rig.acting
           if (tools && !pausedNow) {
             const k = input.keys
             // the number keys pick emotes while the wheel is up, and the click
@@ -4295,10 +4410,13 @@ export default function CrtScene({
                 if (!lv.sandbox || !sandbox) return null
                 return {
                   level: lv.id, collision: lv.collision, groundAt: lv.groundYAt, groundY: lv.groundY,
-                  waterY: lv.waterY, sandbox, meshesNear: portalMeshes,
+                  waterY: lv.waterY, sandbox, meshesNear: portalMeshes, drawnHit: portalHouseHit,
                 }
               },
               portalElsewhere: (color, eye, dir) => portalSky(color, eye, dir),
+              // your own body, which the physgun may take only through a
+              // portal (the one place you can see it from)
+              self: () => (seating.current || fleet.riding ? null : { key: 'self', rig }),
             })
             tools.setHandColor(lookRef.current.shell)
             portalWalk = toolsMod.createPortalWalk({
@@ -4377,6 +4495,7 @@ export default function CrtScene({
                 __tools: tools,
                 __portalWalk: portalWalk,
                 __portalMoon: portalMoon,
+                __portalHouseHit: portalHouseHit,
                 // scripted contraptions (a car, a rocket, a hovercraft), through
                 // the app's own module graph so they share its contraptions
                 __contraptionBuild: () => import('../../game/sandbox/contraption/build'),

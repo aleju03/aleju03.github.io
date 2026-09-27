@@ -76,6 +76,7 @@ type WorldModules = {
   globe: typeof import('../world/globe')
   moon: typeof import('./moon')
   streamer: typeof import('../world/streamer')
+  wind: typeof import('../world/wind')
   terrain: typeof import('../world/terrain')
   birds: typeof import('../world/birds')
   fauna: typeof import('../world/fauna')
@@ -215,7 +216,17 @@ export interface OutsideHandles {
         hung in its sky). Returns the undressing, or null when it cannot be
         done here (up in the sky, where the globes are the sky's own) */
     dress: (cam: THREE.Vector3) => (() => void) | null
+    /** on the Moon: the Earth hanging in its sky, its direction into
+        `out`, and its angular radius (0 when there is no Earth to aim at) */
+    skyEarth: (out: THREE.Vector3) => number
+    /** on the Moon, for one photograph of the Earth's side: its streamed
+        ground shown and the Moon's put away. Returns the undressing */
+    dressEarth: () => (() => void) | null
   }
+  /** cut up to two ovals out of the grass and the wildflowers (open floor
+      portals): centre and the two half-axes, world units. An empty list
+      grows them back. A few uniforms, never a program */
+  groundHoles: (holes: readonly { c: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[]) => void
   /** the scene's sun and sky light, for the globes (they light themselves the
       way the ground under them is lit) */
   lightGlobes: (sun: THREE.Color, ambient: THREE.Color) => void
@@ -312,7 +323,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   let modsPromise: Promise<WorldModules> | null = null
   const loadMods = () => {
     modsPromise ??= (async () => {
-      const [globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors] = await Promise.all([
+      const [globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors, wind] = await Promise.all([
         import('../world/globe'),
         import('./moon'),
         import('../world/streamer'),
@@ -322,8 +333,9 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
         import('../world/pedestrians'),
         import('../world/debris'),
         import('../world/shopDoors'),
+        import('../world/wind'),
       ])
-      return { globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors }
+      return { globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors, wind }
     })()
     return modsPromise
   }
@@ -754,6 +766,23 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   }
   const MOON_SUN_COLOR = new THREE.Color('#fff2dc')
   const moonPortal: OutsideHandles['moonPortal'] = {
+    skyEarth: (out) => {
+      if (venue !== 'moon' || !w || !w.globes.earthReady) return 0
+      out.copy(landing.earthDir).normalize()
+      return Math.asin(Math.min(0.99, EARTH_R / landing.earthDist))
+    },
+    dressEarth: () => {
+      if (venue !== 'moon' || !w) return null
+      const root = w.moon.root
+      const rootShown = root.visible
+      const groundShown = groundRoot.visible
+      root.visible = false
+      groundRoot.visible = true
+      return () => {
+        root.visible = rootShown
+        groundRoot.visible = groundShown
+      }
+    },
     skyMoon: (out) => {
       if (venue !== 'earth' || !w || moonAt.on || view.space > 0.12) return false
       sky.moonDir(out)
@@ -960,6 +989,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       },
     },
     warmSpace: (on) => w?.globes.warm(on),
+    groundHoles: (holes) => w?.mods.wind.setGroundHoles(holes),
     moonPortal,
     lightGlobes: (sun, ambient) => w?.globes.setLights(sun, ambient),
   }

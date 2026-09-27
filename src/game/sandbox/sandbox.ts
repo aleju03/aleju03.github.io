@@ -58,7 +58,7 @@ import { setEar, setEarFallback } from './impactSounds'
   It is renderer-free: with no `parent` it builds no meshes and runs in Node,
   which is what `npm run measure -- physics` and the film harness drive.
 
-  Importing it imports the catalogue (catalogue.ts registers the forty-one
+  Importing it imports the catalogue (catalogue.ts registers the forty-two
   kinds), and the facade carries the three things that make props more than
   rigid bodies: breakables.ts (impact sounds, damage, gibs, fuses),
   explosion.ts (`explode` and `onExplosion`) and fx.ts (the particles, stepped
