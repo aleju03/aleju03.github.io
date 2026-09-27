@@ -1271,6 +1271,11 @@ export function buildCar(opts: CarOpts): Vehicle {
 
   const step = (env: DriveEnv, driven: boolean, dt: number) => {
     const key = axes(env.keys, env.frozen || !driven)
+    // the level's gravity (the Moon's is a sixth). The springs' preload
+    // follows it, so the car rides at the same height anywhere and only
+    // the fall is slower: over a crater rim it floats, and lands soft
+    const grav = GRAV * (env.gravity ?? 1)
+    const free = SPRING_FREE - (GRAV - grav) / SPRING_K
     const surface = env.surfaceAt(pos.x, pos.z)
     const feel = SURFACE_FEEL[surface]
 
@@ -1298,14 +1303,14 @@ export function buildCar(opts: CarOpts): Vehicle {
       // the corner's own vertical speed, which is what the damper resists.
       // A finite difference on `len` would be one frame stale and would ring
       const cornerVy = vy + rollRate * lx - pitchRate * lz
-      const comp = SPRING_FREE - len[i]
+      const comp = free - len[i]
       // named `force`, not `f`: the longitudinal speed eighteen lines down is
       // also `f`, and one of them shadowing the other is a bug waiting to be
       // written by whoever moves a line between the two blocks
       let force = SPRING_K * comp - SPRING_C * cornerVy
       if (len[i] < STOP_LEN) force += STOP_K * (STOP_LEN - len[i])
       force = clamp(force, 0, FORCE_CAP) * 0.25
-      contact[i] = raw < SPRING_FREE
+      contact[i] = raw < free
       if (contact[i]) grounded = true
       else force = 0
       fSum += force
@@ -1429,11 +1434,11 @@ export function buildCar(opts: CarOpts): Vehicle {
     let climbBlock = 0
     if (grounded) {
       groundNormal(pos.x, pos.z, env, upV)
-      const gLong = GRAV * (upV.x * fwdX + upV.z * fwdZ)
+      const gLong = grav * (upV.x * fwdX + upV.z * fwdZ)
       const parked =
         !throttleKey && !backKey && Math.abs(f) < HOLD_SPEED && Math.abs(s) < HOLD_SPEED
-      const holdMax = HOLD_MU * GRAV * upV.y
-      if (parked && GRAV * Math.hypot(upV.x, upV.z) <= holdMax) {
+      const holdMax = HOLD_MU * grav * upV.y
+      if (parked && grav * Math.hypot(upV.x, upV.z) <= holdMax) {
         f = 0
         s = 0
       } else if (parked) {
@@ -1531,7 +1536,7 @@ export function buildCar(opts: CarOpts): Vehicle {
     if (roll <= -ROLL_CAP || roll >= ROLL_CAP) rollRate *= 0.2
 
     /* ---- heave and travel ------------------------------------------------ */
-    vy += (fSum - GRAV) * dt
+    vy += (fSum - grav) * dt
     pos.y += vy * dt
     pos.x += vel.x * dt
     pos.z += vel.z * dt

@@ -574,6 +574,7 @@ export function createPartBuilder(): PartBuilder {
         const mesh = new THREE.Mesh(g, mat)
         mesh.name = slot
         mesh.castShadow = opts.cast ?? true
+        if ((mat as THREE.MeshStandardMaterial).map) mesh.customDepthMaterial = depthFor(mat)
         // glazing that receives shadows goes black in its own doorway; the
         // shells receive so a wing shades the body under it
         mesh.receiveShadow = (opts.receive ?? true) && slot !== 'glass' && slot !== 'lamp'
@@ -586,6 +587,27 @@ export function createPartBuilder(): PartBuilder {
 }
 
 /* --------------------------------------------------------------- helpers -- */
+
+/* A mapped part's own shadow material (the tyres' tread is the one map in
+   the fleet). three draws every caster into a sun's map with one shared
+   depth material, handed the caster's map as it goes, and it only picks a
+   program again when something else about the draw changes: so whether a
+   tyre links a textured depth program depends on what was drawn just before
+   it. On the street that never happened; on the Moon an instanced prop drawn
+   ahead of a delivered car made it link there, mid-walk. A depth material of
+   its own keys the same program every time, which the boot's warm-up can
+   then pay for once. */
+const depthMats = new WeakMap<THREE.Material, THREE.MeshDepthMaterial>()
+const depthFor = (mat: THREE.Material) => {
+  let d = depthMats.get(mat)
+  if (!d) {
+    d = new THREE.MeshDepthMaterial({ map: (mat as THREE.MeshStandardMaterial).map })
+    depthMats.set(mat, d)
+    const made = d
+    mat.addEventListener('dispose', () => made.dispose())
+  }
+  return d
+}
 
 /** compose a transform the short way, for the hundreds of little placements a
     vehicle is made of */

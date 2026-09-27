@@ -385,6 +385,10 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
       if (!b.hull) continue
       let rig = rigs.get(b.hull)
       if (!rig) {
+        // the mirror's underside is measured off the box, and an emptied
+        // box (a machine in another level, or being driven) has none: an
+        // infinite hull is a Rapier throw. It is built once it is back
+        if (b.isEmpty()) continue
         rig = buildRig(b, b.hull)
         rigs.set(b.hull, rig)
       }

@@ -200,8 +200,9 @@ export interface Vehicle {
       under its origin the hull that body is made of closes. Defaults suit a
       car */
   carry?: { mass: number; density: number; bottom: number }
-  /** it flies where there is no air, and lives on levels that say
-      `spacecraft` as well as those that say `vehicles` (the ship) */
+  /** it flies where there is no air, and carries its crew through the
+      Earth-Moon seams (the ship). Every machine runs on any level that
+      says `vehicles`; this is only about getting between them */
   spacecraft?: boolean
   /** put it in the air at a point, still and level, keeping whoever is
       aboard: a level cut flown through (the ship's Earth-Moon seams) */
