@@ -269,15 +269,34 @@ const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 const compassAt = (dx: number, dz: number) =>
   COMPASS[(Math.round((Math.atan2(dx, -dz) / (Math.PI * 2)) * 8) + 8) % 8]
 
-/** the control line each machine puts in the HUD. Three media, three sets of
-    verbs: what "space" does is a handbrake, a throttle blip or the collective
-    depending on what you climbed into */
-const DRIVE_KEYS: Record<VehicleId, string> = {
-  car: 'wasd drive · space handbrake · shift boost · x horn',
-  boat: 'w/s throttle · a/d rudder · shift boost · x horn',
-  heli: 'w/s tilt · a/d turn · space climb · ctrl descend · shift power',
-  ship: 'w/s thrust · a/d turn · r/f pitch · space up · ctrl down · shift boost',
+/** the control line each machine puts in the HUD, in both languages. Four
+    machines, four sets of verbs: what "space" does is a handbrake, a
+    throttle blip, the collective or a lift depending on what you climbed
+    into, and the ship is steered by the mouse */
+const DRIVE_KEYS: Record<VehicleId, { en: string; es: string }> = {
+  car: {
+    en: 'wasd drive · space handbrake · shift boost · x horn',
+    es: 'wasd conducir · espacio freno de mano · shift turbo · x bocina',
+  },
+  boat: {
+    en: 'w/s throttle · a/d rudder · shift boost · x horn',
+    es: 'w/s acelerador · a/d timón · shift turbo · x bocina',
+  },
+  heli: {
+    en: 'w/s tilt · a/d turn · space climb · ctrl descend · shift power',
+    es: 'w/s inclinar · a/d girar · espacio subir · ctrl bajar · shift potencia',
+  },
+  ship: {
+    en: 'mouse steers · w/s thrust · a/d strafe · space up · ctrl down · shift boost',
+    es: 'el ratón dirige · w/s empuje · a/d lateral · espacio subir · ctrl bajar · shift turbo',
+  },
 }
+/** the rest of the driving line, in both languages */
+const DRIVE_TAIL = {
+  en: (cockpit: boolean) => `v ${cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`,
+  es: (cockpit: boolean) => `v ${cockpit ? 'exterior' : 'cabina'} · e salir · esc pausa`,
+}
+const RIDE_ALONG = { en: 'along for the ride', es: 'de pasajero' }
 
 /** fraction of the viewport height the glass fills once parked */
 const FILL = 0.86
@@ -388,7 +407,7 @@ export default function CrtScene({
     null,
   )
   const [gauge, setGauge] = useState({ speed: 0, load: 0, altitude: 0, gear: 0 })
-  /** a line of feedback that fades: "land first", "nowhere to put it down" */
+  /** a line of feedback that fades: "nowhere to put it down" */
   const [notice, setNotice] = useState<string | null>(null)
   useEffect(() => {
     if (!notice) return
@@ -1514,14 +1533,13 @@ export default function CrtScene({
           const v = fleet.riding
           if (!v) return
           const spot = fleet.leave(aimFleetEnv(levels.current))
-          if (!spot) {
-            // a helicopter fifty units up is not somewhere you step out of
-            setNotice('land first')
-            return
-          }
+          if (!spot) return
           chase.drop()
           walk.resetMotion()
           walk.spawnAt(spot.x, spot.z, spot.yaw, spot.feetY)
+          // out of something in the air (or in space): an ejection, and the
+          // walker floats there, noclip, instead of dropping out of the sky
+          if (spot.airborne) setNoclip(true)
           // spawnAt levels the pitch; keep the view the player actually had
           walk.pitch = spot.pitch
           // Leave the vehicle hierarchy before poseBody writes world-space
@@ -2249,6 +2267,22 @@ export default function CrtScene({
             headPos.set(x, feet + EYE, z)
           },
           home: () => ({ x: SPAWN.x, z: SPAWN.z, y: spawnY(levels.current, SPAWN.x, SPAWN.z, deskRoom.floorY) }),
+          // the escape hatch (`unstuck`): out of whatever you are in, off
+          // noclip, and on your feet on the front path at home. From another
+          // level it is the ordinary cut home, landing on the same spot
+          unstuck: () => {
+            if (fleet.riding) leaveVehicle()
+            if (seating.current) leaveSeat()
+            setNoclip(false)
+            standNow()
+            const HOME_PATH = { x: 5.5, z: -2.6, yaw: 0 }
+            const earth = homeLevels.find((l) => l.house) ?? levels.current
+            if (levels.current !== earth) {
+              levels.goTo(earth.id, HOME_PATH)
+              return
+            }
+            host.teleport?.(HOME_PATH.x, HOME_PATH.z, undefined, HOME_PATH.yaw)
+          },
           noclip: (on) => {
             if (on && !levels.frozen && !fleet.riding && !seating.current) standNow()
             if (on !== undefined && canAct()) setNoclip(on)
@@ -4547,8 +4581,8 @@ export default function CrtScene({
                 // A passenger has none of them, and saying so is kinder than
                 // letting them press W and conclude the game is broken
                 driving.seat !== 0
-                ? `along for the ride · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
-                : `${DRIVE_KEYS[driving.id]} · v ${driving.cockpit ? 'chase' : 'cockpit'} · e out · esc pauses`
+                ? `${RIDE_ALONG[language]} · ${DRIVE_TAIL[language](driving.cockpit)}`
+                : `${DRIVE_KEYS[driving.id][language]} · ${DRIVE_TAIL[language](driving.cockpit)}`
               : tapeLine(keyHint(`${flying ? t.sandbox.hud.fly : t.sandbox.hud.walk}${
                   mp.status === 'live' ? ` · ${t.sandbox.hud.voice}` : ''
                 } · ${t.sandbox.hud.pauses}`, language))}

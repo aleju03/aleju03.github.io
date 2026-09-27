@@ -206,6 +206,9 @@ export interface ExitPlace {
   feetY: number
   yaw: number
   pitch: number
+  /** the stand-down spot is in the air (an ejection): the scene floats the
+      walker there rather than dropping them out of the sky */
+  airborne: boolean
 }
 
 /** what the local player is doing with a machine, and what everyone else is
@@ -268,8 +271,9 @@ export interface VehicleFleet {
   /** carry the machine we are in through a level cut: put it in the air at
       the seam's arrival, still, with us aboard (spacecraft only) */
   warpRiding: (x: number, y: number, z: number, yaw: number) => boolean
-  /** climb out; null means "not from here" (a helicopter in the air). A
-      passenger may always get out — they are not the one flying it */
+  /** climb out, from anywhere: on the ground beside the door, or (in the
+      air, in space) an ejection the scene turns into a float. Null only when
+      not riding anything */
   leave: (env: FleetEnvQueries) => ExitPlace | null
   /** who is driving what, from the network. Call before `tick` */
   setNet: (state: FleetNetState | null) => void
@@ -505,11 +509,18 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     return last
   }
 
+  const aimNow = { yaw: 0, pitch: 0 }
   const step = (e: Entry, driven: boolean, dt: number, q: FleetEnvQueries) => {
     // its own box must not exist while it is asking the world what is under
     // it — see the header. Emptied, every test in collision.ts fails closed
     e.box.makeEmpty()
     fillEnv(q)
+    // the pilot's aim, for a machine flown by it; nobody else's
+    if (driven && e === active && e.v.view.aim) {
+      aimNow.yaw = cam.yaw
+      aimNow.pitch = cam.pitch
+      env.aim = aimNow
+    } else env.aim = null
     let sub = Math.min(MAX_SUB, Math.max(1, Math.ceil(dt / SUBSTEP)))
     const h = dt / sub
     env.dt = h
@@ -678,10 +689,14 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     if (!active) return null
     const e = active
     const s = e.step
-    // you may not step out of something that is flying — unless you are not
-    // the one flying it, in which case it is the pilot's problem and stepping
-    // out is still a bad idea, so it is refused for both chairs
-    if ((e.v.id === 'heli' || e.v.spacecraft) && s && (!s.grounded || s.altitude > 1.2)) return null
+    /* Getting out is always allowed. It used to be refused while a helicopter
+       or the ship was off the ground ("land first"), which is a trap the
+       moment the machine cannot be landed: a ship left coasting round the
+       planet had nobody able to stop it and nobody able to leave it. Out of
+       something flying is an ejection: the scene floats the walker beside it
+       (`airborne`), a helicopter left without a pilot comes down on its own
+       physics, and the ship keeps its engines up and holds station */
+    const airborne = !!s && (!s.grounded || s.altitude > 1.2)
     fillEnv(q)
     env.dt = SUBSTEP
     const out = new THREE.Vector3()
@@ -694,7 +709,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     active = null
     seat = 0
     mountT = 0
-    return { x: out.x, z: out.z, feetY, yaw: cam.yaw, pitch: cam.pitch }
+    return { x: out.x, z: out.z, feetY: airborne ? Math.max(feetY, e.v.root.position.y) : feetY, yaw: cam.yaw, pitch: cam.pitch, airborne }
   }
 
   /* ------------------------------------------------------------- carry -- */

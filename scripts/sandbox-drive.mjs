@@ -33,6 +33,9 @@
     npm run drive -- ship             the ship: boarded in the back garden,
                                       flown out of the air, through the seam
                                       to the Moon, landed, and flown home
+    npm run drive -- shipfly          the ship by mouse: turned, climbed to
+                                      orbit, hands off (must hold), E out,
+                                      and the unstuck command home
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -1208,6 +1211,105 @@ try {
     rmSync(dir, { recursive: true, force: true })
   }
 
+  if (WHAT.includes('shipfly')) {
+    /*
+      The ship by mouse, and the ways out of it: boarded in the back garden,
+      lifted, turned by the mouse (the drive camera's aim, fed here through
+      the fleet's own `turn` since a headless page has no pointer lock) with
+      W held, climbed out of the air, and then every key let go for ten
+      seconds in orbit, where it must hold station rather than circle; then
+      E, which must eject into a float from up there, and the console's
+      `unstuck`, which must stand you at home on Earth. A strip and the
+      numbers per frame.
+    */
+    console.log('shipfly')
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await run('time 11:00')
+    await goTo('5.2 31.5')
+    await sleep(1500)
+    await stand()
+    await look(Math.PI / 2, -0.2)
+    const dir = mkdtempSync(join(tmpdir(), 'shipfly-'))
+    const labels = []
+    const state = () => evaluate(`(() => {
+      const v = window.__fleet.all.find((m) => m.id === 'ship'), p = v.root.position
+      const L = window.__levels.current, c = window.__sandboxCamera.position
+      const g = L.groundYAt ? L.groundYAt(p.x, p.z) : L.groundY
+      const me = window.__fleet.riding ? 'aboard' : (window.__sandboxWalk.noclip ? 'floating' : 'on foot')
+      return 'ship ' + [p.x, p.y, p.z].map((n) => n.toFixed(0)).join(', ') + ' (' + (p.y - g).toFixed(0) + ' up, heading ' + v.yaw.toFixed(2) + ')  me ' + me +
+        ' at ' + [c.x, c.y, c.z].map((n) => n.toFixed(0)).join(', ')
+    })()`)
+    const frame = async (label, wait = 0) => {
+      await sleep(wait)
+      const f = join(dir, `${String(labels.length).padStart(2, '0')}.png`)
+      writeFileSync(f, await probe.screenshot(W, H))
+      labels.push(label)
+      console.log(`  ${label.padEnd(30)} ${await state()}`)
+    }
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const mouse = (dx, dy) => evaluate(`window.__fleet.turn(${dx}, ${dy}, 1, 1)`)
+    await tap('KeyE', 150)
+    await sleep(1500)
+    if (!(await evaluate('!!window.__fleet.riding'))) console.log('  E did not board it  <-- WRONG')
+    await hold('Space', true)
+    await sleep(1600)
+    await hold('Space', false)
+    await frame('lifted off, holding', 800)
+    await hold('KeyW', true)
+    for (let i = 0; i < 12; i++) {
+      await mouse(-60, 0)
+      await sleep(80)
+    }
+    await frame('mouse left, W: it turns in', 300)
+    for (let i = 0; i < 24; i++) {
+      await mouse(60, 0)
+      await sleep(80)
+    }
+    await frame('mouse right: and back', 300)
+    // up and out: the aim pitched high, boost
+    for (let i = 0; i < 10; i++) await mouse(0, 50)
+    await hold('ShiftLeft', true)
+    for (let i = 0; i < 60; i++) {
+      const up = await evaluate(`(() => { const p = window.__fleet.riding.root.position; return p.y - window.__levels.current.groundYAt(p.x, p.z) })()`)
+      if (up > 14000) break
+      await sleep(500)
+    }
+    await frame('climbed out of the air', 200)
+    for (const k of ['KeyW', 'ShiftLeft', 'Space']) await hold(k, false)
+    // hands off for ten seconds: it must hold station, not circle
+    await sleep(2000)
+    const a = await evaluate('window.__fleet.riding.root.position.toArray()')
+    await sleep(10000)
+    const b = await evaluate('window.__fleet.riding.root.position.toArray()')
+    const drift = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    console.log(`  hands off for 10 s in orbit: moved ${drift.toFixed(1)} units${drift > 20 ? '  <-- WRONG' : ''}`)
+    await frame('hands off: holding station', 0)
+    await tap('KeyE', 150)
+    await sleep(1200)
+    const out = await evaluate('!window.__fleet.riding')
+    console.log(`  E in orbit: ${out ? 'out, floating' : 'still aboard  <-- WRONG'}`)
+    await frame('E: ejected, floating', 300)
+    const said = await run('unstuck')
+    console.log(`  > unstuck: ${said.join(' / ')}`)
+    await sleep(3500)
+    await look(0.94, -0.1)
+    await frame('unstuck: on the path at home', 800)
+    const home = await evaluate(`(() => { const c = window.__sandboxCamera.position; return [c.x, c.z, window.__sandboxWalk.noclip, window.__levels.current.id] })()`)
+    const ok = Math.hypot(home[0] - 5.5, home[1] + 2.6) < 4 && !home[2]
+    console.log(`  home: ${ok ? 'yes' : 'no  <-- WRONG'} (${home.join(', ')})`)
+    const cols = 4
+    const esc = (t) => t.replace(/[:\\']/g, (c) => `\\${c}`)
+    const inputs = labels.flatMap((_, i) => ['-i', join(dir, `${String(i).padStart(2, '0')}.png`)])
+    const scaled = labels.map((l, i) =>
+      `[${i}:v]scale=640:400,drawbox=x=0:y=370:w=640:h=30:color=black@0.55:t=fill,drawtext=text='${esc(`${i + 1}. ${l}`)}':x=10:y=378:fontsize=15:fontcolor=white[v${i}]`)
+    const layout = labels.map((_, i) => `${(i % cols) * 640}_${Math.floor(i / cols) * 400}`).join('|')
+    const graph = `${scaled.join(';')};${labels.map((_, i) => `[v${i}]`).join('')}xstack=inputs=${labels.length}:layout=${layout}`
+    const outFile = join(OUT, 'shipfly.png')
+    const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...inputs, '-filter_complex', graph, '-frames:v', '1', outFile])
+    if (r.status !== 0) console.error(String(r.stderr))
+    else console.log(`  wrote ${outFile}`)
+    rmSync(dir, { recursive: true, force: true })
+  }
   if (has('debug')) console.log((await evaluate('window.__log')).join('\n'))
   if (probe.errors.length) {
     console.log(`\npage errors (${probe.errors.length}):`)

@@ -51,6 +51,9 @@ export interface DriveEnv {
   gravity?: number
   /** false on a level with no air to fly in (the Moon) */
   air?: boolean
+  /** where the pilot is looking (the drive camera's heading and pitch), for
+      a machine flown by aim (a view with `aim`); null when nobody is */
+  aim?: { yaw: number; pitch: number } | null
   collision: CollisionSet
   /** what is underfoot: picks grip, rolling drag and the colour of the dust */
   surfaceAt: (x: number, z: number) => StepSurface
@@ -138,6 +141,9 @@ export interface DriveView {
   /** smooth the chase boom in the machine's own frame, not the world's: a
       machine that crosses kilometres a second outruns a world-space lag */
   rigid?: boolean
+  /** the mouse aims the machine: the boom looks wherever the mouse turns it,
+      holds there, and the machine steers toward it (`DriveEnv.aim`) */
+  aim?: boolean
 }
 
 export interface Vehicle {

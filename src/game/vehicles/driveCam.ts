@@ -41,6 +41,11 @@ import type { DriveEnv, DriveStep, Vehicle } from './types'
     the ahead-bias of the driving frame is given up, because free-look exists
     to look at the machine, not past it.
 
+  A machine flown by aim (the ship, a view with `aim`) turns the rule round:
+  the mouse turns the boom and it stays turned, the lens looks exactly
+  where the boom points, and the machine steers toward that heading and
+  pitch (`DriveEnv.aim`, read by the registry off `yaw`/`pitch` here).
+
   Cockpit view (v) is the same instrument with the boom at zero: the lens sits
   at the vehicle's own eye point, rides its roll and pitch, and free-look
   becomes head movement with a wider range, since that is the only way to see
@@ -109,6 +114,11 @@ export function createDriveCam(): DriveCam {
   let prevX = 0
   let prevZ = 0
   let travelYaw = 0
+  /** aim mode (a view with `aim`): the heading and pitch the mouse has
+      turned the boom to, which the machine steers toward */
+  let aimMode = false
+  let aimYaw = 0
+  let aimPitch = 0
 
   const want = new THREE.Vector3()
   const probe = new THREE.Vector3()
@@ -138,10 +148,10 @@ export function createDriveCam(): DriveCam {
 
   return {
     get yaw() {
-      return boomYaw + lookYaw
+      return aimMode ? aimYaw : boomYaw + lookYaw
     },
     get pitch() {
-      return -baseElev + lookPitch
+      return aimMode ? aimPitch : -baseElev + lookPitch
     },
     get cockpit() {
       return cockpit
@@ -157,6 +167,11 @@ export function createDriveCam(): DriveCam {
     },
     turn: (dx, dy, sign, sens) => {
       const k = 0.0019 * sens
+      if (aimMode) {
+        aimYaw += sign * dx * k
+        aimPitch = clamp(aimPitch + sign * dy * k, -1.35, 1.35)
+        return
+      }
       lookYaw += sign * dx * k
       // the offset is bounded: past a half turn the boom has no idea which way
       // is forward any more, and neither does the player
@@ -170,6 +185,9 @@ export function createDriveCam(): DriveCam {
     reset: (v, startYaw) => {
       // every boarding starts on the boom, whatever the last drive ended on
       cockpit = false
+      aimMode = !!v.view.aim
+      aimYaw = v.yaw
+      aimPitch = v.pitch
       boomYaw = startYaw ?? v.yaw
       travelYaw = v.yaw
       boomPitch = 0.16
@@ -239,6 +257,43 @@ export function createDriveCam(): DriveCam {
       boomPitch = damp(boomPitch, 0.14 - fast * 0.03, 4, dt)
 
       v.root.updateMatrixWorld()
+
+      if (aimMode) {
+        // the aim is the camera: the lens looks exactly where the machine is
+        // being steered, from behind and a little over it, and the machine
+        // turns into the frame rather than the frame chasing the machine
+        const cpA = Math.cos(aimPitch)
+        dir.set(-Math.sin(aimYaw) * cpA, Math.sin(aimPitch), -Math.cos(aimYaw) * cpA)
+        if (cockpit) {
+          anchor.copy(seat === 0 ? view.eye : view.eye2).applyMatrix4(v.root.matrixWorld)
+          cam.position.copy(anchor)
+          lookAt.copy(anchor).add(dir)
+        } else {
+          anchor.copy(view.anchor).applyMatrix4(v.root.matrixWorld)
+          const reach = view.back + view.stretch * fast
+          want.copy(dir).multiplyScalar(-reach)
+          want.y += view.up * 0.45
+          const grab = 1 - Math.exp(-14 * dt)
+          if (!started) {
+            smoothed.copy(want)
+            started = true
+          } else smoothed.lerp(want, grab)
+          cam.position.copy(anchor).add(smoothed)
+          // never through the ground under a low pass
+          const floorA = env.groundAt(cam.position.x, cam.position.z) + MARGIN
+          if (cam.position.y < floorA) cam.position.y = floorA
+          lookAt.copy(anchor).addScaledVector(dir, 30)
+        }
+        lookM.lookAt(cam.position, lookAt, up)
+        cam.quaternion.setFromRotationMatrix(lookM)
+        const fovA = base + fast * (cockpit ? 6 : 11)
+        if (Math.abs(cam.fov - fovA) > 0.02) {
+          cam.fov = damp(cam.fov, fovA, 6, dt)
+          cam.updateProjectionMatrix()
+        }
+        dist = 0
+        return
+      }
 
       if (cockpit) {
         anchor.copy(seat === 0 ? view.eye : view.eye2).applyMatrix4(v.root.matrixWorld)

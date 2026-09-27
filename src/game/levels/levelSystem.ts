@@ -39,6 +39,10 @@ export interface LevelSystem {
   tick: (now: number, p: THREE.Vector3, live: boolean) => void
   /** snap back to the home level with no cut; returns it if a move happened */
   reset: () => Level | null
+  /** run the ordinary cut to a level, as if a seam had tripped (the
+      console's escape hatch): false if one is already running or the level
+      is unknown */
+  goTo: (id: string, spawn?: LevelSpawn) => boolean
 }
 
 export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
@@ -88,6 +92,14 @@ export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
         opts.onCover(true)
         opts.onCutStart()
       }
+    },
+    goTo: (id, spawn) => {
+      const to = byId.get(id)
+      if (!to || cut) return false
+      cut = { t0: performance.now(), to, spawn: spawn ?? to.spawn, swapped: false, fading: false }
+      opts.onCover(true)
+      opts.onCutStart()
+      return true
     },
     reset: () => {
       cut = null

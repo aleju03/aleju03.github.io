@@ -5,7 +5,7 @@ import {
   type Facets,
 } from './parts'
 import type { VehicleMaterials } from './materials'
-import { axes, clamp, clearAt, damp, groundUnder, netMotion, sweepBody, type NetMotion } from './chassis'
+import { angleDelta, axes, clamp, clearAt, damp, groundUnder, netMotion, sweepBody, type NetMotion } from './chassis'
 import { flyScale, spaceK } from '../levels/space'
 import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 
@@ -36,25 +36,30 @@ import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 
   ------------------------------------------------------------------ the flight
 
-  One integrator, two regimes, blended by how much air is left under it
-  (levels/space.ts's `spaceK` of the height over the ground, and none at all
-  on a level that has no air, the Moon):
+  It flies where you look. The drive camera is in aim mode for it (a view
+  with `aim`): the mouse turns the boom freely and the nose chases the
+  boom's heading and pitch at a bounded, damped rate (`env.aim`), banking
+  into the turn, which is how a third-person flyer steers. W/S thrust along
+  the nose, A/D slide sideways, Space and Ctrl go up and down (the world's
+  up while there is air or ground under it, the ship's own in space), and
+  Shift doubles all of it.
 
-  - **In the air** it flies like a hovercraft with wings. Gravity is
-    cancelled by a lift servo that holds the height when no vertical key is
-    down, drag gives it a top speed (about 100 u/s, twice that on boost),
-    sideways slip is bled off so it carves rather than skates, and the nose
-    levels itself when R/F are let go. A/D yaw it and bank it into the turn.
-  - **In space** it keeps its momentum: no drag, no levelling, and thrust is
-    along the nose wherever the nose points, so it is a real 6-DOF coast with
-    R/F pitching and Space/C translating along its own up. Shift is the
-    boost in both.
+  The flight is assisted everywhere, which is what makes it predictable in
+  three very different places. The engines cancel gravity whenever it is
+  off the ground (on Earth, thinning away with the air, and on the Moon at a
+  sixth), and the velocity is bled off: gently while any thrust key is held,
+  which is its top speed, and hard when none is, so letting go of
+  everything brings it to a hover where it is in a second or so, in the
+  air, in orbit and over the regolith alike. It never coasts on its own,
+  so it cannot be left circling anything; the one exception is a boost in
+  space, which does coast, because that is the burn that crosses the gap to
+  the Moon. A ship left in the air (its pilot ejected) keeps its engines up
+  and holds station.
 
   Thrust and the speed cap grow with height the same way the noclip flight
   does (`flyScale`), because space here is scaled down but not small: the
   Moon is three hundred thousand units off, and at the ground's speeds that
-  is an hour. On the Moon the lift servo carries on under a sixth of the
-  gravity, so it hovers and lands there the same way it does at home.
+  is an hour.
 
   The level cuts (Earth to Moon and back) are CrtScene's: while this
   machine is flown the level system is allowed to fire a seam, and the
@@ -138,23 +143,27 @@ const HULL: HullStation[] = [
 
 /* --------------------------------------------------------------- flight -- */
 
-/** forward thrust, u/s^2, and what boost multiplies it by */
+/** forward, sideways and vertical thrust, u/s^2, and what boost multiplies
+    them by */
 const FWD_A = 46
+const STRAFE_A = 30
+const VERT_A = 28
 const BOOST = 2.1
-/** vertical thrust along the ship's own up */
-const VERT_A = 24
-/** air drag per second at sea level: FWD_A / DRAG is the air top speed */
+/** the flight assist's bleed, per second: gentle under thrust (FWD_A over it
+    is the top speed, about 100 u/s, twice that on boost) and hard with no
+    key down, which brings it to a hover in a second or so */
+const CRUISE_BLEED = 0.45
+const STOP_BLEED = 2.4
+/** and the braking burn with nothing held, u/s^2 before the height's scale */
+const BRAKE_A = 40
+/** plain air drag, for a ship with its engines down */
 const DRAG = 0.45
-/** how fast sideways slip is bled off in the air, per second */
-const SLIP_BLEED = 2.6
-/** the lift servo: vertical velocity toward zero when no key asks otherwise */
-const HOLD = 3.2
-const YAW_RATE = 1.35
-const PITCH_RATE = 1.0
-/** the nose may go this far up or down in the air, and this far in space */
-const PITCH_AIR = 0.55
-const PITCH_SPACE = 1.35
-const BANK = 0.5
+/** how fast the nose chases the aim, and the most it will turn, rad/s */
+const TURN_K = 3.2
+const TURN_MAX = 1.9
+/** the nose never points straighter up or down than this */
+const PITCH_MAX = 1.35
+const BANK = 0.35
 /** the cap, before flyScale grows it with height */
 const TOP = 220
 const SPOOL = 0.7
@@ -404,9 +413,13 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
   let gearOut = 1
   let night = 0
   let throttleK = 0
+  /** where the nose is turning to: the pilot's aim while flown, else held */
+  let aimYaw = 0
+  let aimPitch = 0
   const solid = noStand(new THREE.Box3()) as Solid
   const fwd = new THREE.Vector3()
   const upV = new THREE.Vector3()
+  const right = new THREE.Vector3()
   const eul = new THREE.Euler(0, 0, 0, 'YXZ')
   const q = new THREE.Quaternion()
 
@@ -441,65 +454,82 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
     const dt = env.dt
     const k = axes(env.keys, env.frozen || !driven)
     const live = driven && !env.frozen
-    const pIn = live ? (env.keys.has('KeyR') ? 1 : 0) - (env.keys.has('KeyF') ? 1 : 0) : 0
-    spool = running ? Math.min(1, spool + dt * SPOOL) : Math.max(0, spool - dt * SPOOL * 0.6)
+    // the engines keep station for as long as it is off the ground, piloted or
+    // not: a ship left in the air (its pilot ejected, or somebody else's that
+    // only this client sees) holds where it is instead of falling out of it
+    const powered = running || !landed
+    spool = powered ? Math.min(1, spool + dt * SPOOL) : Math.max(0, spool - dt * SPOOL * 0.6)
 
     const rest = restUnder(env)
     const alt = pos.y - rest
     // how much air there is: none on a level without it, thinning with height
     const air = env.air === false ? 0 : 1 - spaceK(alt)
-    const gShare = env.gravity ?? 1
-    const g = G * gShare * (env.air === false ? 1 : air)
+    const g = G * (env.gravity ?? 1) * (env.air === false ? 1 : air)
     const scale = flyScale(Math.max(0, alt))
     const boost = k.boost ? BOOST : 1
 
-    /* attitude: yaw on A/D, pitch on R/F; in the air the nose levels itself
-       and the machine banks into a turn, in space it holds what it is given */
-    const yawIn = -k.side
-    yaw += yawIn * YAW_RATE * spool * dt
-    const pMax = PITCH_AIR + (PITCH_SPACE - PITCH_AIR) * (1 - air)
-    if (pIn !== 0) pitch = clamp(pitch + pIn * PITCH_RATE * spool * dt, -pMax, pMax)
-    else if (air > 0.05 || landed) pitch = damp(pitch, 0, 1.6 * Math.max(air, landed ? 1 : 0), dt)
-    pitch = clamp(pitch, -pMax, pMax)
-    roll = damp(roll, landed ? 0 : yawIn * BANK * air, 3, dt)
+    /* attitude: the nose turns toward where the pilot is looking (the drive
+       camera's aim), at a bounded, damped rate, the way a third-person flyer
+       steers; parked or unpiloted it holds, and on the ground it sits level */
+    if (live && env.aim && !landed) {
+      aimYaw = env.aim.yaw
+      aimPitch = clamp(env.aim.pitch, -PITCH_MAX, PITCH_MAX)
+    } else if (landed) {
+      aimPitch = 0
+      aimYaw = yaw
+    }
+    const dy = angleDelta(yaw, aimYaw)
+    const yawRate = clamp(dy * TURN_K, -TURN_MAX, TURN_MAX) * spool
+    yaw += yawRate * dt
+    pitch += clamp((aimPitch - pitch) * TURN_K, -TURN_MAX, TURN_MAX) * spool * dt
+    // a bank into the turn and a lean into a strafe: the only roll there is
+    roll = damp(roll, landed ? 0 : clamp(-yawRate * BANK - k.side * 0.22, -0.7, 0.7), 4, dt)
 
     eul.set(pitch, yaw, roll, 'YXZ')
     q.setFromEuler(eul)
     fwd.set(0, 0, -1).applyQuaternion(q)
     upV.set(0, 1, 0).applyQuaternion(q)
+    right.set(Math.cos(yaw), 0, -Math.sin(yaw))
 
-    /* thrust */
-    throttleK = damp(throttleK, Math.abs(k.fwd) * boost * 0.5 + (k.up || k.down ? 0.25 : 0), 5, dt)
-    const push = k.fwd * FWD_A * boost * spool * scale
-    vel.addScaledVector(fwd, push * dt)
+    /* thrust: W/S along the nose, A/D sideways, Space/Ctrl up and down (the
+       world's up while there is air or ground under it, the ship's own in
+       space), Shift doubling all of it */
     const vertIn = (k.up ? 1 : 0) - (k.down ? 1 : 0)
+    const a = spool * scale * boost
+    throttleK = damp(throttleK, Math.abs(k.fwd) * boost * 0.5 + (k.side || vertIn ? 0.25 : 0), 5, dt)
+    vel.addScaledVector(fwd, k.fwd * FWD_A * a * dt)
+    vel.addScaledVector(right, k.side * STRAFE_A * a * dt)
     if (vertIn !== 0) {
-      // up is the ship's own up in space and the world's in the air
-      const ux = upV.x * (1 - air)
-      const uy = upV.y * (1 - air) + air
-      const uz = upV.z * (1 - air)
-      const a = vertIn * VERT_A * boost * spool * scale
-      vel.x += ux * a * dt
-      vel.y += uy * a * dt
-      vel.z += uz * a * dt
+      const w = env.air === false ? 1 : air
+      const ux = upV.x * (1 - w)
+      const uy = upV.y * (1 - w) + w
+      const uz = upV.z * (1 - w)
+      vel.x += ux * vertIn * VERT_A * a * dt
+      vel.y += uy * vertIn * VERT_A * a * dt
+      vel.z += uz * vertIn * VERT_A * a * dt
     }
-    // gravity, and the lift that cancels it while the engines are up: with
-    // no vertical key the servo holds the height, which is the hover
-    vel.y -= g * dt
-    if (spool > 0.05 && !landed) {
-      vel.y += g * spool * dt
-      if (vertIn === 0 && (air > 0.02 || env.air === false)) vel.y = damp(vel.y, 0, HOLD * spool, dt)
+    // gravity, cancelled by the engines while they are up: that is the hover
+    if (!landed) vel.y -= g * (1 - spool) * dt
+    /* assisted flight: the velocity is bled off, gently while any thrust key
+       is held (which is what gives it a top speed) and hard when none is (it
+       comes to a stop and hovers where it is, in the air, in space and on
+       the Moon alike). The one exception is a boost in space, which coasts:
+       that is the burn you cross the gap to the Moon on. Unpowered, only the
+       air slows it */
+    const anyIn = k.fwd !== 0 || k.side !== 0 || vertIn !== 0
+    let bleed = anyIn ? CRUISE_BLEED : STOP_BLEED
+    if (anyIn && k.boost && air < 0.05) bleed = 0
+    bleed = bleed * spool + DRAG * air * (1 - spool)
+    vel.multiplyScalar(Math.exp(-bleed * dt))
+    // ...and with nothing held, a braking burn on top, sized to the height's
+    // own speed scale, so even a ship let go at orbital speed is stopped in
+    // a couple of seconds rather than drifting off at one percent of it
+    if (!anyIn && spool > 0.5) {
+      const v = vel.length()
+      const cut = BRAKE_A * scale * spool * dt
+      if (v > 1e-4) vel.multiplyScalar(Math.max(0, v - cut) / v)
     }
-    // the air: drag, and the slip bled off so it carves
-    if (air > 0) {
-      const d = Math.exp(-DRAG * air * dt)
-      vel.multiplyScalar(d)
-      const side = vel.x * Math.cos(yaw) - vel.z * Math.sin(yaw)
-      const bleed = side * (1 - Math.exp(-SLIP_BLEED * air * dt))
-      vel.x -= Math.cos(yaw) * bleed
-      vel.z += Math.sin(yaw) * bleed
-    }
-    const cap = TOP * scale * (k.boost ? BOOST : 1)
+    const cap = TOP * scale * boost
     if (vel.lengthSq() > cap * cap) vel.setLength(cap)
 
     /* contact */
@@ -518,10 +548,11 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
       if (vel.y < 0) vel.y = 0
       landed = true
     } else if (pos.y > restNow + 0.08) landed = false
-    // lift off: a touch of up (or thrust while spooled) unsticks it
-    if (landed && spool > 0.6 && vertIn > 0) {
+    // lift off: Space (or thrust while spooled) unsticks it
+    if (landed && spool > 0.6 && running && (vertIn > 0 || k.fwd !== 0)) {
       landed = false
-      pos.y = restNow + 0.1
+      pos.y = restNow + 0.15
+      vel.y = Math.max(vel.y, 2)
     }
     // the hull sweeps the world near the ground; in the sky there is nothing
     if (alt < 60) {
@@ -602,6 +633,8 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
   const placeAt = (x: number, z: number, hdg: number, env: DriveEnv) => {
     pos.set(x, env.groundAt(x, z), z)
     yaw = hdg
+    aimYaw = hdg
+    aimPitch = 0
     pitch = 0
     roll = 0
     vel.set(0, 0, 0)
@@ -649,6 +682,9 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
       // it goes fast enough that a lagging boom loses it: smooth the boom
       // in the ship's frame rather than the world's
       rigid: true,
+      // and the mouse aims it: the boom looks where the mouse says, and the
+      // nose follows (env.aim)
+      aim: true,
     },
     size: SIZE,
     hull: HULL,
@@ -669,6 +705,8 @@ export function buildShip(opts: { mats: VehicleMaterials }): Vehicle {
     warp: (x, y, z, hdg) => {
       pos.set(x, y, z)
       yaw = hdg
+      aimYaw = hdg
+      aimPitch = 0
       pitch = 0
       roll = 0
       vel.set(0, 0, 0)

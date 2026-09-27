@@ -111,6 +111,9 @@ export interface SandboxHost {
   /** the authored spawn, where `tp home` goes; `y` is the feet, because home is upstairs and
       a teleport left to find the ground would land under it */
   home?: () => { x: number; z: number; y?: number; yaw?: number }
+  /** the escape hatch: out of any machine or seat, off noclip, and on your
+      feet at home on Earth, from anywhere (the Moon, orbit, a stuck ship) */
+  unstuck?: () => void
   noclip?: (on?: boolean) => boolean
   god?: (on?: boolean) => boolean
   thirdPerson?: (on?: boolean) => boolean
@@ -995,6 +998,21 @@ registerCommand({
     host.teleport!(found!.x, found!.z, undefined, found!.yaw)
     const d = Math.round(Math.hypot(found!.x - here.x, found!.z - here.z))
     ctx.item(found!.label, `${d} u`)
+  },
+})
+
+registerCommand({
+  name: 'unstuck',
+  aliases: ['rescue', 'gohome'],
+  help: msg(
+    'stuck? out of anything you are in, and on your feet at home on Earth',
+    '¿atascado? te saca de lo que sea y te deja de pie en casa, en la Tierra',
+  ),
+  run: (ctx) => {
+    const host = ctx.host
+    if (!host.unstuck) ctx.fail(msg('nowhere to go from here', 'no hay a dónde ir desde aquí'))
+    host.unstuck!()
+    ctx.ok(msg('home, on your feet', 'en casa, de pie'))
   },
 })
 
