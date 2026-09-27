@@ -58,7 +58,7 @@ targets
   body:lineup          the player character: six looks front and back, and a
                        row of poses (wave, crouch, jump, sprint, heap, stretch)
   body:motion          filmstrips of every action below, one row each
-  body:strip:<action>  one filmstrip: walk|run|runside|turn|jump|land|ragdoll|recover|idle
+  body:strip:<action>  one filmstrip: walk|run|walkback|runback|runside|turn|jump|land|ragdoll|recover|idle
   body:fp              the first-person lens looking down at your own body
   body:seat            seated in the car, boat and helicopter seat nodes
   body:car             the car alone, five ways round with two aboard; at

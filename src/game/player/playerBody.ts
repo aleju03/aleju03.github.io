@@ -29,7 +29,8 @@ import { makeBodyMaterial } from './bodyMaterial'
   swinging foot glides to a spot predicted along the real velocity, and
   two-bone IK folds each leg over its foot, so side-steps, diagonals and
   backpedals step where the body is truly going and feet never slide. The
-  hips waddle over the stance foot and roll with it, the trunk leans into
+  hips shift a little over the stance foot (under two degrees of roll, so
+  the head never rocks like a metronome), the trunk leans into
   acceleration and banks into turns, and a landing drops the hips on a damped
   spring in proportion to the impact.
 
@@ -65,7 +66,7 @@ import { makeBodyMaterial } from './bodyMaterial'
   run steps three times a second and these springs ring at about once: fed
   through them, the swing arrived at a seventh of its size and a sprinting
   body ran with its mittens at its hips; the chest rides a
-  jelly spring over the waddle; the head and chest's look-tracking are
+  jelly spring kicked by swerves; the head and chest's look-tracking are
   springs in both axes. On top of those sit four point masses simulated in
   world space and hung back on bones: the top of the bean bobbles, the
   headgear's tails swing off their knot, the belly wobbles, and each mitten
@@ -1056,9 +1057,13 @@ export function buildPlayerBody(
     // swerve still nods and a steady run stays one straight capsule
     headBias.lerp(vTmp2, 1 - Math.exp(-2.5 * dt))
     vTmp2.sub(headBias)
+    // and sideways it barely tips: the walk's waddle drives this particle
+    // side to side every step, and at the old 1.8 radians a unit the head
+    // swung twenty degrees like a metronome (with the waddle's own roll)
+    vTmp2.x *= 0.5
     head.position.add(vTmp2)
     head.rotation.x += vTmp2.z * 1.8
-    head.rotation.z -= vTmp2.x * 1.8
+    head.rotation.z -= vTmp2.x * 0.5
 
     // the belly is jelly: its own point mass, soft and slow to settle, so a
     // footfall, a stop or a landing sets the front of the bean wobbling
@@ -1334,9 +1339,14 @@ export function buildPlayerBody(
     // one carries the weight), bob down through each footfall, and a run
     // pops up off the ground between them. Standing, the weight drifts from
     // one foot to the other now and then, which is most of what reads as
-    // alive in a body doing nothing
+    // alive in a body doing nothing.
+    //
+    // The waddle is a hint, under two degrees of roll and a few hundredths
+    // of sideways shift: at 0.1 rad a step, fed through the chest's roll
+    // spring and the head's jiggle, the walking head rocked 22 degrees each
+    // way like a metronome, which from the chase camera behind is all you see
     const shift = Math.sin(idleT * 0.55 + 1.1) * Math.sin(idleT * 0.21) * 0.05 * idleK * (1 - riseFold)
-    const waddleX = -stepS * (0.075 - 0.045 * runK) * moveK + shift
+    const waddleX = -stepS * (0.03 - 0.015 * runK) * moveK + shift
     const dip = -Math.abs(stepS) * 0.07 * gait * (1 - runK)
     // a run's hips are lowest just after a foot lands and highest in the
     // flight before the next one does (see the toe-off in the feet below)
@@ -1345,8 +1355,8 @@ export function buildPlayerBody(
     pelvis.position.set(
       waddleX, hipH + dip + pop + bounceY + breathe * 0.006 + Math.sin(idleT * 1.7) * 0.05 * flyK, 0,
     )
-    // a walk waddles; a run is upright and bouncy, the roll mostly gone
-    const waddleRoll = stepS * (0.1 - 0.06 * runK) * moveK + shift * 1.2
+    // a walk waddles a little; a run is upright and bouncy, the roll nearly gone
+    const waddleRoll = stepS * (0.03 - 0.015 * runK) * moveK + shift * 1.2
     // the get-up hunch is not gated by pose.show: it is the shape of the
     // action, not flair, and the lens is off the head for the whole of it
     // A bean runs nearly upright: the lean is a hint of the speed and a
@@ -1377,10 +1387,11 @@ export function buildPlayerBody(
     const flyLean = flyK * THREE.MathUtils.clamp(fwdS * 0.02, -0.25, 0.8)
     pelvis.rotation.set(lean - riseFold * 0.275 + flyLean, strafeYaw - stepS * 0.12 * gait, bank * 0.45 + waddleRoll)
 
-    // the chest is jelly on top of the hips: a roll spring that wants to
-    // hold the shoulders level over the waddle, and so arrives late and
-    // overshoots, and a pitch spring kicked by starts, stops and landings
-    const jellyRoll = spring(20, -waddleRoll * 0.9, 70, 3.5, -accS * 0.3 - yawRateS * 0.6 * gait, dt, -0.3, 0.3)
+    // the chest is jelly on top of the hips: a roll spring kicked by
+    // swerves and sidesteps, and a pitch spring kicked by starts, stops and
+    // landings. It no longer chases the waddle: driven at a walk's step rate,
+    // far above its own ring, it answered in phase and doubled the rock
+    const jellyRoll = spring(20, 0, 70, 9, -accS * 0.3 - yawRateS * 0.6 * gait, dt, -0.3, 0.3)
     const jellyPitch = spring(
       22, 0, 110, 6.5, -accF * 0.18 + (pose.landing > 0 ? pose.landing * 2.6 : 0), dt, -0.5, 0.5,
     )

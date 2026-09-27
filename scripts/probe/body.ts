@@ -396,6 +396,18 @@ const ACTIONS: Record<string, {
     cam: [0, 8.5, -0.7],
     run: (a, st) => tick(a, st.env, { speed: RUN, run: true }),
   },
+  // walk and run from straight behind, the chase camera's own view: where a
+  // side-to-side rock of the head reads as a metronome
+  walkback: {
+    frames: [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15],
+    cam: [-Math.PI / 2, 8, 0.6],
+    run: (a, st) => tick(a, st.env, { speed: WALK }),
+  },
+  runback: {
+    frames: [0.8, 0.835, 0.87, 0.905, 0.94, 0.975, 1.01, 1.045],
+    cam: [-Math.PI / 2, 8, 0.6],
+    run: (a, st) => tick(a, st.env, { speed: RUN, run: true }),
+  },
   // a full run swerving hard left: the bank, the lean and what the arms do
   // with a yaw rate on them
   turn: {
