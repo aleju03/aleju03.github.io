@@ -60,7 +60,7 @@ export interface ChaseEnv {
 export interface ChaseCam {
   /** 0 on the lens .. 1 fully boomed, smoothed */
   readonly k: number
-  /** how far the lens actually is from the head after wall clamping — the
+  /** how far the lens actually is from the head after wall clamping: the
       scene reads it to slide the body back behind a lens a wall has crushed
       onto it, and to tell a real third-person view from a crushed one */
   readonly dist: number
