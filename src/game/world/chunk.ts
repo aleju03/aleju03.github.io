@@ -268,6 +268,10 @@ const GROUND_KIND: Record<BiomeId, [number, number, number]> = {
   savanna: [0, 0, 0], jungle: [0, 0, 0], wetland: [0, 0, 0],
 }
 
+/** how far under y=0 the property's ground is drawn: the house's floors,
+    slabs and walks all stand on 0 */
+const PROPERTY_SINK = 0.02
+
 /**
  * The terrain mesh. Vertices come from terrain.ts's shared lattice, so the
  * edge a chunk shares with its neighbour is computed from the same cached
@@ -307,7 +311,9 @@ const buildGround = (cx: number, cz: number): Ground => {
       const wz = originZ(cz) + j * GRID
       const y = h[k]
       pos[k * 3] = wx
-      pos[k * 3 + 1] = y
+      // the property's lawn is this same ground, drawn a hair under the
+      // house's floors so the two cannot fight (see the indices below)
+      pos[k * 3 + 1] = inReserved(wx, wz) ? y - PROPERTY_SINK : y
       pos[k * 3 + 2] = wz
       // central differences off the lattice, reaching into the neighbouring
       // chunk at the edges so normals match across the seam
@@ -342,13 +348,15 @@ const buildGround = (cx: number, cz: number): Ground => {
       uv[k * 2 + 1] = wz / 9
     }
 
-  // indices, skipping the quads that fall on the authored property
+  // indices. The authored property used to be a hole here, filled by the
+  // house's own lawn plane: a flat green texture that no amount of tuning
+  // made read as the same ground as the verge a metre past the fence. So
+  // the property is drawn by the same material off the same lattice as
+  // everything else (its vertices sunk by PROPERTY_SINK), and the house's
+  // lawn only stands in for it until the world is loaded
   const idx: number[] = []
   for (let j = 0; j < VERTS - 1; j++)
     for (let i = 0; i < VERTS - 1; i++) {
-      const mx = originX(cx) + (i + 0.5) * GRID
-      const mz = originZ(cz) + (j + 0.5) * GRID
-      if (inReserved(mx, mz)) continue
       const a = j * VERTS + i
       const b = a + 1
       const c = a + VERTS

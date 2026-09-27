@@ -207,6 +207,8 @@ export const AIR_DEFAULTS = (): Air => ({
 export interface FakeLights {
   /** world x, y, z and radius per pool; the first `count` are live */
   pools: Float32Array
+  /** each live pool's strength, 0..1: the fade a lamp comes and goes by */
+  weights: Float32Array
   count: number
   /** pool colour times its strength; zero by day */
   poolColor: THREE.Color
@@ -290,6 +292,7 @@ export const createPixelLook = (
   const air = AIR_DEFAULTS()
   const lights: FakeLights = {
     pools: new Float32Array(MAX_POOLS * 4),
+    weights: new Float32Array(MAX_POOLS).fill(1),
     count: 0,
     poolColor: new THREE.Color(0, 0, 0),
     halo: 0.05,
@@ -372,6 +375,7 @@ export const createPixelLook = (
     uSkyAir: { value: new THREE.Vector3() },
     uAirLift: { value: new THREE.Vector4() },
     uPools: { value: Array.from({ length: MAX_POOLS }, () => new THREE.Vector4()) },
+    uPoolW: { value: new Float32Array(MAX_POOLS) },
     uPoolCount: { value: 0 },
     uPoolCol: { value: new THREE.Color() },
     uHalo: { value: new THREE.Vector2() },
@@ -508,6 +512,7 @@ export const createPixelLook = (
     const n = Math.min(MAX_POOLS, lights.count)
     for (let i = 0; i < n; i++) {
       U.uPools.value[i].fromArray(lights.pools, i * 4)
+      U.uPoolW.value[i] = lights.weights[i]
     }
     U.uPoolCount.value = n
     U.uPoolCol.value.copy(lights.poolColor)

@@ -48,8 +48,8 @@ export interface ModelLike {
   boxes meeting at an exact edge leave a zero-width line a point-body can be
   resolved onto and then walk along through the wall. Doors are hinge pivots
   worked with the interact key: a closed one swings away from whichever side
-  the player stands on, an open one pulls
-  shut, and the doorway itself is an obstacle while the leaf is in the way.
+  the player stands on (or, where only one side has room for the leaf, into
+  that side), an open one pulls shut, and the doorway itself is an obstacle while the leaf is in the way.
   They cast no shadows so the baked maps stay valid. Working one creaks the
   hinge (core/sfx.ts) and a closing leaf clicks its latch home as it seats.
 
@@ -127,6 +127,9 @@ export interface HouseHandles {
       radius negative for an indoor lamp (houseProps.ts says why) */
   lamps: Float32Array
   lampCount: number
+  /** the open world has attached and draws the property's ground itself
+      (world/chunk.ts): retire the stand-in lawn */
+  worldGround: () => void
 }
 
 interface BuildOpts {
@@ -462,6 +465,10 @@ interface Door {
   y: number
   /** how far the leaf swings, magnitude only; sign is chosen per use */
   swing: number
+  /** the side of the wall the leaf always swings into (+1 toward +axis), for
+      a doorway with no room on one side for the leaf; unset swings away
+      from whoever opens it */
+  opens?: 1 | -1
   angle: number
   target: number
   /** blocks the doorway while the leaf is in the way; emptied once clear */
@@ -735,6 +742,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       /** a pair of leaves shares one opening: draw only this leaf's outer
           jamb and its half of the header */
       pair?: boolean
+      /** swing only into this side of the wall (see Door.opens) */
+      opens?: 1 | -1
     } = {},
   ) => {
     const w = u1 - u0
@@ -843,7 +852,7 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     const block = noStand(new THREE.Box3(closedMin.clone(), closedMax.clone()))
     obstacles.push(block)
     doors.push({
-      pivot, axis, at, dir, ...center, y: lv, swing,
+      pivot, axis, at, dir, ...center, y: lv, swing, opens: o.opens,
       angle: 0, target: 0, block, closedMin, closedMax, solid: true,
     })
   }
@@ -1079,7 +1088,9 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   windowUnit('x', GARAGE.maxX - 0.045, GAR_WIN.u0, GAR_WIN.u1, GAR_WIN.y0, GAR_WIN.y1)
 
   // -- ground-floor doors; each swings away from whoever opens it
-  doorUnit('z', HOUSE.minZ, FRONT_DOOR.u0, FRONT_DOOR.u1, 'u0', Math.PI * 0.55, { color: '#5a2f24', panel: '#4a261d' })
+  // (the front door stops square: any further and its edge reaches the gate
+  // post on its way out onto the step)
+  doorUnit('z', HOUSE.minZ, FRONT_DOOR.u0, FRONT_DOOR.u1, 'u0', Math.PI * 0.5, { color: '#5a2f24', panel: '#4a261d' })
   // the bath leaf stops shy of a right angle so it clears the pedestal sink
   doorUnit('x', BATH.maxX, BATH_DOOR.u0, BATH_DOOR.u1, 'u0', Math.PI * 0.44, { color: '#8a7b64', panel: '#7a6c57' })
   doorUnit('x', HALL.maxX, GARAGE_IN.u0, GARAGE_IN.u1, 'u0', Math.PI * 0.5, { color: '#8a7b64', panel: '#7a6c57' })
@@ -1165,12 +1176,19 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
   windowUnit('x', HOUSE.maxX - 0.045, MBR_WIN_E.u0, MBR_WIN_E.u1, MBR_WIN_E.y0, MBR_WIN_E.y1)
   cornerPosts(PAINT.den, [[BATH.maxX, HALL.maxZ], [BATH.maxX, BATH.maxZ]])
 
-  // -- upstairs doors
-  doorUnit('x', PART_X, BED_DOOR.u0, BED_DOOR.u1, 'u0', Math.PI * 0.52)
+  // -- upstairs doors. The computer room's always swings into the room: the
+  // gallery outside it is 1.8 wide and the leaf 2.1, so swung
+  // it the other way it went straight through the stairwell's railing; and
+  // square is as far as it goes, or it meets the bookshelf behind the hinge
+  doorUnit('x', PART_X, BED_DOOR.u0, BED_DOOR.u1, 'u0', Math.PI * 0.5, { opens: -1 })
   doorUnit('x', BATH.maxX, BATH_DOOR.u0, BATH_DOOR.u1, 'u0', Math.PI * 0.44, { color: '#8a7b64', panel: '#7a6c57' })
-  doorUnit('z', LINEN_Z, LINEN_DOOR.u0, LINEN_DOOR.u1, 'u0', Math.PI * 0.55, { color: '#8a7b64', panel: '#7a6c57' })
+  // a right angle and no further: its hinge is a hand's width off the
+  // partition, and past square the leaf's edge went into it
+  doorUnit('z', LINEN_Z, LINEN_DOOR.u0, LINEN_DOOR.u1, 'u0', Math.PI * 0.5, { color: '#8a7b64', panel: '#7a6c57' })
   doorUnit('z', HALL.maxZ, DEN_DOOR.u0, DEN_DOOR.u1, 'u0', Math.PI * 0.5)
-  doorUnit('z', HALL.maxZ, MBR_DOOR.u0, MBR_DOOR.u1, 'u0', Math.PI * 0.5)
+  // hinged on its east jamb: on the west one the leaf swung onto the
+  // nightstand beside the bed
+  doorUnit('z', HALL.maxZ, MBR_DOOR.u0, MBR_DOOR.u1, 'u1', Math.PI * 0.5)
 
   LV = 0
 
@@ -1403,13 +1421,13 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     void chimney
   }
 
-  // -- ground: mowed lawn inside the property (the meadow beyond the fence
-  // is outsideWorld's business now)
-  // It runs a few units past the fence on every side on purpose: the open
-  // world's terrain mesh cuts a rectangular hole around the property (see
-  // grid.ts's RESERVED) and drops whole quads, so its edge is ragged to
-  // within half a cell. The lawn oversails that raggedness, and sits a
-  // couple of centimetres under the interior floor so the two can't fight.
+  // -- ground: a stand-in lawn inside the property, for as long as the open
+  // world is not loaded (the room tier of /alejOS). Once it is, the world's
+  // chunk ground covers the property too, in the same material and off the
+  // same lattice as the verge past the fence, and `worldGround()` hides this:
+  // a flat texture beside the world's ground read as a green sheet laid on
+  // it. It sits a couple of centimetres under the interior floor so the two
+  // can't fight, which is also where the world draws the property's ground.
   const lawnMat = new THREE.MeshStandardMaterial({ roughness: 1, map: grassTex })
   trackDisposable(lawnMat)
   grassTex.repeat.set(9, 14)
@@ -1953,9 +1971,10 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     put(models.rug, [0.8, 1, 1.6], 0, 3.8, 5.6, { y: 0.012 })
     put(models.plant, 1.05, 2.2, 6.9, -1.0, { pad: 0.1, noStand: true })
     put(models.rug, [0.8, 1, 2.0], HPI, 2.2, 12.25, { y: 0.012 })
-    const console_ = put(models.nightstand, 1.63, -HPI, 5.55, 13.2, { pad: 0.08 })
+    // west of the garage door's swing, which reaches 5.5 along this wall
+    const console_ = put(models.nightstand, 1.63, -HPI, 4.55, 13.2, { pad: 0.08 })
     if (console_ && models.plant) {
-      put(models.plant, 0.62, 0.8, 5.55, 13.2, { y: console_.box.max.y })
+      put(models.plant, 0.62, 0.8, 4.55, 13.2, { y: console_.box.max.y })
     }
 
     /* ------------------------------------------ ground: half bath, laundry --
@@ -2379,9 +2398,10 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       d.target = 0
       doorCreak(false)
     } else {
-      // swing toward the far side of the wall from where the player stands;
-      // which rotation sign that is depends on the wall axis and hinge side
-      const side = (d.axis === 'z' ? p.z : p.x) < d.at ? 1 : -1
+      // swing toward the far side of the wall from where the player stands
+      // (or into the one side it is allowed); which rotation sign that is
+      // depends on the wall axis and hinge side
+      const side = d.opens ?? ((d.axis === 'z' ? p.z : p.x) < d.at ? 1 : -1)
       d.target = (d.axis === 'z' ? -d.dir : d.dir) * side * d.swing
       doorCreak(true)
     }
@@ -2437,6 +2457,9 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
     seats,
     lamps: props.lamps,
     lampCount: props.lampCount,
+    worldGround: () => {
+      lawn.visible = false
+    },
     get screen() {
       return screen
     },
