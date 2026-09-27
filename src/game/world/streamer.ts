@@ -158,6 +158,9 @@ export interface WorldHandles {
   update: (x: number, z: number, dt: number, alt?: number) => void
   /** 0 day .. 1 night: lights the windows and streetlamps */
   setNight: (night: number) => void
+  /** the far field bent onto the planet and dithered away, on the way to
+      orbit (farfield.ts's setSpace, levels/space.ts's numbers) */
+  setSpace: (curve: number, eyeX: number, eyeZ: number, fade: number) => void
   /** tint the water with the sky so it doesn't glow at midnight */
   setWaterTint: (c: THREE.Color, sun: number) => void
   /** build the ring around a point right now, ignoring the frame budget: the
@@ -894,6 +897,7 @@ export function buildWorld(opts: Opts): WorldHandles {
       far.setNight(night)
     },
     setWaterTint: (sky, sun) => tintWater(waterMat, sky, sun),
+    setSpace: (curve, eyeX, eyeZ, fade) => far.setSpace(curve, eyeX, eyeZ, fade),
   }
 }
 

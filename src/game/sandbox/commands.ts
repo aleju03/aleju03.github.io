@@ -90,10 +90,13 @@ export interface PlayerInfo {
  * absent says so instead of failing.
  */
 export interface SandboxHost {
-  /** null until the world (and Rapier) have arrived */
+  /** null until the world (and Rapier) have arrived, and in a level that has
+      no props at all */
   sandbox: () => Sandbox | null
   history: () => History | null
   rules: WorldRules
+  /** the world has arrived, so a missing sandbox is the level's doing */
+  worldLoaded?: () => boolean
   /** connected to the shared world */
   online?: () => boolean
   /** the head and where it is looking, unit length */
@@ -102,6 +105,9 @@ export interface SandboxHost {
   here?: () => { x: number; y: number; z: number; yaw: number }
   /** put the feet at x/z (and y, else on whatever is there), facing yaw */
   teleport?: (x: number, z: number, y?: number, yaw?: number) => void
+  /** the named places (home, towns, landmarks, biomes) are the planet's:
+      false on a level that is somewhere else (the Moon) */
+  placesHere?: () => boolean
   /** the authored spawn, where `tp home` goes; `y` is the feet, because home is upstairs and
       a teleport left to find the ground would land under it */
   home?: () => { x: number; z: number; y?: number; yaw?: number }
@@ -394,10 +400,12 @@ export const createConsole = (host: SandboxHost): Console => {
       needSandbox: () => {
         const sb = host.sandbox()
         if (!sb) {
-          return ctx.fail(msg(
-            'props come with the world. step outside first',
-            'los objetos llegan con el mundo. sal de la casa primero',
-          ))
+          return ctx.fail(host.worldLoaded?.()
+            ? msg('there are no props on this level', 'en este nivel no hay objetos')
+            : msg(
+              'props come with the world. step outside first',
+              'los objetos llegan con el mundo. sal de la casa primero',
+            ))
         }
         return sb
       },
@@ -955,6 +963,14 @@ registerCommand({
       return
     }
     const want = a.toLowerCase()
+    const who = host.players?.().find((p) => p.name.toLowerCase() === want) ??
+      host.players?.().find((p) => p.name.toLowerCase().startsWith(want))
+    if (!who && host.placesHere && !host.placesHere()) {
+      ctx.fail(msg(
+        `"${want}" is on the planet, not here. fly back up, or tp x z`,
+        `"${want}" está en el planeta, no aquí. vuelve volando, o tp x z`,
+      ))
+    }
     if (want === 'home' || want === 'spawn') {
       const h = host.home?.()
       if (!h) ctx.fail(msg('no home here', 'aquí no hay casa'))
@@ -962,8 +978,6 @@ registerCommand({
       ctx.ok(msg('home', 'a casa'))
       return
     }
-    const who = host.players?.().find((p) => p.name.toLowerCase() === want) ??
-      host.players?.().find((p) => p.name.toLowerCase().startsWith(want))
     if (who) {
       // beside them, not inside them
       host.teleport!(who.x + 2.5, who.z + 2.5, who.y)

@@ -140,6 +140,9 @@ export interface WalkController {
   /** multiplies the walk's gravity: the console's `gravity` reaches the
       player through this. Clamped so nobody can be stranded in the sky */
   gravityScale: number
+  /** multiplies noclip's speed: the scene raises it with height, so a climb
+      to orbit takes seconds (levels/space.ts's flyScale). 1 by default */
+  flyScale: number
   /** mouse-look; sens is the player's multiplier, sign flips lock vs drag */
   turn: (dx: number, dy: number, sign: 1 | -1, sens: number) => void
   /** hard-place the player (level spawn): position, heading, floor underfoot */
@@ -195,6 +198,7 @@ export function createWalkController(
   let stride = 0 // which bob cycle the last voiced footfall belonged to
   let noclip = false
   let gravityScale = 1
+  let flyScale = 1
   let bank = 0 // the flight's strafe roll, radians
   const fly = new THREE.Vector3() // the flight's velocity, all three axes
   /** what a flight hands the fall when noclip goes off mid-air: planar
@@ -237,7 +241,7 @@ export function createWalkController(
     const want = wish.length()
     if (want > 1) wish.multiplyScalar(1 / want)
     const speed =
-      FLY_SPEED * (held(keys, 'flyFast') ? FLY_FAST : 1) * (held(keys, 'flySlow') ? FLY_SLOW : 1)
+      FLY_SPEED * flyScale * (held(keys, 'flyFast') ? FLY_FAST : 1) * (held(keys, 'flySlow') ? FLY_SLOW : 1)
     wish.multiplyScalar(speed)
     // quicker to get going than to coast to a stop: the coast is the part
     // that reads as weight, and a snappy start is the part that reads as
@@ -252,14 +256,14 @@ export function createWalkController(
     grounded = false
     // a hair of roll into the strafe, scaled by how fast the flight is going
     const planar = Math.hypot(fly.x, fly.z)
-    const bankWant = -side * 0.045 * Math.min(1, fly.length() / FLY_SPEED)
+    const bankWant = -side * 0.045 * Math.min(1, fly.length() / (FLY_SPEED * flyScale))
     bank += (bankWant - bank) * (1 - Math.exp(-5 * dt))
     rig.rotation.x = pitch
     rig.rotation.y = yaw
     rig.rotation.z = bank
     // the lens widens with speed, more than a sprint does: at three times
     // cruise the world should visibly stream
-    const k = Math.max(0, Math.min(1, (fly.length() - FLY_SPEED * 0.6) / (FLY_SPEED * 2.4)))
+    const k = Math.max(0, Math.min(1, (fly.length() / flyScale - FLY_SPEED * 0.6) / (FLY_SPEED * 2.4)))
     const fovWant = fovBase + 12 * k
     if (Math.abs(rig.fov - fovWant) > 0.02) {
       rig.fov += (fovWant - rig.fov) * (1 - Math.exp(-6 * dt))
@@ -324,6 +328,10 @@ export function createWalkController(
         // that keeps its drift until it lands
         vel.set(0, 0, 0)
         drift.set(fly.x, 0, fly.z)
+        // ...up to what a flight at ground level could carry: letting go at
+        // orbital speed (flyScale) is a fall, not a cannon shot
+        const cap = FLY_SPEED * FLY_FAST
+        if (drift.lengthSq() > cap * cap) drift.setLength(cap)
         // the planar drift is kept whole, the dive is not: letting go a hop
         // over a street while sinking must land you on your feet, and a real
         // drop still earns its flop from the gravity it falls through
@@ -336,6 +344,12 @@ export function createWalkController(
     },
     get gravityScale() {
       return gravityScale
+    },
+    get flyScale() {
+      return flyScale
+    },
+    set flyScale(k: number) {
+      flyScale = Math.max(1, k)
     },
     set gravityScale(k: number) {
       gravityScale = Math.max(0.1, Math.min(4, k))

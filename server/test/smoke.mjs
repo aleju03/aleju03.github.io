@@ -539,6 +539,26 @@ async function main() {
   w2.send({ type: 'world-level', level: 'overworld' });
   await w1.nextOf('world-tick', 'snapshot after coming back');
 
+  // two players who both fly to the Moon meet there: its snapshot carries
+  // them both, at the Moon's own coordinates (it stands at z 60000 in the
+  // scene), and the overworld's no longer does
+  w1.send({ type: 'world-level', level: 'moon' });
+  w2.send({ type: 'world-level', level: 'moon' });
+  w2.send({ type: 'world-move', x: 4, y: 1.5, z: 60004, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  let onMoon = null;
+  for (let i = 0; i < 6; i++) {
+    const t = await w1.nextOf('world-tick', 'a snapshot on the Moon');
+    const them = t.players.find((p) => p[0] === welcome2.you);
+    if (t.players.length === 2 && them && them[3] === 60004) {
+      onMoon = t;
+      break;
+    }
+  }
+  assert.ok(onMoon, 'both walkers on the Moon are in its snapshot, where they stand');
+  w1.send({ type: 'world-level', level: 'overworld' });
+  w2.send({ type: 'world-level', level: 'overworld' });
+  await w1.nextOf('world-tick', 'snapshot after the Moon');
+
   w1.send({ type: 'world-chat', text: '  hello out there  ' });
   const shout = await w2.nextOf('world-chat', 'world chat delivered');
   assert.equal(shout.text, 'hello out there', 'chat is trimmed like room chat');

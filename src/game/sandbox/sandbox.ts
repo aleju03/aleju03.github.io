@@ -1,8 +1,7 @@
 import * as THREE from 'three'
 import type { CollisionSet, Solid } from '../physics/collision'
 import { chunkX, chunkZ } from '../world/grid'
-import { terrainY } from '../world/terrain'
-import { createGround, type Ground } from './ground'
+import { createGround, TERRAIN_GROUND, type Ground, type SandboxGround } from './ground'
 import { KINDS, propMaterial, registerKind, shapeExtents, type PropKind } from './kinds'
 import {
   createPhysicsWorld, GROUPS, loadRapier, STEP, type PhysicsWorld, type Rapier, type RCollider,
@@ -89,6 +88,9 @@ export interface SandboxOpts {
   chunkSolids?: (cx: number, cz: number) => readonly Solid[] | null | undefined
   /** hand the walker seam to `collision` (default true) */
   walker?: boolean
+  /** what the props land on, when it is not the overworld's terrain: a level
+      with ground of its own (the Moon) hands in its lattice here */
+  ground?: SandboxGround
 }
 
 export interface SandboxTick {
@@ -268,6 +270,8 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
   const warmI = warmBatch()
   if (opts.parent) root.add(warmI)
   const batcher: Batcher | null = opts.parent ? createBatcher(root) : null
+  const surface = opts.ground ?? TERRAIN_GROUND
+  const terrainY = surface.heightAt
   const effects: Fx = createFx({ parent: opts.parent ? root : null, groundY: terrainY })
 
   // the waterline cue: foam collars and splashes, drawn only with a parent
@@ -307,13 +311,14 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     const pw = createPhysicsWorld(R)
     pw.gravity = gravity
     pw.timescale = timescale
-    const ground = createGround({ pw, collision: opts.collision, chunkSolids: opts.chunkSolids })
+    const ground = createGround({ pw, collision: opts.collision, chunkSolids: opts.chunkSolids, surface })
     const props = createProps({
       pw,
       ground,
       root: opts.parent ? root : null,
       waterY,
       waveAt: opts.waveAt,
+      groundAt: terrainY,
     })
     const walker = opts.walker === false ? null : createWalker(pw, props)
     if (walker) {

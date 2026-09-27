@@ -59,6 +59,7 @@ import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/qua
 import { createPixelLook, type PixelLook } from '../../game/render/pixelLook'
 import { texelateTree } from '../../game/render/texel'
 import { BIOME_AIR, airForSky, lightsForSky } from '../../game/render/atmosphere'
+import { GROUND_OFF } from '../../game/levels/space'
 import { createLampFader, WANT_MAX } from '../../game/render/lampFade'
 import { createRemoteWorld } from '../../game/net/remotePlayers'
 import { createRemoteAvatars, type AvatarEnv } from '../../game/net/avatars'
@@ -94,9 +95,13 @@ import { OS_SCENE_READY_EVENT } from '../../events'
   (intro flight, outro, stand-up, sit-down), the desk-room light rig and
   the HUD. The simulation is delegated — input events to game/core/input,
   FPS movement and collision to game/player/walkController +
-  game/physics/collision, and which world is live (house/yard vs the
-  backrooms, including the noclip cut between them) to game/levels. The
-  walkTick below is just the per-frame conductor calling each in order.
+  game/physics/collision, and which world is live (house/yard, the
+  backrooms, the Moon, and the noclip cut between them) to game/levels.
+  Nothing here asks which level is live: each declares what it has (its
+  gravity, a props sandbox and its ground, the fleet, the crowd, the house,
+  sky and air), and each level with a sandbox gets its own, which the tool
+  belt and the undo stack follow across a cut. The walkTick below is just
+  the per-frame conductor calling each in order.
 
   Every frame of it, room and world alike, is drawn through the pixel look
   (game/render/pixelLook.ts): a low internal resolution, outlines, a baked
@@ -768,8 +773,12 @@ export default function CrtScene({
         // attachWorld() reaches every one of them without touching any.
         let fleet: VehicleFleet = emptyFleet()
         // the sandbox (src/game/sandbox/): Rapier and the props, loaded with the
-        // world and never before it. Null until then; every call site guards
+        // world and never before it. One per level that declares one (the
+        // Level contract's `sandbox`), and this is the live level's: null
+        // until the world is here, and in a level with no props at all
         let sandbox: Sandbox | null = null
+        /** every level's sandbox made so far, by level id */
+        const sandboxes = new Map<string, { sb: Sandbox; level: Level }>()
         // the tool belt (src/game/sandbox/tools/): hands and the physgun, built
         // with the sandbox. 1 and 2 pick the slot; the belt starts on hands,
         // so a walk that never presses 2 is the walk it always was
@@ -789,7 +798,7 @@ export default function CrtScene({
         disposeFleet = () => {
           fleet.dispose()
           tools?.dispose()
-          sandbox?.dispose()
+          for (const { sb } of sandboxes.values()) sb.dispose()
         }
         // F9: outline whatever the live level is testing the walk against.
         // Collision in here is a Box3 list with nothing drawn behind it, so a
@@ -1240,6 +1249,11 @@ export default function CrtScene({
           fleetEnv.collision = level.collision
           return fleetEnv
         }
+        /** the level the machines live in: the live one when it has them,
+            else the first that does. A welcome that lands while you are on
+            the Moon must place the car on the street, not on the regolith */
+        const fleetLevel = () =>
+          levels.current.vehicles ? levels.current : homeLevels.find((l) => l.vehicles) ?? levels.current
         /*
           The fleet's half of the network, once a frame.
 
@@ -1278,7 +1292,7 @@ export default function CrtScene({
         /** the machines, put where the server last saw them. Only on joining */
         const placeFleetFromNet = () => {
           if (!fleetPlaced) return // spawnAll has not run yet; it calls back
-          const q = aimFleetEnv(levels.current)
+          const q = aimFleetEnv(fleetLevel())
           for (const v of fleetNet.vehicles) {
             if (v.known) fleet.placeFromNet(v.id, v.x, v.z, v.yaw, q)
           }
@@ -1741,7 +1755,7 @@ export default function CrtScene({
                   remote.welcome(msg.you, msg.tick, msg.players)
                   // what we spawn from here on is ours by the server's name
                   // for us, which is what undo and cleanup filter on
-                  if (history) history.me = msg.you
+                  for (const { sb } of sandboxes.values()) historyOf(sb).me = msg.you
                   fleetNet.setSelf(msg.you)
                   fleetNet.setTick(msg.tick)
                   // where the machines actually are. Placed, not interpolated
@@ -1887,7 +1901,7 @@ export default function CrtScene({
           avatars.update(remote, 0, avatarEnv)
           hereNow = 0
           setMp({ status: 'offline', here: 0 })
-          if (history) history.me = LOCAL
+          for (const { sb } of sandboxes.values()) historyOf(sb).me = LOCAL
           setTyping(null)
           typingRef.current = false
         }
@@ -2135,12 +2149,15 @@ export default function CrtScene({
         // the world's shared knobs (sandbox/rules.ts): offline they apply at
         // once; the network will route them through the server
         const rules = createWorldRules()
+        // the console's knob multiplies each level's own gravity (the Moon's
+        // is a sixth), for the walker and for every level's props alike
+        const gravityOf = (level: Level) => level.gravity ?? 1
         rules.onChange((key, v) => {
           if (key === 'gravity') {
-            walk.gravityScale = v
-            if (sandbox) sandbox.gravity = -GRAVITY * v
-          } else if (sandbox) {
-            sandbox.timescale = v
+            walk.gravityScale = v * gravityOf(levels.current)
+            for (const { sb, level } of sandboxes.values()) sb.gravity = -GRAVITY * v * gravityOf(level)
+          } else {
+            for (const { sb } of sandboxes.values()) sb.timescale = v
           }
         })
         rules.onDeny((_what, reason) => pushFeed({ tone: 'err', text: reason }))
@@ -2176,6 +2193,8 @@ export default function CrtScene({
           sandbox: () => sandbox,
           history: () => history,
           rules,
+          worldLoaded: () => outside.hasWorld(),
+          placesHere: () => !!levels.current.house,
           online: () => net !== null,
           // the head and gaze as of the last frame: commands run from DOM
           // events, when the chase boom may be holding the camera
@@ -2195,6 +2214,11 @@ export default function CrtScene({
             standNow()
             if (fleet.riding || rig.down) return
             const level = levels.current
+            // never outside the level's own square: past it there may be no
+            // ground worth the name (the Moon curves away into its horizon)
+            const b = level.collision.bounds
+            x = Math.min(b.maxX, Math.max(b.minX, x))
+            z = Math.min(b.maxZ, Math.max(b.minZ, z))
             const floor = floorOf(level, x, z)
             // a little above whatever is there and let gravity settle it:
             // the chunks under a far teleport are not built yet, and their
@@ -2338,8 +2362,14 @@ export default function CrtScene({
             spawnHome.set(spawn.x, spawn.z)
             scattered = true
             const spot = spawnSpotFor(level, spawn.x, spawn.z)
-            walk.spawnAt(spot.x, spot.z, spawn.yaw, spawnY(level, spot.x, spot.z))
-            if (level.id === 'overworld') house.flagShadows(camera.position)
+            // a seam that lands you in the air (from space) says how high,
+            // and is lifted onto the floor if the number is under it
+            const floorAt = spawnY(level, spot.x, spot.z)
+            walk.spawnAt(spot.x, spot.z, spawn.yaw, spawn.y === undefined ? floorAt : Math.max(floorAt, spawn.y))
+            // the new level's gravity, and its own sandbox (or none)
+            walk.gravityScale = rules.gravity * gravityOf(level)
+            switchSandboxTo(level)
+            if (level.house) house.flagShadows(camera.position)
             // either side of the cut, the body's old shadow may still be
             // baked into the desk-area maps: re-render them without it
             pendant.shadow.needsUpdate = true
@@ -2469,12 +2499,17 @@ export default function CrtScene({
           lampRadii.fill(8.5, n, n + m)
           return n + m
         }
+        /** the house's drawables put away from orbit (see dressAir) */
+        let houseHidden: THREE.Object3D[] | null = null
         let airBiome = 1
         let airAskX = Number.NaN
         let airAskZ = 0
         let airAskAge = 0
         const dressAir = (sky: OutsideState) => {
-          const overworld = levels.current.id === 'overworld'
+          // the look's air and its lamps belong to a level with an atmosphere;
+          // the lens's reach to any level under the open sky
+          const air = !!levels.current.air
+          const open = !!levels.current.outdoors
           const p = camera.position
           airAskAge++
           if (
@@ -2486,7 +2521,7 @@ export default function CrtScene({
             airAskAge = 0
             const b = outside.biomeAt(p.x, p.z)
             airBiome = b ? BIOME_AIR[b] ?? 1 : 1
-            lampFader.want(lampBuf, lampRadii, overworld ? gatherLamps(p) : 0)
+            lampFader.want(lampBuf, lampRadii, air ? gatherLamps(p) : 0)
           }
           const now = performance.now()
           const shown = lampFader.step((now - fadeAt) / 1000, p.x, p.y, p.z, shownXyz, shownR, shownW)
@@ -2495,30 +2530,70 @@ export default function CrtScene({
           const ov = outside.view
           airForSky(
             look.air, sky, airBiome, airSun, outside.sun.color,
-            overworld ? ov.alt : 0, overworld ? ov.reach : 0, Math.max(-100, outside.waterY),
+            air ? ov.alt : 0, air ? ov.reach : 0, Math.max(-100, outside.waterY),
           )
-          // from the air the lens reaches the far field's rim (levels/altitude.ts)
-          const wantFar = overworld ? ov.far : 900
-          if (camera.far !== wantFar) {
+          // from the air the lens reaches the far field's rim (levels/altitude.ts),
+          // and from space the globe and the Moon (levels/space.ts)
+          const wantFar = open ? ov.far : 900
+          const wantNear = open ? ov.near : 0.1
+          // from orbit the house is a speck under a whole planet, and a
+          // thousand draw calls: its drawables go with the streamed ground
+          // (levels/space.ts's GROUND_OFF). Its drawables, not its root: the
+          // root carries the house's PointLights, and a light leaving the
+          // scene changes NUM_POINT_LIGHTS and relinks every lit program
+          const houseAway = open && ov.alt >= GROUND_OFF
+          if (houseAway !== !!houseHidden) {
+            if (houseAway) {
+              houseHidden = []
+              house.root.traverseVisible((o) => {
+                if (isDrawable(o)) houseHidden?.push(o)
+              })
+              for (const o of houseHidden) o.visible = false
+            } else {
+              for (const o of houseHidden ?? []) o.visible = true
+              houseHidden = null
+            }
+          }
+          if (camera.far !== wantFar || camera.near !== wantNear) {
             camera.far = wantFar
+            camera.near = wantNear
             camera.updateProjectionMatrix()
           }
-          // the backrooms carry their own fog and no sky: no air, no lamps
-          if (!overworld) look.air.max = 0
+          // the backrooms carry their own fog and no sky, and the Moon has
+          // a sky and nothing to see it through: no air, no lamps. On the way
+          // to orbit the air drains away under you (levels/space.ts)
+          if (!air) look.air.max = 0
+          else {
+            look.air.max *= 1 - ov.space
+            // thinner air up high: the haze lengthens with height. And once
+            // the globe carries on past the far field's rim the rim is no
+            // longer an edge to hide, so the air's rim (which takes a pixel
+            // to all air whatever the air's cap says) moves out past the
+            // planet's horizon; left where it was, it painted the whole globe
+            // the colour of the sky, and from space that colour is black
+            look.air.dist *= 1 + Math.max(0, ov.alt - 120) / 700
+            look.air.edge *= 1 + 30 * ov.curve * ov.curve
+            // ...and the sky under the horizon is the air's colour only while
+            // there is air: from space, past the limb, it is space
+            const thin = 1 - ov.space
+            look.air.liftK *= thin
+            look.air.skyHorizon *= thin
+            look.air.skyAll *= thin
+          }
           airAmb.copy(hemi.color).multiplyScalar(hemi.intensity)
-          lightsForSky(look.lights, sky, shownXyz, overworld ? shown : 0, airAmb, shownR, shownW)
+          lightsForSky(look.lights, sky, shownXyz, air ? shown : 0, airAmb, shownR, shownW)
           // the headlamp is yours: on while you are on your feet in the
           // overworld at night, off at the wheel (the car has its own) and
           // at the desk
           const head = look.lights.head
-          head.on = head.on && fps && roaming && overworld && !fleet.driving
+          head.on = head.on && fps && roaming && air && !fleet.driving
           if (head.on) {
             head.pos.copy(camera.position)
             camera.getWorldDirection(head.dir)
           }
           // a blast's flash and a burning fuse's flicker are fake lights too
-          // (the sandbox's fx owns them); outside the overworld, nothing
-          if (sandbox && overworld) sandbox.fx.lightLook(look.lights)
+          // (the live level's sandbox's fx owns them); with no sandbox, nothing
+          if (sandbox) sandbox.fx.lightLook(look.lights)
           else look.lights.flash.radius = 0
           // and prop sounds are placed and panned against this lens
           if (sandbox) {
@@ -2721,11 +2796,11 @@ export default function CrtScene({
             camera,
             fovBase: prefsRef.current.fov,
             playerPos: v.root.position,
-            outdoors: level.id === 'overworld',
+            outdoors: !!level.vehicles,
           })
           // whatever this machine is driven into goes over
           impacts.track(fleet.all, pausedNow ? 0 : dt)
-          if (level.id === 'overworld') outside.knockPeople(impacts)
+          if (level.crowd) outside.knockPeople(impacts)
           // v swaps the boom for the cockpit. It is not the walk's saved
           // third-person preference — a car has two views and neither is the
           // one the pause menu's toggle means
@@ -2740,20 +2815,22 @@ export default function CrtScene({
           if (sandbox) {
             const sbf = sandbox.tick({
               dt,
-              active: level.id === 'overworld' && !pausedNow,
+              active: !pausedNow,
               walker: null,
               focus: v.root.position,
             })
-            if (sbf.moving && level.id === 'overworld') followSunShadow(v.root.position, now)
+            if (sbf.moving && level.outdoors) followSunShadow(v.root.position, now)
           }
           level.update(dt, camera.position)
           // the machine is now the moving caster, and `step.moved` — which
           // gates the whole hand-baked shadow regime — comes from a walk
           // controller that is not running. The fleet reports its own
-          if (level.id === 'overworld' && fs.moved) {
-            flagDeskShadows(camera.position)
-            house.flagShadows(camera.position)
-            followSunShadow(v.root.position, now)
+          if (fs.moved) {
+            if (level.house) {
+              flagDeskShadows(camera.position)
+              house.flagShadows(camera.position)
+            }
+            if (level.outdoors) followSunShadow(v.root.position, now)
           }
           // everyone else. Kept in step with the walking branch below by hand:
           // both say where we are and play the others back, they just disagree
@@ -2876,7 +2953,7 @@ export default function CrtScene({
           // same coordinates a hundred units down.
           if (
             !outside.hasWorld() &&
-            levels.current.id === 'overworld' &&
+            levels.current.house &&
             outsideShell(camera.position)
           ) {
             void loadWorldCovered()
@@ -2952,6 +3029,9 @@ export default function CrtScene({
           levels.tick(now, seamPt, fps)
           const level = levels.current
           const sitting = seating.current
+          // noclip speeds up with height, so orbit is seconds away (the
+          // outside's last update measured it, one frame ago)
+          walk.flyScale = outside.view.fly
           const step = walk.update({
             dt,
             keys: input.keys,
@@ -2999,7 +3079,7 @@ export default function CrtScene({
           // step, so this frame's slices already pull. Only on foot, out in
           // the world, standing: a seat, a heap on the floor and the pause
           // sheet all holster it
-          toolsLive = !!tools && level.id === 'overworld' && !sitting && !rig.down && fps
+          toolsLive = !!tools && !!sandbox && !sitting && !rig.down && fps
           if (tools && !pausedNow) {
             const k = input.keys
             if (edges.pressed('slot1')) tools.select(0)
@@ -3026,10 +3106,10 @@ export default function CrtScene({
           if (sandbox) {
             // a flyer goes through props like everything else, so nothing
             // is shoved and nothing is stood on
-            const onFoot = level.id === 'overworld' && !sitting && !walk.noclip
+            const onFoot = !sitting && !walk.noclip
             const sbf = sandbox.tick({
               dt,
-              active: level.id === 'overworld' && !pausedNow,
+              active: !pausedNow,
               walker: onFoot
                 ? {
                     eye: camera.position,
@@ -3042,7 +3122,7 @@ export default function CrtScene({
                 : null,
               focus: camera.position,
             })
-            if (sbf.moving && level.id === 'overworld') followSunShadow(camera.position, now)
+            if (sbf.moving && level.outdoors) followSunShadow(camera.position, now)
           }
           // other bodies: after the walk and the ride have moved the head and
           // before anything reads it. Not from a seat, a heap on the floor, a
@@ -3058,7 +3138,7 @@ export default function CrtScene({
             bumper.height = myExtent.height * (1 - 0.25 * walk.crouchK)
             remoteBumps.refresh()
             // the crowd only walks the overworld's streets
-            bumpSets[0] = level.id === 'overworld' ? outside.crowd : null
+            bumpSets[0] = level.crowd ? outside.crowd : null
             bumpSets[1] = net ? remoteBumps : null
             contactIn.collision = level.collision
             contactIn.stepUp = step.grounded ? EYE * 0.12 : 0
@@ -3099,14 +3179,7 @@ export default function CrtScene({
           if (step.footfall || step.landing > 3) {
             const px = camera.position.x
             const pz = camera.position.z
-            const surface =
-              level.id !== 'overworld'
-                ? 'carpet'
-                : step.wet > 0.12
-                  ? 'water'
-                  : outside.onProperty(px, pz)
-                    ? house.surfaceAt(px, pz, walk.feetY)
-                    : outside.surfaceAt(px, pz)
+            const surface = level.surfaceAt ? level.surfaceAt(px, pz, walk.feetY, step.wet) : 'stone'
             if (step.landing > 3) landThump(surface, Math.min(1, (step.landing - 3) / 14))
             else footstep(surface, step.gait * (1 - walk.crouchK * 0.65), step.run)
           }
@@ -3264,15 +3337,17 @@ export default function CrtScene({
           // a leaf still swinging counts as movement for the baked maps, even
           // when the player who opened it has not shifted a foot
           const bodyMoved = step.moved || rig.unrest() || propSwing > 0
-          if (level.id === 'overworld' && bodyMoved) {
+          if (bodyMoved) {
             // generous regions: a map must keep re-baking until the player is
             // fully out of its light's frustum, or their shadow strands there
-            flagDeskShadows(camera.position)
-            house.flagShadows(camera.position)
+            if (level.house) {
+              flagDeskShadows(camera.position)
+              house.flagShadows(camera.position)
+            }
             // The sun's program stays invariant now, but its hand-managed map
             // still follows a genuinely moving caster, on the error gate and not
             // on every frame. See followSunShadow.
-            followSunShadow(camera.position, now)
+            if (level.outdoors) followSunShadow(camera.position, now)
           }
           // the television has no spatialiser, being an iframe rather than a
           // buffer on our own context, so its loudness is the listener's distance,
@@ -3293,7 +3368,7 @@ export default function CrtScene({
           // what the crosshair is on: one props-only ray a frame, mirrored
           // into React only when the answer changes
           {
-            const hit = sandbox && level.id === 'overworld' && !rig.down
+            const hit = sandbox && !rig.down
               ? sandbox.raycast(headPos, headDir, AIM_REACH, { world: false })
               : null
             // the physgun holding something outranks whatever the ray finds
@@ -3315,7 +3390,7 @@ export default function CrtScene({
           // level 0 has no doors, whatever its x/z coordinates suggest).
           // The house answers first, then the town's shop doors
           const verb =
-            isNear || rig.down || level.id !== 'overworld'
+            isNear || rig.down || !level.house
               ? null
               : house.doorPrompt(camera.position, gazeVec) ??
                 outside.doorPrompt(camera.position, gazeVec)
@@ -3332,7 +3407,7 @@ export default function CrtScene({
             small one; a seat that outranked the drawer would swallow it.
           */
           const propVerb =
-            isNear || verb || rig.down || seating.current || level.id !== 'overworld'
+            isNear || verb || rig.down || seating.current || !level.house
               ? null
               : tvVerb(tv?.prompt(camera.position, gazeVec) ?? null) ??
                 fittingVerb(house.propPrompt(camera.position, gazeVec)) ??
@@ -3353,7 +3428,7 @@ export default function CrtScene({
             camera,
             fovBase: prefsRef.current.fov,
             playerPos: camera.position,
-            outdoors: level.id === 'overworld',
+            outdoors: !!level.vehicles,
           })
           // somebody else's car coming down the street at you: the watch
           // knows how fast it is going, and a seat or a level cut is immune
@@ -3365,7 +3440,7 @@ export default function CrtScene({
           ) {
             rig.hit(impact.impulse, impact.point)
           }
-          if (level.id === 'overworld') outside.knockPeople(impacts)
+          if (level.crowd) outside.knockPeople(impacts)
           // ...and its prompt is the lowest-priority one: the machine and a
           // door both win, because both are things you are standing right at
           // (and not to a flyer: a car offered to somebody passing overhead
@@ -3418,7 +3493,7 @@ export default function CrtScene({
             if (chase.dist > 1.2 && !rig.down) {
               const cp = Math.cos(walk.pitch)
               aimDir.set(-Math.sin(walk.yaw) * cp, Math.sin(walk.pitch), -Math.cos(walk.yaw) * cp)
-              const hit = sandbox && level.id === 'overworld' ? sandbox.raycast(headPos, aimDir, AIM_REACH) : null
+              const hit = sandbox ? sandbox.raycast(headPos, aimDir, AIM_REACH) : null
               // the boom has only just moved the lens; its inverse is last
               // frame's until this, and every projection below would be too
               camera.updateMatrixWorld()
@@ -3522,36 +3597,109 @@ export default function CrtScene({
          * concern that also runs on paths where the world already exists, while
          * this is the one place the world comes into being.
          */
+        /*
+          One props sandbox per level that declares one (types.ts's
+          LevelSandbox), made the first time the player is there and kept for
+          the session: props left in the street are still in the street after
+          a trip to the Moon, and the Moon's crates fall at the Moon's rate.
+          `sandbox` is always the live level's, and the belt, the undo stack
+          and the dev handle follow it across a cut (switchSandboxTo).
+        */
+        let sandboxMod: typeof import('../../game/sandbox/sandbox') | null = null
+        const sandboxFor = (level: Level): Sandbox | null => {
+          if (!level.sandbox || !sandboxMod || !scene) return null
+          const have = sandboxes.get(level.id)
+          if (have) return have.sb
+          const mod = sandboxMod
+          const o = level.sandbox
+          const sb = mod.createSandbox({
+            parent: scene,
+            collision: level.collision,
+            ground: o.ground,
+            waterY: o.waterY,
+            waveAt: o.waveAt,
+            splash: o.splash,
+            chunkSolids: o.chunkSolids,
+          })
+          sandboxes.set(level.id, { sb, level })
+          sb.gravity = -GRAVITY * rules.gravity * gravityOf(level)
+          sb.timescale = rules.timescale
+          const h = historyOf(sb)
+          h.me = remote.you ?? LOCAL
+          h.onChange(() => {
+            if (history === h) setOrders(h.entries(h.me).map((e) => ({ seq: e.seq, label: e.label, kind: e.kind })))
+          })
+          // the buildings come apart: blasts, rubble, the car and the
+          // console all reach them through the world's ruins
+          const ruins = o.ruins?.()
+          if (ruins) mod.attachDestruction(sb, ruins)
+          // a blast knocks down whoever it reaches: the walker (not from a
+          // seat, not mid-cut) through the same rig.hit a car uses, and the
+          // town's pedestrians through the same seam. The maths is the
+          // sandbox's (explosion.ts), so the film harness agrees with this
+          sb.onExplosion((e) => {
+            if (sandbox !== sb) return
+            if (!seating.current && !levels.frozen && !fleet.driving && !godMode && !walk.noclip) {
+              feetPt.set(camera.position.x, walk.feetY, camera.position.z)
+              if (mod.blastImpact(e, feetPt, EYE * 1.15, rig.mass, impact)) {
+                rig.hit(impact.impulse, impact.point)
+              }
+            }
+            if (levels.current.crowd) outside.knockPeople(mod.blastWatch(e))
+          })
+          return sb
+        }
+        /** make the live level's sandbox the one everything talks to */
+        const switchSandboxTo = (level: Level) => {
+          const next = sandboxFor(level)
+          if (next === sandbox) return
+          sandbox = next
+          // a level's props are drawn only while it is live
+          for (const { sb } of sandboxes.values()) sb.root.visible = sb === next
+          history = next ? historyOf(next) : null
+          const h = history
+          setOrders(h ? h.entries(h.me).map((e) => ({ seq: e.seq, label: e.label, kind: e.kind })) : [])
+          for (const pp of pops) pp.mesh.scale.setScalar(1)
+          pops.length = 0
+          if (next) tools?.setSandbox(next)
+          else tools?.holster()
+          // dev only: the harnesses (and a console) reach the live sandbox
+          // and the lens it is being watched through from here, and can type
+          // into the console: `await __sandbox.run('spawn crate 10')`
+          // resolves with the lines it printed, in English
+          if (import.meta.env.DEV && next) {
+            const run = async (line: string) =>
+              (await sbConsole.run(line)).map((l) =>
+                l.right === undefined ? sayIn(l.text, 'en') : `${sayIn(l.text, 'en')} ... ${sayIn(l.right, 'en')}`)
+            Object.assign(window, { __sandbox: Object.assign(next, { run, console: sbConsole }) })
+          }
+        }
         let worldReady: Promise<void> | null = null
         const ensureWorld = () => {
           worldReady ??= (async () => {
-            const [, registry, sandboxMod, toolsMod] = await Promise.all([
+            const [, registry, sbMod, toolsMod] = await Promise.all([
               outside.attachWorld(),
               import('../../game/vehicles/registry'),
               import('../../game/sandbox/sandbox'),
               import('../../game/sandbox/tools/toolbelt'),
             ])
             if (disposed || !scene) return
+            sandboxMod = sbMod
             // the world draws the yard's ground from here on
             house.worldGround()
             // synchronous and cheap: Rapier itself downloads behind it and
             // nothing waits for it. Its material is in the scene now, so the
-            // covered compile in warmForRoam links it with everything else
-            const overworld = homeLevels.find((l) => l.id === 'overworld')!
-            sandbox = sandboxMod.createSandbox({
-              parent: scene,
-              collision: overworld.collision,
-              waterY: () => outside.waterY,
-              waveAt: outside.waveAt,
-              splash: outside.splash,
-              chunkSolids: outside.chunkSolids,
-            })
+            // covered compile in warmForRoam links it with everything else.
+            // The first sandboxed level's (the overworld's) is made here
+            // whatever level is live, because the belt needs one to be built
+            // around
+            const first = sandboxFor(homeLevels.find((l) => l.sandbox)!)!
             // the belt's gun, beam and halo materials are in the scene from
             // here; warmForRoam stages them in front of its camera so the
             // covered compile and first draw pay for them, and the first grab
             // of a walk links nothing
             tools = toolsMod.createToolbelt({
-              sb: sandbox,
+              sb: first,
               parent: scene,
               // the town's crowd, and the other players through the wire
               rigs: function* () {
@@ -3560,17 +3708,7 @@ export default function CrtScene({
               },
             })
             tools.setHandColor(lookRef.current.shell)
-            sandbox.gravity = -GRAVITY * rules.gravity
-            sandbox.timescale = rules.timescale
-            history = historyOf(sandbox)
-            history.me = remote.you ?? LOCAL
-            // the buildings come apart: blasts, rubble, the car and the
-            // console all reach them through the world's ruins
-            const ruins = outside.ruins()
-            if (ruins) sandboxMod.attachDestruction(sandbox, ruins)
-            const h = history
-            h.onChange(() =>
-              setOrders(h.entries(h.me).map((e) => ({ seq: e.seq, label: e.label, kind: e.kind }))))
+            switchSandboxTo(levels.current)
             // the catalogue's data, off the same lazily loaded kind table
             void Promise.all([
               import('../../game/sandbox/spawnlist'),
@@ -3585,30 +3723,8 @@ export default function CrtScene({
                 thumbs: list.spawnThumbs,
               })
             })
-            // a blast knocks down whoever it reaches: the walker (not from a
-            // seat, not mid-cut) through the same rig.hit a car uses, and the
-            // town's pedestrians through the same seam. The maths is the
-            // sandbox's (explosion.ts), so the film harness agrees with this
-            sandbox.onExplosion((e) => {
-              if (levels.current.id !== 'overworld') return
-              if (!seating.current && !levels.frozen && !fleet.driving && !godMode && !walk.noclip) {
-                feetPt.set(camera.position.x, walk.feetY, camera.position.z)
-                if (sandboxMod.blastImpact(e, feetPt, EYE * 1.15, rig.mass, impact)) {
-                  rig.hit(impact.impulse, impact.point)
-                }
-              }
-              outside.knockPeople(sandboxMod.blastWatch(e))
-            })
-            // dev only: the harnesses (and a console) reach the sandbox and
-            // the lens it is being watched through from here, and can type
-            // into the console: `await __sandbox.run('spawn crate 10')`
-            // resolves with the lines it printed, in English
             if (import.meta.env.DEV) {
-              const run = async (line: string) =>
-                (await sbConsole.run(line)).map((l) =>
-                  l.right === undefined ? sayIn(l.text, 'en') : `${sayIn(l.text, 'en')} ... ${sayIn(l.right, 'en')}`)
               Object.assign(window, {
-                __sandbox: Object.assign(sandbox, { run, console: sbConsole }),
                 __sandboxCamera: camera,
                 // the walk's yaw and pitch, which a headless drive cannot
                 // steer any other way (it is never granted the pointer lock)
@@ -3627,6 +3743,9 @@ export default function CrtScene({
                 __outside: outside,
                 __look: look,
                 __scene: scene,
+                __renderer: webgl,
+                // which level is live, for a drive that crosses a seam
+                __levels: levels,
                 // every solid the walk collides with, for a harness sweeping
                 // a door leaf through its swing against the furniture
                 __obstacles: obstacles,
@@ -3701,7 +3820,7 @@ export default function CrtScene({
           // compiling or drawing anything the player can later meet outside.
           if (!fleetPlaced) {
             fleetPlaced = true
-            fleet.spawnAll(aimFleetEnv(levels.current))
+            fleet.spawnAll(aimFleetEnv(fleetLevel()))
             // the welcome can beat the warm-up: if the server already told us
             // where the machines are, spawnAll has just put them back on the
             // home spots and this puts them where they really are
@@ -3721,6 +3840,9 @@ export default function CrtScene({
           // the tool belt's gun, beam, glows and rim shells, in front of the
           // warm camera for the compile and the one-pixel draw below
           tools?.stage(warmCam)
+          // ...and the globes (the planet from orbit and the Moon), so the
+          // first climb out of the air links nothing mid-flight
+          outside.warmSpace(true)
           try {
             // The initial compile ran before the streamed chunks existed.
             // Compile their live outdoor lighting variant now; the promise
@@ -3747,6 +3869,7 @@ export default function CrtScene({
             }
           } finally {
             tools?.unstage()
+            outside.warmSpace(false)
             if (webgl) {
               webgl.setScissorTest(false)
               webgl.setViewport(0, 0, warmSize.x, warmSize.y)
@@ -3984,6 +4107,8 @@ export default function CrtScene({
               homed.spawn.x, homed.spawn.z, walk.yaw,
               spawnY(homed, homed.spawn.x, homed.spawn.z),
             )
+            walk.gravityScale = rules.gravity * gravityOf(homed)
+            switchSandboxTo(homed)
           }
           blackout.style.transition = ''
           blackout.style.opacity = '0'
@@ -4108,7 +4233,8 @@ export default function CrtScene({
               ...fleet.where(v.id, camera.position),
             })),
           recall: (id) => {
-            const ok = fleet.recall(id, camera.position, aimFleetEnv(levels.current))
+            // the machines live in one level; there is no recalling a car to the Moon
+            const ok = !!levels.current.vehicles && fleet.recall(id, camera.position, aimFleetEnv(levels.current))
             setFleetWhere(fleetRef.current?.where() ?? [])
             return ok
           },

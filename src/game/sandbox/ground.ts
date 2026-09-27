@@ -1,7 +1,7 @@
 import type RAPIER_NS from '@dimforge/rapier3d-compat'
 import type { CollisionSet, Hull, Solid } from '../physics/collision'
 import { CHUNK, GRID, originX, originZ } from '../world/grid'
-import { latticeHeight } from '../world/terrain'
+import { latticeHeight, terrainY } from '../world/terrain'
 import { GROUPS, WORLD_FRICTION, type PhysicsWorld, type RBody, type RCollider } from './physics'
 
 /*
@@ -47,9 +47,26 @@ import { GROUPS, WORLD_FRICTION, type PhysicsWorld, type RBody, type RCollider }
 
 const N = CHUNK / GRID
 
+/**
+ * What the heightfields are made of: a height at every lattice point of
+ * world/grid.ts's GRID (lattice (i, j) is at `OFF_X + i * GRID`,
+ * `OFF_Z + j * GRID`), and the drawn surface between them, split along the
+ * same (0,0)-(1,1) diagonal the terrain mesh uses. The overworld's terrain is
+ * the default; a level with ground of its own (the Moon) hands its own pair
+ * in, and a sandbox standing on it needs nothing else changed.
+ */
+export interface SandboxGround {
+  lattice: (i: number, j: number) => number
+  heightAt: (x: number, z: number) => number
+}
+
+export const TERRAIN_GROUND: SandboxGround = { lattice: latticeHeight, heightAt: terrainY }
+
 export interface GroundOpts {
   pw: PhysicsWorld
   collision: CollisionSet
+  /** the lattice the heightfields sample (default: the overworld's terrain) */
+  surface?: SandboxGround
   /** the solids of any loaded chunk, for props outside the walk's nine */
   chunkSolids?: (cx: number, cz: number) => readonly Solid[] | null | undefined
 }
@@ -91,7 +108,8 @@ const KEEP_FRAMES = 240
 /** past this many solids per stream, the rest wait for the next slice */
 const SOLIDS_PER_FRAME = 700
 
-export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground => {
+export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts): Ground => {
+  const lattice = (surface ?? TERRAIN_GROUND).lattice
   const { R, world } = pw
   const chunks = new Map<number, { cx: number; cz: number; col: RCollider; seen: number }>()
   const groundHandles = new Set<number>()
@@ -105,7 +123,7 @@ export const createGround = ({ pw, collision, chunkSolids }: GroundOpts): Ground
     const i0 = cx * N
     const j0 = cz * N
     for (let c = 0; c <= N; c++)
-      for (let r = 0; r <= N; r++) heights[c * (N + 1) + r] = latticeHeight(i0 + r, j0 + (N - c))
+      for (let r = 0; r <= N; r++) heights[c * (N + 1) + r] = lattice(i0 + r, j0 + (N - c))
     const desc = R.ColliderDesc.heightfield(
       N, N, heights, { x: CHUNK, y: 1, z: CHUNK }, R.HeightFieldFlags.FIX_INTERNAL_EDGES,
     )

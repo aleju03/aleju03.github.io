@@ -7,6 +7,13 @@ import { doorCreak, doorLatch, propSnap, type StepSurface } from '../core/sfx'
 import { buildSky, type SkyState } from './sky'
 import { YARD } from './houseWorld'
 import { domeScaleFor, fogForAltitude, viewFarFor } from './altitude'
+import type { LevelSpawn } from './types'
+import type { SandboxGround } from '../sandbox/ground'
+import {
+  curveK, EARTH_IN_MOON_SKY, EARTH_R, EARTH_RETURN, EARTH_SKY_DIST, flyScale, globeRadius, groundK,
+  horizonDist, MOON_ANCHOR, MOON_DIST, MOON_FAR, MOON_FORGET, MOON_LEAVE, MOON_ORIGIN, MOON_R,
+  MOON_SEAM, MOON_TOD, nearFor, spaceK,
+} from './space'
 
 /*
   Everything past the property line: the sky above it (sky.ts) and the endless
@@ -39,6 +46,15 @@ import { domeScaleFor, fogForAltitude, viewFarFor } from './altitude'
     on. The level system calls setActive(false) on the way down.
   - it answers where the ground and the waterline are, which is the contract
     the walk, the ragdoll and the chase boom all read the world through.
+  - **it is where the planet ends.** Climbing, the far field bends onto the
+    planet's curve, the globe (world/globe.ts) takes over past its rim, the
+    sky thins (sky.ts's `space`) and the streamed ground dithers out and
+    stops streaming, all on levels/space.ts's bands of height. Past
+    MOON_ANCHOR the Moon is pinned out there as a body you can fly to, and
+    `moonSeam` is the overworld's seam onto the 'moon' level. On the Moon
+    (`setVenue('moon')`) this same module draws its sky: no ground of the
+    Earth's, the Moon's own terrain (levels/moon.ts), black air, and the
+    globe hung in the sky with the place you left turned toward you.
 
   The one thing the room tier cannot skip is *something to see out of the
   windows*. Past the yard fence the streamed terrain is simply absent, which
@@ -49,6 +65,8 @@ import { domeScaleFor, fogForAltitude, viewFarFor } from './altitude'
 
 /** the lazily-loaded half: everything in src/game/world the room does not need */
 type WorldModules = {
+  globe: typeof import('../world/globe')
+  moon: typeof import('./moon')
   streamer: typeof import('../world/streamer')
   terrain: typeof import('../world/terrain')
   birds: typeof import('../world/birds')
@@ -66,6 +84,8 @@ interface WorldParts {
   pedestrians: ReturnType<WorldModules['pedestrians']['buildPedestrians']>
   debris: ReturnType<WorldModules['debris']['buildDebris']>
   shopDoors: ReturnType<WorldModules['shopDoors']['buildShopDoors']>
+  globes: ReturnType<WorldModules['globe']['buildGlobes']>
+  moon: ReturnType<WorldModules['moon']['buildMoon']>
 }
 
 export type OutsideState = SkyState
@@ -137,8 +157,37 @@ export interface OutsideHandles {
   biomeAt: (x: number, z: number) => string | null
   /** the camera's height over the ground at the last update, how far the
       far field reached past it, and the far plane that wants: the look's
-      air and CrtScene's lens both read these */
-  readonly view: { readonly alt: number; readonly reach: number; readonly far: number }
+      air and CrtScene's lens both read these. `space` is how much of the air
+      is below you (0..1, levels/space.ts) and `fly` what noclip's speed is
+      multiplied by at this height */
+  readonly view: {
+    readonly alt: number; readonly reach: number; readonly far: number
+    readonly space: number; readonly fly: number
+    /** how far the far field is bent onto the globe (0..1), and the near
+        plane the lens wants at this height */
+    readonly curve: number; readonly near: number
+    /** the Moon's centre while it is pinned out there, else null */
+    readonly moon: THREE.Vector3 | null
+  }
+  /** the overworld's seam onto the Moon: flying close enough to it. Records
+      where you climbed from, which is where the way back arrives */
+  moonSeam: (p: THREE.Vector3) => { to: string; spawn: LevelSpawn } | null
+  /** the Moon's seam home: flying up off it */
+  earthSeam: (p: THREE.Vector3) => { to: string; spawn: LevelSpawn } | null
+  /** which body the sky is drawn from. 'moon' builds the Moon's ground the
+      first time (call it under a cover), hides the Earth's and hangs the
+      globe in the sky */
+  setVenue: (venue: 'earth' | 'moon') => void
+  /** the Moon's ground, for its level: the height, the lattice a sandbox
+      stands on, the boulders' boxes, what a step lands on and the arrival */
+  moon: {
+    groundYAt: (x: number, z: number) => number
+    ground: SandboxGround
+    obstacles: Solid[]
+    readonly spawn: LevelSpawn
+  }
+  /** show the globes out of sight for a covered compile (warmForRoam) */
+  warmSpace: (on: boolean) => void
   /** fetch the world modules without building them; free to call early */
   preloadWorld: () => void
   /**
@@ -166,6 +215,12 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   scene.add(root)
 
   const sky = buildSky({ parent: root, trackTexture, trackDisposable })
+
+  // everything that stands on the Earth's ground, so leaving it (orbit, the
+  // Moon) is one flag
+  const groundRoot = new THREE.Group()
+  groundRoot.name = 'earth-ground'
+  root.add(groundRoot)
 
   /*
     The room tier's stand-in for the planet: one plane at y=0 in the grass
@@ -206,7 +261,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   placeholderGround.position.y = -0.12
   placeholderGround.matrixAutoUpdate = false
   placeholderGround.updateMatrix()
-  root.add(placeholderGround)
+  groundRoot.add(placeholderGround)
   trackDisposable(placeholderGround.geometry)
   trackDisposable(placeholderGround.material)
 
@@ -224,7 +279,9 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   let modsPromise: Promise<WorldModules> | null = null
   const loadMods = () => {
     modsPromise ??= (async () => {
-      const [streamer, terrain, birds, fauna, pedestrians, debris, shopDoors] = await Promise.all([
+      const [globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors] = await Promise.all([
+        import('../world/globe'),
+        import('./moon'),
         import('../world/streamer'),
         import('../world/terrain'),
         import('../world/birds'),
@@ -233,7 +290,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
         import('../world/debris'),
         import('../world/shopDoors'),
       ])
-      return { streamer, terrain, birds, fauna, pedestrians, debris, shopDoors }
+      return { globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors }
     })()
     return modsPromise
   }
@@ -250,7 +307,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       // The sfx arrive here rather than inside the manager because core/sfx
       // fetches its clips at module load and world/* must stay headless-safe.
       const shopDoors = shopDoorsMod.buildShopDoors({
-        parent: root,
+        parent: groundRoot,
         obstacles,
         sfx: { creak: doorCreak, latch: doorLatch },
         trackDisposable,
@@ -260,7 +317,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       // it about every chunk it builds, and the snap arrives as a callback for
       // the same headless reason the doors' creak does
       const debris = debrisMod.buildDebris({
-        parent: root,
+        parent: groundRoot,
         obstacles,
         groundAt: terrain.terrainY,
         onSnap: propSnap,
@@ -268,7 +325,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       })
       debris.ruins.onSolids = () => world.resolid()
       const world = streamer.buildWorld({
-        scene: root,
+        scene: groundRoot,
         obstacles,
         onNearDoors: shopDoors.sync,
         onChunk: (c) => debris.arm(c.smash),
@@ -278,7 +335,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       // the flocks are neither sky nor ground: they hang off this seam because
       // they need the sky's daylight and the world's terrain height, and because
       // they must sleep with the streamer when another level is live
-      const birds = birdsMod.buildBirds({ parent: root, trackDisposable })
+      const birds = birdsMod.buildBirds({ parent: groundRoot, trackDisposable })
       /*
         ...and the same seam for what lives on the ground. Both hang here for
         the flocks' reason — they need the world's terrain height and they
@@ -291,16 +348,23 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
         itself when they land. The pedestrians need nothing but the rig the
         player is already wearing, so they are live immediately.
       */
-      const fauna = faunaMod.buildFauna({ parent: root, obstacles, trackDisposable })
+      const fauna = faunaMod.buildFauna({ parent: groundRoot, obstacles, trackDisposable })
       void faunaMod.loadFaunaModels().then((m) => fauna.setModels(m))
       const pedestrians = pedMod.buildPedestrians({
-        parent: root,
+        parent: groundRoot,
         obstacles,
         groundAt: terrain.terrainY,
         trackDisposable,
       })
 
-      w = { mods, world, birds, fauna, pedestrians, debris, shopDoors }
+      // the planet from above and the Moon (see the header). The Moon's own
+      // ground is built on first arrival; its material's stand-in is in the
+      // scene now, so the covered compile that follows links it
+      const globes = mods.globe.buildGlobes({ parent: root, trackDisposable })
+      const moonParts = mods.moon.buildMoon({ parent: root, obstacles: moonObstacles, trackDisposable })
+      root.add(moonParts.warm)
+
+      w = { mods, world, birds, fauna, pedestrians, debris, shopDoors, globes, moon: moonParts }
       placeholderGround.visible = false
     })()
     return attaching
@@ -308,17 +372,100 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
 
   let active = true
   /** what the last update saw from the camera, for the look and the lens */
-  const view = { alt: 0, reach: 0, far: viewFarFor(0) }
+  const view = {
+    alt: 0, reach: 0, far: viewFarFor(0), space: 0, fly: 1, curve: 0, near: 0.1,
+    moon: null as THREE.Vector3 | null,
+  }
 
   let lastT = 0
   const groundBase = new THREE.Color('#6f7d4a')
   const placeholderMat = placeholderGround.material as THREE.MeshBasicMaterial
 
+  /* ---- the way up (levels/space.ts) ---- */
+  let venue: 'earth' | 'moon' = 'earth'
+  /** the Moon level's boxes: its CollisionSet wraps this array from the
+      first frame, and the Moon fills it when it is built */
+  const moonObstacles: Solid[] = []
+  /** the Moon out there: pinned when the climb passes MOON_ANCHOR */
+  const moonAt = { on: false, centre: new THREE.Vector3(), pole: new THREE.Vector3() }
+  /** where the climb that pinned it began: the way home from the Moon lands
+      over this point */
+  const left = { x: 0, z: -20, known: false }
+  const sunDir = new THREE.Vector3()
+  const tmpDir = new THREE.Vector3()
+  const earthDir = new THREE.Vector3(EARTH_IN_MOON_SKY.x, EARTH_IN_MOON_SKY.y, EARTH_IN_MOON_SKY.z)
+  const smooth = (a: number, b: number, x: number) => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)))
+    return t * t * (3 - 2 * t)
+  }
+  /** pin the Moon along the sky moon's bearing if it is well up, and
+      otherwise along a bearing high in the sky, so a daytime climb still has
+      somewhere to go */
+  const pinMoon = (cam: THREE.Vector3) => {
+    const m = sky.moonDir(tmpDir)
+    if (m.y < 0.35) {
+      const h = Math.hypot(m.x, m.z) || 1
+      m.set((m.x / h) * Math.cos(0.75), Math.sin(0.75), (m.z / h) * Math.cos(0.75))
+    }
+    moonAt.centre.copy(cam).addScaledVector(m, MOON_DIST)
+    moonAt.pole.copy(m).negate()
+    moonAt.on = true
+    left.x = cam.x
+    left.z = cam.z
+    left.known = true
+  }
+
+  const moonGround = (x: number, z: number) => (w ? w.mods.moon.moonGroundY(x, z) : 0)
+
+  const updateMoon = (camPos: THREE.Vector3, todOverride?: number) => {
+    const state = sky.update(camPos, todOverride ?? MOON_TOD, 1, false)
+    // no air: nothing is the colour of distance and nothing fades into it,
+    // and nothing fills a shadow in, so the sun is all the light there is
+    // and it is harsh
+    state.fogNear = 1e6
+    state.fogFar = 2e6
+    sky.sun.intensity *= 2.6
+    groundRoot.visible = false
+    const alt = camPos.y - moonGround(camPos.x, camPos.z)
+    view.alt = Math.max(0, alt)
+    view.reach = 0
+    view.far = MOON_FAR
+    view.space = 1
+    view.fly = flyScale(view.alt)
+    view.moon = null
+    view.curve = 0
+    view.near = 0.1
+    sky.setScale(domeScaleFor(MOON_FAR))
+    if (w) {
+      sunDir.subVectors(sky.sun.position, sky.sun.target.position).normalize()
+      w.globes.setSun(sunDir, performance.now() / 1000)
+      w.globes.hideMoon()
+      // the Earth at MOON_DIST, drawn nearer and smaller so it keeps its
+      // angular size inside the far plane
+      w.globes.earthInSky(camPos, earthDir, EARTH_SKY_DIST, (EARTH_R * EARTH_SKY_DIST) / MOON_DIST)
+    }
+    return state
+  }
+
   const update = (camPos: THREE.Vector3, todOverride?: number) => {
-    const state = sky.update(camPos, todOverride)
+    if (venue === 'moon') return updateMoon(camPos, todOverride)
+    // the height the whole climb keys off: over the drawn ground, or over
+    // the house's flat pad before the world exists
+    const alt = Math.max(0, camPos.y - (w ? w.mods.terrain.terrainY(camPos.x, camPos.z) : 0))
+    const space = active && w ? spaceK(alt) : 0
+    // how far below level the planet's limb is from up here, so the sky's
+    // horizon blend starts where the ground does (sky.ts's uHorizonDip)
+    const kDip = active && w ? curveK(alt) : 0
+    const dip = kDip > 0.04 ? Math.acos(globeRadius(kDip) / (globeRadius(kDip) + alt)) : 0
+    const state = sky.update(camPos, todOverride, space, true, dip)
     view.alt = 0
     view.reach = 0
     view.far = viewFarFor(0)
+    view.space = space
+    view.fly = flyScale(alt)
+    view.moon = null
+    view.curve = 0
+    view.near = nearFor(alt)
     // (the sky follows the lens: see SkyHandles.setScale; reset here and
     // grown again below when the world reports a far field in view)
     if (!(active && w)) sky.setScale(1)
@@ -346,25 +493,82 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
         alone would reveal the edge, a wider ring alone would be invisible
         behind the fog. The ramp tops out at 120 units up, past which the
         ground is more than half fog anyway and there is nothing left to see.
+
+        From orbit (levels/space.ts) the ground dithers out over the globe and
+        then is neither drawn nor streamed: a flight across the planet at
+        orbital speed would otherwise have the streamer rebuilding a ring
+        nobody can see.
       */
-      const alt = Math.max(0, camPos.y - w.mods.terrain.terrainY(camPos.x, camPos.z))
-      w.world.update(camPos.x, camPos.z, dt, alt)
-      w.shopDoors.update(dt)
-      w.debris.update(dt)
-      w.birds.update(camPos, dt, state.day, state.twilight)
-      w.fauna.update(camPos, dt)
-      w.pedestrians.update(camPos, dt)
-      /*
-        From the air the far field (world/farfield.ts) draws the planet past
-        the ring, and the fog opens out to its rim; the look's air takes the
-        same altitude and reach (see `view` below), so what was a white wall
-        from a hundred units up is a town and its hills to the horizon.
-      */
-      const reach = w.world.farReach(camPos.x, camPos.z)
+      const gk = groundK(alt)
+      groundRoot.visible = gk > 0
+      let reach = 0
+      if (gk > 0) {
+        w.world.update(camPos.x, camPos.z, dt, alt)
+        w.shopDoors.update(dt)
+        w.debris.update(dt)
+        w.birds.update(camPos, dt, state.day, state.twilight)
+        w.fauna.update(camPos, dt)
+        w.pedestrians.update(camPos, dt)
+        /*
+          From the air the far field (world/farfield.ts) draws the planet past
+          the ring, and the fog opens out to its rim; the look's air takes the
+          same altitude and reach (see `view` below), so what was a white wall
+          from a hundred units up is a town and its hills to the horizon.
+        */
+        reach = w.world.farReach(camPos.x, camPos.z)
+      }
+      const k = curveK(alt)
+      w.world.setSpace(k / (2 * EARTH_R), camPos.x, camPos.z, gk)
       fogForAltitude(state, alt, reach)
+      if (space > 0) {
+        state.fogNear += (1e6 - state.fogNear) * space
+        state.fogFar += (2e6 - state.fogFar) * space
+      }
+      // the globe: painted around you once you are above anything the
+      // helicopter can reach (so a flight costs nothing), shown once the bend
+      // has begun, and alone once the ground has gone
+      const g = w.globes
+      if (alt > 250) g.wantEarth(camPos.x, camPos.z)
+      if (space > 0) g.wantMoon()
+      if (alt > 250) g.work(3)
+      sunDir.subVectors(sky.sun.position, sky.sun.target.position).normalize()
+      g.setSun(sunDir, now / 1000)
+      const curvR = globeRadius(k)
+      let far = viewFarFor(alt, reach)
+      if (k > 0.04) {
+        g.earthBelow({
+          cam: camPos,
+          poleY: w.mods.terrain.SEA_Y,
+          curvR,
+          hole: gk >= 0.999 ? reach * 0.97 : 0,
+          fade: smooth(0.04, 0.2, k),
+          offset: gk > 0,
+          clouds: 1 - gk,
+          rim: space,
+          halo: space,
+        })
+        far = Math.max(far, horizonDist(curvR, alt) * 1.6)
+      } else {
+        g.hideEarth()
+      }
+      // the Moon out there, pinned on the way up and let go on the way down
+      if (!moonAt.on && alt > MOON_ANCHOR) pinMoon(camPos)
+      else if (moonAt.on && alt < MOON_FORGET) moonAt.on = false
+      if (moonAt.on) {
+        const dMoon = camPos.distanceTo(moonAt.centre)
+        g.moonAt(moonAt.centre, MOON_R, moonAt.pole, smooth(0.04, 0.2, space))
+        far = Math.max(far, (dMoon + MOON_R) * 2)
+        // near the Moon the speed is the Moon's business, or you arrive at
+        // orbital speed and go straight through it
+        view.fly = flyScale(Math.min(alt, dMoon - MOON_R))
+      } else {
+        g.hideMoon()
+      }
       view.alt = alt
       view.reach = reach
-      view.far = viewFarFor(alt, reach)
+      view.far = far
+      view.curve = k
+      view.moon = moonAt.on ? moonAt.centre : null
       sky.setScale(domeScaleFor(view.far))
       // windows and streetlamps come up with the dark; the water takes its
       // colour from the fog, which is most of what makes it read as water
@@ -431,5 +635,53 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     preloadWorld: () => void loadMods(),
     view,
     attachWorld,
+    moonSeam: (p) => {
+      if (venue !== 'earth' || !moonAt.on || !w) return null
+      if (p.distanceTo(moonAt.centre) > MOON_R + MOON_SEAM) return null
+      const x = MOON_ORIGIN.x
+      const z = MOON_ORIGIN.z
+      // over the landing site, high enough to see where you are landing,
+      // facing the way the Earth hangs
+      return {
+        to: 'moon',
+        spawn: { x, z, y: moonGround(x, z) + 260, yaw: Math.atan2(-earthDir.x, -earthDir.z) },
+      }
+    },
+    earthSeam: (p) => {
+      if (venue !== 'moon' || !w) return null
+      if (p.y - moonGround(p.x, p.z) < MOON_LEAVE) return null
+      const x = left.known ? left.x : 0
+      const z = left.known ? left.z : -20
+      return {
+        to: 'overworld',
+        spawn: { x, z, y: w.mods.terrain.terrainY(x, z) + EARTH_RETURN, yaw: 0 },
+      }
+    },
+    setVenue: (v) => {
+      if (v === venue) return
+      venue = v
+      if (!w) return
+      if (v === 'moon') {
+        w.moon.ensureBuilt()
+        w.moon.root.visible = true
+        groundRoot.visible = false
+      } else {
+        w.moon.root.visible = false
+        // back over where the climb began: the Moon is pinned afresh
+        moonAt.on = false
+      }
+    },
+    moon: {
+      groundYAt: moonGround,
+      ground: {
+        lattice: (i, j) => (w ? w.mods.moon.moonLattice(i, j) : 0),
+        heightAt: moonGround,
+      },
+      obstacles: moonObstacles,
+      get spawn() {
+        return { x: MOON_ORIGIN.x, z: MOON_ORIGIN.z, y: moonGround(MOON_ORIGIN.x, MOON_ORIGIN.z) + 2, yaw: 0 }
+      },
+    },
+    warmSpace: (on) => w?.globes.warm(on),
   }
 }

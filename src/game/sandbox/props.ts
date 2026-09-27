@@ -1,7 +1,6 @@
 import * as THREE from 'three'
 import type { Solid } from '../physics/collision'
 import { chunkX, chunkZ } from '../world/grid'
-import { terrainY } from '../world/terrain'
 import type { Ground } from './ground'
 import { KINDS, shapeExtents, type PropKind, type ShapeSpec } from './kinds'
 import { GROUPS, type PhysicsWorld, type RBody, type RCollider } from './physics'
@@ -362,6 +361,8 @@ export interface PropsOpts {
   waterY: () => number
   /** the drawn swell on top of it */
   waveAt?: (x: number, z: number) => number
+  /** the drawn ground's height (the level's own, ground.ts's SandboxGround) */
+  groundAt: (x: number, z: number) => number
 }
 
 export interface Props {
@@ -706,7 +707,7 @@ export const createProps = (o: PropsOpts): Props => {
     let tx = 0
     let tz = 0
     let surf0 = wy
-    if (c[1] - r.radius < wy + 0.6 && terrainY(c[0], c[2]) < wy) {
+    if (c[1] - r.radius < wy + 0.6 && o.groundAt(c[0], c[2]) < wy) {
       const g = -pw.gravity
       const S = samplesOf(r)
       const n = S.w.length
@@ -1055,7 +1056,7 @@ export const createProps = (o: PropsOpts): Props => {
         }
       }
       // lost under the ground: lift it back, or give up on it
-      const gy = terrainY(r.cur[0], r.cur[2])
+      const gy = o.groundAt(r.cur[0], r.cur[2])
       if (r.cur[1] < gy - Math.max(2, r.radius * LOST_DEPTH) || r.cur[1] < -2000) {
         if (++r.lost > MAX_RESCUES || r.cur[1] < -2000) {
           remove(r.id)
