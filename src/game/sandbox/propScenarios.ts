@@ -94,8 +94,8 @@ export const siteAvenue = () => {
     if (place.district !== 'downtown' && place.district !== 'midrise') return false
     const r = roadAt(x, z, place)
     if (!r.asphalt || r.junction || r.dist > 1) return false
-    const [cx, cz] = r.axis === 'x' ? [x, r.line] : [r.line, z]
-    const [dx, dz] = r.axis === 'x' ? [1, 0] : [0, 1]
+    const [cx, cz] = [r.footX, r.footZ]
+    const [dx, dz] = [r.dirX, r.dirZ]
     for (let a = -16; a <= 48; a += 6) {
       const px = cx + dx * a
       const pz = cz + dz * a
@@ -127,8 +127,8 @@ export const siteWall = () => {
     if (place.district !== 'midrise' && place.district !== 'downtown') return false
     const r = roadAt(x, z, place)
     if (!r.asphalt || r.junction || r.dist > 1 || slopeAt(x, z) > 0.04) return false
-    const [cx, cz] = r.axis === 'x' ? [x, r.line] : [r.line, z]
-    const [ax, az] = r.axis === 'x' ? [1, 0] : [0, 1]
+    const [cx, cz] = [r.footX, r.footZ]
+    const [ax, az] = [r.dirX, r.dirZ]
     for (const s of [1, -1]) {
       // across the street, toward one side
       const nx = -az * s

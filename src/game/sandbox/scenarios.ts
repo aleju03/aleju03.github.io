@@ -238,9 +238,7 @@ export const siteStreet = () => {
   }, [0, -340], 12)
   const r = roadAt(x, z, placeAt(x, z))
   // snap onto the centreline and lay out along the street
-  return r.axis === 'x'
-    ? { x, z: r.line, dx: 1, dz: 0 }
-    : { x: r.line, z, dx: 0, dz: 1 }
+  return { x: r.footX, z: r.footZ, dx: r.dirX, dz: r.dirZ }
 }
 
 /** open water a few strides off a shore, with the shore to stand on */
