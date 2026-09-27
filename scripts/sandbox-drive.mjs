@@ -3,7 +3,7 @@
   Photograph the sandbox's own interface over the live game.
 
     npm run drive -- console          the receipt printer, open, mid-completion
-    npm run drive -- menu             the catalogue held up with q, a plate ringed
+    npm run drive -- menu             the catalogue opened with q, a plate ringed
     npm run drive -- noclip           a noclip flight: a first-person strip and a
                                       third-person strip of the float pose
     npm run drive -- links            shader links counted in the real game across
@@ -252,7 +252,20 @@ try {
     console.log('menu')
     await stand()
     await look(null, -0.26)
-    await down('KeyQ')
+    // q is a toggle: a tap opens the book, a second tap or esc shuts it
+    const isOpen = () => evaluate(`!!document.querySelector('[data-category]')`)
+    const toggles = []
+    for (const k of ['KeyQ', 'KeyQ', 'KeyQ', 'Escape']) {
+      await tap(k)
+      await sleep(250)
+      toggles.push(await isOpen())
+    }
+    const togglesOk = toggles.join() === 'true,false,true,false'
+    console.log(`  q, q, q, esc -> ${toggles.map((o) => (o ? 'open' : 'shut')).join(', ')}${togglesOk ? '' : '  <-- WRONG'}`)
+    await sleep(200)
+    await tap('KeyQ')
+    await sleep(250)
+    if (!(await isOpen())) console.log('  q after an esc close did not reopen the book  <-- WRONG')
     // the icons are drawn the first time the book opens
     await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 4`), 60, 250, 'the catalogue icons')
     // order three things from their own sections, aiming a little left,
@@ -286,10 +299,8 @@ try {
     await hover('[data-kind="tv"]')
     await sleep(250)
     await shot('menu-category')
-    // the find line pins the book open: click it, let go of q, type
+    // the find line takes the keyboard: click it, type
     if (await clickOn('input[placeholder]:not([type])')) {
-      await sleep(150)
-      await up('KeyQ')
       await sleep(300)
       await type(lang === 'es' ? 'barr' : 'bar')
       await sleep(300)
@@ -299,8 +310,10 @@ try {
       await sleep(200)
       await tap('Escape')
     } else {
-      await up('KeyQ')
+      await tap('KeyQ')
     }
+    await sleep(250)
+    if (await isOpen()) console.log('  the book is still open after esc/q  <-- WRONG')
     // and what was ordered, standing where the crosshair was
     await look(yaw0 - 0.1, -0.2)
     await sleep(1400)

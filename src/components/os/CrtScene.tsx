@@ -1905,6 +1905,14 @@ export default function CrtScene({
         const onEscKey = (e: KeyboardEvent) => {
           if (e.code !== 'Escape') return
           escHeld = e.type === 'keydown'
+          // the catalogue is a toggle, so esc is its other way out (the find
+          // line handles its own esc before this sees it). The book holds no
+          // pointer lock, so this esc reaches the page: it must stop here, or
+          // AlejOS's own esc handler takes it as leaving the room
+          if (escHeld && menuNow && !menuPinned) {
+            e.stopImmediatePropagation()
+            setMenu(false)
+          }
           if (!escHeld && relockOnEscUp) {
             relockOnEscUp = false
             setTimeout(relock, 30)
@@ -1924,8 +1932,6 @@ export default function CrtScene({
           if (!menuNow) return
           menuPinned = on
           if (on) input.clearKeys()
-          // letting go of the find line with q already up closes the book
-          else if (!held(input.keys, 'spawnMenu')) setMenu(false)
         }
         closeMenuRef.current = () => setMenu(false)
 
@@ -3040,15 +3046,15 @@ export default function CrtScene({
             rig.beginRecover()
           }
           // t or enter opens the console line and / opens it on a command;
-          // q held holds the catalogue up and z takes the last spawn back.
+          // q opens the catalogue and q again (or esc) closes it, and z takes
+          // the last spawn back.
           // The console works alone, so none of these wait for a server
           if (!levels.frozen) {
             if (edges.pressed('chat')) openChat('')
             else if (edges.pressed('command')) openChat('/')
-            if (edges.pressed('spawnMenu') && !sitting) setMenu(true)
+            if (edges.pressed('spawnMenu') && !sitting) setMenu(!menuNow)
             if (edges.pressed('undo')) undoLast()
           }
-          if (menuNow && !menuPinned && !held(input.keys, 'spawnMenu')) setMenu(false)
           // m arms the microphone, n swaps the talk mode, and b is held to
           // push to talk
           if (edges.pressed('mic') && voice?.available) {
