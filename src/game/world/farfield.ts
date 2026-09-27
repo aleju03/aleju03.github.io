@@ -1,9 +1,9 @@
 import * as THREE from 'three'
-import { seeded } from '../core/rand'
-import { CHUNK, OFF_X, OFF_Z, RESERVED, chunkX, chunkZ, originX, originZ } from './grid'
+import { CHUNK, OFF_X, OFF_Z, chunkX, chunkZ, originX, originZ } from './grid'
 import { groundSample, heightAt, SEA_Y } from './terrain'
-import { blockInset, buildingHeightAt, placeAt, roadAt, type District } from './settlements'
-import { BLOCK_KIND_FOR, BLOCK_KIND_RATE, KIND_FOR, type BuildKind } from './buildings'
+import { nearestTown, placeAt, townsNear, type District, type Town } from './settlements'
+import { liveOf, networkOf, parcelsInChunk, prepareTown, SPINE_REACH } from './streets'
+import type { BuildKind } from './buildings'
 import { BIOMES, type BiomeId } from './biomes'
 import { hash2 } from './noise'
 import { FIELDS_GLSL } from './groundLook'
@@ -27,14 +27,16 @@ import { gfx } from './quality'
     `groundSample`, the same rules the chunk ground bakes. The sea is the
     same mesh held flat at the waterline, with the depth under it kept as an
     attribute so the shader can band it and draw a one-pixel foam line at
-    the shore. Streets in town are drawn by the shader on the chunk borders
-    they always run along, and forests get a canopy of lit crowns there too,
+    the shore. Streets, in town and on the roads out, are strips laid off
+    the town's plan (streets.ts), and forests get a canopy of lit crowns,
     because the loaded ring's real trees stop three chunks out.
-  - **towns** as block impostors: every block of every district, laid out by
-    the same seeded draws `chunk.ts`'s buildBlock makes (the first lot and
-    any whole-block kit exactly, the rest in the same grid), as boxes with a
+  - **towns** as impostors: every platted lot of every district, off the
+    same parcel list `chunk.ts`'s buildBlock builds from, as boxes with a
     gable on a house, windows drawn by the shader and lit at night. Merged
-    into the tile's one geometry, so a tile is one draw.
+    into the tile's one geometry, so a tile is one draw. A tile grows the
+    plans of the towns near it a slice at a time before it samples any
+    height (streets.ts's prepareTown), so meeting a new city from the air
+    never costs its whole plan in one frame.
 
   Three rules keep it seamless.
 
@@ -116,6 +118,7 @@ const FAR_VERT_HEAD = /* glsl */ `
   attribute vec4 aFar;
   attribute vec3 aExt;
   attribute vec3 aLeaf;
+  attribute vec2 aOwn;
   uniform vec4 uRect[4];
   uniform float uCurve;
   uniform vec2 uEye;
@@ -125,6 +128,7 @@ const FAR_VERT_HEAD = /* glsl */ `
   varying vec3 vLeaf;
   varying float vFarNY;
   varying float vField;
+  varying vec2 vMaskP;
 `
 const FAR_VERT_BODY = /* glsl */ `
   vFar = aFar;
@@ -142,6 +146,9 @@ const FAR_VERT_BODY = /* glsl */ `
     }
   }
   vFarW = (modelMatrix * vec4(transformed, 1.0)).xyz;
+  // where the chunk mask is read: a building's impostor asks about the chunk
+  // that builds the real one (see Soup.own), everything else about itself
+  vMaskP = aOwn.x > 1e8 ? vFarW.xz : aOwn;
   // from high up the ground bends onto the planet (levels/space.ts): a
   // parabola in the distance from the camera, which world/globe.ts's sphere
   // continues past the rim. vFarW keeps the unbent height for the patterns
@@ -164,6 +171,7 @@ const FAR_FRAG_HEAD = /* glsl */ `
   varying vec3 vLeaf;
   varying float vFarNY;
   varying float vField;
+  varying vec2 vMaskP;
   ${FIELDS_GLSL}
   float farHash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -189,7 +197,7 @@ const FAR_FRAG_CLIP = /* glsl */ `
     }
     vec4 hr = uHole[int(vFar.y + 0.5)];
     if (vFarW.x > hr.x && vFarW.x < hr.z && vFarW.z > hr.y && vFarW.z < hr.w) discard;
-    vec2 cc = floor((vFarW.xz - vec2(${OFF_X.toFixed(2)}, ${OFF_Z.toFixed(2)})) / ${CHUNK.toFixed(1)}) - uMaskO;
+    vec2 cc = floor((vMaskP - vec2(${OFF_X.toFixed(2)}, ${OFF_Z.toFixed(2)})) / ${CHUNK.toFixed(1)}) - uMaskO;
     if (cc.x >= 0.0 && cc.y >= 0.0 && cc.x < ${MASK.toFixed(1)} && cc.y < ${MASK.toFixed(1)}) {
       if (texelFetch(uMask, ivec2(cc), 0).r > 0.5) discard;
     }
@@ -263,52 +271,34 @@ const FAR_FRAG_COLOR = /* glsl */ `
       float surf = 1.0 - smoothstep(0.0, dw * 1.0 + 0.02, abs(vDepth - 1.6));
       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.95, 0.96), max(foam, surf * 0.55 * step(0.0, vDepth)));
       if (vDepth <= 0.0 && vFar.z > 0.01) {
-        // a town's streets run along every chunk border
-        vec2 g = abs(fract((vFarW.xz - vec2(${OFF_X.toFixed(2)}, ${OFF_Z.toFixed(2)})) / ${CHUNK.toFixed(1)} + 0.5) - 0.5) * ${CHUNK.toFixed(1)};
-        float d = min(g.x, g.y);
-        float asph = 1.0 - smoothstep(3.2 - px * 0.5, 3.2 + px * 0.5, d);
-        float walk = 1.0 - smoothstep(4.7 - px * 0.5, 4.7 + px * 0.5, d);
-        float townK = clamp(vFar.z, 0.0, 1.0);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.105, 0.105, 0.1), (walk - asph) * townK);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.024, 0.026, 0.03), asph * townK);
-        // Past the rings that carry impostors, the blocks are painted: a
-        // suburb's nine lots (the middle one garden), a midrise's four, a
-        // downtown block's one, each a roof in the district's colours, on
-        // the same grid chunk.ts builds on. At a kilometre that is what a
-        // town is from the air, and it keeps the town to the horizon
+        // Past the rings that carry impostors, a town's lots are painted: a
+        // roof per lot in the district's colours, at the district's lot size.
+        // The streets are real strips now (townRoads), laid over the paint,
+        // so it needs no street grid of its own, and its lattice is simply
+        // world-aligned: at a kilometre only the tone of the roofs reads
         float code = floor(vFar.z + 0.5);
         int lv = int(vFar.y + 0.5);
         bool paint = (code == 1.0 && lv >= 1) || (code == 2.0 && lv >= 2) || (code == 3.0 && lv >= 3);
-        if (paint && d > 5.7) {
-          vec2 cellW = (vFarW.xz - vec2(${OFF_X.toFixed(2)}, ${OFF_Z.toFixed(2)})) / ${CHUNK.toFixed(1)};
-          vec2 loc = fract(cellW) * ${CHUNK.toFixed(1)} - 5.7;
-          float n = code == 1.0 ? 3.0 : code == 2.0 ? 2.0 : 1.0;
-          float lotS = 52.6 / n;
-          vec2 li = floor(loc / lotS);
-          vec2 lf = loc / lotS - li;
-          float hh = farHash(floor(cellW) * 7.0 + li);
+        if (paint) {
+          float lotS = code == 1.0 ? 19.0 : code == 2.0 ? 27.0 : 42.0;
+          vec2 cellW = vFarW.xz / lotS;
+          vec2 li = floor(cellW);
+          vec2 lf = cellW - li;
+          float hh = farHash(li * 7.0 + 3.0);
           float fill = code == 1.0 ? 0.3 : code == 2.0 ? 0.4 : 0.43;
           vec2 e = abs(lf - 0.5);
-          float keep = (code == 1.0 && li.x == 1.0 && li.y == 1.0) ? 0.0 : step(hh, 0.88);
-          keep *= step(li.x, n - 1.0) * step(li.y, n - 1.0);
+          float keep = step(hh, code == 1.0 ? 0.72 : 0.88);
           float inside = step(max(e.x, e.y), fill) * keep;
           float rd = 1.0 - smoothstep(0.5, 1.2, px / (lotS * fill));
-          float cover = mix(fill * fill * 4.0 * 0.85, inside, rd);
+          float cover = mix(fill * fill * 4.0 * 0.8, inside, rd);
           vec3 roof = code == 1.0
             ? (hh < 0.3 ? vec3(0.4, 0.12, 0.07) : hh < 0.5 ? vec3(0.2, 0.12, 0.08) : hh < 0.7 ? vec3(0.12, 0.13, 0.15) : vec3(0.26, 0.24, 0.21))
             : code == 2.0 ? vec3(0.15, 0.14, 0.13) : vec3(0.1, 0.1, 0.11);
           // a suburb roof has a ridge: its two slopes in two tones
           if (code == 1.0) roof *= mix(1.0, (hh > 0.5 ? lf.x : lf.y) < 0.5 ? 1.0 : 0.72, rd);
           diffuseColor.rgb = mix(diffuseColor.rgb, diffuse * roof, cover);
-          farLit += uNight * cover * (code == 1.0 ? 0.03 : 0.07);
+          farLit += uNight * cover * (code == 1.0 ? 0.05 : 0.09);
         }
-        // ...lit at night by a lamp every 24 units along the kerb, the dots
-        // a city is made of from the air after dark
-        float along = g.x < g.y ? vFarW.z : vFarW.x;
-        float wlamp = 0.6 + px * 0.5;
-        float lamp = (1.0 - smoothstep(0.0, wlamp, abs(mod(along, 24.0) - 12.0))) *
-          (1.0 - smoothstep(0.0, wlamp, abs(d - 4.9)));
-        farLit += uNight * lamp * townK * 1.3;
       }
       if (vDepth <= 0.0 && vFar.w > 0.01) {
         // a canopy: one crown per 8-unit cell where the biome's tree count
@@ -366,6 +356,15 @@ const FAR_FRAG_COLOR = /* glsl */ `
       // is one lit slab
       float on = step(farHash(floor(wv) + vFar.w), 0.34);
       farLit = uNight * mix(share * 0.035, win * on, detail);
+    } else if (abs(vFar.z) > 0.001) {
+      // a street strip (townRoads): z runs -1..1 across it and w is the arc
+      // length along it, so the night's lamps are a dot every 24 units at
+      // the kerb, the dots a town is made of from the air after dark
+      float wlamp = 0.6 + px * 0.5;
+      float kerb = (1.0 - abs(vFar.z)) * 3.4;
+      float lamp = (1.0 - smoothstep(0.0, wlamp, abs(mod(vFar.w, 24.0) - 12.0))) *
+        (1.0 - smoothstep(0.0, wlamp, kerb));
+      farLit += uNight * lamp * 1.3;
     }
   }
 `
@@ -418,7 +417,16 @@ class Soup {
   far: number[] = []
   ext: number[] = []
   leaf: number[] = []
+  own: number[] = []
   idx: number[] = []
+  /** the point whose chunk decides whether this geometry is drawn: unset
+      (1e9) means the vertex's own. A lot can straddle a chunk border now, and
+      the chunk its centre is in builds the real building, so its impostor has
+      to disappear exactly when *that* chunk is up, not piecewise wherever a
+      neighbour is: at the edge of the ring that drew half a ghost box round
+      a real tower */
+  ownX = 1e9
+  ownZ = 1e9
   get count() {
     return this.pos.length / 3
   }
@@ -434,6 +442,7 @@ class Soup {
     this.ext.push(depth, stitch, field)
     if (leaf) this.leaf.push(leaf.r, leaf.g, leaf.b)
     else this.leaf.push(0, 0, 0)
+    this.own.push(this.ownX, this.ownZ)
   }
   /** a flat quad from four corners wound counter-clockwise seen from outside */
   quad(
@@ -460,6 +469,7 @@ class Soup {
     g.setAttribute('aFar', new THREE.Float32BufferAttribute(this.far, 4))
     g.setAttribute('aExt', new THREE.Float32BufferAttribute(this.ext, 3))
     g.setAttribute('aLeaf', new THREE.Float32BufferAttribute(this.leaf, 3))
+    g.setAttribute('aOwn', new THREE.Float32BufferAttribute(this.own, 2))
     g.setIndex(this.count > 65535 ? new THREE.Uint32BufferAttribute(this.idx, 1)
       : new THREE.Uint16BufferAttribute(this.idx, 1))
     g.computeBoundingSphere()
@@ -554,40 +564,19 @@ const shapeOf = (kind: BuildKind, height: number, w: number, d: number) => {
 }
 
 /**
- * A block's buildings as impostors, drawn off the same seeded sequence
- * `chunk.ts`'s buildBlock draws from: the park roll, the whole-block kit and
- * its footprint, the lot count, and every lot's rolled kind, size, place and
- * height. The kits themselves roll from a stream of their own seeded on the
- * lot's centre (chunk.ts's `raise`), so they take nothing from the block's
- * sequence and this replays the whole of it, lot for lot. Only the ground
- * under a footprint is sampled differently (corners of the far terrain
- * rather than the chunk's lattice), so a lot on a slope the chunk refuses
- * can still stand here. From where anyone sees these, that is the same
- * skyline.
+ * A chunk's buildings as impostors, off the same platted lots `chunk.ts`
+ * builds (streets.ts's parcels, one list per town): the same footprint,
+ * facing, kind and height, so the replay is exact by construction rather
+ * than by re-drawing a seeded sequence in step. Only the ground under a
+ * footprint is sampled differently (corners of the far terrain rather than
+ * the chunk's lattice), so a lot on a slope the chunk refuses can still
+ * stand here. From where anyone sees these, that is the same skyline.
  */
 const blockImpostors = (
   s: Soup, level: number, cx: number, cz: number, ground: (x: number, z: number) => number,
 ) => {
-  const ox = originX(cx)
-  const oz = originZ(cz)
-  const place = placeAt(ox + CHUNK / 2, oz + CHUNK / 2)
-  const district = place.district
-  if (!district) return
-  // the second ring only keeps what stands up out of the ground colour
-  if (level > 0 && district === 'suburb') return
-  if (level > 1 && district !== 'downtown') return
-  const rng = seeded(hash2(cx, cz, 0x2f61))
-  if (district !== 'downtown' && rng() < (district === 'suburb' ? 0.13 : 0.1)) return
-  const inner = CHUNK - blockInset * 2
-  const lo = ox + blockInset
-  const lz = oz + blockInset
-  const height = buildingHeightAt(place)
-  const walls = WALLS[district]
-  const roofs = ROOFS[district]
-  const office = district === 'suburb' ? 0 : 1
-  const clearOfHome = (bx: number, bz: number, w: number, d: number) =>
-    !(bx - w / 2 < RESERVED.maxX + 4 && bx + w / 2 > RESERVED.minX - 4 &&
-      bz - d / 2 < RESERVED.maxZ + 4 && bz + d / 2 > RESERVED.minZ - 4)
+  const mx = originX(cx) + CHUNK / 2
+  const mz = originZ(cz) + CHUNK / 2
   const base = (bx: number, bz: number, w: number, d: number) => {
     let lo2 = Infinity
     let hi = -Infinity
@@ -598,45 +587,30 @@ const blockImpostors = (
     }
     return [lo2, hi] as const
   }
-  const put = (kind: BuildKind, bx: number, bz: number, w: number, d: number, y0: number, lotH: number) => {
-    const sh = shapeOf(kind, lotH, w, d)
-    const k = hash2(Math.round(bx), Math.round(bz), 0x51f3)
-    building(s, level, bx, bz, w, d, y0 - 0.5, sh.h + 0.5, sh.gable,
-      walls[k % walls.length], roofs[(k >>> 8) % roofs.length],
-      kind === 'house' ? 0 : office, (k & 0xffff) / 97)
-  }
-  if (rng() < BLOCK_KIND_RATE(district)) {
-    const kind = BLOCK_KIND_FOR(district, rng())
-    const w = inner * (0.7 + rng() * 0.18)
-    const d = inner * (0.7 + rng() * 0.18)
-    const bx = ox + CHUNK / 2 + (rng() - 0.5) * 3
-    const bz = oz + CHUNK / 2 + (rng() - 0.5) * 3
-    if (clearOfHome(bx, bz, w, d)) {
-      const [y0, y1] = base(bx, bz, w, d)
-      if (y0 >= SEA_Y + 1 && y1 - y0 <= 3) {
-        put(kind, bx, bz, w, d, y0, height)
-        return
-      }
+  for (const t of townsNear(mx, mz)) {
+    if (Math.hypot(t.x - mx, t.z - mz) > t.radius * 1.35 + 100) continue
+    for (const p of parcelsInChunk(t, cx, cz)) {
+      if (p.use !== 'build' || p.cx !== cx || p.cz !== cz) continue
+      const district = p.district
+      // the second ring only keeps what stands up out of the ground colour
+      if (level > 0 && district === 'suburb') continue
+      if (level > 1 && district !== 'downtown') continue
+      const block = p.kind === 'warehouse' || p.kind === 'chapel' || p.kind === 'parking'
+      const [y0, y1] = base(p.x, p.z, p.w, p.d)
+      if (y0 < SEA_Y + 1 || y1 - y0 > (block ? 3 : 2.2)) continue
+      const walls = WALLS[district]
+      const roofs = ROOFS[district]
+      const sh = shapeOf(p.kind, p.height, p.w, p.d)
+      const k = hash2(Math.round(p.x), Math.round(p.z), 0x51f3)
+      s.ownX = p.x
+      s.ownZ = p.z
+      building(s, level, p.x, p.z, p.w, p.d, y0 - 0.5, sh.h + 0.5, sh.gable,
+        walls[k % walls.length], roofs[(k >>> 8) % roofs.length],
+        p.kind === 'house' ? 0 : district === 'suburb' ? 0 : 1, (k & 0xffff) / 97)
+      s.ownX = 1e9
+      s.ownZ = 1e9
     }
   }
-  const n = district === 'downtown' ? (rng() < 0.55 ? 1 : 2) : district === 'midrise' ? 2 : 3
-  const cell = inner / n
-  for (let gz = 0; gz < n; gz++)
-    for (let gx = 0; gx < n; gx++) {
-      if (n === 3 && gx === 1 && gz === 1) continue
-      const roll = rng()
-      if (district === 'suburb' && roll > 0.86) continue
-      const fill = district === 'downtown' ? 0.86 : district === 'midrise' ? 0.8 : 0.62
-      const w = cell * fill * (0.85 + rng() * 0.3)
-      const d = cell * fill * (0.85 + rng() * 0.3)
-      const bx = lo + (gx + 0.5) * cell + (rng() - 0.5) * cell * 0.12
-      const bz = lz + (gz + 0.5) * cell + (rng() - 0.5) * cell * 0.12
-      if (!clearOfHome(bx, bz, w, d)) continue
-      const kind = KIND_FOR(district, roll)
-      const [y0, y1] = base(bx, bz, w, d)
-      if (y0 < SEA_Y + 1 || y1 - y0 > 2.2) continue
-      put(kind, bx, bz, w, d, y0, height * (0.7 + rng() * 0.6))
-    }
 }
 
 /* ---------------------------------------------------------------- roads -- */
@@ -644,64 +618,70 @@ const blockImpostors = (
 const ASPHALT = new THREE.Color('#2b2d31').multiplyScalar(1.1)
 
 /**
- * The roads out in the country, as flat strips laid on the far terrain. In
- * town the ground shader draws every street itself (they run along every
- * chunk border); outside one, only some borders carry a road, so each
- * border segment of the tile asks `roadAt` at three points along it and a
- * strip goes down where it says asphalt. The strip follows the tile's own
- * height samples along the border, which is a vertex column of the terrain,
- * so it lies on the drawn surface, lifted a little more the coarser the ring.
+ * The streets, as flat strips laid on the far terrain: every street of every
+ * town near the tile, in town and on the roads out, straight off the plan
+ * (streets.ts) rather than sampled. A strip goes down per step of each
+ * segment whose middle is inside this tile and where the street is present
+ * (roadAt's own rule: live, and belonging to the town that claims the
+ * ground), following the tile's own height samples and lifted a little more
+ * the coarser the ring.
  */
-function* countryRoads(
-  s: Soup, level: number, c0: number, d0: number, per: number, cell: number,
+function* townRoads(
+  s: Soup, level: number, x0: number, z0: number, S: number, cell: number,
   ground: (x: number, z: number) => number,
 ): Generator<void, void> {
   const lift = 0.4 + cell * 0.06
   const half = 3.4
   const step = Math.max(cell, 8)
-  const strip = (ax: number, az: number, bx: number, bz: number, alongX: boolean) => {
-    const n = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az) / step))
-    const o = s.count
-    for (let i = 0; i <= n; i++) {
-      const x = ax + ((bx - ax) * i) / n
-      const z = az + ((bz - az) * i) / n
-      const y = Math.max(ground(x, z), SEA_Y + 0.3) + lift
-      if (alongX) {
-        s.vert(x, y, z - half, 0, 1, 0, ASPHALT, 2, level, 0, 0)
-        s.vert(x, y, z + half, 0, 1, 0, ASPHALT, 2, level, 0, 0)
-      } else {
-        s.vert(x - half, y, z, 0, 1, 0, ASPHALT, 2, level, 0, 0)
-        s.vert(x + half, y, z, 0, 1, 0, ASPHALT, 2, level, 0, 0)
+  const x1 = x0 + S
+  const z1 = z0 + S
+  const towns = townsNear(x0 + S / 2, z0 + S / 2)
+  const shared = towns.length > 1
+  for (const t of towns) {
+    const reach = t.radius * SPINE_REACH + 200
+    const dx = Math.max(x0 - t.x, 0, t.x - x1)
+    const dz = Math.max(z0 - t.z, 0, t.z - z1)
+    if (Math.hypot(dx, dz) > reach) continue
+    const net = networkOf(t)
+    let n = 0
+    for (const p of net.pieces) {
+      if (p.bulb) continue
+      const bx = p.ax + p.ux * p.len
+      const bz = p.az + p.uz * p.len
+      if (Math.max(p.ax, bx) < x0 - half || Math.min(p.ax, bx) > x1 + half ||
+        Math.max(p.az, bz) < z0 - half || Math.min(p.az, bz) > z1 + half) continue
+      const k = Math.max(1, Math.round(p.len / step))
+      const nx = -p.uz * half
+      const nz = p.ux * half
+      for (let i = 0; i < k; i++) {
+        const f0 = i / k
+        const f1 = (i + 1) / k
+        const mx = p.ax + p.ux * p.len * (f0 + f1) / 2
+        const mz = p.az + p.uz * p.len * (f0 + f1) / 2
+        if (mx < x0 || mx >= x1 || mz < z0 || mz >= z1) continue
+        if (liveOf(p, p.len * (f0 + f1) / 2) < 0.35) continue
+        if (shared && nearestTown(mx, mz) !== t) continue
+        const ax = p.ax + p.ux * p.len * f0
+        const az = p.az + p.uz * p.len * f0
+        const ex = p.ax + p.ux * p.len * f1
+        const ez = p.az + p.uz * p.len * f1
+        const ya = Math.max(ground(ax, az), SEA_Y + 0.3) + lift
+        const yb = Math.max(ground(ex, ez), SEA_Y + 0.3) + lift
+        const o = s.count
+        // across (-1..1) and arc length ride along for the night's lamps
+        const sa = p.street.s[p.i] + p.len * f0
+        const sb = p.street.s[p.i] + p.len * f1
+        s.vert(ax - nx, ya, az - nz, 0, 1, 0, ASPHALT, 2, level, -1, sa)
+        s.vert(ax + nx, ya, az + nz, 0, 1, 0, ASPHALT, 2, level, 1, sa)
+        s.vert(ex - nx, yb, ez - nz, 0, 1, 0, ASPHALT, 2, level, -1, sb)
+        s.vert(ex + nx, yb, ez + nz, 0, 1, 0, ASPHALT, 2, level, 1, sb)
+        // wound to face up whichever way the street runs
+        s.idx.push(o, o + 1, o + 3, o, o + 3, o + 2)
       }
-      if (i > 0) {
-        const p = o + (i - 1) * 2
-        // wound to face up whichever way the strip runs
-        if (alongX) s.idx.push(p, p + 1, p + 3, p, p + 3, p + 2)
-        else s.idx.push(p, p + 2, p + 3, p, p + 3, p + 1)
-      }
+      // a slice every so often: a city is a few thousand segments
+      if ((++n & 255) === 255) yield
     }
   }
-  const asphalt = (x: number, z: number) => {
-    const pl = placeAt(x, z)
-    if (pl.district) return false
-    return roadAt(x, z, pl).asphalt
-  }
-  for (let j = 0; j <= per; j++)
-    for (let i = 0; i < per; i++) {
-      // the border along x at the chunk row's minimum z, and the one along z
-      const zl = originZ(d0 + j)
-      const xa = originX(c0 + i)
-      let hits = 0
-      for (const t of [0.25, 0.5, 0.75]) if (asphalt(xa + CHUNK * t, zl)) hits++
-      if (hits >= 2) strip(xa, zl, xa + CHUNK, zl, true)
-      const xl = originX(c0 + j)
-      const za = originZ(d0 + i)
-      hits = 0
-      for (const t of [0.25, 0.5, 0.75]) if (asphalt(xl, za + CHUNK * t)) hits++
-      if (hits >= 2) strip(xl, za, xl, za + CHUNK, false)
-      // a slice per few segments: the outer ring's tile has two thousand
-      if ((i & 7) === 7) yield
-    }
 }
 
 /* ---------------------------------------------------------------- tiles -- */
@@ -718,6 +698,20 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
   const cell = S / N
   const x0 = OFF_X + ti * S
   const z0 = OFF_Z + tj * S
+  // grow the street plans (and, where impostors will want them, the lots) of
+  // every town near the tile a slice at a time, before the height samples
+  // below ask for them all at once: a city's plan is several milliseconds
+  // in one piece, and this is where a town is usually first met
+  const near = new Set<Town>()
+  for (const [px, pz] of [[0.5, 0.5], [0, 0], [1, 0], [0, 1], [1, 1]]) {
+    for (const t of townsNear(x0 + S * px, z0 + S * pz)) near.add(t)
+  }
+  for (const t of near) {
+    const dx = Math.max(x0 - t.x, 0, t.x - x0 - S)
+    const dz = Math.max(z0 - t.z, 0, t.z - z0 - S)
+    if (Math.hypot(dx, dz) > t.radius * SPINE_REACH + 200) continue
+    yield* prepareTown(t, level < IMPOSTOR_LEVELS)
+  }
   const W = N + 3
   const h = new Float32Array(W * W)
   for (let b = 0; b < W; b++) {
@@ -792,7 +786,7 @@ function* tileJob(level: number, ti: number, tj: number): Generator<void, THREE.
       yield
     }
   }
-  yield* countryRoads(s, level, c0, d0, per, cell, ground)
+  yield* townRoads(s, level, x0, z0, S, cell, ground)
   yield
   return s.build()
 }

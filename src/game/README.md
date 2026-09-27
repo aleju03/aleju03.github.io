@@ -301,9 +301,8 @@ world/
                   depends on how many were drawn before it, and out here the
                   draw order is whatever the player's feet decided
   grid.ts         CHUNK/GRID/offsets. Chunk (0,0) is the block the house
-                  stands in, which is why roads land on chunk borders and the
-                  street in front of the property lands exactly where the
-                  hand-made one used to (z = -11.2)
+                  stands in, and the street in front of the property lands
+                  exactly where the hand-made one used to (z = -11.2)
   land.ts         the raw planet: continents, erosion, ranges, rivers, basins,
                   latitude temperature + moisture, and the desert oases,
                   site-hashed bowls sunk through the waterline whose moisture
@@ -317,10 +316,28 @@ world/
                   scatter densities
   terrain.ts      land + settlement grading + the house pad -> the finished
                   ground. terrainY() reproduces the drawn mesh exactly
-  settlements.ts  town sites, districts (downtown/midrise/suburb), the street
-                  lattice, frayed by hashed segment dropout into T-junctions,
-                  dead ends and double blocks, and the roads that run out
-                  into the country
+  settlements.ts  town sites, districts (downtown/midrise/suburb, with
+                  noise-jittered edges), the town's graded shelf, and roadAt
+                  / roadArms answered off the town's plan
+  streets.ts      a town's plan, grown once per town and cached: four
+                  independently spaced quadrant grids meeting the two
+                  arterials at staggered Ts (the arterials run on out as the
+                  roads into the country), segment dropout and jogs, one or
+                  two diagonal avenues, a plaza and pocket parks, then the
+                  suburbs: wavy collectors, and per superblock a crescent,
+                  loop, culs-de-sac, a meander, a park or a school/church,
+                  plus infill connectors and culs-de-sac off every collector.
+                  Then the lots: every street side walked junction to
+                  junction and platted by distance from the middle (towers
+                  clustered at the centre, shopfronts on the main street,
+                  corner shops), accepted greedily in priority order. A pure
+                  function of the town; a resumable job so the far field can
+                  grow it in slices (prepareTown)
+  streetMesh.ts   a chunk's share of the plan as geometry: mitred asphalt
+                  ribbons, pavements cut wherever they meet another street's
+                  asphalt, kerbs, dashes, turning circles and lamps by arc
+                  length, every polygon cut on the terrain lattice's creases
+                  so the deck copies the drawn ground exactly
   landmarks.ts    the second site grid: what stands in the *country*. One
                   jittered candidate per 400 units, gated on biome, slope and
                   a two-ring coast test, thrown out on roads, in towns and
@@ -368,7 +385,8 @@ world/
                   picks brick, shingle, paving, bark... computed in the
                   fragment shader from world position, because merged
                   geometry has no UVs to tile a texture across
-  chunk.ts        one block: ground, water, streets, buildings, scatter
+  chunk.ts        one 64-unit chunk: ground, water, streets (streetMesh),
+                  the town's lots whose centres fall in it, scatter
   debris.ts       what a car drives through. Chunk geometry is one merged
                   soup, so a felled tree is a *span* of it: copied out into
                   its own little mesh, collapsed where it stood, and thrown
@@ -392,14 +410,14 @@ world/
                   square rings of coarse terrain tiles (8, 16, 32, 64-unit
                   cells, gfx.farLevels of them) out to 2-4 km, the sea held
                   flat with its depth banded and a one-pixel foam line,
-                  streets, a lit canopy and town impostors (the first lot of
-                  every block drawn off buildBlock's own seeded draws) in one
+                  street strips and town impostors off the same plan and lots
+                  chunk.ts builds, a lit canopy, all in one
                   program and one draw a tile. It discards what a finer ring
                   or a solid chunk already draws, stitches its ring edges to
                   the next ring's polyline, swaps a ring in whole, and builds
                   in resumable slices inside the streamer's budget. Past the
-                  impostor rings the ground shader paints each block's lots
-                  as roofs, country roads are strips off roadAt, forests keep
+                  impostor rings the ground shader paints lots as roofs, the
+                  streets stay strips, forests keep
                   stands and gaps, and rock bands carry strata and gullies,
                   so a town and its roads reach the horizon. From the air the
                   ring shrinks to the flora chunks (RADIUS_FAR) and this

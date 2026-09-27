@@ -4,7 +4,7 @@ import {
   elevationAt, moistureAt, riverAt, temperatureAt, terraceAt, SEA_Y,
 } from './land'
 import {
-  pavedAt, placeAt, roadAt, townGradedHeight, type Place, type Road,
+  pavedAt, placeAt, roadAt, roadArms, townGradedHeight, type Place, type Road, type RoadArm,
 } from './settlements'
 import { landmarkGradedHeight } from './landmarks'
 import { GRID, OFF_X, OFF_Z, RESERVED } from './grid'
@@ -28,8 +28,9 @@ import { fieldWeight } from './groundLook'
     its own centreline — the same skirt-bent profile the terrain has — so one
     continuous grade runs from the town shelf into the countryside and a lane
     rides the hills lengthways while staying level underfoot. The bank either
-    side runs longer the deeper the corridor cuts, which is what keeps a
-    hillside cutting from standing as a 70-degree wall over the shoulder.
+    side is a plane at the batter, and the streets combine as the strongest
+    pull up and down rather than a sum, so no bank anywhere is steeper than
+    natural plus the batter (swept: 29 degrees over natural, worst case).
   - a landmark levels the pad it stands on and eases out of it (landmarks.ts's
     landmarkGradedHeight). It runs after the roads and never argues with them,
     because a site with a road inside 26 units is thrown away at siting time
@@ -60,11 +61,14 @@ const APRON = 26
 
 /** the pitch of a road's cut-and-fill bank, rise per unit (~29 degrees) */
 const BATTER = 0.55
-/** where a road's earthwork must be fully released. Kept under half a chunk:
-    roadAt only ever sees the nearest lattice line, so an earthwork reaching
-    past the midline between two streets would be cut off mid-bank by the
-    nearest-line flip — probed at an 11-unit cliff hiding exactly there. */
+/** where a road's earthwork must be fully released. It must stay inside the
+    street index's filing margin (streets.ts's MARGIN): a street further away
+    than that is not in the lookup's list at all, so an earthwork reaching
+    past it would be cut off mid-bank, which is the 11-unit cliff the old
+    nearest-line lookup once hid exactly there. */
 const REACH = 30
+
+const arms: RoadArm[] = []
 
 export interface Surface {
   height: number
@@ -80,45 +84,40 @@ export interface Surface {
 export const heightAt = (x: number, z: number) => {
   const place = placeAt(x, z)
   let h = townGradedHeight(place, elevationAt(x, z))
-  const road = roadAt(x, z, place)
-  if (road.axis) {
+  roadArms(x, z, place, REACH, arms)
+  if (arms.length) {
     const deep = place.town !== null && place.d < 0.8
-    // one street's earthwork: pull the ground toward the road's level — the
-    // graded ground along its own centreline, which the town skirt has
-    // already bent onto the shelf, so one continuous profile runs from the
-    // middle of town into the open country — by at most the offset that can
-    // still be released back to the hillside at the batter pitch within the
-    // corridor's reach. min(need, slack) is the whole shape: a level bench
-    // where the slack exceeds the need, a bank at the batter past it,
-    // nothing at all by REACH, and every slope it can produce is bounded at
-    // natural-plus-batter by construction. An earlier version shaped the
-    // bank with a smoothstep whose width came from the pointwise cut depth,
-    // and on a mountainside the falloff's edge receded faster than the
-    // walker climbed toward it: a 70-degree wall out in the grass, which is
-    // the quarry face this formulation exists to prevent.
-    const earthwork = (axis: 'x' | 'z', line: number, dist: number, live: number, end: number) => {
-      const target = deep
-        ? place.padY
-        : axis === 'x'
-          ? townGradedHeight(placeAt(x, line), elevationAt(x, line))
-          : townGradedHeight(placeAt(line, z), elevationAt(line, z))
-      const want = target - h
-      // the run left to release in: sideways to the corridor's reach, or
-      // along the line to where the street's live run stops (RoadArm.end)
-      const slack = BATTER * Math.max(0, Math.min(REACH - dist, end))
-      const mag = Math.min(Math.abs(want), slack)
-      if (mag > 0) h += (want > 0 ? mag : -mag) * live
+    // the streets' earthwork: pull the ground toward a road's level (the
+    // graded ground along its centreline, sampled at its vertices and
+    // interpolated, which the town skirt has already bent onto the shelf, so
+    // one continuous profile runs from the middle of town into the open
+    // country; inside the town proper, the shelf itself) by at most the
+    // offset that can still be released back to the hillside at the batter
+    // pitch within the corridor's reach. min(need, slack) is the whole shape:
+    // a level bench where the slack exceeds the need, a bank at the batter
+    // past it, nothing at all by REACH, and every slope it can produce is
+    // bounded at natural-plus-batter by construction. An earlier version
+    // shaped the bank with a smoothstep whose width came from the pointwise
+    // cut depth, and on a mountainside the falloff's edge receded faster than
+    // the walker climbed toward it: a 70-degree wall out in the grass, which
+    // is the quarry face this formulation exists to prevent.
+    //
+    // Distance is to each *segment*, end caps and all, so a dead end releases
+    // its bench radially instead of leaving a scarp across the end of the
+    // road. One arm per street (its segments blended), and the streets
+    // combine as the strongest pull up plus the strongest pull down
+    // (settlements.ts's roadArms says why a sum stacks into walls), which,
+    // being a max of bounded continuous pulls, keeps the bound and cannot
+    // step wherever the nearest street changes
+    let up = 0
+    let down = 0
+    for (const arm of arms) {
+      const want = (deep ? place.padY : arm.level) - h
+      const mag = Math.min(Math.abs(want), BATTER * Math.max(0, REACH - arm.dist)) * arm.live
+      if (want > 0) up = Math.max(up, mag)
+      else down = Math.max(down, mag)
     }
-    // both streets shape the ground, in fixed axis order — never "nearest
-    // first", which flips along the block corner's diagonal (Road.other)
-    const arms: Array<[('x' | 'z'), number, number, number, number]> = [
-      [road.axis, road.line, road.dist, road.live, road.end],
-    ]
-    if (road.other) {
-      arms.push([road.other.axis, road.other.line, road.other.dist, road.other.live, road.other.end])
-    }
-    if (arms.length === 2 && arms[0][0] === 'z') arms.reverse()
-    for (const [axis, line, dist, live, end] of arms) earthwork(axis, line, dist, live, end)
+    h += up - down
   }
   h = landmarkGradedHeight(x, z, h)
   // the authored property, and a short apron so the lawn doesn't meet a bank

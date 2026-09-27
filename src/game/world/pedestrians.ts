@@ -267,7 +267,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
 
   /*
     Somewhere to start. The search is deliberately over *bearings from the
-    camera* rather than over the street grid: the streets are a field, the
+    camera* rather than over the street plan: the streets are a field, the
     walkable band is 1.5 units wide, and hunting for it by sampling a ring is
     both simpler and better behaved at a junction than solving for one.
   */
@@ -280,14 +280,14 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       const place = placeAt(x0, z0)
       if (!place.district) continue
       const road = roadAt(x0, z0, place)
-      if (!road.axis) continue
+      if (road.dist > 30) continue
       // step off the centreline onto one of the two pavements, which is one
       // move rather than a search: roadAt says which way the street runs and
       // where its middle is
       for (const side of [1, -1]) {
-        const x = road.axis === 'x' ? x0 : road.line + side * WALK_MID
-        const z = road.axis === 'x' ? road.line + side * WALK_MID : z0
-        if (onWalk(x, z)) return { x, z, axis: road.axis }
+        const x = road.footX - road.dirZ * side * WALK_MID
+        const z = road.footZ + road.dirX * side * WALK_MID
+        if (onWalk(x, z)) return { x, z, dx: road.dirX, dz: road.dirZ }
       }
     }
     return null
@@ -366,9 +366,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     p.x = spot.x
     p.z = spot.z
     // set off along the street rather than across it
-    p.yaw = spot.axis === 'x'
-      ? (rnd() < 0.5 ? Math.PI / 2 : -Math.PI / 2)
-      : (rnd() < 0.5 ? 0 : Math.PI)
+    p.yaw = Math.atan2(-spot.dx, -spot.dz) + (rnd() < 0.5 ? 0 : Math.PI)
     p.gait = 1
     p.settle = 0
     p.pause = 0
