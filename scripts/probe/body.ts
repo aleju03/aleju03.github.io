@@ -9,6 +9,7 @@ import {
   CABIN_FIT, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../../src/game/player/playerBody'
 import type { RagdollEnv } from '../../src/game/player/ragdoll'
+import { setBodyBuildSync } from '../../src/game/player/bodyShape'
 import { DEFAULT_LOOK, type PlayerLook } from '../../src/game/player/look'
 import { createVehicleMaterials } from '../../src/game/vehicles/materials'
 import { buildCar } from '../../src/game/vehicles/car'
@@ -605,6 +606,8 @@ let renderer: THREE.WebGLRenderer | null = null
 let look: PixelLook | null = null
 
 export const shootBody = (spec: BodySpec) => {
+  // every body here is photographed finished, never in a stand-in variant
+  setBodyBuildSync(true)
   const canvas = document.getElementById('c') as HTMLCanvasElement
   const [tw, th] = spec.tile
   // collect the snapshots first: each renders straight away, into its slot

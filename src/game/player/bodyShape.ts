@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import {
-  ellipsoid, roundCone, segDist, smax, smin, surfaceNets, type Field,
+  drain, ellipsoid, roundCone, segDist, smax, smin, surfaceNetsSteps, type Field,
 } from './isoSurface'
 
 /*
@@ -621,7 +621,7 @@ const SMOOTH_ROUNDS = 10
  * of position (the bean's height bands, an elbow's ramp), and sweeping the
  * whole skin was most of what a variant cost to build.
  */
-const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number, seed: (v: number) => boolean) => {
+function* smoothWeights(full: Float32Array, idx: Uint32Array, V: number, seed: (v: number) => boolean): Generator<void, void, void> {
   // neighbour lists, compressed
   const deg = new Uint32Array(V + 1)
   for (let t = 0; t < idx.length; t++) deg[idx[t] + 1] += 2
@@ -654,6 +654,7 @@ const smoothWeights = (full: Float32Array, idx: Uint32Array, V: number, seed: (v
   }
   const mix = new Uint32Array(V)
   for (let r = 0; r < SMOOTH_ROUNDS; r++) {
+    yield
     // grow first, so this round already reaches one ring further
     const n0 = band.length
     for (let i = 0; i < n0; i++) {
@@ -734,25 +735,30 @@ const BODY_STEP = 0.047
 const GEAR_STEP = 0.033
 
 const BODY_SURF: Array<Piece | null> = new Array(BUILD_COUNT).fill(null)
-const bodySurface = (b: number): Piece => {
+/** one build's bean, as steps (see pumpBodyBuilds) */
+function* bodySurfaceSteps(b: number): Generator<void, Piece, void> {
   const cached = BODY_SURF[b]
   if (cached) return cached
   const fr = frameFor(b)
   const { bd } = fr
   const reachX = SHOULDER_X + (UARM + FARM + 0.3) * Math.sin(ARM_BIND) + 0.1
   const depth = bd.a * bd.zs + 0.05
-  const m = surfaceNets(fr.body, [-reachX, 0, -depth - 0.12], [reachX, fr.crown + 0.04, Math.max(depth, 0.34)], BODY_STEP)
+  const m = yield* surfaceNetsSteps(
+    fr.body, [-reachX, 0, -depth - 0.12], [reachX, fr.crown + 0.04, Math.max(depth, 0.34)], BODY_STEP,
+  )
   const V = m.pos.length / 3
   const si = new Uint16Array(V * 4)
   const sw = new Float32Array(V * 4)
   const part = new Float32Array(V * 2)
   const full = new Float32Array(V * BONE_COUNT)
   for (let v = 0; v < V; v++) {
+    if ((v & 255) === 255) yield
     weighBody(fr, m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2], full, v * BONE_COUNT, part, v * 2)
   }
   // the band: wherever the skin is shared between the bean and a limb
-  smoothWeights(full, m.idx, V, (v) => part[v * 2] > 0.002 && part[v * 2] < 0.998)
+  yield* smoothWeights(full, m.idx, V, (v) => part[v * 2] > 0.002 && part[v * 2] < 0.998)
   for (let v = 0; v < V; v++) {
+    if ((v & 1023) === 1023) yield
     acc.set(full.subarray(v * BONE_COUNT, v * BONE_COUNT + BONE_COUNT))
     pick4(si, sw, v * 4)
   }
@@ -763,24 +769,28 @@ const bodySurface = (b: number): Piece => {
 
 /** one piece of headgear: a closed field in one paint, weighted like the
     head under it (or swung off the knot, for tails) */
+/** a piece still to be built: a generator factory, so the headgear list
+    can be drawn up at once and each piece built a slice at a time */
+type PieceJob = () => Generator<void, Piece, void>
 const gearPiece = (
   fr: Frame, f: Field, lo: [number, number, number], hi: [number, number, number], role: number,
   tails?: THREE.Vector3,
   step = GEAR_STEP,
-): Piece => {
+): PieceJob => function* () {
   // a generous Lipschitz allowance: flattened ellipsoids and a drooped brim
   // overstate their distances, and a block wrongly skipped as far is a
   // hole in a brim
-  const m = surfaceNets(f, lo, hi, step, 2.5)
+  const m = yield* surfaceNetsSteps(f, lo, hi, step, 2.5)
   const V = m.pos.length / 3
   const si = new Uint16Array(V * 4)
   const sw = new Float32Array(V * 4)
   const part = new Float32Array(V * 2)
-  const body = bodySurface(fr.index)
+  const body = yield* bodySurfaceSteps(fr.index)
   const near = nearestOn(body)
   const ni = new Int32Array(KN)
   const nd = new Float64Array(KN)
   for (let v = 0; v < V; v++) {
+    if ((v & 255) === 255) yield
     const x = m.pos[v * 3]
     const y = m.pos[v * 3 + 1]
     const z = m.pos[v * 3 + 2]
@@ -899,7 +909,7 @@ const bandField = (
 }
 
 /** a knot at the back of the head and two tails hanging off it */
-const knotAndTails = (fr: Frame, at: THREE.Vector3, role: number, long: number): Piece[] => {
+const knotAndTails = (fr: Frame, at: THREE.Vector3, role: number, long: number): PieceJob[] => {
   const knot = ellipsoid(at.x, at.y, at.z, 0.1, 0.085, 0.08)
   const tails: Field[] = [1, -1].map((s) => {
     const a = roundCone(at.x + s * 0.03, at.y - 0.02, at.z - 0.02, at.x + s * 0.07, at.y - 0.12, at.z - 0.1, 0.055, 0.05)
@@ -912,7 +922,7 @@ const knotAndTails = (fr: Frame, at: THREE.Vector3, role: number, long: number):
   return [gearPiece(fr, f, [at.x - 0.3, at.y - long - 0.12, at.z - 0.35], [at.x + 0.3, at.y + 0.15, at.z + 0.14], role, at)]
 }
 
-const hatPieces = (fr: Frame, kind: number): Piece[] => {
+const hatPieces = (fr: Frame, kind: number): PieceJob[] => {
   const { bd, crown } = fr
   const zs = bd.zs
   const A = ROLE.ACCENT
@@ -1094,19 +1104,16 @@ const SHARED: Array<THREE.BufferGeometry | null> = new Array(HAT_COUNT * BUILD_C
 /** how long the last variant took to build, ms (the measure prints it) */
 export let lastBuildMs = 0
 
-export const bodyGeometry = (
-  hat = 0, buildIndex = 0, costumeIndex = 0, faceIndex = 0,
-): THREE.BufferGeometry => {
-  void costumeIndex
-  void faceIndex
-  const kind = Math.max(0, Math.min(HAT_COUNT - 1, Math.floor(hat)))
-  const b = clampBuild(buildIndex)
+/** one variant, as steps: its build's bean, each piece of its headgear,
+    then the concatenation. Returns the shared geometry */
+function* variantSteps(kind: number, b: number): Generator<void, THREE.BufferGeometry, void> {
   const key = kind * BUILD_COUNT + b
   const cached = SHARED[key]
   if (cached) return cached
-  const t0 = typeof performance !== 'undefined' ? performance.now() : 0
   const fr = frameFor(b)
-  const pieces = [bodySurface(b), ...hatPieces(fr, kind)]
+  const pieces = [yield* bodySurfaceSteps(b)]
+  for (const job of hatPieces(fr, kind)) pieces.push(yield* job())
+  yield
   let V = 0
   let I = 0
   for (const p of pieces) {
@@ -1146,9 +1153,90 @@ export const bodyGeometry = (
   g.computeBoundingSphere()
   g.userData.shared = true
   SHARED[key] = g
+  return g
+}
+
+const clampHat = (hat: number) => Math.max(0, Math.min(HAT_COUNT - 1, Math.floor(hat)))
+
+/** a variant, built on the spot if it is not built yet. What Node, the
+    probes and the very first body of a session use; everything that can
+    wait uses `requestBodyGeometry` */
+export const bodyGeometry = (
+  hat = 0, buildIndex = 0, costumeIndex = 0, faceIndex = 0,
+): THREE.BufferGeometry => {
+  void costumeIndex
+  void faceIndex
+  const t0 = typeof performance !== 'undefined' ? performance.now() : 0
+  const g = drain(variantSteps(clampHat(hat), clampBuild(buildIndex)))
   lastBuildMs = (typeof performance !== 'undefined' ? performance.now() : 0) - t0
   warmLater()
   return g
+}
+
+/*
+  Building a variant takes a few dozen milliseconds, and a variant is first
+  needed at the worst moment: a stranger in a new hat walking into view, a
+  pedestrian spawned mid-stride, a player changing their look. So outside of
+  Node a new variant is never built on the spot. It is queued, the body
+  wears a variant that is already built (its own build bare, or any) until it
+  is ready, and the queue is worked a slice at a time by `tickBodyBuilds`,
+  which every body's update calls and which does at most TICK_BUDGET_MS of
+  building in any TICK_EVERY_MS of wall clock, however many bodies there
+  are. The first variant of a session is the exception: there is nothing to
+  wear instead, and it is built under the boot cover anyway.
+*/
+const TICK_BUDGET_MS = 2.5
+const TICK_EVERY_MS = 10
+let syncBuilds = typeof window === 'undefined'
+/** true: every variant is built the moment it is asked for (Node, the
+    probes, anything that must see the finished body at once) */
+export const setBodyBuildSync = (sync: boolean) => {
+  syncBuilds = sync
+}
+interface BuildJob {
+  key: number
+  gen: Generator<void, THREE.BufferGeometry, void>
+}
+const queue: BuildJob[] = []
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+const enqueue = (kind: number, b: number) => {
+  const key = kind * BUILD_COUNT + b
+  if (SHARED[key] || queue.some((j) => j.key === key)) return
+  queue.push({ key, gen: variantSteps(kind, b) })
+}
+/** the variant, if it is built; otherwise it is queued and this is null */
+export const requestBodyGeometry = (hat: number, buildIndex: number): THREE.BufferGeometry | null => {
+  const kind = clampHat(hat)
+  const b = clampBuild(buildIndex)
+  const cached = SHARED[kind * BUILD_COUNT + b]
+  if (cached) return cached
+  if (syncBuilds || !SHARED.some((g) => g)) return bodyGeometry(kind, b)
+  enqueue(kind, b)
+  return null
+}
+/** something already built to wear while a variant is queued: the same
+    build bare-headed, or failing that anything */
+export const fallbackBodyGeometry = (buildIndex: number): THREE.BufferGeometry => {
+  const b = clampBuild(buildIndex)
+  return SHARED[6 * BUILD_COUNT + b] ?? SHARED.find((g) => g) ?? bodyGeometry(6, b)
+}
+/** work the queue for up to `budgetMs`. Returns whether anything is left */
+export const pumpBodyBuilds = (budgetMs: number): boolean => {
+  const t0 = now()
+  while (queue.length && now() - t0 < budgetMs) {
+    const job = queue[0]
+    if (SHARED[job.key] || job.gen.next().done) queue.shift()
+  }
+  return queue.length > 0
+}
+let lastTick = -Infinity
+/** the per-frame share of the queue: cheap to call from every body */
+export const tickBodyBuilds = () => {
+  if (!queue.length) return
+  const t = now()
+  if (t - lastTick < TICK_EVERY_MS) return
+  lastTick = t
+  pumpBodyBuilds(TICK_BUDGET_MS)
 }
 
 /*
@@ -1169,22 +1257,23 @@ const warmLater = () => {
   const ric = (globalThis as { requestIdleCallback?: Idle }).requestIdleCallback
   if (warming || !ric) return
   warming = true
-  const next = (): (() => void) | null => {
-    for (let b = 0; b < BUILD_COUNT; b++) if (!BODY_SURF[b]) return () => bodySurface(b)
+  const next = () => {
+    // every build's bare bean first (the fallback everything else wears),
+    // then every headgear on every build
+    for (let b = 0; b < BUILD_COUNT; b++) if (!SHARED[6 * BUILD_COUNT + b]) return enqueue(6, b)
     for (let k = 0; k < SHARED.length; k++) {
-      if (!SHARED[k]) return () => bodyGeometry(Math.floor(k / BUILD_COUNT), k % BUILD_COUNT)
+      if (!SHARED[k]) return enqueue(Math.floor(k / BUILD_COUNT), k % BUILD_COUNT)
     }
-    return null
   }
   const step = (d: { timeRemaining: () => number }) => {
-    const job = next()
-    if (!job) return
-    if (d.timeRemaining() >= 14) job()
+    if (!queue.length) next()
+    if (!queue.length) return
+    const left = d.timeRemaining() - 1
+    if (left > 1) pumpBodyBuilds(left)
     ric(step)
   }
   ric(step)
 }
-
 /** the body's own field for a build: negative inside the skin. What the
     measure uses to leave out of its fold count anything buried inside the
     body, where nobody can see it (the underside of a hat, the inner face of

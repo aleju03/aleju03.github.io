@@ -5,7 +5,8 @@ import { seeded } from '../core/rand'
 import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
   B, BODY_Y0, BONE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HELPERS, HIP_X, HIP_Y,
-  NECK_OFF, SHIN, THIGH, WAIST_OFF, bodyGeometry, bindMatrixWorld,
+  NECK_OFF, SHIN, THIGH, WAIST_OFF, bindMatrixWorld, fallbackBodyGeometry, requestBodyGeometry,
+  tickBodyBuilds,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
 
@@ -509,7 +510,16 @@ export function buildPlayerBody(
   let hatNow = look.hat ?? 0
   let buildNow = look.build ?? 0
   paint.setFace(persona.face)
-  const mesh = new THREE.SkinnedMesh(bodyGeometry(hatNow, buildNow), paint.material)
+  // a variant not built yet is queued and the body wears a built one until
+  // it lands (see bodyShape's tickBodyBuilds): building it on the spot is a
+  // dropped frame whenever a stranger in a new hat walks into view
+  let geoPending = false
+  const wear = () => {
+    const g = requestBodyGeometry(hatNow, buildNow)
+    geoPending = !g
+    return g ?? fallbackBodyGeometry(buildNow)
+  }
+  const mesh = new THREE.SkinnedMesh(wear(), paint.material)
   mesh.castShadow = true
   mesh.frustumCulled = false // hugs the camera; culling would blink limbs out
   // for callers that do cull it (remote bodies): a fixed sphere round the
@@ -2235,7 +2245,7 @@ export function buildPlayerBody(
       if (hat !== hatNow || b !== buildNow) {
         hatNow = hat
         buildNow = b
-        mesh.geometry = bodyGeometry(hat, b)
+        mesh.geometry = wear()
       }
     },
     showHead,
@@ -2272,6 +2282,8 @@ export function buildPlayerBody(
       downTime = 0
     },
     update: (pose, env) => {
+      tickBodyBuilds()
+      if (geoPending) mesh.geometry = wear()
       seated = false
       lastVel.set(pose.vx, pose.vy, pose.vz)
       showHead(pose.show > 0.12)

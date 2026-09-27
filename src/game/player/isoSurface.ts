@@ -60,6 +60,32 @@ export function surfaceNets(
   h: number,
   lip = 1.35,
 ): IsoMesh {
+  return drain(surfaceNetsSteps(f, lo, hi, h, lip))
+}
+
+/** a generator run to its end, synchronously */
+export const drain = <T>(g: Generator<void, T, void>): T => {
+  let r = g.next()
+  while (!r.done) r = g.next()
+  return r.value
+}
+
+/** how much work (roughly, field evaluations) passes between yields */
+const SLICE = 600
+
+/**
+ * The same, as a generator that yields every few hundred field evaluations,
+ * so a caller can spread one mesh over several frames (see bodyShape's
+ * `pumpBodyBuilds`). Returns the mesh.
+ */
+export function* surfaceNetsSteps(
+  f: Field,
+  lo: readonly [number, number, number],
+  hi: readonly [number, number, number],
+  h: number,
+  lip = 1.35,
+): Generator<void, IsoMesh, void> {
+  let work = 0
   // one cell of padding all round, so the boundary is always outside
   const x0 = lo[0] - h
   const y0 = lo[1] - h
@@ -86,8 +112,13 @@ export function surfaceNets(
         const ey = Math.min(ny - 1, by + BLK)
         const ez = Math.min(nz - 1, bz + BLK)
         const c = f(x0 + ((bx + ex) / 2) * h, y0 + ((by + ey) / 2) * h, z0 + ((bz + ez) / 2) * h)
+        if (++work > SLICE) {
+          work = 0
+          yield
+        }
         if (Math.abs(c) > reach) continue
         near.push(bx, by, bz)
+        work += 125
         for (let k = bz; k <= ez; k++)
           for (let j = by; j <= ey; j++)
             for (let i = bx; i <= ex; i++) {
@@ -111,6 +142,10 @@ export function surfaceNets(
   const cv = new Float64Array(8)
   const OFF = CORNERS.map((o) => o[0] * sx + o[1] * sy + o[2] * sz)
   for (let q = 0; q < near.length; q += 3) {
+    if ((work += 40) > SLICE) {
+      work = 0
+      yield
+    }
     const bx = near[q]
     const by = near[q + 1]
     const bz = near[q + 2]
@@ -177,6 +212,10 @@ export function surfaceNets(
     else I.push(a, b, d, b, c, d)
   }
   for (let q = 0; q < near.length; q += 3) {
+    if ((work += 40) > SLICE) {
+      work = 0
+      yield
+    }
     const bx = near[q]
     const by = near[q + 1]
     const bz = near[q + 2]
@@ -205,6 +244,10 @@ export function surfaceNets(
   const nrm = new Float32Array(V * 3)
   const e = h * 0.12
   for (let v = 0; v < V; v++) {
+    if ((work += 8) > SLICE) {
+      work = 0
+      yield
+    }
     let x = P[v * 3]
     let y = P[v * 3 + 1]
     let z = P[v * 3 + 2]

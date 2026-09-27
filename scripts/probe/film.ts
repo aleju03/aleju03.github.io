@@ -19,6 +19,11 @@ import { setBatching } from '../../src/game/sandbox/batch'
 import { buildPlayerBody, type PlayerPose, type PlayerRig } from '../../src/game/player/playerBody'
 import { randomLook } from '../../src/game/player/look'
 import type { RagdollEnv } from '../../src/game/player/ragdoll'
+import { setBodyBuildSync } from '../../src/game/player/bodyShape'
+
+// a film photographs finished bodies, never the stand-in a queued variant
+// wears in the live game
+setBodyBuildSync(true)
 
 // nobody is listening to a film: every impact would spin up a voice for nothing
 setPropSounds(false)
