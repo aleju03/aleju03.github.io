@@ -118,6 +118,8 @@ export function createDriveCam(): DriveCam {
   const smoothed = new THREE.Vector3()
   const lookAt = new THREE.Vector3()
   const lookM = new THREE.Matrix4()
+  /** the rigid boom's eased offset from its anchor */
+  const rigidOff = new THREE.Vector3(0, 4, 12)
   const up = new THREE.Vector3(0, 1, 0)
 
   const blocked = (p: THREE.Vector3, env: DriveEnv) => {
@@ -306,7 +308,13 @@ export function createDriveCam(): DriveCam {
       // position is smoothed, but a shortening boom is not: a camera that
       // eases into a wall shows you the inside of it
       const grab = dist < 0.001 ? 1 : 1 - Math.exp(-(9 + fast * 8) * dt)
-      smoothed.lerp(want, grab)
+      if (view.rigid) {
+        // in the machine's frame: the offset from the anchor is what eases,
+        // so a ship crossing kilometres a second keeps its boom length
+        want.sub(anchor)
+        rigidOff.lerp(want, grab)
+        smoothed.copy(anchor).add(rigidOff)
+      } else smoothed.lerp(want, grab)
       cam.position.copy(smoothed)
 
       lookAt.copy(focus)

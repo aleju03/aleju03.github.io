@@ -113,6 +113,9 @@ export interface Level {
   sandbox?: LevelSandbox
   /** the fleet lives here: its machines prompt, can be boarded and recalled */
   vehicles?: boolean
+  /** only the fleet's spacecraft fly here (the Moon): the ship lands, is
+      boarded and recalled, and the ground machines are a world away */
+  spacecraft?: boolean
   /** the town's pedestrians walk here: bumps, blasts and a car reach them */
   crowd?: boolean
   /** the house stands here: its doors, fittings, seats and television answer

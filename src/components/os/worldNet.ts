@@ -69,6 +69,9 @@ export interface WorldNet {
   seat: (v: number, seat: number) => void
   /** give up whichever chair we hold */
   unseat: () => void
+  /** take an empty machine on the physgun (or let it go); the answer is a
+      world-seats naming us as its hand, or a world-hold-denied */
+  hold: (v: number, on: boolean) => void
   /** we bumped into this player: the velocity their own client should take
       (game/net/shove.ts). Throttled by the caller, clamped by the server */
   shove: (to: PlayerId, vx: number, vy: number, vz: number) => void
@@ -154,14 +157,13 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   let spitch = NaN
   let sgait = NaN
   let sflags = -1
-  // and the same for the machine under us. A separate clock on purpose: the
+  // and the same for the machines under us. A separate clock on purpose: the
   // drive frame reports both, and one shared throttle would drop every other
-  // vehicle packet in favour of a pose that has not changed
-  let lastVehicle = 0
-  let vx = NaN
-  let vy = NaN
-  let vz = NaN
-  let vyaw = NaN
+  // vehicle packet in favour of a pose that has not changed. And one clock
+  // per machine, since a car still settling off the physgun reports while
+  // its thrower drives off in something else
+  const lastVehicle: number[] = []
+  const vLast: number[][] = []
 
   const setStatus = (next: WorldStatus) => {
     if (status === next) return
@@ -224,7 +226,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
         // suppressors think: the server we are talking to may be a different
         // process than the one that heard the last one
         sflags = -1
-        vx = NaN
+        vLast.length = 0
         return
       }
       if (data.type === 'nick-ok') {
@@ -328,22 +330,25 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     vehicle(v, x, y, z, yaw, pitch, roll) {
       if (!joined) return
       const now = performance.now()
-      if (now - lastVehicle < SEND_MS) return
+      const last = lastVehicle[v] ?? 0
+      if (now - last < SEND_MS) return
       // A parked machine with the engine running still has to say so — a late
       // arrival learns where it is from the welcome, but a machine that came
       // to rest between two of their snapshots would otherwise hold the last
-      // *moving* pose on everyone else's screen
+      // *moving* pose on everyone else's screen. Pitch and roll count: a car
+      // turned over on the physgun without moving is still moving
+      const was = vLast[v]
       const still =
-        Math.abs(x - vx) < MOVE_EPS &&
-        Math.abs(y - vy) < MOVE_EPS &&
-        Math.abs(z - vz) < MOVE_EPS &&
-        Math.abs(yaw - vyaw) < TURN_EPS
-      if (still && now - lastVehicle < IDLE_MS) return
-      lastVehicle = now
-      vx = x
-      vy = y
-      vz = z
-      vyaw = yaw
+        was !== undefined &&
+        Math.abs(x - was[0]) < MOVE_EPS &&
+        Math.abs(y - was[1]) < MOVE_EPS &&
+        Math.abs(z - was[2]) < MOVE_EPS &&
+        Math.abs(yaw - was[3]) < TURN_EPS &&
+        Math.abs(pitch - was[4]) < TURN_EPS &&
+        Math.abs(roll - was[5]) < TURN_EPS
+      if (still && now - last < IDLE_MS) return
+      lastVehicle[v] = now
+      vLast[v] = [x, y, z, yaw, pitch, roll]
       raw({ type: 'world-vehicle', v, x, y, z, yaw, pitch, roll })
     },
 
@@ -353,6 +358,10 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
 
     unseat() {
       inWorld({ type: 'world-unseat' })
+    },
+
+    hold(v, on) {
+      inWorld({ type: 'world-hold', v, on })
     },
 
     shove(to, vx, vy, vz) {

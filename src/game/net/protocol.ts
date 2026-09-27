@@ -83,7 +83,7 @@ export interface RosterEntry {
     do not need their spelling repeated fifteen times a second, and the server
     (which knows nothing about what a helicopter is) only has to bounds-check
     a small integer. Mirrored by W_FLEET in server/src/index.js */
-export const WIRE_VEHICLES = ['car', 'boat', 'heli'] as const
+export const WIRE_VEHICLES = ['car', 'boat', 'heli', 'ship'] as const
 export type WireVehicle = (typeof WIRE_VEHICLES)[number]
 
 /** the chair with the controls, and the one without */
@@ -96,10 +96,13 @@ export const SEAT_COUNT = 2
     banking helicopter are most of what a vehicle looks like from outside */
 export type VehicleTuple = [number, number, number, number, number, number, number]
 
-/** [vid, driverId, passengerId]; 0 is an empty chair, since ids start at 1.
-    The whole table is resent on any change — it is six numbers, and a
-    per-seat delta would be more protocol than the thing it describes */
-export type SeatTuple = [number, PlayerId, PlayerId]
+/** [vid, driverId, passengerId, handId]; 0 is an empty chair (or empty
+    hands), since ids start at 1. The hand is whoever has an *empty* machine
+    on their physgun, or is letting one settle after it: its authority, the
+    way a driver is, and the server keeps the two apart. The whole table is
+    resent on any change: it is a dozen numbers, and a per-seat delta would
+    be more protocol than the thing it describes */
+export type SeatTuple = [number, PlayerId, PlayerId, PlayerId]
 
 // ---------------------------------------------------------------- server -> client
 
@@ -163,6 +166,13 @@ export interface WorldSeatDenied {
   type: 'world-seat-denied'
   v: number
   seat: number
+}
+
+/** the physgun claim on a machine lost: somebody is sitting in it, or
+    somebody else already has it */
+export interface WorldHoldDenied {
+  type: 'world-hold-denied'
+  v: number
 }
 
 export interface WorldChat {
@@ -247,6 +257,7 @@ export type WorldServerMessage =
   | WorldSignal
   | WorldSeats
   | WorldSeatDenied
+  | WorldHoldDenied
   | WorldName
   | WorldLook
 
@@ -284,6 +295,9 @@ export type WorldClientMessage =
   /** give up whichever chair I hold. Getting out, a level seam, sitting back
       down at the desk — all the same message */
   | { type: 'world-unseat' }
+  /** take an empty machine on my physgun, or let it go. Answered by a
+      world-seats naming me as its hand, or a world-hold-denied */
+  | { type: 'world-hold'; v: number; on: boolean }
   /** where the machine I am driving now is. Ignored from anyone who is not
       its driver, which is the whole of the server's opinion about physics */
   /** I bumped into this player: here is the velocity it should take.

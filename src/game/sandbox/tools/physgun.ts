@@ -3,7 +3,7 @@ import type { Sandbox } from '../sandbox'
 import type { Prop } from '../props'
 import {
   emptyHold, type Aim, type GrabRig, type HoldRecord, type PhysgunEvent, type PhysgunEventType,
-  type RigEntry, type ToolInput,
+  type RigEntry, type ToolInput, type VehicleGrab,
 } from './types'
 
 /*
@@ -65,6 +65,12 @@ import {
   exactly where it is drawn; grabbing a frozen prop thaws it, and reload
   thaws whatever you are looking at. A rig limb frozen is a limb pinned in
   place, which is how a ragdoll gets posed.
+
+  **Vehicles** are taken through the fleet's hook (`VehicleGrab`): a parked
+  machine is not a prop, so the fleet stands one in for it at the moment of
+  the grab and the beam holds that, weight and all. While the beam has a prop
+  its `data.beam` is set, which is how the fleet knows not to hand a machine
+  back to its own physics in mid-air.
 
   **Rigs** are bodies built by `buildPlayerBody()` (pedestrians, and other
   players through `net/grab.ts`'s adapter), grabbed by their nearest limb
@@ -162,6 +168,8 @@ export interface PhysgunOpts {
   rigs?: () => Iterable<RigEntry>
   /** props that move together with this one (welds); reload thaws them too */
   linked?: (id: number) => Iterable<number>
+  /** the fleet: parked machines the beam can take (types.ts's VehicleGrab) */
+  vehicles?: VehicleGrab
 }
 
 export interface BeamView {
@@ -343,8 +351,11 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     }
     prop = p
     // a mark for the systems that settle things on their own (destruction's
-    // rubble): a player has had their hands on this one, leave it be
+    // rubble): a player has had their hands on this one, leave it be. And
+    // one that lasts only while the beam has it: a machine standing in as a
+    // prop is handed back to its own physics once it is let go and settles
     p.data.handled = true
+    p.data.beam = true
     sb.wake(p.id)
     sb.getTransform(p.id, va, qa)
     // the exact point touched, in the prop's own frame
@@ -391,6 +402,7 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
   }
 
   const clearHold = () => {
+    if (prop) delete prop.data.beam
     prop = null
     rig = null
     rigKey = ''
@@ -497,6 +509,17 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     const hit = castProps(aim, RANGE)
     const t = hit ? hit.timeOfImpact : RANGE
     const r = castRigs(aim, t)
+    // a parked machine nearer than anything else the ray found: the fleet
+    // stands a prop in for it, and from then on it is held like a crate
+    const veh = o.vehicles?.pick(aim.eye, aim.dir, r ? r.t : t) ?? null
+    if (veh) {
+      va.copy(aim.dir).multiplyScalar(veh.t).add(aim.eye)
+      const p = o.vehicles!.take(veh.key, sb)
+      if (p) return grabProp(p, va, aim)
+      view.end.copy(va)
+      view.normal.set(0, 0, 0)
+      return false
+    }
     if (r) {
       grabRig(r.key, r.rig, r.limb, aim)
       return true

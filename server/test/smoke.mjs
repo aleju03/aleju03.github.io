@@ -626,7 +626,7 @@ async function main() {
   w1.send({ type: 'world-seat', v: 0, seat: 0 });
   const seats1 = await w2.nextOf('world-seats', 'the seat table is broadcast');
   await w1.nextOf('world-seats', 'the claimant hears it too');
-  assert.deepEqual(seats1.seats[0], [0, welcome1.you, 0], 'w1 has the wheel of the car');
+  assert.deepEqual(seats1.seats[0], [0, welcome1.you, 0, 0], 'w1 has the wheel of the car');
 
   // the same chair, a round trip later
   w2.send({ type: 'world-seat', v: 0, seat: 0 });
@@ -638,7 +638,7 @@ async function main() {
   w2.send({ type: 'world-seat', v: 0, seat: 1 });
   const seats2 = await w1.nextOf('world-seats', 'the passenger seat is granted');
   await w2.nextOf('world-seats', 'and the passenger hears it too');
-  assert.deepEqual(seats2.seats[0], [0, welcome1.you, welcome2.you], 'two up in the car');
+  assert.deepEqual(seats2.seats[0], [0, welcome1.you, welcome2.you, 0], 'two up in the car');
 
   // only the driver may say where the machine is
   w2.send({ type: 'world-vehicle', v: 0, x: 999, y: 999, z: 999, yaw: 0, pitch: 0, roll: 0 });
@@ -655,15 +655,43 @@ async function main() {
   w2.send({ type: 'world-seat', v: 2, seat: 0 });
   const seats3 = await w1.nextOf('world-seats', 'moving between machines');
   await w2.nextOf('world-seats', 'the mover hears it too');
-  assert.deepEqual(seats3.seats[0], [0, welcome1.you, 0], 'the car seat was given up');
-  assert.deepEqual(seats3.seats[2], [2, welcome2.you, 0], 'and the helicopter taken');
+  assert.deepEqual(seats3.seats[0], [0, welcome1.you, 0, 0], 'the car seat was given up');
+  assert.deepEqual(seats3.seats[2], [2, welcome2.you, 0, 0], 'and the helicopter taken');
 
   // a level seam is getting out
   w2.send({ type: 'world-level', level: 'backrooms' });
   const seats4 = await w1.nextOf('world-seats', 'a level change frees the chair');
   await w2.nextOf('world-seats', 'the leaver hears it too');
-  assert.deepEqual(seats4.seats[2], [2, 0, 0], 'nobody flies into the backrooms');
+  assert.deepEqual(seats4.seats[2], [2, 0, 0, 0], 'nobody flies into the backrooms');
   w2.send({ type: 'world-level', level: 'overworld' });
+
+  // 17b'. The physgun on an empty machine: one hand at a time, never on an
+  //       occupied one, its holder the only voice for where it is, and a
+  //       chair in it refused while somebody else has it.
+  w2.send({ type: 'world-hold', v: 0, on: true });
+  const noHold = await w2.nextOf('world-hold-denied', 'a machine with a driver cannot be grabbed');
+  assert.equal(noHold.v, 0);
+  w2.send({ type: 'world-hold', v: 1, on: true });
+  const held = await w1.nextOf('world-seats', 'an empty boat is taken on the physgun');
+  await w2.nextOf('world-seats', 'the holder hears it too');
+  assert.deepEqual(held.seats[1], [1, 0, 0, welcome2.you], 'w2 has the boat');
+  w1.send({ type: 'world-hold', v: 1, on: true });
+  await w1.nextOf('world-hold-denied', 'two hands on one boat are refused');
+  w1.send({ type: 'world-seat', v: 1, seat: 1 });
+  await w1.nextOf('world-seat-denied', 'nobody boards a boat somebody else is holding');
+  w1.send({ type: 'world-vehicle', v: 1, x: 5, y: 5, z: 5, yaw: 0, pitch: 0, roll: 0 });
+  w2.send({ type: 'world-vehicle', v: 1, x: -20, y: 3, z: 7, yaw: 1, pitch: 2, roll: 3 });
+  let htick = await w1.nextOf('world-tick', 'a held machine rides the snapshot');
+  while (!htick.vehicles?.some((r) => r[0] === 1)) htick = await w1.nextOf('world-tick', 'waiting for the boat');
+  assert.deepEqual(
+    htick.vehicles.find((r) => r[0] === 1),
+    [1, -20, 3, 7, 1, 2, 3],
+    'the holder moves it, and nobody else does'
+  );
+  w2.send({ type: 'world-hold', v: 1, on: false });
+  const let_go = await w1.nextOf('world-seats', 'letting go frees the boat');
+  await w2.nextOf('world-seats', 'the holder hears it too');
+  assert.deepEqual(let_go.seats[1], [1, 0, 0, 0], 'nobody has the boat');
 
   // 17c. Shoves. One walker bumping another is a velocity relayed to the
   //      victim alone, and only when it is honest: the two standing near each
@@ -749,7 +777,7 @@ async function main() {
   assert.equal(exited.id, welcome1.you);
   // a dropped driver must not leave the car locked forever
   const seats5 = await w2.nextOf('world-seats', 'a dropped socket frees its seat');
-  assert.deepEqual(seats5.seats[0], [0, 0, 0], 'the abandoned car is claimable again');
+  assert.deepEqual(seats5.seats[0], [0, 0, 0, 0], 'the abandoned car is claimable again');
   w2.ws.close();
   console.log('17b. open world: seat arbitration, driver-only transforms, seats freed on exit');
 

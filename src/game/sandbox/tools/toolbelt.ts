@@ -3,7 +3,7 @@ import type { Sandbox } from '../sandbox'
 import { createBeam, type Beam } from './beam'
 import { createPhysgun, type Physgun } from './physgun'
 import { createPhysgunSfx, type PhysgunSfx } from './sfx'
-import type { RigEntry, ToolInput } from './types'
+import type { RigEntry, ToolInput, VehicleGrab } from './types'
 import { createViewmodel, type Viewmodel } from './viewmodel'
 
 /*
@@ -43,6 +43,8 @@ export interface ToolbeltOpts {
   rigs?: () => Iterable<RigEntry>
   /** props welded to a prop (reload thaws them together) */
   linked?: (id: number) => Iterable<number>
+  /** the fleet's parked machines, for the physgun */
+  vehicles?: VehicleGrab
   /** starting slot (0 hands) */
   slot?: number
   /** synthesize the physgun's sound (default: when drawn) */
@@ -102,7 +104,7 @@ export interface Toolbelt {
 export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   // the live level's sandbox, re-pointed on a level cut (setSandbox)
   let sb = o.sb
-  const physgun = createPhysgun({ sb, rigs: o.rigs, linked: o.linked })
+  const physgun = createPhysgun({ sb, rigs: o.rigs, linked: o.linked, vehicles: o.vehicles })
   const beam = o.parent ? createBeam(o.parent) : null
   const vm = o.parent ? createViewmodel(o.parent) : null
   const sfx: PhysgunSfx | null = (o.sound ?? !!o.parent) ? createPhysgunSfx() : null

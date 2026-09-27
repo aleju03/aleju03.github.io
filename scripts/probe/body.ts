@@ -2,7 +2,8 @@ import * as THREE from 'three'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
 import { makeChunkMats } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
-import { slopeAt, terrainY } from '../../src/game/world/terrain'
+import { biomeAt, slopeAt, terrainY } from '../../src/game/world/terrain'
+import { landmarkAt } from '../../src/game/world/landmarks'
 import { placeAt, roadAt } from '../../src/game/world/settlements'
 import { makeCollisionSet, type Solid } from '../../src/game/physics/collision'
 import {
@@ -15,6 +16,7 @@ import { createVehicleMaterials } from '../../src/game/vehicles/materials'
 import { buildCar } from '../../src/game/vehicles/car'
 import { buildHeli } from '../../src/game/vehicles/heli'
 import { buildBoat } from '../../src/game/vehicles/boat'
+import { buildShip } from '../../src/game/vehicles/ship'
 import { dressLook, lightFor } from './probe'
 import type { SkyState } from '../../src/game/levels/sky'
 import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
@@ -111,9 +113,9 @@ interface Stage {
 }
 
 let mats: ReturnType<typeof makeChunkMats> | null = null
-const stage = (tod: number): Stage => {
+const stage = (tod: number, at?: { x: number; z: number }): Stage => {
   site ??= findSite()
-  const { x, z } = site
+  const { x, z } = at ?? site
   mats ??= makeChunkMats(() => {}, () => {})
   const scene = new THREE.Scene()
   const gy = terrainY(x, z)
@@ -682,24 +684,54 @@ const seats = (spec: BodySpec, snap: Snap) => {
 }
 
 /*
-  The car on its own, the way somebody meets it: three-quarter front, side,
+  A machine on its own (body:car, body:heli, body:boat), the way somebody
+  meets it: three-quarter front, side,
   three-quarter rear and a low front, with two beans in its seats, lit for
   the stage's moment. At night the machine is told it is night, so the lamps
   and both headlamp beams are on, and the look is dressed for the dark.
 */
-const car = (spec: BodySpec, snap: Snap) => {
+/** open plains outside any town, flat and dry, with nothing within a
+    helicopter's length: the machines are judged on their own, not against
+    a street's houses, which in a town fill every tile's foreground */
+let machineSite: { x: number; z: number } | null = null
+const openSite = () => {
+  for (let r = 1; r < 400; r++) {
+    const n = r * 6
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2
+      const x = 300 + Math.cos(a) * r * 20
+      const z = 300 + Math.sin(a) * r * 20
+      const ok = (px: number, pz: number) =>
+        placeAt(px, pz).district === null && slopeAt(px, pz) < 0.05 && terrainY(px, pz) > 2 &&
+        biomeAt(px, pz, terrainY(px, pz), slopeAt(px, pz)) === 'plains' && !landmarkAt(px, pz)
+      let all = true
+      for (const [dx, dz] of [[0, 0], [30, 0], [-30, 0], [0, 30], [0, -30], [21, 21], [-21, -21], [21, -21], [-21, 21]]) {
+        if (!ok(x + dx, z + dz)) { all = false; break }
+      }
+      if (all) return { x, z }
+    }
+  }
+  return { x: 300, z: 300 }
+}
+const machine = (build: typeof buildCar, empty = false) => (spec: BodySpec, snap: Snap) => {
   const [tw, th] = spec.tile
-  const st = stage(spec.tod)
+  machineSite ??= openSite()
+  const st = stage(spec.tod, machineSite)
   const vmats = createVehicleMaterials({ texture: (t) => t, add: (d) => d })
-  const v = buildCar({ mats: vmats })
-  v.root.position.set(st.x, terrainY(st.x, st.z), st.z)
+  const v = build({ mats: vmats })
+  // stood on its lowest point: a boat's origin is its waterline, so on the
+  // grass it would sit with its keel in the ground
+  v.root.updateMatrixWorld(true)
+  const low = Math.min(0, new THREE.Box3().setFromObject(v.root).min.y)
+  v.root.position.set(st.x, terrainY(st.x, st.z) - low, st.z)
   // nose toward -x, so bearings below read as: pi/2 is the right flank
   v.root.rotation.y = Math.PI / 2
   st.scene.add(v.root)
   vmats.setDay(st.sky.day, st.sky.night, st.sky.fogColor, st.sky.sunEl)
-  v.setDay(st.sky.day)
+  v.setDay?.(st.sky.day, st.sky.night)
   const riders: THREE.Object3D[] = []
   for (const [seat, lk] of [[v.driverSeat, LOOKS[0]], [v.passengerSeat, LOOKS[1]]] as const) {
+    if (empty) break
     const rig = buildPlayerBody(EYE, GRAV, lk)
     rig.sit(seat.userData.fit ?? CABIN_FIT, seat === v.passengerSeat)
     seat.add(rig.group)
@@ -712,21 +744,23 @@ const car = (spec: BodySpec, snap: Snap) => {
   // seated body, crown (hat included) to the seat of the pants
   const fit = riders.map((g) => {
     const bx = new THREE.Box3().setFromObject(g, true)
-    const y0 = v.root.position.y
+    const y0 = v.root.position.y + low
     return `${(bx.min.y - y0).toFixed(2)}..${(bx.max.y - y0).toFixed(2)}`
   }).join(', ')
-  const at = new THREE.Vector3(st.x, st.gy + 1.4, st.z)
+  // framed off the machine's own size, so a helicopter fits its tiles too
+  const k = Math.max(1, v.size.halfZ / 4.5)
+  const at = new THREE.Vector3(st.x, st.gy + Math.max(1.4, v.size.height * 0.42), st.z)
   const shots: Array<[string, number, number, number, number]> = [
-    ['three-quarter front', -Math.PI / 2 + 0.75, 15, 4.5, 34],
-    ['side', Math.PI, 16, 2.6, 34],
-    ['three-quarter rear', Math.PI / 2 + 0.8, 15, 4.5, 34],
-    ['low front', -Math.PI / 2 - 0.35, 12, 0.6, 34],
-    ['seated, from above', Math.PI - 0.5, 9, 6.5, 40],
+    ['three-quarter front', -Math.PI / 2 + 0.75, 15 * k, 4.5 * k, 34],
+    ['side', Math.PI, 16 * k, 2.6 * k, 34],
+    ['three-quarter rear', Math.PI / 2 + 0.8, 15 * k, 4.5 * k, 34],
+    ['low front', -Math.PI / 2 - 0.35, 12 * k, 0.6, 34],
+    ['seated, from above', Math.PI - 0.5, 9 * k, 6.5 * k, 40],
   ]
   for (const [label, bearing, dist, up, fov] of shots) {
     const cam = camAt(tw, th, at, bearing, dist, up, fov)
     if (look) dressLook(look, st.scene, st.sky, cam, 'town', [], false)
-    snap(label === 'side' ? `car side (riders span y ${fit})` : `car ${label}`, cam)
+    snap(label === 'side' ? `${v.id} side (riders span y ${fit})` : `${v.id} ${label}`, cam)
   }
   st.scene.remove(v.root)
 }
@@ -858,7 +892,7 @@ export const shootBody = (spec: BodySpec) => {
     if (a.startsWith('strip')) return n + 8
     if (a === 'fp') return n + 5
     if (a === 'seat') return n + 9
-    if (a === 'car') return n + 5
+    if (/^(car|heli|boat|ship)(-empty)?$/.test(a)) return n + 5
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
     if (a === 'wardrobe') return n + WARDROBE.length
     return n
@@ -943,7 +977,11 @@ export const shootBody = (spec: BodySpec) => {
     else if (a.startsWith('strip:')) run((sp, s) => strip(sp, a.slice(6), s))
     else if (a === 'fp') run(firstPerson)
     else if (a === 'seat') run(seats)
-    else if (a === 'car') run(car)
+    else if (/^(car|heli|boat|ship)(-empty)?$/.test(a)) {
+      const which = a.replace('-empty', '')
+      const build = which === 'car' ? buildCar : which === 'heli' ? buildHeli : which === 'boat' ? buildBoat : buildShip
+      run(machine(build, a.endsWith('-empty')))
+    }
     else if (a === 'wardrobe') run(wardrobe)
     else if (a.startsWith('folds')) run((sp, sn) => folds(sp, sn, Number(a.split(':')[1] ?? 0)))
     else throw new Error(`unknown body target "${a}"`)

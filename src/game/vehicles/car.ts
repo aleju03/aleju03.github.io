@@ -1,13 +1,13 @@
 import * as THREE from 'three'
 import { noStand, type HullStation, type Solid } from '../physics/collision'
-import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
+  V,
   at,
+  createFacets,
   createPartBuilder,
   markDynamic,
   revolve,
   tube,
-  type PartBuilder,
   type Slot,
 } from './parts'
 import {
@@ -48,7 +48,7 @@ import type { VehicleMaterials } from './materials'
   lower flank, bumper line, the flank's widest line, the shoulder, the deck
   edge, the deck and the centreline), so ring point j is the same feature the
   whole length of the car and skinning station to station draws the panels.
-  Normals are *creased* (`createFacets`, toCreasedNormals at CREASE): faces
+  Normals are *creased* (parts.ts's `createFacets`): faces
   meeting at more than about 34 degrees get a hard edge, anything gentler is
   smoothed, so the shoulder, the bonnet's edges and the corners of the nose
   and tail are crisp lines while the flank between them is one sheet of
@@ -530,77 +530,6 @@ const HULL: HullStation[] = [
     spent on something four pixels across */
 const chip = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d)
 
-/**
- * Loose triangles by slot, turned into geometry with *creased* normals: an
- * edge between two faces meeting at more than CREASE is split, anything
- * gentler is smoothed. That is what makes this body read as pressed panels
- * with crisp breaks rather than as one soft bar of soap: the shoulder, the
- * bonnet's edges, the corners of the nose and the tail are hard, and the
- * flank between them is one smooth sheet.
- */
-const CREASE = 0.6
-const createFacets = () => {
-  const by = new Map<Slot, number[]>()
-  const v = new THREE.Vector3()
-  const w = new THREE.Vector3()
-  const push = (slot: Slot, ...pts: THREE.Vector3[]) => {
-    let a = by.get(slot)
-    if (!a) by.set(slot, (a = []))
-    for (const p of pts) a.push(p.x, p.y, p.z)
-  }
-  const api = {
-    tri(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, slot: Slot) {
-      // a sliver with no area has no normal, and one NaN smooths a panel black
-      v.subVectors(b, a).cross(w.subVectors(c, a))
-      if (v.lengthSq() < 1e-12) return
-      push(slot, a, b, c)
-    },
-    /** a, b, c, d counter-clockwise seen from the side the face looks at */
-    quad(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot) {
-      api.tri(a, b, c, slot)
-      api.tri(a, c, d, slot)
-    },
-    /** the same, wound so its face looks along `out` whichever way the
-        corners were listed */
-    quadOut(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
-      v.subVectors(b, a).cross(w.subVectors(c, a))
-      if (v.dot(out) < 0) api.quad(a, d, c, b, slot)
-      else api.quad(a, b, c, d, slot)
-    },
-    /** ...and its mirror across x, which a mirror flips the winding of */
-    quadBoth(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
-      api.quadOut(a, b, c, d, slot, out)
-      const m = (p: THREE.Vector3) => new THREE.Vector3(-p.x, p.y, p.z)
-      api.quadOut(m(a), m(b), m(c), m(d), slot, new THREE.Vector3(-out.x, out.y, out.z))
-    },
-    /** one triangle facing along `out`, and its mirror */
-    triBoth(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, slot: Slot, out: THREE.Vector3) {
-      const m = (p: THREE.Vector3) => new THREE.Vector3(-p.x, p.y, p.z)
-      const one = (p: THREE.Vector3, q: THREE.Vector3, r: THREE.Vector3, o: THREE.Vector3) => {
-        v.subVectors(q, p).cross(w.subVectors(r, p))
-        if (v.dot(o) < 0) api.tri(p, r, q, slot)
-        else api.tri(p, q, r, slot)
-      }
-      one(a, b, c, out)
-      one(m(a), m(b), m(c), new THREE.Vector3(-out.x, out.y, out.z))
-    },
-    /** hand every slot to a part builder */
-    flush(b: PartBuilder) {
-      for (const [slot, pos] of by) {
-        const g = new THREE.BufferGeometry()
-        g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
-        const n = toCreasedNormals(g, CREASE)
-        b.add(n, slot)
-        g.dispose()
-        n.dispose()
-      }
-      by.clear()
-    },
-  }
-  return api
-}
-
-const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
 
 /** a flat decal on the nose or the tail face: a rectangle at z, facing
     along `dir` (-1 forward, +1 back), standing `off` proud of the face */
@@ -1867,6 +1796,9 @@ export function buildCar(opts: CarOpts): Vehicle {
     },
     solid,
     reach: 4.2,
+    // light for a hatchback, heavy for a prop: the beam drags it round a
+    // swing and a flick throws it a few car lengths. It sinks, slowly
+    carry: { mass: 350, density: 1.3, bottom: 0.02 },
 
     placeAt: (x, z, y0, env) => {
       pos.set(x, 0, z)
