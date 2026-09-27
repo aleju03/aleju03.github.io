@@ -12,9 +12,12 @@ import { INK, INK_SOFT, MARK, paperTexture } from './paper'
   existed first.
 
   It is only drawn. The walk holds the pointer, so the wheel has no cursor
-  and nothing to click: CrtScene sends the mouse's movement here through
-  `aim` while the key is held (the view stops turning while it does) and asks
-  `wheelSlice` itself which emote to play when the key comes up. `aim` turns
+  of its own: CrtScene sends the mouse's movement here through `aim` while
+  it is up (the view stops turning, and the guns stop firing), and asks
+  `wheelSlice` itself which emote a click plays. It is a toggle: b puts it
+  up, a click or a number key plays one and puts it away, and b again, a
+  right click or esc put it away with nothing played. Each doodle carries
+  its number key, and the tape along the bottom says as much. `aim` turns
   the arrow by writing its transform straight onto the element, and only a
   change of slice goes through React, so a mouse reporting at a thousand
   hertz costs one style write per event rather than a render.
@@ -163,12 +166,15 @@ function Icon({ name }: { name: EmoteName }) {
 export function EmoteWheel({
   labels,
   hub,
+  hint,
   ref,
 }: {
   /** in EMOTES order */
   labels: readonly string[]
   /** what the middle says when the arrow rests on it */
   hub: string
+  /** how to play one and how to put it away, on the tape along the bottom */
+  hint: string
   ref?: Ref<EmoteWheelApi>
 }) {
   const [sel, setSel] = useState(-1)
@@ -237,6 +243,10 @@ export function EmoteWheel({
                 <g filter="url(#ew-rough)" transform={`translate(-24 -30) ${on ? 'scale(1.08)' : ''}`}>
                   <Icon name={e.name} />
                 </g>
+                {/* the number key that plays it, pencilled small */}
+                <text x="-27" y="-22" textAnchor="middle" className="font-mono" style={{ fontSize: 10, fill: INK_SOFT }}>
+                  {i + 1}
+                </text>
                 <text
                   y="31"
                   textAnchor="middle"
@@ -280,6 +290,18 @@ export function EmoteWheel({
           <circle r="8.5" fill="#b8903f" stroke="#6d5323" strokeWidth="1.4" />
           <circle r="5" fill="#d9b664" />
           <path d="M-4.5 0.5L4.5 -0.5" stroke="#6d5323" strokeWidth="1.6" strokeLinecap="round" />
+        </g>
+        {/* the tape along the bottom, with how to use it written on it */}
+        <g transform="translate(4 192) rotate(1)">
+          <path
+            d="M-212 -11L-208 -13L209 -10L213 -12L211 11L213 13L-210 11L-213 12Z"
+            fill="rgba(238,226,194,0.9)"
+            stroke="rgba(120,100,70,0.25)"
+            strokeWidth="0.8"
+          />
+          <text y="4" textAnchor="middle" className="font-mono" style={{ fontSize: 10.5, fill: '#3f3325' }}>
+            {hint}
+          </text>
         </g>
         {/* and the masking tape holding it up */}
         <g transform="translate(-8 -186) rotate(-4)">

@@ -20,6 +20,10 @@
   land where they were tuned. The torso frame has +X on the body's left, the
   shoulders at (+-SHOULDER_X, SHOULDER_OFF, 0), and a reach of about 0.85
   from shoulder to mitten; a target further than that is simply reached for.
+  A target inside the body is not an error either: the rig moves it out onto
+  the surface (`selfContact.ts`), so a clap aimed at a bean's middle meets
+  in front of whatever belly the build has. Aim a pose where it reads and
+  keep it clear of the head's sides, where headgear lives.
 
   Two kinds. An **upper-body** emote (wave, thumbs up, clap, laugh, facepalm,
   flex) leaves the legs to the stepper, so it plays while walking. A
@@ -258,15 +262,19 @@ export function emoteFrame(id: number, t: number, out: EmoteFrame): EmoteFrame {
       break
     }
     case 'facepalm': {
-      // the right mitten up onto the face, the head bowing into it and
-      // shaking slowly, the other arm hanging
+      // the right mitten up against the side of the face, the head tipping
+      // into it and bowing, then shaking slowly. The side, because a bean's
+      // arms are too short to cross the front of its own face: aimed at the
+      // middle, the forearm went through the chest to get there
       const lift = smooth(ramp(0.1, 0.55, t))
-      setR(f, mix(-0.55, -0.12, lift), mix(0.2, 1.06, lift), mix(0.35, 0.5, lift))
-      f.elbowOut = 0.25
-      const shake = Math.sin(t * 5.5) * 0.16 * ramp(0.7, 1.0, t)
-      f.headX = 0.34 * lift
+      setR(f, mix(-0.62, -0.7, lift), mix(0.25, 1.2, lift), mix(0.3, 0.3, lift))
+      f.elbowOut = 0.6
+      const shake = Math.sin(t * 5.5) * 0.14 * ramp(0.7, 1.0, t)
+      f.headX = 0.26 * lift
       f.headY = shake
-      f.torsoX = 0.14 * lift
+      f.headZ = 0.22 * lift
+      f.torsoX = 0.1 * lift
+      f.torsoZ = 0.06 * lift
       f.lid = 1 - 0.8 * lift
       f.mute = 1
       break
@@ -303,9 +311,12 @@ export function emoteFrame(id: number, t: number, out: EmoteFrame): EmoteFrame {
       f.liftL = 0.1 * Math.max(0, s)
       f.liftR = 0.1 * Math.max(0, -s)
       const u = 0.5 + 0.5 * s
-      setL(f, mix(0.62, 0.52, u), mix(0.18, 1.34, u), mix(0.4, 0.22, u))
-      setR(f, mix(-0.52, -0.62, u), mix(1.34, 0.18, u), mix(0.22, 0.4, u))
-      f.elbowOut = 0.5
+      // (the low hand out at the hip rather than on the belly, and the high
+      // one clear of the head: a wide bean's belly and a headset's cups are
+      // where the first version's forearms went)
+      setL(f, mix(0.86, 0.8, u), mix(0.3, 1.25, u), mix(0.42, 0.28, u))
+      setR(f, mix(-0.8, -0.86, u), mix(1.25, 0.3, u), mix(0.28, 0.42, u))
+      f.elbowOut = 1.0
       f.squash = 0.04 * bounce
       f.mute = 0.8
       break
@@ -331,8 +342,8 @@ export function emoteFrame(id: number, t: number, out: EmoteFrame): EmoteFrame {
       f.liftL = tuck
       f.liftR = tuck
       const up = 0.75 + 0.25 * air
-      setL(f, 0.74, mix(0.9, 1.4, up), 0.18)
-      setR(f, -0.74, mix(0.9, 1.4, up), 0.18)
+      setL(f, 0.86, mix(0.9, 1.34, up), 0.2)
+      setR(f, -0.86, mix(0.9, 1.34, up), 0.2)
       f.elbowOut = 0.6
       f.squash = air * 0.08 - crouch * 0.06
       f.headX = -0.22 * up

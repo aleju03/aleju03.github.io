@@ -95,10 +95,13 @@ export const BINDINGS = {
   ],
 
   /* --- emotes ---------------------------------------------------------- */
-  /** held: the emote wheel. The mouse swings its arrow instead of the view,
-      and letting go plays whatever it points at (the hub plays nothing and
-      stops whatever was playing) */
-  emote: ['KeyG'],
+  /** the emote wheel, a toggle: b puts it up, the mouse swings its arrow
+      instead of the view, a click (or 1-9 for a slice) plays one and puts it
+      away, and b again, a right click or esc put it away with nothing played.
+      The digits are the wheel's while it is up (`emotePick`), not the tool
+      slots' */
+  emote: ['KeyB'],
+  emotePick: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9'],
   /** held: the right arm points at whatever the crosshair is on. f is the
       one the tape names; the middle button does it too */
   point: ['KeyF', 'Mouse1'],
@@ -106,7 +109,9 @@ export const BINDINGS = {
   /* --- the shared walk ------------------------------------------------- */
   mic: ['KeyM'],
   talkMode: ['KeyN'],
-  pushToTalk: ['KeyB'],
+  /** held. It was b until the emote wheel took b; g sits beside it, and is
+      easy to hold with the left hand while it walks */
+  pushToTalk: ['KeyG'],
 
   /* --- diagnostics ----------------------------------------------------- */
   collisionDebug: ['F9'],

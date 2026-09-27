@@ -59,12 +59,14 @@
                                       tried on, and the settings page's
                                       pixel prints; links on the game's
                                       context counted (must be 0)
-    npm run drive -- emotes           the emote wheel held open, three emotes
-                                      mid-pose from the chase camera swung
-                                      round to the front (dance, flex, sit),
-                                      and the point key aimed at a crate;
-                                      links counted (must be 0). Shots to
-                                      ~/.cache/overhaul/emotes (--emote-out)
+    npm run drive -- emotes           the emote wheel put up with b, every
+                                      emote at its peak from the front and
+                                      the side on the bean and on a chubby
+                                      beaver in a cap and headset (contact
+                                      sheets), and the point key aimed at a
+                                      crate; links counted (must be 0).
+                                      Shots to ~/.cache/overhaul/emotes
+                                      (--emote-out)
     npm run drive -- portal           the portal gun: taken from the catalogue's
                                       tools tab, a blue and an orange portal
                                       opened on two walls downtown and each
@@ -193,7 +195,9 @@ const CODES = {
   KeyQ: ['q', 81], KeyV: ['v', 86], KeyW: ['w', 87], KeyT: ['t', 84], KeyZ: ['z', 90],
   KeyC: ['c', 67], Enter: ['Enter', 13], Tab: ['Tab', 9], Space: [' ', 32],
   ShiftLeft: ['Shift', 16], Slash: ['/', 191], Escape: ['Escape', 27], F5: ['F5', 116],
-  KeyG: ['g', 71], KeyF: ['f', 70],
+  KeyG: ['g', 71], KeyF: ['f', 70], KeyB: ['b', 66],
+  Digit1: ['1', 49], Digit2: ['2', 50], Digit3: ['3', 51], Digit4: ['4', 52], Digit5: ['5', 53],
+  Digit6: ['6', 54], Digit7: ['7', 55], Digit8: ['8', 56], Digit9: ['9', 57],
 }
 const key = (type, code) => {
   const [k, vk] = CODES[code]
@@ -1608,12 +1612,14 @@ try {
 
   if (WHAT.includes('emotes')) {
     /*
-      The wheel is held open with a real g and its cursor set through
-      `__emoteAim` (headless Chrome never gets the pointer lock that would
-      carry the mouse to it). Each emote is picked from behind, then the
-      chase camera is swung round to the front, which is what the held
-      facing is for. The point key is a real f, aimed at a crate spawned off
-      to one side.
+      The wheel is put up with a real b (it is a toggle) and its cursor set
+      through `__emoteAim` (headless Chrome never gets the pointer lock that
+      would carry the mouse to it); emotes are played with the number keys,
+      one with a click. Each is photographed at its peak from the front and
+      from the side, on the default bean and on the chubby build in the
+      beaver, a cap and the headset (the widest things worn near a face), as
+      two contact sheets per look (--emote-out, default
+      ~/.cache/overhaul/emotes). The point key is a real f, aimed at a crate.
     */
     console.log('emotes')
     const EMOTE_OUT = resolve(flag('emote-out', join(process.env.HOME ?? '.', '.cache/overhaul/emotes')))
@@ -1622,6 +1628,7 @@ try {
       const path = join(EMOTE_OUT, `${name}.png`)
       writeFileSync(path, await probe.screenshot(W, H))
       console.log(`  wrote ${path}`)
+      return path
     }
     await goTo(flag('at', '5654 -844').replace(',', ' '))
     await sleep(1500)
@@ -1642,57 +1649,96 @@ try {
       }
       return true
     })()`)
-    // the wheel's slices, clockwise from the top (player/emotes.ts's EMOTES)
+    // the wheel's slices, clockwise from the top (player/emotes.ts's EMOTES),
+    // and the moment each one is at its fullest
     const NAMES = ['wave', 'thumbs', 'clap', 'laugh', 'dance', 'joy', 'flex', 'facepalm', 'sit']
+    const PEAK = { wave: 1.0, thumbs: 0.9, clap: 1.0, laugh: 0.9, dance: 1.2, joy: 0.5, flex: 1.2, facepalm: 1.3, sit: 1.5 }
     const aimAt = (name) => {
       const a = (NAMES.indexOf(name) / NAMES.length) * Math.PI * 2
       return [Math.sin(a) * 70, -Math.cos(a) * 70]
     }
-    const play = async (name, shootWheel) => {
+    const setView = (yaw, pitch) =>
+      evaluate(`(() => { const w = window.__sandboxWalk; w.yaw = ${yaw}; w.pitch = ${pitch}; return true })()`)
+    // the wheel up, its arrow on this emote; then played with its number key
+    // (or, with `click`, a click)
+    const play = async (name, { shootWheel = false, click = false } = {}) => {
       await evaluate(`window.__phase = ${JSON.stringify(name)}; true`)
       await look(yaw0, -0.12)
       await sleep(700)
-      await down('KeyG')
+      await tap('KeyB')
       await sleep(250)
       const [x, y] = aimAt(name)
       await evaluate(`window.__emoteAim(${x}, ${y}); true`)
-      await sleep(300)
+      await sleep(250)
       if (shootWheel) await eshot('wheel-open')
-      await up('KeyG')
-      await sleep(150)
+      const open = await evaluate('!!document.querySelector(".emote-wheel-in")')
+      if (click) {
+        await evaluate(`window.__input.keys.add('Mouse0'); true`)
+        await sleep(90)
+        await evaluate(`window.__input.keys.delete('Mouse0'); true`)
+      } else await tap(`Digit${NAMES.indexOf(name) + 1}`, 60)
+      const t0 = Date.now()
+      await sleep(60)
       const on = await evaluate('window.__sandboxRig.acting')
-      console.log(`  ${name.padEnd(9)} playing id ${on}`)
+      const still = await evaluate('!!document.querySelector(".emote-wheel-in")')
+      console.log(`  ${name.padEnd(9)} wheel ${open ? 'up' : 'NOT UP'}, playing id ${on}, wheel ${still ? 'STILL UP' : 'put away'}`)
+      return t0
     }
-    // round to the front: the body holds its facing while it emotes
-    const front = (turn = 2.55, pitch = -0.3) => look(yaw0 + turn, pitch)
-    await play('dance', true)
-    await front()
-    await sleep(900)
-    // four frames a quarter of a beat apart: a dance is its motion
-    for (let i = 0; i < 4; i++) {
-      await eshot(`dance-${i}`)
-      await sleep(110)
+    const shots = {}
+    const LOOKS = [
+      ['bean', null],
+      ['chubby', `{ shell: '#2f6fcf', trim: '#f2eee0', accent: '#2860c8', glow: '#1c1a20', hat: 1, costume: 5, build: 1, fur: 1, phones: 1 }`],
+    ]
+    for (const [lookName, lookJs] of LOOKS) {
+      if (lookJs) {
+        await evaluate(`window.__sandboxRig.setLook(${lookJs}); true`)
+        await sleep(1500)
+      }
+      shots[lookName] = { front: [], side: [] }
+      for (const name of NAMES) {
+        const t0 = await play(name, { shootWheel: lookName === 'bean' && name === 'wave', click: name === 'clap' })
+        // the front, square on (the body holds its facing while it emotes),
+        // then the side a moment later
+        await setView(yaw0 + Math.PI, name === 'sit' ? -0.42 : -0.26)
+        await sleep(Math.max(0, PEAK[name] * 1000 - (Date.now() - t0)))
+        shots[lookName].front.push(await eshot(`${lookName}-${name}-front`))
+        await setView(yaw0 + Math.PI / 2, name === 'sit' ? -0.4 : -0.24)
+        await sleep(250)
+        shots[lookName].side.push(await eshot(`${lookName}-${name}-side`))
+        // put the wheel up and away with b, which must play nothing
+        await tap('KeyB')
+        await sleep(150)
+        await tap('KeyB')
+        await sleep(100)
+        if (NAMES.indexOf(name) === 0 && lookName === 'bean') {
+          console.log(`  b twice: wheel ${await evaluate('!!document.querySelector(".emote-wheel-in")') ? 'STILL UP' : 'put away'}`)
+        }
+        // wait the emote out (the loops are let go through the hub)
+        await tap('KeyB')
+        await sleep(150)
+        await evaluate('window.__emoteAim(0, 0); true')
+        await evaluate(`window.__input.keys.add('Mouse0'); true`)
+        await sleep(90)
+        await evaluate(`window.__input.keys.delete('Mouse0'); true`)
+        await sleep(500)
+      }
+      // two sheets per look: every emote from the front, and from the side,
+      // cropped round the body
+      for (const side of ['front', 'side']) {
+        const sheet = join(EMOTE_OUT, `sheet-${lookName}-${side}.png`)
+        // (appended rather than montaged: montage wants a font for labels
+        // even when it is given none, and not every machine has one it finds)
+        const row = (list) => ['(', ...list, '-crop', '560x620+360+170', '+repage', '+append', ')']
+        const list = shots[lookName][side]
+        const r = spawnSync('magick', [
+          ...row(list.slice(0, 5)), ...row(list.slice(5)), '-background', '#222', '-append', sheet,
+        ])
+        if (r.status === 0) console.log(`  wrote ${sheet}`)
+      }
     }
-    await play('flex')
-    await front(2.4)
-    await sleep(700)
-    await eshot('flex')
-    await play('sit')
-    await front(2.4, -0.42)
-    await sleep(1400)
-    await eshot('sit')
-    await play('clap')
-    await front(2.5)
-    await sleep(500)
-    await eshot('clap')
-    // the hub lets go of whatever is playing
-    await evaluate(`window.__phase = 'hub'; true`)
-    await down('KeyG')
-    await sleep(200)
-    await evaluate('window.__emoteAim(0, 0); true')
-    await up('KeyG')
-    await sleep(900)
     console.log(`  after the hub the rig plays id ${await evaluate('window.__sandboxRig.acting')}`)
+    await evaluate(`window.__sandboxRig.setLook({ shell: '#2f6fcf', trim: '#f2eee0', accent: '#2860c8', glow: '#1c1a20' }); true`)
+    await sleep(1200)
     // the point: a crate off to the right, the camera turned onto it
     await evaluate(`window.__phase = 'point'; true`)
     await look(yaw0, -0.12)

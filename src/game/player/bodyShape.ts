@@ -1852,6 +1852,9 @@ const warmLater = () => {
     body, where nobody can see it (the underside of a hat, the inner face of
     a hood) */
 export const bodyField = (buildIndex: number): Field => frameFor(clampBuild(buildIndex)).body
+/** the bean alone for a build (the egg and its face window, no arms or
+    legs): the surface `selfContact.ts` keeps a body's own mittens out of */
+export const beanField = (buildIndex: number): Field => frameFor(clampBuild(buildIndex)).bean
 
 /** build one variant from nothing (its bean, its headgear) and report the
     milliseconds, without touching the cache anybody is drawing from: what
