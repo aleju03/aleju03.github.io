@@ -2544,6 +2544,7 @@ export default function CrtScene({
         spawnRef.current = (kind) => {
           if (kind.startsWith(FLEET_PREFIX)) orderVehicle(kind.slice(FLEET_PREFIX.length) as VehicleId)
           else if (kind === `${TOOL_PREFIX}portalgun`) givePortalGun()
+          else if (kind === 'portal_panel') void spawnPanel()
           else void sbConsole.run(`spawn ${kind}`, { quiet: true })
         }
         /*
@@ -2596,6 +2597,72 @@ export default function CrtScene({
           const moonGround = outside.moonPortal.root()
           if (moonGround && levels.current.outdoors) visit(moonGround)
           return nearMeshes
+        }
+        /*
+          The furnished house's own meshes along a portal shot (its doors,
+          beds and cupboards have no collision face to be found by): the
+          first drawn, visible mesh the ray meets, with the face's normal in
+          the world. A portal fitted there rides that mesh (portals.ts's
+          anchor), so one on a door swings with the door.
+        */
+        const houseRay = new THREE.Raycaster()
+        const houseHits: THREE.Intersection[] = []
+        const shownChain = (o: THREE.Object3D) => {
+          for (let q: THREE.Object3D | null = o; q; q = q.parent) if (!q.visible) return false
+          return true
+        }
+        const portalHouseHit = (o: THREE.Vector3, d: THREE.Vector3, max: number) => {
+          if (!levels.current.house) return null
+          houseRay.set(o, d)
+          houseRay.near = 0
+          houseRay.far = max
+          houseRay.camera = camera
+          houseHits.length = 0
+          houseRay.intersectObject(house.root, true, houseHits)
+          for (const h of houseHits) {
+            const m = h.object as THREE.Mesh
+            if (!m.isMesh || (m as THREE.SkinnedMesh).isSkinnedMesh || !h.face || !shownChain(m)) continue
+            const n = h.face.normal.clone().transformDirection(m.matrixWorld)
+            return { t: h.distance, normal: n, object: m as THREE.Object3D }
+          }
+          return null
+        }
+        /*
+          The catalogue's portal panel is set down to be used: against the
+          wall under the crosshair, facing out, or standing upright on the
+          ground turned to face you, and frozen either way (the physgun still
+          takes it). It goes through the console's own spawn, so Z undoes it.
+        */
+        const spawnPanel = async () => {
+          const sb = sandbox
+          const a = host.aim?.()
+          if (!sb || !a) return
+          let id = -1
+          const off = sb.onSpawn((p) => {
+            if (p.kind.id === 'portal_panel') id = p.id
+          })
+          await sbConsole.run('spawn portal_panel', { quiet: true })
+          off()
+          if (id < 0) return
+          const HY = 2.6
+          const HZ = 0.08
+          const hit = sb.raycast(a.origin, a.dir, 60, { props: false, world: true })
+          const at = new THREE.Vector3()
+          let yaw: number
+          if (hit && Math.abs(hit.normal.y) < 0.5) {
+            // flat against the wall, standing on whatever is under it
+            const n = hit.normal.clone().setY(0).normalize()
+            at.copy(hit.point).addScaledVector(n, HZ + 0.04)
+            yaw = Math.atan2(n.x, n.z)
+          } else {
+            if (hit) at.copy(hit.point)
+            else at.copy(a.origin).addScaledVector(a.dir, 12)
+            yaw = Math.atan2(camera.position.x - at.x, camera.position.z - at.z)
+          }
+          // on the floor at the height you stand at (upstairs is upstairs)
+          at.y = spawnY(levels.current, at.x, at.z, walk.feetY) + HY + 0.03
+          sb.setTransform(id, at, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw))
+          sb.freeze(id)
         }
         /** a portal shot into the open sky: the Moon, if it is under the ray
             (sandbox/tools/portalMoon.ts) */
@@ -3067,10 +3134,23 @@ export default function CrtScene({
           },
           cross: (to, vcam) => portalCross(to, vcam),
         }
+        let portalHolesKey = ''
         const renderPortals = () => {
           const pv = tools?.portalView
           if (!pv || !webgl || !scene || !roaming) return
           portalMoon?.tick()
+          // an open floor portal cuts its oval out of the grass and the
+          // wildflowers (world/wind.ts's holes), and they grow back when it closes
+          const holesKey = `${tools!.portals.version}:${levels.current.id}`
+          if (holesKey !== portalHolesKey) {
+            portalHolesKey = holesKey
+            const holes: { c: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[] = []
+            for (const p of tools!.portals.list) {
+              if (!p || p.level !== levels.current.id || p.n.y < 0.6) continue
+              holes.push({ c: p.pos, a: p.right.clone().multiplyScalar(tools!.portals.hw), b: p.up.clone().multiplyScalar(tools!.portals.hh) })
+            }
+            outside.groundHoles(holes)
+          }
           const it = look.fitNow()
           pv.render(webgl, scene, camera, it.w, it.h, levels.current.id, performance.now() / 1000, portalHooks)
         }
@@ -4258,7 +4338,7 @@ export default function CrtScene({
                 if (!lv.sandbox || !sandbox) return null
                 return {
                   level: lv.id, collision: lv.collision, groundAt: lv.groundYAt, groundY: lv.groundY,
-                  waterY: lv.waterY, sandbox, meshesNear: portalMeshes,
+                  waterY: lv.waterY, sandbox, meshesNear: portalMeshes, drawnHit: portalHouseHit,
                 }
               },
               portalElsewhere: (color, eye, dir) => portalSky(color, eye, dir),
@@ -4340,6 +4420,7 @@ export default function CrtScene({
                 __tools: tools,
                 __portalWalk: portalWalk,
                 __portalMoon: portalMoon,
+                __portalHouseHit: portalHouseHit,
                 // scripted contraptions (a car, a rocket, a hovercraft), through
                 // the app's own module graph so they share its contraptions
                 __contraptionBuild: () => import('../../game/sandbox/contraption/build'),

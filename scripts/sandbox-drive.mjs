@@ -96,6 +96,12 @@
     npm run drive -- flycam           a third-person noclip flight, the body's
                                       height against the lens every frame:
                                       must never jump 0.1 in a frame
+    npm run drive -- portalhouse      portals on a room door (swung with the
+                                      portal riding it), the bed's mattress,
+                                      the lawn (grass before and after its
+                                      hole), and a catalogue portal panel
+                                      carried on the physgun; shots house-*,
+                                      grass-*, panel-* beside the others
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -1872,8 +1878,9 @@ try {
     await sleep(400)
   }
 
-  if (WHAT.includes('portal') || WHAT.includes('portalmoon')) {
+  if (WHAT.includes('portal') || WHAT.includes('portalmoon') || WHAT.includes('portalhouse')) {
     const moonTrip = WHAT.includes('portalmoon')
+    const houseTrip = WHAT.includes('portalhouse')
     /*
       The portal gun in the real game (see the header). Walls are found by
       sweeping the view round and firing until a portal lands upright a
@@ -1937,18 +1944,22 @@ try {
             if (best < 0 || t < best) best = t
           }
         })
+        // the props are drawn from instanced batches: their collision boxes
+        // are their shapes, and stand in for them here
+        const ph = window.__sandbox.raycast(o, d, max, { props: true, world: false })
+        if (ph && (best < 0 || ph.distance < best)) best = ph.distance
         return best
       }
       // the largest gap between a portal's rim (and middle) and the drawn
       // surface behind it, and how many samples found none
       window.__rimGap = (color) => {
         const P = window.__tools.portals.list[color]; if (!P) return null
-        const right = new V().crossVectors(P.up, P.n), d = P.n.clone().negate()
+        const right = new V().crossVectors(P.up, P.n), d = P.n.clone().negate(), HW = window.__tools.portals.hw, HH = window.__tools.portals.hh
         let worst = 0, miss = 0
         const pts = [[0, 0]]
         for (let i = 0; i < 12; i++) pts.push([Math.cos(i / 12 * Math.PI * 2) * 0.97, Math.sin(i / 12 * Math.PI * 2) * 0.97])
         for (const [x, y] of pts) {
-          const o = P.pos.clone().addScaledVector(right, x * 1.45).addScaledVector(P.up, y * 2.45).addScaledVector(P.n, 0.5)
+          const o = P.pos.clone().addScaledVector(right, x * HW).addScaledVector(P.up, y * HH).addScaledVector(P.n, 0.5)
           const t = window.__drawnHit(o, d, 1.5)
           if (t < 0) { miss++; continue }
           worst = Math.max(worst, Math.abs(t - 0.5))
@@ -1985,7 +1996,7 @@ try {
     }
 
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
-    await goTo(flag('at', '-32 -331').replace(',', ' '))
+    await goTo(houseTrip ? '5.5 -6' : flag('at', '-32 -331').replace(',', ' '))
     await sleep(6000)
     await phase(moonTrip ? 'setup (night falls)' : 'setup (morning)')
     await run(moonTrip ? 'time 22:30' : 'time 10:30')
@@ -1997,7 +2008,7 @@ try {
 
     // 1. the gun, out of the catalogue's tools tab
     await phase('catalogue')
-    if (moonTrip) await evaluate(`(() => { window.__tools.give('portalgun'); window.__tools.select(3); return true })()`)
+    if (moonTrip || houseTrip) await evaluate(`(() => { window.__tools.give('portalgun'); window.__tools.select(3); return true })()`)
     else {
     await tap('KeyQ')
     await sleep(400)
@@ -2012,8 +2023,157 @@ try {
     await sleep(1200)
     }
     console.log(`  in hand: ${await evaluate('window.__tools.tool')}`)
-    if (!moonTrip) await pShot('2-gun-in-hand')
+    if (!moonTrip && !houseTrip) await pShot('2-gun-in-hand')
 
+    if (houseTrip) {
+      /* Portals on what the house and the sandbox are furnished with: a
+         room door (then swung open with the portal riding it), the bed's
+         mattress, a portal panel from the catalogue carried on the physgun
+         with its portal riding it, and a floor portal on the lawn with the
+         grass kept out of it (the same view with the holes cleared first,
+         as the before) */
+      await phase('house')
+      const said = async (label, color) => {
+        const ev = await evaluate('window.__pEv.splice(0).join(" ")')
+        const p = await portalAt(color)
+        console.log(`  ${label}: ${p ? `opened at ${f1(p.pos)} facing ${f1(p.n)}` : 'nothing opened'} (${ev || 'no event'})`)
+        if (p) await rim(color, `  ${label}`)
+        return p
+      }
+      const aimAt = async (x, y, z) => {
+        const c = await here()
+        await look(Math.atan2(-(x - c[0]), -(z - c[2])), Math.atan2(y - c[1], Math.hypot(x - c[0], z - c[2])))
+        await sleep(300)
+      }
+      await evaluate(`window.__pEv = []; window.__tools.portals.on((e) => window.__pEv.push(e.type + ':' + e.color)); true`)
+      // a room door, shut, shot square from five units off
+      await evaluate('window.__house.resetDoors(); true')
+      const leaves = await evaluate('window.__house.doorLeaves()')
+      const UP = 6.4
+      const door = leaves.find((d) => d.y > UP - 0.5) ?? leaves[0]
+      if (!door) console.log('  no room door  <-- WRONG')
+      else {
+        // an 'x' door stands in a wall at x = at, its centre `cu` along z
+        const nx = door.axis === 'x' ? 1 : 0
+        const nz = door.axis === 'z' ? 1 : 0
+        const cx = door.axis === 'x' ? door.at : door.cu
+        const cz = door.axis === 'x' ? door.cu : door.at
+        // from whichever side has a clear view of the leaf
+        let side = 1
+        for (const s of [1, -1]) {
+          side = s
+          await tpFeet(cx + nx * 4.5 * s, cz + nz * 4.5 * s, door.y + 0.05, 0)
+          await sleep(1400)
+          await aimAt(cx, door.y + 2.35, cz)
+          const t = await evaluate(`(() => { const c = window.__sandboxCamera, d = c.getWorldDirection(c.position.clone()); const h = window.__portalHouseHit(c.position, d, 40); return h ? h.t : -1 })()`)
+          if (Math.abs(t - 4.5) < 0.8) break
+        }
+        await click('Mouse0')
+        console.log(`  (door ${JSON.stringify(door)}, lens at ${f1(await here())})`)
+        const p = await said('a room door', 0)
+        await pShot('house-1-door')
+        if (p) {
+          // swing it: the portal rides the leaf
+          const c = await here()
+          await evaluate(`(() => { const V = window.__sandboxCamera.position.constructor
+            return window.__house.useDoor(new V(${c[0]}, ${c[1]}, ${c[2]}), new V(${cx - c[0]}, 0, ${cz - c[2]}).normalize()) })()`)
+          await sleep(1600)
+          const q = await portalAt(0)
+          console.log(`  the door swung: the portal is at ${q ? `${f1(q.pos)} facing ${f1(q.n)}` : 'closed'} (side ${side})`)
+          await pShot('house-2-door-swung')
+          await evaluate('window.__house.resetDoors(); true')
+        }
+      }
+      // the mattress on the kid's bed, from beside it, looking down
+      const bx = -5.72
+      const bz = 8.03
+      await tpFeet(bx + 3.2, bz - 2.2, UP + 0.05, 0)
+      await sleep(1400)
+      await aimAt(bx, UP + 1.0, bz)
+      console.log('  (the house ray: ' + await evaluate(`(() => { const c = window.__sandboxCamera, d = c.getWorldDirection(c.position.clone()); const h = window.__portalHouseHit(c.position, d, 40); if (!h) return 'none'
+        const b = new (window.__sandboxCamera.position.constructor)(); const B = { min: b.clone().setScalar(1e9), max: b.clone().setScalar(-1e9) }
+        h.object.geometry.computeBoundingBox(); const bb = h.object.geometry.boundingBox.clone().applyMatrix4(h.object.matrixWorld)
+        return h.t.toFixed(2) + ' ' + h.normal.toArray().map((n) => n.toFixed(2)) + ' ' + (h.object.name || '?') + ' size ' + bb.getSize(b).toArray().map((n) => n.toFixed(2)) + (B ? '' : '') })()`) + ')')
+      await click('Mouse2')
+      await said("the kid's bed", 1)
+      console.log('  (why: ' + await evaluate('window.__tools.portals.why') + ')')
+      await pShot('house-3-bed')
+      // outside: the lawn, the panel and the physgun
+      await tpFeet(1.5, -7.5, 0.05, Math.PI)
+      await sleep(2500)
+      await look(Math.PI, -1.0)
+      await click('Mouse0')
+      const lawn = await said('the lawn', 0)
+      if (lawn && lawn.n[1] > 0.6) {
+        const holes = `(() => { const P = window.__tools.portals.list[0]; const r = P.up.clone().cross(P.n)
+          window.__outside.groundHoles(P ? [{ c: P.pos, a: r.multiplyScalar(window.__tools.portals.hw), b: P.up.clone().multiplyScalar(window.__tools.portals.hh) }] : []); return true })()`
+        await evaluate('window.__outside.groundHoles([]); true')
+        await sleep(500)
+        await pShot('grass-1-before-eye')
+        await evaluate(holes)
+        await sleep(500)
+        await pShot('grass-2-after-eye')
+        await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+        await look(Math.PI, -0.7)
+        await sleep(1200)
+        await evaluate('window.__outside.groundHoles([]); true')
+        await sleep(400)
+        await pShot('grass-3-before-third')
+        await evaluate(holes)
+        await sleep(400)
+        await pShot('grass-4-after-third')
+        await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+      }
+      // a mattress from the catalogue, lying on the lawn, and the orange
+      // portal on its top
+      await tpFeet(4, -9, 0.05, 0)
+      await sleep(1200)
+      await evaluate(`(() => { const sb = window.__sandbox; const x = 4, z = -14; window.__mat = sb.spawn('mattress', { x, y: sb.restY('mattress', x, z) + 0.05, z }); return true })()`)
+      await sleep(1500)
+      const mat = await evaluate(`(() => { const v = window.__sandboxCamera.position.clone(); window.__sandbox.getTransform(window.__mat, v); return v.toArray() })()`)
+      await aimAt(mat[0], mat[1] + 0.2, mat[2])
+      await click('Mouse2')
+      await said('a mattress (the catalogue one)', 1)
+      console.log('  (why: ' + await evaluate('window.__tools.portals.why') + ')')
+      await pShot('house-3b-mattress-prop')
+      // the panel from the catalogue, set down facing us toward the street
+      await look(0.6, -0.25)
+      await sleep(400)
+      await tap('KeyQ')
+      await sleep(400)
+      await waitFor(() => evaluate(`document.querySelectorAll('[data-kind] img').length > 4`), 60, 250, 'the catalogue icons')
+      const got = await evaluate(`(() => { const el = document.querySelector('[data-kind="portal_panel"]'); el && el.click(); return !!el })()`)
+      await sleep(600)
+      await tap('Escape')
+      await sleep(1000)
+      const panel = await evaluate(`(() => { let q = null; window.__sandbox.forEach((p) => { if (p.kind.id === 'portal_panel') q = p }); if (!q) return null
+        const v = window.__sandboxCamera.position.clone(); window.__sandbox.getTransform(q.id, v); return { id: q.id, at: v.toArray(), mode: q.mode } })()`)
+      console.log(`  the panel: ${got ? '' : 'no plate  <-- WRONG '}${panel ? `at ${f1(panel.at)}, ${panel.mode}` : 'not spawned  <-- WRONG'}`)
+      if (panel) {
+        await aimAt(panel.at[0], panel.at[1], panel.at[2])
+        await click('Mouse0')
+        await said('the panel', 0)
+        await pShot('panel-1-portal-on-it')
+        // carried on the physgun, the portal riding it (and still see-through)
+        await evaluate('window.__tools.select(1); true')
+        await sleep(500)
+        await aimAt(panel.at[0], panel.at[1], panel.at[2])
+        await hold('Mouse0', true)
+        await sleep(700)
+        console.log('  (props ray: ' + await evaluate(`(() => { const c = window.__sandboxCamera, d = c.getWorldDirection(c.position.clone()); const h = window.__sandbox.raycast(c.position, d, 60, { props: true, world: false }); let pk = '?'; window.__sandbox.forEach((p) => { if (p.kind.id === 'portal_panel') pk = p.mode + (p.parked ? ' parked' : '') }); return (h ? h.distance.toFixed(2) + ' ' + (h.prop?.kind.id ?? 'no prop') : 'none') + ', panel ' + pk })()`) + ')')
+        const held = await evaluate('window.__tools.physgun.holding')
+        console.log('  (physgun: ' + await evaluate('window.__tools.tool + " " + window.__tools.physgun.view.mode') + ')')
+        await evaluate('window.__sandboxWalk.yaw += 0.5; true')
+        await sleep(900)
+        console.log(`  the physgun ${held ? 'has' : 'did not take'} the panel`)
+        const q = await portalAt(0)
+        const pv = await evaluate('window.__tools.portalView.stats.passes')
+        console.log(`  carried: the portal at ${q ? f1(q.pos) : 'closed'}, ${pv} live view(s) this frame`)
+        await pShot('panel-2-carried')
+        await hold('Mouse0', false)
+        await evaluate('window.__tools.select(3); true')
+      }
+    } else {
     // 2. a wall for each colour
     await phase('open')
     await evaluate(`window.__pEv = []; window.__tools.portals.on((e) => window.__pEv.push(e.type + ':' + e.color + '@' + e.point.toArray().map((n) => n.toFixed(1)).join(','))); true`)
@@ -2347,6 +2507,7 @@ try {
       await shootAt(-15.7, 2.0, -272.4, [-15.7, -281.4], 'fizzle-or-flush-old-floating-spot')
       if (!empty) console.log('  no empty collision face near (every box nearby has a drawn wall in it)')
       else await shootAt(empty.x, empty.y, empty.z, [empty.x + empty.nx * 7, empty.z + empty.nz * 7], 'fizzle-empty-box-face')
+    }
     }
     const plinks = await evaluate('window.__pLinks')
     console.log(`  ${plinks.length} programs linked from the catalogue on${plinks.length ? ': ' + plinks.join(', ') : ''}`)

@@ -803,7 +803,7 @@ sandbox/
                 Streamed around the walker and around every unparked prop
   kinds.ts      the kind table: shape, mass, friction, bounce, density, mesh,
                 and what it sounds like (surface), breaks into or goes off as
-  catalogue.ts  the forty-one kinds that ship, their physics, and `CATALOGUE`
+  catalogue.ts  the forty-two kinds that ship, their physics, and `CATALOGUE`
                 / `CATEGORIES` (ids, nine categories, en/es names): the menu
   models.ts     what each of them looks like, their atlas cells, and `GIBS`
                 (the pieces a breakable comes apart into)
@@ -1349,6 +1349,26 @@ drawn through this world's machinery:
   measures every placement against the drawn surface independently (13
   rim and middle samples, max gap printed; 0.02 is the offset) and shoots a
   lamp post and an empty collision face.
+- **What it can open on.** The oval is 1.9 by 4.5, narrow enough for a
+  room door. Besides the world's walls and ground it takes the house's own
+  drawn furniture (found by a ray against `house.root`, since doors and
+  beds have no collision face; a soft thing like a comforter is fitted to
+  within 12 cm and the oval laid on its highest point), and any box-shaped
+  sandbox prop with a face big enough (fitted to the prop's own box). A
+  portal on either *rides* it (`Portal.anchor`, re-read every frame by
+  `follow`): one on a door swings with the leaf, one on a prop is carried
+  with it on the physgun and closes when the prop is removed, broken or
+  cleaned up. A prop holds the walker off by its radius, so a portal on one
+  is crossed that far off its face (`skin`). The catalogue's
+  Construction tab has a *portal panel*, a thin 2.8 by 5.2 board set down
+  frozen against the wall under the crosshair or standing on the ground
+  facing you. The house's own beds (3.25 long) are shorter than the oval
+  and refuse it, the way Portal refuses a surface too small.
+- **The grass steps aside.** An open floor portal cuts its oval (plus 0.3)
+  out of the grass and the wildflowers: two holes' worth of uniforms that
+  the trample's vertex shader always carries (`world/wind.ts`'s
+  `setGroundHoles`, off by a flag), so opening and closing one links
+  nothing, and the blades inside fold to their roots.
 - **One matrix carries everything.** Going in one is coming out of the
   other turned half round its up axis, so `orange * flip * blue^-1` maps the
   walker's centre, its gaze and its velocity alike, and a fall into a floor

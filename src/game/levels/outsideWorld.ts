@@ -76,6 +76,7 @@ type WorldModules = {
   globe: typeof import('../world/globe')
   moon: typeof import('./moon')
   streamer: typeof import('../world/streamer')
+  wind: typeof import('../world/wind')
   terrain: typeof import('../world/terrain')
   birds: typeof import('../world/birds')
   fauna: typeof import('../world/fauna')
@@ -216,6 +217,10 @@ export interface OutsideHandles {
         done here (up in the sky, where the globes are the sky's own) */
     dress: (cam: THREE.Vector3) => (() => void) | null
   }
+  /** cut up to two ovals out of the grass and the wildflowers (open floor
+      portals): centre and the two half-axes, world units. An empty list
+      grows them back. A few uniforms, never a program */
+  groundHoles: (holes: readonly { c: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[]) => void
   /** the scene's sun and sky light, for the globes (they light themselves the
       way the ground under them is lit) */
   lightGlobes: (sun: THREE.Color, ambient: THREE.Color) => void
@@ -312,7 +317,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   let modsPromise: Promise<WorldModules> | null = null
   const loadMods = () => {
     modsPromise ??= (async () => {
-      const [globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors] = await Promise.all([
+      const [globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors, wind] = await Promise.all([
         import('../world/globe'),
         import('./moon'),
         import('../world/streamer'),
@@ -322,8 +327,9 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
         import('../world/pedestrians'),
         import('../world/debris'),
         import('../world/shopDoors'),
+        import('../world/wind'),
       ])
-      return { globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors }
+      return { globe, moon, streamer, terrain, birds, fauna, pedestrians, debris, shopDoors, wind }
     })()
     return modsPromise
   }
@@ -960,6 +966,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
       },
     },
     warmSpace: (on) => w?.globes.warm(on),
+    groundHoles: (holes) => w?.mods.wind.setGroundHoles(holes),
     moonPortal,
     lightGlobes: (sun, ambient) => w?.globes.setLights(sun, ambient),
   }

@@ -363,6 +363,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     const shown = f.active && tool === 'physgun'
     const toolOut = f.active && tool === 'toolgun'
     const portalOut = f.active && tool === 'portalgun'
+    // a portal riding a door or a prop goes where it went this frame
+    portals.follow()
     portals.tick(f.dt)
     tracer = Math.max(0, tracer - f.dt)
     if (physgun.holding) aimAt.copy(physgun.view.target)

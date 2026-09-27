@@ -69,9 +69,10 @@ import type { Prop, Sandbox } from '../sandbox'
 */
 
 export type PortalColor = 0 | 1
-/** the opening's half-width and half-height: a little taller than a body */
-export const PORTAL_HW = 1.45
-export const PORTAL_HH = 2.45
+/** the opening's half-width and half-height: a little taller than a body,
+    and narrow enough to fit on a door (the house's are 2.1 by 4.7) */
+export const PORTAL_HW = 0.95
+export const PORTAL_HH = 2.25
 /** how far the gun reaches */
 export const PORTAL_RANGE = 420
 /** the walker's centre over its soles: the point that is carried through */
@@ -92,7 +93,18 @@ export interface PortalWorld {
       the wall you can see (see `soupAround`); without this it sits on the
       box */
   meshesNear?: (at: THREE.Vector3, r: number) => readonly THREE.Mesh[]
+  /** the first drawn mesh of the furnished house along a ray (a door leaf,
+      a mattress, a wardrobe: nothing there has a collision face to find it
+      by). A portal fitted to one rides it */
+  drawnHit?: (o: THREE.Vector3, d: THREE.Vector3, max: number) =>
+    { t: number; normal: THREE.Vector3; object: THREE.Object3D } | null
 }
+
+/** what a portal rides: a drawn object of the house (a swinging door leaf),
+    or a sandbox prop; `local` is the portal's frame in the anchor's */
+export type PortalAnchor =
+  | { kind: 'object'; obj: THREE.Object3D; local: THREE.Matrix4 }
+  | { kind: 'prop'; sb: Sandbox; id: number; local: THREE.Matrix4 }
 
 export interface Portal {
   readonly color: PortalColor
@@ -113,6 +125,11 @@ export interface Portal {
   /** false while the far side is still being made (the Moon's ground):
       a portal that is not ready shows its swirl and leads nowhere */
   ready: boolean
+  /** what it rides, if anything moves under it (see `follow`) */
+  anchor: PortalAnchor | null
+  /** how far in front of the oval the walker is let through: a prop holds
+      the walker off by its radius, so a portal on one is crossed there */
+  skin: number
   /** a fixed spot's id (the Moon's), when it is one */
   site: string | null
   /** seconds since it opened, for the view's opening */
@@ -177,6 +194,14 @@ export interface Portals {
   on: (fn: (e: PortalEvent) => void) => () => void
   /** bumped whenever a portal opens or closes */
   readonly version: number
+  /** why the last shot fizzled, in a word or two (for a harness) */
+  readonly why: string
+  /** once a frame: a portal riding a door or a prop is moved with it, and
+      one whose prop has gone is closed */
+  follow: () => void
+  /** the opening's half-extents (for the scene, which cannot import them) */
+  readonly hw: number
+  readonly hh: number
 }
 
 /* ------------------------------------------------------------ geometry -- */
@@ -328,6 +353,77 @@ const castWorld = (
 
 /* ------------------------------------------------ the drawn surface -- */
 
+/** a ray caster over a flat list of world triangles (nine floats each) */
+const makeSoup = (T: Float32Array, n: THREE.Vector3): Soup => {
+  const e1 = new THREE.Vector3()
+  const e2 = new THREE.Vector3()
+  const p = new THREE.Vector3()
+  const q = new THREE.Vector3()
+  const t0 = new THREE.Vector3()
+  const normal = new THREE.Vector3()
+  let hitI = -1
+  const cast = (o: THREE.Vector3, d: THREE.Vector3, max: number) => {
+    let best: number | null = null
+    hitI = -1
+    for (let i = 0; i < T.length; i += 9) {
+      // Moller-Trumbore, both windings
+      e1.set(T[i + 3] - T[i], T[i + 4] - T[i + 1], T[i + 5] - T[i + 2])
+      e2.set(T[i + 6] - T[i], T[i + 7] - T[i + 1], T[i + 8] - T[i + 2])
+      p.crossVectors(d, e2)
+      const det = e1.dot(p)
+      if (Math.abs(det) < 1e-9) continue
+      const inv = 1 / det
+      t0.set(o.x - T[i], o.y - T[i + 1], o.z - T[i + 2])
+      const u = t0.dot(p) * inv
+      if (u < 0 || u > 1) continue
+      q.crossVectors(t0, e1)
+      const v = d.dot(q) * inv
+      if (v < 0 || u + v > 1) continue
+      const t = e2.dot(q) * inv
+      if (t < 0 || t > max || (best !== null && t >= best)) continue
+      best = t
+      hitI = i
+    }
+    if (hitI >= 0) {
+      const i = hitI
+      e1.set(T[i + 3] - T[i], T[i + 4] - T[i + 1], T[i + 5] - T[i + 2])
+      e2.set(T[i + 6] - T[i], T[i + 7] - T[i + 1], T[i + 8] - T[i + 2])
+      normal.crossVectors(e1, e2).normalize()
+      if (normal.dot(n) < 0) normal.negate()
+    }
+    return best
+  }
+  return { cast, normal }
+}
+
+/**
+ * The same caster over a sandbox prop's box: its six faces where the body is
+ * now. A prop is drawn from an instanced batch the drawn-surface pass skips,
+ * and its collision box is its drawn shape near enough (a panel is exactly
+ * one), so this is the surface a portal on it must fit.
+ */
+export const soupOfBox = (pos: THREE.Vector3, quat: THREE.Quaternion, ext: THREE.Vector3, n: THREE.Vector3): Soup => {
+  const T: number[] = []
+  const c = new THREE.Vector3()
+  const corner = (sx: number, sy: number, sz: number) =>
+    c.set(sx * ext.x, sy * ext.y, sz * ext.z).applyQuaternion(quat).add(pos).toArray()
+  // each face as two triangles: axis k, side s
+  for (let k = 0; k < 3; k++) {
+    for (const s of [-1, 1]) {
+      const q: number[][] = []
+      for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const f = [0, 0, 0]
+        f[k] = s
+        f[(k + 1) % 3] = u
+        f[(k + 2) % 3] = v
+        q.push(corner(f[0], f[1], f[2]))
+      }
+      T.push(...q[0], ...q[1], ...q[2], ...q[0], ...q[2], ...q[3])
+    }
+  }
+  return makeSoup(Float32Array.from(T), n)
+}
+
 /**
  * The drawn triangles of a few meshes that lie within a box round a point
  * and face along `n`, flattened into world space once per shot, so the
@@ -395,44 +491,7 @@ export const soupAround = (
     }
   }
   if (!tris.length) return null
-  const T = Float32Array.from(tris)
-  const p = new THREE.Vector3()
-  const q = new THREE.Vector3()
-  const t0 = new THREE.Vector3()
-  const normal = new THREE.Vector3()
-  let hitI = -1
-  const cast = (o: THREE.Vector3, d: THREE.Vector3, max: number) => {
-    let best: number | null = null
-    hitI = -1
-    for (let i = 0; i < T.length; i += 9) {
-      // Moller-Trumbore, both windings
-      e1.set(T[i + 3] - T[i], T[i + 4] - T[i + 1], T[i + 5] - T[i + 2])
-      e2.set(T[i + 6] - T[i], T[i + 7] - T[i + 1], T[i + 8] - T[i + 2])
-      p.crossVectors(d, e2)
-      const det = e1.dot(p)
-      if (Math.abs(det) < 1e-9) continue
-      const inv = 1 / det
-      t0.set(o.x - T[i], o.y - T[i + 1], o.z - T[i + 2])
-      const u = t0.dot(p) * inv
-      if (u < 0 || u > 1) continue
-      q.crossVectors(t0, e1)
-      const v = d.dot(q) * inv
-      if (v < 0 || u + v > 1) continue
-      const t = e2.dot(q) * inv
-      if (t < 0 || t > max || (best !== null && t >= best)) continue
-      best = t
-      hitI = i
-    }
-    if (hitI >= 0) {
-      const i = hitI
-      e1.set(T[i + 3] - T[i], T[i + 4] - T[i + 1], T[i + 5] - T[i + 2])
-      e2.set(T[i + 6] - T[i], T[i + 7] - T[i + 1], T[i + 8] - T[i + 2])
-      normal.crossVectors(e1, e2).normalize()
-      if (normal.dot(n) < 0) normal.negate()
-    }
-    return best
-  }
-  return { cast, normal }
+  return makeSoup(Float32Array.from(tris), n)
 }
 
 /* ----------------------------------------------------------- the module -- */
@@ -452,7 +511,7 @@ export function createPortals(): Portals {
 
   const make = (color: PortalColor): Portal => ({
     color, level: '', pos: new THREE.Vector3(), n: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0),
-    right: new THREE.Vector3(1, 0, 0), hosts: [], ground: false, inset: 0, ready: true, site: null, age: 0,
+    right: new THREE.Vector3(1, 0, 0), hosts: [], ground: false, inset: 0, ready: true, anchor: null, skin: 0, site: null, age: 0,
     basis: new THREE.Matrix4(), inv: new THREE.Matrix4(),
   })
 
@@ -465,6 +524,9 @@ export function createPortals(): Portals {
   const FIT_OFF = 0.6
   /** how far off the fitted plane any sample of the drawn surface may lie */
   const FLUSH = 0.04
+  /** ...and a soft thing of the house's (a mattress, a cushion) this */
+  const FLUSH_SOFT = 0.12
+  let flushTol = FLUSH
   /** the drawn surface's facets must face within this of the oval's normal */
   const FACING = Math.cos(THREE.MathUtils.degToRad(14))
   /** the samples: round the rim, and a few inside so a post in the middle
@@ -538,6 +600,9 @@ export function createPortals(): Portals {
         o.copy(q).addScaledVector(n, FIT_OFF)
         const t = drawn.cast(o, back, FIT_OFF + 0.7)
         if (t === null || drawn.normal.dot(n) < FACING) return null
+        // and nothing standing over it: a fence rail, a shelf, a post
+        q.copy(o).addScaledVector(back, t - 0.06)
+        if (drawn.cast(q, n, 1.2) !== null) return null
         sx[k] = px * PORTAL_HW
         sy[k] = py * PORTAL_HH
         sd[k] = FIT_OFF - t // + the surface stands proud of the trial plane
@@ -553,11 +618,17 @@ export function createPortals(): Portals {
       if (Math.abs(m.determinant()) < 1e-9) return null
       const sol = new THREE.Vector3(Sxd, Syd, Sd).applyMatrix3(m.invert())
       let resid = 0
-      for (let i = 0; i < k; i++) resid = Math.max(resid, Math.abs(sd[i] - (sol.x * sx[i] + sol.y * sy[i] + sol.z)))
-      if (resid > FLUSH || Math.abs(sol.x) > 0.25 || Math.abs(sol.y) > 0.25) return null
+      let above = 0
+      for (let i = 0; i < k; i++) {
+        const e = sd[i] - (sol.x * sx[i] + sol.y * sy[i] + sol.z)
+        resid = Math.max(resid, Math.abs(e))
+        above = Math.max(above, e)
+      }
+      if (resid > flushTol || Math.abs(sol.x) > 0.25 || Math.abs(sol.y) > 0.25) return null
       fitOut.a = sol.x
       fitOut.b = sol.y
-      fitOut.off = sol.z
+      // on a soft surface (a mattress) the oval lies on its highest point
+      fitOut.off = sol.z + (flushTol > FLUSH ? above : 0)
       fitOut.resid = resid
       fitOut.lift = 0
       fitOut.inset = collectHosts(q.copy(c).addScaledVector(n, sol.z), n, up, right, boxes)
@@ -596,7 +667,9 @@ export function createPortals(): Portals {
   }
 
   const shot: PortalShot = { ok: false, color: 0, point: new THREE.Vector3(), normal: new THREE.Vector3() }
-  const fail = (color: PortalColor, reason: PortalFail, at: THREE.Vector3, n: THREE.Vector3) => {
+  let why = ''
+  const fail = (color: PortalColor, reason: PortalFail, at: THREE.Vector3, n: THREE.Vector3, detail = '') => {
+    why = reason + (detail ? ` (${detail})` : '')
     drawn = null
     shot.ok = false
     shot.color = color
@@ -615,7 +688,15 @@ export function createPortals(): Portals {
   const C = new THREE.Vector3()
   const best = new THREE.Vector3()
   const WORLD_UP = new THREE.Vector3(0, 1, 0)
+  const anchorM = new THREE.Matrix4()
+  const ONE = new THREE.Vector3(1, 1, 1)
   const skipped = new Set<Solid>()
+  const WP = new THREE.Vector3()
+  const WN = new THREE.Vector3()
+  const ap = new THREE.Vector3()
+  const aq = new THREE.Quaternion()
+  /** the world's landing was a bare box: nothing drawn anywhere near it */
+  let drawnLess = false
   const pass: Solid[] = []
 
   /** the oval's frame on a surface facing `n`: a wall stands it upright, a
@@ -633,39 +714,49 @@ export function createPortals(): Portals {
   const fire = (color: PortalColor, eye: THREE.Vector3, dirIn: THREE.Vector3, world: PortalWorld): PortalShot => {
     const dir = dirIn.clone().normalize()
     const max = PORTAL_RANGE
-    // a prop in the way stops the shot there
     const sb = world.sandbox
+    // three things a shot can land on, the nearest wins: a prop, a drawn
+    // piece of the house's furniture, and the world (boxes, ground, chunks)
     const ph = sb ? sb.raycast(eye, dir, max, { props: true, world: false }) : null
+    const hh = world.drawnHit ? world.drawnHit(eye, dir, max) : null
     skipped.clear()
     drawn = null
     let onGround = false
     /*
-      Where the shot lands on something you can see. The ray is cast against
-      the collision boxes and the ground (cheap, and what the walker lives
-      in), and then the drawn meshes are felt for along the ray round that
-      hit. A box with nothing drawn near its face (a guard round a lamp post,
-      a broad-phase box, one standing proud of its wall or running past a
-      building's corner) is no surface: it is set aside and the ray goes on.
+      The world's own landing, on something you can see. The ray is cast
+      against the collision boxes and the ground (cheap, and what the walker
+      lives in), and then the drawn meshes are felt for along the ray round
+      that hit. A box with nothing drawn near its face (a guard round a lamp
+      post, a broad-phase box, one standing proud of its wall or running
+      past a building's corner) is no surface: it is set aside and the ray
+      goes on.
     */
+    let wt = Infinity
+    let wFail: PortalFail = 'miss'
     for (let attempt = 0; ; attempt++) {
       pass.length = 0
       for (const b of world.collision.boxes) if (!skipped.has(b)) pass.push(b)
       const got = castWorld(eye, dir, max, pass, world, hit)
-      if (ph && (!got || ph.distance < hit.t)) return fail(color, 'prop', ph.point, ph.normal)
       if (!got || hit.t <= 0) {
-        P.copy(eye).addScaledVector(dir, got ? 0 : max)
-        return fail(color, 'miss', P, WORLD_UP)
+        WP.copy(eye).addScaledVector(dir, got ? 0 : max)
+        break
       }
-      P.copy(eye).addScaledVector(dir, hit.t)
-      N.copy(hit.normal)
+      WP.copy(eye).addScaledVector(dir, hit.t)
+      WN.copy(hit.normal)
       // the sea is no surface either
-      if (world.waterY !== undefined && P.y < world.waterY + 0.05 && eye.y > world.waterY) {
+      if (world.waterY !== undefined && WP.y < world.waterY + 0.05 && eye.y > world.waterY) {
         const tw = (world.waterY - eye.y) / dir.y
-        P.copy(eye).addScaledVector(dir, tw)
-        return fail(color, 'water', P, WORLD_UP)
+        WP.copy(eye).addScaledVector(dir, tw)
+        wFail = 'water'
+        wt = tw
+        break
       }
       onGround = hit.ground
-      if (!world.meshesNear) break
+      if (!world.meshesNear) {
+        wt = hit.t
+        wFail = 'surface'
+        break
+      }
       // the drawn surface along the ray, from a little before the hit to a
       // little past it
       const t0 = Math.max(0, hit.t - 1.5)
@@ -675,30 +766,65 @@ export function createPortals(): Portals {
       o.copy(eye).addScaledVector(dir, t0)
       const ta = along ? along.cast(o, dir, t1 - t0) : null
       if (along && ta !== null) {
-        P.copy(o).addScaledVector(dir, ta)
-        N.copy(along.normal)
-        if (N.dot(dir) > 0) N.negate()
-        // a facet within a few degrees of square is square (a wall's own
-        // triangles lean by rounding, and the oval would lean with them)
-        for (let k = 0; k < 3; k++) {
-          const v = N.getComponent(k)
-          if (Math.abs(Math.abs(v) - 1) < 0.01) N.set(0, 0, 0).setComponent(k, Math.sign(v))
-        }
-        N.normalize()
+        wt = t0 + ta
+        wFail = 'surface'
+        WP.copy(o).addScaledVector(dir, ta)
+        WN.copy(along.normal)
         break
       }
       if (hit.box && attempt < 4) {
         skipped.add(hit.box)
         continue
       }
-      return fail(color, 'surface', P, N)
+      wt = hit.t
+      wFail = 'surface'
+      drawnLess = true
+      break
     }
+    const tp = ph ? ph.distance : Infinity
+    const th = hh ? hh.t : Infinity
+    let pending: { kind: 'prop'; id: number } | { kind: 'object'; obj: THREE.Object3D } | null = null
+    if (ph && tp <= th && tp <= wt) {
+      // a prop: a box-shaped one wide and flat enough takes a portal, which
+      // rides it; anything else fizzles, the way Portal will not open a
+      // hole in a cube
+      const pr = ph.prop
+      if (!pr || !sb || pr.kind.shape.type !== 'box' || !sb.getTransform(pr.id, ap, aq)) {
+        return fail(color, 'prop', ph.point, ph.normal)
+      }
+      P.copy(ph.point)
+      N.copy(ph.normal)
+      drawn = soupOfBox(ap, aq, pr.extents, N)
+      onGround = false
+      pending = { kind: 'prop', id: pr.id }
+    } else if (hh && th <= wt) {
+      P.copy(eye).addScaledVector(dir, th)
+      N.copy(hh.normal)
+      onGround = false
+      pending = { kind: 'object', obj: hh.object }
+    } else if (wt < Infinity && wFail === 'surface' && !drawnLess) {
+      P.copy(WP)
+      N.copy(WN)
+    } else if (wt < Infinity) {
+      return fail(color, wFail, WP, WN)
+    } else {
+      return fail(color, 'miss', WP, WORLD_UP)
+    }
+    drawnLess = false
+    if (N.dot(dir) > 0) N.negate()
+    // a facet within a few degrees of square is square (a wall's own
+    // triangles lean by rounding, and the oval would lean with them)
+    for (let k = 0; k < 3; k++) {
+      const v = N.getComponent(k)
+      if (Math.abs(Math.abs(v) - 1) < 0.01) N.set(0, 0, 0).setComponent(k, Math.sign(v))
+    }
+    N.normalize()
     frame(N, dir)
     const near = nearBoxes(world, P, PORTAL_HH + 4)
     // the drawn surface round the landing, facing it, felt once per shot
-    if (world.meshesNear) {
+    if (!drawn && world.meshesNear) {
       drawn = soupAround(world.meshesNear(P, PORTAL_HH + 3.5), P, PORTAL_HH + 3.5, N, FACING)
-      if (!drawn) return fail(color, 'surface', P, N)
+      if (!drawn) return fail(color, 'surface', P, N, 'nothing drawn there')
     }
     // where it fits: the hit itself, or the nearest spot round it
     let fit: Fit | null = null
@@ -722,16 +848,25 @@ export function createPortals(): Portals {
       take(c, f)
       return true
     }
-    if (!tryAt(P)) {
-      search: for (let r = 0.4; r <= 2.6; r += 0.4) {
+    // a floor or a bed may take the oval only one way round: a portal
+    // lying down is also tried turned a quarter and an eighth
+    const turns = Math.abs(N.y) > 0.7 ? [0, Math.PI / 2, Math.PI / 4, -Math.PI / 4] : [0]
+    const U0 = U.clone()
+    const R0 = R.clone()
+    flushTol = pending?.kind === 'object' ? FLUSH_SOFT : FLUSH
+    turn: for (const th of turns) {
+      U.copy(U0).multiplyScalar(Math.cos(th)).addScaledVector(R0, Math.sin(th)).normalize()
+      R.crossVectors(U, N).normalize()
+      if (tryAt(P)) break
+      for (const r of [0.15, 0.3, 0.5, 0.75, 1, 1.4, 1.8, 2.2, 2.6]) {
         for (let k = 0; k < 12; k++) {
           const a = (k / 12) * Math.PI * 2
           C.copy(P).addScaledVector(R, Math.cos(a) * r * 0.8).addScaledVector(U, Math.sin(a) * r)
-          if (tryAt(C)) break search
+          if (tryAt(C)) break turn
         }
       }
     }
-    if (!fit) return fail(color, 'surface', P, N)
+    if (!fit) return fail(color, 'surface', P, N, `no fit on ${pending?.kind ?? (onGround ? 'ground' : 'wall')}`)
     // a wall portal a little above a floor slides down to stand on it
     if (Math.abs(N.y) < 0.3) {
       const start = best.clone()
@@ -755,7 +890,9 @@ export function createPortals(): Portals {
     best.addScaledVector(N, keep.off)
     if (keep.a !== 0 || keep.b !== 0) {
       N.addScaledVector(R, -keep.a).addScaledVector(U, -keep.b).normalize()
-      frame(N, dir)
+      // the oval keeps the turn it was fitted at, square to the new normal
+      U.addScaledVector(N, -U.dot(N)).normalize()
+      R.crossVectors(U, N).normalize()
     }
     // not on top of its partner
     const other = list[1 - color]
@@ -777,9 +914,18 @@ export function createPortals(): Portals {
     drawn = null
     // flush, a hair proud so it never fights the surface for depth
     best.addScaledVector(N, keep.lift + 0.02)
-    const p = placeAt(color, world.level, best, N, U, null, hosts)
+    const p = placeAt(color, world.level, best, N, U, null, pending?.kind === 'prop' ? [] : hosts)
     p.ground = onGround
-    p.inset = Math.max(0, keep.inset)
+    p.inset = pending?.kind === 'prop' ? 0 : Math.max(0, keep.inset)
+    // riding what it was opened on: its frame kept in that thing's own
+    if (pending?.kind === 'prop' && sb && sb.getTransform(pending.id, ap, aq)) {
+      p.anchor = { kind: 'prop', sb, id: pending.id, local: anchorM.compose(ap, aq, ONE).invert().multiply(p.basis).clone() }
+      // a prop holds the walker off by its radius (sandbox/walker.ts)
+      p.skin = 0.55
+    } else if (pending?.kind === 'object') {
+      pending.obj.updateWorldMatrix(true, false)
+      p.anchor = { kind: 'object', obj: pending.obj, local: anchorM.copy(pending.obj.matrixWorld).invert().multiply(p.basis).clone() }
+    }
     shot.ok = true
     shot.color = color
     shot.reason = undefined
@@ -859,6 +1005,8 @@ export function createPortals(): Portals {
       if (!to) continue
       toPortal(p, a0, la)
       toPortal(p, a1, lb)
+      la.z -= p.skin
+      lb.z -= p.skin
       if (!(la.z >= 0 && lb.z < 0)) continue
       const k = la.z / (la.z - lb.z)
       const x = la.x + (lb.x - la.x) * k
@@ -900,6 +1048,7 @@ export function createPortals(): Portals {
       if (!sb.getTransform(pr.id, pp, pq)) continue
       sb.getVelocity(pr.id, pv, pw)
       for (const p of open) {
+        if (p.anchor?.kind === 'prop' && p.anchor.id === pr.id) continue
         toPortal(p, pp, lp)
         if (lp.z < -0.5 || lp.z > 4) continue
         if (ovalR(lp.x, lp.y) >= 0.92) continue
@@ -934,6 +1083,20 @@ export function createPortals(): Portals {
     const out: Portal[] = []
     for (const p of list) if (p && p.level === level && partner(p)) out.push(p)
     return out
+  }
+
+  const fp = new THREE.Vector3()
+  const fq = new THREE.Quaternion()
+  const fm = new THREE.Matrix4()
+  const FONE = new THREE.Vector3(1, 1, 1)
+  const closeOne = (c: PortalColor) => {
+    const p = list[c]
+    if (!p) return
+    list[c] = null
+    version++
+    emit('close', c, p.pos)
+    for (const b of marked) b.through = false
+    marked.length = 0
   }
 
   return {
@@ -973,5 +1136,41 @@ export function createPortals(): Portals {
     get version() {
       return version
     },
+    get why() {
+      return why
+    },
+    follow: () => {
+      for (const p of list) {
+        const a = p?.anchor
+        if (!p || !a) continue
+        if (a.kind === 'prop') {
+          if (!a.sb.get(a.id) || !a.sb.getTransform(a.id, fp, fq)) {
+            closeOne(p.color)
+            continue
+          }
+          fm.compose(fp, fq, FONE)
+        } else {
+          let root: THREE.Object3D = a.obj
+          while (root.parent) root = root.parent
+          if (!(root as THREE.Scene).isScene) {
+            closeOne(p.color)
+            continue
+          }
+          a.obj.updateWorldMatrix(true, false)
+          fm.copy(a.obj.matrixWorld)
+        }
+        fm.multiply(a.local)
+        if (fm.equals(p.basis)) continue
+        p.basis.copy(fm)
+        p.inv.copy(fm).invert()
+        const e = fm.elements
+        p.right.set(e[0], e[1], e[2]).normalize()
+        p.up.set(e[4], e[5], e[6]).normalize()
+        p.n.set(e[8], e[9], e[10]).normalize()
+        p.pos.set(e[12], e[13], e[14])
+      }
+    },
+    hw: PORTAL_HW,
+    hh: PORTAL_HH,
   }
 }
