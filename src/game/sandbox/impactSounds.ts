@@ -23,10 +23,11 @@ import type { Surface } from './kinds'
   dumpster bongs an octave under a trash can) and how much there is of it.
   Distance to the ear attenuates, pans, delays (sound is slow: 800 units a
   second, so a barrel going off across the street is seen before it is
-  heard) and muffles the booms. The levels are peak-matched against a grass
-  footstep (0.033 peak) by rendering offline in headless Chrome (`npm run
-  film -- props:sounds` prints the table): a light knock of anything lands
-  at 0.01 to 0.05, level with a footstep; a crate hitting at full strength
+  heard) and muffles the booms. The levels were peak-matched against the
+  first grass footstep (0.033 peak; the steps in core/footsteps.ts now sit
+  about 9 dB under that, deliberately further back) by rendering offline in
+  headless Chrome (`npm run film -- props:sounds` prints the table): a light
+  knock of anything lands at 0.01 to 0.05; a crate hitting at full strength
   0.2, a drum 0.25, glass 0.07, a mattress 0.06; a break about 0.2; a barrel
   going off four units away about 0.6, before the bus's limiter, which is
   what keeps a chain of them from clipping.

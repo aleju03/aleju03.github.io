@@ -187,7 +187,7 @@ export function makeHomeLevels(
     // the ship flies here, and lands, under a sixth of the gravity
     spacecraft: true,
     outdoors: true,
-    surfaceAt: () => 'sand',
+    surfaceAt: () => 'regolith',
   }
 
   return [overworld, level0, moon]

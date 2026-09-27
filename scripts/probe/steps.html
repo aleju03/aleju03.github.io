@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>footsteps</title>
+  </head>
+  <body>
+    <!-- Dev server only: scripts/steps.mjs renders the footsteps offline
+         through this page over CDP (see steps.ts). -->
+    <script type="module">
+      import { render } from './steps.ts'
+      window.__steps = { render, ready: true }
+    </script>
+  </body>
+</html>
