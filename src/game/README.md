@@ -1460,6 +1460,40 @@ drawn through this world's machinery:
   vegetation, with that capacity compiled at boot. Pairs close when their
   owner disconnects, but survive walking between levels.
 
+### The weapons
+
+Slots 5, 6 and 7 are a pistol, a crossbow and a rocket launcher, carried from
+the start (`give pistol|crossbow|rocket`, or `pistola|ballesta|cohete`, draws
+one; so does the catalogue's tools tab). Four modules, split the way the
+physgun's are: `tools/weapons.ts` is the whole behaviour as plain numbers and
+runs headless (hitscan, projectiles, stuck bolts, the wire), `weaponModels.ts`
+builds the three guns on the viewmodel's own materials (so they link nothing),
+`weaponView.ts` draws the rockets, bolts, tracers and other players' guns off
+`weapons.ts`'s arrays from pools built at construction and staged at boot, and
+`weaponSfx.ts` voices them through the props' own bus (`placedVoice`).
+
+- **A rocket is the `explode` command.** Its impact calls `sb.explode`, so it
+  throws props, breaks breakables, brings buildings and trees down, knocks
+  the walker and the crowd over through the scene's `onExplosion` handler
+  (rocket jumping is that), and reaches other players through the explosion
+  relay the prop network already runs. Nothing about a blast is weapon code.
+- **Shots fly the crosshair's ray and are drawn from the gun.** A projectile
+  starts at the eye; what is drawn starts at the muzzle and eases onto the
+  ray (`Projectile.off`).
+- **The shooter decides.** A `world-shot` makes every other client fly a
+  cosmetic copy; the shooter resolves the impact and relays a
+  `world-shot-hit` (the stuck bolt's frame in a shared prop, the impulse for
+  that prop's authority, the player struck and the velocity their own client
+  takes through the shove taker). A copy that meets something first parks
+  there and waits for the verdict. `world-wield` says who is holding what, so
+  remote bodies raise their arms (`AvatarEnv.aimOf`) around the right gun.
+
+```
+npm run drive -- weapons     the three guns in first person, a rocket in
+                             flight, a stuck bolt, the launcher in the body's
+                             hands, the voices' peaks; links (must be 0)
+```
+
 ### The console, the keys and undo
 
 The walk and the sandbox read keys through `bindings.ts` only: `held(keys,

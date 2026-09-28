@@ -10,6 +10,10 @@ import { contraptionOf, type Contraption } from '../contraption/contraption'
 import { createPortals, type Portal, type PortalColor, type Portals, type PortalWorld } from './portals'
 import { createPortalSfx } from './portalSfx'
 import { createPortalView, type PortalView } from './portalView'
+import { createWeapons, WEAPON_IDS, type WeaponId, type Weapons, type WeaponWorld } from './weapons'
+import { createWeaponView, type RemoteHands, type WeaponView } from './weaponView'
+import { createWeaponSfx } from './weaponSfx'
+import type { WorldServerMessage } from '../../net/protocol'
 
 /*
   The tool belt: which thing is in your hand, and the one object CrtScene
@@ -20,7 +24,9 @@ import { createPortalView, type PortalView } from './portalView'
   weld, axis, rope, no-collide, keys, remove). 4 is the portal gun
   (portals.ts), which is not carried until it is taken from the catalogue
   (`give`): left click opens the blue portal, right click the orange, R
-  closes both. The wheel cycles slots while nothing is held, and belongs to
+  closes both. 5, 6 and 7 are the weapons (weapons.ts): the pistol, the
+  crossbow and the rocket launcher, carried from the start; left click fires,
+  R reloads the pistol. The wheel cycles slots while nothing is held, and belongs to
   the physgun's distance while something is. A slot with nothing in it, or a
   tool not yet given, is skipped.
 
@@ -64,10 +70,11 @@ import { createPortalView, type PortalView } from './portalView'
   the boot cover; `unstage()` puts it all back.
 */
 
-export type ToolId = 'hands' | 'physgun' | 'toolgun' | 'portalgun'
-export const SLOTS: readonly (ToolId | null)[] = ['hands', 'physgun', 'toolgun', 'portalgun']
+export type ToolId = 'hands' | 'physgun' | 'toolgun' | 'portalgun' | WeaponId
+export const SLOTS: readonly (ToolId | null)[] = ['hands', 'physgun', 'toolgun', 'portalgun', 'pistol', 'crossbow', 'rocket']
 /** carried from the start; the rest are given */
-const STARTER: readonly ToolId[] = ['hands', 'physgun', 'toolgun']
+const STARTER: readonly ToolId[] = ['hands', 'physgun', 'toolgun', 'pistol', 'crossbow', 'rocket']
+const isWeapon = (t: ToolId | null | undefined): t is WeaponId => !!t && (WEAPON_IDS as readonly string[]).includes(t)
 
 export interface ToolbeltOpts {
   sb: Sandbox
@@ -92,6 +99,11 @@ export interface ToolbeltOpts {
   self?: () => RigEntry | null
   /** a portal shot that hit nothing: open it somewhere else, or say no */
   portalElsewhere?: (color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3) => boolean
+  /** what the weapons can hit beyond the sandbox and the fleet, and their
+      way onto the wire (weapons.ts's WeaponWorld) */
+  weapons?: Omit<WeaponWorld, 'sb' | 'vehicles'>
+  /** where another player's hands are, for the gun they are holding */
+  remoteHands?: RemoteHands
 }
 
 export interface ToolFrame {
@@ -155,6 +167,14 @@ export interface Toolbelt {
   readonly viewmodel: Viewmodel | null
   /** the ovals and the views through them, when drawn */
   readonly portalView: PortalView | null
+  /** the pistol, the crossbow and the rocket launcher */
+  readonly weapons: Weapons
+  readonly weaponView: WeaponView | null
+  /** fly the shots and place other people's guns: `present` does it, and a
+      frame loop that is not presenting (at the wheel) calls this instead */
+  tickWeapons: (dt: number) => void
+  /** the shared walk's messages the weapons answer to */
+  receive: (m: WorldServerMessage) => void
   dispose: () => void
 }
 
@@ -189,6 +209,20 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   const beam = o.parent ? createBeam(o.parent) : null
   const vm = o.parent ? createViewmodel(o.parent) : null
   const sfx: PhysgunSfx | null = (o.sound ?? !!o.parent) ? createPhysgunSfx() : null
+  const weapons = createWeapons({ sb: () => sb, vehicles: o.vehicles, ...o.weapons })
+  const weaponView = o.parent && vm ? createWeaponView(o.parent, weapons, vm) : null
+  const weaponSfx = (o.sound ?? !!o.parent) ? createWeaponSfx() : null
+  const offWeapons = weapons.on((e) => {
+    if (e.type === 'fire' && e.mine) vm?.weaponShot(e.w)
+    weaponSfx?.play(e, aimEye)
+  })
+  /** where the drawn shot leaves: the muzzle as of the last present */
+  const shotFrom = new THREE.Vector3()
+  let shotFromSet = false
+  const tickWeapons = (dt: number) => {
+    weapons.step(dt)
+    weaponView?.update(dt, o.remoteHands ?? null)
+  }
   let slot = Math.max(0, Math.min(SLOTS.length - 1, o.slot ?? 0))
   if (!SLOTS[slot]) slot = 0
   let lastActive = true
@@ -420,6 +454,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       toolgun.cancel()
       con.held = null
       lastActive = false
+      weapons.update(input, null, null)
+      weapons.wield(null)
       return
     }
     // a click that brought the tool back (a pause, a seat) is not a grab
@@ -446,6 +482,10 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       portalAltWas = input.alt
       portalCloseWas = input.reload
     } else portalFireWas = portalAltWas = portalCloseWas = false
+    // the weapons keep their clocks whatever is out
+    const tool = SLOTS[slot]
+    weapons.update(input, isWeapon(tool) ? tool : null, shotFromSet ? shotFrom : null)
+    weapons.wield(isWeapon(tool) ? tool : null)
     // a hoverball carried on the beam holds wherever it is let go
     con.held = physgun.prop?.id ?? null
   }
@@ -461,6 +501,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     const shown = f.active && tool === 'physgun'
     const toolOut = f.active && tool === 'toolgun'
     const portalOut = f.active && tool === 'portalgun'
+    const weaponOut = f.active && isWeapon(tool)
+    tickWeapons(f.dt)
     // a portal riding a door or a prop goes where it went this frame
     portals.follow()
     portals.tick(f.dt)
@@ -478,12 +520,14 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       vm.update({
         camera: f.camera, dt: f.dt, gait: f.gait, grounded: f.grounded,
         holding: physgun.holding, strain: physgun.view.strain,
-        firstPerson: f.firstPerson, hand: f.hand, handL: f.handL, aim: aimDir, aimAt, shown: shown || toolOut || portalOut,
-        tool: tool === 'toolgun' || tool === 'portalgun' ? tool : 'physgun',
+        firstPerson: f.firstPerson, hand: f.hand, handL: f.handL, aim: aimDir, aimAt,
+        shown: shown || toolOut || portalOut || weaponOut,
+        tool: tool === 'toolgun' || tool === 'portalgun' || isWeapon(tool) ? tool : 'physgun',
+        loaded: isWeapon(tool) ? weapons.loaded(tool) : 1,
       })
     }
     if (beam) {
-      if (vm && (shown || toolOut || portalOut)) vm.muzzle(muzzle, forward)
+      if (vm && (shown || toolOut || portalOut || weaponOut)) vm.muzzle(muzzle, forward)
       else {
         f.camera.getWorldDirection(forward)
         muzzle.copy(f.camera.position).addScaledVector(forward, 0.8)
@@ -497,8 +541,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
           muzzle, forward, end: tracerEnd, target: tracerEnd, mode: tracer > 0 ? 'miss' : 'off',
           strain: 0, dt: f.dt, lines: f.lines, fov: f.camera.fov, camera: f.camera,
         })
-      } else if (portalOut) {
-        // the portal gun draws no beam: its shot is the oval opening
+      } else if (portalOut || weaponOut) {
+        // the portal gun and the weapons draw no beam: its shot is the oval opening
         beam.holdHalo(null)
         beam.update({
           muzzle, forward, end: tracerEnd, target: tracerEnd, mode: 'off',
@@ -521,6 +565,10 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       }
     }
     sfx?.hum(shown && physgun.holding, physgun.view.strain)
+    if (weaponOut && vm) {
+      vm.muzzle(shotFrom, forward)
+      shotFromSet = true
+    } else shotFromSet = false
   }
 
   return {
@@ -583,6 +631,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       con = contraptionOf(next)
       physgun.retarget(next)
       toolgun.retarget(next)
+      weapons.retarget()
       offCarry()
       offCarry = next.onAfterSlice(carry)
     },
@@ -592,17 +641,29 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       beam?.stage(camera)
       beamIn?.stage(camera)
       portalView?.stage(camera)
+      weaponView?.stage(camera)
     },
     unstage: () => {
       vm?.unstage()
       beam?.unstage()
       beamIn?.unstage()
       portalView?.unstage()
+      weaponView?.unstage()
     },
     beam,
     viewmodel: vm,
     portalView,
+    weapons,
+    weaponView,
+    tickWeapons,
+    receive: (m) => {
+      weapons.receive(m, (id, out) => weaponView?.muzzleOf(id, out) ?? false)
+      if (m.type === 'world-shot' && WEAPON_IDS[m.w]) weaponView?.remoteShot(m.id, WEAPON_IDS[m.w])
+      if (m.type === 'world-welcome' || m.type === 'world-wields') weapons.wield(isWeapon(SLOTS[slot]) && lastActive ? SLOTS[slot] as WeaponId : null)
+    },
     dispose: () => {
+      offWeapons()
+      weaponView?.dispose()
       offEvents()
       offTool()
       offPortals()

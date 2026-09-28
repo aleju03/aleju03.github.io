@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLOW_ALPHA } from '../../render/pixelLook'
 import { buildGripMitten } from './viewHand'
+import { aimStrings, buildWeapon, type WeaponModel, type WeaponModelId } from './weaponModels'
 
 /*
   The physgun you hold: a chunky procedural gun at the bottom right of the
@@ -58,6 +59,17 @@ import { buildGripMitten } from './viewHand'
   plastic; the chamber's colour eases from blue to orange rather than
   snapping, and the claws twitch in on every shot.
 
+  **The weapons** (slots 5 to 7: the pistol, the crossbow and the rocket
+  launcher) are three more models on the same programs again, built in
+  `weaponModels.ts` and drawn here in the same two copies. What they do is
+  `weapons.ts`; what this side shows of it is a shot (`weaponShot`: the
+  kick, a muzzle flash for a few frames, the pistol's slide slamming back)
+  and how loaded the gun is (`ViewFrame.loaded`, 0 just fired to 1 ready),
+  which drops the pistol's magazine, draws the crossbow's string back and
+  lays a bolt on its rail, and slides the next rocket up the tube. The
+  body's copy of each is also what other players are seen holding
+  (`buildRemote`), a fresh copy per player on the body's materials.
+
   **The hand** is `viewHand.ts`: one smooth surface drawn the way the body is
   drawn, a mitten closed round the grip with a stub of forearm leaving the
   frame, in the body's colour and its vinyl sheen. Both guns' first-person
@@ -114,6 +126,21 @@ const TOOL_TURN = new THREE.Euler(0.04, 0.16, -0.08, 'YXZ')
 /** the portal gun's: rolled a touch less than the physgun, so the chamber
     and the top claw both show */
 const PORTAL_TURN = new THREE.Euler(0.1, 0.3, -0.18, 'YXZ')
+/** the weapons': the pistol square and a touch yawed so the slide's flank
+    shows, the crossbow yawed further so the limbs and the scope read, the
+    launcher nearly level with its tube along the view */
+const WEAPON_TURN: Record<WeaponModelId, THREE.Euler> = {
+  pistol: new THREE.Euler(0.03, 0.14, -0.06, 'YXZ'),
+  crossbow: new THREE.Euler(0.05, 0.2, -0.1, 'YXZ'),
+  rocket: new THREE.Euler(0.03, 0.04, -0.04, 'YXZ'),
+}
+/** the weapons' first-person offsets on top of FP_OFFSET: the launcher
+    rides lower (its tube sits over the grip) and the crossbow further out */
+const WEAPON_NUDGE: Record<WeaponModelId, THREE.Vector3> = {
+  pistol: new THREE.Vector3(0, 0.02, 0.04),
+  crossbow: new THREE.Vector3(-0.02, -0.01, 0),
+  rocket: new THREE.Vector3(0.1, -0.1, 0.06),
+}
 /** where a first-person gun points when nothing pulls it: this far down the
     crosshair, in the lens's frame */
 const CONVERGE = new THREE.Vector3(0, 0, -16)
@@ -158,7 +185,7 @@ const glowing = (m: THREE.MeshBasicMaterial) => {
   return m
 }
 
-interface Mats {
+export interface Mats {
   slate: THREE.MeshStandardMaterial
   dark: THREE.MeshStandardMaterial
   steel: THREE.MeshStandardMaterial
@@ -170,6 +197,12 @@ interface Mats {
   cream: THREE.MeshStandardMaterial
   /** the portal gun's chamber, in the last portal's colour */
   portal: THREE.MeshBasicMaterial
+  /** the weapons (weaponModels.ts): a crossbow's stock and a pistol's grip
+      panels, a hot bolt tip and a sight's lens, and the muzzle flash. All
+      on the programs above (a colour is a uniform), so they link nothing */
+  wood: THREE.MeshStandardMaterial
+  hot: THREE.MeshBasicMaterial
+  flash: THREE.MeshBasicMaterial
 }
 
 const makeMats = (fp: boolean): Mats => {
@@ -195,8 +228,19 @@ const makeMats = (fp: boolean): Mats => {
     lens: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: CORE_IDLE.clone() })), fp),
     cream: std(CREAM, 0.55, 0.1),
     portal: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: PORTAL_GLOW[0].clone() })), fp),
+    wood: std('#7a4d2c', 0.8, 0.05),
+    hot: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 1.1, 0.12) })), fp),
+    flash: vmMaterial(glowing(new THREE.MeshBasicMaterial({ color: new THREE.Color(4.2, 2.6, 0.7) })), fp),
   }
 }
+
+/**
+ * A glowing surface in the world (a tracer, a rocket's exhaust, a bolt's hot
+ * tip) on the viewmodel's glowing program with the depth squeeze off: it
+ * writes the look's light code and links nothing the belt has not already.
+ */
+export const glowWorldMaterial = (color: THREE.Color) =>
+  vmMaterial(glowing(new THREE.MeshBasicMaterial({ color })), false)
 
 /** the portal gun's chamber, blue and orange, linear and HDR */
 const PORTAL_GLOW = [new THREE.Color(0.1, 0.8, 3.4), new THREE.Color(3.4, 1.0, 0.06)] as const
@@ -210,14 +254,14 @@ export const portalWorldMaterial = (color: THREE.ColorRepresentation, rough = 0.
   vmMaterial(new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal, flatShading: true }), false)
 
 /** geometries, shared by both copies of the gun */
-interface Geos {
+export interface Geos {
   list: THREE.BufferGeometry[]
   box: (w: number, h: number, d: number) => THREE.BufferGeometry
   drum: (r: number, len: number, seg?: number, r2?: number) => THREE.BufferGeometry
   /** a flat face toward +z */
   plane: (w: number, h: number) => THREE.BufferGeometry
 }
-const makeGeos = (): Geos => {
+export const makeGeos = (): Geos => {
   const list: THREE.BufferGeometry[] = []
   const cache = new Map<string, THREE.BufferGeometry>()
   const keep = (k: string, g: () => THREE.BufferGeometry) => {
@@ -631,9 +675,12 @@ export interface ViewFrame {
   shown: boolean
   /** which gun is out (default the physgun) */
   tool?: ViewTool
+  /** a weapon's state: 0 just fired (or reloading), 1 ready */
+  loaded?: number
 }
 
-export type ViewTool = 'physgun' | 'toolgun' | 'portalgun'
+export type ViewTool = 'physgun' | 'toolgun' | 'portalgun' | WeaponModelId
+const isWeapon = (t: ViewTool): t is WeaponModelId => t === 'pistol' || t === 'crossbow' || t === 'rocket'
 
 export interface Viewmodel {
   readonly root: THREE.Group
@@ -653,9 +700,43 @@ export interface Viewmodel {
   /** the portal gun fired this colour (0 blue, 1 orange): the chamber turns
       to it and the claws twitch */
   portalShot: (color: 0 | 1) => void
+  /** a weapon went off: the kick, the flash, the pistol's slide */
+  weaponShot: (w: WeaponModelId) => void
+  /** a copy of a weapon for somebody else's hands, on the body's materials:
+      no new program. Its root is scaled for a body and aimed by the caller */
+  buildRemote: (w: WeaponModelId) => WeaponModel
+  /** the body's materials and the shared geometries, for things the
+      weapons put in the world (weaponView.ts) */
+  readonly worldMats: Mats
+  readonly geos: Geos
   stage: (camera: THREE.Camera) => void
   unstage: () => void
   dispose: () => void
+}
+
+/**
+ * A weapon's moving parts for this frame: `loaded` 0 just fired to 1 ready,
+ * `slide` the pistol's kick (0 at rest), and the muzzle flash.
+ */
+export const poseWeapon = (w: WeaponModelId, m: WeaponModel, loaded: number, slide: number, flash: boolean) => {
+  m.flash.visible = flash
+  if (flash) m.flash.rotation.z = Math.random() * Math.PI
+  const l = Math.max(0, Math.min(1, loaded))
+  if (w === 'pistol') {
+    m.action.position.z = m.actionZ + Math.max(0, slide)
+    // the magazine drops out and comes back over a reload
+    if (m.extra) m.extra.position.y = m.extraY - (l < 1 ? Math.sin(l * Math.PI) * 0.18 : 0)
+  } else if (w === 'crossbow') {
+    // loosed: the string is at the limbs; spanned back over the reload
+    const e = l * l * (3 - 2 * l)
+    m.action.position.z = m.actionZ + (1 - e) * -0.36
+    aimStrings(m)
+    if (m.extra) m.extra.visible = l > 0.97
+  } else {
+    // the next round slides up the tube and out to the mouth
+    m.action.visible = l > 0.05
+    m.action.position.z = m.actionZ + (1 - l) * 0.7
+  }
 }
 
 /** the first-person gun's resting turn in the lens's frame (no sway): its
@@ -706,11 +787,20 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
   screen.draw('WELD', 'A')
   const fpPortal = buildPortalgun(geos, fpGun.mats, mitten)
   const tpPortal = buildPortalgun(geos, tpGun.mats, null)
+  const WEAPON_IDS: readonly WeaponModelId[] = ['pistol', 'crossbow', 'rocket']
+  const fpW = Object.fromEntries(WEAPON_IDS.map((w) => [w, buildWeapon(w, geos, fpGun.mats, mitten)])) as Record<WeaponModelId, WeaponModel>
+  const tpW = Object.fromEntries(WEAPON_IDS.map((w) => [w, buildWeapon(w, geos, tpGun.mats, null)])) as Record<WeaponModelId, WeaponModel>
   // each copy is a holder for every gun; the belt says which is out
   const fp = new THREE.Group()
   const tp = new THREE.Group()
-  fp.add(fpGun.root, fpTool.root, fpPortal.root)
-  tp.add(tpGun.root, tpTool.root, tpPortal.root)
+  fp.add(fpGun.root, fpTool.root, fpPortal.root, ...WEAPON_IDS.map((w) => fpW[w].root))
+  tp.add(tpGun.root, tpTool.root, tpPortal.root, ...WEAPON_IDS.map((w) => tpW[w].root))
+  /** the weapons' own springs: the pistol's slide and the flash's clock */
+  let slide = 0
+  let slideV = 0
+  let flashT = 0
+  let loaded = 1
+  for (const w of WEAPON_IDS) for (const m of [fpW[w], tpW[w]]) poseWeapon(w, m, 1, 0, false)
   let which: ViewTool = 'physgun'
   /** the chamber's colour, eased toward the last shot's */
   let portalHue = 0
@@ -776,6 +866,13 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     fpGun.root.visible = tpGun.root.visible = which === 'physgun'
     fpTool.root.visible = tpTool.root.visible = which === 'toolgun'
     fpPortal.root.visible = tpPortal.root.visible = which === 'portalgun'
+    for (const w of WEAPON_IDS) fpW[w].root.visible = tpW[w].root.visible = which === w
+    if (isWeapon(which)) {
+      loaded += ((f.loaded ?? 1) - loaded) * (1 - Math.exp(-dt * 30))
+      ;[slide, slideV] = spring(slide, slideV, 0, 38, 0.6, dt)
+      flashT = Math.max(0, flashT - dt)
+      for (const m of [fpW[which], tpW[which]]) poseWeapon(which, m, loaded, slide, flashT > 0)
+    }
     if (which === 'portalgun') {
       portalHue += (portalWant - portalHue) * (1 - Math.exp(-dt * 12))
       ;[claw, clawV] = spring(claw, clawV, 0, 30, 0.35, dt)
@@ -844,6 +941,7 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       const k = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2) / FP_REF_TAN
       fp.scale.setScalar(FP_SCALE * k)
       fp.position.copy(FP_OFFSET).add(off)
+      if (isWeapon(which)) fp.position.add(WEAPON_NUDGE[which])
       fp.position.x *= k
       fp.position.y *= k
       // the aim, in the lens's frame: down the crosshair, or toward what
@@ -865,7 +963,8 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       fp.position.applyMatrix4(cam.matrixWorld)
       fp.quaternion.copy(cam.quaternion).multiply(aimQ)
       // then the gun's own turn, and the springs' sway on top
-      const turn = which === 'toolgun' ? TOOL_TURN : which === 'portalgun' ? PORTAL_TURN : FP_TURN
+      const turn = which === 'toolgun' ? TOOL_TURN : which === 'portalgun' ? PORTAL_TURN
+        : isWeapon(which) ? WEAPON_TURN[which] : FP_TURN
       eul.set(turn.x + rot.x, turn.y + rot.y, turn.z + rot.z, 'YXZ')
       fp.quaternion.multiply(q.setFromEuler(eul))
     } else aimed = false
@@ -893,6 +992,7 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     const holder = usingFp ? fp : tp
     const m = which === 'toolgun' ? (usingFp ? fpTool : tpTool).muzzle
       : which === 'portalgun' ? (usingFp ? fpPortal : tpPortal).muzzle
+      : isWeapon(which) ? (usingFp ? fpW : tpW)[which].muzzle
       : (usingFp ? fpGun : tpGun).muzzle
     holder.updateMatrixWorld(true)
     m.getWorldPosition(pos)
@@ -913,6 +1013,11 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
     // both guns in both copies, so every program either draws is linked
     fpGun.root.visible = tpGun.root.visible = fpTool.root.visible = tpTool.root.visible = true
     fpPortal.root.visible = tpPortal.root.visible = true
+    for (const w of WEAPON_IDS) {
+      fpW[w].root.visible = tpW[w].root.visible = true
+      // the flashes too: they are the only thing on the flash material
+      fpW[w].flash.visible = tpW[w].flash.visible = true
+    }
     fp.position.copy(FP_OFFSET).applyMatrix4(camera.matrixWorld)
     fp.quaternion.copy(camera.quaternion)
     tp.position.set(-0.6, -0.2, -2.5).applyMatrix4(camera.matrixWorld)
@@ -946,6 +1051,25 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
       offV.z += 1.2
       rotV.x += 3.5
     },
+    weaponShot: (w) => {
+      flashT = 0.06
+      slideV += w === 'pistol' ? 9 : 0
+      const k = w === 'rocket' ? 1.4 : w === 'crossbow' ? 0.8 : 0.55
+      offV.z += 1.8 * k
+      rotV.x += 6 * k
+      loaded = 0
+    },
+    buildRemote: (w) => {
+      const m = buildWeapon(w, geos, tpGun.mats, null)
+      poseWeapon(w, m, 1, 0, false)
+      m.root.scale.setScalar(TP_SCALE)
+      m.root.traverse((o) => {
+        o.frustumCulled = false
+      })
+      return m
+    },
+    worldMats: tpGun.mats,
+    geos,
     stage,
     unstage,
     dispose: () => {

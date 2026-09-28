@@ -258,6 +258,7 @@ export interface WorldGrab {
 export type WorldServerMessage =
   | import('./effectProtocol').EffectServerMessage
   | import('./propProtocol').PropServerMessage
+  | import('./weaponProtocol').WeaponServerMessage
   | WorldShove
   | WorldGrab
   | WorldWelcome

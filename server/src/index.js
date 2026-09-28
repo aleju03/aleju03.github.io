@@ -22,6 +22,7 @@ import { createAnalytics } from './analytics.js';
 import { createYouTubeSearch } from './ytsearch.js';
 import { createPropRegistry } from './props.js';
 import { createWorldEffects } from './worldEffects.js';
+import { createWeapons } from './weapons.js';
 
 // ---------------------------------------------------------------- config
 
@@ -897,6 +898,14 @@ let worldTicker = null;
 let worldDirty = false;
 const propRegistry = createPropRegistry({ players: worldPlayers, send, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
 const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: propRegistry.get });
+// the pistol, the crossbow and the rocket launcher: shots and hits relayed
+// to the level, checked for honesty (weapons.js)
+const worldWeapons = createWeapons({
+  players: worldPlayers,
+  send,
+  seated: (id) => worldSeated(id),
+  flying: (w) => (w.f & W_FLY) !== 0,
+});
 
 // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
 // `hand` is whoever has an *empty* machine on their physgun (or is letting it
@@ -1213,6 +1222,7 @@ function handleWorldJoin(ws, msg) {
   });
   propRegistry.join(ws);
   worldEffects.snapshot(ws);
+  worldWeapons.snapshot(ws);
   worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   worldDirty = true;
   startWorldTicker();
@@ -1277,6 +1287,8 @@ function handleWorldLevel(ws, msg) {
   propRegistry.leave(w.id, previousLevel);
   propRegistry.join(ws);
   worldEffects.snapshot(ws);
+  worldWeapons.snapshot(ws);
+  if (previousLevel !== w.level) worldWeapons.moved(ws, previousLevel);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(w.id)) announceSeats();
   worldDirty = true;
@@ -1773,6 +1785,11 @@ function handleMessage(ws, msg) {
     case 'world-portal':
     case 'world-air-hop':
       worldEffects.handle(ws, msg);
+      break;
+    case 'world-shot':
+    case 'world-shot-hit':
+    case 'world-wield':
+      worldWeapons.handle(ws, msg, strike);
       break;
     case 'world-prop-spawn':
     case 'world-prop-move':

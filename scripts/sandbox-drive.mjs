@@ -54,6 +54,13 @@
                                       standing and walking; links counted
                                       (must be 0). Shots to ~/.cache/overhaul/
                                       viewmodel (--vm-out <dir>)
+    npm run drive -- weapons          the weapons in hand: the pistol, the
+                                      crossbow and the rocket launcher in
+                                      first person, the launcher from the
+                                      chase camera, a rocket in flight and a
+                                      bolt stuck in the ground; links counted
+                                      (must be 0). Shots to ~/.cache/overhaul/
+                                      weapons (--weapons-out <dir>)
     npm run drive -- pause            the pause sheet on a town street: the
                                       wardrobe's snapshots, one hovered and
                                       tried on, and the settings page's
@@ -849,6 +856,13 @@ try {
     await shot('links-chain')
     total += await phase('the chain, later bangs', '', 4400)
     total += await phase('after the dust settles', '', 3000)
+    // the weapons: each drawn and fired once (a pistol round, a bolt, a
+    // rocket down the street), on the programs the belt staged at boot
+    const fireAt = (ms, slot) => `setTimeout(() => window.__tools.select(${slot}), ${ms});
+      setTimeout(() => window.__input.keys.add('Mouse0'), ${ms + 700});
+      setTimeout(() => window.__input.keys.delete('Mouse0'), ${ms + 900});`
+    total += await phase('weapons drawn and fired', `${fireAt(0, 4)} ${fireAt(1300, 5)} ${fireAt(2600, 6)}
+      setTimeout(() => window.__tools.select(0), 6500)`, 7000)
     const names = await evaluate('window.__links')
     for (const n of names) console.log(`    linked ${n}`)
     const seen = await evaluate('[window.__wrapped, window.__booms, window.__breaks]')
@@ -1885,6 +1899,105 @@ try {
     await evaluate('window.__sandbox.console.host.thirdPerson(false)')
     await evaluate('window.__tools.select(0)')
     console.log(`  ${await evaluate('window.__vLinks')} programs linked across the viewmodel shots`)
+  }
+
+  if (WHAT.includes('weapons')) {
+    /*
+      The three weapons held in first person over a grazing view, the
+      launcher from the chase camera, a rocket a moment after it left and a
+      bolt stuck in the ground, with every shader link counted from the
+      first draw on (must be 0). Shots to ~/.cache/overhaul/weapons
+      (--weapons-out <dir>).
+    */
+    console.log('weapons')
+    const WP_OUT = resolve(flag('weapons-out', join(process.env.HOME ?? '.', '.cache/overhaul/weapons')))
+    mkdirSync(WP_OUT, { recursive: true })
+    const wpShot = async (name) => {
+      const path = join(WP_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    await evaluate(`(() => { window.__wLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__wWrapped) continue; gl.__wWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__wLinks++; real(p) } } return true })()`)
+    const trigger = async (ms = 200) => {
+      await evaluate(`window.__input.keys.add('Mouse0'), true`)
+      await sleep(ms)
+      await evaluate(`window.__input.keys.delete('Mouse0'), true`)
+    }
+    await stand()
+    await look(0.6, -0.12)
+    for (const [slot, name] of [[4, 'pistol'], [5, 'crossbow'], [6, 'rocket']]) {
+      await evaluate(`window.__tools.select(${slot})`)
+      await sleep(1000)
+      await wpShot(name)
+    }
+    // one frame drawn through the look from a lens borrowed off to the right
+    // of `target` (a live object's position, read in the page), read back
+    // off the canvas in the same task, before the loop draws over it
+    const side = async (name, target, back = 3.6, lift = 1.4) => {
+      const png = await evaluate(`(() => {
+        const cam = window.__sandboxCamera, yaw = window.__sandboxWalk.yaw
+        const p = (${target}).clone()
+        const fx = -Math.sin(yaw), fz = -Math.cos(yaw), rx = Math.cos(yaw), rz = -Math.sin(yaw)
+        const c = cam.clone()
+        c.position.set(p.x + rx * ${back} - fx * 0.6, p.y + ${lift}, p.z + rz * ${back} - fz * 0.6)
+        c.lookAt(p.x + fx * 0.3, p.y, p.z + fz * 0.3)
+        c.updateMatrixWorld()
+        window.__look.render(window.__scene, c)
+        return window.__renderer.domElement.toDataURL('image/png').split(',')[1]
+      })()`)
+      const path = join(WP_OUT, `${name}.png`)
+      writeFileSync(path, Buffer.from(png, 'base64'))
+      console.log(`  wrote ${path}`)
+    }
+    // a rocket a moment after it left, climbing a little, and seen from
+    // the side on the same frame
+    await look(0.6, 0.06)
+    await trigger()
+    await sleep(300)
+    await side('rocket-flight', 'window.__tools.weapons.projectiles[0]?.pos ?? cam.position', 5, 0.8)
+    await sleep(2500)
+    // a bolt into the ground a few steps ahead
+    await evaluate('window.__tools.select(5)')
+    await look(0.6, -0.55)
+    await sleep(1200)
+    await trigger()
+    await sleep(900)
+    await side('crossbow-stuck', 'window.__tools.weapons.stuck.at(-1)?.pos ?? cam.position', 3, 1.2)
+    // the launcher in the body's hands, from off its right shoulder
+    await evaluate('window.__tools.select(6)')
+    await evaluate('window.__sandbox.console.host.thirdPerson(true)')
+    await look(null, -0.12)
+    await sleep(1400)
+    await side('rocket-third', 'window.__tools.viewmodel.tp.getWorldPosition(cam.position.clone())')
+    await evaluate('window.__sandbox.console.host.thirdPerson(false)')
+    await evaluate('window.__tools.select(0)')
+    // the voices' peaks at arm's length, against a crate hit hard, a crate
+    // breaking and the barrel's boom, rendered offline through the props' bus
+    const levels = await evaluate(`(async () => {
+      const snd = await import('/src/game/sandbox/impactSounds.ts')
+      const wsfx = (await import('/src/game/sandbox/tools/weaponSfx.ts')).createWeaponSfx()
+      const ear = { x: 0, y: 0, z: 0 }
+      const out = {}
+      const at = { x: 0.5, y: 0, z: -1 }
+      // (the walk moves the ear every frame, so it is put back for each one)
+      const m = async (name, fn) => {
+        const r = await snd.measureSound(() => { snd.setEar(0, 0, 0); fn() }, 2)
+        out[name] = r.peak.toFixed(3)
+      }
+      await m('crate hit', () => snd.impactSound('wood', 1, 30, at.x, at.y, at.z))
+      await m('crate break', () => snd.breakSound('wood', 1, at.x, at.y, at.z))
+      await m('barrel boom', () => snd.boom(1, at.x, at.y, at.z))
+      for (const w of ['pistol', 'crossbow', 'rocket']) await m(w, () => wsfx.play({ type: 'fire', w, mine: true, ...at }, ear))
+      await m('bolt in', () => wsfx.play({ type: 'hit', w: 'crossbow', mine: true, what: 'world', surface: 'concrete', ...at }, ear))
+      await m('reload', () => wsfx.play({ type: 'reload', w: 'pistol' }, ear))
+      return out
+    })()`)
+    console.log(`  peaks: ${Object.entries(levels).map(([k, v]) => `${k} ${v}`).join(', ')}`)
+    const st = await evaluate('[window.__tools.weapons.stuck.length, window.__tools.weapons.projectiles.length]')
+    console.log(`  ${st[0]} bolt(s) stuck, ${st[1]} shot(s) still in the air`)
+    console.log(`  ${await evaluate('window.__wLinks')} programs linked across the weapons shots`)
   }
 
   if (WHAT.includes('pause')) {

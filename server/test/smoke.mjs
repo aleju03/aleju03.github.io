@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { propSmoke } from './props.mjs';
 import { effectsSmoke } from './worldEffects.mjs';
+import { weaponsSmoke } from './weapons.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -95,6 +96,7 @@ async function main() {
   const url = `ws://127.0.0.1:${port}/ws`;
 
   await effectsSmoke(url, connect);
+  await weaponsSmoke(url, connect);
   await propSmoke(url, connect);
 
   // 1. Guest hello: gets a guest name and the room list.
