@@ -14,9 +14,13 @@
                                       back (loaded under the cut's card,
                                       looked round, a crate blown up there)
                                       (must be 0)
-    npm run drive -- nuketown         the Nuketown map: the street from each
-                                      end and the living room of the yellow
-                                      house (shots nuketown-*.png)
+    npm run drive -- nuketown [--only a,b]
+                                      the Nuketown map from its references'
+                                      angles: both spawn ends, the loading
+                                      screen's view down the street, each
+                                      living room, the yellow house's front
+                                      window and straight down from noclip
+                                      (shots nuketown-*.png)
     npm run drive -- space            the way up and to the Moon: the street's
                                       frame cost, a crate dropped from 20 up, a
                                       noclip climb shot at the stratosphere, the
@@ -175,7 +179,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--rubble-out', '--power', '--building', '--back', '--tag', '--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
+const VALUED = new Set(['--only', '--rubble-out', '--power', '--building', '--back', '--tag', '--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -2125,23 +2129,101 @@ try {
   }
 
   if (WHAT.includes('nuketown')) {
-    // the map's three views: down the street from each end, and inside
+    /*
+      The map from the angles its references are taken from (map coordinates
+      about the middle of the cul-de-sac, +x east down the street, +z south
+      to the green house): each spawn end looking at its own house, straight
+      down from noclip, the loading screen's view from the end of the street,
+      each house's living room, and out of the yellow house's front bedroom
+      window across the circle. `--only a,b` takes a subset by name.
+    */
     console.log('nuketown')
     console.log(`  ${(await run('map nuketown')).join(' / ')}`)
     await sleep(7000)
     await stand()
     const O = -24000
-    const at = async (name, x, z, yaw, pitch) => {
-      await evaluate(`window.__sandbox.console.host.teleport(${O + x}, ${z}, undefined, ${yaw})`)
+    const only = flag('only', null)?.split(',')
+    const at = async (name, x, z, yaw, pitch, y) => {
+      if (only && !only.some((o) => name.includes(o))) return
+      await evaluate(`window.__sandbox.console.host.teleport(${O + x}, ${z}, ${y ?? 'undefined'}, ${yaw})`)
       await sleep(1800)
       await look(yaw, pitch)
       await sleep(600)
       await shot(name)
     }
-    await at('nuketown-west-end', -64, 1, -Math.PI / 2, -0.04)
-    await at('nuketown-east-end', 64, -1, Math.PI / 2, -0.04)
-    // the yellow house's living room, from beside the sofa toward the stairs
-    await at('nuketown-inside', -5, 31, 1.15, -0.05)
+    await at('nuketown-north-spawn', -16, -94, Math.PI, -0.04)
+    await at('nuketown-south-spawn', 2, 94, 0, -0.04)
+    await at('nuketown-loading', 43.8, -6, 1.87, -0.02)
+    await at('nuketown-green-front', 27, 13.6, 1.95, -0.02)
+    await at('nuketown-yellow-front', 21, -13, 0.62, 0.06)
+    await at('nuketown-inside-yellow', -4, -39, Math.PI - 0.5, -0.05)
+    await at('nuketown-inside-green', -10, 39, -0.5, -0.05)
+    await at('nuketown-yellow-window', 4, -33, Math.PI, -0.08, 6.6)
+    /*
+      --walk: the map's collision driven the way a player would, with W held:
+      every spawn must let you walk off it, both houses' stairs (the one
+      inside and the balcony's outside one) must carry you up to the upper
+      floor, and the back fence must hold. Prints each result; anything
+      wrong is flagged.
+    */
+    if (has('walk')) {
+      const hold = async (x, z, yaw, ms, y) => {
+        await evaluate(`window.__sandbox.console.host.teleport(${O + x}, ${z}, ${y ?? 'undefined'}, ${yaw})`)
+        await sleep(1200)
+        await look(yaw, 0)
+        const a = await evaluate('[window.__sandboxCamera.position.x, window.__sandboxCamera.position.z, window.__sandboxWalk.feetY]')
+        await down('KeyW')
+        await sleep(ms)
+        await up('KeyW')
+        await sleep(500)
+        const b = await evaluate('[window.__sandboxCamera.position.x, window.__sandboxCamera.position.z, window.__sandboxWalk.feetY]')
+        return { moved: Math.hypot(b[0] - a[0], b[1] - a[1]), feet: b[2], x: b[0] - O, z: b[1] }
+      }
+      // nuketown.ts's SPAWNS: the north six, and the same turned half round
+      const north = [[-28, -92, Math.PI + 0.15], [-16, -94, Math.PI + 0.05], [-4, -86, Math.PI - 0.05], [12, -84, Math.PI - 0.2], [-40, -80, Math.PI + 0.25], [-22, -80, Math.PI]]
+      const all = [...north, ...north.map(([x, z, t]) => [-14 - x, -z, t - Math.PI])]
+      // headless Chrome renders in software and the walk's step is clamped,
+      // so how far a held W goes in a second is measured on open lawn first
+      const cal = (await hold(-36, -60, Math.PI, 2000)).moved
+      console.log(`  open lawn: ${cal.toFixed(1)} units in 2 s`)
+      for (const [x, z, yaw] of all) {
+        const r = await hold(x, z, yaw, 2000)
+        console.log(`  spawn ${x},${z}: walked ${r.moved.toFixed(1)}${r.moved < cal * 0.6 ? '  <-- WRONG (stuck)' : ''}`)
+      }
+      // the stairs, both houses: inside from beside the front door, outside
+      // from the yard up to the balcony (yellow is x = 4 - u, z = -(28 + v);
+      // green is its half turn about (-7, 0))
+      for (const [name, x, z, yaw] of [
+        ['yellow inside stair', 14.2, -29.4, 0], ['green inside stair', -28.2, 29.4, Math.PI],
+        ['yellow balcony stair', 6.3, -78, Math.PI], ['green balcony stair', -20.3, 78, 0],
+      ]) {
+        const r = await hold(x, z, yaw, Math.max(3200, (16 / Math.max(cal, 0.5)) * 2000))
+        console.log(`  ${name}: feet at ${r.feet.toFixed(2)}${r.feet < 6 ? '  <-- WRONG (did not reach the upper floor)' : ''}`)
+      }
+      for (const [name, x, z, yaw, ok] of [
+        ['north fence', -10, -96, 0, (r) => r.z > -100.5], ['south fence', -4, 96, Math.PI, (r) => r.z < 100.5],
+        ['street end', 40, -4, -Math.PI / 2, (r) => r.x < 44.5],
+      ]) {
+        const r = await hold(x, z, yaw, 2500)
+        console.log(`  ${name}: stopped at ${r.x.toFixed(1)}, ${r.z.toFixed(1)}${ok(r) ? '' : '  <-- WRONG (walked out)'}`)
+      }
+    }
+    if (!only || only.includes('overhead')) {
+      await run('noclip')
+      await evaluate(`window.__sandbox.console.host.teleport(${O - 4}, 0, 205, 0)`)
+      await look(0, -Math.PI / 2 + 0.002)
+      // the console's receipt fades on its own; the walker's own body is
+      // right under a lens looking straight down, so it is emptied for the
+      // shot (by draw range, as the perf ablation does)
+      await sleep(6000)
+      await evaluate(`window.__hid = []; window.__scene.traverse((o) => { if (o.isSkinnedMesh && o.material.name === 'playerBody') {
+        const g = o.geometry; if (window.__hid.some((h) => h[0] === g)) return
+        window.__hid.push([g, g.drawRange.count]); g.setDrawRange(0, 0) } }); true`)
+      await sleep(400)
+      await shot('nuketown-overhead')
+      await evaluate('for (const [g, n] of window.__hid) g.setDrawRange(0, n); true')
+      await run('noclip')
+    }
     console.log(`  ${(await run('map home')).join(' / ')}`)
     await sleep(3000)
   }
