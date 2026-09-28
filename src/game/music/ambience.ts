@@ -13,7 +13,7 @@
 
   The levels are a small table of plain facts about places: a forest has
   more birds than a desert, a town has fewer crickets than a meadow, height
-  means wind, the Moon has no air and so has none of it. Indoors the whole
+  means a little more wind and fewer birds, the Moon has no air and so has none of it. Indoors the whole
   chain goes through a lowpass, because walls pass the low end, and that one
   filter is also what water does to sound when the lens is under it.
 
@@ -149,7 +149,7 @@ export function createAmbience(ctx: AudioContext, out: AudioNode): Ambience {
       const outside = 1 - inp.indoor
       const high = Math.min(1, Math.max(0, inp.alt / 80))
       const want = {
-        wind: air ? (0.2 + 0.12 * (1 - place[2]) + 0.6 * high) * (0.35 + 0.65 * outside) : 0,
+        wind: air ? (0.2 + 0.12 * (1 - place[2]) + 0.15 * high) * (0.35 + 0.65 * outside) : 0,
         leaves: air ? place[2] * (1 - high) * outside * 0.5 : 0,
         surf: air ? inp.shore * (1 - high * 0.7) * (0.3 + 0.7 * outside) : 0,
         birds: air ? place[0] * Math.max(0, inp.day - 0.35) * (1 - high) * (0.25 + 0.75 * outside) : 0,
@@ -178,12 +178,17 @@ export function createAmbience(ctx: AudioContext, out: AudioNode): Ambience {
       // read as static on the street: a steady band of noise with nothing
       // coming and going in it. Now the audible wind is the gusts over a low
       // rumble, the bandpass stays under 700 Hz near the ground, and the
-      // leaves are a soft band only while a gust is in them, never a hiss
+      // leaves are a soft band only while a gust is in them, never a hiss.
+      // Height used to mean a louder wind (three times the street's) with its
+      // band lifted towards 1 kHz and the rumble under it held up, which at
+      // altitude was the same static again, only worse the higher you got.
+      // So height barely raises the wind, never lifts the band much past
+      // 550 Hz, and the rumble comes and goes with the gusts like the rest
       const g2 = Math.max(0, gust - 0.3) / 0.7
       const w = cur.wind * (0.15 + 0.85 * g2 * g2)
       wind.g.gain.setTargetAtTime(w * 0.04, now, 0.25)
-      wind.f.frequency.setTargetAtTime(260 + 260 * gust + 500 * high, now, 0.3)
-      windLow.g.gain.setTargetAtTime(cur.wind * (0.4 + 0.6 * gust) * 0.09, now, 0.25)
+      wind.f.frequency.setTargetAtTime(260 + 220 * gust + 70 * high, now, 0.3)
+      windLow.g.gain.setTargetAtTime(cur.wind * (0.2 + 0.8 * g2) * 0.08, now, 0.25)
       leaves.g.gain.setTargetAtTime(cur.leaves * g2 * g2 * g2 * 0.02, now, 0.15)
 
       // surf: a wave every six to ten seconds, rising slow and falling slower
