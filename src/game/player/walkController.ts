@@ -57,8 +57,8 @@ import { axis, held } from '../sandbox/bindings'
 */
 
 /** the mid-air hop's launch speed as a share of a jump's: height goes with
-    its square, so 0.72 is about half a jump's height */
-const HOP_K = 0.72
+    its square, so 0.85 is about three quarters of a jump's height again */
+const HOP_K = 0.85
 
 export interface WalkTuning {
   /** standing eye height over the surface underfoot */
@@ -555,9 +555,9 @@ export function createWalkController(
         grounded = false
         vy = tune.jumpV
       } else if (jumpPress && !grounded && !hopped && !stunned && !swimming) {
-        // and one small hop in the air, on a fresh press: about half a
-        // jump's height again from wherever it is fired, enough to make a
-        // ledge a plain jump just misses, never a second full jump. It
+        // and one smaller hop in the air, on a fresh press: about three
+        // quarters of a jump's height again from wherever it is fired,
+        // enough for a ledge a plain jump misses, never a second full one. It
         // replaces a fall rather than adding to it, so a late hop still lifts
         hopped = true
         vy = Math.max(vy, tune.jumpV * HOP_K)
