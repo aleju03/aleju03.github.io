@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { STEP_SETS, setStepSet, stepSet, type StepSet } from '../core/footsteps'
+import { ENGINE_SETS, engineSet, setEngineSet, type EngineSet } from '../vehicles/engine'
 import { forceMusic, musicNow, type Mood } from '../music'
 import { labelIn, type History } from './history'
 import type { PropKind } from './kinds'
@@ -1181,6 +1182,28 @@ registerCommand({
       c: msg('the bean', 'el frijol'),
     }[now]
     ctx.ok(msg(`footsteps: ${now} (${say(name, 'en')})`, `pasos: ${now} (${say(name, 'es')})`))
+  },
+})
+
+// which engine the car plays: three to compare by ear (vehicles/engine.ts)
+registerCommand({
+  name: 'engine',
+  hidden: true,
+  args: [{ name: 'set', nameEs: 'juego', type: 'choice', optional: true, choices: [...ENGINE_SETS] }],
+  help: msg(
+    'which car engine plays: a a synthesized four, b recorded, c a synthesized V8',
+    'qué motor suena en el auto: a un cuatro cilindros sintetizado, b grabado, c un V8 sintetizado',
+  ),
+  run: (ctx) => {
+    const want = ctx.args[0]?.toLowerCase() as EngineSet | undefined
+    if (want) setEngineSet(want)
+    const now = engineSet()
+    const name = {
+      a: msg('synthesized four', 'cuatro sintetizado'),
+      b: msg('recorded', 'grabado'),
+      c: msg('synthesized V8', 'V8 sintetizado'),
+    }[now]
+    ctx.ok(msg(`engine: ${now} (${say(name, 'en')})`, `motor: ${now} (${say(name, 'es')})`))
   },
 })
 

@@ -13,6 +13,7 @@
     "measure": "node scripts/measure.mjs",
     "music": "node scripts/music-render.mjs",
     "steps": "node scripts/steps.mjs",
+    "engine": "node scripts/engine.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

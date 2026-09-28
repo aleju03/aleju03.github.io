@@ -1,8 +1,9 @@
 # Sound credits
 
 The recorded audio on the site: the house doors in roam mode
-(`doorCreak`/`doorLatch` in `src/game/core/sfx.ts`) and the footsteps of
-set b (`src/game/core/footsteps.ts`, the `steps b` console switch).
+(`doorCreak`/`doorLatch` in `src/game/core/sfx.ts`), the footsteps of
+set b (`src/game/core/footsteps.ts`, the `steps b` console switch) and the
+car's engine (`src/game/vehicles/engine.ts`, the `engine b` console switch).
 Everything else (the default footsteps, landings, the UI and the backrooms
 hum) is synthesized at runtime with WebAudio.
 
@@ -23,6 +24,18 @@ free straight onto its squeak, dropping the dead air between them), downmixed to
 32 kHz mono, high-passed at 85 Hz, denoised, faded at both ends, normalized to a
 common RMS with soft-knee limiting so one playback gain suits every variant, and
 encoded as MP3.
+
+`engine.mp3` is cut from **Car Engine Loop 96kHz, 4s** by **qubodup**
+(https://opengameart.org/content/car-engine-loop-96khz-4s, also
+https://freesound.org/people/qubodup/sounds/147242/), an Opel Astra 1.6 16V,
+licensed CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
+
+Modified: downmixed to 44.1 kHz mono, high-passed at 35 Hz and low-passed at
+7 kHz, padded with a quarter second of the loop's own tail before it and head
+after it (so the game can loop the middle four seconds seamlessly whatever
+delay the MP3 decoder adds), peak-normalized to -1 dBFS and encoded as a
+96 kbps mono MP3. The game repitches it by rpm and plays it some 30 dB under
+that, peak-matched to the synthesized engine it replaced.
 
 ## CC0 (public domain dedication)
 

@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>the car engine</title>
+  </head>
+  <body>
+    <!-- Dev server only: scripts/engine.mjs renders the car engine offline
+         through this page over CDP (see engine.ts). -->
+    <script type="module">
+      import { render } from './engine.ts'
+      window.__engine = { render, ready: true }
+    </script>
+  </body>
+</html>
