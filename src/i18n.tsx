@@ -331,6 +331,11 @@ const dictionaries = {
       nobody: 'nobody else, just now',
       elsewhere: 'somewhere else',
       menuKeys: '↑↓ menu',
+      // the maps, as ticket stubs pinned under the menu (levels/maps.ts ids)
+      maps: 'maps',
+      mapNames: { home: 'home', nuketown: 'nuketown' },
+      mapBlurbs: { home: 'the house and the planet', nuketown: 'a test-site cul-de-sac, 1957' },
+      mapHere: 'you are here',
     },
   },
   es: {
@@ -616,6 +621,10 @@ const dictionaries = {
       nobody: 'nadie más, por ahora',
       elsewhere: 'en otra parte',
       menuKeys: '↑↓ menú',
+      maps: 'mapas',
+      mapNames: { home: 'casa', nuketown: 'nuketown' },
+      mapBlurbs: { home: 'la casa y el planeta', nuketown: 'un callejón en un sitio de pruebas, 1957' },
+      mapHere: 'estás aquí',
     },
   },
 }

@@ -63,6 +63,9 @@ import {
     ground and whose Earth this module makes ready a slice a frame, and the
     view through the pair dresses the scene as the Moon for the one pass
     (`dress`) and puts the night back after.
+    On a map (`setVenue('away')`, levels/maps.ts) it draws the Earth's sky
+    and nothing of its ground: the map stands far off in the scene with a
+    ground of its own, and the sky goes on following the lens there.
 
   The one thing the room tier cannot skip is *something to see out of the
   windows*. Past the yard fence the streamed terrain is simply absent, which
@@ -101,6 +104,9 @@ interface WorldParts {
 }
 
 export type OutsideState = SkyState
+
+/** where the sky is being drawn over (see setVenue) */
+export type Venue = 'earth' | 'moon' | 'away'
 
 export interface OutsideHandles {
   /** the sky and the streamed world, under one group the levels can hide */
@@ -192,8 +198,11 @@ export interface OutsideHandles {
   /** the Moon's seamless seam home: flying up off it */
   earthSeam: (p: THREE.Vector3) => { to: string; shift: LevelShift } | null
   /** which body the sky is drawn from. 'moon' draws the Moon's ground in its
-      own coordinates, hides the Earth's and hangs the globe in the sky */
-  setVenue: (venue: 'earth' | 'moon') => void
+      own coordinates, hides the Earth's and hangs the globe in the sky.
+      'away' is a map (levels/maps.ts) standing somewhere else in the scene
+      under the Earth's own sky: the sky goes on following the lens, and the
+      Earth's ground is hidden and stops streaming */
+  setVenue: (venue: Venue) => void
   /** the Moon's ground, for its level: the height, the lattice a sandbox
       stands on, the boulders' boxes, what a step lands on and the arrival */
   moon: {
@@ -440,7 +449,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   const placeholderMat = placeholderGround.material as THREE.MeshBasicMaterial
 
   /* ---- the way up (levels/space.ts) ---- */
-  let venue: 'earth' | 'moon' = 'earth'
+  let venue: Venue = 'earth'
   /** the Moon level's boxes: its CollisionSet wraps this array from the
       first frame, and the Moon fills it when it is built */
   const moonObstacles: Solid[] = []
@@ -582,7 +591,9 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   const update = (camPos: THREE.Vector3, todOverride?: number) => {
     heard.copy(camPos)
     if (venue === 'moon') return updateMoon(camPos, todOverride)
-    const live = active && !!w
+    // (on a map the sky is the Earth's and nothing else of it is: no ring,
+    // no far field, no Moon to pin)
+    const live = active && !!w && venue === 'earth'
     if (live) track(camPos, q)
     else {
       ps.copy(camPos)
@@ -933,7 +944,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     },
     nearLamps: (x, z, out, max) => (w ? w.world.nearLamps(x, z, out, max) : 0),
     biomeAt: (x, z) => {
-      if (!w) return null
+      if (!w || venue !== 'earth') return null
       const s = w.mods.terrain.sampleAt(x, z)
       return s.place.district ? 'town' : s.biome
     },
@@ -977,7 +988,12 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     },
     setVenue: (v) => {
       if (v === venue) return
+      const was = venue
       venue = v
+      // the ground goes with a map and comes back with the Earth; the next
+      // live update settles its visibility for the altitude
+      if (v === 'away') groundRoot.visible = false
+      else if (was === 'away') groundRoot.visible = true
       if (!w) return
       const moonRoot = w.moon.root
       if (v === 'moon') {

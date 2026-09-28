@@ -114,6 +114,11 @@ export interface SandboxHost {
   /** the authored spawn, where `tp home` goes; `y` is the feet, because home is upstairs and
       a teleport left to find the ground would land under it */
   home?: () => { x: number; z: number; y?: number; yaw?: number }
+  /** the maps (levels/maps.ts), and whether you are on each */
+  maps?: () => Array<{ id: string; here: boolean }>
+  /** the cut to a map: 'ok' once it is running, 'here' if you are on it
+      already, 'busy' mid-cut or mid-load, 'unknown' for no such map */
+  goMap?: (id: string) => 'ok' | 'here' | 'busy' | 'unknown'
   /** the escape hatch: out of any machine or seat, off noclip, and on your
       feet at home on Earth, from anywhere (the Moon, orbit, a stuck ship) */
   unstuck?: () => void
@@ -1051,6 +1056,48 @@ registerCommand({
     if (!host.unstuck) ctx.fail(msg('nowhere to go from here', 'no hay a dónde ir desde aquí'))
     host.unstuck!()
     ctx.ok(msg('home, on your feet', 'en casa, de pie'))
+  },
+})
+
+/** what each map is, for the list `map` prints (levels/maps.ts's ids) */
+const MAP_BLURBS: Record<string, Msg> = {
+  home: msg('the house and the planet', 'la casa y el planeta'),
+  nuketown: msg('a test-site cul-de-sac, 1957', 'un callejón en un sitio de pruebas, 1957'),
+}
+
+registerCommand({
+  name: 'map',
+  aliases: ['maps', 'changelevel'],
+  args: [{
+    name: 'map', nameEs: 'mapa', type: 'word', optional: true,
+    choices: (host) => host.maps?.().map((m) => m.id) ?? [],
+  }],
+  help: msg(
+    'the maps, or go to one (map home comes back)',
+    'los mapas, o ve a uno (map home vuelve)',
+  ),
+  run: (ctx) => {
+    const host = ctx.host
+    if (!host.maps || !host.goMap) ctx.fail(msg('no maps from here', 'desde aquí no hay mapas'))
+    const want = ctx.args[0]?.toLowerCase()
+    if (!want) {
+      for (const m of host.maps!()) {
+        const b = MAP_BLURBS[m.id]
+        ctx.item(
+          b ? msg(`${m.id}: ${say(b, 'en')}`, `${m.id}: ${say(b, 'es')}`) : m.id,
+          m.here ? msg('you are here', 'estás aquí') : '',
+        )
+      }
+      return
+    }
+    const r = host.goMap!(want)
+    if (r === 'unknown') {
+      const ids = host.maps!().map((m) => m.id)
+      ctx.fail(msg(`no map "${want}": ${ids.join(', ')}`, `no hay mapa "${want}": ${ids.join(', ')}`))
+    }
+    if (r === 'here') ctx.fail(msg(`already on ${want}`, `ya estás en ${want}`))
+    if (r === 'busy') ctx.fail(msg('not now: finish the cut first', 'ahora no: termina el corte primero'))
+    ctx.ok(msg(`off to ${want}`, `rumbo a ${want}`))
   },
 })
 
