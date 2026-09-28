@@ -288,7 +288,7 @@ const dictionaries = {
       // the three pixel sizes, largest pixel first (roamPrefs' large, medium, small)
       pixelNames: ['chunky', 'classic', 'fine'],
       // over the three snapshots: they are crops of the view behind the sheet
-      pixelProof: 'your view, twice as big',
+      pixelProof: 'your view, three times as big',
       scale: 'resolution',
       scaleHint: 'lower is lighter on the graphics card and blockier. slow frames drop it on their own, never above this',
       detail: 'detail',
@@ -558,7 +558,7 @@ const dictionaries = {
       pixels: 'píxeles',
       pixelsHint: 'qué tan grande es cada píxel de la imagen. gusto, no velocidad',
       pixelNames: ['gruesos', 'clásicos', 'finos'],
-      pixelProof: 'tu vista, al doble',
+      pixelProof: 'tu vista, al triple',
       scale: 'resolución',
       scaleHint: 'menos es más liviano para la tarjeta gráfica y más cuadrado. si los cuadros van lentos baja sola, nunca más arriba de esto',
       detail: 'detalle',
