@@ -8,7 +8,7 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 export default defineConfig([
   // demos/ holds separately-deployed apps with their own node_modules and
   // lint setups; walking into them crashes this eslint's plugin resolution
-  globalIgnores(['dist', 'demos']),
+  globalIgnores(['dist', 'demos', '.claude']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
