@@ -11,7 +11,7 @@ import { packLook, type PlayerLook } from '../../game/player/look'
   context is the one thing a page may not have many of: twenty-four
   thumbnails each owning a renderer would be twenty-four contexts, and
   browsers start throwing the oldest away at sixteen. So a snapshot is asked
-  for here (`want`), the preview's frame loop takes at most one a frame
+  for here (`want`), the preview's frame loop takes a few a frame
   (`next`), draws it into a corner of its own canvas, copies that corner out
   into a plain 2D canvas (`put`) and then draws its normal frame over the
   top, all in one task, so nobody ever sees the corner.
@@ -25,10 +25,13 @@ import { packLook, type PlayerLook } from '../../game/player/look'
   - **Only what is on the sheet.** A snapshot nobody is showing any more is
     dropped from the queue the moment its `want` is released, so dragging
     through eight body colours queues eight sets and renders one.
-  - **Never more than one a frame**, and never one whose body geometry has
-    not been built yet (`next` takes a readiness test): a variant costs a
-    couple of dozen milliseconds to build and `bodyShape.ts` spreads that
-    over idle time, so a snapshot waits for it rather than forcing it.
+  - **A few a frame**, and never one whose body geometry has not been built
+    yet (`next` takes a readiness test): a variant costs a couple of dozen
+    milliseconds to build, so a snapshot waits for it rather than forcing it.
+    The sheet only shows while the walk is paused, so while one is waiting
+    the preview works `bodyShape.ts`'s queue with most of each frame instead
+    of the walk's thin share, and the whole wardrobe lands in about a
+    second rather than one picture at a time.
 */
 
 /** what a snapshot frames: the head and whatever is on it, or the whole body */

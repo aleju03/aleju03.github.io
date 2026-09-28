@@ -4,7 +4,7 @@ import {
   DESIGN_LENS, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../../game/player/playerBody'
 import { makeCollisionSet } from '../../game/physics/collision'
-import { GEAR_BEAVER, GEAR_PHONES, requestBodyGeometry } from '../../game/player/bodyShape'
+import { GEAR_BEAVER, GEAR_PHONES, pumpBodyBuilds, requestBodyGeometry } from '../../game/player/bodyShape'
 import { makeGlowTexture } from '../../game/core/textures'
 import type { RagdollEnv } from '../../game/player/ragdoll'
 import { CIRCLED, INK, INK_SOFT, MARK } from './paper'
@@ -58,7 +58,7 @@ import { createThumbStore, thumbKey, type ThumbFrame, type ThumbJob, type ThumbS
   - **The wardrobe is shown, not named.** Each headgear, headset, build and
     outfit is a small snapshot of *you* wearing it, in your own colours,
     and hovering one tries it on the Polaroid. The snapshots are taken by
-    the same renderer, with a second rig standing out of shot, one per frame
+    the same renderer, with a second rig standing out of shot, a few a frame
     into a corner of the canvas the frame then covers (`lookThumbs.ts`
     explains the bookkeeping), because a context per thumbnail would be
     two dozen WebGL contexts and browsers stop at sixteen.
@@ -91,6 +91,12 @@ const SNAP_H = 60
 /** the snapshots stand three-quarters on, so a cap's brim and a hood's
     shape read as shapes and not as a flat front */
 const SNAP_TURN = 0.42
+/** the sheet is up and the walk behind it is paused, so the wardrobe can
+    spend what a walk never could: a few snapshots a frame, and most of a
+    frame building the bodies they wear. At the walk's own share (2.5 ms in
+    every 10) a row of outfits filled in one picture at a time over seconds */
+const SNAPS_PER_FRAME = 4
+const WARDROBE_BUILD_MS = 9
 
 /** is the geometry this look wears already built? (see bodyShape's queue:
     asking queues it, so a snapshot that is not ready now will be soon) */
@@ -333,10 +339,14 @@ function BodyPreview({
       pivot.rotation.y = spin + Math.sin(clock * SWAY_HZ * Math.PI * 2) * SWAY_RAD
       pose.dt = dt
       rig.update(pose, env)
-      // at most one snapshot a frame, taken before the frame proper so the
-      // frame covers it; one whose body is still being built waits its turn
-      const job = thumbs.next((j) => geometryReady(j.look))
-      if (job) snap(job)
+      // a few snapshots a frame, taken before the frame proper so the frame
+      // covers them; one whose body is still being built waits its turn,
+      // and while any is waiting the body queue gets most of the frame
+      for (let i = 0; i < SNAPS_PER_FRAME; i++) {
+        const job = thumbs.next((j) => geometryReady(j.look))
+        if (!job || !snap(job)) break
+      }
+      if (thumbs.next(() => true)) pumpBodyBuilds(WARDROBE_BUILD_MS)
       renderer.render(scene, camera)
     }
     raf = requestAnimationFrame(tick)
