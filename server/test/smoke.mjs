@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { propSmoke } from './props.mjs';
+import { protectionSmoke } from './protection.mjs';
 import { effectsSmoke } from './worldEffects.mjs';
 import { damageSmoke } from './worldDamage.mjs';
 import { weaponsSmoke } from './weapons.mjs';
@@ -52,7 +53,7 @@ function connect(url) {
   // Skip broadcast chatter (rooms/users/typing, world ticks and the level
   // snapshots every world-level brings) until a given type arrives.
   const nextOf = async (type, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await next(label);
       if (msg.type === type) return msg;
     }
@@ -101,6 +102,7 @@ async function main() {
   await damageSmoke(url, connect);
   await weaponsSmoke(url, connect);
   await propSmoke(url, connect);
+  await protectionSmoke(url, connect);
 
   // 1. Guest hello: gets a guest name and the room list.
   const guest = connect(url);
@@ -752,7 +754,7 @@ async function main() {
   //      Anything else is dropped in silence, so each refusal is followed by
   //      a chat line and the victim must see the chat without a shove first.
   const noShoveBefore = async (client, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await client.next(label);
       assert.notEqual(msg.type, 'world-shove', `${label}: a shove got through`);
       if (msg.type === 'world-chat') return;
@@ -812,7 +814,7 @@ async function main() {
   //      alone, inside the beam's reach, never at somebody flying, and a
   //      throw is clamped; a release always goes through.
   const noGrabBefore = async (client, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await client.next(label);
       assert.notEqual(msg.type, 'world-grab', `${label}: a grab got through`);
       if (msg.type === 'world-chat') return;
