@@ -80,10 +80,18 @@ function Doodle({ tool }: { tool: ToolId }) {
     case 'hands':
       return (
         <g {...ink}>
-          {/* an open mitten, thumb out, and a cuff */}
-          <path {...card} d="M17 41c-3-6-4-14-3-21 1-5 4-8 8-8s8 3 9 8c1 6 0 14-3 21" />
-          <path {...card} d="M14 27c-4-2-7-5-7-9 0-2 2-3 4-2 3 2 4 5 5 8" />
-          <path d="M16 41h13M20 18v9M25 18v9" strokeWidth={1.8} />
+          {/* an open hand, palm out: the thumb and four fingers drawn
+              first, and the palm laid over their roots so no knuckle line
+              crosses them. The thumb is a capsule, a thick ink stroke with a
+              card-coloured one inside it */}
+          <path d="M17 34L7.5 23.5" strokeWidth={8.4} />
+          <path d="M17 34L7.5 23.5" stroke={card.fill} strokeWidth={3.4} />
+          <rect {...card} x={13.5} y={12} width={5.6} height={18} rx={2.8} />
+          <rect {...card} x={19.3} y={8.5} width={5.6} height={21} rx={2.8} />
+          <rect {...card} x={25.1} y={10.5} width={5.6} height={19} rx={2.8} />
+          <rect {...card} x={30.9} y={15} width={5.2} height={15} rx={2.6} />
+          <path d="M13.5 25H36.1V33C36.1 39.5 32 43.5 26 43.5H23.5C17.5 43.5 13.5 39.5 13.5 33Z" fill={card.fill} stroke="none" />
+          <path d="M13.5 25V33C13.5 39.5 17.5 43.5 23.5 43.5H26C32 43.5 36.1 39.5 36.1 33V25" />
         </g>
       )
     case 'physgun':
