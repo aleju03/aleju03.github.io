@@ -5,7 +5,9 @@ import { createPhysgun, RANGE, type Physgun } from './physgun'
 import { createPhysgunSfx, type PhysgunSfx } from './sfx'
 import { emptyInput, type RigEntry, type ToolInput, type VehicleGrab } from './types'
 import { createViewmodel, type Viewmodel } from './viewmodel'
-import { createToolgun, toolgunScreen, type Toolgun } from './toolgun'
+import { createToolgun, toolgunScreen, toolgunSwatch, type Toolgun } from './toolgun'
+import { createCameraTool, type CameraTool } from './camera'
+import { shutter } from '../creative/sfx'
 import { contraptionOf, type Contraption } from '../contraption/contraption'
 import { createPortals, type Portal, type PortalColor, type Portals, type PortalWorld } from './portals'
 import { createPortalSfx } from './portalSfx'
@@ -76,7 +78,7 @@ import { COLUMNS, SLOTS, columnOf, type ToolId } from './slots'
 
 export { COLUMNS, SLOTS, columnOf, type ToolId }
 /** carried from the start; the rest are given */
-const STARTER: readonly ToolId[] = ['hands', 'physgun', 'toolgun', 'pistol', 'crossbow', 'rocket']
+const STARTER: readonly ToolId[] = ['hands', 'physgun', 'toolgun', 'camera', 'pistol', 'crossbow', 'rocket']
 const isWeapon = (t: ToolId | null | undefined): t is WeaponId => !!t && (WEAPON_IDS as readonly string[]).includes(t)
 
 export interface ToolbeltOpts {
@@ -138,6 +140,8 @@ export interface Toolbelt {
   column: (c: number) => void
   readonly physgun: Physgun
   readonly toolgun: Toolgun
+  /** the camera (camera.ts): its zoom and its requests for a photograph */
+  readonly camera: CameraTool
   /** the blue and the orange portal, and everything that goes through them */
   readonly portals: Portals
   /** hand over a tool the belt does not carry yet (the catalogue's portal
@@ -201,6 +205,10 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     self: o.self,
   })
   const toolgun = createToolgun(sb)
+  const camera = createCameraTool()
+  camera.onShot(() => {
+    if (o.sound ?? !!o.parent) shutter(aimEye.x, aimEye.y, aimEye.z)
+  })
   const portals = createPortals()
   const owned = new Set<ToolId>(STARTER)
   const portalSfx = (o.sound ?? !!o.parent) ? createPortalSfx() : null
@@ -476,7 +484,9 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     // the machines hear the keys whatever is in your hand: a seat drives
     // with no tool out at all
     con.input(input.keys ?? NO_KEYS, input.seat ?? null)
+    camera.step(input.dt)
     if (!active) {
+      camera.cancel()
       if (physgun.holding) physgun.release(false)
       toolgun.cancel()
       con.held = null
@@ -489,7 +499,10 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     if (!lastActive && input.fire) input.fire = false
     lastActive = true
     if (!physgun.holding && input.wheel) {
-      cycle(input.wheel > 0 ? 1 : -1)
+      // the paint and balloon modes read the wheel as the palette
+      if (SLOTS[slot] === 'toolgun' && toolgun.wantsWheel) toolgun.stepColor(input.wheel > 0 ? 1 : -1)
+      else if (SLOTS[slot] === 'camera' && camera.wheel(input.wheel)) { /* the level, not the next tool */ }
+      else cycle(input.wheel > 0 ? 1 : -1)
       input.wheel = 0
     }
     if (SLOTS[slot] === 'physgun') {
@@ -500,6 +513,8 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       if (physgun.holding) physgun.release(false)
     }
     if (SLOTS[slot] === 'toolgun') toolgun.update(input)
+    if (SLOTS[slot] === 'camera') camera.update(input)
+    else camera.cancel()
     if (SLOTS[slot] === 'portalgun') {
       // a click opens one; holding it down does not keep firing
       if (input.fire && !portalFireWas) firePortal(0, input)
@@ -542,7 +557,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     if (vm) {
       if (toolOut) {
         const [a, b] = toolgunScreen(toolgun.state, lang, toolgun.aimedKeys)
-        vm.setScreen(a, b)
+        vm.setScreen(a, b, toolgunSwatch(toolgun.state))
       }
       vm.update({
         camera: f.camera, dt: f.dt, gait: f.gait, grounded: f.grounded,
@@ -610,6 +625,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     column,
     physgun,
     toolgun,
+    camera,
     portals,
     give: (tool) => {
       if (owned.has(tool)) return false

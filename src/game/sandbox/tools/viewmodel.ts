@@ -606,8 +606,8 @@ const makeScreen = () => {
     if (cut < 0) return [a]
     return [a.slice(0, a[cut] === '-' ? cut + 1 : cut), a.slice(cut + 1)]
   }
-  const draw = (a: string, b: string) => {
-    const key = `${a}|${b}`
+  const draw = (a: string, b: string, swatch: string | null = null) => {
+    const key = `${a}|${b}|${swatch ?? ''}`
     if (!canvas || key === last) return
     last = key
     const ctx = canvas.getContext('2d')
@@ -646,6 +646,14 @@ const makeScreen = () => {
     if (sb) {
       ctx.fillStyle = '#ffd27a'
       text(ctx, b, sb, y - 2 + gap)
+    }
+    // the paint and balloon modes show the colour they will use, a chip in
+    // the corner ringed in the glass's own light
+    if (swatch) {
+      ctx.fillStyle = '#8ff0ff'
+      ctx.fillRect(SCREEN_W - 13, 3, 10, 10)
+      ctx.fillStyle = swatch
+      ctx.fillRect(SCREEN_W - 12, 4, 8, 8)
     }
     tex.needsUpdate = true
   }
@@ -696,7 +704,7 @@ export interface Viewmodel {
   /** the hand's colour, from the body's look */
   setHandColor: (c: THREE.ColorRepresentation) => void
   /** what the tool gun's screen says: a big line and a small one */
-  setScreen: (a: string, b: string) => void
+  setScreen: (a: string, b: string, swatch?: string | null) => void
   /** the portal gun fired this colour (0 blue, 1 orange): the chamber turns
       to it and the claws twitch */
   portalShot: (color: 0 | 1) => void
@@ -1044,7 +1052,7 @@ export function createViewmodel(parent: THREE.Object3D): Viewmodel {
         gun.mats.hand.emissive.copy(gun.mats.hand.color).multiplyScalar(HAND_GUMMY)
       }
     },
-    setScreen: (a, b) => screen.draw(a, b),
+    setScreen: (a, b, swatch) => screen.draw(a, b, swatch),
     portalShot: (color) => {
       portalWant = color
       clawV += 7

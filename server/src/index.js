@@ -1852,6 +1852,7 @@ function handleMessage(ws, msg) {
     case 'world-prop-break':
     case 'world-prop-explosion':
     case 'world-prop-meta':
+    case 'world-prop-tag':
     case 'world-prop-joint':
     case 'world-prop-unjoint':
       propRegistry.handle(ws, msg);

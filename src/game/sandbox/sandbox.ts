@@ -15,6 +15,10 @@ import { createWake } from './wake'
 import './catalogue'
 // the contraption parts register after the catalogue, under their own tab
 import './contraption/parts'
+// balloons, lamps, signs and dynamite register after both, and one controller
+// per sandbox is made below so it hears every spawn
+import { creativeOf } from './creative/creative'
+import './creative/commands'
 import { createBatcher, warmBatch, type Batcher } from './batch'
 import { createFx, type Fx } from './fx'
 import { createLife, type BreakEvent, type PropLife } from './breakables'
@@ -22,6 +26,9 @@ import { createExplosions, type ExplosionEvent, type Explosions } from './explos
 // the scene reaches these through its dynamic import of this module, so
 // knocking the walker and the town flat costs the room boot nothing
 export { blastImpact, blastWatch } from './explosion'
+// the balloon, lamp, sign and dynamite controller (the scene asks it for lamp
+// pools and what E does)
+export { creativeOf } from './creative/creative'
 export { CATALOGUE, CATEGORIES, catalogueEntry, inCategory, type CatalogueEntry, type Category } from './catalogue'
 export { renderThumbnails } from './thumbnails'
 // destruction registers its rubble kinds and its console commands on import,
@@ -655,6 +662,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
   }
   life = createLife(sb, effects, (at, power, radius, source) => void explosions.explode(at, power, radius, source))
   explosions = createExplosions(sb, effects, life.damage)
+  creativeOf(sb)
   return sb
 }
 

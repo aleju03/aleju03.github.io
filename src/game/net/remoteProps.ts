@@ -17,6 +17,8 @@ import * as THREE from 'three'
 import type { Sandbox, Prop } from '../sandbox/sandbox'
 import { catalogueEntry } from '../sandbox/catalogue'
 import { contraptionOf } from '../sandbox/contraption/contraption'
+import { creativeOf } from '../sandbox/creative/creative'
+import { tagKey } from '../sandbox/creative/tags'
 import { breakSound } from '../sandbox/impactSounds'
 import type { NetProp, NetJoint, PropPose, PropClientMessage, PropServerMessage } from './propProtocol'
 import type { WorldServerMessage } from './protocol'
@@ -27,6 +29,8 @@ interface Body {
   samples: Array<{ at: number; row: PropPose }>
   last: string
   meta: string
+  /** the creative tag as last agreed with the server (sent or received) */
+  tagSent: string
 }
 interface LevelState {
   name: string
@@ -108,7 +112,7 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
       let id: number
       if (pending && sb.get(nonce!)) id = nonce!
       else id = sb.spawn(n.kind, position(n.pose), { scale: n.scale, mass: n.mass, quaternion: rotation(n.pose), data: { net: true } })
-      b = { net: n, local: id, samples: [], last: '', meta: '' }
+      b = { net: n, local: id, samples: [], last: '', meta: '', tagSent: '' }
       l.bodies.set(n.id, b); l.local.set(id, b)
       if (nonce !== undefined && pending) l.pending.delete(nonce)
     }
@@ -143,6 +147,12 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
     if (n.life && !wasMine) {
       const life = (p.data.life ??= {}) as Record<string, number>
       ;[life.hp, life.fuse, life.boom, life.lit] = n.life
+    }
+    // Paint, a lamp's switch, a sign's words: whoever set them last wins, unless
+    // this client has an edit of its own it has not sent yet
+    if (tagKey(p.data.tag as number[] | null | undefined) === b.tagSent) {
+      creativeOf(sb).receive(p, n.tag ?? null)
+      b.tagSent = tagKey(n.tag)
     }
     if (ack) l.acknowledgements.push(ack)
     if (pending?.removed) send({ type: 'world-prop-remove', level: active, id: n.id })
@@ -210,7 +220,7 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
             const t = p.body.translation()
             if (m.how === 'break') {
               breakSound(p.kind.surface ?? 'wood', 1, t.x, t.y, t.z)
-              sb.fx.debris(p.kind.surface === 'glass' ? 'glass' : 'wood', t, { x: 0, y: 0, z: 0 }, p.extents.length())
+              sb.fx.debris(p.kind.surface === 'glass' ? 'glass' : p.kind.surface === 'rubber' ? 'plastic' : 'wood', t, { x: 0, y: 0, z: 0 }, p.extents.length())
             }
             sb.remove(b.local)
           }
@@ -332,6 +342,14 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
           b.meta = meta
         }
         if (rows.length) send({ type: 'world-prop-move', level: name, rows })
+        for (const b of l.bodies.values()) {
+          const p = sb.get(b.local)
+          if (!p) continue
+          const key = tagKey(p.data.tag as number[] | null | undefined)
+          if (key === b.tagSent) continue
+          b.tagSent = key
+          send({ type: 'world-prop-tag', level: name, id: b.net.id, tag: (p.data.tag as number[] | null | undefined) ?? null })
+        }
         for (const r of c.constraints()) {
           if (l.jointSent.has(r.id)) continue
           const a = l.local.get(r.a), b = l.local.get(r.b)

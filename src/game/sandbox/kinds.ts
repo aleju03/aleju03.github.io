@@ -76,6 +76,9 @@ export interface ExplodeSpec {
       lights its fuse instead. A blast is hotter than a knock: from another
       explosion, half this sets it off and a fifth of it lights it */
   speed: number
+  /** seconds a fuse burns once lit, when it is not the barrel's couple of
+      seconds and a bit (dynamite's five) */
+  fuse?: number
 }
 
 export interface PropKind {

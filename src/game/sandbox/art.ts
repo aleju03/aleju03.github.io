@@ -317,6 +317,25 @@ export const atlasCanvas = () => {
   return (layers?.color.image as HTMLCanvasElement | undefined) ?? null
 }
 
+/**
+ * Paint a declared cell again, after the atlas is live: the colour layer only,
+ * and only that cell's rectangle, then the whole texture is marked for upload
+ * (a new image on the same texture, never a new program). This is how the
+ * signs' pool of text tiles (creative/signs.ts) shows what somebody typed.
+ * False headless, where there is no canvas.
+ */
+export const repaintCell = (name: string, paint: (p: Pen) => void): boolean => {
+  propMaterial()
+  if (!layers) return false
+  const c = cellOf(name)
+  const ctx = (layers.color.image as HTMLCanvasElement).getContext('2d')
+  if (!ctx) return false
+  paint(makePen(ctx, c.x, c.y, c.w, c.h))
+  bleed(ctx, c)
+  layers.color.needsUpdate = true
+  return true
+}
+
 let material: THREE.MeshStandardMaterial | null = null
 
 /** how hot the atlas's glow layer burns; HDR, because the look's ACES

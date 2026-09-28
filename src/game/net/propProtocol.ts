@@ -18,6 +18,9 @@ export interface NetProp {
   lock: 'hand' | 'seat' | 'keys' | null
   part: number[] | null
   life: number[] | null
+  /** the creative props' record (sandbox/creative/tags.ts): paint, a lamp's
+      switch, a sign's text. Anyone in reach may set it, whoever simulates */
+  tag?: number[] | null
   transfer?: { to: number; lock: 'hand' | 'seat' | 'keys' | null; waiting: number }
 }
 export interface NetJoint {
@@ -50,6 +53,7 @@ export type PropClientMessage = { level: string } & (
   | { type: 'world-prop-break'; id: number; epoch: number; how: 'break' | 'explode' }
   | { type: 'world-prop-explosion'; id?: number; epoch?: number; at: number[]; power: number; radius: number }
   | { type: 'world-prop-meta'; id: number; epoch: number; part: number[] | null; life: number[] | null }
+  | { type: 'world-prop-tag'; id: number; tag: number[] | null }
   | { type: 'world-prop-joint'; id: number; b: number; kind: NetJoint['kind']; frames: number[]; nonce: number }
   | { type: 'world-prop-unjoint'; id: number }
 )

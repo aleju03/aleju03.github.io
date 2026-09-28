@@ -12,11 +12,30 @@
 export const PROP_CAP = 150;
 const LEVEL_CAP = 2000;
 const WORLD_CAP = 8000;
-export const PROP_KINDS = new Set(`crate crate_small pallet plank barrel trashcan sawblade pipe hydrant cone ball bucket milk_crate lawn_chair wheelie_bin chair table couch bathtub mattress door tv melon bottle soda_can portal_panel block barrier cinder sawhorse girder stop_sign tyre engine barrel_explosive gascan propane dumpster fridge vending streetlamp container plate_s plate_m plate_l beam_s beam_l thruster wheel hoverball seat`.split(' '));
+export const PROP_KINDS = new Set(`crate crate_small pallet plank barrel trashcan sawblade pipe hydrant cone ball bucket milk_crate lawn_chair wheelie_bin chair table couch bathtub mattress door tv melon bottle soda_can portal_panel block barrier cinder sawhorse girder stop_sign tyre engine barrel_explosive gascan propane dumpster fridge vending streetlamp container plate_s plate_m plate_l beam_s beam_l thruster wheel hoverball seat balloon lamp sign dynamite`.split(' '));
 const TYPES = new Set(['weld', 'axis', 'rope', 'nocollide']);
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const finite = (n) => typeof n === 'number' && Number.isFinite(n);
 const idOK = (n) => Number.isSafeInteger(n) && n > 0;
+// The creative props' tag (src/game/sandbox/creative/tags.ts): [paint, flags,
+// ...sign characters]. Paint is 0..12, only flag bit 0 (lamp off) exists, and
+// the characters are what the sign font has: printable ASCII and the Spanish
+// set. The mirror of the client's cleanSign; keep the two in step.
+const SIGN_MAX = 40;
+const PAINTS = 12;
+const EXTRA = new Set([...'ñÑ¡¿áéíóúÁÉÍÓÚüÜ'].map((c) => c.charCodeAt(0)));
+const signChar = (c) => Number.isInteger(c) && ((c >= 32 && c <= 126) || EXTRA.has(c));
+export function cleanTag(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (!Array.isArray(raw) || raw.length < 2 || raw.length > 2 + SIGN_MAX) return undefined;
+  const [paint, flags, ...chars] = raw;
+  if (!Number.isInteger(paint) || paint < 0 || paint > PAINTS || !Number.isInteger(flags)) return undefined;
+  if (!chars.every(signChar)) return undefined;
+  const text = String.fromCharCode(...chars).replace(/ {2,}/g, ' ').trim();
+  const off = flags & 1;
+  if (!paint && !off && !text) return null;
+  return [paint, off, ...[...text].map((c) => c.charCodeAt(0))];
+}
 const vec = (v, n, cap) => Array.isArray(v) && v.length === n && v.every(finite) ? v.map((x) => clamp(x, -cap, cap)) : null;
 
 export function createPropRegistry({ players, send, now = Date.now, onRemove = () => {} }) {
@@ -130,7 +149,7 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       const scale = finite(m.scale) ? clamp(m.scale, 0.2, 4) : 1;
       const mass = finite(m.mass) ? clamp(m.mass, 0.05, 20000) : undefined;
       const prop = { id: seq++, owner: w.id, name: ws.user?.username ?? ws.nick, authority: w.id, epoch: 1,
-        kind: m.kind, scale, mass, pose: row, lock: null, part: null, life: null };
+        kind: m.kind, scale, mass, pose: row, lock: null, part: null, life: null, tag: null };
       l.props.set(prop.id, prop);
       seen.set(key, prop.id);
       if (seen.size > 2048) seen.delete(seen.keys().next().value);
@@ -216,6 +235,17 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       const life = vec(m.life, 4, 60);
       if (part) p.part = [p.owner === w.id ? clamp(Math.round(part[0]), -1, 4) : (p.part?.[0] ?? 0), p.owner === w.id ? (part[1] ? 1 : 0) : (p.part?.[1] ?? 0), part[2], clamp(part[3], -1, 1)];
       if (life) p.life = life;
+      announce(w.level, [p]);
+    } else if (m.type === 'world-prop-tag') {
+      // Paint, a lamp's switch, a sign's words: anyone within reach may set
+      // them, whoever owns or simulates the prop, and the result rides the
+      // ordinary prop state, so a late joiner's snapshot carries it too.
+      if (!p || p.transfer || !allow(ws, 'tag', 12)) return;
+      if (Math.hypot(p.pose[2] / 100 - w.x, p.pose[3] / 100 - w.y, p.pose[4] / 100 - w.z) > 90) return deny(ws, m.type, 'reach');
+      const tag = cleanTag(m.tag);
+      if (tag === undefined) return deny(ws, m.type, 'invalid');
+      if (JSON.stringify(tag) === JSON.stringify(p.tag ?? null)) return;
+      p.tag = tag;
       announce(w.level, [p]);
     } else if (m.type === 'world-prop-joint') {
       const b = l.props.get(m.b);
