@@ -3251,6 +3251,31 @@ try {
       await hold('KeyW', false)
       await sleep(1500)
       console.log(`  on your feet: ${!(await evaluate('window.__sandboxRig.down'))}, lens at ${f1(await here())}`)
+      // 3. the car, parked behind you (on the orange side), taken through
+      // the blue portal
+      await evaluate(`(window.__sandbox.console.host.teleport(${x0}, ${z0}, undefined, 0), true)`)
+      await sleep(1500)
+      await evaluate(`(() => { const f = window.__fleet, V = window.__sandboxCamera.position.constructor; f.recall('car', new V(${x0}, 0, ${z0 + 4}), window.__fleetEnv())
+        f.all.find((v) => v.id === 'car').placeAt(${x0}, ${z0 + 4}, Math.PI / 2, window.__fleetEnv()); return true })()`)
+      await sleep(1500)
+      const car = await evaluate(`window.__fleet.all.find((v) => v.id === 'car').root.position.toArray()`)
+      await aimThrough(car[0], car[1] + 1.2, car[2])
+      await sleep(300)
+      await hold('Mouse0', true)
+      await sleep(900)
+      const hv = await evaluate(`(() => { const p = window.__tools.physgun.prop; return [window.__tools.physgun.holding, p?.data.vehicle ?? null] })()`)
+      console.log(`  the car through the portal: ${hv[1] === 'car' ? 'held' : hv[0] ? 'held something else  <-- WRONG' : 'not held  <-- WRONG'} (car at ${f1(car)})`)
+      await evaluate('window.__sandboxWalk.pitch += 0.1; true')
+      await sleep(600)
+      await gShot('grab-1b-car-through-portal')
+      for (let i = 0; i < 4; i++) {
+        await evaluate('window.__sandboxWalk.yaw += 0.06; true')
+        await sleep(40)
+      }
+      await hold('Mouse0', false)
+      await sleep(150)
+      console.log(`  car let go at ${f1(await evaluate(`window.__fleet.all.find((v) => v.id === 'car').root.position.toArray()`))}`)
+      await sleep(500)
     }
     console.log(`  ${(await evaluate('window.__gLinks')).length} programs linked`)
   }

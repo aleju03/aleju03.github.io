@@ -540,7 +540,10 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
     const r = castRigs(aim, t)
     // a parked machine nearer than anything else the ray found: the fleet
     // stands a prop in for it, and from then on it is held like a crate
-    const veh = o.vehicles?.pick(aim.eye, aim.dir, r ? r.t : t) ?? null
+    const found = o.vehicles?.pick(aim.eye, aim.dir, r ? r.t : t) ?? null
+    // (an aim carried through a portal starts at the exit: a machine behind
+    // the exit's wall is not in view)
+    const veh = found && found.t >= (aim.near ?? 0) ? found : null
     if (veh) {
       va.copy(aim.dir).multiplyScalar(veh.t).add(aim.eye)
       const p = o.vehicles!.take(veh.key, sb)

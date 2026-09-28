@@ -326,6 +326,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   const entryAt = new THREE.Vector3()
   const exitAt = new THREE.Vector3()
   const exitDir = new THREE.Vector3()
+  const outDir = new THREE.Vector3()
   /** the aim the physgun gets this frame: the real one, or carried through */
   const beamAim = (input: ToolInput): ToolInput => {
     viaNow = false
@@ -340,12 +341,22 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     let near = 0
     if (w) {
       const e = portals.rayEnters(w.level, input.aim.eye, input.aim.dir, RANGE)
-      // anything solid before the oval stops the beam there
-      const blk = e ? sb.raycast(input.aim.eye, input.aim.dir, e.t, { props: true, world: true }) : null
-      if (e && !(blk && blk.distance < e.t - 0.05)) {
-        M = e.M
-        near = e.t + 0.05
-        entryAt.copy(e.at)
+      if (e) {
+        /* Anything solid before the oval stops the beam there, except the
+           collision box the portal lies on: a wall's box stands a shoulder
+           pad proud of the drawn wall, in front of the oval (Portal.inset),
+           and read as a wall it kept every wall portal from ever carrying
+           the beam. The same pad stands in front of the exit, so the ray
+           carried out starts past it rather than inside it */
+        const inDepth = (e.from.inset + 0.06) / Math.max(0.2, -input.aim.dir.dot(e.from.n))
+        const blk = sb.raycast(input.aim.eye, input.aim.dir, e.t, { props: true, world: true })
+        const own = blk?.prop && e.from.anchor?.kind === 'prop' && e.from.anchor.id === blk.prop.id
+        if (!(blk && !own && blk.distance < e.t - inDepth)) {
+          M = e.M
+          outDir.copy(input.aim.dir).transformDirection(e.M)
+          near = e.t + (e.to.inset + 0.06) / Math.max(0.2, outDir.dot(e.to.n))
+          entryAt.copy(e.at)
+        }
       }
     }
     if (physgun.holding) {
