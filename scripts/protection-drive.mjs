@@ -55,6 +55,11 @@ const shim = (nick) => `(() => {
   localStorage.setItem('alejos-nick', ${JSON.stringify(nick)})
   localStorage.setItem('alejos-roam-prefs', JSON.stringify({cap: 60}))
   window.__links = 0
+  window.__refused = 0
+  const Native = window.WebSocket
+  window.WebSocket = class extends Native {
+    constructor(...args) { super(...args); this.addEventListener('message', (e) => { if (typeof e.data === 'string' && e.data.includes('world-block-refused')) { window.__refused++; window.__lastRefused = JSON.parse(e.data) } }) }
+  }
   for (const C of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
     if (!C) continue
     const link = C.prototype.linkProgram
@@ -181,15 +186,15 @@ if (process.env.PROTECTION_ONLY !== 'cubeland') {
   // both stand at the spawn (on land), in one chunk
   const centre = await a.evaluate(`(() => {
     const sp = __cubeland.level.spawn, c = __cubeland.net.chunkAt(sp.x, sp.z)
-    return { cx: c.cx, cz: c.cz, x: sp.x, z: sp.z }
+    return { cx: c.cx, cz: c.cz, x: sp.x, z: sp.z, y: sp.y }
   })()`)
-  await a.evaluate(`__sandbox.console.host.teleport(${centre.x}, ${centre.z}, undefined, 0)`)
+  await a.evaluate(`__sandbox.console.host.teleport(${centre.x}, ${centre.z}, ${centre.y}, 0)`)
   const near = await b.evaluate(`(() => {
     const n = __cubeland.net
     const same = (dx) => { const c = n.chunkAt(${centre.x} + dx, ${centre.z} + dx); return c.cx === ${centre.cx} && c.cz === ${centre.cz} }
     return same(1) ? 1 : -1
   })()`)
-  await b.evaluate(`__sandbox.console.host.teleport(${centre.x + near}, ${centre.z + near}, undefined, 0)`)
+  await b.evaluate(`__sandbox.console.host.teleport(${centre.x + near}, ${centre.z + near}, ${centre.y}, 0)`)
   await sleep(2500)
   await run(a, 'claim')
   await waitFor(() => b.evaluate(`__social.claims.some((c) => c.cx === ${centre.cx} && c.cz === ${centre.cz} && !c.allowed)`), 80, 100, 'the claim reaches B')
@@ -231,25 +236,43 @@ if (process.env.PROTECTION_ONLY !== 'cubeland') {
   console.log(`B's dig at ${t1.bx},${t1.by},${t1.bz} declined by the client`)
   await b.shot('claim-declined')
 
-  // 2. the client's guard is lifted: the edit is made, sent, refused, and put back
+  // 2. the client's guard is lifted: the edit is made, sent, refused, and put back.
+  //    (the dig hits whichever block the crosshair is on, so the check is on
+  //    the whole neighbourhood of the column, not one cell)
   const t2 = await dig(b, `C.net.setClaims(null)`)
+  const shape = (c, t) => c.evaluate(`(() => { const C = window.__cubeland, out = []; for (let y = ${t.by - 3}; y <= ${t.by + 2}; y++) for (let z = ${t.bz - 4}; z <= ${t.bz + 4}; z++) for (let x = ${t.bx - 4}; x <= ${t.bx + 4}; x++) out.push(C.store.get(x, y, z)); return out.join(',') })()`)
+  const before2 = await shape(b, t2)
+  const refused0 = await b.evaluate('__refused')
   await sleep(500)
   await press(b)
-  const ghost = await at(b, t2)
-  await waitFor(async () => (await at(b, t2)) === t2.before, 80, 100, 'the server\'s correction restores the block')
-  console.log(`unguarded dig: B saw ${ghost === t2.before ? 'no change' : `block ${ghost}`} for a moment, then the correction put block ${t2.before} back`)
-  assert.equal(await at(a, t2), t2.before, 'A never saw the edit')
+  const ghost = (await shape(b, t2)) !== before2
+  await waitFor(async () => (await b.evaluate('__refused')) > refused0, 120, 100, 'the server refuses the edit')
+  await waitFor(async () => (await shape(b, t2)) === before2, 120, 100, 'the server\'s correction restores the blocks')
+  console.log(`unguarded dig: B ${ghost ? 'saw the block go' : 'made no visible change (it may have been corrected first)'}, the server refused ${(await b.evaluate('__refused')) - refused0} message(s), and the correction put the neighbourhood back`)
+  assert.equal(await shape(a, t2), before2, 'A never saw the edit')
+  // the refused cells themselves: B holds exactly what A (who never saw the edit) holds
+  const cells = await b.evaluate('__lastRefused.edits')
+  const held = (c) => c.evaluate(`(() => { const e = ${JSON.stringify(cells)}, out = []; for (let i = 0; i < e.length; i += 4) out.push(window.__cubeland.store.get(e[i], e[i + 1], e[i + 2])); return out.join(',') })()`)
+  assert.equal(await held(b), await held(a), 'every refused cell is back to what the owner sees')
+  console.log(`  ${cells.length / 4} refused cell(s) at ${cells.slice(0, 3).join(',')}${cells.length > 4 ? ' ...' : ''}; B now matches A there`)
   await b.shot('claim-corrected')
 
   // 3. a friend may build there
   await run(a, 'friend bravo')
   await waitFor(() => b.evaluate(`__social.claims.some((c) => c.cx === ${centre.cx} && c.cz === ${centre.cz} && c.allowed)`), 80, 100, 'B is allowed after the friend')
-  // (B's guard was lifted for step 2 and the mirror allows it now: dig for real)
-  const t3 = await dig(b)
-  await sleep(500)
+  // (the crosshair falls on the block step 2 was refused: the same cell)
+  const t3 = { bx: cells[0], by: cells[1], bz: cells[2] }
+  const cell = (c) => c.evaluate(`window.__cubeland.store.get(${t3.bx}, ${t3.by}, ${t3.bz})`)
+  const was3 = await cell(a)
+  assert.notEqual(was3, 0, 'there is a block to dig')
+  const refused1 = await b.evaluate('__refused')
+  await sleep(1500)
   await press(b)
-  await waitFor(async () => (await at(a, t3)) !== t3.before, 80, 100, 'the friend\'s dig reaches A')
-  console.log('friend dug in the claim; A sees it')
+  await waitFor(async () => (await cell(a)) === 0, 150, 100, 'the friend\'s dig reaches A')
+  assert.equal(await cell(b), 0)
+  assert.equal(await b.evaluate('__refused'), refused1, 'and the server refused nothing this time')
+  console.log(`friend dug the block at ${t3.bx},${t3.by},${t3.bz} inside the claim; A sees it gone`)
+  await a.shot('friend-dug')
   await run(a, 'unclaim')
   await sleep(500)
 
