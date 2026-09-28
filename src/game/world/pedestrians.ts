@@ -132,6 +132,10 @@ const RECUT_NEAR = 95
 const RECUT_SPREAD = 45
 /** past this there is no town under the camera and the crowd sleeps */
 const IDLE_CHECK = 0.75
+/** Keep close encounters at the render rate; distant silhouettes need fewer
+    bone/IK updates. Movement and collision still run on every crowd tick. */
+const ANIMATE_NEAR = 32
+const ANIMATE_FAR = 80
 
 /** how tall a body the wall test asks about */
 const BODY_H = 4.2
@@ -206,6 +210,13 @@ interface Person {
       second half of the touchdown's limb slap */
   airborne: boolean
   slapIn: number
+  /** Actual time since the last pose, separate from the next scheduled pose.
+      The phase spreads the crowd's expensive updates across frames. */
+  poseElapsed: number
+  poseIn: number
+  posePhase: number
+  poseFresh: boolean
+  poseGait: number
 }
 
 const swatch = <T,>(list: readonly T[], r: number) => list[Math.floor(r * list.length) % list.length]
@@ -378,11 +389,18 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     // whoever was lying in the road back there is somebody new over here
     p.down = null
     p.sx = p.sz = 0
+    p.poseElapsed = p.poseIn = 0
+    p.poseFresh = true
+    p.poseGait = 0.5
+    p.ptsAt = -1
     p.rig.reset()
     p.rig.setLook(look())
     bodyExtent(p.group, p.ext)
     p.rig.face(p.yaw)
-    p.group.position.set(p.x, groundAt(p.x, p.z), p.z)
+    p.y = groundAt(p.x, p.z)
+    p.vx = fwdX(p.yaw) * PACE
+    p.vz = fwdZ(p.yaw) * PACE
+    p.group.position.set(p.x, p.y, p.z)
     p.group.visible = true
     return true
   }
@@ -402,6 +420,8 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       y: 0, vx: 0, vz: 0, sx: 0, sz: 0, ext: { radius: 1, height: BODY_H }, kicked: 0,
       pts: new Float32Array(MAX_POINTS * 4), npts: 0, ptsAt: -1,
       airborne: false, slapIn: -1,
+      poseElapsed: 0, poseIn: 0, posePhase: i / gfx.pedestrians,
+      poseFresh: true, poseGait: 0,
     })
   }
 
@@ -412,6 +432,22 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
 
   /** the crowd's tick count, which is what a body's cached points are stamped with */
   let tick = 0
+  /** Also used before a hit/contact/grab needs an up-to-date skeleton. Never
+      feed accumulated walking time into the ragdoll's physics step. */
+  const animateWalking = (p: Person) => {
+    if (p.down || (p.poseElapsed <= 0 && !p.poseFresh)) return
+    pose.dt = p.poseElapsed
+    pose.gait = p.poseGait
+    pose.yaw = p.yaw
+    pose.vx = p.vx
+    pose.vz = p.vz
+    env.groundY = p.y
+    p.rig.update(pose, env)
+    p.group.rotation.y = p.rig.facing + Math.PI
+    p.poseElapsed = 0
+    p.poseFresh = false
+    p.ptsAt = -1
+  }
   const update = (camPos: THREE.Vector3, dt: number) => {
     tick++
     if (!crowd.length) return
@@ -440,6 +476,8 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       // the ragdoll owns the body until it has settled a while, then they
       // stand up where they lie and carry on down the pavement from there
       if (p.down) {
+        p.poseElapsed = p.poseIn = 0
+        p.poseFresh = true
         touchdown(p, dt)
         p.vx = p.vz = 0
         p.sx = p.sz = 0
@@ -526,14 +564,21 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       p.vx = fwdX(p.yaw) * speed + p.sx
       p.vz = fwdZ(p.yaw) * speed + p.sz
       p.group.position.set(p.x, y, p.z)
-      pose.dt = dt
-      pose.gait = staggered ? Math.min(1, Math.hypot(p.sx, p.sz) / 5.9) : p.gait * 0.5 // PACE against the walk's own run cap
-      pose.yaw = p.yaw
-      pose.vx = p.vx
-      pose.vz = p.vz
-      env.groundY = y
-      p.rig.update(pose, env)
-      p.group.rotation.y = p.rig.facing + Math.PI
+      p.poseGait = staggered ? Math.min(1, Math.hypot(p.sx, p.sz) / 5.9) : p.gait * 0.5 // PACE against the walk's own run cap
+      p.poseElapsed += dt
+      p.poseIn -= dt
+      const distanceSq = dx * dx + dz * dz
+      const interval = staggered || distanceSq <= ANIMATE_NEAR * ANIMATE_NEAR
+        ? 0 : distanceSq <= ANIMATE_FAR * ANIMATE_FAR ? 1 / 30 : 1 / 20
+      if (interval === 0 || p.poseFresh) {
+        p.poseIn = interval * p.posePhase
+        animateWalking(p)
+      } else if (p.poseIn <= 1e-9 || p.poseElapsed >= interval) {
+        // Preserve the schedule's remainder at frame rates that do not
+        // divide 20/30 Hz, but do not try to catch up a paused render loop.
+        p.poseIn = Math.min(0, p.poseIn) % interval + interval
+        animateWalking(p)
+      }
     }
   }
 
@@ -564,7 +609,10 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       limbs: p.rig.limbs,
       limbPos: (k: number, out: THREE.Vector3) => p.rig.limbPos(k, out),
       grab: (k: number, target: THREE.Vector3 | null, stiff?: number) => {
-        if (target && !p.down) p.down = downEnv(p)
+        if (target && !p.down) {
+          animateWalking(p)
+          p.down = downEnv(p)
+        }
         p.downFor = 0
         p.rig.grab(k, target, stiff)
       },
@@ -579,6 +627,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       fell. Counts it once however many blows land on the heap after */
   const fell = (p: Person) => {
     if (!p.down) {
+      animateWalking(p)
       p.down = downEnv(p)
       knocks++
       // thrown: its limbs slap the ground when it comes down
@@ -649,6 +698,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     // test their own walk steers by, so a body is never pushed into a shop
     points: (i, out) => {
       const p = crowd[i]
+      animateWalking(p)
       // read off the skeleton once a tick, relative to where the body
       // stands, so a shove since (which moves the body, not the bones)
       // carries them along
@@ -773,6 +823,11 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       p.live = true
       p.down = null
       p.sx = p.sz = 0
+      p.poseElapsed = p.poseIn = 0
+      p.poseFresh = true
+      p.poseGait = 0
+      p.ptsAt = -1
+      p.vx = p.vz = 0
       p.rig.reset()
       p.rig.setLook(look())
       bodyExtent(p.group, p.ext)

@@ -8,7 +8,7 @@ import {
 import { SEA_Y, latticeGround, latticeHeight, terrainY } from './terrain'
 import { placeAt, roadAt, pavedAt, townsNear, ROAD_HALF, WALK_W } from './settlements'
 import { hit, liveOf, networkOf, parcelsInChunk, pieceNear, piecesIn, probe } from './streets'
-import { buildStreets, makeLayer, type Layer } from './streetMesh'
+import { buildStreetsSteps, makeLayer, type Layer } from './streetMesh'
 import { lotStream, type Lot } from './kitbash'
 import { BIOMES, type BiomeId, type PropKind } from './biomes'
 import {
@@ -125,9 +125,8 @@ interface RotorSpec {
   rate: number
   rec?: StructureRec
 }
-/** the rotors the chunk being built has handed out, so recordStructure can
-    tie each to the structure that stamped it (build is synchronous) */
-let rotorsMade: RotorSpec[] | null = null
+/** Recorder state belongs to its builder: suspended chunks may interleave. */
+const rotorsByOut = new WeakMap<BuildOut, RotorSpec[]>()
 
 /**
  * The street test a kit's `clear` asks (kitbash.ts's BuildOut): is a world
@@ -170,6 +169,7 @@ const recordStructure = (
   const gv = out.glass.count
   const gi = out.glass.indexCount
   const bn = out.boxes.length
+  const rotorsMade = rotorsByOut.get(out)
   const rn = rotorsMade?.length ?? 0
   const md: number[] = []
   const mg: number[] = []
@@ -331,7 +331,7 @@ const PROPERTY_SINK = 0.02
  * edge a chunk shares with its neighbour is computed from the same cached
  * numbers and the two can never disagree by a float.
  */
-const buildGround = (cx: number, cz: number): Ground => {
+function* buildGround(cx: number, cz: number): Generator<void, Ground, void> {
   // lattice index of this chunk's minimum corner. Chunk origins are whole
   // multiples of GRID from the lattice origin by construction (CHUNK is 16
   // cells), which is what lets neighbours share an edge exactly
@@ -351,14 +351,17 @@ const buildGround = (cx: number, cz: number): Ground => {
   const nat = new Float32Array(n * 4)
   let wet = false
 
-  for (let j = 0; j < VERTS; j++)
+  for (let j = 0; j < VERTS; j++) {
+    yield
     for (let i = 0; i < VERTS; i++) {
       const y = latticeHeight(baseI + i, baseJ + j)
       h[j * VERTS + i] = y
       if (y < SEA_Y + 0.15) wet = true
     }
+  }
 
-  for (let j = 0; j < VERTS; j++)
+  for (let j = 0; j < VERTS; j++) {
+    yield
     for (let i = 0; i < VERTS; i++) {
       const k = j * VERTS + i
       const wx = originX(cx) + i * GRID
@@ -401,6 +404,7 @@ const buildGround = (cx: number, cz: number): Ground => {
       uv[k * 2] = wx / 9
       uv[k * 2 + 1] = wz / 9
     }
+  }
 
   // indices. The authored property used to be a hole here, filled by the
   // house's own lawn plane: a flat green texture that no amount of tuning
@@ -442,14 +446,14 @@ const buildGround = (cx: number, cz: number): Ground => {
  * footprint snapshot: a mast is solid enough to walk into, but it is not a
  * footprint the scatterer should clear three units of grass around.
  */
-const buildRoads = (
+function* buildRoads(
   cx: number, cz: number, out: MeshBuilder, glass: MeshBuilder, detailed: boolean,
   smash: Smashable[], lamps: Array<{ x: number; y: number; z: number }>,
-): Solid[] => {
+): Generator<void, Solid[], void> {
   const poleC = new THREE.Color('#22262a')
   const bulbC = new THREE.Color('#ffd9a0')
   const poles: Solid[] = []
-  buildStreets(cx, cz, out, detailed, (lx, y, lz, yaw, id) => {
+  yield* buildStreetsSteps(cx, cz, out, detailed, (lx, y, lz, yaw, id) => {
     const dv = out.count
     const di = out.indexCount
     const gv = glass.count
@@ -546,9 +550,9 @@ const plant = (
  * lot is no longer confined to a chunk, so a building can straddle a border;
  * the chunk its centre is in builds all of it.
  */
-const buildBlock = (
+function* buildBlock(
   cx: number, cz: number, out: BuildOut, ground: Ground, leaves: MeshBuilder, layer: Layer,
-): Solid[] => {
+): Generator<void, Solid[], void> {
   const ox = originX(cx)
   const oz = originZ(cz)
   const keep: Solid[] = []
@@ -594,16 +598,17 @@ const buildBlock = (
 
   /** trees on a jittered lattice through a rectangle, this chunk's share:
       a lattice in world space, so a park across a chunk border is one park */
-  const grove = (
+  function* grove(
     x0: number, z0: number, x1: number, z1: number, step: number, rate: number,
     kinds: PropKind[], skip?: (x: number, z: number) => boolean,
-  ) => {
+  ): Generator<void, void, void> {
     const gx0 = Math.ceil(Math.max(x0, ox) / step)
     const gx1 = Math.floor(Math.min(x1, ox + CHUNK) / step)
     const gz0 = Math.ceil(Math.max(z0, oz) / step)
     const gz1 = Math.floor(Math.min(z1, oz + CHUNK) / step)
     for (let gz = gz0; gz <= gz1; gz++)
       for (let gx = gx0; gx <= gx1; gx++) {
+        yield
         if (rand2(gx, gz, 0x3f19) > rate) continue
         const px = gx * step + (rand2(gx, gz, 0x1c55) - 0.5) * step * 0.7
         const pz = gz * step + (rand2(gx, gz, 0x6e21) - 0.5) * step * 0.7
@@ -631,8 +636,9 @@ const buildBlock = (
     // a town's lots never reach past its rim
     if (Math.hypot(t.x - ox - CHUNK / 2, t.z - oz - CHUNK / 2) > t.radius * 1.35 + 100) continue
     for (const p of parcelsInChunk(t, cx, cz)) {
+      yield
       if (p.use === 'park') {
-        grove(p.x0, p.z0, p.x1, p.z1, 11, 0.62, ['broadleaf', 'broadleaf', 'birch', 'bush'])
+        yield* grove(p.x0, p.z0, p.x1, p.z1, 11, 0.62, ['broadleaf', 'broadleaf', 'birch', 'bush'])
         continue
       }
       if (p.use === 'plaza') {
@@ -641,7 +647,7 @@ const buildBlock = (
         // a café and planters
         layer.poly([p.x0, p.z0, p.x1, p.z0, p.x1, p.z1, p.x0, p.z1], 0.04, PLAZA, SURF.paving)
         const { hx, hz } = plazaInner(p)
-        grove(p.x0, p.z0, p.x1, p.z1, 7.5, 0.85, ['broadleaf'],
+        yield* grove(p.x0, p.z0, p.x1, p.z1, 7.5, 0.85, ['broadleaf'],
           (x, z) => Math.abs(x - p.x) < hx + 1 && Math.abs(z - p.z) < hz + 1)
         furnishPlaza(out, layer, p, inChunk)
         // the paving is laid, not graded, so pavedAt knows nothing of it:
@@ -759,11 +765,11 @@ const insideBuilt = (built: Solid[], x: number, z: number, pad: number) => {
  * (Slope needs no test of its own: land steep enough to shed soil classifies
  * as 'rock' in biomes.ts, and rock grows nothing.)
  */
-const scatter = (
+function* scatter(
   cx: number, cz: number, ground: Ground, built: Solid[],
   out: MeshBuilder, cardsOut: MeshBuilder, boxes: Solid[] | null,
   smash: Smashable[] | null, cover: boolean,
-) => {
+): Generator<void, void, void> {
   const ox = originX(cx)
   const oz = originZ(cz)
   // which biomes this chunk actually contains, and in what proportion
@@ -780,6 +786,7 @@ const scatter = (
     for (const s of table) {
       const want = Math.round(s.per * frac)
       for (let i = 0; i < want; i++) {
+        if (i % 8 === 0) yield
         const id = seq++
         const px = ox + rand3(cx, cz, id * 3 + 1, 0x51a7) * CHUNK
         const pz = oz + rand3(cx, cz, id * 3 + 2, 0x51a7) * CHUNK
@@ -834,200 +841,225 @@ export interface ChunkFade {
   from?: Tier
 }
 
+/** A partial build owns its geometry until completion. return() cancels it. */
+export function* buildChunkSteps(
+  cx: number, cz: number, tier: Tier, mats: ChunkMats, fade?: ChunkFade,
+): Generator<void, Chunk, void> {
+  const group = new THREE.Group()
+  const geos: THREE.BufferGeometry[] = []
+  let complete = false
+  try {
+    const boxes: Solid[] = []
+    const lamps: Array<{ x: number; y: number; z: number }> = []
+
+    // birth stamps per slice: the base (ground, water, roads, buildings, glass)
+    // fades only on a brand-new chunk, flora only when the old tier had none,
+    // and cover — which only 'full' builds — is new whenever anything fades
+    const at = fade?.at ?? PREBORN
+    const baseBirth = fade?.from === undefined ? at : PREBORN
+    const floraBirth = fade?.from !== 'flora' ? at : PREBORN
+
+    const ground = yield* buildGround(cx, cz)
+    if (ground.geo) {
+      geos.push(ground.geo)
+      bakeBirth(ground.geo, baseBirth)
+      const m = new THREE.Mesh(ground.geo, mats.ground)
+      m.receiveShadow = true
+      group.add(m)
+    }
+
+    yield
+    if (ground.wet) {
+      // subdivided, and each vertex carries how deep the water is under it.
+      // That one baked attribute is what buys a shoreline: the material fades
+      // to clear and foams where the depth goes to nothing, instead of ending
+      // in the hard straight line a flat quad would draw across the beach
+      const n = 8
+      const g = new THREE.PlaneGeometry(CHUNK, CHUNK, n, n)
+      g.rotateX(-Math.PI / 2)
+      g.translate(originX(cx) + CHUNK / 2, SEA_Y, originZ(cz) + CHUNK / 2)
+      const wp = g.getAttribute('position')
+      const depth = new Float32Array(wp.count)
+      for (let i = 0; i < wp.count; i++) {
+        depth[i] = SEA_Y - terrainY(wp.getX(i), wp.getZ(i))
+      }
+      g.setAttribute('aDepth', new THREE.BufferAttribute(depth, 1))
+      bakeBirth(g, baseBirth)
+      geos.push(g)
+      const m = new THREE.Mesh(g, mats.water)
+      m.renderOrder = 1
+      group.add(m)
+    }
+
+    const detail = createMeshBuilder()
+    const glass = createMeshBuilder()
+    const leaves = createMeshBuilder(true)
+    const interiors: InteriorRect[] = []
+    const doors: ShopDoorSpec[] = []
+    const props: Smashable[] = []
+    const structures: StructureRec[] = []
+    const rotors: RotorSpec[] = []
+    const out: BuildOut = {
+      solid: detail, glass, boxes, lamps, interiors, doors, smash: props, structures,
+      detailed: tier !== 'bare',
+      rotor: (x, y, z, ax, ay, az, rate) => {
+        const b = createMeshBuilder()
+        rotors.push({ b, x, y, z, axis: new THREE.Vector3(ax, ay, az).normalize(), rate })
+        return b
+      },
+    }
+
+    rotorsByOut.set(out, rotors)
+    yield
+    const poles = yield* buildRoads(cx, cz, detail, glass, out.detailed, props, lamps)
+    const neighbours = yield* buildBlock(cx, cz, out, ground, leaves, makeLayer(cx, cz, detail))
+    yield
+    buildLandmarks(cx, cz, out)
+    yield
+    // everything in `boxes` at this point is a building — the roads register
+    // theirs separately and the scatter has not run yet — so this is the
+    // footprint list the scatterer needs to keep trees out of people's living
+    // rooms. The lamp posts join afterwards: they collide, but clearing three
+    // units of flora around each one would leave a bald ring down every verge
+    const built = boxes.slice()
+    // ...plus the buildings next door whose footprints reach into this chunk
+    for (const b of neighbours) built.push(b)
+    // ...and an enterable interior is a footprint with no box over most of it
+    // (its walls register individually so the doorway stays open), so it joins
+    // the scatter's keep-out list as a phantom: never collided with, only read
+    // for its x/z extents here
+    for (const r of interiors) {
+      built.push(new THREE.Box3(
+        new THREE.Vector3(r.minX, 0, r.minZ), new THREE.Vector3(r.maxX, 0, r.maxZ),
+      ))
+    }
+    // ...and a landmark clears its whole graded pad, not just the boxes it
+    // registered. A ring of standing stones is nine thin solids with the site
+    // wide open between them, and a forest growing up through the middle of it
+    // is the difference between a monument and a clearing that happens to have
+    // rocks in it. Same phantom trick as an interior: never collided with, read
+    // only for its extents. It is asked of every landmark whose pad could reach
+    // this chunk, not only the one standing in it: a pad runs a good way past
+    // its footprint, and the chunk next door used to grow a broadleaf up
+    // through the edge of the ring
+    const pads = new Set<Landmark>()
+    const lx0 = originX(cx)
+    const lz0 = originZ(cz)
+    for (const [px, pz] of [[lx0, lz0], [lx0 + CHUNK, lz0], [lx0, lz0 + CHUNK], [lx0 + CHUNK, lz0 + CHUNK]]) {
+      const l = landmarkAt(px, pz)
+      if (l) pads.add(l)
+    }
+    for (const l of pads) {
+      const r = Math.max(l.r, l.pad)
+      built.push(new THREE.Box3(
+        new THREE.Vector3(l.x - r, 0, l.z - r), new THREE.Vector3(l.x + r, 0, l.z + r),
+      ))
+    }
+    for (const p of poles) boxes.push(p)
+    // the builders' vertex counts, snapshotted between passes, are what turn
+    // one merged soup into separately-born slices for the fade attribute
+    const dFlora = detail.count
+    const lFlora = leaves.count
+    if (tier !== 'bare') yield* scatter(cx, cz, ground, built, detail, leaves, boxes, props, false)
+    const dCover = detail.count
+    const lCover = leaves.count
+    if (tier === 'full') yield* scatter(cx, cz, ground, built, detail, leaves, null, null, true)
+
+    /** base up to `m1`, flora up to `m2`, cover after — each at its own birth */
+    const slicedBirth = (g: THREE.BufferGeometry, m1: number, m2: number) => {
+      const a = new Float32Array(g.getAttribute('position').count)
+      a.fill(baseBirth, 0, m1)
+      a.fill(floraBirth, m1, m2)
+      a.fill(at, m2)
+      g.setAttribute('aBirth', new THREE.BufferAttribute(a, 1))
+    }
+
+    const smash: SmashSet = { key: `${cx},${cz}`, meshes: {}, props, structures, boxes, geos }
+    yield
+    const dg = detail.build()
+    if (dg) {
+      geos.push(dg)
+      slicedBirth(dg, dFlora, dCover)
+      const dm = new THREE.Mesh(dg, mats.detail)
+      dm.castShadow = true
+      dm.receiveShadow = true
+      group.add(dm)
+      smash.meshes.detail = dm
+    }
+    yield
+    const lg = leaves.build()
+    if (lg) {
+      geos.push(lg)
+      slicedBirth(lg, lFlora, lCover)
+      const lm = new THREE.Mesh(lg, mats.leaf)
+      lm.castShadow = true
+      lm.receiveShadow = true
+      // the depth pass must respect the leaf alpha or every crown casts the
+      // shadow of a solid card deck
+      lm.customDepthMaterial = mats.leafDepth
+      group.add(lm)
+      smash.meshes.leaf = lm
+    }
+    yield
+    const gg = glass.build()
+    if (gg) {
+      geos.push(gg)
+      bakeBirth(gg, baseBirth)
+      const m = new THREE.Mesh(gg, mats.glass)
+      m.renderOrder = 2
+      group.add(m)
+      smash.meshes.glass = m
+    }
+
+    const spinners: Spinner[] = []
+    for (const r of rotors) {
+      yield
+      const g = r.b.build()
+      if (!g) continue
+      // re-based on its pivot, so the mesh turns about its own origin
+      g.translate(-r.x, -r.y, -r.z)
+      g.computeBoundingSphere()
+      geos.push(g)
+      bakeBirth(g, baseBirth)
+      const m = new THREE.Mesh(g, mats.detail)
+      m.position.set(r.x, r.y, r.z)
+      m.castShadow = true
+      m.receiveShadow = true
+      group.add(m)
+      spinners.push({ mesh: m, axis: r.axis, rate: r.rate })
+      if (r.rec) (r.rec.rotors ??= []).push(m)
+    }
+
+    group.updateMatrixWorld(true)
+    group.traverse((o) => {
+      o.matrixAutoUpdate = false
+    })
+    // ...all but what turns, which also opts out of the scene's own freeze
+    for (const sp of spinners) {
+      sp.mesh.matrixAutoUpdate = true
+      sp.mesh.userData.dynamic = true
+    }
+    // door ids are position-stable across rebuilds, so the session's open/shut
+    // state survives a tier change or a ring exit and return
+    doors.forEach((d, i) => {
+      d.id = `${cx},${cz}:${i}`
+    })
+    complete = true
+    return { cx, cz, tier, group, geos, boxes, lamps, interiors, doors, smash, structures, spinners }
+  } finally {
+    if (!complete) for (const g of geos) g.dispose()
+  }
+}
+
+/** Synchronous entry for covered boot, collision backstops and offline probes. */
 export const buildChunk = (
   cx: number, cz: number, tier: Tier, mats: ChunkMats, fade?: ChunkFade,
 ): Chunk => {
-  const group = new THREE.Group()
-  const geos: THREE.BufferGeometry[] = []
-  const boxes: Solid[] = []
-  const lamps: Array<{ x: number; y: number; z: number }> = []
-
-  // birth stamps per slice: the base (ground, water, roads, buildings, glass)
-  // fades only on a brand-new chunk, flora only when the old tier had none,
-  // and cover — which only 'full' builds — is new whenever anything fades
-  const at = fade?.at ?? PREBORN
-  const baseBirth = fade?.from === undefined ? at : PREBORN
-  const floraBirth = fade?.from !== 'flora' ? at : PREBORN
-
-  const ground = buildGround(cx, cz)
-  if (ground.geo) {
-    geos.push(ground.geo)
-    bakeBirth(ground.geo, baseBirth)
-    const m = new THREE.Mesh(ground.geo, mats.ground)
-    m.receiveShadow = true
-    group.add(m)
+  const steps = buildChunkSteps(cx, cz, tier, mats, fade)
+  for (;;) {
+    const step = steps.next()
+    if (step.done) return step.value
   }
-
-  if (ground.wet) {
-    // subdivided, and each vertex carries how deep the water is under it.
-    // That one baked attribute is what buys a shoreline: the material fades
-    // to clear and foams where the depth goes to nothing, instead of ending
-    // in the hard straight line a flat quad would draw across the beach
-    const n = 8
-    const g = new THREE.PlaneGeometry(CHUNK, CHUNK, n, n)
-    g.rotateX(-Math.PI / 2)
-    g.translate(originX(cx) + CHUNK / 2, SEA_Y, originZ(cz) + CHUNK / 2)
-    const wp = g.getAttribute('position')
-    const depth = new Float32Array(wp.count)
-    for (let i = 0; i < wp.count; i++) {
-      depth[i] = SEA_Y - terrainY(wp.getX(i), wp.getZ(i))
-    }
-    g.setAttribute('aDepth', new THREE.BufferAttribute(depth, 1))
-    bakeBirth(g, baseBirth)
-    geos.push(g)
-    const m = new THREE.Mesh(g, mats.water)
-    m.renderOrder = 1
-    group.add(m)
-  }
-
-  const detail = createMeshBuilder()
-  const glass = createMeshBuilder()
-  const leaves = createMeshBuilder(true)
-  const interiors: InteriorRect[] = []
-  const doors: ShopDoorSpec[] = []
-  const props: Smashable[] = []
-  const structures: StructureRec[] = []
-  const rotors: RotorSpec[] = []
-  rotorsMade = rotors
-  const out: BuildOut = {
-    solid: detail, glass, boxes, lamps, interiors, doors, smash: props, structures,
-    detailed: tier !== 'bare',
-    rotor: (x, y, z, ax, ay, az, rate) => {
-      const b = createMeshBuilder()
-      rotors.push({ b, x, y, z, axis: new THREE.Vector3(ax, ay, az).normalize(), rate })
-      return b
-    },
-  }
-
-  const poles = buildRoads(cx, cz, detail, glass, out.detailed, props, lamps)
-  const neighbours = buildBlock(cx, cz, out, ground, leaves, makeLayer(cx, cz, detail))
-  buildLandmarks(cx, cz, out)
-  // everything in `boxes` at this point is a building — the roads register
-  // theirs separately and the scatter has not run yet — so this is the
-  // footprint list the scatterer needs to keep trees out of people's living
-  // rooms. The lamp posts join afterwards: they collide, but clearing three
-  // units of flora around each one would leave a bald ring down every verge
-  const built = boxes.slice()
-  // ...plus the buildings next door whose footprints reach into this chunk
-  for (const b of neighbours) built.push(b)
-  // ...and an enterable interior is a footprint with no box over most of it
-  // (its walls register individually so the doorway stays open), so it joins
-  // the scatter's keep-out list as a phantom: never collided with, only read
-  // for its x/z extents here
-  for (const r of interiors) {
-    built.push(new THREE.Box3(
-      new THREE.Vector3(r.minX, 0, r.minZ), new THREE.Vector3(r.maxX, 0, r.maxZ),
-    ))
-  }
-  // ...and a landmark clears its whole graded pad, not just the boxes it
-  // registered. A ring of standing stones is nine thin solids with the site
-  // wide open between them, and a forest growing up through the middle of it
-  // is the difference between a monument and a clearing that happens to have
-  // rocks in it. Same phantom trick as an interior: never collided with, read
-  // only for its extents. It is asked of every landmark whose pad could reach
-  // this chunk, not only the one standing in it: a pad runs a good way past
-  // its footprint, and the chunk next door used to grow a broadleaf up
-  // through the edge of the ring
-  const pads = new Set<Landmark>()
-  const lx0 = originX(cx)
-  const lz0 = originZ(cz)
-  for (const [px, pz] of [[lx0, lz0], [lx0 + CHUNK, lz0], [lx0, lz0 + CHUNK], [lx0 + CHUNK, lz0 + CHUNK]]) {
-    const l = landmarkAt(px, pz)
-    if (l) pads.add(l)
-  }
-  for (const l of pads) {
-    const r = Math.max(l.r, l.pad)
-    built.push(new THREE.Box3(
-      new THREE.Vector3(l.x - r, 0, l.z - r), new THREE.Vector3(l.x + r, 0, l.z + r),
-    ))
-  }
-  for (const p of poles) boxes.push(p)
-  // the builders' vertex counts, snapshotted between passes, are what turn
-  // one merged soup into separately-born slices for the fade attribute
-  const dFlora = detail.count
-  const lFlora = leaves.count
-  if (tier !== 'bare') scatter(cx, cz, ground, built, detail, leaves, boxes, props, false)
-  const dCover = detail.count
-  const lCover = leaves.count
-  if (tier === 'full') scatter(cx, cz, ground, built, detail, leaves, null, null, true)
-
-  /** base up to `m1`, flora up to `m2`, cover after — each at its own birth */
-  const slicedBirth = (g: THREE.BufferGeometry, m1: number, m2: number) => {
-    const a = new Float32Array(g.getAttribute('position').count)
-    a.fill(baseBirth, 0, m1)
-    a.fill(floraBirth, m1, m2)
-    a.fill(at, m2)
-    g.setAttribute('aBirth', new THREE.BufferAttribute(a, 1))
-  }
-
-  const smash: SmashSet = { key: `${cx},${cz}`, meshes: {}, props, structures, boxes, geos }
-  const dg = detail.build()
-  if (dg) {
-    geos.push(dg)
-    slicedBirth(dg, dFlora, dCover)
-    const dm = new THREE.Mesh(dg, mats.detail)
-    dm.castShadow = true
-    dm.receiveShadow = true
-    group.add(dm)
-    smash.meshes.detail = dm
-  }
-  const lg = leaves.build()
-  if (lg) {
-    geos.push(lg)
-    slicedBirth(lg, lFlora, lCover)
-    const lm = new THREE.Mesh(lg, mats.leaf)
-    lm.castShadow = true
-    lm.receiveShadow = true
-    // the depth pass must respect the leaf alpha or every crown casts the
-    // shadow of a solid card deck
-    lm.customDepthMaterial = mats.leafDepth
-    group.add(lm)
-    smash.meshes.leaf = lm
-  }
-  const gg = glass.build()
-  if (gg) {
-    geos.push(gg)
-    bakeBirth(gg, baseBirth)
-    const m = new THREE.Mesh(gg, mats.glass)
-    m.renderOrder = 2
-    group.add(m)
-    smash.meshes.glass = m
-  }
-
-  rotorsMade = null
-  const spinners: Spinner[] = []
-  for (const r of rotors) {
-    const g = r.b.build()
-    if (!g) continue
-    // re-based on its pivot, so the mesh turns about its own origin
-    g.translate(-r.x, -r.y, -r.z)
-    g.computeBoundingSphere()
-    geos.push(g)
-    bakeBirth(g, baseBirth)
-    const m = new THREE.Mesh(g, mats.detail)
-    m.position.set(r.x, r.y, r.z)
-    m.castShadow = true
-    m.receiveShadow = true
-    group.add(m)
-    spinners.push({ mesh: m, axis: r.axis, rate: r.rate })
-    if (r.rec) (r.rec.rotors ??= []).push(m)
-  }
-
-  group.updateMatrixWorld(true)
-  group.traverse((o) => {
-    o.matrixAutoUpdate = false
-  })
-  // ...all but what turns, which also opts out of the scene's own freeze
-  for (const sp of spinners) {
-    sp.mesh.matrixAutoUpdate = true
-    sp.mesh.userData.dynamic = true
-  }
-  // door ids are position-stable across rebuilds, so the session's open/shut
-  // state survives a tier change or a ring exit and return
-  doors.forEach((d, i) => {
-    d.id = `${cx},${cz}:${i}`
-  })
-  return { cx, cz, tier, group, geos, boxes, lamps, interiors, doors, smash, structures, spinners }
 }
 
 /**

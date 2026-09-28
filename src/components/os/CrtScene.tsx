@@ -33,7 +33,7 @@ import { facingOf } from '../../game/levels/fittings'
 import { buildHouseTv, type TvHandles } from './houseTv'
 import { resetPcAudio, setPcListenerDistance } from './pcAudio'
 import { createRoamInput } from '../../game/core/input'
-import { blockedAt, makeCollisionSet, supportY } from '../../game/physics/collision'
+import { blockedAt, makeCollisionSet, supportY, syncCollisionSet } from '../../game/physics/collision'
 import { createCollisionDebug } from '../../game/physics/collisionDebug'
 import { createDisposer } from '../../game/core/disposer'
 import { footstep, landThump, spawnPop } from '../../game/core/sfx'
@@ -259,6 +259,9 @@ const sitVerb = (label: string | null) => (label ? `sit on ${label}` : null)
     deadline, in ms. See walkTick: without it, a cap set to the panel's own
     rate halves it, because half the frames land a few microseconds short */
 const FRAME_SLOP = 2
+/** Keep the shared world ticking at twice its 15 Hz pose cadence while the
+    menu covers it, without spending the player's full render budget. */
+const PAUSED_FPS = 30
 /** the four colours the character screen edits. Kept beside the prefs and
     apart from them: prefs are how you *see* the world, a look is how the
     world sees you, and only one of the two travels */
@@ -2209,6 +2212,13 @@ export default function CrtScene({
         const setPauseNow = (on: boolean) => {
           if (pausedNow === on) return
           pausedNow = on
+          // The new cap takes effect on the next rAF, including an immediate
+          // resume. Paused intervals must not carry into the live resolution
+          // governor and make it mistake an intentional wait for GPU strain.
+          nextFrame = 0
+          lastT = performance.now()
+          emaMs = 16
+          prWait = 1.5
           // an engine is the first sound in this project that does not stop by
           // itself, so the menu has to say so — a paused world that is still
           // idling underneath reads as the game having hung
@@ -3419,6 +3429,7 @@ export default function CrtScene({
           if (!v) return
           const driver = fleet.seat === SEAT_DRIVER
           const level = levels.current
+          syncCollisionSet(level.collision)
           // the cut state machine still has to run — but no seam may fire at
           // the wheel, except in a spacecraft: the ship is how you get to
           // the Moon, and onSeamless carries it (and us) across the seam
@@ -3470,6 +3481,7 @@ export default function CrtScene({
             if (sbf.moving && level.outdoors) followSunShadow(v.root.position, now)
           }
           level.update(dt, camera.position)
+          syncCollisionSet(level.collision)
           // the machine is now the moving caster, and `step.moved` — which
           // gates the whole hand-baked shadow regime — comes from a walk
           // controller that is not running. The fleet reports its own
@@ -3573,7 +3585,10 @@ export default function CrtScene({
             a card that cannot hold the cap anyway — it is resynced to now
             rather than left to bank credit and spend it as a burst.
           */
-          const cap = prefsRef.current.cap
+          const requestedCap = prefsRef.current.cap
+          const cap = pausedNow
+            ? Math.min(requestedCap || PAUSED_FPS, PAUSED_FPS)
+            : requestedCap
           const interval = cap > 0 ? 1000 / cap : 0
           if (interval > 0) {
             if (now < nextFrame - FRAME_SLOP) {
@@ -3688,6 +3703,7 @@ export default function CrtScene({
           seamPt.set(camera.position.x, walk.feetY, camera.position.z)
           levels.tick(now, seamPt, fps)
           const level = levels.current
+          syncCollisionSet(level.collision)
           if (partSeatRequest) {
             const request = partSeatRequest
             if (performance.now() > request.until || !sandbox?.get(request.id)) partSeatRequest = null
@@ -4114,6 +4130,7 @@ export default function CrtScene({
           // doors easing upstairs, chunks streaming below — whichever side
           // the player is on, both worlds keep their pulse
           level.update(dt, camera.position)
+          syncCollisionSet(level.collision)
           // the player is the only moving shadow caster: re-bake just the
           // lights that can see them, only on frames where they moved (the
           // rig speaks up for motion the walker can't see: ragdoll, springs)

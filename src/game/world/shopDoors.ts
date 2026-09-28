@@ -140,7 +140,8 @@ export function buildShopDoors({ parent, obstacles, sfx, trackDisposable }: Opts
     const cz = spec.z + spec.dz * (spec.leafW / 2)
     const closedMin = new THREE.Vector3(cx - ex, spec.y, cz - ez)
     const closedMax = new THREE.Vector3(cx + ex, spec.y + spec.leafH, cz + ez)
-    const block = noStand(new THREE.Box3(closedMin.clone(), closedMax.clone()))
+    const block: Solid = noStand(new THREE.Box3(closedMin.clone(), closedMax.clone()))
+    block.moving = true
     obstacles.push(block)
 
     const mem = remembered.get(spec.id)

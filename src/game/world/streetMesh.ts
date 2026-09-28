@@ -240,9 +240,9 @@ export type LampFn = (x: number, y: number, z: number, yaw: number, id: string) 
  * Lay every street of every town near this chunk that crosses it. Returns
  * nothing: lamps go out through `lamp`, everything else into `out`.
  */
-export const buildStreets = (
+export function* buildStreetsSteps(
   cx: number, cz: number, out: MeshBuilder, detailed: boolean, lamp: LampFn,
-) => {
+): Generator<void, void, void> {
   const ox = originX(cx)
   const oz = originZ(cz)
   const layer = makeLayer(cx, cz, out)
@@ -261,8 +261,14 @@ export const buildStreets = (
       if (p.bulb) bulbs.push(p)
       else streets.add(p.street)
     }
-    for (const st of streets) layStreet(st, pieces, layer, ox, oz, detailed, lamp, ours)
-    for (const b of bulbs) layBulb(b, pieces, layer, ours)
+    for (const st of streets) {
+      yield
+      layStreet(st, pieces, layer, ox, oz, detailed, lamp, ours)
+    }
+    for (const b of bulbs) {
+      yield
+      layBulb(b, pieces, layer, ours)
+    }
   }
 }
 

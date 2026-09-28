@@ -175,6 +175,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 // headless reports a coarse pointer and reduced motion, and either one boots
 // the flat bezel instead of the 3D scene (see AlejOS.tsx's `fancy`)
 const shim = `(() => {
+  // Observe Escape before the game's capture handler consumes it on resume.
+  window.addEventListener('keydown', (e) => {
+    const S = window.__pauseFrames
+    if (e.code === 'Escape' && S?.awaitingResume) {
+      S.resumeAt = performance.now()
+      S.awaitingResume = false
+    }
+  }, true)
   const real = window.matchMedia.bind(window)
   window.matchMedia = (q) => {
     const fake = (matches) => ({ matches, media: q, onchange: null,
@@ -1900,6 +1908,36 @@ try {
     await stand()
     await look(Number(flag('yaw', Math.PI)), -0.05)
     await sleep(1200)
+    // Count frames that actually submit the game's WebGL work, excluding the
+    // menu's independent wardrobe canvas and rAFs the limiter drops.
+    await evaluate(`(() => {
+      const gl = [...document.querySelectorAll('canvas')]
+        .find((c) => c.width > 64 && c.getContext('webgl2')).getContext('webgl2')
+      const S = window.__pauseFrames = { draws: 0, times: [], resumeAt: null, resumeMs: null }
+      for (const name of ['drawElements', 'drawArrays', 'drawElementsInstanced', 'drawArraysInstanced']) {
+        const real = gl[name].bind(gl)
+        gl[name] = (...args) => { S.draws++; return real(...args) }
+      }
+      const raf = window.requestAnimationFrame.bind(window)
+      window.requestAnimationFrame = (cb) => raf((t) => {
+        const before = S.draws
+        cb(t)
+        if (S.draws !== before) {
+          S.times.push(t)
+          if (S.resumeAt !== null && S.resumeMs === null) S.resumeMs = performance.now() - S.resumeAt
+        }
+      })
+      return true
+    })()`)
+    const frameRate = async () => {
+      await evaluate('window.__pauseFrames.times = []; true')
+      await sleep(2000)
+      return evaluate(`(() => {
+        const ts = window.__pauseFrames.times
+        return ts.length > 1 ? (ts.length - 1) * 1000 / (ts.at(-1) - ts[0]) : 0
+      })()`)
+    }
+    const liveFps = await frameRate()
     await evaluate(`(() => {
       window.__pauseLinks = 0
       for (const c of document.querySelectorAll('canvas')) {
@@ -1915,6 +1953,10 @@ try {
     // every snapshot is one frame of the preview's loop, once its body
     // variant has been built in idle time
     await sleep(3500)
+    const pausedFps = await frameRate()
+    if (!(pausedFps > 0 && pausedFps <= 31)) {
+      throw new Error('Paused game must render at most 30 FPS; got ' + pausedFps)
+    }
     await shot('pause-wardrobe')
     const snaps = await evaluate(`[...document.querySelectorAll('button[title]')].length`)
     console.log(`  ${snaps} snapshots on the sheet`)
@@ -1933,8 +1975,19 @@ try {
     await sleep(1500)
     await shot('pause-settings')
     console.log(`  ${await evaluate('window.__pauseLinks')} programs linked on the game's context while paused`)
+    await evaluate('window.__pauseFrames.awaitingResume = true; true')
     await tap('Escape')
     await sleep(400)
+    const resumedFps = await frameRate()
+    if (liveFps > 40 && resumedFps < liveFps * 0.8) {
+      throw new Error('Resume did not restore live frame rate: ' + resumedFps + ' vs ' + liveFps)
+    }
+    const resumeMs = await evaluate('window.__pauseFrames.resumeMs')
+    if (resumeMs === null || resumeMs > Math.max(100, 3000 / liveFps)) {
+      throw new Error('First resumed frame was delayed: ' + resumeMs + ' ms')
+    }
+    console.log(`  render FPS: live ${liveFps.toFixed(1)}, paused ${pausedFps.toFixed(1)}, resumed ${resumedFps.toFixed(1)}`)
+    console.log(`  first resumed frame: ${resumeMs.toFixed(1)} ms after Escape`)
   }
 
   if (WHAT.includes('portal') || WHAT.includes('portalmoon') || WHAT.includes('portalhouse')) {

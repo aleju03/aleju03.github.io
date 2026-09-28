@@ -883,7 +883,8 @@ export function buildHouse(opts: BuildOpts): HouseHandles {
       : new THREE.Vector3(u1 + WALL_SHOULDER, lv + CEIL_H, at + 0.4)
     // a shut door reaches the ceiling like the wall it stands in: same deal,
     // its top is not a ledge (and it collapses to a point when it opens)
-    const block = noStand(new THREE.Box3(closedMin.clone(), closedMax.clone()))
+    const block: Solid = noStand(new THREE.Box3(closedMin.clone(), closedMax.clone()))
+    block.moving = true
     obstacles.push(block)
     doors.push({
       pivot, axis, at, dir, ...center, y: lv, swing, opens: o.opens,

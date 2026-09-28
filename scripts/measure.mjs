@@ -4,6 +4,9 @@
 
     node scripts/measure.mjs kits          every prop kit: verts, cards, bounds
     node scripts/measure.mjs chunks        build cost and vertex budget
+    node scripts/measure.mjs streaming     sliced chunk parity, cancellation and build cost
+    node scripts/measure.mjs collision     collision grid parity and query cost
+    node scripts/measure.mjs pedestrians   crowd animation cadence and CPU cost
     node scripts/measure.mjs landmarks     site density and the kind mix
     node scripts/measure.mjs smoke         build a few thousand chunks, catch throws
     node scripts/measure.mjs far           the far field: build cost per slice
@@ -195,11 +198,15 @@ if (bad) process.exitCode = 1
 `,
 }
 
+const FILE_REPORTS = [
+  'physics', 'console', 'fracture', 'bodies', 'body', 'seats', 'prop-sync',
+  'world-effects', 'streaming', 'pedestrians', 'collision',
+]
 const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
 // the sandbox's report lives in its own file (it is long, and it imports the
 // sandbox, which nothing else here needs); `physics <section>` runs one part
-if (what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies' || what === 'body' || what === 'seats' || what === 'prop-sync' || what === 'world-effects') {
+if (FILE_REPORTS.includes(what)) {
   body = readFileSync(join(ROOT, 'scripts', 'measure', `${what}.js`), 'utf8')
     .replace(/'\.\.\/\.\.\/src\//g, `'${ROOT}/src/`)
     .replace(/'\.\.\/\.\.\/server\//g, `'${ROOT}/server/`)
@@ -209,7 +216,7 @@ if (what === 'eval') {
   body = readFileSync(resolve(arg), 'utf8')
 }
 if (!body) {
-  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|physics [section]|console|eval <file>>`)
+  console.error(`usage: node scripts/measure.mjs <${[...Object.keys(REPORTS), ...FILE_REPORTS].join('|')} [section]|eval <file>>`)
   console.error('\nan `eval` file is plain JS with the whole world already imported:')
   console.error('  buildChunk tierFor kitsFor VARIANTS SNAP BIOMES classify')
   console.error('  landmarkIn landmarkAt LANDMARK_CELL placeAt roadAt')
@@ -233,6 +240,6 @@ const build = spawnSync('npx', [
   `--outfile=${out}`, '--log-level=error',
 ], { stdio: 'inherit', cwd: ROOT })
 if (build.status !== 0) process.exit(build.status ?? 1)
-const run = spawnSync(process.execPath, [...(process.env.PROF ? ['--cpu-prof', `--cpu-prof-dir=${process.env.PROF}`] : []), out, ...((what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies' || what === 'body' || what === 'seats' || what === 'prop-sync' || what === 'world-effects') && arg ? [arg] : [])], { stdio: 'inherit' })
+const run = spawnSync(process.execPath, [...(process.env.PROF ? ['--cpu-prof', `--cpu-prof-dir=${process.env.PROF}`] : []), out, ...((FILE_REPORTS.includes(what)) && arg ? [arg] : [])], { stdio: 'inherit' })
 rmSync(stage, { recursive: true, force: true })
 process.exit(run.status ?? 0)

@@ -1,11 +1,11 @@
 import * as THREE from 'three'
-import type { Solid } from '../physics/collision'
+import { invalidateCollisionBoxes, type Solid } from '../physics/collision'
 import { CHUNK, chunkX, chunkZ, OFF_Z, originX, originZ } from './grid'
 import {
-  buildChunk, spin, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Spinner, type Tier,
+  buildChunk, buildChunkSteps, spin, tierFor, type Chunk, type ChunkFade, type ChunkMats, type Spinner, type Tier,
 } from './chunk'
 import { applyGroundLook, groundLookUniforms } from './groundLook'
-import { applyFadeIn, FADE_FRAG_ALPHA, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead } from './fade'
+import { applyFadeIn, FADE_FRAG_ALPHA, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead, PREBORN } from './fade'
 import { registerInteriors, unregisterInteriors } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
 import { SEA_Y, terrainY } from './terrain'
@@ -544,19 +544,17 @@ export function buildWorld(opts: Opts): WorldHandles {
   let curZ = Number.POSITIVE_INFINITY
   /** the live ring radius; the altitude ramp swaps it (see RADIUS_HIGH) */
   let radius = RADIUS
-  /** a running average of what one chunk costs to build, so the drain can stop
-      *before* it blows the frame rather than after. Testing the clock only on
-      the way in lets a single 27 ms jungle chunk through whatever the budget
-      says, and that one chunk is the hitch.
-
-      Kept per tier, because one average over all three is an average of things
-      that are not alike: a `bare` ocean chunk is ground and nothing else, a
-      `full` one in the middle of town carries every building, tree and fence
-      in its block. A single EMA blends them into a number that is wrong for
-      both: pessimistic enough to stop after one cheap chunk, optimistic
-      enough to start a second expensive one. The seeds are the measured shape
-      (bare cheap, full several times that); two crossings correct them. */
-  const chunkMs: Record<Tier, number> = { bare: 1.5, flora: 4, full: 6 }
+  // Only one unpublished chunk is retained. It owns its partial geometries,
+  // and can be cancelled when travel makes its coordinates/tier irrelevant.
+  let building: {
+    cx: number; cz: number; tier: Tier
+    steps: Generator<void, Chunk, void>
+    fade?: ChunkFade
+  } | null = null
+  const cancelBuild = () => {
+    building?.steps.return(undefined as never)
+    building = null
+  }
 
   const key = (cx: number, cz: number) => `${cx},${cz}`
 
@@ -598,8 +596,8 @@ export function buildWorld(opts: Opts): WorldHandles {
     unregisterInteriors(key(c.cx, c.cz))
   }
 
-  const make = (cx: number, cz: number, tier: Tier, fade?: ChunkFade) => {
-    const c = buildChunk(cx, cz, tier, mats, fade)
+  const publish = (c: Chunk, fade?: ChunkFade) => {
+    const { cx, cz } = c
     c.group.visible = chunksOn
     root.add(c.group)
     chunks.set(key(cx, cz), c)
@@ -617,6 +615,14 @@ export function buildWorld(opts: Opts): WorldHandles {
     onChunk?.(c)
     return c
   }
+
+  const make = (cx: number, cz: number, tier: Tier) => publish(buildChunk(cx, cz, tier, mats))
+
+  trackDisposable({ dispose: () => {
+    cancelBuild()
+    for (const g of freeing) g.dispose()
+    freeing.length = 0
+  } })
 
   /** re-shelve the collision set: authored boxes, then the near ring's —
       and report the same ring's hinged doors, whose collision is live too */
@@ -639,6 +645,7 @@ export function buildWorld(opts: Opts): WorldHandles {
         }
       }
     onNearDoors?.(doors)
+    invalidateCollisionBoxes(obstacles)
   }
 
   /**
@@ -675,6 +682,13 @@ export function buildWorld(opts: Opts): WorldHandles {
         const cz = pcz + dz
         want.set(key(cx, cz), { cx, cz, tier: tierFor(d), d, retier: false })
       }
+    if (building) {
+      const next = want.get(key(building.cx, building.cz))
+      const have = chunks.has(key(building.cx, building.cz))
+      if (!next || next.tier !== building.tier || next.d <= syncRadius || (!have && next.d <= SOLID_RADIUS)) {
+        cancelBuild()
+      }
+    }
     for (const c of [...chunks.values()]) {
       const w = want.get(key(c.cx, c.cz))
       if (!w) {
@@ -687,6 +701,7 @@ export function buildWorld(opts: Opts): WorldHandles {
     for (const w of want.values()) {
       const have = chunks.get(key(w.cx, w.cz))
       if (have && !w.retier) continue
+      if (building && building.cx === w.cx && building.cz === w.cz) continue
       // a hole in the floor with nothing solid in it is never acceptable, and
       // neither is a priming pass that leaves one; everything else waits
       if (w.d <= syncRadius || (!have && w.d <= SOLID_RADIUS)) {
@@ -789,9 +804,9 @@ export function buildWorld(opts: Opts): WorldHandles {
     }
     freeSome()
     let drained = 0
-    if (queue.length) {
-      // the budget rides the player's speed, and the drain stops when the
-      // *next* chunk would not fit rather than when the last one already didn't
+    if (queue.length || building) {
+      // The budget rides the player's speed; each small construction step
+      // returns control so the deadline also applies within a single chunk.
       const budget = BUDGET_MS + (BUDGET_MAX - BUDGET_MS) * Math.min(1, speed / BUDGET_SPEED)
       const d0 = performance.now()
       drain(budget)
@@ -806,69 +821,56 @@ export function buildWorld(opts: Opts): WorldHandles {
     // left of the stretched budget, never on top of it
     far.work(alt > 12
       ? Math.max(FAR_MS_GROUND, Math.min(FAR_MS_AIR, BUDGET_MAX - drained))
-      : queue.length ? 0 : FAR_MS_GROUND)
+      : (queue.length || building) ? 0 : FAR_MS_GROUND)
   }
 
   const TIER_RANK: Record<Tier, number> = { bare: 0, flora: 1, full: 2 }
 
-  /** take chunks off the queue until `budget` milliseconds are spent.
-      `announce` stamps what gets built with a fresh birth so it dissolves in
-      (world/fade.ts); a priming pass under the boot cover passes false, so the
-      lens never opens onto a world still materialising */
+  /** Build until the deadline, leaving unfinished work private. Geometry,
+      doors, interiors and collision all swap together only on completion. */
   const drain = (budget: number, announce = true) => {
-    const t0 = performance.now()
-    let built = 0
-    for (;;) {
-      const w = queue[0]
-      if (!w) break
-      /*
-        One chunk a frame is a floor, not an accident, and it is worth saying
-        so because the code used to express it by accident: the old guard was
-        `spent > 0 && ...`, which skipped the check on the first pass because
-        the clock had not moved yet. That worked, but it leaned on
-        `performance.now()` being coarse: a chunk built inside the timer's
-        resolution left `spent` at zero and the loop ran on, so the same line
-        could either apply the budget or ignore it depending on how the page
-        was isolated.
-
-        Say it directly instead. A chunk cannot be built in slices, and the
-        average one costs more than BUDGET_MS on its own, so applying the
-        budget to the first candidate too would leave the queue permanently
-        full and the front edge of the world permanently open inside the fog,
-        the one thing the fog exists to hide. What the budget governs is
-        everything after the first.
-
-        The real cap on a single chunk needs the build split into resumable
-        passes (ground, roads, buildings, flora, merge) so it can be stopped
-        partway. That is the same restructuring the worker move wants, and it
-        is not free to bolt on here.
-      */
-      if (built > 0 && performance.now() - t0 + chunkMs[w.tier] > budget) break
-      queue.shift()
-      const have = chunks.get(key(w.cx, w.cz))
-      let fade: ChunkFade | undefined
-      if (announce) fade = { at: windUniforms.uTime.value }
-      if (have) {
-        if (have.tier === w.tier) continue
-        // an upgrade dissolves in only what the old tier lacked; a downgrade
-        // only removes, and fading its survivors would blink geometry the
-        // player is already looking at
-        if (fade) {
-          fade = TIER_RANK[w.tier] > TIER_RANK[have.tier]
-            ? { ...fade, from: have.tier } : undefined
+    const deadline = performance.now() + budget
+    do {
+      if (!building) {
+        const w = queue.shift()
+        if (!w) return
+        const have = chunks.get(key(w.cx, w.cz))
+        if (have?.tier === w.tier) continue
+        let fade: ChunkFade | undefined
+        if (announce) {
+          if (!have) fade = { at: windUniforms.uTime.value }
+          else if (TIER_RANK[w.tier] > TIER_RANK[have.tier]) {
+            fade = { at: windUniforms.uTime.value, from: have.tier }
+          }
         }
-        drop(have)
+        building = { ...w, steps: buildChunkSteps(w.cx, w.cz, w.tier, mats, fade), fade }
       }
-      const c0 = performance.now()
-      make(w.cx, w.cz, w.tier, fade)
-      chunkMs[w.tier] = chunkMs[w.tier] * 0.8 + (performance.now() - c0) * 0.2
-      built += 1
-      // a chunk arriving inside the collision radius changed the boxes under
-      // the player's feet, and refreshSolids only runs on a border crossing
-      if (Math.max(Math.abs(w.cx - curX), Math.abs(w.cz - curZ)) <= SOLID_RADIUS) {
-        refreshSolids(curX, curZ)
+      const job = building
+      const step = job.steps.next()
+      if (step.done) {
+        const c = step.value
+        building = null
+        // A slow build must start its dissolve when published, not several
+        // frames earlier when it first entered the queue. Upgrades preserve
+        // the PREBORN vertices belonging to the old visible tier.
+        if (job.fade) {
+          job.fade.at = windUniforms.uTime.value
+          for (const g of c.geos) {
+            const birth = g.getAttribute('aBirth')
+            if (!birth) continue
+            for (let i = 0; i < birth.count; i++) {
+              if (birth.getX(i) !== PREBORN) birth.setX(i, job.fade.at)
+            }
+          }
+        }
+        const have = chunks.get(key(c.cx, c.cz))
+        if (have) drop(have)
+        publish(c, job.fade)
+        if (Math.max(Math.abs(c.cx - curX), Math.abs(c.cz - curZ)) <= SOLID_RADIUS) {
+          refreshSolids(curX, curZ)
+        }
       }
-    }
+    } while (performance.now() < deadline)
   }
 
   const prime = (x: number, z: number, ms = 0) => {
@@ -910,7 +912,7 @@ export function buildWorld(opts: Opts): WorldHandles {
     prime,
     splash: pushSplash,
     get pending() {
-      return queue.length
+      return queue.length + (building ? 1 : 0)
     },
     solidsIn: (cx, cz) => chunks.get(key(cx, cz))?.boxes ?? null,
     farReach: (x, z) => (far.visible ? far.reach(x, z) : 0),

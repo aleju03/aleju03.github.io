@@ -2031,6 +2031,16 @@ every one of them has a failure you can see in a harness shot.
   `userData.dynamic`.
 - Merge/instance geometry per chunk. Finish model-dependent shader variants
   under the boot cover; time-box later chunk streaming per frame.
+  `buildChunkSteps` yields between terrain rows, streets, parcels, scatter
+  batches and mesh merges. Unfinished chunks remain private, old tiers stay
+  live until replacement, and cancellation releases partial geometry. Boot
+  priming and missing collision ground retain the synchronous wrapper. A cold
+  town plan or one large building can still exceed a slice's budget.
+- Pause caps the shared world at 30 FPS and restores the selected cap on the
+  first resumed frame. Networking and the menu remain live.
+- Pedestrian movement stays at the simulation rate. Bone animation is full
+  rate nearby, 30 Hz beyond 32 units and 20 Hz beyond 80; interactions refresh
+  a pending pose and ragdolls/staggers always keep the full rate.
 - An instanced pool that follows the camera must still be cullable: tile it
   (grass.ts) and keep hidden slots out of the draw rather than scaled to
   zero, because a zero-scale instance still runs its whole vertex shader.
@@ -2043,11 +2053,12 @@ every one of them has a failure you can see in a harness shot.
 
 ## Known debts (grow into these when a feature demands them)
 
-- Collision is a linear Box3 scan. It is height-aware now (a box argues only
-  where it overlaps the body, and `supportY` reports the tallest top under an
-  x/z), but it is still one flat list walked per query, twice per walk tick
-  plus once per foot. The upgrade is a spatial hash, or a physics lib, inside
-  `resolveXZ`/`supportY` behind the same CollisionSet contract.
+- Collision point queries use a spatial grid on large active level sets;
+  small sets and raw volume sweeps stay linear. `syncCollisionSet` reconciles
+  direct static mutations at frame boundaries, while door blockers marked
+  `moving` and hulls are tested live. Owners replacing a ring mid-frame call
+  `invalidateCollisionBoxes`, even when its length does not change. Preserve
+  box order: pushing through overlapping walls is a sequential operation.
 - An AABB is a coarse stand-in, so any solid whose box top is taller than the
   thing it wraps registers with `noStand()` (walls, fences, lamp poles, tree
   canopies, house eaves, wardrobes, lampshades). Miss one and the furniture
@@ -2092,3 +2103,16 @@ surface fits and keyboard-driven walking and double jumping. It also checks
 that remote portal materials do not link new shader programs. The cloud is
 an ephemeral `world-air-hop` event, shown two ticks late with the avatar;
 portal pairs are snapshotted, but old clouds are never replayed.
+
+### Runtime performance regression checks
+
+`npm run measure -- streaming` checks frozen geometry/collision fingerprints,
+interleaved builds, rotor ownership, cancellation and construction-step costs.
+`node scripts/streaming-drive.mjs` exercises the actual streamer in Chrome:
+partial chunks stay private, upgrades swap geometry and collision together,
+fades begin at publication, and teleports cancel stale builds.
+`npm run measure -- collision` compares spatial queries with the linear path,
+including mutable doors, moving hulls, ordered pushes and replaced arrays.
+`npm run measure -- pedestrians` checks animation cadence, movement parity,
+contact/grab wake-up and crowd CPU cost. `npm run drive -- pause --cap 0`
+checks rendered pause/resume rates and first-frame latency in the real game.

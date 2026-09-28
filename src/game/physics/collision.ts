@@ -52,41 +52,18 @@ import * as THREE from 'three'
   standing a hand's width above every surface they climb onto, and downward
   would sink a box's underside below the floor it rests on.
 
-  When the world grows past a few hundred boxes, the upgrade path is inside
-  resolveXZ/supportY: swap the linear scan for a spatial hash over the same
-  CollisionSet contract (or graduate to a real physics lib) without touching
-  any caller.
+  Large sets use a spatial grid for these point queries. The scene calls
+  syncCollisionSet before simulation and after level.update to reconcile the
+  plain, shared box array (including same-length replacement). Doors declare
+  `moving`, and hulls are always live: their bounds can change between two
+  queries in the same physics tick. Static boxes are checked once at that
+  boundary rather than by every foot, camera and body query. Small sets and
+  callers that never opt in with syncCollisionSet retain the linear scan.
 
-  That is still the right shape, and it is worth writing down what makes it
-  more than an afternoon, because the hard part is not the grid.
+  Candidate indices retain the array's order. A push across a cell boundary
+  fetches that cell's remaining candidates, so a chain of overlapping walls
+  resolves exactly as it did in the original scan, even across several cells.
 
-  `boxes` is a plain array that many owners mutate *in place*, with no
-  notification and no frame boundary: `fitHull` rewrites all six numbers of
-  every vehicle box each tick, the registry empties whichever one is being
-  driven, house and shop doors collapse a blocker to a point and set it back
-  when they close, debris empties one when it is knocked down, and the chunk
-  streamer's `refreshSolids` filters the whole array and re-pushes on every
-  border crossing. An index built over that goes stale silently, and a stale
-  broad phase is not a slow frame, it is a player walking through a wall.
-
-  Three properties make the difference and are worth designing to:
-   - Shrinking is free. A door or a debris box that gets smaller is still
-     inside the cells it was indexed into, so the index merely over-reports a
-     candidate and the existing per-box test rejects it. Only *growth* and
-     *movement* can be missed.
-   - The movers identify themselves. A box that moves carries a `hull`, which
-     is what a hull is for, so vehicles can stay in a short linear tail that every
-     query scans, and never enter the grid at all.
-   - Doors are the remaining case: they grow back to a `closedMin/closedMax`
-     that is fixed at construction, so indexing that envelope rather than the
-     live extent keeps them honest for free.
-
-  What is still needed is one explicit per-frame resync (the natural site is
-  `Level.update`, which CrtScene already calls exactly once a frame from both
-  the walk and drive ticks) plus a rebuild whenever the array's length changes.
-  Get the ordering wrong against the fleet tick and the bug is a one-frame
-  clip through a moving car, which is exactly the kind of thing that needs
-  driving to find rather than reading.
 */
 
 /** hard outer clamp, pre-shrunk by whatever shoulder margin the level wants */
@@ -126,6 +103,8 @@ export interface Solid extends THREE.Box3 {
       has gone through or stepped away */
   through?: boolean
   hull?: Hull
+  /** bounds may change between queries; doors and other non-hull movers */
+  moving?: boolean
   breaks?: Breakable
   ramp?: Ramp
 }
@@ -309,6 +288,145 @@ export const makeCollisionSet = (bounds: WorldBounds, boxes: Solid[] = []): Coll
   bounds,
 })
 
+// A cell is about a room wide. Very large boxes stay in the live list to
+// keep one level-wide slab from allocating thousands of buckets.
+const CELL = 16
+const INDEX_THRESHOLD = 96
+const MAX_CELLS = 256
+interface IndexedBox {
+  box: Solid
+  live: boolean
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+}
+interface CollisionIndex {
+  boxes: Solid[]
+  entries: IndexedBox[]
+  cells: Map<number, Map<number, number[]>>
+  boxCells: Map<number, Map<number, Solid[]>>
+  liveBoxes: Solid[]
+  live: number[]
+  version: number
+}
+const indices = new WeakMap<CollisionSet, CollisionIndex>()
+const versions = new WeakMap<Solid[], number>()
+
+/** A stream/structure owner replaced solids mid-tick. Existing queries rebuild
+    lazily before using that array again, even if its length stayed equal. */
+export const invalidateCollisionBoxes = (boxes: Solid[]) => {
+  versions.set(boxes, (versions.get(boxes) ?? 0) + 1)
+}
+
+const liveBox = (b: Solid) => !!(b.hull || b.moving)
+
+/** Opt a set into the grid and reconcile direct array/bounds mutations.
+    Call before simulation and after level.update. Movers need no resync:
+    mark doors `moving`, and fitHull supplies the vehicle marker. Static
+    edits made elsewhere must call this before their next collision query.
+    Comparing identities as well as length catches a streamed ring replacing
+    N boxes with N different boxes. Y/flags stay live in the narrow phase. */
+export const syncCollisionSet = (set: CollisionSet) => {
+  const boxes = set.boxes
+  if (boxes.length < INDEX_THRESHOLD) {
+    indices.delete(set)
+    return
+  }
+  const old = indices.get(set)
+  const version = versions.get(boxes) ?? 0
+  if (old && old.boxes === boxes && old.entries.length === boxes.length && old.version === version) {
+    let same = true
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i]
+      const e = old.entries[i]
+      if (e.box !== b || e.live !== liveBox(b) || (!e.live && (
+        e.minX !== b.min.x || e.maxX !== b.max.x ||
+        e.minZ !== b.min.z || e.maxZ !== b.max.z
+      ))) {
+        same = false
+        break
+      }
+    }
+    if (same) return
+  }
+  const index: CollisionIndex = { boxes, entries: [], cells: new Map(), boxCells: new Map(), liveBoxes: [], live: [], version }
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i]
+    const live = liveBox(b)
+    index.entries.push({ box: b, live, minX: b.min.x, maxX: b.max.x, minZ: b.min.z, maxZ: b.max.z })
+    const x0 = Math.floor(b.min.x / CELL)
+    const x1 = Math.floor(b.max.x / CELL)
+    const z0 = Math.floor(b.min.z / CELL)
+    const z1 = Math.floor(b.max.z / CELL)
+    if (live || !Number.isFinite(x0 + x1 + z0 + z1) ||
+      (x1 - x0 + 1) * (z1 - z0 + 1) > MAX_CELLS) {
+      index.live.push(i)
+      continue
+    }
+    for (let x = x0; x <= x1; x++) {
+      let column = index.cells.get(x)
+      if (!column) index.cells.set(x, column = new Map())
+      for (let z = z0; z <= z1; z++) {
+        let cell = column.get(z)
+        if (!cell) column.set(z, cell = [])
+        cell.push(i)
+      }
+    }
+  }
+  // Merge the short live tail once per cell, keeping the original order.
+  // Queries then iterate ordinary arrays; mixing generator and array
+  // iterators in the hot narrow-phase loop deoptimizes even small sets.
+  if (index.live.length) for (const column of index.cells.values()) {
+    for (const [z, cell] of column) {
+      const merged: number[] = []
+      let a = 0
+      let b = 0
+      while (a < cell.length || b < index.live.length) {
+        merged.push(b >= index.live.length || (a < cell.length && cell[a] < index.live[b])
+          ? cell[a++] : index.live[b++])
+      }
+      column.set(z, merged)
+    }
+  }
+  index.liveBoxes = index.live.map(i => boxes[i])
+  for (const [x, column] of index.cells) {
+    const boxColumn = new Map<number, Solid[]>()
+    for (const [z, cell] of column) boxColumn.set(z, cell.map(i => boxes[i]))
+    index.boxCells.set(x, boxColumn)
+  }
+  indices.set(set, index)
+}
+
+/** The first unvisited candidate after changing cells during push-out. */
+const afterIndex = (list: readonly number[], after: number) => {
+  let lo = 0
+  let hi = list.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (list[mid] <= after) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+/** Rebuild an opted-in set after a notified edit or changed array length. */
+const collisionIndex = (set: CollisionSet) => {
+  let index = indices.get(set)
+  if (index && (index.boxes !== set.boxes || index.entries.length !== set.boxes.length ||
+    index.version !== (versions.get(set.boxes) ?? 0))) {
+    syncCollisionSet(set)
+    index = indices.get(set)
+  }
+  return index
+}
+const cellAt = (index: CollisionIndex, cx: number, cz: number) =>
+  index.cells.get(cx)?.get(cz) ?? index.live
+
+const nearbyBoxes = (set: CollisionSet, x: number, z: number): Solid[] => {
+  const index = collisionIndex(set)
+  return index ? index.boxCells.get(Math.floor(x / CELL))?.get(Math.floor(z / CELL)) ?? index.liveBoxes : set.boxes
+}
+
 /** mark a box as blocking-but-not-standable, in place. It has to be in
     place: the backrooms splice chunk boxes back out by identity, and the
     desk strip relies on its position in the obstacle order */
@@ -348,7 +466,7 @@ export const supportY = (
   floorY: number,
 ) => {
   let top = floorY
-  for (const b of set.boxes) {
+  for (const b of nearbyBoxes(set, x, z)) {
     if (b.noStand || b.through || b.max.y <= b.min.y || b.max.y <= top) continue
     // out of reach culls a plain box outright, but a hull's box top is the
     // whole body's highest point — the bonnet under the player's feet can be
@@ -384,7 +502,7 @@ export const surfaceAbove = (
   set: CollisionSet,
 ) => {
   let ceil = -Infinity
-  for (const b of set.boxes) {
+  for (const b of nearbyBoxes(set, x, z)) {
     if (b.hull) continue
     if (x <= b.min.x || x >= b.max.x || z <= b.min.z || z >= b.max.z) continue
     if (b.min.y > footY || topAt(b, x, z) <= footY) continue
@@ -410,7 +528,7 @@ export const blockedAt = (
 ) => {
   if (x < set.bounds.minX || x > set.bounds.maxX) return true
   if (z < set.bounds.minZ || z > set.bounds.maxZ) return true
-  for (const b of set.boxes) {
+  for (const b of nearbyBoxes(set, x, z)) {
     if (b.through) continue
     const walkable = b.noStand ? footY : footY + stepUp
     if (b.max.y <= walkable || b.min.y >= headY) continue
@@ -429,6 +547,73 @@ export const blockedAt = (
     of colliding with — zero in mid-air, where a hop has to clear a surface
     before it may travel over it. */
 export const resolveXZ = (
+  p: THREE.Vector3,
+  set: CollisionSet,
+  footY: number,
+  headY: number,
+  stepUp = 0,
+) => {
+  const index = collisionIndex(set)
+  if (!index) return resolveLinear(p, set, footY, headY, stepUp)
+  p.x = THREE.MathUtils.clamp(p.x, set.bounds.minX, set.bounds.maxX)
+  p.z = THREE.MathUtils.clamp(p.z, set.bounds.minZ, set.bounds.maxZ)
+  let cx = Math.floor(p.x / CELL)
+  let cz = Math.floor(p.z / CELL)
+  let nearby = cellAt(index, cx, cz)
+  let cursor = 0
+  let last = -1
+  for (;;) {
+    // A prior push may enter another cell. Only boxes later in the original
+    // array are eligible, exactly as in the linear one-pass resolver.
+    if (index) {
+      const nx = Math.floor(p.x / CELL)
+      const nz = Math.floor(p.z / CELL)
+      if (nx !== cx || nz !== cz) {
+        cx = nx
+        cz = nz
+        nearby = cellAt(index, cx, cz)
+        cursor = afterIndex(nearby, last)
+      }
+    }
+    if (cursor >= nearby.length) break
+    last = nearby[cursor++]
+    const b = set.boxes[last]
+    // low enough to step onto, or entirely underfoot/overhead: not a wall.
+    // A noStand solid forfeits the step allowance — its top isn't a floor,
+    // so there is nothing to climb onto and it stays a wall to the last
+    // millimetre — but it still stops blocking once the feet clear it,
+    // which is what lets a walk cross a low rail from something taller.
+    if (b.through) continue
+    const walkable = b.noStand ? footY : footY + stepUp
+    if (b.max.y <= walkable || b.min.y >= headY) continue
+    if (!(p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z)) continue
+    if (b.hull) {
+      pushOutHull(p, b.hull, walkable)
+      continue
+    }
+    // a roof slope under the feet (or low enough to step up) is a floor, and
+    // so is one a hand's width over them in mid-air: a hop up the slope has
+    // its feet under the surface ahead for a tick or two, and that is a
+    // landing, not a wall to be thrown off the eaves by
+    if (b.ramp && topAt(b, p.x, p.z) <= Math.max(walkable, footY + RAMP_REACH)) continue
+    const exitL = p.x - b.min.x
+    const exitR = b.max.x - p.x
+    const exitN = p.z - b.min.z
+    const exitF = b.max.z - p.z
+    const m = Math.min(exitL, exitR, exitN, exitF)
+    if (m === exitL) p.x = b.min.x
+    else if (m === exitR) p.x = b.max.x
+    else if (m === exitN) p.z = b.min.z
+    else p.z = b.max.z
+  }
+  // the moving solids last: a prop pushed against a wall is resolved after
+  // the wall, so the player ends up against the prop rather than inside it
+  set.dynamic?.pushOut(p, footY, headY, stepUp)
+}
+
+// Keep the small-set path a plain array loop: adding a per-box grid branch
+// slows those sets down more than their handful of collisions costs.
+const resolveLinear = (
   p: THREE.Vector3,
   set: CollisionSet,
   footY: number,
