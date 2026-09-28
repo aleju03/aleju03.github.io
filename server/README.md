@@ -402,3 +402,40 @@ slab or garage-door site; existing endpoints can continue following their
 surface after the owner crosses. Same-level prop anchors follow the normal
 prop stream. For viewers in the other level, the server derives their world
 frame from the stored prop transform and sends updates only when it changes.
+
+### Weapons
+
+`src/weapons.js` relays the three weapons (`src/game/sandbox/tools/weapons.ts`:
+the pistol, the crossbow and the rocket launcher). Nothing is simulated
+here: the shooter's own client resolves every shot and every hit, and the
+server checks that each one is honest and sends it to the other players in
+the shooter's level. `w` is 0 pistol, 1 crossbow, 2 rocket
+(`WIRE_WEAPONS` in `src/game/net/weaponProtocol.ts`).
+
+- C to S `world-shot {level,w,seq,o,d,len?}`: a shot fired from the eye `o`
+  along the unit `d`; the pistol's carries `len`, how far its ray went, so
+  everybody draws its tracer to the same point. S to C adds `id`. Dropped
+  when the origin is more than 16 units from the shooter's last pose, `d`
+  is not near unit length, the shooter is seated in a machine, or it is past
+  10 pistol / 3 crossbow / 3 rocket shots a second.
+- C to S `world-shot-hit {level,w,seq,at,d?,prop?,fr?,imp?,player?,v?}`:
+  where the shooter decided shot `seq` landed. `prop` is a shared prop id,
+  `fr` a stuck bolt's frame in that prop's space (`[x,y,z,qx,qy,qz,qw]`),
+  `imp` the push (clamped to 2000) that the prop's authority applies.
+  `player` is a player struck and `v` the velocity their own client applies
+  to itself, like a `world-shove` (clamped to 24 u/s); `v` is left off when
+  the victim is seated or flying, and the hit is dropped when the victim is
+  not within 14 units of `at`. S to C adds `id`. Hits must land within the
+  weapon's reach of the shooter (320 / 480 / 460 units) and are limited to
+  14 a second. A rocket's explosion is not in here: it is the ordinary
+  `world-prop-explosion`, the same message the `explode` command sends.
+- C to S `world-wield {w}`: what the sender is holding, `-1` for anything
+  that is not a weapon. Kept on the socket and relayed to the level as
+  `{type:'world-wield',level,id,w}`; a shot also counts as holding that
+  weapon. S to C `world-wields {level,wields:[[id,w],...]}` is the snapshot
+  after joining or changing level, sent only when somebody holds one;
+  walking into a level announces what you hold to it (and `-1` to the
+  level you left).
+
+A malformed number or array is a strike; everything else that fails a check
+is dropped in silence, because shots are a stream.

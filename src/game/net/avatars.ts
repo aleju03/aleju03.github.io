@@ -73,6 +73,10 @@ export interface AvatarEnv {
       Supplied by the scene, which is the only side that knows both the seat
       table and the fleet's scene graph */
   seatOf?: (id: PlayerId) => THREE.Object3D | null
+  /** 1 while this player holds a weapon, so the copy raises both arms onto
+      its aim as the local body does (sandbox/tools/weaponView.ts puts the
+      gun between the hands) */
+  aimOf?: (id: PlayerId) => number
 }
 
 export interface RemoteAvatars {
@@ -517,6 +521,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
         pose.point = player.pointing ? 1 : 0
         pose.pointYaw = player.pointYaw
         pose.pointPitch = player.pointPitch
+        pose.aim = worldEnv.aimOf?.(id) ?? 0
         // (a whole-body one is never restarted under somebody on the move:
         // the copy lets go of it by itself the moment they walk off, a beat
         // before the stream says so)

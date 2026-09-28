@@ -273,6 +273,7 @@ export type WorldServerMessage =
   | import('./effectProtocol').EffectServerMessage
   | import('./propProtocol').PropServerMessage
   | import('./damageProtocol').DamageServerMessage
+  | import('./weaponProtocol').WeaponServerMessage
   | WorldShove
   | WorldBring
   | WorldGrab

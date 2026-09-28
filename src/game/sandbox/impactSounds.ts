@@ -457,6 +457,30 @@ export const igniteSound = (x: number, y: number, z: number, seconds = 0) => {
   }
 }
 
+/* ------------------------------------------------------ the weapons -- */
+
+/**
+ * A voice placed in the world for the weapons (tools/weaponSfx.ts): through
+ * the same bus, distance law and voice budget as the props, so a gunfight
+ * and a chain of barrels share one limiter. Far voices lose their top end
+ * the way a boom does. Null when it would be inaudible or the budget is
+ * spent. `burst` and `mode` are the voices to play into it.
+ */
+export const placedVoice = (key: string, x: number, y: number, z: number, level: number, reach: number): Out | null => {
+  const a = context()
+  if (!a || !bus) return null
+  if (!admit(a, key, level)) return null
+  const pl = place(a, x, y, z, level, reach)
+  if (!pl) return null
+  const lp = a.createBiquadFilter()
+  lp.type = 'lowpass'
+  lp.frequency.value = Math.max(700, 16000 / (1 + pl.d / 10))
+  lp.Q.value = 0.5
+  pl.head.connect(lp).connect(bus)
+  return { a, node: pl.out, at: a.currentTime + pl.d / 800 }
+}
+export { burst, mode, type Out }
+
 /* ---------------------------------------------------------- measuring -- */
 
 /**

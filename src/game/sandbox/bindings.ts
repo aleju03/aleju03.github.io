@@ -62,12 +62,16 @@ export const BINDINGS = {
   chat: ['KeyT', 'Enter', 'NumpadEnter'],
   /** open the console with a `/` already typed */
   command: ['Slash'],
-  /** tool slots (S3): hands, physgun, toolgun, and the portal gun once the
-      catalogue has handed it over */
+  /** tool slots (S3): hands, physgun, toolgun, the portal gun once the
+      catalogue has handed it over, and the weapons: pistol, crossbow and
+      rocket launcher */
   slot1: ['Digit1'],
   slot2: ['Digit2'],
   slot3: ['Digit3'],
   slot4: ['Digit4'],
+  slot5: ['Digit5'],
+  slot6: ['Digit6'],
+  slot7: ['Digit7'],
   /** the physgun (S3). The mouse buttons are codes too: the input service
       puts `Mouse0`/`Mouse2` in the key set while the pointer is locked.
       The wheel is not a key: `RoamInput.takeWheel()` is the physgun's

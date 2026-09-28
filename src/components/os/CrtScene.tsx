@@ -315,6 +315,14 @@ const RIDE_ALONG = { en: 'along for the ride', es: 'de pasajero' }
 const FLEET_PREFIX = 'fleet:'
 /** ...and one that hands you a tool (the portal gun) */
 const TOOL_PREFIX = 'tool:'
+/** the belt's weapons (sandbox/tools/weapons.ts), for the tape and `give` */
+const WEAPON_TOOLS: readonly string[] = ['pistol', 'crossbow', 'rocket']
+type WeaponTool = 'pistol' | 'crossbow' | 'rocket'
+/** what `give` answers to, in both languages, and the slot it draws */
+const GIVE_NAMES: Record<string, number> = {
+  physgun: 1, toolgun: 2, portalgun: 3, pistol: 4, crossbow: 5, rocket: 6,
+  rocketlauncher: 6, rpg: 6, pistola: 4, ballesta: 5, cohete: 6, cohetes: 6, lanzacohetes: 6,
+}
 /** the machines' names in Spanish, for the catalogue's plates */
 const VEHICLE_ES: Record<VehicleId, string> = { car: 'coche', boat: 'lancha', heli: 'helicóptero', ship: 'nave' }
 
@@ -396,6 +404,7 @@ export default function CrtScene({
   const [seated, setSeated] = useState<{ label: string; atTv: boolean; part?: boolean } | null>(null)
   /** the tool gun's readout: its `mode:step` and the keys it is aimed at */
   const [toolLine, setToolLine] = useState<{ state: string; keys: string | null } | null>(null)
+  const [weaponLine, setWeaponLine] = useState<WeaponTool | null>(null)
   /** what the crosshair is on (Crosshair.tsx) */
   const [aim, setAim] = useState<CrosshairAim>('none')
   /** the channel the set is showing, while you are sitting in front of it */
@@ -1451,6 +1460,7 @@ export default function CrtScene({
         let reachPropNow: number | null = null
         let partSeatRequest: { id: number; until: number } | null = null
         let toolLineNow = ''
+        let weaponLineNow: WeaponTool | null = null
         /** props still scaling in from a spawn, and how long that takes */
         const pops: { mesh: THREE.Object3D; t: number }[] = []
         const POP_S = 0.24
@@ -1896,6 +1906,8 @@ export default function CrtScene({
           // anyone sitting in a machine is drawn in it, not at the
           // coordinates their own client is sending
           seatOf: seatFor,
+          // a weapon in their hands raises both arms onto their look
+          aimOf: (id) => (tools?.weapons.wields.has(id) ? 1 : 0),
         }
 
         const pushFeed = (line: Omit<FeedLine, 'key' | 'at'>) =>
@@ -1908,6 +1920,21 @@ export default function CrtScene({
               : { tone: 'chat', text: line.text, name: line.name, admin: line.admin, mine: line.mine },
           )
 
+        /** somebody bumped or shot us: our own body, our own call (a
+            stumble through the walk, or past the flop line the ragdoll) */
+        const takeShove = (vx: number, vy: number, vz: number) => {
+          shoveV.set(vx, vy, vz)
+          const able =
+            !fleet.riding && !seating.current && partSeat === null && !walk.noclip && !godMode && !rig.down && !levels.frozen
+          const fx = shoveTaker.take(shoveV, performance.now() / 1000, able)
+          if (fx === 'flop') {
+            rig.limbPos(chestLimb, impact.point)
+            impact.impulse.copy(shoveV).multiplyScalar(rig.mass)
+            rig.hit(impact.impulse, impact.point)
+          } else if (fx === 'stumble') {
+            walk.push(shoveV.x, 0, shoveV.z)
+          }
+        }
         const propNet = createPropNetwork(
           (m) => net?.prop(m),
           (en, es) => pushFeed({ tone: 'err', text: bilingual(en, es) }),
@@ -1949,7 +1976,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline() }
+              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); tools?.weapons.offline() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -1959,6 +1986,8 @@ export default function CrtScene({
               propNet.receive(msg)
               worldEffects.receive(msg)
               damageNet.receive(msg)
+              // shots, hits and who is holding what (sandbox/tools/weapons.ts)
+              tools?.receive(msg)
               switch (msg.type) {
                 case 'world-welcome':
                   remote.welcome(msg.you, msg.tick, msg.players)
@@ -2036,20 +2065,9 @@ export default function CrtScene({
                   voice?.accept(msg.from, msg.data)
                   break
                 // somebody bumped into us: our own body, our own call
-                case 'world-shove': {
-                  shoveV.set(msg.vx, msg.vy, msg.vz)
-                  const able =
-                    !fleet.riding && !seating.current && partSeat === null && !walk.noclip && !godMode && !rig.down && !levels.frozen
-                  const fx = shoveTaker.take(shoveV, performance.now() / 1000, able)
-                  if (fx === 'flop') {
-                    rig.limbPos(chestLimb, impact.point)
-                    impact.impulse.copy(shoveV).multiplyScalar(rig.mass)
-                    rig.hit(impact.impulse, impact.point)
-                  } else if (fx === 'stumble') {
-                    walk.push(shoveV.x, 0, shoveV.z)
-                  }
+                case 'world-shove':
+                  takeShove(msg.vx, msg.vy, msg.vz)
                   break
-                }
                 // somebody has us on their physgun: our body, our call
                 case 'world-grab':
                   grabTaker.take(msg, performance.now() / 1000, grabAble())
@@ -2552,6 +2570,16 @@ export default function CrtScene({
             return true
           },
           clear: () => setFeed([]),
+          // the belt's tools by name (`give pistol`, `give ballesta`): handed
+          // over if not carried yet, and drawn
+          tools: () => Object.keys(GIVE_NAMES),
+          give: (name) => {
+            const at = GIVE_NAMES[name.toLowerCase()]
+            if (at === undefined || !tools) return false
+            tools.give((['hands', 'physgun', 'toolgun', 'portalgun', 'pistol', 'crossbow', 'rocket'] as const)[at])
+            tools.select(at)
+            return true
+          },
           // a spawn arrives: every piece scales in with a little overshoot, a
           // ring of dust goes up where it sits down, and one pop plays for the
           // lot (ten crates are one order, not ten)
@@ -2597,6 +2625,7 @@ export default function CrtScene({
         spawnRef.current = (kind) => {
           if (kind.startsWith(FLEET_PREFIX)) orderVehicle(kind.slice(FLEET_PREFIX.length) as VehicleId)
           else if (kind === `${TOOL_PREFIX}portalgun`) givePortalGun()
+          else if (kind.startsWith(TOOL_PREFIX)) host.give?.(kind.slice(TOOL_PREFIX.length))
           else if (kind === 'portal_panel') void spawnPanel()
           else void sbConsole.run(`spawn ${kind}`, { quiet: true })
         }
@@ -3694,6 +3723,8 @@ export default function CrtScene({
               tools?.holster()
               toolsLive = false
             }
+            // shots already in the air keep flying under a driver
+            tools?.tickWeapons(dt)
             driveTick(now, dt)
             return
           }
@@ -3797,6 +3828,9 @@ export default function CrtScene({
               else if (edges.pressed('slot2')) tools.select(1)
               else if (edges.pressed('slot3')) tools.select(2)
               else if (edges.pressed('slot4')) tools.select(3)
+              else if (edges.pressed('slot5')) tools.select(4)
+              else if (edges.pressed('slot6')) tools.select(5)
+              else if (edges.pressed('slot7')) tools.select(6)
             }
             toolAim.eye.copy(camera.position)
             // from the head, at whatever is under the crosshair (resolveAim)
@@ -3823,6 +3857,12 @@ export default function CrtScene({
             if (tl !== toolLineNow) {
               toolLineNow = tl
               setToolLine(tl ? { state: tools.toolgun.state, keys: tools.toolgun.aimedKeys } : null)
+            }
+            // a weapon out: its own line on the tape
+            const wl = toolsLive && WEAPON_TOOLS.includes(tools.tool) ? tools.tool as WeaponTool : null
+            if (wl !== weaponLineNow) {
+              weaponLineNow = wl
+              setWeaponLine(wl)
             }
           }
           // the props: one fixed-step physics frame, the walker's shoves and
@@ -4547,6 +4587,34 @@ export default function CrtScene({
               // your own body, which the physgun may take only through a
               // portal (the one place you can see it from)
               self: () => (seating.current || fleet.riding ? null : { key: 'self', rig }),
+              // the weapons: the other players and the town's crowd as
+              // targets, the sea, and the wire
+              weapons: {
+                players: function* () {
+                  for (const [id, p] of remote.players) {
+                    if (p.here && !p.flying && !fleetNet.seatOf(id)) yield { id, x: p.x, y: p.y, z: p.z }
+                  }
+                },
+                people: (watch) => {
+                  if (levels.current.crowd) outside.knockPeople(watch)
+                },
+                waterY: () => levels.current.waterY,
+                level: () => levels.current.id,
+                send: (m) => net?.weapon(m),
+                shoved: (vx, vy, vz) => takeShove(vx, vy, vz),
+              },
+              // where somebody else's gun goes: between their hands, along
+              // their look, while their body is drawn standing
+              remoteHands: (id, r, l, aim) => {
+                const p = remote.players.get(id)
+                const body = avatars.rigOf(id)
+                if (!p || !p.here || p.down || !body || !body.group.visible || fleetNet.seatOf(id) || handR < 0 || handL < 0) return false
+                body.limbPos(handR, r)
+                body.limbPos(handL, l)
+                const cp = Math.cos(p.pitch)
+                aim.set(-Math.sin(p.yaw) * cp, Math.sin(p.pitch), -Math.cos(p.yaw) * cp)
+                return true
+              },
             })
             tools.setHandColor(lookRef.current.shell)
             worldEffects.attach(tools.portals)
@@ -4593,6 +4661,10 @@ export default function CrtScene({
                   })),
                   // the tools the belt does not start with
                   { id: `${TOOL_PREFIX}portalgun`, category: 'tools', label: 'portal gun', labelEs: 'pistola de portales' },
+                  // and the weapons it does (a click draws one)
+                  { id: `${TOOL_PREFIX}pistol`, category: 'tools', label: 'pistol', labelEs: 'pistola' },
+                  { id: `${TOOL_PREFIX}crossbow`, category: 'tools', label: 'crossbow', labelEs: 'ballesta' },
+                  { id: `${TOOL_PREFIX}rocket`, category: 'tools', label: 'rocket launcher', labelEs: 'lanzacohetes' },
                 ],
                 categories: (entries) => [
                   ...list.spawnCategories(entries),
@@ -4603,8 +4675,13 @@ export default function CrtScene({
                 note: list.kindNote,
                 thumbs: () => {
                   fleetPics ??= import('../../game/vehicles/thumbs').then((m) => m.renderFleetThumbs(fleet.all))
-                  const toolPics = import('../../game/sandbox/tools/portalThumb').then((m) =>
-                    new Map([[`${TOOL_PREFIX}portalgun`, m.portalGunThumb(96)]]))
+                  const toolPics = Promise.all([
+                    import('../../game/sandbox/tools/portalThumb'),
+                    import('../../game/sandbox/tools/weaponThumbs'),
+                  ]).then(([m, w]) => new Map([
+                    [`${TOOL_PREFIX}portalgun`, m.portalGunThumb(96)],
+                    ...(['pistol', 'crossbow', 'rocket'] as const).map((k) => [`${TOOL_PREFIX}${k}`, w.weaponThumb(k, 96)] as [string, string]),
+                  ]))
                   return Promise.all([list.spawnThumbs(), fleetPics, toolPics]).then(([a, b, c]) => new Map([...a, ...b, ...c]))
                 },
               })
@@ -5422,6 +5499,9 @@ export default function CrtScene({
               : seated?.part
                 ? // a contraption seat: the machine's keys, whatever it was built from
                   tapeLine(keyHint(`${t.sandbox.hud.seat} · ${t.sandbox.hud.pauses}`, language))
+                : weaponLine
+                  ? tapeLine(keyHint(`${t.sandbox.hud.weapons[weaponLine]} · ${
+                      t.sandbox.hud.weaponTail} · ${t.sandbox.hud.pauses}`, language))
                 : toolLine
                   ? // the tool gun out: what its two buttons do in this mode, now
                     tapeLine(keyHint(`${toolgunLine(toolLine.state, language, toolLine.keys)} · ${
