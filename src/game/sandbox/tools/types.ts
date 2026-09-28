@@ -159,7 +159,7 @@ export const isGrabRig = (r: unknown): r is GrabRig => {
 }
 
 /** something that happened to the beam, for sound, sparks and history */
-export type PhysgunEventType = 'grab' | 'release' | 'freeze' | 'unfreeze' | 'miss'
+export type PhysgunEventType = 'grab' | 'release' | 'freeze' | 'unfreeze' | 'miss' | 'deny'
 export interface PhysgunEvent {
   type: PhysgunEventType
   kind: HoldKind

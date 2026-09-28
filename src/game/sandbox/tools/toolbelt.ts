@@ -282,6 +282,9 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       case 'miss':
         sfx?.miss()
         break
+      case 'deny':
+        sfx?.deny()
+        break
     }
   })
 
@@ -319,6 +322,10 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
         break
       case 'fail':
         sfx?.miss()
+        vm?.kick(0.3)
+        break
+      case 'deny':
+        sfx?.deny()
         vm?.kick(0.3)
         break
     }

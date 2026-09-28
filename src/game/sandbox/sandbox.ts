@@ -137,6 +137,15 @@ export interface SandboxNetwork {
   readonly online: boolean
   authority: (id: PropId) => boolean
   owns: (id: PropId) => boolean
+  /** may I use this prop as its owner would (mine, shared, a friend's, or the
+      scope has protection off). Asking never costs a round trip: it reads the
+      mirror of the server's last word */
+  may?: (id: PropId) => boolean
+  /** the tools tell the mirror they were refused: a quiet "that belongs to
+      NAME" toast, throttled */
+  denied?: (id: PropId) => void
+  /** open (or close) props to everybody: the ids given, or all of mine */
+  share?: (ids: PropId[] | 'all', on: boolean) => void
   claim: (id: PropId, reason: 'hand' | 'seat' | 'keys') => boolean
   release: (id: PropId) => void
   cleanup: (target: string) => void

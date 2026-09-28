@@ -26,6 +26,7 @@ import { createWorldDamage } from './worldDamage.js';
 import { createWorldBlocks } from './worldBlocks.js';
 import { createWorldRooms, createLimiter, normalizeRoom, PUBLIC_ROOM } from './worldRooms.js';
 import { createWeapons } from './weapons.js';
+import { createWorldSocial } from './worldSocial.js';
 
 // ---------------------------------------------------------------- config
 
@@ -253,6 +254,17 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_scores_board ON scores(game, score);
 `);
+// A registered account's friend list: one row per grant ("this account may
+// use my things"), by the friend's username. Guests' lists live in memory
+// only (protection.js), and a guest grantee is never stored.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS world_friends (
+    user_id INTEGER NOT NULL,
+    friend TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, friend)
+  );
+`);
 
 const stmt = {
   userByName: db.prepare('SELECT * FROM users WHERE username = ?'),
@@ -303,6 +315,9 @@ const stmt = {
   ),
   scoreRankDesc: db.prepare('SELECT COUNT(*) AS n FROM scores WHERE game = ? AND score > ?'),
   scoreRankAsc: db.prepare('SELECT COUNT(*) AS n FROM scores WHERE game = ? AND score < ?'),
+  friendList: db.prepare('SELECT friend FROM world_friends WHERE user_id = ? ORDER BY at LIMIT 64'),
+  friendAdd: db.prepare('INSERT OR IGNORE INTO world_friends (user_id, friend, at) VALUES (?, ?, ?)'),
+  friendRemove: db.prepare('DELETE FROM world_friends WHERE user_id = ? AND friend = ?'),
 };
 
 // Startup maintenance: drop expired sessions and any history overflow left
@@ -911,6 +926,22 @@ const worldLookRate = new WeakMap();
 const worldShoveRate = new WeakMap();
 const worldGrabRate = new WeakMap();
 let worldTicker = null;
+// The friends list is the database's, not a room's: an account's list follows
+// it into every room. Everything else of protection.js/claims.js (the switch,
+// mutes, kicks, votes, chunk claims) is built per room in buildRoom.
+const friendStore = {
+  list: (userId) => stmt.friendList.all(userId).map((r) => r.friend),
+  add: (userId, friend) => stmt.friendAdd.run(userId, friend, Date.now()),
+  remove: (userId, friend) => stmt.friendRemove.run(userId, friend),
+};
+// orphaned props and claims expire even in a room nobody is standing in,
+// where the world ticker is stopped
+setInterval(() => {
+  for (const room of worldRooms) {
+    room.props.sweep();
+    room.social.claims.tick();
+  }
+}, 5_000).unref();
 
 // Rooms (worldRooms.js). Every module below is built ONCE PER ROOM and handed
 // that room's own `players` map, so a module that filters on `ws.world.level`
@@ -919,11 +950,12 @@ let worldTicker = null;
 // created here, and dispatched through `roomOf(ws)`, or it will be global.
 function buildRoom(room) {
   const players = room.players;
-  room.props = createPropRegistry({ players, send, onRemove: (level, ids) => room.effects.removeProps(level, ids) });
+  room.social = createWorldSocial({ players, send, name: displayName, eject: leaveWorld, store: friendStore, isPrivate: () => !room.isPublic });
+  room.props = createPropRegistry({ players, send, access: room.social.protection, onRemove: (level, ids) => room.effects.removeProps(level, ids) });
   room.effects = createWorldEffects({ players, send, prop: room.props.get });
   room.damage = createWorldDamage({ players, send });
   // Cubeland's broken and placed blocks, the last word per block (worldBlocks.js)
-  room.blocks = createWorldBlocks({ players, send });
+  room.blocks = createWorldBlocks({ players, send, claims: room.social.claims });
   // the pistol, the crossbow and the rocket launcher: shots and hits relayed
   // to the level, checked for honesty (weapons.js)
   room.weapons = createWeapons({
@@ -1236,6 +1268,11 @@ function handleWorldJoin(ws, msg) {
   }
   const room = openRoom(ws, code, msg.create === true);
   if (!room) return;
+  const until = room.social.protection.banned(ws, level);
+  if (until) {
+    send(ws, { type: 'world-kicked', level, until, by: 0 });
+    return;
+  }
   const id = worldSeq++;
   // Every spawn in the game is one authored point, so arrivals stack inside
   // each other. The lowest free slot is handed out here — the client turns it
@@ -1273,6 +1310,8 @@ function handleWorldJoin(ws, msg) {
     ...(vehicles.length > 0 ? { vehicles } : {}),
     ...(room.fleet.some((v) => v.seats.some(Boolean)) ? { seats: worldSeatTable(room) } : {}),
   });
+  room.social.protection.join(ws);
+  room.social.claims.join(ws);
   room.props.join(ws);
   room.effects.snapshot(ws);
   room.damage.snapshot(ws);
@@ -1325,6 +1364,8 @@ function leaveWorld(ws) {
   worldPlayers.delete(w.id);
   room.players.delete(w.id);
   room.props.leave(w.id, w.level);
+  room.social.claims.left(ws, w.level);
+  room.social.protection.leave(ws, w.level, w.id);
   room.effects.leave(w.id);
   room.damage.left(w.level);
   room.blocks.left(w.level);
@@ -1378,8 +1419,19 @@ function handleWorldLevel(ws, msg) {
   }
   const previousLevel = w.level;
   const room = w.room;
+  const until = previousLevel === msg.level ? 0 : room.social.protection.banned(ws, msg.level);
+  if (until) {
+    // kicked from where it was walking to: out of the world, as a kick is
+    send(ws, { type: 'world-kicked', level: msg.level, until, by: 0 });
+    leaveWorld(ws);
+    return;
+  }
   w.level = msg.level;
   room.props.leave(w.id, previousLevel);
+  room.social.claims.left(ws, previousLevel);
+  room.social.protection.leave(ws, previousLevel, w.id, true);
+  room.social.protection.join(ws);
+  room.social.claims.join(ws);
   room.props.join(ws);
   room.effects.snapshot(ws);
   room.damage.left(previousLevel);
@@ -1425,6 +1477,10 @@ function handleWorldChat(ws, msg) {
     sendError(ws, 'too_long');
     return;
   }
+  if (w.room.social.protection.muted(ws)) {
+    sendError(ws, 'muted');
+    return;
+  }
   if (!allowWorld(worldChatRate, ws, WORLD_CHAT_RATE_MAX, WORLD_CHAT_RATE_WINDOW_MS)) {
     sendError(ws, 'rate');
     return;
@@ -1442,6 +1498,8 @@ function handleWorldChat(ws, msg) {
 function handleWorldSignal(ws, msg) {
   const w = ws.world;
   if (!w) return;
+  // a muted player is muted on voice too: their handshakes go nowhere
+  if (w.room.social.protection.muted(ws)) return;
   if (!allowWorld(worldSignalRate, ws, WORLD_SIGNAL_RATE_MAX, WORLD_SIGNAL_RATE_WINDOW_MS)) return;
   if (!Number.isInteger(msg.to) || msg.data === null || typeof msg.data !== 'object') {
     strike(ws);
@@ -1947,7 +2005,13 @@ function handleMessage(ws, msg) {
     case 'world-prop-meta':
     case 'world-prop-joint':
     case 'world-prop-unjoint':
+    case 'world-prop-share':
       roomOf(ws)?.props.handle(ws, msg);
+      break;
+    // friends, the protection switch, votes, kicks, mutes and chunk claims
+    case 'world-social':
+      if (msg.op === 'claim' || msg.op === 'unclaim') roomOf(ws)?.social.claims.handle(ws, msg);
+      else roomOf(ws)?.social.protection.handle(ws, msg);
       break;
     case 'world-join':
       handleWorldJoin(ws, msg);

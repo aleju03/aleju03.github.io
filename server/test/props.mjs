@@ -4,9 +4,10 @@ import { createPropRegistry } from '../src/props.js';
 function limits() {
   const owner = { world: { id: 1, level: 'limits', x: 0, y: 0, z: 0 }, nick: 'owner' };
   const players = new Map([[1, owner]]), messages = [];
-  const registry = createPropRegistry({ players, send: (_, m) => messages.push(m) });
+  let clock = 1e6;
+  const registry = createPropRegistry({ players, send: (_, m) => messages.push(m), now: () => clock });
   registry.join(owner);
-  for (let nonce = 1; nonce <= 151; nonce++) registry.handle(owner, {
+  for (let nonce = 1; nonce <= 151; nonce++, clock += 50) registry.handle(owner, {
     type: 'world-prop-spawn', level: 'limits', nonce, kind: 'crate', pose: [0,1,0,300,0,0,0,0,10000,1],
   });
   assert.equal(messages.filter(m => m.type === 'world-prop-spawn').length, 150);
@@ -28,6 +29,9 @@ export async function propSmoke(url, connect) {
       await c.nextOf('world-prop-snapshot', 'snapshot');
     }
     const tx = (c, m) => c.send({ level: 'prop-test', ...m });
+    // ownership itself is tested in protection.mjs; this flow is about handoffs between strangers
+    tx(a, { type: 'world-social', op: 'protect', on: false });
+    assert.equal((await a.nextOf('world-social-note', 'protection off')).code, 'protect-off');
     const spawn = async (c, nonce, kind = 'crate') => {
       tx(c, { type: 'world-prop-spawn', nonce, kind, scale: 1.2, pose: [0, 1, 100, 300, 200, 0, 0, 0, 10000, 1] });
       let m;
@@ -51,7 +55,6 @@ export async function propSmoke(url, connect) {
     assert.equal(granted.authority, b.you); assert.equal(granted.pose[2], 200); assert.equal(granted.epoch, 2);
     tx(b, { type: 'world-prop-cleanup', target: 'all' });
     assert.equal((await b.nextOf('world-prop-denied', 'cleanup denied')).reason, 'admin');
-    tx(b, { type: 'world-prop-remove', id: p.id });
     const own = await spawn(b, 2, 'barrel');
     const late = connect(url); sockets.push(late);
     await late.opened; late.send({ type: 'hello' }); await late.nextOf('hello-ok', 'late hello');

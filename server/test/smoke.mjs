@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { propSmoke } from './props.mjs';
+import { protectionSmoke } from './protection.mjs';
 import { effectsSmoke } from './worldEffects.mjs';
 import { damageSmoke } from './worldDamage.mjs';
 import { weaponsSmoke } from './weapons.mjs';
@@ -53,7 +54,7 @@ function connect(url) {
   // Skip broadcast chatter (rooms/users/typing, world ticks and the level
   // snapshots every world-level brings) until a given type arrives.
   const nextOf = async (type, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await next(label);
       if (msg.type === type) return msg;
     }
@@ -107,6 +108,7 @@ async function main() {
   await propSmoke(url, connect);
   await roomsSmoke(url, connect);
   console.log('0. world rooms: isolation of roster, ticks, chat, signals, props, damage and seats; join errors; death and rebirth; creation limits');
+  await protectionSmoke(url, connect);
 
   // 1. Guest hello: gets a guest name and the room list.
   const guest = connect(url);
@@ -595,10 +597,14 @@ async function main() {
   // Cubeland's blocks: an edit relayed to the other walker in the level,
   // bad quadruples dropped whole, and the map handed to an arrival
   w1.send({ type: 'world-level', level: 'cubeland' });
-  const emptyMap = await w1.nextOf('world-blockmap', 'the empty block map on arrival');
+  let emptyMap;
+  do emptyMap = await w1.nextOf('world-blockmap', 'the empty block map on arrival'); while (emptyMap.level !== 'cubeland');
   assert.deepEqual(emptyMap.edits, [], 'a level nobody has touched has an empty map');
   w2.send({ type: 'world-level', level: 'cubeland' });
-  await w2.nextOf('world-blockmap', 'the second arrival\'s map');
+  // (skip the overworld's map still queued from the walk back: taking it for
+  // Cubeland's let the edit below race the server's handling of this move)
+  let map2;
+  do map2 = await w2.nextOf('world-blockmap', 'the second arrival\'s map'); while (map2.level !== 'cubeland');
   w1.send({ type: 'world-blocks', level: 'cubeland', edits: [3, 40, -7, 0, 3, 41, -7, 5], blast: false });
   const relayed = await w2.nextOf('world-blocks', 'block edits relayed');
   assert.deepEqual(relayed.edits, [3, 40, -7, 0, 3, 41, -7, 5]);
@@ -758,7 +764,7 @@ async function main() {
   //      Anything else is dropped in silence, so each refusal is followed by
   //      a chat line and the victim must see the chat without a shove first.
   const noShoveBefore = async (client, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await client.next(label);
       assert.notEqual(msg.type, 'world-shove', `${label}: a shove got through`);
       if (msg.type === 'world-chat') return;
@@ -818,7 +824,7 @@ async function main() {
   //      alone, inside the beam's reach, never at somebody flying, and a
   //      throw is clamped; a release always goes through.
   const noGrabBefore = async (client, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await client.next(label);
       assert.notEqual(msg.type, 'world-grab', `${label}: a grab got through`);
       if (msg.type === 'world-chat') return;

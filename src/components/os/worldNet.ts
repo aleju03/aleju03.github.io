@@ -54,6 +54,9 @@ export interface WorldNet {
   damage: (message: import('../../game/net/damageProtocol').DamageClientMessage) => void
   /** Cubeland's block edits (net/remoteBlocks.ts) */
   blocks: (message: import('../../game/net/blockProtocol').BlockClientMessage) => void
+  /** friends, the protection switch, claims, votes, kicks and mutes
+      (game/net/socialProtocol.ts) */
+  social: (message: import('../../game/net/socialProtocol').SocialClientMessage) => void
   /** a shot, a hit or what is in our hands (game/net/weaponProtocol.ts) */
   weapon: (message: import('../../game/net/weaponProtocol').WeaponClientMessage) => void
   readonly status: WorldStatus
@@ -363,6 +366,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     prop: (message) => { if (joined) raw(message) },
     damage: (message) => { if (joined) raw(message) },
     blocks: (message) => { if (joined) raw(message) },
+    social: (message) => { if (joined) raw(message) },
     weapon: (message) => { if (joined) raw(message) },
     get status() {
       return status

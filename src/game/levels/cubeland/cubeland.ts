@@ -13,7 +13,7 @@ import { invalidateCollisionBoxes, makeCollisionSet, type Solid } from '../../ph
 import type { StepSurface } from '../../core/sfx'
 import { gfx } from '../../world/quality'
 import type { HandsHud, Level, LevelLightRig, LevelSpawn } from '../types'
-import { Biome, CHUNK, H, SEA, columnAt } from './gen'
+import { Biome, CHUNK, H, SEA, columnAt, generateChunk, idx } from './gen'
 import { meshChunk, type MeshArrays } from './mesher'
 import { daylight, fadeClock, terrainMaterials } from './material'
 import { PREBORN } from '../../world/fade'
@@ -108,6 +108,25 @@ export interface BlockNet {
   apply: (edits: readonly WireEdit[], blast: boolean) => void
   /** every edit this session knows about, for a late arrival's catch-up */
   all: () => WireEdit[]
+  /** the server refused these edits (somebody's claim): x, y, z and the
+      value it holds there, or -1 for the generated terrain. Put them back */
+  revert: (cells: readonly WireEdit[]) => void
+  /** claims (net/remoteSocial.ts): who stands on a block column, so a local
+      edit there is declined before it is made, and the toast, the entry line
+      and the boundary cue have something to say. Null when there are none */
+  setClaims: (q: ClaimQuery | null) => void
+  /** the claimable chunk (16x16 blocks, full height) under a point in world units */
+  chunkAt: (x: number, z: number) => { cx: number; cz: number }
+}
+
+/** what Cubeland asks of the claims mirror */
+export interface ClaimQuery {
+  /** the claim on a block column, if any: its owner, and whether I may edit it */
+  at: (bx: number, bz: number) => { cx: number; cz: number; owner: string; allowed: boolean; mine: boolean } | null
+  /** an edit was declined: the owner's name */
+  denied: (owner: string) => void
+  /** I walked into (or out of) a claim */
+  entered: (claim: { owner: string; mine: boolean } | null) => void
 }
 
 export interface Cubeland {
@@ -270,12 +289,75 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
   /* --------------------------------------------------------------- edits -- */
 
   let sb: Sandbox | null = null
+  let claimQ: ClaimQuery | null = null
+  /** an edit here would be declined: the owner's name, or null */
+  const locked = (bx: number, bz: number) => {
+    const c = claimQ?.at(bx, bz)
+    return c && !c.allowed ? c.owner : null
+  }
+  let lastClaim = ''
+  let cueT = 0
+  const cueAt = new THREE.Vector3()
+  const cueN = new THREE.Vector3()
+  /** the claim under the walker: the entry line once when it changes, and a
+      few blue sparks on the nearest claimed edge, so a boundary can be seen
+      without a shape of its own to draw (a new mesh is a new program) */
+  const claimCue = (dt: number, p: THREE.Vector3) => {
+    const q = claimQ
+    if (!q) return
+    const bx = Math.floor((p.x - CUBE_ORIGIN.x) / B)
+    const bz = Math.floor((p.z - CUBE_ORIGIN.z) / B)
+    const here = q.at(bx, bz)
+    const key = here ? `${here.cx},${here.cz}` : ''
+    if (key !== lastClaim) {
+      lastClaim = key
+      q.entered(here ? { owner: here.owner, mine: here.mine } : null)
+    }
+    cueT -= dt
+    if (cueT > 0 || !sb) return
+    cueT = 0.35
+    const cx = Math.floor(bx / CHUNK)
+    const cz = Math.floor(bz / CHUNK)
+    let best = 12
+    for (let dz = -1; dz <= 1; dz++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const c = q.at((cx + dx) * CHUNK, (cz + dz) * CHUNK)
+        if (!c) continue
+        const x0 = CUBE_ORIGIN.x + c.cx * CHUNK_W
+        const z0 = CUBE_ORIGIN.z + c.cz * CHUNK_W
+        const x1 = x0 + CHUNK_W
+        const z1 = z0 + CHUNK_W
+        let qx = Math.min(x1, Math.max(x0, p.x))
+        let qz = Math.min(z1, Math.max(z0, p.z))
+        if (qx === p.x && qz === p.z) {
+          // inside: the nearest of the four edges
+          const e = [p.x - x0, x1 - p.x, p.z - z0, z1 - p.z]
+          const m = Math.min(...e)
+          if (m === e[0]) qx = x0
+          else if (m === e[1]) qx = x1
+          else if (m === e[2]) qz = z0
+          else qz = z1
+        }
+        const d = Math.hypot(p.x - qx, p.z - qz)
+        if (d < best) {
+          best = d
+          cueAt.set(qx, p.y + (Math.random() - 0.5) * 5, qz)
+        }
+      }
+    if (best < 12) {
+      cueN.set(p.x - cueAt.x, 0, p.z - cueAt.z).normalize()
+      sb.fx.zap(cueAt, cueN)
+    }
+  }
   const localFns = new Set<(edits: WireEdit[], blast: boolean) => void>()
   let outbox: WireEdit[] = []
   let outboxBlast = false
   /** the one way a block changes: the store, the meshes, the boxes, and
       (unless it came off the wire) the outbox */
   const edit = (bx: number, by: number, bz: number, id: number, remote = false) => {
+    // (the server refuses these too; declining here spares a ghost block that
+    // only this client would see until the correction arrived)
+    if (!remote && locked(bx, bz)) return -1
     const was = store.set(bx, by, bz, id)
     if (was < 0) return -1
     const cx = Math.floor(bx / CHUNK)
@@ -536,6 +618,11 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     const id = store.get(bx, by, bz)
     const def = BLOCKS[id]
     if (!id || def.liquid || def.hardness === Infinity) return false
+    const owner = locked(bx, bz)
+    if (owner) {
+      claimQ?.denied(owner)
+      return false
+    }
     if (id === TNT && sb) {
       // punched TNT is lit, not broken
       edit(bx, by, bz, AIR)
@@ -735,7 +822,9 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
           const body = cam.position.x + r > x0 && cam.position.x - r < x0 + B &&
             cam.position.z + r > z0 && cam.position.z - r < z0 + B &&
             f.feetY < (py + 1) * B && cam.position.y + 0.2 > py * B
-          if (free && py >= 0 && py < H && (!def.solid || !body)) {
+          const owner = free ? locked(px, pz) : null
+          if (owner) claimQ?.denied(owner)
+          if (free && !owner && py >= 0 && py < H && (!def.solid || !body)) {
             if (edit(px, py, pz, def.id) >= 0) {
               swing = 1
               centre(px, py, pz, tmp)
@@ -806,6 +895,8 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
           if (y < 0 || y >= H) continue
           const d = Math.hypot(x + 0.5 - bx0, y + 0.5 - by0, z + 0.5 - bz0)
           if (d > rb) continue
+          // a blast does not carve a claim its owner may not edit
+          if (locked(x, z)) continue
           const id = store.get(x, y, z)
           if (!id || BLOCKS[id].liquid) continue
           const def = BLOCKS[id]
@@ -884,6 +975,11 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       const id = store.get(x, y, z)
       const def = BLOCKS[id]
       if (!id || def.hardness === Infinity || def.cross || def.liquid) return null
+      const owner = locked(x, z)
+      if (owner) {
+        claimQ?.denied(owner)
+        return null
+      }
       edit(x, y, z, AIR)
       centre(x, y, z, tmp)
       chips(def, tmp, 0.6)
@@ -1125,6 +1221,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       fadeClock.value = performance.now() / 1000
       stream(cx, cz, 4)
       refreshBoxes(cx, cz)
+      claimCue(dt, p)
       // (the lens is the walker's eye, 3.84 over the soles)
       waterNow = findWater(p, p.y - 3.84)
       settleFalling(dt)
@@ -1238,6 +1335,31 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
         wakeAround(x, y, z)
       }
       trimDebris()
+    },
+    setClaims: (q) => {
+      claimQ = q
+      lastClaim = ''
+    },
+    chunkAt: (x, z) => ({
+      cx: Math.floor(Math.floor((x - CUBE_ORIGIN.x) / B) / CHUNK),
+      cz: Math.floor(Math.floor((z - CUBE_ORIGIN.z) / B) / CHUNK),
+    }),
+    revert: (cells) => {
+      const made = new Map<number, ReturnType<typeof generateChunk>>()
+      for (const [x, y, z, id] of cells) {
+        let to = id
+        if (to < 0) {
+          const cx = Math.floor(x / CHUNK)
+          const cz = Math.floor(z / CHUNK)
+          const k = chunkKey(cx, cz)
+          let g = made.get(k)
+          if (!g) made.set(k, (g = generateChunk(cx, cz)))
+          to = g.vox[idx(x - cx * CHUNK, y, z - cz * CHUNK)]
+        }
+        edit(x, y, z, to, true)
+        if (id < 0) store.forget(x, y, z)
+        wakeAround(x, y, z)
+      }
     },
     all: () => {
       const out: WireEdit[] = []

@@ -8,8 +8,22 @@
  * State is bounded and in memory. Silent bodies cost no periodic traffic;
  * dirty poses are coalesced at the world's tick. Departures retain props
  * and elect a remaining player, or park them with authority zero.
+ *
+ * Protection (protection.js supplies `access`): by default only a prop's
+ * owner, the owner's friends and admins may grab, freeze, weld, remove or
+ * drive the parts of it, unless the owner shared it or the scope switched
+ * protection off. Bodies and blasts stay free (physics is physics). A
+ * refusal is a typed `world-prop-denied` naming the owner. Ownership also
+ * carries a per-owner cap, a spawn rate and the departure rule: the props of
+ * somebody who left stay ORPHAN_MS for them (an account's next socket adopts
+ * them back) and are then removed, so worlds do not fill with orphans.
  */
 export const PROP_CAP = 150;
+export const ORPHAN_MS = 5 * 60_000;
+/** toys anyone may use from the moment they exist; an owner can /unshare */
+export const OPEN_KINDS = new Set(['ball', 'cone', 'melon', 'soda_can', 'bottle']);
+const SPAWN_BURST = 100;
+const SPAWN_PER_SEC = 30;
 const LEVEL_CAP = 2000;
 const WORLD_CAP = 8000;
 export const PROP_KINDS = new Set(`crate crate_small pallet plank barrel trashcan sawblade pipe hydrant cone ball bucket milk_crate lawn_chair wheelie_bin chair table couch bathtub mattress door tv melon bottle soda_can portal_panel block barrier cinder sawhorse girder stop_sign tyre engine barrel_explosive gascan propane dumpster fridge vending streetlamp container plate_s plate_m plate_l beam_s beam_l thruster wheel hoverball seat`.split(' '));
@@ -19,10 +33,13 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n);
 const idOK = (n) => Number.isSafeInteger(n) && n > 0;
 const vec = (v, n, cap) => Array.isArray(v) && v.length === n && v.every(finite) ? v.map((x) => clamp(x, -cap, cap)) : null;
 
-export function createPropRegistry({ players, send, now = Date.now, onRemove = () => {} }) {
+export function createPropRegistry({ players, send, now = Date.now, onRemove = () => {}, access = null }) {
   const levels = new Map();
   const rates = new WeakMap();
   const spawns = new WeakMap();
+  const orphans = new Map(); // prop id -> when it goes (ids are unique across scopes)
+  const buckets = new WeakMap();
+  const keys = new WeakMap(); // prop -> its owner's identity (never sent)
   let seq = 1;
   let jointSeq = 1;
   const level = (name) => {
@@ -31,7 +48,23 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
   };
   const peers = (name) => [...players.values()].filter((s) => s.world?.level === name);
   const broadcast = (name, m) => { for (const s of peers(name)) send(s, { ...m, level: name }); };
-  const deny = (ws, op, reason, nonce) => send(ws, { type: 'world-prop-denied', level: ws.world.level, op, reason, nonce });
+  const deny = (ws, op, reason, nonce, extra) => send(ws, { type: 'world-prop-denied', level: ws.world.level, op, reason, nonce, ...extra });
+  const identOf = (ws) => access?.ident(ws) ?? `w:${ws.world.id}`;
+  const keyOf = (p) => keys.get(p) ?? `w:${p.owner}`;
+  /** may this socket act on the prop as its owner would */
+  const may = (ws, p) => !access || ws.isAdmin || p.owner === ws.world.id || keyOf(p) === identOf(ws)
+    || p.share === true || !access.enabled(ws.world.level) || access.granted(keyOf(p), ws);
+  const refuse = (ws, op, p) => deny(ws, op, 'protected', undefined, { id: p.id, owner: p.name });
+  const spawnToken = (ws) => {
+    const at = now();
+    let b = buckets.get(ws);
+    if (!b) buckets.set(ws, b = { n: SPAWN_BURST, at });
+    b.n = Math.min(SPAWN_BURST, b.n + (at - b.at) / 1000 * SPAWN_PER_SEC);
+    b.at = at;
+    if (b.n < 1) return false;
+    b.n -= 1;
+    return true;
+  };
   const allow = (ws, key, max) => {
     let r = rates.get(ws);
     if (!r) rates.set(ws, r = new Map());
@@ -88,6 +121,17 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
   const join = (ws) => {
     const name = ws.world.level;
     const l = level(name);
+    // an owner coming back (the same account on a new socket, or a guest
+    // returning to a scope they stepped out of) takes their props off the
+    // orphan clock
+    const mine = access ? identOf(ws) : null;
+    const back = [];
+    for (const p of l.props.values()) {
+      if (mine && keyOf(p) === mine && (p.owner !== ws.world.id || orphans.has(p.id))) {
+        p.owner = ws.world.id; p.name = ws.user?.username ?? ws.nick; orphans.delete(p.id); back.push(p);
+      }
+    }
+    if (back.length) announce(name, back);
     const parked = [...l.props.values()].filter((p) => p.authority === 0 && !p.transfer);
     if (parked.length) grant(name, parked, ws.world.id);
     send(ws, { type: 'world-prop-snapshot', level: name, props: [...l.props.values()], joints: [...l.joints.values()] });
@@ -96,11 +140,25 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
     const l = levels.get(name);
     if (!l) return;
     const next = peers(name).find((s) => s.world.id !== id)?.world.id ?? 0;
+    // the departed's props wait for them, then go (sweep)
+    for (const p of l.props.values()) if (p.owner === id) orphans.set(p.id, now() + ORPHAN_MS);
     const abandoned = [...l.props.values()].filter((p) => p.authority === id && !p.transfer);
     if (abandoned.length) grant(name, abandoned, next);
     for (const p of l.props.values()) if (p.transfer?.waiting === id) p.transfer.waiting = 0;
     settleTransfers(name);
     if (!l.props.size && !peers(name).length) levels.delete(name);
+  };
+  /** remove what has waited out its owner's absence */
+  const sweep = () => {
+    if (!orphans.size) return;
+    const at = now();
+    for (const [name, l] of [...levels]) {
+      const gone = [...l.props.values()].filter((p) => orphans.has(p.id) && orphans.get(p.id) <= at && !peers(name).some((s) => s.world.id === p.owner)).map((p) => p.id);
+      if (gone.length) remove(name, gone);
+      for (const id of gone) orphans.delete(id);
+      if (!l.props.size && !peers(name).length) levels.delete(name);
+    }
+    for (const id of orphans.keys()) if (![...levels.values()].some((l) => l.props.has(id))) orphans.delete(id);
   };
   const handle = (ws, m) => {
     const w = ws.world;
@@ -123,14 +181,17 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
         else deny(ws, m.type, 'invalid', m.nonce);
         return;
       }
-      if ([...levels.values()].reduce((n, s) => n + [...s.props.values()].filter((q) => q.owner === w.id).length, 0) >= PROP_CAP || l.props.size >= LEVEL_CAP || [...levels.values()].reduce((n, s) => n + s.props.size, 0) >= WORLD_CAP)
-        return deny(ws, m.type, 'limit', m.nonce);
+      const me = identOf(ws), cap = access?.cap(ws) ?? PROP_CAP;
+      if ([...l.props.values()].filter((q) => keyOf(q) === me).length >= cap || l.props.size >= LEVEL_CAP || [...levels.values()].reduce((n, s) => n + s.props.size, 0) >= WORLD_CAP)
+        return deny(ws, m.type, 'limit', m.nonce, { cap });
+      if (!spawnToken(ws)) return deny(ws, m.type, 'rate', m.nonce);
       const row = pose(m.pose, seq, 1);
       if (!row) return deny(ws, m.type, 'invalid', m.nonce);
       const scale = finite(m.scale) ? clamp(m.scale, 0.2, 4) : 1;
       const mass = finite(m.mass) ? clamp(m.mass, 0.05, 20000) : undefined;
       const prop = { id: seq++, owner: w.id, name: ws.user?.username ?? ws.nick, authority: w.id, epoch: 1,
-        kind: m.kind, scale, mass, pose: row, lock: null, part: null, life: null };
+        kind: m.kind, scale, mass, pose: row, lock: null, part: null, life: null, share: m.share === true || OPEN_KINDS.has(m.kind) };
+      keys.set(prop, me);
       l.props.set(prop.id, prop);
       seen.set(key, prop.id);
       if (seen.size > 2048) seen.delete(seen.keys().next().value);
@@ -156,6 +217,10 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
         if (p.authority === w.id) { for (const q of ps) q.lock = null; announce(w.level, ps); }
         return;
       }
+      if (m.reason !== 'collision') {
+        const shut = ps.find((q) => !may(ws, q));
+        if (shut) return refuse(ws, m.type, shut);
+      }
       if (ps.some((q) => q.transfer || (q.lock && q.authority !== w.id))) return deny(ws, m.type, 'busy');
       if (m.reason === 'collision') {
         const source = l.props.get(m.source);
@@ -164,7 +229,7 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       } else {
         if (Math.hypot(p.pose[2] / 100 - w.x, p.pose[3] / 100 - w.y, p.pose[4] / 100 - w.z) > 90) return deny(ws, m.type, 'reach');
         if (m.reason === 'seat' && p.kind !== 'seat') return;
-        if (m.reason === 'keys' && (p.owner !== w.id || !['thruster', 'wheel', 'hoverball'].includes(p.kind))) return;
+        if (m.reason === 'keys' && (!may(ws, p) || !['thruster', 'wheel', 'hoverball'].includes(p.kind))) return;
       }
       const lock = m.reason === 'collision' ? null : m.reason;
       if (ps.every((q) => q.authority === w.id)) { for (const q of ps) q.lock = lock; announce(w.level, ps); return; }
@@ -176,7 +241,10 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       announce(w.level, ps);
       settleTransfers(w.level);
     } else if (m.type === 'world-prop-remove') {
-      if (p && p.owner === w.id && !p.transfer) remove(w.level, [p.id]);
+      if (p && !p.transfer) {
+        if (may(ws, p)) remove(w.level, [p.id]);
+        else refuse(ws, m.type, p);
+      }
     } else if (m.type === 'world-prop-cleanup') {
       let owner = w.id;
       if (m.target === 'all') {
@@ -188,7 +256,21 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
         if (!found.length) return deny(ws, m.type, 'name');
         remove(w.level, found.map((q) => q.id)); return;
       }
-      remove(w.level, [...l.props.values()].filter((q) => owner === null || q.owner === owner).map((q) => q.id));
+      const me = identOf(ws);
+      remove(w.level, [...l.props.values()].filter((q) => owner === null || q.owner === owner || keyOf(q) === me).map((q) => q.id));
+    } else if (m.type === 'world-prop-share') {
+      if (typeof m.on !== 'boolean') return;
+      const ids = m.all === true ? [...l.props.values()].filter((q) => q.owner === w.id || keyOf(q) === identOf(ws)).map((q) => q.id)
+        : Array.isArray(m.ids) ? m.ids.slice(0, 512) : [];
+      const changed = [];
+      for (const id of ids) {
+        const q = l.props.get(id);
+        if (!q || q.share === m.on) continue;
+        // sharing is the owner's call (or an admin's), never a friend's
+        if (!ws.isAdmin && q.owner !== w.id && keyOf(q) !== identOf(ws)) { refuse(ws, m.type, q); continue; }
+        q.share = m.on; changed.push(q);
+      }
+      if (changed.length) announce(w.level, changed);
     } else if (m.type === 'world-prop-hit') {
       if (!p || p.transfer || !finite(m.amount) || typeof m.ignite !== 'boolean' || !allow(ws, 'hit', 20)) return;
       if (Math.hypot(p.pose[2] / 100 - w.x, p.pose[3] / 100 - w.y, p.pose[4] / 100 - w.z) > 90) return;
@@ -214,12 +296,12 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       if (!p || p.authority !== w.id || p.epoch !== m.epoch || p.transfer) return;
       const part = vec(m.part, 4, 1e6);
       const life = vec(m.life, 4, 60);
-      if (part) p.part = [p.owner === w.id ? clamp(Math.round(part[0]), -1, 4) : (p.part?.[0] ?? 0), p.owner === w.id ? (part[1] ? 1 : 0) : (p.part?.[1] ?? 0), part[2], clamp(part[3], -1, 1)];
+      if (part) p.part = [may(ws, p) ? clamp(Math.round(part[0]), -1, 4) : (p.part?.[0] ?? 0), may(ws, p) ? (part[1] ? 1 : 0) : (p.part?.[1] ?? 0), part[2], clamp(part[3], -1, 1)];
       if (life) p.life = life;
       announce(w.level, [p]);
     } else if (m.type === 'world-prop-joint') {
       const b = l.props.get(m.b);
-      if (!p || !b || p.owner !== w.id || b.owner !== w.id || p.authority !== w.id || b.authority !== w.id || p.transfer || b.transfer) return;
+      if (!p || !b || !may(ws, p) || !may(ws, b) || p.authority !== w.id || b.authority !== w.id || p.transfer || b.transfer) return;
       if (!TYPES.has(m.kind) || p.id === b.id || l.joints.size >= LEVEL_CAP * 4) return;
       // Frames are local, so late arrivals reconstruct the original joint,
       // not a new weld at whatever poses happened to arrive last.
@@ -234,15 +316,18 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       if ([...l.joints.values()].some((j) => j.a === p.id && j.b === b.id && j.kind === m.kind && JSON.stringify(j.frames) === JSON.stringify(frames))) return;
       const j = { id: jointSeq++, a: p.id, b: b.id, kind: m.kind, frames };
       l.joints.set(j.id, j);
-      broadcast(w.level, { type: 'world-prop-joint', joint: j, nonce: m.nonce });
+      broadcast(w.level, { type: 'world-prop-joint', joint: j, nonce: m.nonce, from: w.id });
     } else if (m.type === 'world-prop-unjoint') {
       const j = l.joints.get(m.id);
-      if (!j || l.props.get(j.a)?.owner !== w.id || l.props.get(j.b)?.owner !== w.id) return;
+      const ja = l.props.get(j?.a), jb = l.props.get(j?.b);
+      if (!j || !ja || !jb) return;
+      if (!may(ws, ja) || !may(ws, jb)) return refuse(ws, m.type, may(ws, ja) ? jb : ja);
       l.joints.delete(j.id);
       broadcast(w.level, { type: m.type, id: j.id });
     }
   };
-  return { get: (name, id) => levels.get(name)?.props.get(id), join, leave, handle, tick: () => {
+  return { get: (name, id) => levels.get(name)?.props.get(id), join, leave, handle, sweep, tick: () => {
+    sweep();
     for (const [name, l] of levels) {
       if (!l.dirty.size) continue;
       broadcast(name, { type: 'world-prop-move', rows: [...l.dirty.values()] });
