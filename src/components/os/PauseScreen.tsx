@@ -3,6 +3,8 @@ import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
 import RoomStrip from './RoomStrip'
+import PlayPanel from './PlayPanel'
+import { useRoundText } from './roundText'
 import { keyHint } from '../../game/sandbox/bindings'
 import { useI18n } from '../../i18n'
 import {
@@ -83,7 +85,7 @@ export interface PersonWhere {
   bearing?: string
 }
 
-type Page = 'character' | 'settings' | 'people'
+type Page = 'character' | 'settings' | 'people' | 'play'
 
 /**
   A row of the menu. The selected one is swiped through with the marker: a
@@ -526,6 +528,7 @@ export default function PauseScreen({
   onResume,
 }: PauseScreenProps) {
   const { t, language } = useI18n()
+  const { tr: rt } = useRoundText()
   const [page, setPage] = useState<Page>('character')
   const [hearing, setHearing] = useState(false)
   const fxWords = VOICE_FILTERS.map((id, i) => ({ id, label: t.sandbox.voiceFx.names[i] }))
@@ -536,6 +539,8 @@ export default function PauseScreen({
     // only when there is a walk to share. Offline the page would be a page
     // about nobody, and the answer would never change
     ...(multiplayer ? [{ id: 'people' as const, label: tp.people }] : []),
+    // the rounds (PlayPanel.tsx): friends' goals, in the same shared walk
+    ...(multiplayer ? [{ id: 'play' as const, label: rt('play') }] : []),
   ]
   const cameras = [
     { id: 'first', label: tp.firstPerson },
@@ -945,6 +950,8 @@ export default function PauseScreen({
                 are drawn from, and a name here is a name you can shout at.
                 Somebody with no bearing is in another level: they found the
                 backrooms, or flew to the Moon */}
+            {page === 'play' && <PlayPanel />}
+
             {page === 'people' && (
               <div className="max-w-lg">
                 <div className="flex items-baseline justify-between gap-4">

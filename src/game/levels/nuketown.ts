@@ -1772,6 +1772,8 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
       lastSpawn = k
       return SPAWNS[k]
     },
+    // the north yard's six and the south yard's six, one side each
+    teamSpawns: [SPAWNS.slice(0, NORTH.length), SPAWNS.slice(NORTH.length)],
     enter: () => {
       root.visible = true
       o.venue('away')

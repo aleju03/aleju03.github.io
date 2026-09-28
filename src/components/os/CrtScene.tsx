@@ -48,7 +48,7 @@ import { columnOf } from '../../game/sandbox/tools/slots'
 import type { PortalHooks } from '../../game/sandbox/tools/portalView'
 import type { Portal, PortalColor, PortalCrossing } from '../../game/sandbox/tools/portals'
 import type { ToolInput } from '../../game/sandbox/tools/types'
-import { createEdges, held, keyHint } from '../../game/sandbox/bindings'
+import { BINDINGS, createEdges, held, keyHint } from '../../game/sandbox/bindings'
 import {
   createConsole, msg as bilingual, say as sayIn, type Console, type Msg, type SandboxHost,
 } from '../../game/sandbox/commands'
@@ -92,6 +92,13 @@ import RoomChip from './RoomChip'
 import { createHealthState, type HealthState } from '../../game/player/health'
 import { deathSound, hurtSound, respawnSound } from '../../game/player/healthSfx'
 import '../../game/sandbox/healthCommands'
+import '../../game/sandbox/roundCommands'
+import { createRoundState, type RoundState } from '../../game/net/remoteRounds'
+import { createRoundDirector, type RoundDirector } from '../../game/modes/director'
+import { createRingLayer } from '../../game/modes/ringLayer'
+import { sideColor } from '../../game/modes/defs'
+import RoundHud from './RoundHud'
+import { bindRound } from './worldRound'
 import HealthHud from './HealthHud'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
 import { PIXEL_LINES_K, PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
@@ -428,6 +435,8 @@ export default function CrtScene({
   const [aim, setAim] = useState<CrosshairAim>('none')
   /** hit points and the killfeed (HealthHud.tsx): the store and a name lookup */
   const [healthHud, setHealthHud] = useState<{ state: HealthState; nameOf: (id: number) => string } | null>(null)
+  /** the round's store and director, for its HUD (game/modes) */
+  const [roundHud, setRoundHud] = useState<{ state: RoundState; director: RoundDirector; nameOf: (id: number) => string } | null>(null)
   /** the channel the set is showing, while you are sitting in front of it */
   const [tvChannel, setTvChannel] = useState<string | null>(null)
   const [locked, setLocked] = useState(false)
@@ -572,6 +581,8 @@ export default function CrtScene({
   const goMapRef = useRef<((id: MapId) => void) | null>(null)
   /** the room wish changed (worldRoom.ts): drop the socket and re-enter */
   const roomRestartRef = useRef<(() => void) | null>(null)
+  /** drops the round store from the menus' bridge (worldRound.ts) */
+  const roundUnbindRef = useRef<(() => void) | null>(null)
   /** a print on the map sheet: that map, or the world let go of */
   const pickMapRef = useRef<((id: MapId) => void) | null>(null)
   const failRef = useRef(onFail)
@@ -1909,6 +1920,13 @@ export default function CrtScene({
           host, which they use.
         */
         const health = createHealthState({ level: () => levels.current.id })
+        /*
+          Rounds (game/net/remoteRounds.ts, game/modes): the store is fed by the
+          socket like health, the director is built below the console's host,
+          which it acts through, and the HUD and the menus read both.
+        */
+        const roundState = createRoundState()
+        let rounds: RoundDirector | null = null
         setHealthHud({
           state: health,
           nameOf: (id) => remote.roster.get(id)?.name ?? '?',
@@ -1988,6 +2006,14 @@ export default function CrtScene({
           seatOf: seatFor,
           // a weapon in their hands raises both arms onto their look
           aimOf: (id) => (tools?.weapons.wields.has(id) ? 1 : 0),
+          // a prop-hunt disguise stands in for the body, and a round's sides
+          // colour the name plates
+          hidden: (id) => rounds?.hidden(id) ?? false,
+          tintOf: (id) => {
+            if (!roundState.inRound && !roundState.watching) return null
+            const c = sideColor(roundState.mode, roundState.partOf(id)?.team ?? '')
+            return c ? `${c}d8` : null
+          },
         }
 
         const pushFeed = (line: Omit<FeedLine, 'key' | 'at'>) =>
@@ -2091,7 +2117,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); social.offline(); tools?.weapons.offline(); health.offline() }
+              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); social.offline(); tools?.weapons.offline(); health.offline(); roundState.offline() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -2106,6 +2132,7 @@ export default function CrtScene({
               // shots, hits and who is holding what (sandbox/tools/weapons.ts)
               tools?.receive(msg)
               health.receive(msg)
+              roundState.receive(msg)
               switch (msg.type) {
                 case 'world-welcome':
                   // god mode is ours to declare, and a new socket has forgotten
@@ -2699,6 +2726,10 @@ export default function CrtScene({
             }
             return godMode
           },
+          rounds: {
+            state: () => roundState,
+            send: (m) => { net?.round(m); return net !== null },
+          },
           health: {
             read: () => ({ hp: health.hp, max: health.max, dead: health.dead, pvp: health.pvp, online: net !== null }),
             kill: () => { net?.health({ type: 'world-health-cmd', cmd: 'kill' }); return net !== null },
@@ -2775,6 +2806,81 @@ export default function CrtScene({
         }
         const sbConsole = createConsole(host)
         /*
+          The round director's hands in this scene (game/modes/types.ts's
+          ModeHost): walking somewhere, changing map, asking for the car,
+          what the crosshair is on, where the rings stand. It is built here,
+          under the host, because every one of them is a thing the console
+          already does.
+        */
+        const ringLayer = createRingLayer(scene!)
+        const roundName = (id: number) =>
+          id === roundState.you ? (langRef.current === 'es' ? 'tú' : 'you') : remote.roster.get(id)?.name ?? '?'
+        rounds = createRoundDirector(roundState, {
+          you: () => roundState.you,
+          levelId: () => levels.current.id,
+          lang: () => (langRef.current === 'es' ? 'es' : 'en'),
+          nameOf: roundName,
+          here: () => ({ x: headPos.x, y: walk.feetY, z: headPos.z, yaw: walk.yaw }),
+          riding: () => !!fleet.riding,
+          teleport: (x, z, y, yaw) => host.teleport?.(x, z, y, yaw),
+          goLevel: (level) => {
+            resumeRef.current?.()
+            return goMap(mapOf(level))
+          },
+          send: (m) => net?.round(m),
+          others: function* () {
+            for (const [id, p] of remote.players) if (p.here) yield { id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }
+          },
+          aimedProp: () => {
+            const a = host.aim?.()
+            const hit = a && sandbox ? sandbox.raycast(a.origin, a.dir, 70, { props: true, world: true }) : null
+            return hit?.prop ? { kind: hit.prop.kind.id } : null
+          },
+          say: (text, tone) => pushFeed({ tone: tone ?? 'system', text }),
+          driveCar: () => {
+            orderVehicle('car')
+            window.setTimeout(() => enterVehicle('car'), 500)
+          },
+          groundAt: (x, z) => floorOf(levels.current, x, z),
+          rings: (rings) => ringLayer.set(rings, (x, z) => floorOf(levels.current, x, z)),
+          cue: (kind) => menuTick(kind === 'lap' ? 'tab' : 'pick'),
+          teamSpawns: (team) => levels.current.teamSpawns?.[team] ?? [],
+          scene: null,
+        })
+        setRoundHud({ state: roundState, director: rounds, nameOf: roundName })
+        const unbindRound = bindRound({
+          state: roundState,
+          send: (m) => net?.round(m),
+          nameOf: roundName,
+          headcount: () => remote.players.size + 1,
+          isAdmin: () => false,
+        })
+        const roundEdges = new Map<string, boolean>()
+        /** one edge per key per frame, for the mode modules */
+        const roundPressed = (action: string) => {
+          const codes: readonly string[] =
+            action === 'disguise' ? BINDINGS.disguise
+              : action === 'point' ? BINDINGS.point
+                : action.startsWith('vote') ? [BINDINGS.vote[Number(action.slice(4)) - 1]]
+                  : []
+          const down = codes.some((c) => input.keys.has(c))
+          const was = roundEdges.get(action) ?? false
+          roundEdges.set(action, down)
+          return down && !was
+        }
+        /** every frame a round is on: the modes' own tick, the rings, the disguises */
+        const roundsFrame = (dt: number) => {
+          if (!rounds) return
+          ringLayer.update(dt)
+          if (roundState.phase !== 'lobby' || rounds.active) {
+            rounds.tick({ dt, pressed: (a) => roundPressed(a) })
+          }
+          rounds.syncDisguises(sandbox?.root ?? null, (function* () {
+            for (const [id, p] of remote.players) if (p.here) yield { id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }
+          })())
+        }
+        roundUnbindRef.current = unbindRound
+        /*
           What hit points make the body do. A death is the ordinary ragdoll
           with the recovery held (the wantsUp test above): out of whatever we
           were in, thrown away from whoever did it, and left in a heap until
@@ -2805,9 +2911,12 @@ export default function CrtScene({
           } else if (e.type === 'respawn') {
             respawnSound()
             const level = levels.current
+            const roundSpot = rounds?.respawnSpot()
             const at = e.x !== undefined && e.z !== undefined
               ? { x: e.x, z: e.z, yaw: walk.yaw }
-              : level.house
+              : roundSpot
+                ? { x: roundSpot.x, z: roundSpot.z, yaw: roundSpot.yaw }
+                : level.house
                 ? { x: 5.5, z: -2.6, yaw: 0 }
                 : { x: level.spawn.x, z: level.spawn.z, yaw: level.spawn.yaw }
             const clear = (cx: number, cz: number) => {
@@ -3801,6 +3910,7 @@ export default function CrtScene({
             avatarEnv.hpOf = health.vitalsOf
             avatarEnv.collision = level.collision
             avatarEnv.ceilingY = level.ceilingY
+            roundsFrame(dt)
             avatars.update(remote, dt, avatarEnv)
             remoteGrabs.tick(dt)
             voice?.update(remote.players, camera, dt)
@@ -4022,7 +4132,7 @@ export default function CrtScene({
             // a downed body forfeits movement until it has stood back up, and
             // so does a seated one: the seat owns the lens until E gives it
             // back. Gravity and the crouch ease keep integrating either way
-            frozen: levels.frozen || rig.down || !!sitting,
+            frozen: levels.frozen || rig.down || !!sitting || !!rounds?.frozen(),
             groundY: level.groundY,
             groundAt: portalsOn ? portalWalk!.ground(level) : level.groundYAt,
             // (a block world's ceiling is wherever the blocks are overhead)
@@ -4075,7 +4185,7 @@ export default function CrtScene({
           // the world, standing: a seat, a heap on the floor and the pause
           // sheet all holster it
           // (a body on your own beam is down on purpose: the beam keeps it)
-          toolsLive = !!tools && !!sandbox && !sitting && (!rig.down || tools.physgun.holdsSelf) && fps && !rig.acting
+          toolsLive = !!tools && !!sandbox && !sitting && (!rig.down || tools.physgun.holdsSelf) && fps && !rig.acting && !rounds?.locked()
           if (tools && !pausedNow) {
             const k = input.keys
             // the number keys pick emotes while the wheel is up, and the click
@@ -4435,6 +4545,7 @@ export default function CrtScene({
             remote.sample(now, dt)
             avatarEnv.collision = level.collision
             avatarEnv.ceilingY = level.ceilingY
+            roundsFrame(dt)
             avatars.update(remote, dt, avatarEnv)
             remoteGrabs.tick(dt)
             voice?.update(remote.players, camera, dt)
@@ -4877,7 +4988,7 @@ export default function CrtScene({
               weapons: {
                 players: function* () {
                   for (const [id, p] of remote.players) {
-                    if (p.here && !p.flying && !fleetNet.seatOf(id)) yield { id, x: p.x, y: p.y, z: p.z }
+                    if (p.here && !p.flying && !fleetNet.seatOf(id)) yield { id, x: p.x, y: p.y, z: p.z, ...rounds?.hitbox(id) }
                   }
                 },
                 people: (watch) => {
@@ -4999,6 +5110,7 @@ export default function CrtScene({
                 __input: input,
                 __remote: remote,
                 __health: health,
+                __rounds: { state: roundState, get director() { return rounds } },
                 __avatars: avatars,
                 __grabTaker: grabTaker,
                 // the view from the air: what the fog, the far field and the
@@ -5913,6 +6025,8 @@ export default function CrtScene({
       propRef.current = null
       resumeRef.current = null
       goMapRef.current = null
+      roundUnbindRef.current?.()
+      roundUnbindRef.current = null
       roomRestartRef.current = null
       unsubRoom()
       pixelProofsRef.current = null
@@ -6082,6 +6196,9 @@ export default function CrtScene({
         />
       )}
       {/* hit points, the killfeed and the death sheet (HealthHud.tsx) */}
+      {roam && walking && !paused && roundHud && (
+        <RoundHud state={roundHud.state} director={roundHud.director} nameOf={roundHud.nameOf} />
+      )}
       {roam && walking && !paused && healthHud && (
         <HealthHud state={healthHud.state} nameOf={healthHud.nameOf} />
       )}

@@ -154,6 +154,12 @@ export interface SandboxHost {
     heal: () => boolean
     pvp: (on: boolean) => boolean
   }
+  /** the rounds (sandbox/roundCommands.ts): the store, and a way to speak to the
+      server. Absent headless */
+  rounds?: {
+    state: () => import('../net/remoteRounds').RoundState
+    send: (m: import('../net/roundProtocol').RoundClientMessage) => boolean
+  }
   /** tools the tool slots offer, and handing one over (the physgun piece) */
   tools?: () => string[]
   give?: (tool: string) => boolean

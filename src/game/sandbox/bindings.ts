@@ -117,6 +117,15 @@ export const BINDINGS = {
       easy to hold with the left hand while it walks */
   pushToTalk: ['KeyG'],
 
+  /* --- rounds (game/modes) ------------------------------------------- */
+  /** prop hunt: become the prop under the crosshair (again: yourself) */
+  disguise: ['KeyY'],
+  /** held: the round's scoreboard */
+  scoreboard: ['Tab'],
+  /** the build contest's marks, while the gallery is on (the tool slots'
+      digits, which nothing else needs there) */
+  vote: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'],
+
   /* --- diagnostics ----------------------------------------------------- */
   collisionDebug: ['F9'],
 } as const satisfies Record<string, readonly string[]>
@@ -145,7 +154,7 @@ export const BOUND_CODES: ReadonlySet<string> = new Set(
 export const SWALLOWED_CODES: ReadonlySet<string> = new Set([
   ...BINDINGS.forward, ...BINDINGS.back, ...BINDINGS.left, ...BINDINGS.right,
   ...BINDINGS.jump, ...BINDINGS.camera, ...BINDINGS.command, ...BINDINGS.flySlow,
-  ...BINDINGS.chat,
+  ...BINDINGS.chat, ...BINDINGS.scoreboard,
 ])
 
 /**

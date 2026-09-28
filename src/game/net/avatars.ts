@@ -80,6 +80,11 @@ export interface AvatarEnv {
   /** how hurt this player is, or null while they are whole: a small health
       pip is drawn under their name plate (player/health.ts's `vitalsOf`) */
   hpOf?: (id: PlayerId) => { hp: number; max: number; dead: boolean } | null
+  /** this player is drawn some other way (a prop-hunt disguise, modes/director.ts):
+      the body, plate and everything on it are hidden */
+  hidden?: (id: PlayerId) => boolean
+  /** a round's side colour for this player's name plate, or null */
+  tintOf?: (id: PlayerId) => string | null
 }
 
 export interface RemoteAvatars {
@@ -264,6 +269,8 @@ interface Avatar {
   nameText: string
   nameAdmin: boolean
   look: string | undefined
+  /** the side colour the plate is drawn in, when a round gives one */
+  tint: string | null
   badge: THREE.Sprite
   /** the health pip, shown only while hurt; -1 when hidden */
   pip: THREE.Sprite
@@ -318,9 +325,9 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   const seatWorld = new THREE.Vector3()
   const chestOf = (a: Avatar) => Math.max(0, a.rig.limbs.findIndex((l) => l.name === 'chest'))
 
-  const namePlate = (text: string, admin: boolean) =>
+  const namePlate = (text: string, admin: boolean, tint: string | null = null) =>
     plaqueTexture(text, {
-      bg: admin ? 'rgba(157,85,66,0.82)' : 'rgba(12,16,20,0.62)',
+      bg: tint ?? (admin ? 'rgba(157,85,66,0.82)' : 'rgba(12,16,20,0.62)'),
       fg: '#f2f5f8',
       weight: admin ? '700' : '500',
     })
@@ -350,7 +357,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     root.add(group)
     const a: Avatar = {
       rig, group, name, nameTex, badge, pip, pipK: -1,
-      nameText: player.name, nameAdmin: player.admin, look: player.look,
+      nameText: player.name, nameAdmin: player.admin, look: player.look, tint: null,
       bubble: null, bubbleTex: null, bubbleUntil: 0,
       badgeK: 0, wasDown: false, clock: 0, seat: null, top: STAND_TOP,
       claimed: false, claimUntil: 0, follow: new THREE.Vector3(), following: false,
@@ -408,6 +415,16 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     a.bubbleTex = null
   }
 
+  /** redraw the name plate from the avatar's current text, rank and tint */
+  const repaintPlate = (a: Avatar) => {
+    const { tex, aspect } = namePlate(a.nameText, a.nameAdmin, a.tint)
+    a.name.material.map = tex
+    a.name.material.needsUpdate = true
+    a.name.scale.set(NAME_H * aspect, NAME_H, 1)
+    a.nameTex.dispose()
+    a.nameTex = tex
+  }
+
   const despawn = (id: PlayerId) => {
     const a = avatars.get(id)
     if (!a) return
@@ -461,6 +478,18 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
           a.rig.face(player.yaw)
         }
         a.clock += dt
+        // a prop-hunt disguise stands in for the body: draw nothing of it
+        if (worldEnv.hidden?.(id)) {
+          a.group.visible = false
+          a.wasDown = player.down
+          continue
+        }
+        // a round's side colours the plate (a redraw only when it changes)
+        const tint = worldEnv.tintOf?.(id) ?? null
+        if (tint !== a.tint) {
+          a.tint = tint
+          repaintPlate(a)
+        }
         // a pip under the plate for anyone hurt: whole is nothing to draw
         const vit = worldEnv.hpOf?.(id) ?? null
         const eighths = vit && !vit.dead && vit.hp < vit.max ? Math.max(1, Math.ceil((vit.hp / vit.max) * 8)) : -1
@@ -612,12 +641,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       if (entry.name === a.nameText && entry.admin === a.nameAdmin) return
       a.nameText = entry.name
       a.nameAdmin = entry.admin
-      const { tex, aspect } = namePlate(entry.name, entry.admin)
-      a.name.material.map = tex
-      a.name.material.needsUpdate = true
-      a.name.scale.set(NAME_H * aspect, NAME_H, 1)
-      a.nameTex.dispose()
-      a.nameTex = tex
+      repaintPlate(a)
     },
 
     rigOf(id) {

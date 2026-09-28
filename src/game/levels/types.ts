@@ -161,6 +161,9 @@ export interface Level {
   collision: CollisionSet
   /** default arrival point, used when a seam doesn't carry its own */
   spawn: LevelSpawn
+  /** where each side of a round starts, side 0 then side 1 (modes/deathmatch.ts).
+      Absent, a round has only the random `spawn` */
+  teamSpawns?: readonly (readonly LevelSpawn[])[]
   /** the player just arrived through a seam (start ambience, stream chunks) */
   enter: () => void
   /** the player just left through a seam */
