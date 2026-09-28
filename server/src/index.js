@@ -25,8 +25,7 @@ import { createWorldEffects } from './worldEffects.js';
 import { createWorldDamage } from './worldDamage.js';
 import { createWorldBlocks } from './worldBlocks.js';
 import { createWeapons } from './weapons.js';
-import { createProtection } from './protection.js';
-import { createClaims } from './claims.js';
+import { createWorldSocial } from './worldSocial.js';
 
 // ---------------------------------------------------------------- config
 
@@ -917,28 +916,32 @@ const worldShoveRate = new WeakMap();
 const worldGrabRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
-// who may touch whose things, who is muted or kicked, and the vote (protection.js)
-const worldProtection = createProtection({
+// Who may touch whose things, who is muted or kicked, the vote and the chunk
+// claims (worldSocial.js). It is built per world over that world's own
+// players, so with rooms it belongs in the room builder next to the props;
+// `socialOf` is the one place that changes when it moves there. The friends
+// list is the database's, not a room's, and stays out here.
+const friendStore = {
+  list: (userId) => stmt.friendList.all(userId).map((r) => r.friend),
+  add: (userId, friend) => stmt.friendAdd.run(userId, friend, Date.now()),
+  remove: (userId, friend) => stmt.friendRemove.run(userId, friend),
+};
+const worldSocial = createWorldSocial({
   players: worldPlayers,
   send,
   name: displayName,
   eject: (ws) => leaveWorld(ws),
-  store: {
-    list: (userId) => stmt.friendList.all(userId).map((r) => r.friend),
-    add: (userId, friend) => stmt.friendAdd.run(userId, friend, Date.now()),
-    remove: (userId, friend) => stmt.friendRemove.run(userId, friend),
-  },
+  store: friendStore,
 });
-const worldClaims = createClaims({ players: worldPlayers, send, protection: worldProtection, name: displayName });
-worldProtection.attach(worldClaims);
-const propRegistry = createPropRegistry({ players: worldPlayers, send, access: worldProtection, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
+const socialOf = (_ws) => worldSocial;
+const propRegistry = createPropRegistry({ players: worldPlayers, send, access: worldSocial.protection, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
 // orphaned props and claims expire even in a world nobody is standing in,
 // where the world ticker is stopped
-setInterval(() => { propRegistry.sweep(); worldClaims.tick(); }, 5_000).unref();
+setInterval(() => { propRegistry.sweep(); worldSocial.claims.tick(); }, 5_000).unref();
 const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: propRegistry.get });
 const worldDamage = createWorldDamage({ players: worldPlayers, send });
 // Cubeland's broken and placed blocks, the last word per block (worldBlocks.js)
-const worldBlocks = createWorldBlocks({ players: worldPlayers, send, claims: worldClaims });
+const worldBlocks = createWorldBlocks({ players: worldPlayers, send, claims: worldSocial.claims });
 // the pistol, the crossbow and the rocket launcher: shots and hits relayed
 // to the level, checked for honesty (weapons.js)
 const worldWeapons = createWeapons({
@@ -1228,7 +1231,7 @@ function handleWorldJoin(ws, msg) {
     strike(ws);
     return;
   }
-  const until = worldProtection.banned(ws, level);
+  const until = socialOf(ws).protection.banned(ws, level);
   if (until) {
     send(ws, { type: 'world-kicked', level, until, by: 0 });
     return;
@@ -1266,8 +1269,8 @@ function handleWorldJoin(ws, msg) {
     ...(vehicles.length > 0 ? { vehicles } : {}),
     ...(worldFleet.some((v) => v.seats.some(Boolean)) ? { seats: worldSeatTable() } : {}),
   });
-  worldProtection.join(ws);
-  worldClaims.join(ws);
+  socialOf(ws).protection.join(ws);
+  socialOf(ws).claims.join(ws);
   propRegistry.join(ws);
   worldEffects.snapshot(ws);
   worldDamage.snapshot(ws);
@@ -1284,8 +1287,8 @@ function leaveWorld(ws) {
   ws.world = null;
   worldPlayers.delete(w.id);
   propRegistry.leave(w.id, w.level);
-  worldClaims.left(ws, w.level);
-  worldProtection.leave(ws, w.level, w.id);
+  socialOf(ws).claims.left(ws, w.level);
+  socialOf(ws).protection.leave(ws, w.level, w.id);
   worldEffects.leave(w.id);
   worldDamage.left(w.level);
   worldBlocks.left(w.level);
@@ -1337,7 +1340,7 @@ function handleWorldLevel(ws, msg) {
     return;
   }
   const previousLevel = w.level;
-  const until = previousLevel === msg.level ? 0 : worldProtection.banned(ws, msg.level);
+  const until = previousLevel === msg.level ? 0 : socialOf(ws).protection.banned(ws, msg.level);
   if (until) {
     // kicked from where it was walking to: out of the world, as a kick is
     send(ws, { type: 'world-kicked', level: msg.level, until, by: 0 });
@@ -1346,10 +1349,10 @@ function handleWorldLevel(ws, msg) {
   }
   w.level = msg.level;
   propRegistry.leave(w.id, previousLevel);
-  worldClaims.left(ws, previousLevel);
-  worldProtection.leave(ws, previousLevel, w.id, true);
-  worldProtection.join(ws);
-  worldClaims.join(ws);
+  socialOf(ws).claims.left(ws, previousLevel);
+  socialOf(ws).protection.leave(ws, previousLevel, w.id, true);
+  socialOf(ws).protection.join(ws);
+  socialOf(ws).claims.join(ws);
   propRegistry.join(ws);
   worldEffects.snapshot(ws);
   worldDamage.left(previousLevel);
@@ -1395,7 +1398,7 @@ function handleWorldChat(ws, msg) {
     sendError(ws, 'too_long');
     return;
   }
-  if (worldProtection.muted(ws)) {
+  if (socialOf(ws).protection.muted(ws)) {
     sendError(ws, 'muted');
     return;
   }
@@ -1417,7 +1420,7 @@ function handleWorldSignal(ws, msg) {
   const w = ws.world;
   if (!w) return;
   // a muted player is muted on voice too: their handshakes go nowhere
-  if (worldProtection.muted(ws)) return;
+  if (socialOf(ws).protection.muted(ws)) return;
   if (!allowWorld(worldSignalRate, ws, WORLD_SIGNAL_RATE_MAX, WORLD_SIGNAL_RATE_WINDOW_MS)) return;
   if (!Number.isInteger(msg.to) || msg.data === null || typeof msg.data !== 'object') {
     strike(ws);
@@ -1856,10 +1859,6 @@ function handleMessage(ws, msg) {
         sendError(ws, 'too_long');
         return;
       }
-      if (worldProtection.muted(ws)) {
-        sendError(ws, 'muted');
-        return;
-      }
       if (!allowMessage(ws)) {
         sendError(ws, 'rate');
         return;
@@ -1932,8 +1931,8 @@ function handleMessage(ws, msg) {
       break;
     // friends, the protection switch, votes, kicks, mutes and chunk claims
     case 'world-social':
-      if (msg.op === 'claim' || msg.op === 'unclaim') worldClaims.handle(ws, msg);
-      else worldProtection.handle(ws, msg);
+      if (msg.op === 'claim' || msg.op === 'unclaim') socialOf(ws).claims.handle(ws, msg);
+      else socialOf(ws).protection.handle(ws, msg);
       break;
     case 'world-join':
       handleWorldJoin(ws, msg);

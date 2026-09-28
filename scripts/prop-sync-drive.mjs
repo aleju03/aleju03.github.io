@@ -79,6 +79,8 @@ try {
   launch(process.execPath, ['--input-type=module', '-e', `const {createServer}=await import('vite');const s=await createServer({server:{port:${port},strictPort:true,hmr:false,watch:null}});await s.listen()`], { env: { ...process.env, VITE_CHAT_URL: `ws://127.0.0.1:${relay}/ws`, VITE_CACHE_DIR: `${root}/node_modules/.vite-prop-sync-${port}` } })
   await waitFor(async () => (await fetch(`http://localhost:${port}/world`)).ok, 80, 250, 'vite')
   const a = await chrome(0), b = await chrome(1)
+  // (this probe is about handoffs between strangers: ownership has its own, protection-drive.mjs)
+  await run(a, 'protect off'); await sleep(500)
   await run(a, 'tp -32 -331'); await run(b, 'tp -28 -331')
   await sleep(1500)
   for(const c of [a,b])await c.evaluate('__propLinks=0')

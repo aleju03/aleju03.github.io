@@ -1997,6 +1997,8 @@ export default function CrtScene({
         // the server's friends, protection switch and claims
         const social = createSocialNetwork((m) => net?.social(m), { admin: () => sessionRef.current?.admin === true })
         const quiet = (en: string, es: string) => pushFeed({ tone: 'system', text: bilingual(en, es) })
+        // dev only: the ownership drive reads the mirror
+        if (import.meta.env.DEV) Object.assign(window, { __social: social })
         permRef.current = {
           protect: (on) => social.send({ op: 'protect', on }),
           friend: (name, on) => social.send({ op: on ? 'friend' : 'unfriend', name }),

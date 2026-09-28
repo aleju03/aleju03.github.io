@@ -154,6 +154,15 @@
                                       own body taken and pulled about and let
                                       go; positions and speeds printed (no NaN,
                                       capped). Shots grab-* beside the others
+    npm run drive -- protection       ownership and anti-grief with two real clients
+                                      on a private relay (scripts/protection-drive.mjs):
+                                      a stranger's physgun denied (buzz, toast),
+                                      a friend's allowed, unfriended, /share;
+                                      in Cubeland a claim declines a stranger's
+                                      dig, and with the client's guard lifted
+                                      the server refuses it and the correction
+                                      puts the block back; links counted (0).
+                                      Shots protection-* (--out)
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -201,6 +210,12 @@ if (has('help') || argv.includes('-h')) {
   process.exit(0)
 }
 const WHAT = wanted.length ? wanted : ['console', 'menu', 'noclip']
+// the ownership scenario needs a relay and two browsers of its own, so it
+// runs as its own script before this one boots a single-client probe
+if (WHAT.includes('protection')) {
+  await import('./protection-drive.mjs')
+  process.exit(0)
+}
 const OUT = resolve(flag('out', 'shots/sandbox'))
 const W = 1280
 const H = 800
