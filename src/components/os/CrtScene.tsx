@@ -3084,6 +3084,7 @@ export default function CrtScene({
           },
           fog: sceneFog,
           bg: sceneBg,
+          day: 1,
         }
         // the most recent sky the light pass composed. A fleet built mid-session
         // (the world attaching behind the front door) has never seen a day
@@ -3126,6 +3127,7 @@ export default function CrtScene({
           // the day, and the night table's drained chroma would grey it out
           look.setMood(sky.night * (1 - sky.twilight))
           dressAir(sky)
+          lightRig.day = sky.day
           level.overrideLight?.(lightRig)
           // the globes light themselves the way the ground under them is lit,
           // so the planet from orbit and the far field over it agree

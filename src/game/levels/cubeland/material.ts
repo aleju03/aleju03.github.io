@@ -31,12 +31,22 @@ import { FADE_FRAG_ALPHA, FADE_FRAG_DISSOLVE, FADE_VERT_BODY, FADE_VERT_HEAD, fa
   `fadeClock`, the water by alpha. A chunk re-meshed on screen is stamped
   PREBORN and simply swaps.
 
-  **Glow** is a per-vertex flag (the glowstone) that adds the texture's own
-  colour to the emitted light, at the look's HDR, so it burns in a cave.
+  **Light.** Each vertex carries its sky light and its block light (the
+  mesher's flood from torches, lamps and lava, 0..15). Sky light is baked
+  into the vertex colour and scaled by the scene's own sun and sky as ever;
+  block light is added here as warm emitted light on the block's own
+  colour (the sky's darkening undone first, so a torch shows a cave wall
+  its true colour), weighted by how little daylight reaches that face
+  (`daylight` times its sky light), so a torch hardly shows at noon on open
+  ground and lights a cave by day and everything round it at night. A
+  per-vertex flag makes the things that are light (glowstone, lanterns, the
+  flame of a torch, lava) glow in their own colour, at the look's HDR.
+  Liquids scroll their texture, slowly when still and quickly when flowing.
 
   The vertex colour arrives at half scale (a biome's tint can lift a
   channel over one) and is doubled here with the texel. The vertex format
-  is the mesher's: 16-bit positions and texture
+  is the mesher's (the layer, the flags and the two lights are aBlk's four
+  bytes): 16-bit positions and texture
   coordinates in eighths of a block (the mesh is scaled; the texture
   coordinate is scaled here), byte normals and colours, and the layer and
   glow as two bytes. Each material has its own program key, and both are
@@ -53,19 +63,33 @@ export interface TerrainMats {
     advances it every frame) */
 export const fadeClock = { value: 0 }
 
+/** how much of the day's sky light is out there, 0 night .. 1 day (the
+    level sets it off its clock): block light shows most where it is not */
+export const daylight = { value: 1 }
+/** the colour and strength of block light, linear HDR: a warm torch */
+const LAMP = 'vec3(1.7, 0.98, 0.42)'
+
 const inject = (key: string) => (shader: THREE.WebGLProgramParametersWithUniforms, tex: THREE.DataArrayTexture) => {
   shader.uniforms.uBlocks = { value: tex }
   shader.uniforms.uTime = fadeClock
+  shader.uniforms.uDay = daylight
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
-      `#include <common>\nattribute vec2 aTex;\nattribute vec2 aBlk;\nvarying vec2 vTex;\nvarying vec2 vBlk;\n${FADE_VERT_HEAD}`,
+      `#include <common>\nattribute vec2 aTex;\nattribute vec4 aBlk;\nvarying vec2 vTex;\nvarying vec4 vBlk;\nuniform float uTime;\n${FADE_VERT_HEAD}`,
     )
-    .replace('#include <begin_vertex>', `#include <begin_vertex>\n  vTex = aTex * 0.125;\n  vBlk = aBlk;\n${FADE_VERT_BODY}`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+  vTex = aTex * 0.125;
+  vBlk = aBlk;
+  // liquids move: a slow shimmer on a still one, a quick run on a flowing one
+  float liquidF = mod(floor(aBlk.y / 2.0), 2.0);
+  float flowF = mod(floor(aBlk.y / 4.0), 2.0);
+  vTex.y -= liquidF * uTime * (flowF > 0.5 ? 1.3 : 0.18);
+${FADE_VERT_BODY}`)
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
-      `#include <common>\nuniform highp sampler2DArray uBlocks;\nvarying vec2 vTex;\nvarying vec2 vBlk;\n${fadeFragHead(true)}`,
+      `#include <common>\nuniform highp sampler2DArray uBlocks;\nuniform float uDay;\nvarying vec2 vTex;\nvarying vec4 vBlk;\n${fadeFragHead(true)}`,
     )
     .replace(
       key === 'water' ? '#include <opaque_fragment>' : '#include <clipping_planes_fragment>',
@@ -79,7 +103,19 @@ const inject = (key: string) => (shader: THREE.WebGLProgramParametersWithUniform
     )
     .replace(
       '#include <emissivemap_fragment>',
-      '#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * vBlk.y * 1.8;',
+      `#include <emissivemap_fragment>
+  {
+    // the colour the block would be in full sky light (mesher.ts bakes the
+    // sky into the vertex colour on exactly this curve)
+    float skyV = vBlk.z / 15.0;
+    vec3 albedo = diffuseColor.rgb / (0.1 + 0.9 * pow(skyV, 1.5));
+    // block light: the game's own falloff, and a torch counts for most
+    // where the day does not reach
+    float lampV = pow(vBlk.w / 15.0, 1.9);
+    totalEmissiveRadiance += albedo * ${LAMP} * lampV * (1.0 - 0.85 * uDay * skyV);
+    // and what is itself light
+    totalEmissiveRadiance += albedo * mod(vBlk.y, 2.0) * 1.7;
+  }`,
     )
 }
 

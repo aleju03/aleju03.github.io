@@ -2339,6 +2339,68 @@ try {
       await run('noclip')
       await sleep(500)
     }
+    // light and liquid: torches round the spawn by night, a lava lake in a
+    // cave, and water and lava poured out on the ground and left to run
+    if (want('light') || want('fluid')) {
+      const handsOnce = (kind) => cube(`const f = { camera: cam, feetY: w.feetY, fire: false, alt: false, wheel: 0, dt: 0.016, active: true, firstPerson: true };
+        L.hands.choose('${kind}'); L.hands.update(f); L.hands.update({ ...f, alt: true }); L.hands.update(f); return true`)
+      const count = (keys, r) => cube(`const s = L.spawn, bx = Math.floor(s.x / 2), bz = Math.floor((s.z + 40000) / 2), by = Math.round(s.y / 2);
+        const ids = ${JSON.stringify(keys)}.map((k) => C.blockId(k)); let n = 0;
+        for (let y = by - 4; y < by + 4; y++) for (let z = bz - ${r}; z <= bz + ${r}; z++) for (let x = bx - ${r}; x <= bx + ${r}; x++) if (ids.includes(C.store.get(x, y, z))) n++
+        return n`)
+      if (want('light')) {
+        await run('time 0.97')
+        await cube(`const s = L.spawn, bx = Math.floor(s.x / 2), bz = Math.floor((s.z + 40000) / 2), by = Math.round(s.y / 2);
+          const T = C.blockId('torch'), G = C.blockId('glowstone'), J = C.blockId('jack_o_lantern');
+          const at = (x, z, id) => { let y = by + 6; while (y > 1 && !C.store.get(x, y - 1, z)) y--; while (C.store.get(x, y, z) && y < 90) y++; C.net.apply([[x, y, z, id]], false) }
+          at(bx - 4, bz - 6, T); at(bx + 4, bz - 6, T); at(bx, bz - 10, G); at(bx - 7, bz - 12, T); at(bx + 6, bz - 13, J); at(bx + 1, bz - 4, T)
+          window.__sandbox.console.host.teleport(s.x, s.z + 6, s.y, 0); return true`)
+        await sleep(2500)
+        await look(0, -0.15)
+        await sleep(800)
+        await shot('cube-night')
+        await run('time 0.4')
+        // the nearest lava under the spawn, looked at from the cave beside it
+        const lava = await cube(`const s = L.spawn, bx = Math.floor(s.x / 2), bz = Math.floor((s.z + 40000) / 2), Lv = C.blockId('lava');
+          for (let r = 0; r < 120; r++) for (let z = bz - r; z <= bz + r; z++) for (let x = bx - r; x <= bx + r; x++) {
+            if (Math.max(Math.abs(x - bx), Math.abs(z - bz)) !== r) continue
+            for (let y = 3; y < 10; y++) if (C.store.get(x, y, z) === Lv && !C.store.get(x, y + 2, z) && !C.store.get(x, y + 3, z)) return [x, y, z]
+          }
+          return null`)
+        if (lava) {
+          await run('noclip')
+          await cube(`window.__sandbox.console.host.teleport(${lava[0] * 2 + 1}, ${-40000 + lava[2] * 2 + 1 + 6}, ${lava[1] * 2 + 5}, 0); return true`)
+          await look(0, -0.5)
+          await sleep(3000)
+          await shot('cube-lava')
+          await run('noclip')
+          console.log(`  a lava lake at block ${lava.join(',')}`)
+        } else console.log('  no lava found near the spawn')
+      }
+      if (want('fluid')) {
+        await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x, s.z, s.y, 0); return true')
+        await sleep(1200)
+        await look(0, -0.9)
+        await sleep(300)
+        await handsOnce('block_water')
+        await sleep(5000)
+        const wet = await count(['water', 'water_1', 'water_2', 'water_3', 'water_4', 'water_5', 'water_6', 'water_7', 'water_8'], 10)
+        console.log(`  a bucket of water poured: ${wet} water block(s) after 5 s`)
+        await look(Math.PI / 2, -0.9)
+        await sleep(300)
+        await handsOnce('block_lava')
+        await sleep(9000)
+        const set = await count(['obsidian', 'cobblestone'], 10)
+        const hot = await count(['lava', 'lava_1', 'lava_2', 'lava_3', 'lava_8'], 10)
+        console.log(`  a bucket of lava beside it: ${hot} lava block(s), ${set} obsidian or cobblestone where they met`)
+        await run('noclip')
+        await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x + 8, s.z + 10, s.y + 10, 0.6); return true')
+        await look(0.6, -0.6)
+        await sleep(1500)
+        await shot('cube-fluids')
+        await run('noclip')
+      }
+    }
     // back on the ground at the spawn, facing north, looking down at it
     await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x, s.z, s.y, 0); return true')
     await sleep(1500)

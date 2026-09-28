@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import {
-  AIR, B, BLOCKS, BLOCK_BY_KEY, GRAVEL, SAND, TNT, WATER, blockKind, blockOfKind, paintTexture,
-  type BlockDef,
+  AIR, B, BLOCKS, BLOCK_BY_KEY, COBBLE, GRAVEL, LAVA_FLOW, OBSIDIAN, SAND, STONE, TNT, WATER, WATER_FLOW,
+  blockKind, blockOfKind, paintTexture, type BlockDef,
 } from '../../sandbox/blocks'
 import { propMaterial } from '../../sandbox/art'
 import { KINDS } from '../../sandbox/kinds'
@@ -15,7 +15,7 @@ import { gfx } from '../../world/quality'
 import type { HandsHud, Level, LevelLightRig, LevelSpawn } from '../types'
 import { Biome, CHUNK, H, SEA, columnAt } from './gen'
 import { meshChunk, type MeshArrays } from './mesher'
-import { fadeClock, terrainMaterials } from './material'
+import { daylight, fadeClock, terrainMaterials } from './material'
 import { PREBORN } from '../../world/fade'
 import { CHUNK_W, chunkKey, createVoxelStore, isSolid, type VoxelStore } from './world'
 
@@ -61,6 +61,14 @@ import { CHUNK_W, chunkKey, createVoxelStore, isSolid, type VoxelStore } from '.
   - **The day** is twenty minutes, the real one's to the tick (`skyOf`):
     ten of daylight, a minute and a half of sunset, seven of night, a minute
     and a half of dawn, off the wall clock so every player shares it.
+  - **Liquids flow** (see "liquids" below): water runs seven blocks and
+    lava three, both pour down first and head for the nearest drop, two
+    water sources make a third, and where they meet lava sets to obsidian
+    or cobblestone. Buckets of either are in the catalogue. Lava lakes lie
+    in the deepest caves, and lava burns up any prop that falls in.
+  - **Light.** Torches, lanterns, glowstone, jack o'lanterns and lava give
+    block light, flooded out by the mesher and added by the material as
+    warm light that shows most at night and underground.
   - **Loose blocks.** The physgun tears a block out of the ground as a prop
     (the level's `grab`), sand and gravel with nothing under them fall as
     props and set back into the grid where they land, and flowers and tall
@@ -79,7 +87,7 @@ const REACH = 10.5
 const REPEAT = 0.2
 /** blocks one blast may throw as props */
 const DEBRIS_PER_BLAST = 26
-const HOTBAR = ['grass', 'dirt', 'stone', 'cobblestone', 'planks', 'log', 'glass', 'bricks', 'tnt']
+const HOTBAR = ['grass', 'dirt', 'stone', 'cobblestone', 'planks', 'log', 'glass', 'torch', 'tnt']
 
 export interface CubelandOpts {
   parent: THREE.Object3D
@@ -107,6 +115,8 @@ export interface Cubeland {
   level: Level
   store: VoxelStore
   net: BlockNet
+  /** a block's id by its key (the harness counts blocks with it) */
+  blockId: (key: string) => number
 }
 
 interface Drawn {
@@ -175,7 +185,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     g.setAttribute('normal', new THREE.BufferAttribute(a.normal, 3, true))
     g.setAttribute('aTex', new THREE.BufferAttribute(a.tex, 2))
     g.setAttribute('color', new THREE.BufferAttribute(a.color, 3, true))
-    g.setAttribute('aBlk', new THREE.BufferAttribute(a.blk, 2))
+    g.setAttribute('aBlk', new THREE.BufferAttribute(a.blk, 4))
     g.setIndex(new THREE.BufferAttribute(a.index, 1))
     g.computeBoundingSphere()
     return g
@@ -276,8 +286,199 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     for (let dz = lz === 0 ? -1 : 0; dz <= (lz === CHUNK - 1 ? 1 : 0); dz++)
       for (let dx = lx === 0 ? -1 : 0; dx <= (lx === CHUNK - 1 ? 1 : 0); dx++) markDirty(cx + dx, cz + dz)
     if (Math.abs(cx - boxAt.cx) <= 1 && Math.abs(cz - boxAt.cz) <= 1) boxesStale = true
-    if (!remote) outbox.push([bx, by, bz, id])
+    if (!remote) {
+      outbox.push([bx, by, bz, id])
+      // the liquids round a change are this client's to run (a peer's
+      // changes arrive with their flow already worked out)
+      wakeFluids(bx, by, bz)
+    }
     return was
+  }
+
+  /* ------------------------------------------------------------- liquids -- */
+
+  /*
+    Water and lava flow the way they do there. A block of liquid is a
+    source (level 0), a flowing block (1 to 7 for water, 1 to 3 for lava:
+    lava runs a third as far), or a falling column (8). When anything next
+    to a liquid changes, the liquid is scheduled for an update a game tick
+    count later (5 ticks for water, 30 for lava, twenty ticks a second), and
+    an update:
+
+    - re-derives a flowing block's level from its neighbours (a falling one
+      if the same liquid is on top of it, else one more than its lowest
+      neighbour, else it dries up), and makes a new water source where two
+      sources meet over something that holds them up, which is the endless
+      water trick;
+    - pours down first: into anything it can replace below it, as a falling
+      column. A flowing block that can fall does not spread sideways, a
+      source does both;
+    - spreads sideways, one level thinner, only toward the nearest drop
+      within four blocks (two for lava) if there is one, as there, else all
+      round;
+    - and where water and lava meet, lava becomes obsidian (a source) or
+      cobblestone (flowing), and lava falling on water makes stone.
+
+    Every change goes through `edit` like any other, so it is meshed,
+    boxed, and sent: a peer sees the flow as edits and runs none of it.
+  */
+  const FAMILY = new Uint8Array(256)
+  const LEVEL = new Uint8Array(256)
+  for (const b of BLOCKS) {
+    FAMILY[b.id] = b.fluid === 'water' ? 1 : b.fluid === 'lava' ? 2 : 0
+    LEVEL[b.id] = b.level ?? 0
+  }
+  const MAX_RUN = [0, 7, 3]
+  const TICKS = [0, 5, 30]
+  const SEEK = [0, 4, 2]
+  const idOf = (fam: number, level: number) => (fam === 1 ? WATER_FLOW[level] : LAVA_FLOW[level])
+  /** ticks of simulated time here, twenty a second */
+  let tick = 0
+  const due = new Map<number, number>()
+  const pack = (x: number, y: number, z: number) => ((x + 4096) * 8192 + (z + 4096)) * 128 + y
+  const schedule = (x: number, y: number, z: number, fam: number) => {
+    if (y < 0 || y >= H) return
+    const k = pack(x, y, z)
+    const at = tick + TICKS[fam]
+    const was = due.get(k)
+    if (was === undefined || was > at) due.set(k, at)
+  }
+  const NB6 = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]]
+  const H4 = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+  const wakeFluids = (x: number, y: number, z: number) => {
+    const f = FAMILY[store.get(x, y, z)]
+    if (f) schedule(x, y, z, f)
+    for (const [dx, dy, dz] of NB6) {
+      const g = FAMILY[store.get(x + dx, y + dy, z + dz)]
+      if (g) schedule(x + dx, y + dy, z + dz, g)
+    }
+  }
+  /** can a liquid of `fam` at `level` run into this block */
+  const takes = (id: number, fam: number, level: number) => {
+    if (id === AIR) return true
+    const b = BLOCKS[id]
+    if (b.cross || b.shape === 'torch') return true
+    return FAMILY[id] === fam && LEVEL[id] !== 0 && LEVEL[id] !== 8 && LEVEL[id] > level
+  }
+  const fizz = (x: number, y: number, z: number) => {
+    centre(x, y, z, tmp)
+    sb?.fx.dust(tmp, 1.2)
+    breakSound('glass', 0.3, tmp.x, tmp.y, tmp.z)
+  }
+  /** is there a drop within `n` blocks along the level, from (x, y, z),
+      stepping only through blocks the liquid could run into */
+  const dropIn = (x: number, y: number, z: number, first: number[], fam: number, n: number) => {
+    let cx = x + first[0]
+    let cz = z + first[1]
+    for (let k = 1; k <= n; k++) {
+      if (!takes(store.get(cx, y, cz), fam, 7)) return Infinity
+      if (takes(store.get(cx, y - 1, cz), fam, 7) || FAMILY[store.get(cx, y - 1, cz)] === fam) return k
+      cx += first[0]
+      cz += first[1]
+    }
+    return Infinity
+  }
+  const flow = (x: number, y: number, z: number) => {
+    const id = store.get(x, y, z)
+    const fam = FAMILY[id]
+    if (!fam) return
+    let level = LEVEL[id]
+    const other = fam === 1 ? 2 : 1
+    // water met: lava sets
+    if (fam === 2) {
+      for (const [dx, dy, dz] of NB6) {
+        if (dy < 0) continue
+        if (FAMILY[store.get(x + dx, y + dy, z + dz)] === 1) {
+          edit(x, y, z, level === 0 ? OBSIDIAN : COBBLE)
+          fizz(x, y, z)
+          return
+        }
+      }
+    }
+    // a flowing block finds its level again from what feeds it
+    if (level !== 0) {
+      let want: number
+      if (FAMILY[store.get(x, y + 1, z)] === fam) want = 8
+      else {
+        let lo = 99
+        let sources = 0
+        for (const [dx, dz] of H4) {
+          const n = store.get(x + dx, y, z + dz)
+          if (FAMILY[n] !== fam) continue
+          const l = LEVEL[n] === 8 ? 0 : LEVEL[n]
+          if (LEVEL[n] === 0) sources++
+          lo = Math.min(lo, l)
+        }
+        want = lo + 1
+        const under = store.get(x, y - 1, z)
+        if (fam === 1 && sources >= 2 && (isSolid(under) || (FAMILY[under] === 1 && LEVEL[under] === 0))) want = 0
+      }
+      if (want > MAX_RUN[fam] && want !== 8) {
+        edit(x, y, z, AIR)
+        return
+      }
+      if (want !== level) {
+        edit(x, y, z, idOf(fam, want))
+        level = want
+      }
+    }
+    // down first
+    const below = store.get(x, y - 1, z)
+    let falls = false
+    if (y > 0) {
+      if (FAMILY[below] === other) {
+        if (fam === 2) {
+          edit(x, y - 1, z, STONE)
+          fizz(x, y - 1, z)
+        } else {
+          edit(x, y - 1, z, LEVEL[below] === 0 ? OBSIDIAN : COBBLE)
+          fizz(x, y - 1, z)
+        }
+      } else if (takes(below, fam, 0) || (FAMILY[below] === fam && LEVEL[below] !== 0 && LEVEL[below] !== 8)) {
+        edit(x, y - 1, z, idOf(fam, 8))
+        falls = true
+      } else if (FAMILY[below] === fam) falls = LEVEL[below] !== 0
+    }
+    if (falls && level !== 0) return
+    // then sideways, thinner, toward the nearest drop if there is one
+    const next = level === 0 || level === 8 ? 1 : level + 1
+    if (next > MAX_RUN[fam]) return
+    // (a falling column spreads only where it lands)
+    if (level === 8 && !isSolid(below) && FAMILY[below] !== fam) return
+    let best = Infinity
+    const dist = H4.map((d) => {
+      const k = dropIn(x, y, z, d, fam, SEEK[fam])
+      best = Math.min(best, k)
+      return k
+    })
+    H4.forEach(([dx, dz], k) => {
+      if (best !== Infinity && dist[k] !== best) return
+      const nx = x + dx
+      const nz = z + dz
+      const n = store.get(nx, y, nz)
+      if (FAMILY[n] === other) {
+        edit(nx, y, nz, fam === 1 && LEVEL[n] === 0 ? OBSIDIAN : COBBLE)
+        fizz(nx, y, nz)
+      } else if (takes(n, fam, next)) edit(nx, y, nz, idOf(fam, next))
+    })
+  }
+  /** run what is due, at most `cap` blocks a frame */
+  const runFluids = (dt: number, cap: number) => {
+    tick += dt * 20
+    if (!due.size) return
+    let n = 0
+    const now: number[] = []
+    for (const [k, at] of due) {
+      if (at > tick) continue
+      now.push(k)
+      if (++n >= cap) break
+    }
+    for (const k of now) {
+      due.delete(k)
+      const y = k % 128
+      const r = Math.floor(k / 128)
+      flow(Math.floor(r / 8192) - 4096, y, (r % 8192) - 4096)
+    }
   }
 
   const tmp = new THREE.Vector3()
@@ -400,7 +601,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     for (let n = 0; n < 64 && t <= maxT; n++) {
       if (y >= 0 && y < H) {
         const id = store.get(x, y, z)
-        if (id && id !== WATER) {
+        if (id && !BLOCKS[id].liquid) {
           hit.x = x; hit.y = y; hit.z = z
           hit.nx = nx; hit.ny = ny; hit.nz = nz
           hit.t = t * B
@@ -526,7 +727,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
           const py = onto ? h.y : h.y + h.ny
           const pz = onto ? h.z : h.z + h.nz
           const there = store.get(px, py, pz)
-          const free = there === AIR || there === WATER || BLOCKS[there].cross
+          const free = there === AIR || BLOCKS[there].liquid || BLOCKS[there].cross || BLOCKS[there].shape === 'torch'
           // never inside the body placing it
           const x0 = CUBE_ORIGIN.x + px * B
           const z0 = CUBE_ORIGIN.z + pz * B
@@ -534,7 +735,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
           const body = cam.position.x + r > x0 && cam.position.x - r < x0 + B &&
             cam.position.z + r > z0 && cam.position.z - r < z0 + B &&
             f.feetY < (py + 1) * B && cam.position.y + 0.2 > py * B
-          if (free && !body && py >= 0 && py < H && (!def.solid || !body)) {
+          if (free && py >= 0 && py < H && (!def.solid || !body)) {
             if (edit(px, py, pz, def.id) >= 0) {
               swing = 1
               centre(px, py, pz, tmp)
@@ -606,7 +807,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
           const d = Math.hypot(x + 0.5 - bx0, y + 0.5 - by0, z + 0.5 - bz0)
           if (d > rb) continue
           const id = store.get(x, y, z)
-          if (!id || id === WATER) continue
+          if (!id || BLOCKS[id].liquid) continue
           const def = BLOCKS[id]
           if (def.hardness === Infinity) continue
           const f = 1 - d / rb
@@ -658,7 +859,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       const t = p.body.translation()
       toBlock(t.x, t.y, t.z, tmp)
       const here = store.get(tmp.x, tmp.y, tmp.z)
-      if (here === AIR || here === WATER || BLOCKS[here].cross) {
+      if (here === AIR || BLOCKS[here].liquid || BLOCKS[here].cross) {
         const def = BLOCK_BY_KEY.get(f.key)
         if (def) edit(tmp.x, tmp.y, tmp.z, def.id)
       }
@@ -838,26 +1039,66 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     rig.moon.intensity *= 0.6
     rig.windowSpill.intensity = 0
     rig.setMoonPool(0)
+    // block light shows most where the day does not reach (material.ts)
+    daylight.value = rig.day
   }
 
   /* -------------------------------------------------------------- water -- */
 
   let waterNow: number | undefined
   const SEA_TOP = (SEA + 1) * B - 0.25
+  /** the surface of whatever liquid the body is in (lava is swum through
+      like water, slowly and badly), or undefined */
   const findWater = (p: THREE.Vector3, feetY: number) => {
     toBlock(p.x, feetY + 0.2, p.z, tmp)
     let y = tmp.y
-    if (store.get(tmp.x, y, tmp.z) !== WATER) {
+    let fam = FAMILY[store.get(tmp.x, y, tmp.z)]
+    if (!fam) {
       // wading: the water is at the eye, not the feet
-      if (store.get(tmp.x, Math.floor(p.y / B), tmp.z) !== WATER) return undefined
       y = Math.floor(p.y / B)
+      fam = FAMILY[store.get(tmp.x, y, tmp.z)]
+      if (!fam) return undefined
     }
-    while (y < H - 1 && store.get(tmp.x, y + 1, tmp.z) === WATER) y++
-    return (y + 1) * B - 0.25
+    while (y < H - 1 && FAMILY[store.get(tmp.x, y + 1, tmp.z)] === fam) y++
+    const top = store.get(tmp.x, y, tmp.z)
+    const lv = LEVEL[top]
+    const h = lv === 0 || lv === 8 ? 0.875 : Math.max(0.12, (8 - (fam === 2 ? lv * 2 : lv)) / 9)
+    return (y + h) * B - 0.1
+  }
+
+  /* ------------------------------------------------ what lava does to props -- */
+
+  const inLava = new Map<number, number>()
+  let lavaCheck = 0
+  const burnProps = (dt: number) => {
+    lavaCheck -= dt
+    if (lavaCheck > 0 || !sb) return
+    lavaCheck = 0.25
+    const s2 = sb
+    s2.forEach((p) => {
+      if (!s2.getTransform(p.id, tmp)) return
+      const id = blockAt(tmp.x, tmp.y - p.extents.y * 0.5, tmp.z)
+      if (FAMILY[id] !== 2) {
+        inLava.delete(p.id)
+        return
+      }
+      const t = (inLava.get(p.id) ?? 0) + 0.25
+      inLava.set(p.id, t)
+      s2.fx.burn(tmp, 1)
+      // a thing that goes off goes off; anything else is gone in a second
+      if (p.kind.explodes) s2.ignite(p.id)
+      else if (t >= 1) {
+        s2.fx.dust(tmp, 1.2)
+        breakSound('glass', 0.25, tmp.x, tmp.y, tmp.z)
+        s2.remove(p.id)
+        inLava.delete(p.id)
+      }
+    })
   }
 
   /* -------------------------------------------------------------- level -- */
 
+  let sendIn = 0
   const level: Level = {
     id: 'cubeland',
     groundY: 0,
@@ -887,7 +1128,12 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       // (the lens is the walker's eye, 3.84 over the soles)
       waterNow = findWater(p, p.y - 3.84)
       settleFalling(dt)
-      if (outbox.length) {
+      runFluids(dt, 400)
+      burnProps(dt)
+      // (at most ten sends a second: a flood makes an edit every tick)
+      sendIn -= dt
+      if (outbox.length && sendIn <= 0) {
+        sendIn = 0.1
         const out = outbox
         const blast = outboxBlast
         outbox = []
@@ -1004,5 +1250,5 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     },
   }
 
-  return { root, level, store, net }
+  return { root, level, store, net, blockId: (key) => BLOCK_BY_KEY.get(key)?.id ?? -1 }
 }

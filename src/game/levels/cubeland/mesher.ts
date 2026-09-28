@@ -1,10 +1,10 @@
-import { BLOCKS, WATER, textureIndex } from '../../sandbox/blocks'
+import { BLOCKS, textureIndex } from '../../sandbox/blocks'
 import { BIOMES, CHUNK, H, type ChunkData } from './gen'
 
 /*
   A chunk of blocks turned into two meshes: everything solid-looking (the
   cubes, the leaves and glass with their see-through pixels, the crossed
-  cards of the plants) and the water.
+  cards of the plants, the torches, the lava) and the water.
 
   **Greedy.** Faces are only made where a block meets one that does not hide
   it, and each slice of the chunk merges its faces into the biggest
@@ -12,48 +12,85 @@ import { BIOMES, CHUNK, H, type ChunkData } from './gen'
   shading at all four corners and the same light. A flat sunny field is a
   handful of quads rather than a quad a block, and the texture repeats
   across a merged quad because its coordinates are in blocks and the
-  material samples an array texture that wraps (material.ts).
+  material samples an array texture that wraps (material.ts). What is not
+  a cube (a plant, a torch, a liquid that is flowing and so not level with
+  its neighbours) is made cell by cell after.
 
-  **Shading** is the two things that make a block world read as one:
-  ambient occlusion at every vertex (each corner darkened by the blocks
-  touching it, the classic three-neighbour rule, with the quad's diagonal
-  flipped so the gradient runs the right way) and sky light, which is
-  whether the block in front of the face sees the sky (the column's highest
-  opaque block is below it), half-sees it (a neighbouring column's is), or
-  is under ground, darker the deeper it is, so a cave is dark and a hollow
-  under a cliff is dim without any light in the scene. Both are baked into
-  the vertex colour with the biome's tint for grass and leaves.
+  **Shading** is three things. Ambient occlusion at every vertex (each
+  corner darkened by the blocks touching it, the classic three-neighbour
+  rule, with the quad's diagonal flipped so the gradient runs the right
+  way). Sky light, which is whether the block in front of the face sees the
+  sky (the column's highest opaque block is below it), half-sees it (a
+  neighbouring column's is), or is under ground, darker the deeper it is.
+  Both are baked into the vertex colour with the biome's tint for grass and
+  leaves. And block light, the game's own: every block that gives light (a
+  torch 14, glowstone, lanterns and lava 15) floods it through everything
+  that is not opaque, one level a block, across the chunk seams (the flood
+  runs over the chunk and the eight round it); a face takes the level of the
+  block in front of it. That one is not baked into the colour: it travels as
+  its own byte and the material adds it as warm emitted light, strongest in
+  the dark (material.ts), so a torch lights a cave by day and a whole
+  hillside at night.
+
+  **Liquids** have levels (sandbox/blocks.ts): a source or a falling column
+  stands an eighth of a block under the surface and is meshed greedily like
+  a cube; a flowing block is lower the further it has run, and the step down
+  from one to the next is drawn as its own strip, so a spreading sheet of
+  water is a staircase of thin slabs, as there.
 
   **The format** is small because the whole visible world is in it:
   positions and texture coordinates are 16-bit integers in eighths of a
   block (the mesh is scaled by B/8), normals are bytes, colour is three
-  bytes (at half scale, so a tint can go over one) and the texture layer
-  and glow two more, about twenty bytes a vertex.
+  bytes (at half scale, so a tint can go over one), and four more bytes are
+  the texture layer, the flags (glows, is a liquid, is flowing), the sky
+  light and the block light: about twenty-two bytes a vertex.
 */
 
-const P = CHUNK + 2
-const PY = H + 2
-/** padded copy: the chunk and a one-block rim from its neighbours */
-const pad = new Uint8Array(P * P * PY)
-const tops = new Int16Array(P * P)
-const pi = (x: number, y: number, z: number) => x + 1 + (z + 1) * P + (y + 1) * P * P
+/* the region a chunk is meshed from: itself and the eight round it, which
+   is exactly as far as a torch's light can reach into it */
+const RW = CHUNK * 3
+const RO = CHUNK
+const RY = H + 2
+const vox = new Uint8Array(RW * RW * RY)
+const tops = new Int16Array(RW * RW)
+const bl = new Uint8Array(RW * RW * RY)
+let blUsed = false
+const queue = new Int32Array(RW * RW * RY)
+const SX = 1
+const SZ = RW
+const SYs = RW * RW
+/** index in the region of chunk-local (x, y, z); x and z may run -16..31,
+    y -1..H */
+const ri = (x: number, y: number, z: number) => x + RO + (z + RO) * RW + (y + 1) * SYs
 
 /* what each block does to the mesher, flattened for the inner loops */
 const OPAQUE = new Uint8Array(256)
-const CUBE = new Uint8Array(256)
 const CROSS = new Uint8Array(256)
 const LIQUID = new Uint8Array(256)
 const GLOW = new Uint8Array(256)
 const TINT = new Uint8Array(256)
+const EMIT = new Uint8Array(256)
+const TORCH = new Uint8Array(256)
+/** 1 water, 2 lava */
+const FAM = new Uint8Array(256)
+/** a liquid's level as drawn, 0 a source, 1..7 flowing, 8 falling */
+const LVL = new Uint8Array(256)
+/** cells the greedy pass leaves to the cell pass */
+const SPECIAL = new Uint8Array(256)
 /** texture layer per block and face: [top, side, bottom] */
 const LAYER = new Uint8Array(256 * 3)
 for (const b of BLOCKS) {
   OPAQUE[b.id] = b.opaque ? 1 : 0
   CROSS[b.id] = b.cross ? 1 : 0
   LIQUID[b.id] = b.liquid ? 1 : 0
-  CUBE[b.id] = b.id !== 0 && !b.cross && !b.liquid ? 1 : 0
   GLOW[b.id] = b.glow ? 1 : 0
   TINT[b.id] = b.tint === 'grass' ? 1 : b.tint === 'foliage' ? 2 : 0
+  EMIT[b.id] = b.light ?? 0
+  TORCH[b.id] = b.shape === 'torch' ? 1 : 0
+  FAM[b.id] = b.fluid === 'water' ? 1 : b.fluid === 'lava' ? 2 : 0
+  // lava's flowing levels run every other step of water's, as there
+  LVL[b.id] = b.level === 8 ? 8 : b.fluid === 'lava' ? Math.min(7, (b.level ?? 0) * 2) : (b.level ?? 0)
+  SPECIAL[b.id] = b.cross || b.shape === 'torch' || (b.liquid && LVL[b.id] >= 1 && LVL[b.id] <= 7) ? 1 : 0
   LAYER[b.id * 3] = textureIndex.get(b.top) ?? 0
   LAYER[b.id * 3 + 1] = textureIndex.get(b.side) ?? 0
   LAYER[b.id * 3 + 2] = textureIndex.get(b.bottom) ?? 0
@@ -71,16 +108,24 @@ const tintsOf = (key: 'grass' | 'foliage') =>
   })
 const GRASS_TINT = tintsOf('grass')
 const FOLIAGE_TINT = tintsOf('foliage')
+const WHITE: [number, number, number] = [1, 1, 1]
 
 const AO = [0.5, 0.68, 0.84, 1]
-/** sky light 0..15 to a brightness */
+/** sky light 0..15 to a brightness (material.ts undoes exactly this to find
+    the albedo block light shines on: keep the two in step) */
 const LIGHT = Array.from({ length: 16 }, (_, l) => 0.1 + 0.9 * Math.pow(l / 15, 1.5))
+
+/** the flags byte */
+const F_GLOW = 1
+const F_LIQUID = 2
+const F_FLOW = 4
 
 export interface MeshArrays {
   position: Int16Array
   normal: Int8Array
   tex: Int16Array
   color: Uint8Array
+  /** texture layer, flags, sky light, block light */
   blk: Uint8Array
   index: Uint16Array | Uint32Array
 }
@@ -92,7 +137,8 @@ const makeStore = () => {
   let nor = new Int8Array(cap * 3)
   let tex = new Int16Array(cap * 2)
   let col = new Uint8Array(cap * 3)
-  let blk = new Uint8Array(cap * 2)
+  let blk = new Uint8Array(cap * 4)
+  let flips = new Uint8Array(cap / 4)
   let n = 0
   const grow = () => {
     cap *= 2
@@ -105,18 +151,19 @@ const makeStore = () => {
     nor = g(nor, 3)
     tex = g(tex, 2)
     col = g(col, 3)
-    blk = g(blk, 2)
+    blk = g(blk, 4)
+    const f = new Uint8Array(cap / 4)
+    f.set(flips)
+    flips = f
   }
   return {
     reset: () => {
       n = 0
     },
-    get count() {
-      return n
-    },
     vert: (
       x: number, y: number, z: number, nx: number, ny: number, nz: number,
-      u: number, v: number, r: number, g: number, b: number, layer: number, glow: number,
+      u: number, v: number, r: number, g: number, b: number,
+      layer: number, flags: number, sky: number, block: number,
     ) => {
       if (n >= cap) grow()
       pos[n * 3] = Math.round(x * 8)
@@ -132,13 +179,18 @@ const makeStore = () => {
       col[n * 3] = Math.min(255, Math.round(r * 127.5))
       col[n * 3 + 1] = Math.min(255, Math.round(g * 127.5))
       col[n * 3 + 2] = Math.min(255, Math.round(b * 127.5))
-      blk[n * 2] = layer
-      blk[n * 2 + 1] = glow
+      blk[n * 4] = layer
+      blk[n * 4 + 1] = flags
+      blk[n * 4 + 2] = sky
+      blk[n * 4 + 3] = block
       n++
     },
-    /** the vertices so far and an index buffer of two triangles per quad
-        (`flips` says which quads take the other diagonal) */
-    take: (flips: Uint8Array): MeshArrays | null => {
+    /** the quad just finished takes the other diagonal */
+    flip: (f: number) => {
+      flips[(n >> 2) - 1] = f
+    },
+    /** the vertices so far and an index buffer of two triangles per quad */
+    take: (): MeshArrays | null => {
       if (!n) return null
       const quads = n / 4
       const index = n > 65535 ? new Uint32Array(quads * 6) : new Uint16Array(quads * 6)
@@ -155,51 +207,61 @@ const makeStore = () => {
       }
       return {
         position: pos.slice(0, n * 3), normal: nor.slice(0, n * 3), tex: tex.slice(0, n * 2),
-        color: col.slice(0, n * 3), blk: blk.slice(0, n * 2), index,
+        color: col.slice(0, n * 3), blk: blk.slice(0, n * 4), index,
       }
     },
   }
 }
+type Store = ReturnType<typeof makeStore>
 
 const solidStore = makeStore()
 const waterStore = makeStore()
-let solidFlips = new Uint8Array(1 << 14)
-let waterFlips = new Uint8Array(1 << 12)
-let solidQuads = 0
-let waterQuads = 0
-const flip = (water: boolean, f: number) => {
-  if (water) {
-    if (waterQuads >= waterFlips.length) {
-      const b = new Uint8Array(waterFlips.length * 2)
-      b.set(waterFlips)
-      waterFlips = b
-    }
-    waterFlips[waterQuads++] = f
-  } else {
-    if (solidQuads >= solidFlips.length) {
-      const b = new Uint8Array(solidFlips.length * 2)
-      b.set(solidFlips)
-      solidFlips = b
-    }
-    solidFlips[solidQuads++] = f
-  }
-}
 
-/** how bright the air block at padded (x, y, z) is, 0..15 */
+/** how much sky the block at region (x, y, z) sees, 0..15 */
 const skyAt = (x: number, y: number, z: number) => {
-  const t = tops[x + 1 + (z + 1) * P]
+  const c = x + RO + (z + RO) * RW
+  const t = tops[c]
   if (y > t) return 15
   // a neighbouring column open to the sky: the light spills in sideways
-  let lo = t
-  if (x > -1) lo = Math.min(lo, tops[x + (z + 1) * P])
-  if (x < CHUNK) lo = Math.min(lo, tops[x + 2 + (z + 1) * P])
-  if (z > -1) lo = Math.min(lo, tops[x + 1 + z * P])
-  if (z < CHUNK) lo = Math.min(lo, tops[x + 1 + (z + 2) * P])
+  const lo = Math.min(t, tops[c - 1], tops[c + 1], tops[c - RW], tops[c + RW])
   if (y > lo) return 12
   // in steps of three blocks, so a cave wall is a few big faces rather
   // than a stripe per block of depth
-  const depth = Math.min(t, lo) - y
-  return Math.max(2, 11 - Math.floor(depth / 3) * 3)
+  return Math.max(2, 11 - Math.floor((lo - y) / 3) * 3)
+}
+
+/** flood the block light of every emitter in the region, one level a block
+    through anything not opaque */
+const floodLight = () => {
+  let tail = 0
+  for (let i = RW * RW; i < RW * RW * (H + 1); i++) {
+    const e = EMIT[vox[i]]
+    if (!e) continue
+    bl[i] = e
+    queue[tail++] = i
+  }
+  if (!tail) return false
+  let head = 0
+  while (head < tail) {
+    const i = queue[head++]
+    const l = bl[i] - 1
+    if (l <= 0) continue
+    const x = i % RW
+    const z = Math.floor(i / RW) % RW
+    const y = Math.floor(i / SYs)
+    const spread = (j: number) => {
+      if (bl[j] >= l || OPAQUE[vox[j]]) return
+      bl[j] = l
+      queue[tail++] = j
+    }
+    if (x > 0) spread(i - SX)
+    if (x < RW - 1) spread(i + SX)
+    if (z > 0) spread(i - SZ)
+    if (z < RW - 1) spread(i + SZ)
+    if (y > 1) spread(i - SYs)
+    if (y < H) spread(i + SYs)
+  }
+  return true
 }
 
 /*
@@ -223,51 +285,46 @@ const DIRS: Dir[] = [
   { d: 2, s: -1, u: 0, v: 1 },
 ]
 const DIM = [CHUNK, H, CHUNK]
-/** a step along x, y and z in the padded copy */
-const STRIDE = [1, P * P, P]
+/** a step along x, y and z in the region */
+const STRIDE = [SX, SYs, SZ]
 
 const mask = new Int32Array(CHUNK * H)
-/** each mask cell's corner shading and light, beside the key */
+/** each mask cell's corner shading, beside the key */
 const maskAO = new Uint8Array(CHUNK * H)
-const maskBio = new Uint8Array(CHUNK * H)
 
 /**
  * Mesh a chunk. `neighbour(dx, dz)` hands back the chunks round it (dx, dz in
  * -1..1), which must exist: a face on the chunk's rim depends on the block
- * across the seam, and its shading on the columns there.
+ * across the seam, its shading on the columns there, and its light on the
+ * lamps up to fifteen blocks off. `far` is the far ring's cheap mesh: no
+ * corner shading, no cave walls, no plants, no block light.
  */
 export const meshChunk = (
   c: ChunkData,
   neighbour: (dx: number, dz: number) => ChunkData,
   far = false,
 ): { solid: MeshArrays | null; water: MeshArrays | null } => {
-  // the padded copy
+  // the region: this chunk and its eight neighbours, bedrock under the
+  // floor and air over the roof
   for (let dz = -1; dz <= 1; dz++)
     for (let dx = -1; dx <= 1; dx++) {
       const n = dx === 0 && dz === 0 ? c : neighbour(dx, dz)
-      const xa = dx < 0 ? CHUNK - 1 : 0
-      const xb = dx > 0 ? 0 : CHUNK - 1
-      const za = dz < 0 ? CHUNK - 1 : 0
-      const zb = dz > 0 ? 0 : CHUNK - 1
-      for (let z = za; z <= zb; z++)
-        for (let x = xa; x <= xb; x++) {
+      for (let z = 0; z < CHUNK; z++)
+        for (let x = 0; x < CHUNK; x++) {
           const px = x + dx * CHUNK
           const pz = z + dz * CHUNK
-          tops[px + 1 + (pz + 1) * P] = n.top[x + z * CHUNK]
-          for (let y = 0; y < H; y++) pad[pi(px, y, pz)] = n.vox[x + (z << 4) + (y << 8)]
+          tops[px + RO + (pz + RO) * RW] = n.top[x + z * CHUNK]
+          let o = ri(px, 0, pz)
+          for (let y = 0, s = x + (z << 4); y < H; y++, s += 256, o += SYs) vox[o] = n.vox[s]
         }
     }
-  // bedrock below the floor, air above the roof
-  for (let z = -1; z <= CHUNK; z++)
-    for (let x = -1; x <= CHUNK; x++) {
-      pad[pi(x, -1, z)] = 11
-      pad[pi(x, H, z)] = 0
-    }
+  vox.fill(11, 0, RW * RW)
+  vox.fill(0, RW * RW * (H + 1))
+  if (blUsed) bl.fill(0)
+  blUsed = !far && floodLight()
 
   solidStore.reset()
   waterStore.reset()
-  solidQuads = 0
-  waterQuads = 0
   const at = [0, 0, 0]
   const nb = [0, 0, 0]
 
@@ -285,52 +342,52 @@ export const meshChunk = (
           at[d] = i
           at[u] = a
           at[v] = b
-          const id = pad[pi(at[0], at[1], at[2])]
+          const id = vox[ri(at[0], at[1], at[2])]
           const m = a + b * du
           mask[m] = 0
-          if (!id || CROSS[id]) continue
+          if (!id || SPECIAL[id]) continue
           nb[0] = at[0]
           nb[1] = at[1]
           nb[2] = at[2]
           nb[d] += s
-          const other = pad[pi(nb[0], nb[1], nb[2])]
+          const n0 = ri(nb[0], nb[1], nb[2])
+          const other = vox[n0]
           const liquid = LIQUID[id]
           if (liquid) {
-            if (other === id || OPAQUE[other]) continue
+            if (FAM[other] === FAM[id] || OPAQUE[other]) continue
           } else if (OPAQUE[other] || other === id) continue
           // the face's texture, light and corner shading
           const face = d === 1 ? (s > 0 ? 0 : 2) : 1
           const layer = LAYER[id * 3 + face]
           const light = skyAt(nb[0], nb[1], nb[2])
+          const lamp = bl[n0]
           // far off, the inside of a cave is nothing anybody can see
-          if (far && light < 9) continue
+          if (far && light < 9 && !GLOW[id]) continue
           let ao: number
-          if (far && !liquid) ao = 0xff
-          else if (!liquid) {
+          if (liquid) {
+            // a liquid face whose top edge is the surface: lowered
+            ao = FAM[vox[ri(at[0], at[1] + 1, at[2])]] === FAM[id] ? 0 : 1
+          } else if (far) ao = 0xff
+          else {
             ao = 0
-            const n0 = pi(nb[0], nb[1], nb[2])
             const su = STRIDE[u]
             const sv = STRIDE[v]
             // corners in (u, v) order: (-,-) (+,-) (+,+) (-,+)
             for (let k = 0; k < 4; k++) {
               const cu = k === 1 || k === 2 ? su : -su
               const cv = k >= 2 ? sv : -sv
-              const s1 = OPAQUE[pad[n0 + cu]]
-              const s2 = OPAQUE[pad[n0 + cv]]
-              const cr = OPAQUE[pad[n0 + cu + cv]]
+              const s1 = OPAQUE[vox[n0 + cu]]
+              const s2 = OPAQUE[vox[n0 + cv]]
+              const cr = OPAQUE[vox[n0 + cu + cv]]
               const o = s1 && s2 ? 0 : 3 - (s1 + s2 + cr)
               ao |= o << (k * 2)
             }
-          } else {
-            // a water face whose top edge is the surface: lowered
-            const up = pad[pi(at[0], at[1] + 1, at[2])]
-            ao = up === WATER ? 0 : 1
           }
           const tint = TINT[id]
-          const bio = tint ? c.biome[(d === 0 ? i : at[0]) + ((d === 2 ? i : at[2]) << 4)] : 0
-          mask[m] = 1 + (layer | (light << 8) | (tint << 12) | (liquid << 14) | (GLOW[id] << 15) | (bio << 16))
+          const bio = tint ? c.biome[at[0] + (at[2] << 4)] : 0
+          mask[m] = 1 + (layer | (light << 8) | (tint << 12) | (liquid << 14) | (GLOW[id] << 15) | (bio << 16) |
+            (lamp << 21) | ((FAM[id] === 2 ? 1 : 0) << 25))
           maskAO[m] = ao
-          maskBio[m] = bio
           any = true
         }
       if (!any) continue
@@ -355,60 +412,50 @@ export const meshChunk = (
             h++
           }
           for (let hh = 0; hh < h; hh++) for (let k = 0; k < w; k++) mask[m + k + hh * du] = 0
-          emit(dir, nrm, i, a, b, w, h, key - 1, ao, maskBio[m])
+          emit(dir, nrm, i, a, b, w, h, key - 1, ao)
           a += w
         }
     }
   }
 
-  // the plants: two crossed cards, each drawn from both sides (not far off,
-  // where a meadow of them is a few pixels of noise)
-  if (!far) for (let y = 0; y < H; y++)
+  // what is not a cube, cell by cell
+  for (let y = 0; y < H; y++)
     for (let z = 0; z < CHUNK; z++)
       for (let x = 0; x < CHUNK; x++) {
-        const id = pad[pi(x, y, z)]
-        if (!CROSS[id]) continue
-        const light = LIGHT[skyAt(x, y, z)]
-        const t = TINT[id] ? GRASS_TINT[c.biome[x + (z << 4)]] : [1, 1, 1]
-        const r = t[0] * light
-        const g = t[1] * light
-        const bb = t[2] * light
-        const layer = LAYER[id * 3 + 1]
-        const e = 0.15
-        const cards = [
-          [x + e, z + e, x + 1 - e, z + 1 - e],
-          [x + e, z + 1 - e, x + 1 - e, z + e],
-        ]
-        for (const [ax, az, bx, bz] of cards) {
-          for (const side of [0, 1]) {
-            const [x0, z0, x1, z1] = side ? [bx, bz, ax, az] : [ax, az, bx, bz]
-            solidStore.vert(x0, y, z0, 0, 1, 0, 0, 0, r, g, bb, layer, 0)
-            solidStore.vert(x1, y, z1, 0, 1, 0, 1, 0, r, g, bb, layer, 0)
-            solidStore.vert(x1, y + 1, z1, 0, 1, 0, 1, -1, r, g, bb, layer, 0)
-            solidStore.vert(x0, y + 1, z0, 0, 1, 0, 0, -1, r, g, bb, layer, 0)
-            flip(false, 0)
-          }
-        }
+        const i = ri(x, y, z)
+        const id = vox[i]
+        if (!id) continue
+        if (CROSS[id]) {
+          if (!far) plant(c, id, x, y, z, i)
+        } else if (TORCH[id]) torch(id, x, y, z, i)
+        else if (LIQUID[id]) liquid(id, x, y, z, i)
       }
-  return { solid: solidStore.take(solidFlips), water: waterStore.take(waterFlips) }
+  return { solid: solidStore.take(), water: waterStore.take() }
 }
+
+/* ------------------------------------------------------------ faces -- */
 
 const corner = [0, 0, 0]
 /** one merged face: its plane, its rectangle in the slice, and its look */
-const emit = (dir: Dir, nrm: number[], i: number, a: number, b: number, w: number, h: number, key: number, ao: number, bio: number) => {
+const emit = (dir: Dir, nrm: number[], i: number, a: number, b: number, w: number, h: number, key: number, ao: number) => {
   const { d, s, u, v } = dir
   const layer = key & 0xff
-  const light = LIGHT[(key >> 8) & 0xf]
+  const sky = (key >> 8) & 0xf
+  const light = LIGHT[sky]
   const tint = (key >> 12) & 3
   const liquid = (key >> 14) & 1
   const glow = (key >> 15) & 1
+  const bio = (key >> 16) & 31
+  const lamp = (key >> 21) & 15
+  const lava = (key >> 25) & 1
   const tc = tint === 1 ? GRASS_TINT[bio] : tint === 2 ? FOLIAGE_TINT[bio] : null
   // the grass block's sides keep their dirt: only its top is tinted
-  const tr = tc && !(tint === 1 && d !== 1) ? tc : [1, 1, 1]
-  const store = liquid ? waterStore : solidStore
+  const tr = tc && !(tint === 1 && d !== 1) ? tc : WHITE
+  const store = liquid && !lava ? waterStore : solidStore
+  const flags = (glow ? F_GLOW : 0) | (liquid ? F_LIQUID : 0)
   const plane = i + (s > 0 ? 1 : 0)
-  // the water's surface sits an eighth of a block down
-  const sink = liquid ? (d === 1 && s > 0 ? 0.125 : 0) : 0
+  // a liquid's surface sits an eighth of a block down
+  const sink = liquid && d === 1 && s > 0 && ao === 1 ? 0.125 : 0
   const us = [a, a + w, a + w, a]
   const vs = [b, b, b + h, b + h]
   const aos = [0, 0, 0, 0]
@@ -422,7 +469,7 @@ const emit = (dir: Dir, nrm: number[], i: number, a: number, b: number, w: numbe
     corner[u] = us[k]
     corner[v] = vs[k]
     let y = corner[1] - sink
-    // a water side face's top edge comes down to the surface
+    // a liquid side face's top edge comes down to the surface
     if (liquid && d !== 1 && ao === 1 && k >= 2) y -= 0.125
     const px = corner[0]
     const pz = corner[2]
@@ -438,12 +485,151 @@ const emit = (dir: Dir, nrm: number[], i: number, a: number, b: number, w: numbe
       tv = -y
     }
     const k2 = light * AO[aos[k]]
-    store.vert(px, y, pz, nrm[0], nrm[1], nrm[2], tu, tv, tr[0] * k2, tr[1] * k2, tr[2] * k2, layer, glow)
+    store.vert(px, y, pz, nrm[0], nrm[1], nrm[2], tu, tv, tr[0] * k2, tr[1] * k2, tr[2] * k2, layer, flags, sky, lamp)
   }
   // the diagonal that keeps the shading smooth
-  const a0 = aos[order[0]]
-  const a1 = aos[order[1]]
-  const a2 = aos[order[2]]
-  const a3 = aos[order[3]]
-  flip(!!liquid, a0 + a2 < a1 + a3 ? 1 : 0)
+  store.flip(aos[order[0]] + aos[order[2]] < aos[order[1]] + aos[order[3]] ? 1 : 0)
+}
+
+/** the six faces of a box, as a direction: 0 +x, 1 -x, 2 +y, 3 -y, 4 +z, 5 -z */
+const NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+/**
+ * One face of the box (x0..x1, y0..y1, z0..z1), counter-clockwise from
+ * outside. Texture coordinates run from the world position (liquids, which
+ * must line up with the greedy faces beside them) unless `uv` gives the
+ * rectangle of the painting it shows (u0, v0 at its top left, u1, v1 at its
+ * bottom right: a torch's stick)
+ */
+const boxFace = (
+  st: Store, f: number, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number,
+  col: number[], layer: number, flags: number, sky: number, lamp: number, uv?: number[],
+) => {
+  const [nx, ny, nz] = NORMALS[f]
+  let q: number[][]
+  switch (f) {
+    case 0: q = [[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]]; break
+    case 1: q = [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]]; break
+    case 2: q = [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]]; break
+    case 3: q = [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]]; break
+    case 4: q = [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]]; break
+    default: q = [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]]
+  }
+  // the painting's corners, in the same order as the quad's
+  const side = f !== 2 && f !== 3
+  for (let k = 0; k < 4; k++) {
+    const [px, py, pz] = q[k]
+    let tu: number
+    let tv: number
+    if (uv) {
+      if (side) {
+        tu = k === 0 || k === 3 ? uv[0] : uv[2]
+        tv = k < 2 ? uv[3] : uv[1]
+      } else {
+        tu = k === 0 || k === 3 ? uv[0] : uv[2]
+        tv = (f === 2) === (k < 2) ? uv[3] : uv[1]
+      }
+    } else if (side) {
+      tu = f === 0 ? -pz : f === 1 ? pz : f === 4 ? px : -px
+      tv = -py
+    } else {
+      tu = px
+      tv = f === 2 ? pz : -pz
+    }
+    st.vert(px, py, pz, nx, ny, nz, tu, tv, col[0], col[1], col[2], layer, flags, sky, lamp)
+  }
+  st.flip(0)
+}
+
+/** the plants: two crossed cards, each drawn from both sides */
+const plant = (c: ChunkData, id: number, x: number, y: number, z: number, i: number) => {
+  const sky = skyAt(x, y, z)
+  const light = LIGHT[sky]
+  const lamp = bl[i]
+  const t = TINT[id] ? GRASS_TINT[c.biome[x + (z << 4)]] : WHITE
+  const r = t[0] * light
+  const g = t[1] * light
+  const bb = t[2] * light
+  const layer = LAYER[id * 3 + 1]
+  const e = 0.15
+  const cards = [
+    [x + e, z + e, x + 1 - e, z + 1 - e],
+    [x + e, z + 1 - e, x + 1 - e, z + e],
+  ]
+  for (const [ax, az, bx, bz] of cards) {
+    for (const back of [0, 1]) {
+      const [x0, z0, x1, z1] = back ? [bx, bz, ax, az] : [ax, az, bx, bz]
+      solidStore.vert(x0, y, z0, 0, 1, 0, 0, 0, r, g, bb, layer, 0, sky, lamp)
+      solidStore.vert(x1, y, z1, 0, 1, 0, 1, 0, r, g, bb, layer, 0, sky, lamp)
+      solidStore.vert(x1, y + 1, z1, 0, 1, 0, 1, -1, r, g, bb, layer, 0, sky, lamp)
+      solidStore.vert(x0, y + 1, z0, 0, 1, 0, 0, -1, r, g, bb, layer, 0, sky, lamp)
+      solidStore.flip(0)
+    }
+  }
+}
+
+/** a torch: a two-pixel stick ten pixels tall, and its flame on top, lit */
+const torch = (id: number, x: number, y: number, z: number, i: number) => {
+  const sky = skyAt(x, y, z)
+  const l = LIGHT[sky]
+  const col = [l, l, l]
+  const layer = LAYER[id * 3 + 1]
+  const a = 7 / 16
+  const b = 9 / 16
+  for (let f = 0; f < 6; f++) {
+    if (f === 2) continue
+    boxFace(solidStore, f, x + a, y, z + a, x + b, y + 10 / 16, z + b, col, layer, 0, sky, bl[i], [a, 6 / 16, b, 1])
+  }
+  for (let f = 0; f < 6; f++) {
+    if (f === 3) continue
+    boxFace(solidStore, f, x + a, y + 10 / 16, z + a, x + b, y + 13 / 16, z + b, col, layer, F_GLOW, sky, 15, [a, 3 / 16, b, 6 / 16])
+  }
+}
+
+/** how high a liquid block's surface stands in its cell */
+const heightAt = (i: number) => {
+  const id = vox[i]
+  if (FAM[vox[i + SYs]] === FAM[id]) return 1
+  const l = LVL[id]
+  return l === 0 || l === 8 ? 0.875 : Math.max(0.12, (8 - l) / 9)
+}
+
+/** a liquid's faces the greedy pass cannot make: a flowing block's own
+    (its surface is lower than its neighbours'), and the step down from any
+    liquid block to a lower one of the same liquid beside it */
+const liquid = (id: number, x: number, y: number, z: number, i: number) => {
+  const fam = FAM[id]
+  const lava = fam === 2
+  const st = lava ? solidStore : waterStore
+  const flowing = SPECIAL[id] === 1
+  const h = heightAt(i)
+  const flags = F_LIQUID | (flowing ? F_FLOW : 0) | (lava ? F_GLOW : 0)
+  const side = LAYER[id * 3 + 1]
+  const topL = LAYER[id * 3]
+  const HS = [SX, -SX, 0, 0, SZ, -SZ]
+  for (const f of [0, 1, 4, 5]) {
+    const j = i + HS[f]
+    const other = vox[j]
+    if (OPAQUE[other]) continue
+    let lo = 0
+    if (FAM[other] === fam) {
+      lo = heightAt(j)
+      if (lo >= h - 1e-3) continue
+    } else if (!flowing) continue
+    const sky = skyAt(x + (f === 0 ? 1 : f === 1 ? -1 : 0), y, z + (f === 4 ? 1 : f === 5 ? -1 : 0))
+    const l = LIGHT[sky]
+    boxFace(st, f, x, y + lo, z, x + 1, y + h, z + 1, [l, l, l], side, flags, sky, bl[j])
+  }
+  if (!flowing) return
+  const up = vox[i + SYs]
+  if (FAM[up] !== fam && !OPAQUE[up]) {
+    const sky = skyAt(x, y + 1, z)
+    const l = LIGHT[sky]
+    boxFace(st, 2, x, y, z, x + 1, y + h, z + 1, [l, l, l], topL, flags, sky, bl[i + SYs])
+  }
+  const down = vox[i - SYs]
+  if (FAM[down] !== fam && !OPAQUE[down]) {
+    const sky = skyAt(x, y - 1, z)
+    const l = LIGHT[sky]
+    boxFace(st, 3, x, y, z, x + 1, y + h, z + 1, [l, l, l], topL, flags, sky, bl[i - SYs])
+  }
 }

@@ -129,6 +129,9 @@ export interface LevelLightRig {
   setMoonPool: (opacity: number) => void
   fog: THREE.Fog
   bg: THREE.Color
+  /** how much day there is in the sky being drawn, 0 night .. 1 day (the
+      console's pinned hour included) */
+  day: number
 }
 
 export interface Level {

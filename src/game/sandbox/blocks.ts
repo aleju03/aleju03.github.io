@@ -74,6 +74,17 @@ export interface BlockDef {
   catalogue: boolean
   /** goes off rather than breaks (the TNT) */
   explosive?: boolean
+  /** block light it gives off, 1..15 (a torch 14, glowstone and lava 15):
+      flooded through the air round it, one level a block */
+  light?: number
+  /** which liquid, for the flow and the swim */
+  fluid?: 'water' | 'lava'
+  /** a liquid's level: 0 a source, 1..7 flowing (higher is thinner), 8
+      falling (a full column pouring down) */
+  level?: number
+  /** a shape that is not a cube: a torch is a stick in the middle of its
+      cell */
+  shape?: 'torch'
 }
 
 type Def = Omit<BlockDef, 'id' | 'key' | 'top' | 'side' | 'bottom' | 'catalogue'> & {
@@ -111,7 +122,7 @@ export const LOG = add('log', { ...wood, name: { en: 'Oak log', es: 'Tronco de r
 export const LEAVES = add('leaves', { ...leaf, name: { en: 'Oak leaves', es: 'Hojas de roble' }, tex: 'leaves' })
 export const SAND = add('sand', { ...earth, name: { en: 'Sand', es: 'Arena' }, tex: 'sand', step: 'sand', sound: 'soft', hardness: 0.2, mass: 60 })
 export const GRAVEL = add('gravel', { ...earth, name: { en: 'Gravel', es: 'Grava' }, tex: 'gravel', step: 'sand', hardness: 0.25, mass: 70 })
-export const WATER = add('water', { name: { en: 'Water', es: 'Agua' }, tex: 'water', solid: false, opaque: false, liquid: true, hardness: Infinity, step: 'water', sound: 'soft', mass: 0, density: 1, catalogue: false })
+export const WATER = add('water', { name: { en: 'Water bucket', es: 'Cubo de agua' }, tex: 'water', solid: false, opaque: false, liquid: true, fluid: 'water', level: 0, hardness: Infinity, step: 'water', sound: 'metal', mass: 6, density: 1.2, catalogue: true })
 export const BEDROCK = add('bedrock', { ...earth, name: { en: 'Bedrock', es: 'Roca madre' }, tex: 'bedrock', hardness: Infinity, mass: 300, catalogue: false })
 export const COAL = add('coal_ore', { ...earth, name: { en: 'Coal ore', es: 'Mena de carbón' }, tex: 'coal_ore', hardness: 0.6, mass: 90 })
 export const IRON = add('iron_ore', { ...earth, name: { en: 'Iron ore', es: 'Mena de hierro' }, tex: 'iron_ore', hardness: 0.65, mass: 110 })
@@ -189,6 +200,22 @@ export const ACACIA_PLANKS = add('acacia_planks', { ...wood, name: { en: 'Acacia
 export const JUNGLE_PLANKS = add('jungle_planks', { ...wood, name: { en: 'Jungle planks', es: 'Tablones de jungla' }, tex: 'jungle_planks' })
 export const DARK_PLANKS = add('dark_oak_planks', { ...wood, name: { en: 'Dark oak planks', es: 'Tablones de roble oscuro' }, tex: 'dark_planks' })
 export const CHERRY_PLANKS = add('cherry_planks', { ...wood, name: { en: 'Cherry planks', es: 'Tablones de cerezo' }, tex: 'cherry_planks' })
+/* lights */
+export const TORCH = add('torch', { name: { en: 'Torch', es: 'Antorcha' }, tex: 'torch', solid: false, opaque: false, shape: 'torch', light: 14, hardness: 0, step: 'wood', sound: 'wood', mass: 1, density: 0.6 })
+export const LANTERN = add('lantern', { ...earth, name: { en: 'Lantern', es: 'Farol' }, tex: { top: 'lantern_top', side: 'lantern' }, opaque: false, light: 15, glow: 1, sound: 'metal', hardness: 0.3, mass: 20 })
+export const JACK = add('jack_o_lantern', { ...wood, name: { en: "Jack o'lantern", es: 'Calabaza iluminada' }, tex: { top: 'pumpkin_top', side: 'jack_face' }, light: 15, glow: 1, sound: 'melon', step: 'grass', hardness: 0.1, mass: 20, density: 0.7 })
+export const SEA_LANTERN = add('sea_lantern', { ...earth, name: { en: 'Sea lantern', es: 'Linterna marina' }, tex: 'sea_lantern', light: 15, glow: 1, sound: 'glass', hardness: 0.2, mass: 40 })
+/* the liquids that flow: lava's source, and each liquid's flowing levels
+   (lava spreads a third as far, every other level) and its falling column */
+export const LAVA = add('lava', { name: { en: 'Lava bucket', es: 'Cubo de lava' }, tex: 'lava', solid: false, opaque: false, liquid: true, fluid: 'lava', level: 0, light: 15, glow: 1, hardness: Infinity, step: 'water', sound: 'metal', mass: 8, density: 1.2 })
+export const WATER_FLOW: number[] = [WATER]
+for (let l = 1; l <= 8; l++) {
+  WATER_FLOW[l] = add(`water_${l}`, { name: { en: 'Water', es: 'Agua' }, tex: 'water', solid: false, opaque: false, liquid: true, fluid: 'water', level: l, hardness: Infinity, step: 'water', sound: 'soft', mass: 0, density: 1, catalogue: false })
+}
+export const LAVA_FLOW: number[] = [LAVA]
+for (let l = 1; l <= 8; l++) {
+  LAVA_FLOW[l] = add(`lava_${l}`, { name: { en: 'Lava', es: 'Lava' }, tex: 'lava', solid: false, opaque: false, liquid: true, fluid: 'lava', level: l, light: 15, glow: 1, hardness: Infinity, step: 'water', sound: 'soft', mass: 0, density: 1, catalogue: false })
+}
 
 export const blockKind = (b: BlockDef) => `block_${b.key}`
 /** the block a prop kind is, if it is one */
@@ -741,6 +768,59 @@ const PAINTERS: Record<string, (p: Px) => void> = {
   jungle_planks: (p) => planks(p, [0xa0724c, 0x966a46, 0xaa7a52], 0x6a4a2c),
   dark_planks: (p) => planks(p, [0x4a3220, 0x422c1c, 0x523826], 0x2a1c10),
   cherry_planks: (p) => planks(p, [0xe2b0a8, 0xd8a69e, 0xeabab2], 0xa8746c),
+  torch: (p) => {
+    p.clear()
+    for (let y = 6; y < 16; y++) {
+      p.set(7, y, 0x6a4a2a)
+      p.set(8, y, 0x5a3c20)
+    }
+    p.rect(7, 4, 2, 2, 0xffd060)
+    p.set(7, 3, 0xfff0a0)
+    p.set(8, 5, 0xff9a30)
+  },
+  lantern: (p) => {
+    p.noise([0x3a3c44, 0x2e3038], [3, 1])
+    p.rect(3, 3, 10, 10, 0xffc860)
+    p.rect(5, 5, 6, 6, 0xffe6a0)
+    for (let i = 3; i < 13; i++) {
+      p.set(i, 8, 0x3a3c44)
+      p.set(8, i, 0x3a3c44)
+    }
+  },
+  lantern_top: (p) => {
+    p.noise([0x3a3c44, 0x2e3038], [3, 1])
+    p.rect(6, 6, 4, 4, 0x55585f)
+  },
+  jack_face: (p) => {
+    PAINTERS.pumpkin_side(p)
+    const lit = 0xffc040
+    p.rect(3, 4, 3, 2, lit)
+    p.rect(10, 4, 3, 2, lit)
+    p.rect(3, 10, 10, 2, lit)
+    p.rect(5, 12, 2, 1, lit)
+    p.rect(9, 12, 2, 1, lit)
+    p.set(7, 7, lit)
+    p.set(8, 7, lit)
+  },
+  sea_lantern: (p) => {
+    p.noise([0xc8ded6, 0xb4d0c8, 0xdcece6], [3, 2, 2])
+    for (let i = 0; i < 16; i++) {
+      p.set(i, 0, 0x9ab8b0)
+      p.set(0, i, 0x9ab8b0)
+      p.set(i, 15, 0x9ab8b0)
+      p.set(15, i, 0x9ab8b0)
+    }
+    p.rect(5, 5, 6, 6, 0xf2fbf8)
+  },
+  lava: (p) => {
+    p.noise([0xd4520c, 0xe86a14, 0xc03e08, 0xf28a24], [4, 3, 2, 1])
+    for (let k = 0; k < 7; k++) {
+      const x0 = Math.floor(p.rnd() * 16)
+      const y = Math.floor(p.rnd() * 16)
+      for (let x = 0; x < 3; x++) p.set((x0 + x) % 16, y, 0xffc050)
+    }
+    p.speck(0x9a2a04, 0.05)
+  },
   ...wools,
 }
 
@@ -777,6 +857,8 @@ const BACKING: Record<string, number> = {
 /* ---------------------------------------------------------- the props -- */
 
 const cellName = (tex: string) => `blk_${tex}`
+/** the textures that are light */
+const GLOWING = new Set(['glowstone', 'torch', 'lantern', 'jack_face', 'sea_lantern', 'lava'])
 for (const name of TEXTURES) {
   cell(cellName(name), {
     w: TEX_SIZE,
@@ -793,7 +875,20 @@ for (const name of TEXTURES) {
           pen.px(x, y, css(c))
         }
     },
-    glow: name === 'glowstone' ? (pen) => pen.fill('#b07830') : undefined,
+    // what glows on a loose one: the lit textures' own pixels
+    glow: GLOWING.has(name)
+      ? (pen) => {
+          const d = paintTexture(name)
+          for (let y = 0; y < TEX_SIZE; y++)
+            for (let x = 0; x < TEX_SIZE; x++) {
+              const i = (y * TEX_SIZE + x) * 4
+              // (only the bright pixels: a torch's stick and a lantern's
+              // frame stay dark)
+              if (d[i + 3] < 128 || d[i] + d[i + 1] < 330) continue
+              pen.px(x, y, `rgb(${d[i] >> 1},${d[i + 1] >> 1},${d[i + 2] >> 1})`)
+            }
+        }
+      : undefined,
   })
 }
 
@@ -805,21 +900,37 @@ if (!CATEGORIES.some((c) => c.id === 'blocks')) {
 }
 
 for (const b of BLOCKS) {
-  if (b.id === AIR || b.liquid || b.cross) continue
+  // (a liquid's source is its bucket; its flowing levels are nothing loose)
+  if (b.id === AIR || b.cross || (b.liquid && b.level !== 0)) continue
   const tint = b.tint ? PROP_TINT[b.tint] : undefined
-  const draw = () =>
-    model()
+  const draw = () => {
+    if (b.liquid) {
+      // a bucket: an open steel pail, the liquid at its brim
+      return model()
+        .cyl([0, 0, 0], [0.5, 0.66], 1.2, { side: { cell: 'gloss', tint: '#9ea4aa' }, bottom: { cell: 'gloss', tint: '#8a9096' } }, { seg: 10, open: true })
+        .cyl([0, 0.5, 0], 0.62, 0.04, { top: { cell: cellName(b.top) }, side: { cell: cellName(b.top) } }, { seg: 10 })
+        .box([0, 0.72, 0], [1.4, 0.06, 0.06], { cell: 'gloss', tint: '#6a7076' })
+        .mesh()
+    }
+    if (b.shape === 'torch') {
+      return model()
+        .box([0, -0.2, 0], [0.26, 1.3, 0.26], { cell: cellName(b.side), sub: [0.43, 0, 0.57, 0.62] })
+        .box([0, 0.55, 0], [0.3, 0.3, 0.3], { cell: cellName(b.side), sub: [0.43, 0.62, 0.57, 0.8] })
+        .mesh()
+    }
+    return model()
       .box([0, 0, 0], [B, B, B], {
         py: { cell: cellName(b.top), tint: b.tint === 'grass' || b.tint === 'foliage' ? tint : undefined },
         ny: { cell: cellName(b.bottom) },
         side: { cell: cellName(b.side), tint: b.tint === 'foliage' ? tint : undefined },
       })
       .mesh()
+  }
   const h = B / 2 - 0.01
   registerKind({
     id: blockKind(b),
     label: b.name.en.toLowerCase(),
-    shape: { type: 'box', hx: h, hy: h, hz: h },
+    shape: b.liquid ? { type: 'cylinder', r: 0.64, hh: 0.6 } : b.shape === 'torch' ? { type: 'box', hx: 0.15, hy: 0.78, hz: 0.15 } : { type: 'box', hx: h, hy: h, hz: h },
     mass: b.mass,
     friction: 0.7,
     restitution: 0.05,

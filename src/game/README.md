@@ -127,11 +127,15 @@ levels/
                      walker's merged boxes and the props' Rapier voxel
                      colliders, mesher.ts greedy faces with AO and sky light,
                      material.ts the array-texture terrain material, and
-                     cubeland.ts the level: streaming, bare hands that dig
+                     cubeland.ts the level: streaming (near chunks in full,
+                     far ones cheap, each dissolving in), bare hands that dig
                      and build (the Level's `hands`), blasts that carve and
                      throw blocks as props, the physgun tearing blocks out
-                     (`grab`), the real game's 20-minute day, and the edits'
-                     handle for the wire (net/remoteBlocks.ts)
+                     (`grab`), water and lava that flow as there (sources,
+                     levels, falls, obsidian where they meet), block light
+                     flooded from torches, lamps and lava, the real game's
+                     20-minute day, and the edits' handle for the wire
+                     (net/remoteBlocks.ts)
   houseWorld.ts      the house + yard, two storeys (walls, stairs, slab, roof,
                      doors, furniture placement); owns the property line
                      inward. The computer room is upstairs, at UP

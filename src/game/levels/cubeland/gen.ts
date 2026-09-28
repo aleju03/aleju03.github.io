@@ -1,7 +1,7 @@
 import {
   ACACIA_LEAVES, ACACIA_LOG, AIR, BEDROCK, BIRCH_LEAVES, BIRCH_LOG, BLOCKS, BLUE_ORCHID, BROWN_CAP, BROWN_MUSHROOM,
   CACTUS, CHERRY_LEAVES, CHERRY_LOG, CLAY, COAL, CORNFLOWER, DANDELION, DARK_LEAVES, DARK_LOG, DEAD_BUSH, DIAMOND,
-  DIRT, FERN, GOLD, GRASS, GRAVEL, ICE, IRON, JUNGLE_LEAVES, JUNGLE_LOG, LEAVES, LOG, MYCELIUM, OXEYE, PACKED_ICE,
+  DIRT, FERN, GOLD, GRASS, GRAVEL, ICE, IRON, JUNGLE_LEAVES, LAVA, JUNGLE_LOG, LEAVES, LOG, MYCELIUM, OXEYE, PACKED_ICE,
   PODZOL, POPPY, RED_CAP, RED_MUSHROOM, RED_SAND, SAND, SANDSTONE, SNOW, SNOWY_GRASS, SPRUCE_LEAVES, SPRUCE_LOG,
   STEM, STONE, SUGAR_CANE, TALL_GRASS, TERRACOTTA, TERRA_BROWN, TERRA_ORANGE, TERRA_RED, TERRA_WHITE, TERRA_YELLOW,
   WATER,
@@ -32,7 +32,8 @@ import { fbm, hash2, ridged, smoothstep, vein } from '../../world/noise'
     frozen ocean. Each has its own ground, its own trees and plants, and its
     own grass and leaf colour (mesher.ts reads `BIOMES` for the tints).
   - **Underground** is stone with ore in blobs (coal high, iron lower, gold
-    and diamonds deep), bedrock at the floor, and caves: spaghetti tunnels
+    and diamonds deep), bedrock at the floor, lava in the bottom of the
+    deepest caves (under LAVA_Y), and caves: spaghetti tunnels
     where two 3D fields both cross their middle, sampled on a four-block
     world lattice and interpolated, so the caves are as pure a function of
     position as the rest.
@@ -47,6 +48,8 @@ export const CHUNK = 16
 export const H = 96
 /** the sea's surface: water fills up to and including this layer */
 export const SEA = 34
+/** caves at or under this layer are full of lava */
+export const LAVA_Y = 9
 
 export const Biome = {
   Plains: 0, Forest: 1, Desert: 2, SnowyPlains: 3, Windswept: 4, Beach: 5, Ocean: 6,
@@ -387,7 +390,8 @@ export const generateChunk = (cx: number, cz: number): ChunkData => {
         else if (banded && y > h - 16 && y > SEA - 4) k = BANDS[y & 15]
         else if (y > h - depth - 3 && deep === SANDSTONE) k = SANDSTONE
         else k = STONE
-        if (k !== BEDROCK && (dry ? y <= h : y < h - 3) && caveHere(x, y, z)) k = AIR
+        // a cave below LAVA_Y is a lake of lava, the way the deep ones were
+        if (k !== BEDROCK && (dry ? y <= h : y < h - 3) && caveHere(x, y, z)) k = y <= LAVA_Y ? LAVA : AIR
         vox[idx(x, y, z)] = k
       }
       // the sea, frozen over where it is cold
