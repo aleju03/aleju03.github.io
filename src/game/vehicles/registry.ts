@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { fitHull, makeHull, type Hull, type Solid } from '../physics/collision'
 import { markDynamic } from './parts'
 import { createVehicleMaterials, type VehicleMaterials } from './materials'
+export { preloadVehicleEnvironment } from './materials'
 import { createVehicleEffects, type VehicleEffects } from './effects'
 import { createDriveCam, type DriveCam } from './driveCam'
 import {
@@ -330,9 +331,6 @@ export interface VehicleFleet {
   where: (id: VehicleId, p: THREE.Vector3) => { dist: number; bearing: string }
   /** the day cycle: headlamps, nav lights, reflections */
   setDay: (day: number, night: number, fog: THREE.Color, sunEl: number) => void
-  /** expose renderer lights that normally appear only at a threshold, solely
-      while CrtScene compiles that program layout behind the boot cover */
-  setLightWarmup: (on: boolean) => void
   /** the pause menu is up, or the tab went away */
   setMuted: (on: boolean) => void
   /** everything stops (sitting back down, a level cut, unmount) */
@@ -1428,12 +1426,9 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     order,
     placeFromNet,
     where,
-    setDay: (day, night, fog, sunEl) => {
-      mats.setDay(day, night, fog, sunEl)
+    setDay: (day, night) => {
+      mats.setDay(day, night)
       for (const e of entries) e.v.setDay?.(day, night)
-    },
-    setLightWarmup: (on) => {
-      for (const e of entries) e.v.setLightWarmup?.(on)
     },
     setMuted: (on) => {
       for (const k of Object.keys(voices) as VehicleId[]) voices[k].mute(on)

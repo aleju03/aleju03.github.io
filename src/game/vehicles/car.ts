@@ -1141,38 +1141,15 @@ export function buildCar(opts: CarOpts): Vehicle {
     spins.push(spin)
   }
 
-  /* headlamp beams. castShadow is off on purpose: the shadow budget in this
-     project is hand-baked one light per frame, and a pair of moving shadow
-     spots would blow it in a single corner.
-
-     They are also switched off with `.visible`, not with `.intensity`. Three's
-     WebGLLights counts every *visible* spot light into NUM_SPOT_LIGHTS
-     whatever its intensity, and that number is baked into every lit program
-     in the scene — so a pair of zero-intensity spots parked on a car recompile
-     the whole world's shaders with two spot slots nobody uses. Zero intensity
-     costs a uniform upload; zero intensity and still visible costs a
-     recompile. The dusk layout is exposed once under BootCover by
-     `setLightWarmup`, then hidden again, so the threshold hits a cached program
-     without making those two unused slots a permanent daytime cost.
-
-     Re-checked against three 0.184.0: `projectObject` returns early on
-     `visible === false`, so an invisible light is not counted into
-     NUM_SPOT_LIGHTS and the mechanism above is real. The tempting one-liner,
-     pinning `visible = true` forever and driving intensity, does kill the dusk
-     threshold outright, at the price of two extra spot slots evaluated per
-     fragment on every lit surface in the scene, all day, to spare a
-     transition that both routes reaching the fleet already pay under a cover
-     (`/world` under BootCover, the front door under `loadWorldCovered`). It is
-     the wrong side of that trade while the warm-up stays covered. What would
-     change the answer is a *late* material never seen by the warm-up. A
-     remote player's body used to be exactly that, until playerBody's geometry
-     and this module's materials became shared. */
+  // Keep the light layout stable through day and night. Changing visibility
+  // used to require two copies of every world shader and two shadow warm-up
+  // draws at the front door. Intensity alone now turns the beams off.
+  // These moving spots do not cast shadows.
   const beams: THREE.SpotLight[] = []
   for (const s of [-1, 1]) {
     const l = new THREE.SpotLight(0xfff0d2, 0, 52, 0.42, 0.55, 1.2)
     l.position.set(s * 1.12, 1.41, NOSE_Z - 0.05)
     l.castShadow = false
-    l.visible = false
     l.target.position.set(s * 1.6, -1.2, -26)
     body.add(l, l.target)
     beams.push(l)
@@ -1201,7 +1178,6 @@ export function buildCar(opts: CarOpts): Vehicle {
   let dayK = 1
   let lampHead = -1
   let lampTail = -1
-  let lightWarmup = false
 
   const len = [SPRING_FREE - GRAV / SPRING_K, SPRING_FREE - GRAV / SPRING_K, SPRING_FREE - GRAV / SPRING_K, SPRING_FREE - GRAV / SPRING_K]
   /** last tick's lengths, so the landing detector can read how fast a spring
@@ -1255,7 +1231,6 @@ export function buildCar(opts: CarOpts): Vehicle {
     mats.setLamps(head, tail)
     for (const l of beams) {
       l.intensity = head * 30
-      l.visible = lightWarmup || head > 0.01
     }
   }
 
@@ -1884,14 +1859,6 @@ export function buildCar(opts: CarOpts): Vehicle {
     setDay: (day) => {
       dayK = day
       syncLamps()
-    },
-
-    setLightWarmup: (on) => {
-      lightWarmup = on
-      // Only visibility matters to Three's lighting program key. Intensity
-      // stays on the real day-cycle value (zero during the covered warm-up),
-      // so this compiles the dusk layout without visibly turning the beams on.
-      for (const l of beams) l.visible = on || lampHead > 0.01
     },
 
     dispose: () => {

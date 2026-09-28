@@ -2998,9 +2998,8 @@ export default function CrtScene({
           if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
           house.setRoamLight(k)
           house.setDay(sky.day)
-          // the fleet's paintwork has no lights of its own: what it reflects
-          // is a painted equirect sky repainted off these same numbers, and
-          // its headlamps and nav lights come up with the dusk
+          // The fleet's baked sky reflection dims with daylight; headlamps
+          // and navigation lights come up with the dusk.
           fleet.setDay(sky.day, sky.night, sky.fogColor, sky.sunEl)
           sceneFog.color.copy(sky.fogColor)
           sceneFog.near = sky.fogNear
@@ -4343,12 +4342,8 @@ export default function CrtScene({
           The world the walk will eventually be handed, built while there is
           still a cover over the scene's very first frame.
 
-          Two inner rings is what prime has always guaranteed; the extra
-          budget buys as much of the outer ones as it can, because the frame
-          budget's alternative is to dribble them out at two milliseconds a
-          frame into the face of somebody who already has the controls. This
-          covered pass guarantees that first ring before either entrance draws
-          its first visible frame.
+          The visible inner rings are ready before either entrance draws;
+          distant terrain streams under the ordinary frame budget.
 
           It deliberately does *not* sweep every chunk through a first draw.
           That was tried: a one-pixel viewport through four headings pulled
@@ -4372,12 +4367,8 @@ export default function CrtScene({
           So compile the sun-lit surface variants asynchronously, then do one
           render with the sun map flagged into a one-pixel viewport. The depth
           programs only exist when Three performs a real shadow pass, so
-          compileAsync alone cannot cover them. The car's two headlight spots
-          are the other thresholded program layout: expose them at zero
-          intensity for a second compile and the first dusk can reuse that
-          cached variant instead of linking the whole lit world in one frame.
-          It is the same total cost either way — the only choice is whether it
-          is paid behind the boot cover or in someone's face on the doorstep.
+          compileAsync alone cannot cover them. The car's headlight count is
+          stable through day and night: one layout and one bake cover both.
         */
         const warmCam = new THREE.PerspectiveCamera(110, 1, 0.1, 900)
         const warmSize = new THREE.Vector2()
@@ -4664,11 +4655,9 @@ export default function CrtScene({
         /**
          * The world arriving mid-session, behind the boot cover.
          *
-         * Reuses BootCover rather than inventing a second loading state: it is
-         * already built to animate on the compositor through a main thread that
-         * is blocked in multi-second lumps, which is exactly what compiling the
-         * outdoor shader variants does. Anything hand-rolled here would freeze
-         * for the part of the wait it exists to cover.
+         * StepOutCover animates on the compositor while shader programs link.
+         * The walk sleeps during this cut so it cannot render partially warmed
+         * materials or move the player through a world still being built.
          *
          * Idempotent through `worldReady`, so the door, the walk-out backstop
          * and a second press all land on one load.
@@ -4706,10 +4695,8 @@ export default function CrtScene({
           outside.sun.shadow.needsUpdate = true
           render()
         }
-        /** the fleet's meshes unculled for the warm's sun passes, and its
-            lamps put out for the second of them */
+        /** the fleet's meshes unculled for the warm's sun pass */
         const warmUnculled: THREE.Object3D[] = []
-        const warmDark: THREE.Object3D[] = []
         const warmForRoam = async (at: THREE.Vector3) => {
           await ensureWorld()
           if (disposed) return
@@ -4753,49 +4740,23 @@ export default function CrtScene({
             // parallel while BootCover continues animating on the compositor.
             await webgl.compileAsync(scene, warmCam).catch(() => {})
             if (disposed || !webgl || !scene) return
-            // At dusk the car adds two visible SpotLights. Their count is a
-            // shader define, so compile and first-draw that layout now while
-            // BootCover still owns the screen. The helper restores the live
-            // day-cycle visibility even if compilation or teardown interrupts.
-            fleet.setLightWarmup(true)
-            try {
-              await webgl.compileAsync(scene, warmCam).catch(() => {})
-              if (disposed || !webgl || !scene) return
-              webgl.getSize(warmSize)
-              webgl.setScissorTest(true)
-              webgl.setScissor(0, 0, 1, 1)
-              webgl.setViewport(0, 0, 1, 1)
-              outside.sun.shadow.needsUpdate = true
-              /* Every machine into the sun's map, whatever its box covers,
-                 with the headlamps lit and then dark: a depth program's key
-                 carries the spot count too. The fleet runs on the Moon as
-                 well, far from where it was warmed, and its depth variants
-                 were being linked there, mid-walk, the moment a car was
-                 delivered in whichever lamp state this pass had missed */
-              fleet.root.traverse((o) => {
-                if ((o as THREE.Mesh).isMesh && o.frustumCulled) {
-                  o.frustumCulled = false
-                  warmUnculled.push(o)
-                }
-              })
-              webgl.render(scene, warmCam)
-              fleet.setLightWarmup(false)
-              fleet.root.traverse((o) => {
-                if ((o as THREE.SpotLight).isSpotLight && o.visible) {
-                  o.visible = false
-                  warmDark.push(o)
-                }
-              })
-              outside.sun.shadow.needsUpdate = true
-              webgl.render(scene, warmCam)
-            } finally {
-              for (const o of warmUnculled) o.frustumCulled = true
-              for (const o of warmDark) o.visible = true
-              warmUnculled.length = 0
-              warmDark.length = 0
-              fleet.setLightWarmup(false)
-            }
+            webgl.getSize(warmSize)
+            webgl.setScissorTest(true)
+            webgl.setScissor(0, 0, 1, 1)
+            webgl.setViewport(0, 0, 1, 1)
+            outside.sun.shadow.needsUpdate = true
+            // Warm every machine's depth variants, including those parked
+            // outside this camera's frustum (they can be delivered anywhere).
+            fleet.root.traverse((o) => {
+              if ((o as THREE.Mesh).isMesh && o.frustumCulled) {
+                o.frustumCulled = false
+                warmUnculled.push(o)
+              }
+            })
+            webgl.render(scene, warmCam)
           } finally {
+            for (const o of warmUnculled) o.frustumCulled = true
+            warmUnculled.length = 0
             tools?.unstage()
             avatars.unstage()
             outside.warmSpace(false)
