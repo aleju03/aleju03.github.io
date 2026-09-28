@@ -88,6 +88,9 @@ export interface RoamPrefs {
       to the default rather than failing (`proximityVoice`) */
   micDevice: string
   outDevice: string
+  /** RNNoise on your microphone (`voiceDenoise.ts`), Discord's noise
+      suppression; off falls back to the browser's own */
+  denoise: boolean
   /** the soundtrack (game/music), and the world's own sound under it */
   musicVol: number
   ambVol: number
@@ -136,7 +139,7 @@ const CAP_DEFAULT_KEY = 'alejos-roam-cap-default'
 const OLD_CAP_DEFAULT = 160
 const PREFS_DEFAULT: RoamPrefs = {
   fov: 60, sens: 1, third: false, cap: 120, detail: 'auto', scale: 1,
-  pixels: 'medium', micVol: 1, voiceVol: 1, micDevice: '', outDevice: '', musicVol: 1, ambVol: 1, voiceFx: 'none',
+  pixels: 'medium', micVol: 1, voiceVol: 1, micDevice: '', outDevice: '', denoise: true, musicVol: 1, ambVol: 1, voiceFx: 'none',
   fps: false,
 }
 
@@ -163,6 +166,7 @@ export const loadPrefs = (): RoamPrefs => {
         voiceVol: vol(p.voiceVol, PREFS_DEFAULT.voiceVol),
         micDevice: typeof p.micDevice === 'string' ? p.micDevice.slice(0, 200) : '',
         outDevice: typeof p.outDevice === 'string' ? p.outDevice.slice(0, 200) : '',
+        denoise: p.denoise !== false,
         musicVol: vol(p.musicVol, PREFS_DEFAULT.musicVol),
         ambVol: vol(p.ambVol, PREFS_DEFAULT.ambVol),
         voiceFx: VOICE_FILTERS.includes(p.voiceFx as VoiceFilter)

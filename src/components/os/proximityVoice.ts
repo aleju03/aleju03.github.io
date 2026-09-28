@@ -33,11 +33,25 @@ import { createVoiceFx, type VoiceFilter } from './voiceFilters'
   a third of the way down at conversational range, HRTF panning costs a few
   dB on top, and the first version of this ran all of that straight into
   `ctx.destination` at unity, which is why two people standing in a field
-  could barely hear each other. A limiter sits after the bus so that boost
-  can never turn a shout into clipping. The mic trim is deliberately *before*
+  could barely hear each other. A soft clipper sits after the bus so that
+  boost can never turn a shout into clipping. It used to be a
+  DynamicsCompressor at -10 dB, 20:1, on the send as well as the bus, and a
+  voice went through two of them: Chrome's compressor adds its own makeup
+  gain (about +5.7 dB at those settings), so every syllable was brick-walled
+  and the room noise came up with it, twice. That is most of what "I sound
+  so bad next to Discord" was. The clipper is a straight line to -4.4 dBFS
+  and only rounds off what passes it. The mic trim is deliberately *before*
   the analyser as well as before the gate: turning yourself up has to make
   the voice gate open more readily, or a quiet speaker turns the dial up and
   still gets cut off mid-word.
+
+  Noise suppression is RNNoise (`voiceDenoise.ts`, loaded the first time a
+  microphone is turned on), a small neural network in an AudioWorklet
+  between the microphone and the trim, with the browser's own weaker
+  suppression switched off under it so the two do not fight. It is
+  `roamPrefs.denoise`, on by default; turning it off, or a context that is
+  not at 48 kHz, reopens the microphone with the browser's suppression
+  instead.
 
   The visitor's voice filter (`voiceFilters.ts`: helium, giant, robot, radio,
   cave, or none, picked on the pause sheet as `roamPrefs.voiceFx`) sits
@@ -109,7 +123,7 @@ const ROLLOFF = 0.9
 /** what the bus adds under the visitor's dial. A voice track lands around
     -20 dBFS after the browser's own AGC and the panner takes a chunk more;
     unity here is a conversation you have to lean into */
-const VOICE_MAKEUP = 2.8
+const VOICE_MAKEUP = 3.5
 /** how far up either dial may go, so a stored number cannot hand the graph
     something it will scream through */
 const VOL_MAX = 2
@@ -201,6 +215,8 @@ export interface ProximityVoiceOpts {
   /** the chosen microphone and speaker ('' the system default), read fresh
       every frame like the dials; a change is acted on, not re-set */
   devices: () => { mic: string; out: string }
+  /** RNNoise on the microphone (`voiceDenoise.ts`); a change reopens it */
+  denoise: () => boolean
   /** the ICE servers to open the next peer with, read fresh each time: the
       server hands them over at join, and a TURN credential in them expires */
   ice: () => RTCIceServer[]
@@ -210,22 +226,27 @@ export interface ProximityVoiceOpts {
 }
 
 /**
-  A brick wall on a bus, both directions.
-
-  Measured offline against a -20 dBFS voice track, which is where a browser's
-  own AGC leaves one: at -6/12:1 the makeup gain still pushed peaks half a dB
-  past full scale at the top of the dial. At -10/20:1 the loudest thing either
-  chain can produce peaks at -1 dBFS, which is the point: a volume control
-  that can distort is a volume control people learn not to turn up.
+  The ceiling on every voice chain: a waveshaper that is a straight line up
+  to CLIP_KNEE (-4.4 dBFS) and bends into a tanh above it, so a shout at the
+  top of both dials rounds off under -0.9 dBFS instead of clipping, and
+  anything below the knee passes untouched. Not a DynamicsCompressor: that
+  node adds makeup gain of its own in Chrome and pumps on every word (see
+  the header). Oversampled so the bend does not alias.
 */
-const limiterIn = (ctx: AudioContext) => {
-  const c = ctx.createDynamicsCompressor()
-  c.threshold.value = -10
-  c.knee.value = 0
-  c.ratio.value = 20
-  c.attack.value = 0.002
-  c.release.value = 0.2
-  return c
+const CLIP_KNEE = 0.6
+const softClip = (ctx: AudioContext) => {
+  const ws = ctx.createWaveShaper()
+  const n = 2049
+  const curve = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1
+    const a = Math.abs(x)
+    const y = a <= CLIP_KNEE ? a : CLIP_KNEE + (1 - CLIP_KNEE) * Math.tanh((a - CLIP_KNEE) / (1 - CLIP_KNEE))
+    curve[i] = Math.sign(x) * y
+  }
+  ws.curve = curve
+  ws.oversample = '2x'
+  return ws
 }
 
 const loadMode = (): VoiceMode => {
@@ -270,7 +291,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
   const gate = ctx ? ctx.createGain() : null
   const fx = ctx ? createVoiceFx(ctx, opts.filter()) : null
   const send = ctx ? ctx.createGain() : null
-  const outLimit = ctx ? limiterIn(ctx) : null
+  const outLimit = ctx ? softClip(ctx) : null
   const outDest = ctx ? ctx.createMediaStreamDestination() : null
   // the mic test's tap: the filtered voice, back to this machine's speakers
   const monitor = ctx ? ctx.createGain() : null
@@ -290,7 +311,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
   // one bus, the bus carries the dial, and the limiter after it is what makes
   // a boost above unity safe to offer at all
   const bus = ctx ? ctx.createGain() : null
-  const limiter = ctx ? limiterIn(ctx) : null
+  const limiter = ctx ? softClip(ctx) : null
   if (ctx && bus && limiter) {
     bus.gain.value = VOICE_MAKEUP
     bus.connect(limiter)
@@ -320,6 +341,27 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
   let micDevice = ''
   let outDevice = ''
   let switching = false
+  // the noise suppressor: made the first time a microphone opens with it
+  // wanted, then kept; `denoiseOn` is what the open microphone was set up for
+  let denoiser: (AudioWorkletNode & { destroy: () => void }) | null = null
+  let denoiseOn = false
+  let denoiseTried = false
+  /** where a microphone plugs in: the denoiser (which feeds the trim), or
+      the trim itself */
+  const entry = (): AudioNode => (denoiseOn && denoiser ? denoiser : trim!)
+  const ensureDenoiser = async () => {
+    if (!ctx || !trim || denoiser || denoiseTried) return
+    denoiseTried = true
+    try {
+      const { createDenoiser } = await import('./voiceDenoise')
+      denoiser = await createDenoiser(ctx)
+      denoiser?.connect(trim)
+    } catch {
+      denoiser = null
+    }
+    // a failed load may be the network: let the next mic-on try again
+    if (!denoiser) denoiseTried = false
+  }
   const applyLevels = () => {
     if (!ctx) return
     const want = opts.levels()
@@ -344,6 +386,10 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     }
     if (dev.mic !== micDevice && !switching) {
       micDevice = dev.mic
+      if (enabled) void switchMic()
+    }
+    if (opts.denoise() !== denoiseOn && !switching) {
+      denoiseOn = opts.denoise()
       if (enabled) void switchMic()
     }
   }
@@ -470,7 +516,14 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
   /** the microphone asked for: the chosen one, or the system's own when
       that one has been unplugged since it was picked */
   const openMic = async () => {
-    const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    // the browser's suppression only where RNNoise is not doing the job:
+    // the two stacked smear the voice. Mono, which is all RNNoise takes
+    const audio = {
+      echoCancellation: true,
+      noiseSuppression: !(denoiseOn && denoiser),
+      autoGainControl: true,
+      channelCount: 1,
+    }
     if (micDevice) {
       try {
         return await navigator.mediaDevices.getUserMedia({ audio: { ...audio, deviceId: { exact: micDevice } } })
@@ -487,6 +540,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     if (!ctx || !trim || switching) return
     switching = true
     try {
+      if (denoiseOn) await ensureDenoiser()
       const stream = await openMic()
       if (!enabled) {
         stream.getTracks().forEach((t) => t.stop())
@@ -496,7 +550,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       mic?.getTracks().forEach((t) => t.stop())
       mic = stream
       micSource = ctx.createMediaStreamSource(stream)
-      micSource.connect(trim)
+      micSource.connect(entry())
       error = null
     } catch {
       // the old microphone is still connected; say so and keep it
@@ -514,6 +568,8 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     changed()
     try {
       micDevice = opts.devices().mic
+      denoiseOn = opts.denoise()
+      if (denoiseOn) await ensureDenoiser()
       const stream = await openMic()
       if (ctx.state === 'suspended') await ctx.resume()
       mic = stream
@@ -525,7 +581,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       // the detector taps after the trim and ahead of the gate: a shut gate
       // can still hear you begin to speak, and turning yourself up turns the
       // gate's own threshold down with you
-      micSource.connect(trim!)
+      micSource.connect(entry())
       trim!.connect(analyser)
       trim!.connect(gate!)
       enabled = true
@@ -768,6 +824,8 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       trim?.disconnect()
       gate?.disconnect()
       fx?.dispose()
+      denoiser?.disconnect()
+      denoiser?.destroy()
       send?.disconnect()
       monitor?.disconnect()
       outLimit?.disconnect()

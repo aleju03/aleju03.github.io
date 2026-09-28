@@ -2167,6 +2167,7 @@ export default function CrtScene({
             }),
             filter: () => prefsRef.current.voiceFx,
             devices: () => ({ mic: prefsRef.current.micDevice, out: prefsRef.current.outDevice }),
+            denoise: () => prefsRef.current.denoise,
             // read per peer, not captured: a reconnect brings a fresh TURN
             // credential and the old one may already have expired
             ice: () => net?.ice ?? [],

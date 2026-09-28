@@ -1000,6 +1000,19 @@ export default function PauseScreen({
                         {testFailed ? tp.micTestFail : testing ? `${tp.micTestHint} · ▾ ${tp.gateNote}` : tp.micTestHint}
                       </Hint>
                     </div>
+                    {/* Discord's noise suppression: RNNoise, before the trim */}
+                    <div className="sm:col-span-2">
+                      <Choice<'on' | 'off'>
+                        label={tp.denoise}
+                        hint={tp.denoiseHint}
+                        options={[
+                          { id: 'on', label: tp.denoiseWords[0] },
+                          { id: 'off', label: tp.denoiseWords[1] },
+                        ]}
+                        value={prefs.denoise ? 'on' : 'off'}
+                        onPick={(v) => onPrefs((p) => ({ ...p, denoise: v === 'on' }))}
+                      />
+                    </div>
                     {/* what everybody else hears you through. The filter is
                         applied on this machine before the voice leaves it
                         (`voiceFilters.ts`), so the only honest way to show it
