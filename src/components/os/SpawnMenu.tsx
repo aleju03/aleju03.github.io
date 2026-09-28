@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { menuTick } from '../../game/core/sfx'
 import { useI18n } from '../../i18n'
 import type { PropKind } from '../../game/sandbox/kinds'
 import type { SpawnCategory, SpawnEntry } from '../../game/sandbox/spawnlist'
@@ -210,6 +211,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
         type="button"
         title={name}
         onClick={() => {
+          menuTick('pick')
           onSpawn(e.id)
           setStamped((p) => ({ id: e.id, n: (p?.n ?? 0) + 1 }))
         }}
@@ -339,7 +341,10 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                 // a click must not take focus off the find line, whose
                 // blur is what lets the catalogue close
                 onMouseDown={(ev) => ev.preventDefault()}
-                onClick={() => pick(c.id)}
+                onClick={() => {
+                  menuTick('tab')
+                  pick(c.id)
+                }}
                 className="font-display min-w-0 flex-1 truncate self-end rounded-t-[7px] px-1.5 pt-[5px] text-left text-[12px] leading-none font-semibold"
                 style={{
                   // the tab's foot tucks behind the cover's edge (7px), so the
@@ -392,6 +397,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                   } else if (e.key === 'Enter' && shown.length) {
                     // enter orders the first thing on the page
                     e.preventDefault()
+                    menuTick('pick')
                     onSpawn(shown[0].id)
                     setStamped((p) => ({ id: shown[0].id, n: (p?.n ?? 0) + 1 }))
                   }
@@ -422,7 +428,10 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
                 type="button"
                 data-turn="back"
                 onMouseDown={(ev) => ev.preventDefault()}
-                onClick={() => turn(-1)}
+                onClick={() => {
+                  menuTick('page')
+                  turn(-1)
+                }}
                 className="shrink-0 underline decoration-dotted underline-offset-2"
                 style={{ color: RED }}
               >
@@ -459,7 +468,10 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onPin, onClos
             aria-label={s.next}
             disabled={at >= spreads - 1}
             onMouseDown={(ev) => ev.preventDefault()}
-            onClick={() => turn(1)}
+            onClick={() => {
+              menuTick('page')
+              turn(1)
+            }}
             className="absolute right-0 bottom-0 z-10 size-[34px] enabled:cursor-pointer"
             style={{
               background:
