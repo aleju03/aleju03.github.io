@@ -13,9 +13,13 @@ import type { WeaponEvent } from './weapons'
   the report bouncing off whatever is round it, and the slide's clack
   behind it if it is your own. **The crossbow** is a twang: a string's
   three partials ringing down with a slight sag in pitch, a dry snap as the
-  latch lets go and a thin whoosh of the bolt leaving. **The rocket** is a
-  deep thump and a pop under a long hiss that sweeps down as the motor
-  gets away. Impacts are the props' own surface voices (a pistol round on a
+  latch lets go and a thin whoosh of the bolt leaving. **The rocket** is
+  the igniter's snap and the tube's low punch, then the motor: a roar that
+  swells in and brightens for a tenth of a second and darkens as it gets
+  away (`roar`, because `burst` strikes and a motor catching does not),
+  with a rumble under it and a thin crackle on top. It was a thump under a
+  hiss sweeping down, which read as gas escaping rather than as a rocket
+  leaving. Impacts are the props' own surface voices (a pistol round on a
   crate sounds like wood being hit hard) plus, for the pistol on stone, a
   ricochet one time in four; a bolt going in is a thunk and the shaft
   buzzing. A rocket's bang is the explosion's own boom.
@@ -25,11 +29,58 @@ import type { WeaponEvent } from './weapons'
   bus at arm's length): a crate hit hard peaks at 0.18, a crate breaking at
   0.14 and a red barrel's boom at 0.58; the pistol sits a little over the
   crate (0.22), the crossbow a little under it (0.16), a bolt going in with
-  it (0.15), the launch between the pistol and the boom (0.30), and your
+  it (0.15), the launch a touch under the pistol (0.22: its peak is lower,
+  but it lasts a second where the pistol's crack lasts a twentieth), and your
   own reload clicks well under all of them (0.03).
 */
 
 const jit = (k = 0.06) => 1 + (Math.random() * 2 - 1) * k
+
+type Out = NonNullable<ReturnType<typeof placedVoice>>
+
+/** a second of white noise per context, looped from a random offset */
+const noiseFor = new WeakMap<BaseAudioContext, AudioBuffer>()
+const noise = (a: BaseAudioContext) => {
+  let b = noiseFor.get(a)
+  if (!b) {
+    b = a.createBuffer(1, a.sampleRate, a.sampleRate)
+    const d = b.getChannelData(0)
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
+    noiseFor.set(a, b)
+  }
+  return b
+}
+
+/**
+ * Noise that swells in rather than striking: `burst` opens in 4 ms, which is
+ * a hit, and a motor catching is not a hit. The filter's corner rides its own
+ * envelope, up from `f0` to `f1` while the gain swells over `rise` and back
+ * down to `f2` as it dies over `dur`, which is the "fwoosh" of something
+ * getting away from you rather than a hiss of gas
+ */
+const roar = (
+  o: Out, type: BiquadFilterType, q: number, gain: number,
+  f0: number, f1: number, f2: number, rise: number, dur: number, delay = 0,
+) => {
+  const { a, at } = o
+  const t = at + delay
+  const src = a.createBufferSource()
+  src.buffer = noise(a)
+  src.loop = true
+  const f = a.createBiquadFilter()
+  f.type = type
+  f.Q.value = q
+  f.frequency.setValueAtTime(f0, t)
+  f.frequency.exponentialRampToValueAtTime(f1, t + rise)
+  f.frequency.exponentialRampToValueAtTime(f2, t + dur)
+  const g = a.createGain()
+  g.gain.setValueAtTime(0.0001, t)
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + rise)
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur)
+  src.connect(f).connect(g).connect(o.node)
+  src.start(t, Math.random() * 0.6)
+  src.stop(t + dur + 0.03)
+}
 
 export interface WeaponSfx {
   play: (e: WeaponEvent, ear: { x: number; y: number; z: number }) => void
@@ -55,12 +106,17 @@ export function createWeaponSfx(): WeaponSfx {
       mode(o, f * 3.03, 0.3, 0.17)
       burst(o, 'highpass', 2800, 0.7, 0.3, 0.14, 0.01, 6200)
     } else {
-      const o = placedVoice('rocket', x, y, z, 0.27, 30)
+      const o = placedVoice('rocket', x, y, z, 0.31, 30)
       if (!o) return
-      mode(o, 62 * jit(), 1, 0.32, 0, 0.5)
-      burst(o, 'lowpass', 900, 0.7, 0.8, 0.18)
-      burst(o, 'highpass', 1900, 0.6, 0.6, 1.15, 0.03, 850)
-      burst(o, 'bandpass', 3500, 0.8, 0.35, 0.6, 0.05)
+      // the igniter's snap, then the tube's low punch as the charge kicks
+      burst(o, 'bandpass', 1500 * jit(), 1.4, 0.35, 0.025)
+      mode(o, 96 * jit(), 0.8, 0.26, 0.004, 0.45)
+      // the motor catching: a roar that swells in and brightens over the
+      // first tenth of a second, then darkens and fades as it gets away
+      roar(o, 'lowpass', 0.8, 0.9, 420, 2600 * jit(), 650, 0.07, 1.05, 0.01)
+      // its body, the rumble under the roar, and a thin crackle riding on it
+      roar(o, 'bandpass', 0.9, 0.55, 140, 230, 90, 0.05, 0.8, 0.01)
+      roar(o, 'bandpass', 2.5, 0.12, 3800, 4400, 2200, 0.05, 0.5, 0.03)
     }
   }
 
