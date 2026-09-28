@@ -3,6 +3,8 @@ import { menuTick } from '../../game/core/sfx'
 import { MAPS, type MapId } from '../../game/levels/maps'
 import { useI18n } from '../../i18n'
 import { INK, INK_SOFT, MARK, PAPER, stockTexture } from './paper'
+import RoomStrip from './RoomStrip'
+import { Rule } from './PaperMarks'
 
 /*
   Where to? The map you play on is picked before you are put in the world:
@@ -37,6 +39,8 @@ export default function MapPicker({ here, onPick }: MapPickerProps) {
   // 1, 2, 3... pick; enter takes the one you are on
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // the room strip's code field is made of exactly these keys
+      if ((e.target as HTMLElement | null)?.tagName === 'INPUT') return
       const n = Number(e.key)
       if (n >= 1 && n <= MAPS.length) {
         e.preventDefault()
@@ -128,6 +132,9 @@ export default function MapPicker({ here, onPick }: MapPickerProps) {
             )
           })}
         </div>
+        {/* who to play with: the public world, a private room, or a code */}
+        <Rule className="mt-6 mb-3 w-40" color={`${INK}66`} />
+        <RoomStrip />
       </div>
     </div>
   )

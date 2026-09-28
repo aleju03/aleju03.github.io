@@ -47,6 +47,7 @@
                                       shots to ~/.cache/overhaul/space
                                       (--space-out <dir>); --dump-globe stops at
                                       orbit and writes the globe's painted map
+    (private rooms have their own three-client harness: node scripts/rooms-drive.mjs)
     npm run drive -- perf             frame cost (cpu, gpu, draw calls,
                                       triangles) in the computer room, at
                                       the front gate by day and night, and

@@ -12,6 +12,7 @@ import { propSmoke } from './props.mjs';
 import { effectsSmoke } from './worldEffects.mjs';
 import { damageSmoke } from './worldDamage.mjs';
 import { weaponsSmoke } from './weapons.mjs';
+import { roomsSmoke } from './worldRooms.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -79,6 +80,9 @@ function startServer(port = '0') {
         ANALYTICS_URL: `file:${path.join(tmpDir, 'analytics.db')}`,
         ANALYTICS_SITE_HOSTS: 'aleju.dev',
         ALLOWED_ORIGINS: 'https://aleju.dev',
+        // rooms: a short grace and a small private cap, so death and fullness are cheap to test
+        WORLD_ROOM_GRACE_MS: '300',
+        WORLD_ROOM_MAX_PLAYERS: '3',
       },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
@@ -101,6 +105,8 @@ async function main() {
   await damageSmoke(url, connect);
   await weaponsSmoke(url, connect);
   await propSmoke(url, connect);
+  await roomsSmoke(url, connect);
+  console.log('0. world rooms: isolation of roster, ticks, chat, signals, props, damage and seats; join errors; death and rebirth; creation limits');
 
   // 1. Guest hello: gets a guest name and the room list.
   const guest = connect(url);

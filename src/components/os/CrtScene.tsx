@@ -85,6 +85,8 @@ import { createBlockNetwork } from '../../game/net/remoteBlocks'
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
+import { getRoomState, subscribeRoom } from './worldRoom'
+import RoomChip from './RoomChip'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
 import { PIXEL_LINES_K, PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
 import { snapPixelProofs, type PixelProofs } from './pixelProofs'
@@ -557,6 +559,8 @@ export default function CrtScene({
   const resumeRef = useRef<(() => void) | null>(null)
   /** go to a map from the pause sheet (see goMap in the scene) */
   const goMapRef = useRef<((id: MapId) => void) | null>(null)
+  /** the room wish changed (worldRoom.ts): drop the socket and re-enter */
+  const roomRestartRef = useRef<(() => void) | null>(null)
   /** a print on the map sheet: that map, or the world let go of */
   const pickMapRef = useRef<((id: MapId) => void) | null>(null)
   const failRef = useRef(onFail)
@@ -635,6 +639,7 @@ export default function CrtScene({
     const mount = mountRef.current
     if (!mount) return
     let disposed = false
+    const unsubRoom = subscribeRoom(() => roomRestartRef.current?.())
     let raf = 0
     let webgl: THREE.WebGLRenderer | null = null
     let scene: THREE.Scene | null = null
@@ -2017,8 +2022,14 @@ export default function CrtScene({
           })
         }
 
+        // the room the socket was opened for. Rooms are chosen on the map
+        // sheet (worldRoom.ts), and a socket is one room's for life: a change
+        // of wish is a full leave and re-join, which is exactly what sitting
+        // down and standing up again does, so nothing here can be half-stale
+        let joinedRoom: string | null = null
         const joinWorld = () => {
           if (net || !worldConfigured()) return
+          joinedRoom = getRoomState().code
           // The room is walkable long before the desktop has been logged into
           // — that is the whole of the /world entrance — so an absent session
           // is a guest, not a reason to stay out of the world. The server
@@ -2195,6 +2206,16 @@ export default function CrtScene({
           for (const { sb } of sandboxes.values()) historyOf(sb).me = LOCAL
           setTyping(null)
           typingRef.current = false
+        }
+
+        roomRestartRef.current = () => {
+          if (!net || getRoomState().code === joinedRoom) return
+          // out of the caller's stack: this is usually a socket handler
+          setTimeout(() => {
+            if (disposed || !net || getRoomState().code === joinedRoom) return
+            leaveWorld()
+            joinWorld()
+          }, 0)
         }
 
         /** move off the shared spawn tile onto our slot. Only ever fires once,
@@ -5301,7 +5322,10 @@ export default function CrtScene({
           nextFrame = 0
           look.setScale(pr)
           // announce ourselves while the stand-up glide plays, so the roster
-          // and the first snapshots have landed by the time the controls do
+          // and the first snapshots have landed by the time the controls do.
+          // (Into the room worldRoom.ts already wants: a ?room= link is
+          // decided before this runs. A room picked on the map sheet
+          // afterwards is a re-join, via roomRestartRef.)
           joinWorld()
           // push back from the desk and rise to standing height in one move,
           // straight off the glass: half a second reads as standing up, and
@@ -5735,6 +5759,8 @@ export default function CrtScene({
       propRef.current = null
       resumeRef.current = null
       goMapRef.current = null
+      roomRestartRef.current = null
+      unsubRoom()
       pixelProofsRef.current = null
       enterRef.current = null
       leaveRef.current = null
@@ -5818,6 +5844,8 @@ export default function CrtScene({
                 } · ${t.sandbox.hud.pauses}`, language))}
         </p>
       )}
+      {/* a private room's code, in the corner; nothing at all in public */}
+      {roam && walking && !paused && <RoomChip />}
       {/* the instrument panel. Deliberately the same quiet mono the rest of
           the HUD is in — a chrome speedometer over this world would be a
           different game's furniture */}

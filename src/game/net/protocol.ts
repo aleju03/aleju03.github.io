@@ -134,6 +134,10 @@ export interface WorldWelcome {
       has one configured. Absent from older servers, which is why the client
       keeps its own STUN default */
   ice?: RTCIceServer[]
+  /** the room we were put in: 'public' or a private room's code. Absent from
+      servers that predate rooms, which the client treats as a refusal when it
+      asked for a private one (components/os/worldRoom.ts) */
+  room?: string
   players: RosterEntry[]
   /** where the machines actually are, for a late arrival. Absent while the
       fleet is still untouched — until somebody drives one, every client's own
@@ -304,7 +308,7 @@ export type WorldClientMessage =
   | import('./blockProtocol').BlockClientMessage
   /** `look` rides the join so a body is never drawn in the wrong colours even
       for the one tick between arriving and repainting */
-  | { type: 'world-join'; level: string; look?: string }
+  | { type: 'world-join'; level: string; look?: string; room?: string; create?: boolean }
   | { type: 'world-leave' }
   /** repainted. Answered by a world-look to everyone else and by nothing at
       all to us — the local body is already wearing it */

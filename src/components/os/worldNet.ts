@@ -8,6 +8,7 @@ import {
   type WorldServerMessage,
 } from '../../game/net/protocol'
 import { packEmote } from '../../game/player/emotes'
+import { confirmRoom, failRoom, roomOffline, roomWanted, type RoomError } from './worldRoom'
 
 /*
   The socket the 3D world's shared walk runs on — the fourth on this server,
@@ -28,6 +29,16 @@ import { packEmote } from '../../game/player/emotes'
   is where a reconnect is made invisible — the socket re-joins the world on
   its own, so a dropped wifi costs a few seconds of everyone else standing
   still, not a trip back to the desktop.
+
+  Rooms ride the join: `world-join` carries the room `worldRoom.ts` wants,
+  read on every join so a reconnect lands back in the same private room. The
+  server's refusal (unknown code, full, too many rooms, rate) is only ever an
+  answer to a join, so an `error` while a join is pending is the room's, and
+  it drops the wish back to public through `failRoom`; whoever owns this net
+  sees the wish change and re-enters. A server too old to know about rooms
+  welcomes us with no `room` at all, which is treated as the same refusal
+  rather than silently dropping somebody into public who asked for a private
+  room.
 */
 
 const CHAT_URL = import.meta.env.VITE_CHAT_URL as string | undefined
@@ -165,6 +176,9 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   /** a rename is in flight, so the next `nick-ok` or `error` on this socket
       is its answer. Nothing else this socket sends can be answered by either */
   let nickPending = false
+  /** a world-join is on the wire and its welcome has not come back: any
+      refusal in this window is the room's */
+  let joinPending: string | null = null
 
   // last pose actually put on the wire, for the idle suppressor
   let lastSent = 0
@@ -244,7 +258,9 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
         // a reconnect re-enters the world by itself; the player never sees it.
         // The look rides along so nobody ever draws us in the wrong colours,
         // not even for the tick between arriving and repainting
-        raw({ type: 'world-join', level, look: opts.look?.() })
+        const want = roomWanted()
+        joinPending = want.room ?? 'public'
+        raw({ type: 'world-join', level, look: opts.look?.(), ...want })
         // force the next move() and vehicle() through, whatever the idle
         // suppressors think: the server we are talking to may be a different
         // process than the one that heard the last one
@@ -270,6 +286,21 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
         }
         return
       }
+      if (data.type === 'error' && joinPending) {
+        const code = String(data.code ?? '')
+        const asked = joinPending
+        const reason: RoomError | null =
+          code === 'room_unknown' ? 'unknown'
+          : code === 'room_full' ? 'full'
+          : code === 'room_limit' ? 'limit'
+          : code === 'rate' ? 'rate'
+          : null
+        if (reason && asked !== 'public') {
+          joinPending = null
+          failRoom(reason)
+          return
+        }
+      }
       if (data.type === 'error' && nickPending) {
         nickPending = false
         opts.onNick?.({
@@ -279,6 +310,14 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
         return
       }
       if (data.type === 'world-welcome') {
+        const asked = joinPending
+        joinPending = null
+        const room = typeof data.room === 'string' ? data.room : 'public'
+        if (asked && asked !== 'public' && room !== asked) {
+          failRoom('unknown')
+          return
+        }
+        confirmRoom(room)
         // a TURN credential in here is short-lived, so it is re-read on every
         // reconnect rather than captured once
         const offered = (data as { ice?: RTCIceServer[] }).ice
@@ -293,6 +332,8 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     socket.onclose = () => {
       if (ws === socket) ws = null
       joined = false
+      joinPending = null
+      roomOffline()
       // a rename that was in flight when the socket went down has no answer
       // coming; the panel waiting on it must not spin forever
       if (nickPending) {
@@ -464,6 +505,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
       joined = false
       ws?.close()
       ws = null
+      roomOffline()
       setStatus('offline')
     },
   }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
+import RoomStrip from './RoomStrip'
 import { keyHint } from '../../game/sandbox/bindings'
 import { useI18n } from '../../i18n'
 import {
@@ -671,6 +672,9 @@ export default function PauseScreen({
             </Note>
           </p>
         </header>
+
+        {/* which room this is, with the invite link and the way back to public */}
+        <RoomStrip />
 
         {/* Scrolls when a short window needs it, but never draws a bar: a bar
             takes its own width out of the columns, the widest option row then

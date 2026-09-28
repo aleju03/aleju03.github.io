@@ -22,6 +22,9 @@ v2 replaced the old 1:1 messenger protocol entirely, so deploy the server and th
 | `ANALYTICS_RETENTION_DAYS` | no | `180` | Rows older than this are pruned hourly |
 | `ANALYTICS_SITE_HOSTS` | no | unset | Comma-separated hosts that count as real traffic in the live feed, e.g. `aleju03.github.io`. Keeps localhost and preview deploys out |
 | `ANALYTICS_TIME_ZONE` | no | `UTC` | IANA zone for the feed's clock labels |
+| `WORLD_MAX_ROOMS` | no | `200` | Private world rooms alive at once (see "World rooms") |
+| `WORLD_ROOM_MAX_PLAYERS` | no | `16` | Players per private room. The public room keeps its own cap (32) |
+| `WORLD_ROOM_GRACE_MS` | no | `30000` | How long an empty private room lives before it is forgotten, props and all |
 | `YT_SEARCH` | no | `on` | Set to `off` to unmount the browser's video search. Nothing else depends on it |
 
 ## Video search
@@ -149,7 +152,7 @@ question two clients cannot answer between themselves. Even there the server
 simulates nothing: it hands out chairs and relays the transform of whoever is
 sitting in the driving one.
 
-- `{type:'world-join', level, look?}` → `{type:'world-welcome', you, tick, players:[{id,name,admin,registered,look?}], vehicles?, seats?}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`. The two optional fields catch a late arrival up on the fleet, and are absent while it is untouched. Until somebody moves a machine, every client's own spawn agrees about where all three are
+- `{type:'world-join', level, look?, room?, create?}` → `{type:'world-welcome', you, room, tick, players:[{id,name,admin,registered,look?}], vehicles?, seats?}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`. The two optional fields catch a late arrival up on the fleet, and are absent while it is untouched. Until somebody moves a machine, every client's own spawn agrees about where all three are
 - `{type:'world-look', look}` → `{type:'world-look', id, look}` to everyone else. `look` is 24 hex characters, four packed colours from `src/game/player/look.ts`, and this process never parses it; it is stored on the socket and relayed, so a repaint survives walking out of the world and back in. A malformed one is a strike, not a silent drop, because only a hand-written client can send one. The join carries the same field so nobody is ever drawn in the wrong colours, not even for one tick
 - `{type:'nick', name}` → `{type:'nick-ok', name}` to the sender **and** `{type:'world-name', id, name}` to everyone else in the world. Renaming is not a world message at all: it is the chat server's existing nick, because one socket carries one identity and the plate over your head, the chat rail and the arcade boards all have to agree on it. Registered users are refused, as they always were
 - `{type:'world-move', x, y, z, yaw, pitch, gait, f, e?, py?, pp?}`. The hot path, ~15/s per client, dropped rather than punished above the rate cap. `y` is the soles, not the eye; `f` is a pose bitfield (grounded/run/crouch/swim/**speaking**/down) mirrored by `POSE` in protocol.ts. `e` is the emote playing, packed as one small integer the server only range-checks (id and age, `src/game/player/emotes.ts`); `py`/`pp` are where the right arm points (a world yaw and pitch), sent only while pointing
@@ -163,6 +166,28 @@ sitting in the driving one.
 - `{type:'world-chat', text}` → `{type:'world-chat', id, name, admin, registered, text, at}` to everyone in the world. Not stored: this is shouting across a field, not a room with history
 - `{type:'world-signal', to, data}` → `{type:'world-signal', from, data}`. The WebRTC offer/answer/ICE relay for proximity voice, forwarded verbatim between two peers in the same level. **No audio ever passes through this process**; peers talk browser to browser and the server only introduces them. A signal aimed at someone who just left or stepped through a seam is dropped in silence, because that race is one the caller already recovers from
 - `world-exit {id}` on departure; a socket closing leaves the world as well as its chat room and any duel
+
+### World rooms
+
+The world is not one place any more: it is one place **per room**. `room` on
+`world-join` is absent or `'public'` (the shared world, exactly as it always
+was) or a code of 4-12 letters and digits, compared upper-case. Only the people
+in a room see each other, chat, hear each other's voice handshake, share props,
+blocks, damage, portals, weapons fire, and sit in the same four vehicles.
+
+- `{type:'world-join', level, room:'AMBER7', create?:true}`: joins that room if it exists; with `create:true` makes it if it does not (creation is limited to 3 per socket per minute and 12 per address per 10 minutes, answered `error/rate`); without `create` an unknown code is `error/room_unknown` (unknown-code attempts are limited to 10 per address per minute, then `error/rate`, so a code is as private as it is hard to guess). A malformed code is a strike. `error/room_full` (private rooms hold `WORLD_ROOM_MAX_PLAYERS`, public holds `WORLD_MAX_PLAYERS`) and `error/room_limit` (`WORLD_MAX_ROOMS` alive) round it out. A refused join leaves the socket free to join again.
+- `world-welcome.room` is always present: `'public'` or the code. To switch rooms a client sends `world-leave` and joins again (same socket, in order); everything else keeps its meaning, and `level` on the wire is always the plain level id.
+- A private room forgets itself `WORLD_ROOM_GRACE_MS` after its last player leaves, with all of its props, ruins, blocks, portals and seat table. Inside that grace a dropped connection rejoins its own room as it was. Codes are minted by the client (six characters of an alphabet without lookalikes, ~887M codes), so the invite link exists before the socket does; the server only validates.
+
+The isolation is structural, not a filter: `server/src/worldRooms.js` owns the
+rooms, and `buildRoom` in `index.js` gives each one its **own** `players` map
+and its own copy of every module (props, effects, damage, blocks, weapons, the
+fleet). Each module already scoped itself by filtering `players` on
+`ws.world.level`, so handing it a smaller map is the whole of the isolation and
+nothing in a module knows rooms exist. The world tick, chat, signalling, shove,
+grab, bring, look and name broadcasts are all per room (`worldBroadcast(room,
+...)`, `room.players.get`). **A new world module must be created inside
+`buildRoom` and dispatched through `roomOf(ws)`**, or it is global.
 
 ### Sandbox props
 
