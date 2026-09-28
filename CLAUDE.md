@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The npm scripts are in `package.json`; `npx tsc -b` typechecks without building.
 
-There is no frontend test suite; verification is typecheck + lint + build, then driving the affected flow in the dev server. The chat server has a smoke test: `cd server && npm test` (plain `node test/smoke.mjs`). `server/` runs with `npm start` and refuses to boot without `ADMIN_TOKEN` set. `npm run deploy:server` deploys it to the production VPS (`scripts/deploy-server.sh`: checks main is pushed, runs the smoke test, then the VPS's own `~/apps/redeploy-chat.sh` over `ssh -t vps`, whose sudo asks for a password).
+There is no frontend test suite; verification is typecheck + lint + build, then driving the affected flow in the dev server. The chat server has a smoke test: `cd server && npm test` (plain `node test/smoke.mjs`). `server/` runs with `npm start` and refuses to boot without `ADMIN_TOKEN` set. Production deploys from GitHub: push `main`, then `ssh vps '~/apps/redeploy-chat.sh'` (the VPS pulls, syncs `server/` into `/opt/portfolio-chat` with `data/` untouched, restarts `portfolio-chat` with no password prompt and checks `/health`).
 
 **The open world has its own harness (`npm run shoot`, `npm run measure`), and anything touching `src/game/world/` should use it instead of booting the site.** It is documented at the top of both scripts and in `src/game/CLAUDE.md`. It takes its own port (5178) and kills only what it spawned: `:5173` belongs to whoever started it, so never kill it.
 
