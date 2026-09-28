@@ -10,10 +10,12 @@
                                       a first spawn, a change of look (the
                                       beaver, a cap, the headset), a break, a
                                       fuse and a chain
-                                      of bangs, and a trip to Nuketown and
-                                      back (loaded under the cut's card,
-                                      looked round, a crate blown up there)
-                                      (must be 0)
+                                      of bangs, and trips to Nuketown and
+                                      Cubeland and back (loaded under the
+                                      cut's card, looked round, blown up
+                                      there) (must be 0; Cubeland's own
+                                      programs, made under its card, are
+                                      counted apart)
     npm run drive -- nuketown [--only a,b]
                                       the Nuketown map from its references'
                                       angles: both spawn ends, the loading
@@ -21,6 +23,12 @@
                                       living room, the yellow house's front
                                       window and straight down from noclip
                                       (shots nuketown-*.png)
+    npm run drive -- cubeland [--only a,b]
+                                      Cubeland: the spawn from four headings
+                                      and the air, a block broken and a tower
+                                      placed, a blast, the physgun tearing a
+                                      block out, a walk and a hop; links after
+                                      arrival counted (must be 0)
     npm run drive -- space            the way up and to the Moon: the street's
                                       frame cost, a crate dropped from 20 up, a
                                       noclip climb shot at the stratosphere, the
@@ -988,12 +996,29 @@ try {
       const b = put('barrel_explosive', 12, 0); put('crate', 14, 2);
       setTimeout(() => window.__sandbox.damage(b, 1000), 400) }`, 3000)
     await shot('links-nuketown')
+    // and Cubeland: its terrain is two programs of its own (the blocks and
+    // the water) plus the outline and the block in hand, all paid under the
+    // card; digging, placing, a blast and its loose blocks link nothing
+    // (its own programs are made under the card, by design: counted apart)
+    const underCard = await phase('map cubeland (loaded under the card)', `window.__sandbox.run('map cubeland')`, 11000)
+    total += await phase('cubeland, looking round', `(() => { const w = window.__sandboxWalk; let k = 0;
+      const id = setInterval(() => { w.yaw += 0.45; if (++k > 14) clearInterval(id) }, 140) })()`, 3000)
+    total += await phase('cubeland, dug, built and blown up', `(() => {
+      const L = window.__cubeland.level, cam = window.__sandboxCamera, w = window.__sandboxWalk
+      w.pitch = -0.7
+      setTimeout(() => {
+        const f = { camera: cam, feetY: w.feetY, fire: false, alt: false, wheel: 0, dt: 0.016, active: true, firstPerson: true }
+        L.hands.update(f); L.hands.update({ ...f, fire: true }); L.hands.update(f); L.hands.update({ ...f, alt: true })
+        const p = cam.position; window.__sandbox.explode({ x: p.x, y: w.feetY - 1, z: p.z - 16 }, 1, 14)
+      }, 500) })()`, 4000)
+    await shot('links-cubeland')
     total += await phase('map home', `window.__sandbox.run('map home')`, 4000)
     total += await phase('home again, looking round', `(() => { const w = window.__sandboxWalk; let k = 0;
       const id = setInterval(() => { w.yaw += 0.45; if (++k > 14) clearInterval(id) }, 140) })()`, 3000)
     const names = await evaluate('window.__links')
     for (const n of names) console.log(`    linked ${n}`)
     const seen = await evaluate('[window.__wrapped, window.__booms, window.__breaks]')
+    console.log(`  ${underCard} of Cubeland's own programs linked under its loading card (its terrain, water, outline, block in hand)`)
     console.log(`  ${total} programs linked from the first spawn to the last bang ` +
       `(${seen[0]} WebGL context(s) watched, ${seen[1]} explosions, ${seen[2]} breaks)`)
     await run('cleanup')
@@ -2224,6 +2249,162 @@ try {
       await evaluate('for (const [g, n] of window.__hid) g.setDrawRange(0, n); true')
       await run('noclip')
     }
+    console.log(`  ${(await run('map home')).join(' / ')}`)
+    await sleep(3000)
+  }
+
+  if (WHAT.includes('cubeland')) {
+    /*
+      Cubeland: the spawn from four headings and from the air, then the
+      hands (a block broken and a little tower placed, driven through the
+      level's own hands with the lens as it is), a rocket's worth of blast
+      in the ground ahead (blocks thrown as props), the physgun's grab
+      tearing a block out, and the walk: a held W across open ground and a
+      hop onto a block placed in the way. Links are counted from arrival.
+    */
+    console.log('cubeland')
+    await evaluate(`(() => {
+      const gl = [...document.querySelectorAll('canvas')].find((c) => c.width > 64 && c.getContext('webgl2')).getContext('webgl2')
+      window.__cLinks = 0
+      if (!gl.__cubeWrapped) { const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__cLinks++; return real(p) }; gl.__cubeWrapped = true }
+      return true
+    })()`)
+    const t0 = Date.now()
+    console.log(`  ${(await run('map cubeland')).join(' / ')}`)
+    await sleep(9000)
+    console.log(`  arrived in ~${((Date.now() - t0) / 1000).toFixed(1)} s, ${await evaluate('window.__cLinks')} programs linked on the way (under the card)`)
+    await evaluate('window.__cLinks = 0; true')
+    await stand()
+    // the day runs off the wall clock there: pin it to mid-morning
+    await run('time 0.4')
+    const only = flag('only', null)?.split(',')
+    const want = (n) => !only || only.some((o) => n.includes(o))
+    const cube = (js) => evaluate(`(() => { const C = window.__cubeland, L = C.level, cam = window.__sandboxCamera, w = window.__sandboxWalk; ${js} })()`)
+    for (const [n, yaw] of [['cube-north', 0], ['cube-west', Math.PI / 2], ['cube-south', Math.PI], ['cube-east', -Math.PI / 2]]) {
+      if (!want(n)) continue
+      await look(yaw, -0.08)
+      await sleep(1500)
+      await shot(n)
+    }
+    const stats = await cube(`let n = 0, t = 0; C.root.traverse((o) => { if (o.isMesh && o.name.startsWith('cube-') && o.geometry.index) { n++; t += o.geometry.index.count / 3 } }); return [n, t, L.collision.boxes.length, C.store.loaded]`)
+    console.log(`  ${stats[0]} chunk meshes, ${Math.round(stats[1] / 1000)}k triangles, ${stats[2]} walker boxes, ${stats[3]} chunks in memory`)
+    // a tour of the biomes, each from a little above its first column near
+    // the middle (gen.ts's columnAt, probed offline: block coordinates)
+    const TOUR = [
+      ['flower-forest', 0, -32], ['ice-spikes', 4, 52], ['dark-forest', 8, -104], ['jungle', 36, -160], ['swamp', 4, -124],
+      ['cherry', 144, 8], ['badlands', 220, -214], ['desert', 224, -200], ['mushroom', 172, -252], ['snowy-peaks', 212, 64],
+      ['savanna', 240, -250], ['birch', -44, -110], ['taiga', 60, -64], ['snowy-taiga', -144, 72], ['windswept', 116, 120], ['ocean', 300, -210],
+    ]
+    if (TOUR.some(([n]) => want('biome-' + n))) {
+      await run('noclip')
+      for (const [n, bx, bz] of TOUR) {
+        if (!want('biome-' + n)) continue
+        await cube(`let y = 0; for (let by = 95; by >= 0; by--) if (C.store.get(${bx}, by, ${bz})) { y = by * 2 + 2; break }
+          window.__sandbox.console.host.teleport(${bx * 2 + 1}, ${-40000 + bz * 2 + 1}, y + 14, 0.6); return true`)
+        await look(0.6, -0.3)
+        await sleep(3500)
+        await shot('cube-biome-' + n)
+      }
+      await run('noclip')
+    }
+    if (want('aerial')) {
+      await run('noclip')
+      await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x - 40, s.z + 40, s.y + 70, 0.8); return true')
+      await look(0.8, -0.55)
+      await sleep(4000)
+      await shot('cube-aerial')
+      await run('noclip')
+      await sleep(500)
+    }
+    // back on the ground at the spawn, facing north, looking down at it
+    await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x, s.z, s.y, 0); return true')
+    await sleep(1500)
+    await stand()
+    console.log(`  on foot: ${await evaluate('JSON.stringify({ noclip: window.__sandboxWalk.noclip, down: !!window.__sandboxRig.down, feet: window.__sandboxWalk.feetY })')}`)
+    await evaluate('window.__tools.select(0); true')
+    await look(0, -0.75)
+    await sleep(600)
+    // (armed with a frame of nothing held first: headless never holds the
+    // pointer, so the walk's own frames hand the hands in as put away, and a
+    // button already down when they come out is not a click)
+    const handsAt = (fire, alt) => cube(`const f = { camera: cam, feetY: w.feetY, fire: false, alt: false, wheel: 0, dt: 0.016, active: true, firstPerson: true };
+      L.hands.update(f); L.hands.update({ ...f, fire: ${fire}, alt: ${alt} }); return true`)
+    const counts = () => cube(`let a = 0; for (const m of C.store.edits.values()) a += m.size; return a`)
+    await handsAt(true, false)
+    await sleep(100)
+    await handsAt(false, false)
+    console.log(`  a click broke ${await counts()} block(s)`)
+    for (let k = 0; k < 4; k++) {
+      await look(0, -0.62 + k * 0.08)
+      await sleep(120)
+      await handsAt(false, true)
+      await sleep(80)
+      await handsAt(false, false)
+    }
+    console.log(`  after placing, ${await counts()} block(s) changed`)
+    // stepped back to see it
+    const back = () => cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x + 3, s.z + 16, s.y + 8, 0); return true')
+    await run('noclip')
+    await back()
+    await look(0, -0.3)
+    await sleep(1200)
+    await shot('cube-built')
+    await run('noclip')
+    await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x, s.z, s.y, 0); return true')
+    await sleep(1200)
+    await look(0, -0.35)
+    // a blast in the ground a few blocks ahead
+    const props0 = await evaluate('window.__sandbox.count')
+    await look(0, -0.35)
+    await cube(`const d = new cam.position.constructor(); cam.getWorldDirection(d); d.y = 0; d.normalize();
+      const x = cam.position.x + d.x * 14, z = cam.position.z + d.z * 14;
+      let y = 0; for (let by = 95; by >= 0; by--) { if (L.collision && C.store.get(Math.floor((x - ${0}) / 2), by, Math.floor((z + 40000) / 2))) { y = by * 2 + 1; break } }
+      window.__sandbox.explode({ x, y, z }, 1, 14); return true`)
+    await run('noclip')
+    await back()
+    await look(0, -0.3)
+    await sleep(900)
+    await shot('cube-blast')
+    await sleep(2500)
+    const props1 = await evaluate('window.__sandbox.count')
+    console.log(`  a rocket's blast: ${await counts()} block(s) changed, ${props1 - props0} loose block(s) thrown`)
+    await shot('cube-after')
+    await run('noclip')
+    await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x, s.z, s.y, 0); return true')
+    await sleep(1200)
+    await look(0, -0.75)
+    // the physgun tears one out
+    const took = await cube(`const d = new cam.position.constructor(); cam.getWorldDirection(d);
+      const g = L.grab.pick(cam.position, d, 100); if (!g) return 'nothing under the beam';
+      const p = L.grab.take(g.key, window.__sandbox); return p ? 'took ' + p.kind.id : 'refused'`)
+    console.log(`  physgun on the ground: ${took}`)
+    // the walk: open ground, then a block in the way
+    await evaluate(`window.__sandbox.console.host.teleport(${'0'}, 0, undefined, 0); true`).catch(() => {})
+    await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x, s.z, s.y, Math.PI / 2); return true')
+    await sleep(2500)
+    await look(Math.PI / 2, 0)
+    const pos = () => evaluate('[window.__sandboxCamera.position.x, window.__sandboxCamera.position.z, window.__sandboxWalk.feetY]')
+    let a = await pos()
+    await down('KeyW'); await sleep(2000); await up('KeyW'); await sleep(400)
+    let b = await pos()
+    console.log(`  held W for 2 s: ${Math.hypot(b[0] - a[0], b[1] - a[1]).toFixed(1)} units, feet ${a[2].toFixed(2)} -> ${b[2].toFixed(2)}`)
+    // a one-block step three blocks ahead of the spawn, walked into with
+    // the jump held: the feet must end a block (2 units) up
+    const step = await cube(`const s = L.spawn, bx = Math.floor(s.x / 2), bz = Math.floor((s.z + 40000) / 2), by = Math.round(s.y / 2);
+      for (let k = 2; k < 9; k++) for (let dx = -2; dx <= 2; dx++) { C.net.apply([[bx + dx, by, bz - k, 1]], false); for (let h = 1; h < 4; h++) C.net.apply([[bx + dx, by + h, bz - k, 0]], false) }
+      window.__sandbox.console.host.teleport(s.x, s.z, s.y, 0); return s.y`)
+    await sleep(1500)
+    await look(0, 0)
+    a = await pos()
+    await down('KeyW'); await down('Space')
+    const trace = []
+    for (let k = 0; k < 12; k++) { await sleep(200); trace.push((await pos())[2].toFixed(1)) }
+    await up('Space'); await up('KeyW'); await sleep(1500)
+    b = await pos()
+    console.log(`    feet while held: ${trace.join(' ')}`)
+    console.log(`  a one-block step, W and jump held: feet ${a[2].toFixed(2)} -> ${b[2].toFixed(2)}` +
+      `${b[2] < step + 1.9 ? '  <-- WRONG (did not get up the step)' : ''}`)
+    console.log(`  ${await evaluate('window.__cLinks')} programs linked in Cubeland after arrival (must be 0)`)
     console.log(`  ${(await run('map home')).join(' / ')}`)
     await sleep(3000)
   }

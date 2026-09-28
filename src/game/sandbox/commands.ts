@@ -1063,6 +1063,7 @@ registerCommand({
 const MAP_BLURBS: Record<string, Msg> = {
   home: msg('the house and the planet', 'la casa y el planeta'),
   nuketown: msg('a test-site cul-de-sac, 1957', 'un callejón en un sitio de pruebas, 1957'),
+  cubeland: msg('a world of blocks to dig, build and blow up', 'un mundo de bloques para cavar, construir y volar'),
 }
 
 registerCommand({

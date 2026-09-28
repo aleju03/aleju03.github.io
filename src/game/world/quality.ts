@@ -84,6 +84,10 @@ export interface Gfx {
       sleep and breaking up stops a level coarser, and past one and a half
       times it the oldest small ones shrink away */
   rubble: number
+  /** Cubeland's view distance, in 16-block chunks round the walker
+      (levels/cubeland/): each ring is a merged mesh a chunk, so this is
+      both the triangle budget and the streaming work */
+  cubeView: number
 }
 
 // The two lattices are deliberately the same size on each tier, which puts
@@ -92,11 +96,11 @@ export interface Gfx {
 // that all of it was being spent at distances where none of it could be seen.
 const MEDIUM: Gfx = {
   grassSide: 144, grassNearSide: 144, flowerSide: 44, shadowMap: 1024, canopyK: 1,
-  birds: 26, fauna: 8, pedestrians: 5, richSky: false, pixelLines: 340, rubble: 110, farLevels: 3,
+  birds: 26, fauna: 8, pedestrians: 5, richSky: false, pixelLines: 340, rubble: 110, farLevels: 3, cubeView: 7,
 }
 const HIGH: Gfx = {
   grassSide: 224, grassNearSide: 224, flowerSide: 60, shadowMap: 2048, canopyK: 1.45,
-  birds: 54, fauna: 14, pedestrians: 9, richSky: true, pixelLines: 360, rubble: 220, farLevels: 4,
+  birds: 54, fauna: 14, pedestrians: 9, richSky: true, pixelLines: 360, rubble: 220, farLevels: 4, cubeView: 10,
 }
 
 export const gfx: Gfx = { ...MEDIUM }

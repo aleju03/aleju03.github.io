@@ -148,6 +148,10 @@ export interface WalkController {
   /** multiplies the walk's gravity: the console's `gravity` reaches the
       player through this. Clamped so nobody can be stranded in the sky */
   gravityScale: number
+  /** multiplies the jump's height (not its speed: the take-off is scaled
+      by the square root, so the apex follows the number). A level whose
+      ledges are taller than the house's furniture asks for more */
+  jumpScale: number
   /** multiplies noclip's speed: the scene raises it with height, so a climb
       to orbit takes seconds (levels/space.ts's flyScale). 1 by default */
   flyScale: number
@@ -223,6 +227,7 @@ export function createWalkController(
       come out on top of it (collision.ts's surfaceAbove) */
   let unstick = false
   let gravityScale = 1
+  let jumpScale = 1
   let flyScale = 1
   let bank = 0 // the flight's strafe roll, radians
   const fly = new THREE.Vector3() // the flight's velocity, all three axes
@@ -379,6 +384,12 @@ export function createWalkController(
     },
     set gravityScale(k: number) {
       gravityScale = Math.max(0.1, Math.min(4, k))
+    },
+    get jumpScale() {
+      return jumpScale
+    },
+    set jumpScale(k: number) {
+      jumpScale = Math.max(0.25, Math.min(4, k))
     },
     turn: (dx, dy, sign, sens) => {
       const k = 0.0019 * sens
@@ -553,14 +564,15 @@ export function createWalkController(
       if (grounded) hopped = false
       if (!frozen && !stunned && !swimming && jumpNow && grounded && !duck) {
         grounded = false
-        vy = tune.jumpV
+        // the apex goes with the square of the take-off
+        vy = tune.jumpV * Math.sqrt(jumpScale)
       } else if (jumpPress && !grounded && !hopped && !stunned && !swimming) {
         // and one smaller hop in the air, on a fresh press: about three
         // quarters of a jump's height again from wherever it is fired,
         // enough for a ledge a plain jump misses, never a second full one. It
         // replaces a fall rather than adding to it, so a late hop still lifts
         hopped = true
-        vy = Math.max(vy, tune.jumpV * HOP_K)
+        vy = Math.max(vy, tune.jumpV * HOP_K * Math.sqrt(jumpScale))
         step.airHop = true
       }
       step.landing = 0

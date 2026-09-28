@@ -3,6 +3,7 @@ import type { CollisionSet, Solid } from '../physics/collision'
 import type { StepSurface } from '../core/sfx'
 import type { SandboxGround } from '../sandbox/ground'
 import type { Felling, Ruins } from '../world/debris'
+import type { Prop, Sandbox } from '../sandbox/sandbox'
 
 /*
   The level contract. A level is a walkable place: it owns its collision
@@ -64,6 +65,56 @@ export interface LevelSandbox {
   ruins?: () => Ruins | null
   /** the trees and posts a car knocks down, for the shared world */
   felling?: () => Felling | null
+  /** the level's own hold on its sandbox, handed over the moment the
+      sandbox is made: Cubeland listens to its blasts and throws blocks
+      into it */
+  attach?: (sb: Sandbox) => void
+}
+
+/** one walk frame of bare hands, for a level that does something with them */
+export interface HandsFrame {
+  camera: THREE.PerspectiveCamera
+  /** the soles, so a block is never placed inside the body placing it */
+  feetY: number
+  fire: boolean
+  alt: boolean
+  /** wheel notches this frame (the hands take it while they are out) */
+  wheel: number
+  dt: number
+  /** the hands are out and usable (on foot, not sitting, not paused) */
+  active: boolean
+  firstPerson: boolean
+}
+
+/** what a hotbar shows: the kinds in it and which one is in hand */
+export interface HandsHud {
+  kinds: readonly string[]
+  sel: number
+}
+
+/**
+ * A level where your bare hands do something (Cubeland: left click breaks
+ * the block you are looking at, right click places the one in your hand).
+ * The scene hands it every walk frame while slot 0 is out and knows nothing
+ * else about blocks.
+ */
+export interface LevelHands {
+  update: (f: HandsFrame) => void
+  /** the catalogue picked this kind: true when the hands took it (a block
+      put in hand) instead of it being spawned */
+  choose: (kind: string) => boolean
+  /** the hotbar, whenever it changes (and once on subscribing) */
+  subscribe: (fn: (hud: HandsHud) => void) => () => void
+}
+
+/**
+ * Something in the level the physgun can take hold of that is not yet a
+ * prop (types.ts's VehicleGrab has the same shape): Cubeland's blocks, torn
+ * out of the ground as a loose one when the beam catches them.
+ */
+export interface LevelGrab {
+  pick: (eye: THREE.Vector3, dir: THREE.Vector3, within: number) => { key: string; t: number } | null
+  take: (key: string, sb: Sandbox) => Prop | null
 }
 
 /** the shared lights a level may commandeer while the player is inside */
@@ -153,4 +204,16 @@ export interface Level {
       Moon's regolith is sand underfoot and firm going under a tyre. Default
       the overworld's own answer (the property, then the open world) */
   driveSurface?: (x: number, z: number) => StepSurface
+  /** the jump's height as a share of the overworld's: Cubeland's blocks are
+      two units and a hop has to clear one with time to spare. Default 1 */
+  jump?: number
+  /** the lowest thing overhead at (x, z) for a body whose soles are at
+      `feetY`, where that is not one flat `ceilingY`: a hop under a block
+      stops at it instead of pushing the body out sideways. Infinity for
+      open sky */
+  ceilingAt?: (x: number, z: number, feetY: number) => number
+  /** bare hands do something here */
+  hands?: LevelHands
+  /** the physgun can tear things out of the level itself */
+  grab?: LevelGrab
 }

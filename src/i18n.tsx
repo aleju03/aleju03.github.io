@@ -151,6 +151,10 @@ const dictionaries = {
        (spawn menu) and the walk's key hints. Command output is bilingual at
        its source, in src/game/sandbox/commands.ts */
     sandbox: {
+      // Cubeland's hotbar (BlockBar.tsx); {keys} are the bindings
+      blocks: {
+        hint: 'left click breaks · right click places · wheel picks · {spawnMenu} for more blocks',
+      },
       console: {
         placeholder: 'say something, or /help',
         placeholderOffline: 'type /help for the commands',
@@ -333,8 +337,8 @@ const dictionaries = {
       menuKeys: '↑↓ menu',
       // the maps, as ticket stubs pinned under the menu (levels/maps.ts ids)
       maps: 'maps',
-      mapNames: { home: 'home', nuketown: 'nuketown' },
-      mapBlurbs: { home: 'the house and the planet', nuketown: 'a test-site cul-de-sac, 1957' },
+      mapNames: { home: 'home', nuketown: 'nuketown', cubeland: 'cubeland' },
+      mapBlurbs: { home: 'the house and the planet', nuketown: 'a test-site cul-de-sac, 1957', cubeland: 'a world of blocks to dig, build and blow up' },
       mapHere: 'you are here',
     },
   },
@@ -474,6 +478,9 @@ const dictionaries = {
       otherVersion: 'Ver la otra versión',
     },
     sandbox: {
+      blocks: {
+        hint: 'clic izquierdo rompe · clic derecho coloca · la rueda elige · {spawnMenu} para más bloques',
+      },
       console: {
         placeholder: 'di algo, o /help',
         placeholderOffline: 'escribe /help para ver los comandos',
@@ -622,8 +629,8 @@ const dictionaries = {
       elsewhere: 'en otra parte',
       menuKeys: '↑↓ menú',
       maps: 'mapas',
-      mapNames: { home: 'casa', nuketown: 'nuketown' },
-      mapBlurbs: { home: 'la casa y el planeta', nuketown: 'un callejón en un sitio de pruebas, 1957' },
+      mapNames: { home: 'casa', nuketown: 'nuketown', cubeland: 'cubolandia' },
+      mapBlurbs: { home: 'la casa y el planeta', nuketown: 'un callejón en un sitio de pruebas, 1957', cubeland: 'un mundo de bloques para cavar, construir y volar' },
       mapHere: 'estás aquí',
     },
   },

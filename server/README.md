@@ -304,6 +304,21 @@ minus signs. Keys and ids cannot be checked against the world here, so a
 hand-written client could mark buildings broken; the caps bound what that
 costs.
 
+Cubeland's blocks (`worldBlocks.js`): the world is a pure function of block
+coordinates on every client, so the server keeps only the last word on each
+block somebody changed, per level. In memory: at most 250,000 blocks a level
+(the oldest forgotten first), and a level nobody has been in for thirty
+minutes is dropped.
+
+- S to C `world-blockmap {level,edits:[x,y,z,id,...]}` follows `world-welcome`
+  and every `world-level`, empty or not. A client hands back the edits it has
+  that the map lacks only after this, so it never overwrites a newer block.
+- C to S `world-blocks {level,edits:[x,y,z,id,...],blast}`: integers, x and z
+  within ±800, y 0..95, id 0..255, at most 2,048 blocks a message, 30
+  messages/s; one bad quadruple drops the message. Stored, and S to C the same
+  to everyone else in the level with `from`. `blast` marks a blast's edits
+  (peers throw some loose blocks of their own).
+
 
 Voice needs a path between two browsers, and a minority of visitors, both ends
 behind a symmetric NAT, have none that STUN can find. `TURN_URLS` + `TURN_SECRET`

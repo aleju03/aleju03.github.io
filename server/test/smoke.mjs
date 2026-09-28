@@ -586,6 +586,32 @@ async function main() {
   w2.send({ type: 'world-level', level: 'overworld' });
   await w1.nextOf('world-tick', 'snapshot after the Moon');
 
+  // Cubeland's blocks: an edit relayed to the other walker in the level,
+  // bad quadruples dropped whole, and the map handed to an arrival
+  w1.send({ type: 'world-level', level: 'cubeland' });
+  const emptyMap = await w1.nextOf('world-blockmap', 'the empty block map on arrival');
+  assert.deepEqual(emptyMap.edits, [], 'a level nobody has touched has an empty map');
+  w2.send({ type: 'world-level', level: 'cubeland' });
+  await w2.nextOf('world-blockmap', 'the second arrival\'s map');
+  w1.send({ type: 'world-blocks', level: 'cubeland', edits: [3, 40, -7, 0, 3, 41, -7, 5], blast: false });
+  const relayed = await w2.nextOf('world-blocks', 'block edits relayed');
+  assert.deepEqual(relayed.edits, [3, 40, -7, 0, 3, 41, -7, 5]);
+  assert.equal(relayed.from, welcome1.you);
+  w1.send({ type: 'world-blocks', level: 'cubeland', edits: [3, 400, -7, 0], blast: false });
+  w1.send({ type: 'world-blocks', level: 'cubeland', edits: [4, 40, -7, 1], blast: true });
+  const next = await w2.nextOf('world-blocks', 'the good message after a bad one');
+  assert.deepEqual(next.edits, [4, 40, -7, 1], 'a block outside the world is dropped');
+  assert.equal(next.blast, true);
+  w2.send({ type: 'world-level', level: 'overworld' });
+  w2.send({ type: 'world-level', level: 'cubeland' });
+  // (the overworld's own, empty, arrives first)
+  let map = await w2.nextOf('world-blockmap', 'the map on coming back');
+  if (map.level !== 'cubeland') map = await w2.nextOf('world-blockmap', 'the map on coming back');
+  assert.deepEqual(map.edits, [3, 40, -7, 0, 3, 41, -7, 5, 4, 40, -7, 1], 'the map is the last word per block');
+  w1.send({ type: 'world-level', level: 'overworld' });
+  w2.send({ type: 'world-level', level: 'overworld' });
+  await w1.nextOf('world-tick', 'snapshot after Cubeland');
+
   w1.send({ type: 'world-chat', text: '  hello out there  ' });
   const shout = await w2.nextOf('world-chat', 'world chat delivered');
   assert.equal(shout.text, 'hello out there', 'chat is trimmed like room chat');

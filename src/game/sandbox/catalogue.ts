@@ -37,6 +37,8 @@ export type Category =
   | 'construction' | 'vehicle' | 'explosive' | 'big'
   /** contraption parts: contraption/parts.ts registers them and the tab */
   | 'parts'
+  /** Cubeland's blocks: blocks.ts registers them and the tab */
+  | 'blocks'
 
 export interface Names {
   en: string

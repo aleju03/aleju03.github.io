@@ -41,6 +41,8 @@ export interface WorldNet {
   prop: (message: import('../../game/net/propProtocol').PropClientMessage) => void
   /** what the world lost: net/remoteDamage.ts's records */
   damage: (message: import('../../game/net/damageProtocol').DamageClientMessage) => void
+  /** Cubeland's block edits (net/remoteBlocks.ts) */
+  blocks: (message: import('../../game/net/blockProtocol').BlockClientMessage) => void
   /** a shot, a hit or what is in our hands (game/net/weaponProtocol.ts) */
   weapon: (message: import('../../game/net/weaponProtocol').WeaponClientMessage) => void
   readonly status: WorldStatus
@@ -319,6 +321,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     effect: (message) => { if (joined) raw(message) },
     prop: (message) => { if (joined) raw(message) },
     damage: (message) => { if (joined) raw(message) },
+    blocks: (message) => { if (joined) raw(message) },
     weapon: (message) => { if (joined) raw(message) },
     get status() {
       return status

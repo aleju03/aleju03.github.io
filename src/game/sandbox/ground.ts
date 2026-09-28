@@ -68,6 +68,11 @@ const N = CHUNK / GRID
 export interface SandboxGround {
   lattice: (i: number, j: number) => number
   heightAt: (x: number, z: number) => number
+  /** static shapes of the level's own over a chunk's rectangle, made when
+      the ring first needs the chunk; the function returned lets them go
+      when it retires it. Cubeland's blocks are these (Rapier voxels), and
+      a hit on one reads as a solid, not as the ground */
+  extra?: (pw: PhysicsWorld, x0: number, z0: number, x1: number, z1: number) => () => void
 }
 
 export const TERRAIN_GROUND: SandboxGround = { lattice: latticeHeight, heightAt: terrainY }
@@ -122,7 +127,10 @@ const SOLIDS_PER_FRAME = 700
 export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts): Ground => {
   const lattice = (surface ?? TERRAIN_GROUND).lattice
   const { R, world } = pw
-  const chunks = new Map<number, { cx: number; cz: number; col: RCollider; rough: RCollider | null; seen: number }>()
+  const chunks = new Map<number, {
+    cx: number; cz: number; col: RCollider; rough: RCollider | null; seen: number; release: (() => void) | null
+  }>()
+  const extra = surface?.extra
   const groundHandles = new Set<number>()
   let frame = 0
 
@@ -158,7 +166,12 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
     const k = key(cx, cz)
     let have = chunks.get(k)
     if (!have) {
-      have = { cx, cz, col: buildChunk(cx, cz, true), rough: null, seen: frame }
+      const x0 = originX(cx)
+      const z0 = originZ(cz)
+      have = {
+        cx, cz, col: buildChunk(cx, cz, true), rough: null, seen: frame,
+        release: extra ? extra(pw, x0, z0, x0 + CHUNK, z0 + CHUNK) : null,
+      }
       chunks.set(k, have)
       solidsDirty = true
     }
@@ -278,7 +291,7 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
   const collectWanted = () => {
     wanted.clear()
     for (const b of collision.boxes) {
-      if (b.hull) continue
+      if (b.hull || b.walkOnly) continue
       if (chunks.has(chunkOfPoint((b.min.x + b.max.x) / 2, (b.min.z + b.max.z) / 2))) wanted.add(b)
     }
     if (chunkSolids) {
@@ -449,6 +462,7 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
         groundHandles.delete(c.rough.handle)
         world.removeCollider(c.rough, true)
       }
+      c.release?.()
       chunks.delete(k)
       solidsDirty = true
     }
@@ -479,6 +493,7 @@ export const createGround = ({ pw, collision, chunkSolids, surface }: GroundOpts
       for (const c of chunks.values()) {
         world.removeCollider(c.col, false)
         if (c.rough) world.removeCollider(c.rough, false)
+        c.release?.()
       }
       for (const m of mirrors.values()) world.removeCollider(m.col, false)
       for (const r of rigs.values()) world.removeRigidBody(r.body)

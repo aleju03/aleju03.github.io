@@ -23,6 +23,7 @@ import { createYouTubeSearch } from './ytsearch.js';
 import { createPropRegistry } from './props.js';
 import { createWorldEffects } from './worldEffects.js';
 import { createWorldDamage } from './worldDamage.js';
+import { createWorldBlocks } from './worldBlocks.js';
 import { createWeapons } from './weapons.js';
 
 // ---------------------------------------------------------------- config
@@ -903,6 +904,8 @@ let worldDirty = false;
 const propRegistry = createPropRegistry({ players: worldPlayers, send, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
 const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: propRegistry.get });
 const worldDamage = createWorldDamage({ players: worldPlayers, send });
+// Cubeland's broken and placed blocks, the last word per block (worldBlocks.js)
+const worldBlocks = createWorldBlocks({ players: worldPlayers, send });
 // the pistol, the crossbow and the rocket launcher: shots and hits relayed
 // to the level, checked for honesty (weapons.js)
 const worldWeapons = createWeapons({
@@ -1228,6 +1231,7 @@ function handleWorldJoin(ws, msg) {
   propRegistry.join(ws);
   worldEffects.snapshot(ws);
   worldDamage.snapshot(ws);
+  worldBlocks.snapshot(ws);
   worldWeapons.snapshot(ws);
   worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   worldDirty = true;
@@ -1242,6 +1246,7 @@ function leaveWorld(ws) {
   propRegistry.leave(w.id, w.level);
   worldEffects.leave(w.id);
   worldDamage.left(w.level);
+  worldBlocks.left(w.level);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(w.id);
@@ -1296,6 +1301,8 @@ function handleWorldLevel(ws, msg) {
   worldEffects.snapshot(ws);
   worldDamage.left(previousLevel);
   worldDamage.snapshot(ws);
+  worldBlocks.left(previousLevel);
+  worldBlocks.snapshot(ws);
   worldWeapons.snapshot(ws);
   if (previousLevel !== w.level) worldWeapons.moved(ws, previousLevel);
   // the fleet lives in one level; walking a seam out of it is getting out
@@ -1836,6 +1843,9 @@ function handleMessage(ws, msg) {
     case 'world-ruin':
     case 'world-fell':
       worldDamage.handle(ws, msg);
+      break;
+    case 'world-blocks':
+      worldBlocks.handle(ws, msg);
       break;
     case 'world-shot':
     case 'world-shot-hit':

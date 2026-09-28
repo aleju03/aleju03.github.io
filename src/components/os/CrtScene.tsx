@@ -13,7 +13,7 @@ import { buildDeskRoom } from '../../game/levels/deskRoom'
 import { fleetLevelAt, makeHomeLevels } from '../../game/levels/homeLevels'
 import { createLevelSystem } from '../../game/levels/levelSystem'
 import { findMap, mapOf, MAPS, type MapId } from '../../game/levels/maps'
-import type { Level, LevelLightRig } from '../../game/levels/types'
+import type { HandsHud, Level, LevelLightRig } from '../../game/levels/types'
 import { buildPaperPlane } from '../../game/props/paperPlane'
 import type { HouseModels } from '../../game/levels/houseWorld'
 import { CABIN_FIT, buildPlayerBody, type PlayerPose } from '../../game/player/playerBody'
@@ -58,6 +58,7 @@ import { GRAVITY } from '../../game/sandbox/physics'
 import SandboxConsole, { type FeedLine } from './SandboxConsole'
 import Crosshair, { type CrosshairAim } from './Crosshair'
 import SpawnMenu, { type CatalogueSource, type OrderLine } from './SpawnMenu'
+import BlockBar from './BlockBar'
 import ToolSwitcher, { type BeltState } from './ToolSwitcher'
 import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
@@ -79,6 +80,7 @@ import {
 import { createWorldEffects } from '../../game/net/worldEffects'
 import { createPropNetwork } from '../../game/net/remoteProps'
 import { createDamageNetwork } from '../../game/net/remoteDamage'
+import { createBlockNetwork } from '../../game/net/remoteBlocks'
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
@@ -410,6 +412,9 @@ export default function CrtScene({
   const [weaponLine, setWeaponLine] = useState<WeaponTool | null>(null)
   /** what is in your hands, for the switcher; `n` counts changes */
   const [belt, setBelt] = useState<BeltState>({ slot: 0, portal: false, n: 0 })
+  /** Cubeland's hotbar, once the map has been loaded (BlockBar.tsx) */
+  const [blockHud, setBlockHud] = useState<HandsHud | null>(null)
+  const [blockPics, setBlockPics] = useState<Map<string, string> | null>(null)
   /** what the crosshair is on (Crosshair.tsx) */
   const [aim, setAim] = useState<CrosshairAim>('none')
   /** the channel the set is showing, while you are sitting in front of it */
@@ -474,6 +479,15 @@ export default function CrtScene({
   const [menuOpen, setMenuOpen] = useState(false)
   const [catalogue, setCatalogue] = useState<CatalogueSource | null>(null)
   const [orders, setOrders] = useState<OrderLine[]>([])
+  // its plates are the catalogue's, drawn the first time it is needed
+  useEffect(() => {
+    if (!blockHud || !catalogue || blockPics) return
+    let live = true
+    void catalogue.thumbs().then((m) => live && setBlockPics(m))
+    return () => {
+      live = false
+    }
+  }, [blockHud, catalogue, blockPics])
   /** noclip, mirrored for the key hints */
   const [flying, setFlying] = useState(false)
   // the emote wheel is up (b, until something is picked); its arrow is driven through the api, not
@@ -866,6 +880,8 @@ export default function CrtScene({
         const toolHand = new THREE.Vector3()
         const toolHandL = new THREE.Vector3()
         let toolsLive = false
+        /** wheel notches the hands took this frame (a level with hands: its hotbar) */
+        let handsWheel = 0
         /** its undo stack, once it exists (sandbox/history.ts) */
         let history: History | null = null
         disposeFleet = () => {
@@ -1972,6 +1988,8 @@ export default function CrtScene({
         )
         // what players break: the buildings' lost pieces and the felled trees
         const damageNet = createDamageNetwork((m) => net?.damage(m))
+        // Cubeland's blocks: attached when the map is first loaded
+        const blockNet = createBlockNetwork((m) => net?.blocks(m))
         const worldEffects = createWorldEffects({
           send: (m) => net?.effect(m),
           level: () => levels.current.id,
@@ -2007,7 +2025,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); tools?.weapons.offline() }
+              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); tools?.weapons.offline() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -2017,6 +2035,7 @@ export default function CrtScene({
               propNet.receive(msg)
               worldEffects.receive(msg)
               damageNet.receive(msg)
+              blockNet.receive(msg)
               // shots, hits and who is holding what (sandbox/tools/weapons.ts)
               tools?.receive(msg)
               switch (msg.type) {
@@ -2147,6 +2166,7 @@ export default function CrtScene({
           propNet.offline()
           worldEffects.offline()
           damageNet.offline()
+          blockNet.offline()
           voice?.dispose()
           voice = null
           voicePreviewRef.current = null
@@ -2662,6 +2682,12 @@ export default function CrtScene({
         // a click in the catalogue is a spawn at the crosshair, the same one
         // `spawn <kind>` does, without the echo
         spawnRef.current = (kind) => {
+          // a level that builds with its hands takes what it can hold (a
+          // block in Cubeland goes in hand), and the hands come out for it
+          if (levels.current.hands?.choose(kind)) {
+            tools?.select(0)
+            return
+          }
           if (kind.startsWith(FLEET_PREFIX)) orderVehicle(kind.slice(FLEET_PREFIX.length) as VehicleId)
           else if (kind === `${TOOL_PREFIX}portalgun`) givePortalGun()
           else if (kind.startsWith(TOOL_PREFIX)) host.give?.(kind.slice(TOOL_PREFIX.length))
@@ -2969,10 +2995,12 @@ export default function CrtScene({
             propNet.setLevel(level.id)
             worldEffects.setLevel(level.id)
             damageNet.setLevel(level.id)
+            blockNet.setLevel(level.id)
             net?.setLevel(level.id)
             // the server frees a chair at a level change: take it back
             if (craft?.spacecraft) reclaimSeat(craft.id)
             walk.gravityScale = rules.gravity * gravityOf(level)
+            walk.jumpScale = level.jump ?? 1
             switchSandboxTo(level)
           },
           levels: homeLevels,
@@ -3005,6 +3033,7 @@ export default function CrtScene({
             propNet.setLevel(level.id)
             worldEffects.setLevel(level.id)
             damageNet.setLevel(level.id)
+            blockNet.setLevel(level.id)
             net?.setLevel(level.id)
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
@@ -3027,6 +3056,7 @@ export default function CrtScene({
             }
             // the new level's gravity, and its own sandbox (or none)
             walk.gravityScale = rules.gravity * gravityOf(level)
+            walk.jumpScale = level.jump ?? 1
             switchSandboxTo(level)
             if (level.house) house.flagShadows(camera.position)
             // either side of the cut, the body's old shadow may still be
@@ -3827,7 +3857,8 @@ export default function CrtScene({
             frozen: levels.frozen || rig.down || !!sitting,
             groundY: level.groundY,
             groundAt: portalsOn ? portalWalk!.ground(level) : level.groundYAt,
-            ceilingY: level.ceilingY,
+            // (a block world's ceiling is wherever the blocks are overhead)
+            ceilingY: level.ceilingAt ? level.ceilingAt(camera.position.x, camera.position.z, walk.feetY) : level.ceilingY,
             waterY: level.waterY,
             collision: level.collision,
             fovBase: prefsRef.current.fov,
@@ -3895,7 +3926,11 @@ export default function CrtScene({
             toolIn.rotate = held(k, 'rotate') && !gunsOff
             toolIn.snap = held(k, 'snap')
             toolIn.reload = held(k, 'unfreeze')
-            toolIn.wheel = gunsOff ? (input.takeWheel(), 0) : input.takeWheel()
+            const wheelNow = gunsOff ? (input.takeWheel(), 0) : input.takeWheel()
+            // bare hands in a level that builds with them keep the wheel
+            // for their hotbar; everywhere else it steps the belt
+            handsWheel = level.hands && tools.tool === 'hands' ? wheelNow : 0
+            toolIn.wheel = handsWheel ? 0 : wheelNow
             toolIn.lookX = toolLook.x
             toolIn.lookY = toolLook.y
             toolLook.x = toolLook.y = 0
@@ -4447,6 +4482,15 @@ export default function CrtScene({
           chase.apply(camera, dt, chaseEnv)
           // the gun and the beam go where the lens ended up: in the hand of
           // the body when the boom is out, in front of the lens when it is not
+          // bare hands, where the level does something with them (Cubeland
+          // digs and builds), aimed down the lens as it ended up
+          if (level.hands) {
+            level.hands.update({
+              camera, feetY: walk.feetY, fire: toolIn.fire, alt: toolIn.alt, wheel: handsWheel, dt,
+              active: toolsLive && !pausedNow && !!tools && tools.tool === 'hands', firstPerson: chase.dist <= 1.2,
+            })
+          }
+          handsWheel = 0
           if (tools) {
             const third = chase.dist > 1.2
             if (third && handR >= 0) rig.limbPos(handR, toolHand)
@@ -4536,6 +4580,8 @@ export default function CrtScene({
           })
           sandboxes.set(level.id, { sb, level })
           propNet.attach(sb, level.id)
+          // the level's own hold on it (Cubeland's blasts carve the blocks)
+          o.attach?.(sb)
           sb.gravity = -GRAVITY * rules.gravity * gravityOf(level)
           sb.timescale = rules.timescale
           const h = historyOf(sb)
@@ -4628,9 +4674,14 @@ export default function CrtScene({
               },
               // the parked machines: read through the binding, so the real
               // fleet, built a few lines down, is the one the beam asks
+              // and whatever the live level lets the beam tear out of itself
+              // (Cubeland's blocks), whichever is nearer
               vehicles: {
-                pick: (eye, dir, within) => fleet.pick(eye, dir, within),
-                take: (key, sb) => fleet.take(key, sb),
+                pick: (eye, dir, within) => {
+                  const own = levels.current.grab?.pick(eye, dir, within) ?? null
+                  return fleet.pick(eye, dir, own ? own.t : within) ?? own
+                },
+                take: (key, sb) => (key.startsWith('blk:') ? levels.current.grab?.take(key, sb) ?? null : fleet.take(key, sb)),
               },
               // the portals: their ovals and views, what a shot can land on
               // in the live level, and the sky's answer to a shot at nothing
@@ -4853,6 +4904,24 @@ export default function CrtScene({
         /** the maps loaded this session, joined to the level system */
         const mapLevels: Level[] = []
         const MAP_BUILDERS: Partial<Record<MapId, () => Promise<{ root: THREE.Object3D; level: Level }>>> = {
+          cubeland: async () => {
+            const mod = await import('../../game/levels/cubeland/cubeland')
+            const built = mod.buildCubeland({
+              parent: scene!,
+              trackTexture: disposer.texture,
+              trackDisposable: disposer.add,
+              venue: outside.setVenue,
+              homeUpdate: (dt, p) => {
+                house.update(dt)
+                backrooms.update(dt, p, false)
+              },
+            })
+            blockNet.attach(built.net)
+            built.level.hands?.subscribe((h) => setBlockHud(h))
+            // dev only: the drive harness digs, builds and blasts through it
+            if (import.meta.env.DEV) Object.assign(window, { __cubeland: built })
+            return built
+          },
           nuketown: async () => {
             const mod = await import('../../game/levels/nuketown')
             return mod.buildNuketown({
@@ -5313,6 +5382,7 @@ export default function CrtScene({
               spawnY(homed, homed.spawn.x, homed.spawn.z),
             )
             walk.gravityScale = rules.gravity * gravityOf(homed)
+            walk.jumpScale = homed.jump ?? 1
             switchSandboxTo(homed)
           }
           blackout.style.transition = ''
@@ -5843,6 +5913,17 @@ export default function CrtScene({
             fps
           </span>
         </div>
+      )}
+      {/* Cubeland's hotbar, while bare hands are out there */}
+      {roam && walking && !paused && !driving && !seated && mapHere === 'cubeland' && belt.slot === 0 && blockHud && (
+        <BlockBar
+          hud={blockHud}
+          thumbs={blockPics}
+          name={(k) => {
+            const e = catalogue?.entries().find((x) => x.id === k)
+            return e ? (language === 'es' ? e.labelEs : e.label) : k
+          }}
+        />
       )}
       {roam && walking && (
         <ToolSwitcher

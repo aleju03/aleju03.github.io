@@ -107,6 +107,11 @@ export interface Solid extends THREE.Box3 {
   moving?: boolean
   breaks?: Breakable
   ramp?: Ramp
+  /** the walk's alone: the sandbox's physics has a shape of its own for
+      what this box stands in for (Cubeland's blocks are Rapier voxels, flush
+      and without the shoulder this box is padded by), so sandbox/ground.ts
+      does not mirror it */
+  walkOnly?: boolean
 }
 
 /** a top that is not level: one slope of a pitched roof. Across the box

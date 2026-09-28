@@ -115,11 +115,23 @@ levels/
                      the world grid the walker and the sandbox both stand on,
                      a horizon that curves away, boulders; built on arrival
   maps.ts            the maps picked from the pause sheet or `map <id>`:
-                     'home' (the three levels above) and 'nuketown'. Pure
+                     'home' (the three levels above), 'nuketown' and
+                     'cubeland'. Pure
   nuketown.ts        a 1950s test-site cul-de-sac, a map: loaded on first
                      pick, built and warmed under the cut's card (levelSystem's
                      goToLoading), drawn with the chunks' own materials so it
                      links nothing, standing far off at NUKE_ORIGIN
+  cubeland/          a world of blocks, a map (at CUBE_ORIGIN): gen.ts the
+                     generator (a pure function of block coordinates: 24
+                     biomes, caves, ore, trees), world.ts the edits, the
+                     walker's merged boxes and the props' Rapier voxel
+                     colliders, mesher.ts greedy faces with AO and sky light,
+                     material.ts the array-texture terrain material, and
+                     cubeland.ts the level: streaming, bare hands that dig
+                     and build (the Level's `hands`), blasts that carve and
+                     throw blocks as props, the physgun tearing blocks out
+                     (`grab`), the real game's 20-minute day, and the edits'
+                     handle for the wire (net/remoteBlocks.ts)
   houseWorld.ts      the house + yard, two storeys (walls, stairs, slab, roof,
                      doors, furniture placement); owns the property line
                      inward. The computer room is upstairs, at UP
@@ -830,11 +842,18 @@ sandbox/
                 off the terrain lattice (turned a quarter so Rapier's cell
                 diagonal matches the mesh's), a fixed cuboid per world Solid
                 tracked by identity, and a kinematic convex hull per vehicle.
-                Streamed around the walker and around every unparked prop
+                Streamed around the walker and around every unparked prop.
+                A level's ground may add static shapes of its own per chunk
+                (`SandboxGround.extra`: Cubeland's voxel colliders), and a
+                `walkOnly` solid is the walker's alone and never mirrored
   kinds.ts      the kind table: shape, mass, friction, bounce, density, mesh,
                 and what it sounds like (surface), breaks into or goes off as
   catalogue.ts  the forty-two kinds that ship, their physics, and `CATALOGUE`
                 / `CATEGORIES` (ids, nine categories, en/es names): the menu
+  blocks.ts     Cubeland's block table (ids append-only: chunks and the wire
+                store them), their 16x16 paintings (also the atlas cells a
+                loose block is drawn with), and a `block_<key>` kind for each,
+                in the catalogue's Blocks tab
   models.ts     what each of them looks like, their atlas cells, and `GIBS`
                 (the pieces a breakable comes apart into)
   art.ts        the one atlas, the one material, and `model()`, the builder
@@ -1867,6 +1886,21 @@ throw endpoints, tests claims, joints, explosion, late join and cleanup,
 and measures JSON bytes per second with 200 resting props and ten moving.
 `npm run drive -- links` covers program reuse in the real renderer.
 
+
+### Shared blocks
+
+Cubeland's world is `levels/cubeland/gen.ts`'s pure function of block
+coordinates on every client, so only what somebody changed travels:
+`net/remoteBlocks.ts` (headless store), `net/blockProtocol.ts` (flat
+x, y, z, id quadruples) and `server/src/worldBlocks.js` (the last word per
+block, per level, bounded and forgotten when a level stands empty). Local
+edits go out a frame's worth at a time; a blast's are flagged so peers throw
+some loose blocks of their own (the explosion itself travels as a prop blast
+and is carved only by the client that set it off). Every arrival in a level
+is answered with its whole map, empty or not, and only after hearing it does
+a client hand back what it changed that the map lacks, so an old edit never
+overwrites somebody else's newer one. The day there runs off the wall clock,
+so nobody has to agree on the hour.
 
 ### Shared world damage
 

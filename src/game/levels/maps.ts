@@ -15,7 +15,7 @@
   Pure data and no imports, so the room tier and the console can hold it.
 */
 
-export type MapId = 'home' | 'nuketown'
+export type MapId = 'home' | 'nuketown' | 'cubeland'
 
 export interface MapDef {
   id: MapId
@@ -28,6 +28,7 @@ export interface MapDef {
 export const MAPS: readonly MapDef[] = [
   { id: 'home', level: 'overworld', levels: ['overworld', 'backrooms', 'moon'] },
   { id: 'nuketown', level: 'nuketown', levels: ['nuketown'] },
+  { id: 'cubeland', level: 'cubeland', levels: ['cubeland'] },
 ]
 
 /** the map a level belongs to; anything unlisted is home's */
