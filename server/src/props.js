@@ -19,7 +19,7 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n);
 const idOK = (n) => Number.isSafeInteger(n) && n > 0;
 const vec = (v, n, cap) => Array.isArray(v) && v.length === n && v.every(finite) ? v.map((x) => clamp(x, -cap, cap)) : null;
 
-export function createPropRegistry({ players, send, now = Date.now, onRemove = () => {} }) {
+export function createPropRegistry({ players, send, now = Date.now, onRemove = () => {}, onBlast = () => {} }) {
   const levels = new Map();
   const rates = new WeakMap();
   const spawns = new WeakMap();
@@ -209,7 +209,13 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       // allowed near the caller (the console and weapons use the same seam).
       // The console aims 150 units out at up to power 10 (radius 16 * sqrt 10).
       if (p ? (p.authority !== w.id && p.transfer?.waiting !== w.id) || p.epoch !== m.epoch : Math.hypot(at[0] - w.x, at[1] - w.y, at[2] - w.z) > 170) return;
-      broadcast(w.level, { type: m.type, from: w.id, at, power: clamp(m.power, 0.1, 10), radius: clamp(m.radius, 1, 60) });
+      const power = clamp(m.power, 0.1, 10);
+      const radius = clamp(m.radius, 1, 60);
+      broadcast(w.level, { type: m.type, from: w.id, at, power, radius });
+      // what it does to a player is health.js's business, from these clamped
+      // numbers; a prop's own blast (a barrel) counts as earned, a free one
+      // only if the caller really fired a rocket
+      onBlast(ws, { at, power, radius, fromProp: !!p });
     } else if (m.type === 'world-prop-meta') {
       if (!p || p.authority !== w.id || p.epoch !== m.epoch || p.transfer) return;
       const part = vec(m.part, 4, 1e6);

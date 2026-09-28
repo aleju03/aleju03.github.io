@@ -141,6 +141,16 @@ export interface SandboxHost {
   bring?: (to: number | 'all') => boolean
   /** say something on the shared chat; false offline */
   chat?: (text: string) => boolean
+  /** hit points (sandbox/healthCommands.ts). Absent headless; `online` says
+      whether a server is keeping the numbers, without which there is no
+      health to speak of (each verb answers false, and the command says so) */
+  health?: {
+    read: () => { hp: number; max: number; dead: boolean; pvp: boolean; online: boolean }
+    kill: () => boolean
+    hurt: (n: number) => boolean
+    heal: () => boolean
+    pvp: (on: boolean) => boolean
+  }
   /** tools the tool slots offer, and handing one over (the physgun piece) */
   tools?: () => string[]
   give?: (tool: string) => boolean

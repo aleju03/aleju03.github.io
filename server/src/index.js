@@ -24,6 +24,7 @@ import { createPropRegistry } from './props.js';
 import { createWorldEffects } from './worldEffects.js';
 import { createWorldDamage } from './worldDamage.js';
 import { createWeapons } from './weapons.js';
+import { createHealth } from './health.js';
 
 // ---------------------------------------------------------------- config
 
@@ -900,9 +901,17 @@ const worldShoveRate = new WeakMap();
 const worldGrabRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
-const propRegistry = createPropRegistry({ players: worldPlayers, send, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
+const propRegistry = createPropRegistry({
+  players: worldPlayers,
+  send,
+  onRemove: (level, ids) => worldEffects.removeProps(level, ids),
+  onBlast: (ws, blast) => worldHealth.blast(ws, blast),
+});
 const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: propRegistry.get });
 const worldDamage = createWorldDamage({ players: worldPlayers, send });
+// hit points, death, respawn, pvp and the scoreboard (health.js): the one
+// entry point everything that hurts a player calls
+const worldHealth = createHealth({ players: worldPlayers, send });
 // the pistol, the crossbow and the rocket launcher: shots and hits relayed
 // to the level, checked for honesty (weapons.js)
 const worldWeapons = createWeapons({
@@ -910,6 +919,7 @@ const worldWeapons = createWeapons({
   send,
   seated: (id) => worldSeated(id),
   flying: (w) => (w.f & W_FLY) !== 0,
+  health: worldHealth,
 });
 
 // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
@@ -1129,6 +1139,7 @@ function handleWorldVehicle(ws, msg) {
 function worldTick() {
   propRegistry.tick();
   worldEffects.tick();
+  worldHealth.tick();
   if (!worldDirty || worldPlayers.size === 0) return;
   worldDirty = false;
   const byLevel = new Map();
@@ -1229,6 +1240,7 @@ function handleWorldJoin(ws, msg) {
   worldEffects.snapshot(ws);
   worldDamage.snapshot(ws);
   worldWeapons.snapshot(ws);
+  worldHealth.snapshot(ws);
   worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   worldDirty = true;
   startWorldTicker();
@@ -1242,6 +1254,7 @@ function leaveWorld(ws) {
   propRegistry.leave(w.id, w.level);
   worldEffects.leave(w.id);
   worldDamage.left(w.level);
+  worldHealth.left(w.id, w.level);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(w.id);
@@ -1272,6 +1285,7 @@ function handleWorldMove(ws, msg) {
   w.pitch = msg.pitch;
   w.gait = finite(msg.gait) ? Math.max(0, Math.min(1, msg.gait)) : 0;
   w.f = Number.isInteger(msg.f) ? msg.f & W_FLAGS : 0;
+  worldHealth.pose(ws);
   // both optional, and absent from older clients: absence is "neither"
   w.e = Number.isInteger(msg.e) && msg.e > 0 && msg.e < W_EMOTE_MAX ? msg.e : 0;
   w.pt = finite(msg.py) && finite(msg.pp);
@@ -1298,6 +1312,8 @@ function handleWorldLevel(ws, msg) {
   worldDamage.snapshot(ws);
   worldWeapons.snapshot(ws);
   if (previousLevel !== w.level) worldWeapons.moved(ws, previousLevel);
+  if (previousLevel !== w.level) worldHealth.moved(ws, previousLevel);
+  worldHealth.snapshot(ws);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(w.id)) announceSeats();
   worldDirty = true;
@@ -1841,6 +1857,10 @@ function handleMessage(ws, msg) {
     case 'world-shot-hit':
     case 'world-wield':
       worldWeapons.handle(ws, msg, strike);
+      break;
+    case 'world-fall':
+    case 'world-health-cmd':
+      worldHealth.handle(ws, msg, strike);
       break;
     case 'world-prop-spawn':
     case 'world-prop-move':

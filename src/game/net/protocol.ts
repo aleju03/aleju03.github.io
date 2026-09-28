@@ -274,6 +274,7 @@ export type WorldServerMessage =
   | import('./propProtocol').PropServerMessage
   | import('./damageProtocol').DamageServerMessage
   | import('./weaponProtocol').WeaponServerMessage
+  | import('./healthProtocol').HealthServerMessage
   | WorldShove
   | WorldBring
   | WorldGrab
@@ -300,6 +301,7 @@ export type WorldClientMessage =
   | import('./effectProtocol').EffectClientMessage
   | import('./propProtocol').PropClientMessage
   | import('./damageProtocol').DamageClientMessage
+  | import('./healthProtocol').HealthClientMessage
   /** `look` rides the join so a body is never drawn in the wrong colours even
       for the one tick between arriving and repainting */
   | { type: 'world-join'; level: string; look?: string }
