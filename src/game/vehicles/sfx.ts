@@ -1,4 +1,5 @@
 import { sharedAudio } from '../core/sfx'
+import { buildEngine, engineSet, engineVoice, preloadEngine, type EngineCore } from './engine'
 
 /*
   Engines.
@@ -19,13 +20,17 @@ import { sharedAudio } from '../core/sfx'
   second is a staircase, and a staircase in an audio signal is a buzz — and
   every voice hangs off one master gain that a single call can take to zero.
 
-  The three voices are built out of the same three ideas in different
+  The voices are built out of the same three ideas in different
   proportions:
 
   - a **pitched core** at the firing frequency, from detuned sawtooth or
     square oscillators through a lowpass whose cutoff opens with load. That
     opening filter is what "under power" sounds like; without it, a throttle
-    is just a pitch change and the engine sounds like a theremin.
+    is just a pitch change and the engine sounds like a theremin. The car is
+    the exception: detuned saws are a synth pad, and a car is a train of
+    exhaust pulses, so its core is engine.ts (three switchable engines, the
+    console's hidden `engine a|b|c`, one of them recorded), built and torn
+    down here alongside the rest of the graph.
   - a **noise bed** — intake, water rush, rotor wash — band-limited and
     scaled by speed.
   - for the helicopter, an **amplitude gate** at the blade-passage frequency.
@@ -78,31 +83,27 @@ export interface VehicleVoice {
 
 /** where the pitched core sits, and how the bed is voiced, per machine */
 const SPEC = {
+  /** the car's pitched core is engine.ts; this is only what sits on it */
   car: {
-    /** firing note at idle and at the redline, Hz */
-    f0: 46, f1: 268,
-    wave: 'sawtooth' as OscillatorType,
-    /** lowpass cutoff, closed and wide open */
-    lp0: 340, lp1: 2600,
-    /** how loud the pitched core is, idling and flat out */
-    core0: 0.016, core1: 0.05,
     /** the intake/exhaust noise bed */
     bed: 0.02, bedF: 420, bedQ: 0.8,
     /** roll/wind noise with speed */
     rush: 0.028, rushF: 900,
-    /** detune spread in cents between the three oscillators */
-    spread: 9,
     slap: 0,
   },
   boat: {
+    /** firing note at idle and at the redline, Hz */
     // an outboard is a slower, fatter note than a car engine and most of what
     // you hear at speed is the hull, not the motor
     f0: 30, f1: 158,
     wave: 'square' as OscillatorType,
+    /** lowpass cutoff, closed and wide open */
     lp0: 220, lp1: 1250,
+    /** how loud the pitched core is, idling and flat out */
     core0: 0.02, core1: 0.046,
     bed: 0.016, bedF: 300, bedQ: 0.7,
     rush: 0.055, rushF: 1500,
+    /** detune spread in cents between the three oscillators */
     spread: 14,
     slap: 0,
   },
@@ -160,7 +161,13 @@ const mix = (a: number, b: number, t: number) => a + (b - a) * t
 
 export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
   const spec = SPEC[kind]
+  /** the oscillator core's numbers, for every machine but the car */
+  const pitch = 'f0' in spec ? spec : null
+  // set b's recording starts downloading when there is a car to play it in
+  if (kind === 'car' && engineSet() === 'b') void preloadEngine()
   let a: AudioContext | null = null
+  /** the car's core (engine.ts), in place of the oscillators */
+  let engine: EngineCore | null = null
   let master: GainNode | null = null
   let oscs: OscillatorNode[] = []
   let sources: AudioBufferSourceNode[] = []
@@ -209,6 +216,8 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
     } catch {
       /* already stopped */
     }
+    engine?.stopAt(0)
+    engine = null
     oscs = []
     sources = []
     master?.disconnect()
@@ -242,32 +251,39 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
     pan.pan.setValueAtTime(side, now)
     master.connect(pan).connect(a.destination)
 
-    // --- the pitched core: detuned oscillators through an opening lowpass ---
-    lp = a.createBiquadFilter()
-    lp.type = 'lowpass'
-    lp.frequency.setValueAtTime(spec.lp0, now)
-    lp.Q.value = 0.9
+    // --- the pitched core: detuned oscillators through an opening lowpass,
+    // or for the car an engine from engine.ts, which is its own lowpass ---
     core = a.createGain()
-    core.gain.setValueAtTime(spec.core0, now)
-    for (let i = 0; i < 3; i++) {
-      const o = a.createOscillator()
-      o.type = spec.wave
-      o.frequency.setValueAtTime(spec.f0, now)
-      o.detune.setValueAtTime((i - 1) * spec.spread, now)
-      o.connect(lp)
-      o.start(now)
-      oscs.push(o)
+    if (pitch) {
+      lp = a.createBiquadFilter()
+      lp.type = 'lowpass'
+      lp.frequency.setValueAtTime(pitch.lp0, now)
+      lp.Q.value = 0.9
+      core.gain.setValueAtTime(pitch.core0, now)
+      for (let i = 0; i < 3; i++) {
+        const o = a.createOscillator()
+        o.type = pitch.wave
+        o.frequency.setValueAtTime(pitch.f0, now)
+        o.detune.setValueAtTime((i - 1) * pitch.spread, now)
+        o.connect(lp)
+        o.start(now)
+        oscs.push(o)
+      }
+      // a sub an octave down gives the note a body the sawtooth alone has not
+      const sub = a.createOscillator()
+      sub.type = 'sine'
+      sub.frequency.setValueAtTime(pitch.f0 * 0.5, now)
+      const subG = a.createGain()
+      subG.gain.value = 0.5
+      sub.connect(subG).connect(lp)
+      sub.start(now)
+      oscs.push(sub)
+      lp.connect(core)
+    } else {
+      core.gain.value = 1
+      engine = buildEngine(a, engineVoice(), 0)
+      engine.out.connect(core)
     }
-    // a sub an octave down gives the note a body the sawtooth alone has not
-    const sub = a.createOscillator()
-    sub.type = 'sine'
-    sub.frequency.setValueAtTime(spec.f0 * 0.5, now)
-    const subG = a.createGain()
-    subG.gain.value = 0.5
-    sub.connect(subG).connect(lp)
-    sub.start(now)
-    oscs.push(sub)
-    lp.connect(core)
 
     // --- the noise bed: intake, water, rotor wash ---
     const bedSrc = a.createBufferSource()
@@ -358,6 +374,8 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
     // hold the reference until the fade has actually played out, or the
     // graph is collected mid-ramp and the engine cuts rather than dies
     const dying = { oscs, sources, master, pan, bias: slapBias }
+    engine?.stopAt(now + 0.3)
+    engine = null
     oscs = []
     sources = []
     master = null
@@ -423,15 +441,27 @@ export function createVehicleVoice(kind: VoiceKind): VehicleVoice {
       const r = rpm < 0 ? 0 : rpm > 1 ? 1 : rpm
       const l = load < 0 ? 0 : load > 1 ? 1 : load
       const s = speed < 0 ? 0 : speed > 1 ? 1 : speed
-      const f = mix(spec.f0, spec.f1, r)
-      for (let i = 0; i < oscs.length; i++) {
-        // the last oscillator is the sub, an octave under the rest
-        to(oscs[i].frequency, i === oscs.length - 1 ? f * 0.5 : f, 0.035)
+      if (pitch) {
+        const f = mix(pitch.f0, pitch.f1, r)
+        for (let i = 0; i < oscs.length; i++) {
+          // the last oscillator is the sub, an octave under the rest
+          to(oscs[i].frequency, i === oscs.length - 1 ? f * 0.5 : f, 0.035)
+        }
+        // the filter opens with load, not with revs: that is the difference
+        // between "revving" and "pulling"
+        to(lp?.frequency, mix(pitch.lp0, pitch.lp1, 0.25 * r + 0.75 * l), 0.05)
+        to(core?.gain, mix(pitch.core0, pitch.core1, 0.3 * r + 0.7 * l))
+      } else if (core) {
+        // the console switched engines, or set b's recording has decoded
+        // under set a's stand-in: crossfade to the one that should play
+        const want = engineVoice()
+        if (engine?.set !== want) {
+          engine?.release(0.15)
+          engine = buildEngine(a, want, 0.15)
+          engine.out.connect(core)
+        }
+        engine.update(rpm, load)
       }
-      // the filter opens with load, not with revs: that is the difference
-      // between "revving" and "pulling"
-      to(lp?.frequency, mix(spec.lp0, spec.lp1, 0.25 * r + 0.75 * l), 0.05)
-      to(core?.gain, mix(spec.core0, spec.core1, 0.3 * r + 0.7 * l))
       to(bedGain?.gain, spec.bed * (0.35 + 0.65 * l))
       to(rushGain?.gain, spec.rush * s * s)
       to(howlGain?.gain, 0.04 * slip * slip)
