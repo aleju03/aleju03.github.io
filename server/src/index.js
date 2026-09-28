@@ -1385,6 +1385,43 @@ function handleWorldShove(ws, msg) {
   send(peer, { type: 'world-shove', from: w.id, vx: r2(vx), vy: r2(vy), vz: r2(vz) });
 }
 
+// The admin summons a player, or everyone on their level, to where they
+// stand. Admin only, because being moved is not something a visitor agreed
+// to; anyone else is dropped in silence (the client already refused them).
+// The server spaces the arrivals in a ring round the admin, so a whole room
+// brought at once does not land in one heap, and each victim's client moves
+// itself, the same as a shove.
+function handleWorldBring(ws, msg) {
+  const w = ws.world;
+  if (!w || !ws.isAdmin) return;
+  const all = msg.to === 'all';
+  if (!all && !Number.isInteger(msg.to)) {
+    strike(ws);
+    return;
+  }
+  if (!allowWorld(worldShoveRate, ws, WORLD_SHOVE_RATE_MAX, WORLD_SHOVE_RATE_WINDOW_MS)) return;
+  const peers = [];
+  if (all) {
+    for (const peer of worldPlayers.values()) {
+      if (peer !== ws && peer.world.level === w.level) peers.push(peer);
+    }
+  } else {
+    const peer = worldPlayers.get(msg.to);
+    if (peer && peer !== ws && peer.world.level === w.level) peers.push(peer);
+  }
+  const ring = 2.5 + Math.max(0, peers.length - 6) * 0.3;
+  peers.forEach((peer, i) => {
+    const a = w.yaw + Math.PI + (i - (peers.length - 1) / 2) * 0.7;
+    send(peer, {
+      type: 'world-bring',
+      from: w.id,
+      x: r2(w.x - Math.sin(a) * ring),
+      y: r2(w.y),
+      z: r2(w.z - Math.cos(a) * ring),
+    });
+  });
+}
+
 // Somebody has somebody else on the end of a physgun. Streamed at about the
 // snapshot rate while held; a 'freeze' pins the limb where it is and a
 // 'release' carries the throw. Nothing here moves anybody: the victim's own
@@ -1823,6 +1860,9 @@ function handleMessage(ws, msg) {
       return;
     case 'world-shove':
       handleWorldShove(ws, msg);
+      return;
+    case 'world-bring':
+      handleWorldBring(ws, msg);
       return;
     case 'world-grab':
       handleWorldGrab(ws, msg);

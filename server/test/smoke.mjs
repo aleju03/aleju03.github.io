@@ -754,6 +754,29 @@ async function main() {
   w1.send({ type: 'world-shove', to: welcome1.you, vx: 8, vy: 0, vz: 0 });
   w1.send({ type: 'world-chat', text: 'marker: self' });
   await noShoveBefore(w1, 'a shove at yourself is dropped');
+  // 17c'. Bring. Only the admin can summon somebody, and the summoned client
+  //       is told where to stand, a little way off the admin, on its level
+  w1.send({ type: 'world-bring', to: welcome2.you });
+  w1.send({ type: 'world-chat', text: 'marker: not admin' });
+  for (let i = 0; i < 40; i++) {
+    const msg = await w2.next('a guest cannot bring anybody');
+    assert.notEqual(msg.type, 'world-bring', 'a guest brought somebody');
+    if (msg.type === 'world-chat') break;
+  }
+  dup.send({ type: 'world-join', level: 'overworld' });
+  const adminWelcome = await dup.nextOf('world-welcome', 'the admin walks in');
+  dup.send({ type: 'world-move', x: 100, y: 7, z: -40, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  await dup.nextOf('world-tick', 'the admin is somewhere');
+  dup.send({ type: 'world-bring', to: welcome2.you });
+  const brought = await w2.nextOf('world-bring', 'the admin brings a player');
+  assert.equal(brought.from, adminWelcome.you, 'told who brought them');
+  assert.ok(Math.hypot(brought.x - 100, brought.z + 40) < 4, 'lands beside the admin');
+  assert.equal(brought.y, 7, 'at the admin feet height');
+  dup.send({ type: 'world-bring', to: 'all' });
+  await w1.nextOf('world-bring', 'bring all reaches everyone on the level');
+  await w2.nextOf('world-bring', 'bring all reaches the other walker too');
+  dup.send({ type: 'world-leave' });
+  console.log("17c'. bring: guests are ignored, the admin brings one or all");
   // 17d. Grabs. The physgun on a player is a stream relayed to the victim
   //      alone, inside the beam's reach, never at somebody flying, and a
   //      throw is clamped; a release always goes through.

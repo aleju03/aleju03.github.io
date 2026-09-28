@@ -84,6 +84,9 @@ export interface WorldNet {
   /** we bumped into this player: the velocity their own client should take
       (game/net/shove.ts). Throttled by the caller, clamped by the server */
   shove: (to: PlayerId, vx: number, vy: number, vz: number) => void
+  /** admin only, and the server is the one that checks: bring this player
+      (or everyone on the level) to where we stand */
+  bring: (to: PlayerId | 'all') => void
   /** our physgun has this player (game/net/grab.ts). Throttled by the
       caller, checked and clamped by the server */
   grab: (
@@ -402,6 +405,10 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     shove(to, vx, vy, vz) {
       const r = (n: number) => Math.round(n * 100) / 100
       inWorld({ type: 'world-shove', to, vx: r(vx), vy: r(vy), vz: r(vz) })
+    },
+
+    bring(to) {
+      inWorld({ type: 'world-bring', to })
     },
 
     grab(to, phase, limb, x, y, z, vx = 0, vy = 0, vz = 0) {

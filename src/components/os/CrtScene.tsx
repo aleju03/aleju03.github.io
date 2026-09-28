@@ -2289,6 +2289,7 @@ export default function CrtScene({
           // E: get out of whatever you are in, else the machine's prompt, else
           // a door's, else climb into whatever is parked in front of you
           onUse: () => {
+            if (loadingWorld) return true
             // while the beam holds something E is its rotate modifier
             if (tools?.capturesUse && !fleet.riding) return true
             if (fleet.riding) {
@@ -3540,6 +3541,16 @@ export default function CrtScene({
 
         const walkTick = (now: number) => {
           if (disposed || !roaming) return
+          // The compositor animates the cover. Rendering here would race the
+          // shader warm-up, draw its staged tools, and keep the GPU busy with
+          // frames nobody can see. Also keep held movement out of the cut.
+          if (loadingWorld) {
+            lastT = now
+            nextFrame = now
+            edges.update(input.keys)
+            raf = requestAnimationFrame(walkTick)
+            return
+          }
           /*
             The frame limiter.
 
@@ -3605,6 +3616,8 @@ export default function CrtScene({
             outsideShell(camera.position)
           ) {
             void loadWorldCovered()
+            raf = requestAnimationFrame(walkTick)
+            return
           }
           prWait -= rawMs / 1000
           // The render-scale dial, taken the frame after it moves. It is a
@@ -4460,14 +4473,20 @@ export default function CrtScene({
             Object.assign(window, { __sandbox: Object.assign(next, { run, console: sbConsole }) })
           }
         }
+        const loadWorldModules = () => Promise.all([
+          import('../../game/vehicles/registry').then(async (registry) => {
+            await registry.preloadVehicleEnvironment()
+            return registry
+          }),
+          import('../../game/sandbox/sandbox'),
+          import('../../game/sandbox/tools/toolbelt'),
+        ])
         let worldReady: Promise<void> | null = null
         const ensureWorld = () => {
           worldReady ??= (async () => {
-            const [, registry, sbMod, toolsMod] = await Promise.all([
+            const [, [registry, sbMod, toolsMod]] = await Promise.all([
               outside.attachWorld(),
-              import('../../game/vehicles/registry'),
-              import('../../game/sandbox/sandbox'),
-              import('../../game/sandbox/tools/toolbelt'),
+              loadWorldModules(),
             ])
             if (disposed || !scene) return
             sandboxMod = sbMod
@@ -4694,7 +4713,9 @@ export default function CrtScene({
         const warmForRoam = async (at: THREE.Vector3) => {
           await ensureWorld()
           if (disposed) return
-          outside.prime(at.x, at.z, 200)
+          // Build the visible inner rings. Distant chunks keep their normal
+          // streaming budget instead of adding 200 ms to every first exit.
+          outside.prime(at.x, at.z)
           if (!webgl || !scene) return
           // Constructors leave all three machines at (0,0,0), hidden by the
           // fleet root. Terrain and collision now exist, so place them before
@@ -4914,6 +4935,7 @@ export default function CrtScene({
           // and the covered wait at the front door is then only the build and
           // the shader compile rather than the download as well.
           outside.preloadWorld()
+          void loadWorldModules().catch(() => {})
           webgl.domElement.style.pointerEvents = 'auto'
           input.setCursor('grab')
           // with the OS still running the tube keeps spilling light
@@ -5110,6 +5132,7 @@ export default function CrtScene({
         }
         // the door prompt button routes here (E does the same via input)
         doorRef.current = () => {
+          if (loadingWorld) return
           if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
           if (!outside.hasWorld() && atExteriorDoor(headPos)) void loadWorldCovered()
         }
