@@ -53,13 +53,14 @@ import type { StepSurface } from './sfx'
   table`). The switch is `setStepSet`, persisted in localStorage and reached
   from the sandbox console's hidden `steps` command.
 
-  Set a is the default. By the numbers all three now sit where they should
-  (every surface within a few dB of -56 dBA, nothing over 4 kHz), and a is
-  the one with the least to wear on you over minutes of walking: a soft
-  onset (b's recordings open on a heel transient under a millisecond), the
-  widest step-to-step variation (a 3 semitone spread in brightness against
-  c's one, and c is a pitched tone, which a repeated sound makes into a
-  tune), and no download.
+  Set b is the default, because the owner listened to all three and picked
+  it. By the numbers a had the better case (a soft onset where b's
+  recordings open on a heel transient under a millisecond, the widest
+  step-to-step variation, and no download), and that is still why a is the
+  voice under b: it plays every step until b's 46 kB sprite has decoded on
+  the first footfall, it is b's water, and its knock sits on b's wood, whose
+  recordings are too low for a phone speaker. A recording wins on the thing
+  the numbers do not measure, which is sounding like a foot.
 
   Headless-safe: nothing here runs until a caller hands it an AudioContext,
   and the one storage read is guarded. Math.random() is deliberate, as in
@@ -68,7 +69,7 @@ import type { StepSurface } from './sfx'
 
 export type StepSet = 'a' | 'b' | 'c'
 export const STEP_SETS: readonly StepSet[] = ['a', 'b', 'c']
-export const DEFAULT_STEP_SET: StepSet = 'a'
+export const DEFAULT_STEP_SET: StepSet = 'b'
 const STORE = 'alejos-steps'
 
 const stored = (): StepSet => {

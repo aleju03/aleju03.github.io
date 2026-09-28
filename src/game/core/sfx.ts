@@ -223,8 +223,43 @@ export const spawnPop = (mass: number) => {
   if (!a) return
   const now = a.currentTime
   const heavy = Math.min(1, Math.log10(1 + Math.max(0, mass)) / 3)
-  burst(a, now, 'highpass', 3200 - 1400 * heavy, 0.8, 0.026, 0.045)
-  thump(a, now + 0.015, 190 - 110 * heavy, 0.05 + 0.03 * heavy, 0.11)
+  // a cork coming out: a sine that jumps up in pitch in a few milliseconds
+  // (a rising blip is what an ear calls "pop"), a puff of air round it and a
+  // soft landing thump under it, lower for heavier things. It used to be a
+  // tick and a thump at about -51 dBA, a dozen dB under a door, which in
+  // play was no sound at all
+  const f0 = 420 - 170 * heavy
+  const o = a.createOscillator()
+  o.type = 'sine'
+  o.frequency.setValueAtTime(f0, now)
+  o.frequency.exponentialRampToValueAtTime(f0 * 2.3, now + 0.045)
+  const g = a.createGain()
+  g.gain.setValueAtTime(0.0001, now)
+  g.gain.exponentialRampToValueAtTime(0.09, now + 0.006)
+  g.gain.exponentialRampToValueAtTime(0.0004, now + 0.13)
+  o.connect(g).connect(a.destination)
+  o.start(now)
+  o.stop(now + 0.15)
+  burst(a, now, 'bandpass', 1500 - 500 * heavy, 0.7, 0.04, 0.14)
+  thump(a, now + 0.02, 150 - 70 * heavy, 0.08 + 0.05 * heavy, 0.16)
+}
+
+/** the Q catalogue's paper under the cursor: a tab picked, a page turned,
+    an entry pressed. Small, dry and a little different each time */
+export const menuTick = (kind: 'tab' | 'page' | 'pick') => {
+  const a = audio()
+  if (!a) return
+  const now = a.currentTime
+  const r = 0.92 + Math.random() * 0.16
+  if (kind === 'page') {
+    // a sheet flipped: a short breathy sweep of paper noise
+    burst(a, now, 'bandpass', 1700 * r, 0.6, 0.035, 0.11)
+    burst(a, now + 0.04, 'bandpass', 2600 * r, 0.8, 0.02, 0.07)
+    return
+  }
+  // a tab or an entry: a pencil tap, the entry a touch brighter
+  burst(a, now, 'bandpass', (kind === 'pick' ? 3200 : 2400) * r, 1.2, 0.04, 0.03)
+  thump(a, now, (kind === 'pick' ? 900 : 650) * r, 0.035, 0.05)
 }
 
 /** the hinge working: the recorded swing, or the stick-slip judder below
