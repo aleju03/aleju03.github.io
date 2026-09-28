@@ -88,7 +88,10 @@ export const MODE_DEFS: Record<RoundModeId, ModeDef> = {
       { team: 'b', color: BLUE, name: { en: 'Blue', es: 'Azul' } },
     ],
     roles: [],
-    options: [{ key: 'teams', kind: 'bool', label: { en: 'Teams', es: 'Equipos' } }],
+    options: [
+      { key: 'teams', kind: 'bool', label: { en: 'Teams', es: 'Equipos' } },
+      { key: 'limit', kind: 'choice', label: { en: 'Kill limit', es: 'Límite de bajas' }, choices: [{ value: 0, label: { en: 'auto', es: 'auto' } }, { value: 5, label: { en: '5', es: '5' } }, { value: 10, label: { en: '10', es: '10' } }, { value: 20, label: { en: '20', es: '20' } }, { value: 40, label: { en: '40', es: '40' } }] },
+    ],
     keys: { en: 'Tab scores', es: 'Tab marcador' },
   },
   prophunt: {

@@ -102,6 +102,7 @@ export const kill = (R, victim, by, kind = 'pistol') => {
 /** every unit test of the rounds, in order */
 export async function roundsUnit() {
   await lobbyTests();
+  await (await import('./roundsDefs.mjs')).defsAgree();
   const { deathmatchTests } = await import('./roundsDeathmatch.mjs');
   await deathmatchTests();
   const modes = await import('./roundsModes.mjs');
@@ -147,9 +148,9 @@ async function lobbyTests() {
     assert.ok(!R.state().rd.includes(b.world.id));
     // mode switching resets the mode's options
     R.cmd(a, 'mode', { mode: 'deathmatch' });
-    assert.deepEqual(R.state().opt, { teams: true });
+    assert.deepEqual(R.state().opt, { teams: true, limit: 0 });
     R.cmd(a, 'opt', { key: 'teams', value: false });
-    assert.deepEqual(R.state().opt, { teams: false });
+    assert.deepEqual(R.state().opt, { teams: false, limit: 0 });
     R.cmd(a, 'opt', { key: 'nope', value: 1 });
     assert.equal(R.strikes.length, 3, 'an unknown option is a strike');
     R.cmd(a, 'mode', { mode: 'prophunt' });

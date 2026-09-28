@@ -25,6 +25,9 @@ v2 replaced the old 1:1 messenger protocol entirely, so deploy the server and th
 | `WORLD_MAX_ROOMS` | no | `200` | Private world rooms alive at once (see "World rooms") |
 | `WORLD_ROOM_MAX_PLAYERS` | no | `16` | Players per private room. The public room keeps its own cap (32) |
 | `WORLD_ROOM_GRACE_MS` | no | `30000` | How long an empty private room lives before it is forgotten, props and all |
+| `ROUND_COUNTDOWN_MS` | no | `6000` | The minimum countdown before a round begins (a test knob; at least 50) |
+| `ROUND_TIME_SCALE` | no | `1` | Multiplies every mode's own clocks (the hiding time, the build minutes, the race turns); a test knob |
+| `ROUND_RESULTS_MS` | no | `12000` | How long the results sheet stays up (a test knob; at least 50) |
 | `YT_SEARCH` | no | `on` | Set to `off` to unmount the browser's video search. Nothing else depends on it |
 
 ## Video search
@@ -566,3 +569,64 @@ comes from the validated `world-prop-explosion`: up to 90 x sqrt(power)
 (0.3..1.2) falling off linearly to `min(radius, 24)`, half to the caster
 themselves and only in pvp; other players are hurt only if the caster fired
 a rocket in the last eight seconds or the blast came from a prop (a barrel).
+
+### Rounds
+
+`src/rounds.js` is a per-room state machine, `lobby -> countdown -> playing ->
+results -> lobby`, built in `buildRoom` like every other world module
+(`room.rounds`) and keyed by `ws.world.level`, and `src/roundModes.js` is the
+table of games it runs (`deathmatch`, `prophunt`, `hide`, `race`, `build`),
+one object each: the maps it may run on, minimum and maximum players,
+duration, the room's pvp and respawn settings, its options, and the hooks
+`prepare/start/tick/pose/cmd/mayShoot/playerHit/propHit/guard/died/left/
+check/result/end/cleanup`. A sixth mode is an entry there and an entry in
+`src/game/modes/defs.ts`; `test/roundsDefs.mjs` fails if they disagree.
+`notes/modes.md` is the guide.
+
+What a round borrows from the rest of the server: `health.setPvp(level, on,
+{sticky})` and `health.setRespawn(level, ms | Infinity)` (both put back when
+the round ends), `health.setGuard(fn)` (a veto over who may hurt whom: teams,
+spectators, a prop hunt's props, nothing at all in a game of tag) and
+`health.onDeath`; `props.spawnSystem / removeSystem` (the decoys, owned by
+nobody and open to every hand); `claims.assign / free` (the build contest's
+plots); and `weapons.js`, which asks the round before letting a shot out
+(`mayShoot`), hands it validated hits on players (`playerHit`, so a tag is
+not damage) and on shared props (`propHit`, the hunter's penalty).
+
+Who plays: the host (the longest-standing player of the room) picks the game
+and options and may start; the ready play, plus the host; everyone ready and
+present starts it by itself. Anyone else in the room is a spectator (immune,
+cannot fire) until the next round, except a deathmatch, which takes a `join`.
+A participant who leaves the round's level or the room is out; under the
+minimum the round ends (`abandoned`), and a team with nobody left loses. The
+`debug` flag lowers every minimum to one, for the admin or the host of a
+private room. An emptied room forgets its round.
+
+- C to S `world-round-cmd {cmd, ...}`, ten a second: `mode {mode, level?}`
+  and `opt {key, value}` (host, lobby), `ready {on}`, `start` and `stop`
+  (host), `debug {on}`, `join`, and a mode's own verbs while playing:
+  `disguise {kind}` (prop hunt), `tag {target}` (hide and seek), `cp {i, x,
+  z}` (race: the running checkpoint count), `vote {n}` (build). Anything
+  malformed is a strike; a refusal is `world-round-no {cmd, reason, need?,
+  have?}` (`host`, `few`, `busy`, `admin`, `closed`, `full`).
+- S to C `world-round`: the whole state to the room, whenever a screen would
+  change (coalesced to ~2.5 a second in play): `ph` phase, `mode`, `lv` the
+  level, `now`/`end` server ms (clients count down with `end - now`), `host`,
+  `rd` ready ids, `p` rows `[id, team, role, score, a, b, out]`, `obj` the
+  mode's public data (keys ending `At` are server ms), `opt`, `dbg`, `w`
+  (waiting for someone to arrive), `dg` disguises `[[id, kind]]`, `res`
+  (`{win, team, why, rows}`) in the results phase.
+- S to C `world-round-go {level, mode, here?}` (change map: the client runs
+  its own level cut and reports it with `world-level`), `world-round-tp
+  {level, x, z, yaw}` (a grid slot, a plot, back to where you hid),
+  `world-round-ev {code, ...}` (an announcement, worded by the client) and
+  `world-round-dg {id, kind}`.
+
+The countdown waits up to 30 s for participants to arrive on the map and
+drops the ones who do not. Movement gating (hide and seek's seekers, prop
+hunt's hunters) is the server walking a wanderer back with a `tp`; the
+client also freezes itself. Checkpoints are validated against the position
+the server has watched the runner report, in order, and against a top speed
+(140 u/s in a car, 40 on foot). Test with `npm test` (`test/rounds.mjs`,
+`roundsDeathmatch.mjs`, `roundsModes.mjs`, `roundsDefs.mjs` on fake sockets
+and a fake clock, `roundsSocket.mjs` over the wire).

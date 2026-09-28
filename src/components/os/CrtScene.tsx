@@ -5110,7 +5110,7 @@ export default function CrtScene({
                 __input: input,
                 __remote: remote,
                 __health: health,
-                __rounds: { state: roundState, get director() { return rounds } },
+                __rounds: { state: roundState, get director() { return rounds }, pause: (on: boolean) => setPauseNow(on), here: () => host.here?.() },
                 __avatars: avatars,
                 __grabTaker: grabTaker,
                 // the view from the air: what the fog, the far field and the

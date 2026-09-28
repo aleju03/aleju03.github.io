@@ -923,7 +923,11 @@ const envMs = (name) => {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && n >= 50 ? n : undefined;
 };
-const ROUND_TIMING = { countdownMs: envMs('ROUND_COUNTDOWN_MS'), resultsMs: envMs('ROUND_RESULTS_MS') };
+const ROUND_TIMING = {
+  countdownMs: envMs('ROUND_COUNTDOWN_MS'),
+  resultsMs: envMs('ROUND_RESULTS_MS'),
+  timeScale: Number(process.env.ROUND_TIME_SCALE) > 0 ? Number(process.env.ROUND_TIME_SCALE) : undefined,
+};
 
 let worldSeq = 1;
 const worldPlayers = new Map(); // id -> ws, every room: the ticker's and the total cap's view

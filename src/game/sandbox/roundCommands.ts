@@ -8,7 +8,8 @@ import { msg, registerCommand, type CommandCtx } from './commands'
   server's solo-test flag from a harness:
 
     round                 what is on, who is ready
-    round mode <game>     pick a game (host)
+    round mode <game> [map]  pick a game, and a map for it (host)
+    round opt <key> <value>  a game's option: teams on|off, limit 10, laps 1, seekers 2 (host)
     round ready [off]     press ready
     round start           start it (host)
     round stop            end the round (host)
@@ -30,12 +31,13 @@ registerCommand({
   name: 'round',
   aliases: ['r'],
   args: [
-    { name: 'verb', nameEs: 'verbo', type: 'choice', choices: ['status', 'mode', 'ready', 'start', 'stop', 'debug', 'join'], optional: true },
-    { name: 'what', nameEs: 'qué', type: 'word', optional: true, choices: () => [...ROUND_MODES, 'off', 'on'] },
+    { name: 'verb', nameEs: 'verbo', type: 'choice', choices: ['status', 'mode', 'opt', 'ready', 'start', 'stop', 'debug', 'join'], optional: true },
+    { name: 'what', nameEs: 'qué', type: 'word', optional: true, choices: () => [...ROUND_MODES, 'teams', 'limit', 'laps', 'seekers', 'off', 'on'] },
+    { name: 'value', nameEs: 'valor', type: 'word', optional: true },
   ],
   help: msg(
-    'rounds: round mode <game>, ready, start, stop, debug, join; alone it says what is on',
-    'rondas: round mode <juego>, ready, start, stop, debug, join; solo, dice qué hay',
+    'rounds: round mode <game> [map], opt, ready, start, stop, debug, join; alone it says what is on',
+    'rondas: round mode <juego> [mapa], opt, ready, start, stop, debug, join; solo, dice qué hay',
   ),
   run: (ctx) => {
     const r = need(ctx)
@@ -57,7 +59,15 @@ registerCommand({
       }
       case 'mode': {
         if (!(ROUND_MODES as readonly string[]).includes(what)) ctx.fail(msg(`one of: ${ROUND_MODES.join(', ')}`, `uno de: ${ROUND_MODES.join(', ')}`))
-        cmd({ type: 'world-round-cmd', cmd: 'mode', mode: what as RoundModeId })
+        const level = (ctx.args[2] ?? '').toLowerCase()
+        cmd({ type: 'world-round-cmd', cmd: 'mode', mode: what as RoundModeId, ...(level ? { level } : {}) })
+        return
+      }
+      case 'opt': {
+        const raw = (ctx.args[2] ?? '').toLowerCase()
+        const value: number | boolean = raw === 'on' || raw === 'true' ? true : raw === 'off' || raw === 'false' ? false : Number(raw)
+        if (!what || (typeof value === 'number' && !Number.isFinite(value))) ctx.fail(msg('round opt <key> <value>', 'round opt <clave> <valor>'))
+        cmd({ type: 'world-round-cmd', cmd: 'opt', key: what, value })
         return
       }
       case 'ready':
@@ -76,6 +86,6 @@ registerCommand({
         cmd({ type: 'world-round-cmd', cmd: 'join' })
         return
     }
-    ctx.fail(msg('round [status|mode|ready|start|stop|debug|join]', 'round [status|mode|ready|start|stop|debug|join]'))
+    ctx.fail(msg('round [status|mode|opt|ready|start|stop|debug|join]', 'round [status|mode|opt|ready|start|stop|debug|join]'))
   },
 })

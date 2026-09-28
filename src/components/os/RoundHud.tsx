@@ -193,14 +193,16 @@ export default function RoundHud({
 
       {/* the countdown / waiting */}
       {banner && (
-        <div className="pointer-events-none absolute inset-x-0 top-[32%] z-20 flex justify-center">
+        <div className="pointer-events-none absolute inset-x-0 top-[30%] z-20 flex justify-center">
           <span
             key={banner}
-            className="font-display uppercase"
+            className="font-display px-8 uppercase"
             style={{
               color: '#fff6dc',
-              fontSize: bannerBig ? 120 : 34,
-              textShadow: '0 3px 0 rgba(60,40,20,0.7), 0 0 30px rgba(0,0,0,0.6)',
+              fontSize: bannerBig ? 110 : 30,
+              lineHeight: 1.15,
+              background: 'rgba(24,17,10,0.62)',
+              textShadow: '0 3px 0 rgba(60,40,20,0.7)',
               animation: bannerBig ? 'rd-pop 1s ease-out forwards' : 'rd-in 0.3s ease-out',
             }}
           >

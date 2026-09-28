@@ -58,6 +58,8 @@ const r2 = (n) => Math.round(n * 100) / 100;
 export function createRounds({
   players, send, health, props = null, claims = null, isPublic = () => false, now = Date.now, rand = Math.random,
   countdownMs = COUNTDOWN_MS, arriveMs = ARRIVE_MS, resultsMs = RESULTS_MS,
+  // scales every mode's own clocks (hiding, building, turns); a test knob
+  timeScale = 1,
 }) {
   const rates = new WeakMap();
   const st = {
@@ -196,6 +198,8 @@ export function createRounds({
       return out;
     },
     opt: (k, fallback) => (st.opt[k] === undefined ? fallback : st.opt[k]),
+    /** a mode's duration in ms, through the test knob */
+    time: (ms) => Math.max(1, Math.round(ms * timeScale)),
     finish: (why, result = null) => finish(why, result),
     disguise(id, kind) {
       if (kind) st.dg.set(id, kind);
@@ -271,7 +275,7 @@ export function createRounds({
     st.phase = 'playing';
     st.waiting = false;
     st.t0 = now();
-    st.end = st.t0 + d.duration * 1000;
+    st.end = st.t0 + E.time(d.duration * 1000);
     applyHealth();
     health.reset(st.level);
     d.start?.(E);

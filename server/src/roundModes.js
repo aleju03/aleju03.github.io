@@ -88,12 +88,16 @@ const deathmatch = {
   pvp: true,
   respawnMs: 3000,
   midJoin: true,
-  options: { teams: true },
-  limit: (teams) => (teams ? 40 : 20),
+  // teams or free for all; the kill limit (0: 40 for a team, 20 alone)
+  options: { teams: true, limit: 0 },
+  limit: (E) => {
+    const set = E.opt('limit', 0);
+    return set > 0 ? Math.min(200, Math.floor(set)) : E.opt('teams', true) ? 40 : 20;
+  },
   start(E) {
     const teams = E.opt('teams', true);
     if (teams) dealTeams(E, E.parts(), TEAMS);
-    E.st.obj = { limit: deathmatch.limit(teams), teams };
+    E.st.obj = { limit: deathmatch.limit(E), teams };
   },
   joined(E, p) {
     if (E.opt('teams', true)) p.team = smallerTeam(E);
@@ -115,7 +119,7 @@ const deathmatch = {
   },
   check(E) {
     const teams = E.opt('teams', true);
-    const limit = deathmatch.limit(teams);
+    const limit = deathmatch.limit(E);
     if (teams) {
       const sum = { a: 0, b: 0 };
       for (const p of E.parts()) if (p.team) sum[p.team] += p.a;
@@ -162,7 +166,7 @@ const hide = {
       p.role = i < n ? 'seeker' : 'hider';
       p.team = p.role === 'seeker' ? 'b' : 'a';
     });
-    E.st.data.seekAt = E.st.t0 + HIDE_MS;
+    E.st.data.seekAt = E.st.t0 + E.time(HIDE_MS);
     E.st.data.alive = new Map(parts.filter((p) => p.role === 'hider').map((p) => [p.id, E.st.t0]));
     E.st.obj = { seekAt: E.st.data.seekAt };
   },
@@ -193,7 +197,7 @@ const hide = {
     if (v.role !== 'hider') return;
     v.role = 'seeker';
     v.team = 'b';
-    v.b = Math.floor((E.now() - E.st.t0 - HIDE_MS) / 1000);
+    v.b = Math.max(0, Math.floor((E.now() - E.st.data.seekAt) / 1000));
     v.out = false;
     E.st.data.alive.delete(v.id);
     by.a++;
@@ -272,7 +276,7 @@ const prophunt = {
       p.role = i < nh ? 'hunter' : 'prop';
       p.team = p.role === 'hunter' ? 'b' : 'a';
     });
-    E.st.data.seekAt = E.st.t0 + HIDE_MS;
+    E.st.data.seekAt = E.st.t0 + E.time(HIDE_MS);
     E.st.obj = { seekAt: E.st.data.seekAt, decoys: E.st.data.decoys?.length ?? 0 };
   },
   pose(E, p, ws) {
@@ -386,7 +390,7 @@ const race = {
       p.lastCp = t;
     }
     if (d.course.foot) {
-      d.goAt = t + 3000;
+      d.goAt = t + E.time(3000);
       E.st.obj.goAt = d.goAt;
       for (const p of E.parts()) p.startAt = d.goAt;
       // a staggered start line, on the grid's row
@@ -406,8 +410,8 @@ const race = {
     const id = d.order[d.turn];
     const g = d.course.grid;
     const t = E.now();
-    d.goAt = t + 8000;
-    d.turnEnd = d.goAt + 150_000;
+    d.goAt = t + E.time(8000);
+    d.turnEnd = d.goAt + E.time(150_000);
     const p = E.partOf(id);
     p.a = 0;
     p.lastCp = d.goAt;
@@ -526,10 +530,11 @@ const build = {
       // a plot's middle
       E.tp(p.id, build.wx(o.cx * CHUNK + CHUNK), build.wz(o.cz * CHUNK + CHUNK), 0);
     });
-    d.buildEnd = E.st.t0 + BUILD_MS;
+    d.buildEnd = E.st.t0 + E.time(BUILD_MS);
     d.galleryAt = d.buildEnd;
     d.gi = -1;
-    E.st.end = d.buildEnd + parts.length * GALLERY_MS;
+    d.galMs = E.time(GALLERY_MS);
+    E.st.end = d.buildEnd + parts.length * d.galMs;
     E.st.obj.stage = 'build';
     E.st.obj.buildEndAt = d.buildEnd;
     E.st.obj.plots = parts.map((p) => [p.id, d.plots.get(p.id).cx, d.plots.get(p.id).cz]);
@@ -539,13 +544,13 @@ const build = {
     const t = E.now();
     if (t < d.buildEnd) return;
     const ids = [...d.plots.keys()];
-    const gi = Math.min(ids.length - 1, Math.floor((t - d.buildEnd) / GALLERY_MS));
+    const gi = Math.min(ids.length - 1, Math.floor((t - d.buildEnd) / d.galMs));
     if (gi === d.gi) return;
     d.gi = gi;
     const id = ids[gi];
     const o = d.plots.get(id);
     E.st.obj.stage = 'gallery';
-    E.st.obj.gal = { plot: id, i: gi, n: ids.length, endAt: d.buildEnd + (gi + 1) * GALLERY_MS };
+    E.st.obj.gal = { plot: id, i: gi, n: ids.length, endAt: d.buildEnd + (gi + 1) * d.galMs };
     // everyone to the front of that plot, looking in (owners too: it is
     // their moment as much as anybody's)
     for (const p of E.parts()) E.tp(p.id, build.wx(o.cx * CHUNK + CHUNK), build.wz(o.cz * CHUNK - 8), Math.PI);
