@@ -14,21 +14,25 @@ import { createWeapons, WEAPON_IDS, type WeaponId, type Weapons, type WeaponWorl
 import { createWeaponView, type RemoteHands, type WeaponView } from './weaponView'
 import { createWeaponSfx } from './weaponSfx'
 import type { WorldServerMessage } from '../../net/protocol'
+import { COLUMNS, SLOTS, columnOf, type ToolId } from './slots'
 
 /*
   The tool belt: which thing is in your hand, and the one object CrtScene
   talks to about any of them.
 
-  Slots are GMod's: 1 is your hands (nothing drawn, E uses doors and seats
-  the way it always has), 2 is the physgun, 3 is the tool gun (toolgun.ts:
-  weld, axis, rope, no-collide, keys, remove). 4 is the portal gun
-  (portals.ts), which is not carried until it is taken from the catalogue
-  (`give`): left click opens the blue portal, right click the orange, R
-  closes both. 5, 6 and 7 are the weapons (weapons.ts): the pistol, the
-  crossbow and the rocket launcher, carried from the start; left click fires,
-  R reloads the pistol. The wheel cycles slots while nothing is held, and belongs to
-  the physgun's distance while something is. A slot with nothing in it, or a
-  tool not yet given, is skipped.
+  Slots are GMod's, and so are the columns they are kept in. Slot 0 is your
+  hands (nothing drawn, E uses doors and seats the way it always has), 1 is
+  the physgun, 2 the tool gun (toolgun.ts: weld, axis, rope, no-collide,
+  keys, remove) and 3 the portal gun (portals.ts), which is not carried until
+  it is taken from the catalogue (`give`): left click opens the blue portal,
+  right click the orange, R closes both. 4, 5 and 6 are the weapons
+  (weapons.ts): the pistol, the crossbow and the rocket launcher, carried
+  from the start; left click fires, R reloads the pistol. The number keys
+  pick a *column* (`COLUMNS`, `column()`): 1 is the hands, 2 the tools, 3
+  the weapons, and pressing the same one again steps down it, wrapping. The
+  wheel steps through every slot in order, across the columns, while nothing
+  is held, and belongs to the physgun's distance while something is. A slot
+  with nothing in it, or a tool not yet given, is skipped by both.
 
   The physgun's beam goes through them too: an aim whose ray meets an open
   oval before anything solid is handed to the physgun carried out of the
@@ -70,8 +74,7 @@ import type { WorldServerMessage } from '../../net/protocol'
   the boot cover; `unstage()` puts it all back.
 */
 
-export type ToolId = 'hands' | 'physgun' | 'toolgun' | 'portalgun' | WeaponId
-export const SLOTS: readonly (ToolId | null)[] = ['hands', 'physgun', 'toolgun', 'portalgun', 'pistol', 'crossbow', 'rocket']
+export { COLUMNS, SLOTS, columnOf, type ToolId }
 /** carried from the start; the rest are given */
 const STARTER: readonly ToolId[] = ['hands', 'physgun', 'toolgun', 'pistol', 'crossbow', 'rocket']
 const isWeapon = (t: ToolId | null | undefined): t is WeaponId => !!t && (WEAPON_IDS as readonly string[]).includes(t)
@@ -130,6 +133,9 @@ export interface Toolbelt {
   readonly tool: ToolId
   select: (slot: number) => void
   cycle: (dir: number) => void
+  /** a number key: the column's first carried slot, or, when the hand is
+      already in that column, the next one down it (wrapping) */
+  column: (c: number) => void
   readonly physgun: Physgun
   readonly toolgun: Toolgun
   /** the blue and the orange portal, and everything that goes through them */
@@ -442,6 +448,18 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
       }
     }
   }
+  const column = (c: number) => {
+    const col = COLUMNS[c]
+    if (!col) return
+    const at = col.indexOf(slot)
+    for (let k = 1; k <= col.length; k++) {
+      const s = at < 0 ? col[k - 1] : col[(at + k) % col.length]
+      if (SLOTS[s] && owned.has(SLOTS[s]!)) {
+        select(s)
+        return
+      }
+    }
+  }
 
   const update = (input: ToolInput, active: boolean) => {
     aimDir.copy(input.aim.dir)
@@ -580,6 +598,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     },
     select,
     cycle,
+    column,
     physgun,
     toolgun,
     portals,

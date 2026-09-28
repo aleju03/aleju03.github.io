@@ -36,13 +36,14 @@ import { createRoamInput } from '../../game/core/input'
 import { blockedAt, makeCollisionSet, supportY, syncCollisionSet } from '../../game/physics/collision'
 import { createCollisionDebug } from '../../game/physics/collisionDebug'
 import { createDisposer } from '../../game/core/disposer'
-import { footstep, landThump, spawnPop } from '../../game/core/sfx'
+import { footstep, landThump, menuTick, spawnPop } from '../../game/core/sfx'
 // the registry itself is loaded on demand with the rest of the world; only its
 // types are needed up front, and those cost nothing at runtime
 import type { FleetEnvQueries, VehicleFleet } from '../../game/vehicles/registry'
 import { emptyFleet } from '../../game/vehicles/emptyFleet'
 import type { Sandbox } from '../../game/sandbox/sandbox'
 import type { PortalMoon, PortalWalk, Toolbelt } from '../../game/sandbox/tools/toolbelt'
+import { columnOf } from '../../game/sandbox/tools/slots'
 import type { PortalHooks } from '../../game/sandbox/tools/portalView'
 import type { Portal, PortalColor, PortalCrossing } from '../../game/sandbox/tools/portals'
 import type { ToolInput } from '../../game/sandbox/tools/types'
@@ -56,6 +57,7 @@ import { GRAVITY } from '../../game/sandbox/physics'
 import SandboxConsole, { type FeedLine } from './SandboxConsole'
 import Crosshair, { type CrosshairAim } from './Crosshair'
 import SpawnMenu, { type CatalogueSource, type OrderLine } from './SpawnMenu'
+import ToolSwitcher, { type BeltState } from './ToolSwitcher'
 import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/quality'
@@ -405,6 +407,8 @@ export default function CrtScene({
   /** the tool gun's readout: its `mode:step` and the keys it is aimed at */
   const [toolLine, setToolLine] = useState<{ state: string; keys: string | null } | null>(null)
   const [weaponLine, setWeaponLine] = useState<WeaponTool | null>(null)
+  /** what is in your hands, for the switcher; `n` counts changes */
+  const [belt, setBelt] = useState<BeltState>({ slot: 0, portal: false, n: 0 })
   /** what the crosshair is on (Crosshair.tsx) */
   const [aim, setAim] = useState<CrosshairAim>('none')
   /** the channel the set is showing, while you are sitting in front of it */
@@ -1461,6 +1465,8 @@ export default function CrtScene({
         let partSeatRequest: { id: number; until: number } | null = null
         let toolLineNow = ''
         let weaponLineNow: WeaponTool | null = null
+        /** the belt slot the switcher last showed; the belt starts on hands */
+        let beltSlotNow = 0
         /** props still scaling in from a spawn, and how long that takes */
         const pops: { mesh: THREE.Object3D; t: number }[] = []
         const POP_S = 0.24
@@ -2631,7 +2637,8 @@ export default function CrtScene({
         }
         /*
           The catalogue's portal gun is not delivered, it is handed over: the
-          belt carries it from then on in slot 4, and it comes out at once.
+          belt carries it from then on under 2, after the tool gun, and it comes
+          out at once.
           Ordering it again just draws it.
         */
         const givePortalGun = () => {
@@ -2640,8 +2647,8 @@ export default function CrtScene({
           tools.select(3)
           pushFeed(fresh
             ? { tone: 'ok', text: bilingual(
-              'portal gun: left click blue, right click orange, r closes both, 4 draws it',
-              'pistola de portales: clic izquierdo azul, clic derecho naranja, r cierra los dos, 4 la saca') }
+              'portal gun: left click blue, right click orange, r closes both, 2 steps to it',
+              'pistola de portales: clic izquierdo azul, clic derecho naranja, r cierra los dos, 2 llega a ella') }
             : { tone: 'ok', text: bilingual('portal gun out', 'pistola de portales en mano') })
         }
         /*
@@ -3824,13 +3831,10 @@ export default function CrtScene({
             if (wheelSwallow && !held(k, 'grab') && !held(k, 'freeze')) wheelSwallow = false
             const gunsOff = wheel.open || wheelSwallow
             if (!wheel.open) {
-              if (edges.pressed('slot1')) tools.select(0)
-              else if (edges.pressed('slot2')) tools.select(1)
-              else if (edges.pressed('slot3')) tools.select(2)
-              else if (edges.pressed('slot4')) tools.select(3)
-              else if (edges.pressed('slot5')) tools.select(4)
-              else if (edges.pressed('slot6')) tools.select(5)
-              else if (edges.pressed('slot7')) tools.select(6)
+              // a column per key, again steps down it (toolbelt.ts's COLUMNS)
+              if (edges.pressed('slot1')) tools.column(0)
+              else if (edges.pressed('slot2')) tools.column(1)
+              else if (edges.pressed('slot3')) tools.column(2)
             }
             toolAim.eye.copy(camera.position)
             // from the head, at whatever is under the crosshair (resolveAim)
@@ -3857,6 +3861,13 @@ export default function CrtScene({
             if (tl !== toolLineNow) {
               toolLineNow = tl
               setToolLine(tl ? { state: tools.toolgun.state, keys: tools.toolgun.aimedKeys } : null)
+            }
+            // a change of what is in your hands, however it came (a key, the
+            // wheel, `give`, the catalogue): the tags come down (ToolSwitcher.tsx)
+            if (tools.slot !== beltSlotNow) {
+              menuTick(columnOf(tools.slot) === columnOf(beltSlotNow) ? 'pick' : 'tab')
+              beltSlotNow = tools.slot
+              setBelt((b) => ({ slot: tools!.slot, portal: tools!.has('portalgun'), n: b.n + 1 }))
             }
             // a weapon out: its own line on the tape
             const wl = toolsLive && WEAPON_TOOLS.includes(tools.tool) ? tools.tool as WeaponTool : null
@@ -5602,6 +5613,15 @@ export default function CrtScene({
           <Crosshair aim={aim} />
           {pointHud && <PointMark />}
         </div>
+      )}
+      {/* what is in your hands, for a moment after it changes (ToolSwitcher.tsx).
+          Mounted for the whole walk so the fade keeps its clock; the rest
+          only puts it away */}
+      {roam && walking && (
+        <ToolSwitcher
+          belt={belt}
+          hidden={paused || !!driving || !!seated || wheelOpen || menuOpen || typing !== null}
+        />
       )}
       {/* the emote wheel, from b until something is picked (EmoteWheel.tsx) */}
       {roam && walking && !paused && !driving && !seated && wheelOpen && (

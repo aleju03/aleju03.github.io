@@ -191,7 +191,7 @@ const dictionaries = {
         noMatch: 'nothing by that name in here',
       },
       hud: {
-        walk: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {emote} emotes · {point} point · {spawnMenu} props · {slot2} physgun · {slot3} tool gun · {slot5}-{slot7} weapons · {chat} chat · {command} commands',
+        walk: 'wasd move · {jump} jump · {sprint} run · {crouch} crouch · {noclip} fly · {camera} camera · {ragdoll} flop · {emote} emotes · {point} point · {spawnMenu} props · {slot2} tools · {slot3} weapons · {chat} chat · {command} commands',
         fly: 'flying · {flyUp} up · {flyDown} down · {flyFast} fast · {flySlow} slow · {emote} emotes · {point} point · {noclip} to land',
         grab: 'wasd to move · click to grab the mouse · esc to leave',
         pauses: 'esc pauses',
@@ -203,7 +203,7 @@ const dictionaries = {
         // own wheels, thrusters and hoverballs answer, plus each part's keys
         seat: 'wasd drive · {jump} thrusters and lift · {sprint} reverse and sink · i/k u/j o/l arrows: part keys · {use} get up',
         // after the tool gun's own line
-        toolTail: '{slot2} physgun · {undo} undo · {spawnMenu} parts',
+        toolTail: '{slot2} next tool · {undo} undo · {spawnMenu} parts',
         // a weapon out (sandbox/tools/weapons.ts): what the buttons do, then
         // the way back to the other tools
         weapons: {
@@ -211,7 +211,7 @@ const dictionaries = {
           crossbow: 'crossbow · {grab} loose a bolt',
           rocket: 'rocket launcher · {grab} fire',
         },
-        weaponTail: '{slot5} pistol · {slot6} crossbow · {slot7} rockets · {slot1} hands · {slot2} physgun',
+        weaponTail: '{slot3} next weapon · {slot1} hands · {slot2} tools',
       },
       // the emote wheel (components/os/EmoteWheel.tsx), in player/emotes.ts's
       // EMOTES order, clockwise from the top; `hub` is the middle, which
@@ -221,6 +221,16 @@ const dictionaries = {
         hub: 'nothing',
         // pencilled along the bottom of the wheel
         hint: 'click or 1-9 plays · {emote} or right click puts it away',
+      },
+      // the tool switcher (components/os/ToolSwitcher.tsx): a tag per number
+      // key, its column's name, and the things kept under it, in the belt's
+      // SLOTS order
+      belt: {
+        columns: ['hands', 'tools', 'weapons'],
+        names: {
+          hands: 'hands', physgun: 'physgun', toolgun: 'tool gun', portalgun: 'portal gun',
+          pistol: 'pistol', crossbow: 'crossbow', rocket: 'rocket launcher',
+        },
       },
       // the voice filter on the pause sheet (components/os/voiceFilters.ts),
       // in VOICE_FILTERS order
@@ -496,7 +506,7 @@ const dictionaries = {
         noMatch: 'aquí no hay nada con ese nombre',
       },
       hud: {
-        walk: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {emote} gestos · {point} señalar · {spawnMenu} objetos · {slot2} pistola física · {slot3} pistola de herramientas · {slot5}-{slot7} armas · {chat} chat · {command} comandos',
+        walk: 'wasd moverse · {jump} saltar · {sprint} correr · {crouch} agacharse · {noclip} volar · {camera} cámara · {ragdoll} desplomarte · {emote} gestos · {point} señalar · {spawnMenu} objetos · {slot2} herramientas · {slot3} armas · {chat} chat · {command} comandos',
         fly: 'volando · {flyUp} sube · {flyDown} baja · {flyFast} rápido · {flySlow} lento · {emote} gestos · {point} señalar · {noclip} para aterrizar',
         grab: 'wasd para moverse · clic para agarrar el mouse · esc para salir',
         pauses: 'esc pausa',
@@ -504,18 +514,25 @@ const dictionaries = {
         voice: '{mic} micro',
         shoulder: '{shoulder} hombro',
         seat: 'wasd conducir · {jump} propulsores y subir · {sprint} reversa y bajar · i/k u/j o/l flechas: teclas de piezas · {use} levantarte',
-        toolTail: '{slot2} pistola física · {undo} deshacer · {spawnMenu} piezas',
+        toolTail: '{slot2} siguiente herramienta · {undo} deshacer · {spawnMenu} piezas',
         weapons: {
           pistol: 'pistola · {grab} disparar (mantén) · {unfreeze} recargar',
           crossbow: 'ballesta · {grab} soltar un virote',
           rocket: 'lanzacohetes · {grab} disparar',
         },
-        weaponTail: '{slot5} pistola · {slot6} ballesta · {slot7} cohetes · {slot1} manos · {slot2} pistola física',
+        weaponTail: '{slot3} siguiente arma · {slot1} manos · {slot2} herramientas',
       },
       emotes: {
         names: ['saludar', 'pulgar arriba', 'aplaudir', 'reír', 'bailar', 'saltar de alegría', 'músculo', 'mano a la cara', 'sentarse'],
         hub: 'nada',
         hint: 'clic o 1-9 lo hace · {emote} o clic derecho lo guarda',
+      },
+      belt: {
+        columns: ['manos', 'herramientas', 'armas'],
+        names: {
+          hands: 'manos', physgun: 'pistola física', toolgun: 'pistola de herramientas', portalgun: 'pistola de portales',
+          pistol: 'pistola', crossbow: 'ballesta', rocket: 'lanzacohetes',
+        },
       },
       voiceFx: {
         label: 'tu voz',

@@ -62,20 +62,20 @@ export const BINDINGS = {
   chat: ['KeyT', 'Enter', 'NumpadEnter'],
   /** open the console with a `/` already typed */
   command: ['Slash'],
-  /** tool slots (S3): hands, physgun, toolgun, the portal gun once the
-      catalogue has handed it over, and the weapons: pistol, crossbow and
-      rocket launcher */
+  /** the tool belt's three columns, Garry's Mod's way (toolbelt.ts's
+      COLUMNS): 1 is your hands, 2 the tools (physgun, tool gun, and the
+      portal gun once the catalogue has handed it over), 3 the weapons
+      (pistol, crossbow, rocket launcher). A key draws its column's first
+      item, and pressing it again steps down the column, wrapping. Three
+      keys rather than one per thing, so the row stops growing */
   slot1: ['Digit1'],
   slot2: ['Digit2'],
   slot3: ['Digit3'],
-  slot4: ['Digit4'],
-  slot5: ['Digit5'],
-  slot6: ['Digit6'],
-  slot7: ['Digit7'],
   /** the physgun (S3). The mouse buttons are codes too: the input service
       puts `Mouse0`/`Mouse2` in the key set while the pointer is locked.
       The wheel is not a key: `RoamInput.takeWheel()` is the physgun's
-      push/pull while it holds something and cycles the slots when not */
+      push/pull while it holds something and steps through everything
+      carried, in order and across the columns, when not */
   grab: ['Mouse0'],
   freeze: ['Mouse2'],
   /** held with the mouse: turns the held prop. Shares `use`, which is why
@@ -84,7 +84,7 @@ export const BINDINGS = {
   /** held while rotating: snap to the 45-degree grid */
   snap: ['ShiftLeft', 'ShiftRight'],
   unfreeze: ['KeyR'],
-  /** the tool gun (slot 3): r steps to its next mode (reload, like Garry's
+  /** the tool gun (column 2): r steps to its next mode (reload, like Garry's
       Mod's own tool gun has no better key for it); shift+r steps back */
   toolMode: ['KeyR'],
 

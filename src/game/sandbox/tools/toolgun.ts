@@ -11,7 +11,7 @@ export { TOOL_MODES, MODE_NAMES, toolgunLine, toolgunScreen, type ToolMode } fro
 type Msg = { en: string; es: string }
 
 /*
-  The tool gun: slot 3, next to the physgun, and the way parts become a
+  The tool gun: under the 2 key, next to the physgun, and the way parts become a
   machine. Headless like the physgun: it reads a `ToolInput` and talks to
   the sandbox and its contraption (contraption.ts); the gun you see, its
   little screen, the tracer and the sounds are the belt's business, driven

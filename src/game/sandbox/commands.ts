@@ -1264,7 +1264,7 @@ registerCommand({
 registerCommand({
   name: 'give',
   args: [{ name: 'tool', nameEs: 'herramienta', type: 'word', choices: (host) => host.tools?.() ?? [] }],
-  help: msg('put a tool in your hands', 'ponte una herramienta en las manos'),
+  help: msg('put a tool in your hands (the keys: 1 hands, 2 tools, 3 weapons)', 'ponte una herramienta en las manos (las teclas: 1 manos, 2 herramientas, 3 armas)'),
   run: (ctx) => {
     if (!ctx.host.give) ctx.fail(msg('no tools yet', 'todavía no hay herramientas'))
     const t = ctx.args[0].toLowerCase()

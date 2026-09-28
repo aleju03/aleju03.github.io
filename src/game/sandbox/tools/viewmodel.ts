@@ -32,7 +32,7 @@ import { aimStrings, buildWeapon, type WeaponModel, type WeaponModelId } from '.
   know about. The squeezed depth still differs from the world's behind it, so
   the look outlines the gun's silhouette like everything else.
 
-  **The tool gun** (slot 3) is a second model in the same two copies, built
+  **The tool gun** (the 2 key's second) is a second model in the same two copies, built
   from the *same* materials, so it costs no program the physgun did not
   already link: a boxy body with a long thin barrel and a glowing tip, and a
   screen that says which mode it is in (a canvas,
@@ -50,7 +50,7 @@ import { aimStrings, buildWeapon, type WeaponModel, type WeaponModelId } from '.
   the chase camera over that shoulder. The belt says which of the two
   guns is out; the springs, the bob and the draw are shared.
 
-  **The portal gun** (slot 4, once taken from the catalogue) is a third
+  **The portal gun** (the 2 key's third, once taken from the catalogue) is a third
   model on the same programs again: a cream shell over a slate receiver, a
   glass chamber at the front lit in the colour of the last portal it opened
   (its own two glowing materials, which share the core's program), and three
@@ -59,7 +59,7 @@ import { aimStrings, buildWeapon, type WeaponModel, type WeaponModelId } from '.
   plastic; the chamber's colour eases from blue to orange rather than
   snapping, and the claws twitch in on every shot.
 
-  **The weapons** (slots 5 to 7: the pistol, the crossbow and the rocket
+  **The weapons** (the 3 key's column: the pistol, the crossbow and the rocket
   launcher) are three more models on the same programs again, built in
   `weaponModels.ts` and drawn here in the same two copies. What they do is
   `weapons.ts`; what this side shows of it is a shot (`weaponShot`: the

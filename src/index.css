@@ -445,10 +445,34 @@ html[data-cursor-swap] * {
   transform-origin: 50% 50%;
   animation: emote-wheel-in 0.16s ease-out both;
 }
+/* the tool switcher's open tag (os/ToolSwitcher.tsx) swings on its string
+   each time what is in your hands changes, and settles */
+@keyframes tool-tag-swing {
+  from {
+    transform: rotate(6deg);
+  }
+  35% {
+    transform: rotate(-3.2deg);
+  }
+  65% {
+    transform: rotate(1.4deg);
+  }
+  85% {
+    transform: rotate(-0.5deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+.tool-tag-swing {
+  transform-origin: 50% 0;
+  animation: tool-tag-swing 0.7s ease-out both;
+}
 @media (prefers-reduced-motion: reduce) {
   .chooser-in,
   .nudge-in,
   .nudge-out,
+  .tool-tag-swing,
   .nav-eq {
     animation: none !important;
   }

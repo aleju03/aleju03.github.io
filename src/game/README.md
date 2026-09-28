@@ -878,13 +878,16 @@ sandbox/
     viewmodel.ts  the gun, first person (depth-squeezed, never in a wall)
                   and in the body's hand
     sfx.ts        the hum pitched by strain, the grab and freeze one-shots
-    toolbelt.ts   slots 1/2/3, and the one object CrtScene talks to; also
-                  where the contraptions get their keys every frame
-    toolgun.ts    slot 3: weld, axis, rope, no-collide, keys, remove (two
+    toolbelt.ts   the slots, the three columns the number keys pick (1
+                  hands, 2 tools, 3 weapons; again steps down), and the one
+                  object CrtScene talks to; also where the contraptions get
+                  their keys every frame. What is in your hands is shown by
+                  components/os/ToolSwitcher.tsx, paper tags on strings
+    toolgun.ts    under 2: weld, axis, rope, no-collide, keys, remove (two
                   clicks, R steps the mode), each joint one undo entry
     toolgunText.ts  its words in both languages, import-free for the scene
     scenarios.ts  the films: swing, rotate, heavy, throw, ragdoll, each -3p
-    portals.ts    slot 4, the portal gun's world: placing a portal (a ray,
+    portals.ts    under 2, the portal gun's world: placing a portal (a ray,
                   then a fit to the box and to the drawn wall), the pair's
                   transform, the walls that step aside for the walker, the
                   hole in the terrain, the crossing, and props carried
@@ -1280,7 +1283,7 @@ out of the nozzle, fx.ts's `thrust`, sprites on the existing pools and the
 fuse's fake light, no light object), a wheel is driven by the motor of the
 axis it is hinged on, a hoverball holds a height its keys raise and lower,
 and a seat drives the machine it is welded into. They are ordinary props
-under a *parts* tab in the catalogue; the tool gun (slot 3) joins them.
+under a *parts* tab in the catalogue; the tool gun (the 2 key's second) joins them.
 
 ```ts
 const c = contraptionOf(sb)             // one per sandbox, like historyOf
@@ -1352,7 +1355,7 @@ npm run drive -- contraption            the real game: parts tab, tool gun,
 
 ### The portals
 
-The catalogue's Tools tab hands over a portal gun (slot 4, `4` draws it):
+The catalogue's Tools tab hands over a portal gun (the tools column, `2` steps to it):
 left click opens the blue portal and right click the orange on whatever
 surface is under the crosshair, and R closes both. It is Portal's rules
 drawn through this world's machinery:
@@ -1463,7 +1466,7 @@ drawn through this world's machinery:
 
 ### The weapons
 
-Slots 5, 6 and 7 are a pistol, a crossbow and a rocket launcher, carried from
+The 3 key's column is a pistol, a crossbow and a rocket launcher, carried from
 the start (`give pistol|crossbow|rocket`, or `pistola|ballesta|cohete`, draws
 one; so does the catalogue's tools tab). Four modules, split the way the
 physgun's are: `tools/weapons.ts` is the whole behaviour as plain numbers and
