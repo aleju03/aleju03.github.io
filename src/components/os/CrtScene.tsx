@@ -92,6 +92,10 @@ import RoomChip from './RoomChip'
 import { createHealthState, type HealthState } from '../../game/player/health'
 import { deathSound, hurtSound, respawnSound } from '../../game/player/healthSfx'
 import '../../game/sandbox/healthCommands'
+import '../../game/sandbox/creatureCommands'
+import type { CreatureDirector } from '../../game/creatures/director'
+import type { PlayerRef } from '../../game/creatures/world'
+import type { CreatureServerMessage } from '../../game/net/creatureProtocol'
 import HealthHud from './HealthHud'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
 import { PIXEL_LINES_K, PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
@@ -2045,6 +2049,36 @@ export default function CrtScene({
         let blockChunk: ((x: number, z: number) => { cx: number; cz: number }) | null = null
         // what players break: the buildings' lost pieces and the felled trees
         const damageNet = createDamageNetwork((m) => net?.damage(m))
+        // The living things (game/creatures/): one director per level that
+        // has any, made with that level's sandbox. The server's last word on
+        // who hosts, and its last table, are kept per level for a director
+        // made after they arrived.
+        const creatureDirs = new Map<string, CreatureDirector>()
+        const creatureMail = new Map<string, { host?: CreatureServerMessage; rows?: CreatureServerMessage }>()
+        const creatureList: PlayerRef[] = []
+        /** the walker first, then everyone in this level */
+        const creaturePlayers = (): PlayerRef[] => {
+          creatureList.length = 0
+          creatureList.push({ id: remote.you ?? 0, x: camera.position.x, y: walk.feetY, z: camera.position.z, self: true, dead: health.dead })
+          for (const [id, p] of remote.players) if (p.here) creatureList.push({ id, x: p.x, y: p.y, z: p.z, self: false, dead: p.down })
+          return creatureList
+        }
+        const creatureRoute = (m: CreatureServerMessage) => {
+          if (m.type === 'world-creature-knock') {
+            // a mob's blow: a stumble for a hit, a flop for a blast
+            takeShove(m.vx * 0.55, 3, m.vz * 0.55)
+            return
+          }
+          if (m.type === 'world-creature-no') {
+            quiet('only the first player here or an admin can do that', 'solo el primer jugador de aquí o un administrador puede hacer eso')
+            return
+          }
+          const mail = creatureMail.get(m.level) ?? {}
+          if (m.type === 'world-creature-host') mail.host = m
+          else if (m.type === 'world-creatures') mail.rows = m
+          creatureMail.set(m.level, mail)
+          creatureDirs.get(m.level)?.receive(m)
+        }
         // Cubeland's blocks: attached when the map is first loaded
         const blockNet = createBlockNetwork(
           (m) => net?.blocks(m),
@@ -2091,7 +2125,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); social.offline(); tools?.weapons.offline(); health.offline() }
+              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); social.offline(); tools?.weapons.offline(); health.offline(); creatureMail.clear(); for (const d of creatureDirs.values()) d.reset() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -2106,10 +2140,12 @@ export default function CrtScene({
               // shots, hits and who is holding what (sandbox/tools/weapons.ts)
               tools?.receive(msg)
               health.receive(msg)
+              if (msg.type.startsWith('world-creature')) creatureRoute(msg as CreatureServerMessage)
               switch (msg.type) {
                 case 'world-welcome':
                   // god mode is ours to declare, and a new socket has forgotten
                   if (godMode) net?.health({ type: 'world-health-cmd', cmd: 'god', on: true })
+                  for (const d of creatureDirs.values()) d.reset()
                   remote.welcome(msg.you, msg.tick, msg.players)
                   // what we spawn from here on is ours by the server's name
                   // for us, which is what undo and cleanup filter on
@@ -2706,6 +2742,18 @@ export default function CrtScene({
             heal: () => { net?.health({ type: 'world-health-cmd', cmd: 'heal' }); return net !== null },
             pvp: (on) => { net?.health({ type: 'world-health-cmd', cmd: 'pvp', on }); return net !== null },
           },
+          // the living things of the live level (sandbox/creatureCommands.ts);
+          // absent where nothing lives
+          get creatures(): import('../../game/sandbox/creatureCommands').CreatureHost | undefined {
+            const d = creatureDirs.get(levels.current.id)
+            if (!d) return undefined
+            return {
+              command: (op) => d.command(op),
+              spawn: (kind) =>
+                d.spawn(kind, camera.position.x - Math.sin(walk.yaw) * 10, camera.position.z - Math.cos(walk.yaw) * 10),
+              count: () => d.count(),
+            }
+          },
           thirdPerson: (on) => {
             const now = on ?? prefsRef.current.third
             if (on !== undefined) setPrefs((p) => ({ ...p, third: on }))
@@ -3158,6 +3206,7 @@ export default function CrtScene({
             damageNet.setLevel(level.id)
             blockNet.setLevel(level.id)
             health.newLevel()
+            for (const d of creatureDirs.values()) d.reset()
             net?.setLevel(level.id)
             // the server frees a chair at a level change: take it back
             if (craft?.spacecraft) reclaimSeat(craft.id)
@@ -3198,6 +3247,7 @@ export default function CrtScene({
             damageNet.setLevel(level.id)
             blockNet.setLevel(level.id)
             health.newLevel()
+            for (const d of creatureDirs.values()) d.reset()
             net?.setLevel(level.id)
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
@@ -3734,6 +3784,7 @@ export default function CrtScene({
           // whatever this machine is driven into goes over
           impacts.track(fleet.all, pausedNow ? 0 : dt)
           if (level.crowd) outside.knockPeople(impacts)
+          if (level.creatures) creatureDirs.get(level.id)?.knock(impacts)
           // v swaps the boom for the cockpit. It is not the walk's saved
           // third-person preference — a car has two views and neither is the
           // one the pause menu's toggle means
@@ -4136,6 +4187,11 @@ export default function CrtScene({
           // the props: one fixed-step physics frame, the walker's shoves and
           // weight in, a ride carried out (it moves camera x/z, so it runs
           // before anything below reads the head)
+          // the creatures, ahead of the props' tick: their parts are proxies the
+          // sandbox's batcher writes out at the end of it
+          if (sandbox && level.creatures) {
+            creatureDirs.get(level.id)?.update(dt, !pausedNow && !levels.frozen, creaturePlayers())
+          }
           if (sandbox) {
             // a flyer goes through props like everything else, so nothing
             // is shoved and nothing is stood on
@@ -4609,6 +4665,7 @@ export default function CrtScene({
             rig.hit(impact.impulse, impact.point)
           }
           if (level.crowd) outside.knockPeople(impacts)
+          if (level.creatures) creatureDirs.get(level.id)?.knock(impacts)
           // ...and its prompt is the lowest-priority one: the machine and a
           // door both win, because both are things you are standing right at
           // (and not to a flyer: a car offered to somebody passing overhead
@@ -4737,6 +4794,7 @@ export default function CrtScene({
           and the dev handle follow it across a cut (switchSandboxTo).
         */
         let sandboxMod: typeof import('../../game/sandbox/sandbox') | null = null
+        let creaturesMod: typeof import('../../game/creatures/director') | null = null
         const sandboxFor = (level: Level): Sandbox | null => {
           if (!level.sandbox || !sandboxMod || !scene) return null
           const have = sandboxes.get(level.id)
@@ -4758,6 +4816,25 @@ export default function CrtScene({
           o.attach?.(sb)
           sb.gravity = -GRAVITY * rules.gravity * gravityOf(level)
           sb.timescale = rules.timescale
+          if (level.creatures && creaturesMod) {
+            const d = creaturesMod.createCreatureDirector({
+              world: level.creatures,
+              sb,
+              level: level.id,
+              players: creaturePlayers,
+              daylight: () => lastSky?.day ?? 1,
+              send: (m) => net?.creature(m),
+              online: () => net !== null && net.status === 'live',
+              you: () => remote.you,
+              knockSelf: (vx, vz) => takeShove(vx * 0.55, 3, vz * 0.55),
+            })
+            creatureDirs.set(level.id, d)
+            const mail = creatureMail.get(level.id)
+            if (mail?.host) d.receive(mail.host)
+            if (mail?.rows) d.receive(mail.rows)
+            // a blast is applied to the creatures by the host alone
+            sb.onExplosion((e) => d.explosion(e))
+          }
           const h = historyOf(sb)
           h.me = remote.you ?? LOCAL
           h.onChange(() => {
@@ -4815,16 +4892,18 @@ export default function CrtScene({
           }),
           import('../../game/sandbox/sandbox'),
           import('../../game/sandbox/tools/toolbelt'),
+          import('../../game/creatures/director'),
         ])
         let worldReady: Promise<void> | null = null
         const ensureWorld = () => {
           worldReady ??= (async () => {
-            const [, [registry, sbMod, toolsMod]] = await Promise.all([
+            const [, [registry, sbMod, toolsMod, crMod]] = await Promise.all([
               outside.attachWorld(),
               loadWorldModules(),
             ])
             if (disposed || !scene) return
             sandboxMod = sbMod
+            creaturesMod = crMod
             // the world draws the yard's ground from here on
             house.worldGround()
             // synchronous and cheap: Rapier itself downloads behind it and
@@ -4882,6 +4961,7 @@ export default function CrtScene({
                 },
                 people: (watch) => {
                   if (levels.current.crowd) outside.knockPeople(watch)
+                  creatureDirs.get(levels.current.id)?.knock(watch)
                 },
                 waterY: () => levels.current.waterY,
                 level: () => levels.current.id,
@@ -4999,6 +5079,7 @@ export default function CrtScene({
                 __input: input,
                 __remote: remote,
                 __health: health,
+                __creatures: () => creatureDirs.get(levels.current.id) ?? null,
                 __avatars: avatars,
                 __grabTaker: grabTaker,
                 // the view from the air: what the fog, the far field and the

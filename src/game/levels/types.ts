@@ -4,6 +4,7 @@ import type { StepSurface } from '../core/sfx'
 import type { SandboxGround } from '../sandbox/ground'
 import type { Felling, Ruins } from '../world/debris'
 import type { Prop, Sandbox } from '../sandbox/sandbox'
+import type { CreatureWorld } from '../creatures/world'
 
 /*
   The level contract. A level is a walkable place: it owns its collision
@@ -219,4 +220,8 @@ export interface Level {
   hands?: LevelHands
   /** the physgun can tear things out of the level itself */
   grab?: LevelGrab
+  /** living things walk here (src/game/creatures/): the level answers what
+      the ground is for a creature and which kinds live on it, and the scene
+      runs the simulation, the wire and the drawing. Needs a sandbox */
+  creatures?: CreatureWorld
 }

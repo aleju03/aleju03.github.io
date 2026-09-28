@@ -15,6 +15,7 @@ import { damageSmoke } from './worldDamage.mjs';
 import { weaponsSmoke } from './weapons.mjs';
 import { roomsSmoke } from './worldRooms.mjs';
 import { healthSmoke, healthRoomsSmoke } from './health.mjs';
+import { creaturesSmoke } from './creatures.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -112,6 +113,8 @@ async function main() {
   await healthRoomsSmoke(url, connect);
   console.log('0. world rooms: isolation of roster, ticks, chat, signals, props, damage and seats; join errors; death and rebirth; creation limits');
   await protectionSmoke(url, connect);
+  await creaturesSmoke(url, connect);
+  console.log('0b. creatures: host designation and handoff, relay, bounds, hit validation, mob attacks through health, switches');
 
   // 1. Guest hello: gets a guest name and the room list.
   const guest = connect(url);

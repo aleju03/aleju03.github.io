@@ -154,6 +154,8 @@ export interface SandboxHost {
     heal: () => boolean
     pvp: (on: boolean) => boolean
   }
+  /** the living things of this level (sandbox/creatureCommands.ts) */
+  creatures?: import('./creatureCommands').CreatureHost
   /** tools the tool slots offer, and handing one over (the physgun piece) */
   tools?: () => string[]
   give?: (tool: string) => boolean

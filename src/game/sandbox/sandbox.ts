@@ -16,6 +16,8 @@ import './catalogue'
 // the blocks after it: their cells go into the atlas and their kinds into the
 // catalogue's Blocks tab (Cubeland builds with them, anywhere else they fall)
 import './blocks'
+// the creatures' cells, for the same reason: the atlas packs on first use
+import '../creatures/cells'
 // the contraption parts register after the catalogue, under their own tab
 import './contraption/parts'
 import { createBatcher, warmBatch, type Batcher } from './batch'

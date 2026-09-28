@@ -18,6 +18,7 @@ import { meshChunk, type MeshArrays } from './mesher'
 import { daylight, fadeClock, terrainMaterials } from './material'
 import { PREBORN } from '../../world/fade'
 import { CHUNK_W, chunkKey, createVoxelStore, isSolid, type VoxelStore } from './world'
+import { cubelandCreatures } from './creatures'
 
 /*
   Cubeland: a world of blocks, generated the way the famous one is and
@@ -1289,6 +1290,9 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
         })
       },
     },
+    // pigs and cows by day, the dark's zombies, creepers and skeletons
+    // (creatures/, answered from the block store)
+    creatures: cubelandCreatures({ store, ox: CUBE_ORIGIN.x, oz: CUBE_ORIGIN.z }),
     outdoors: true,
     air: true,
     surfaceAt: (x, z, feetY, wet): StepSurface => {

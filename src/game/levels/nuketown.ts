@@ -11,6 +11,7 @@ import { PREBORN, bakeBirth } from '../world/fade'
 import { makeChunkMats } from '../world/streamer'
 import { CEIL_H, UP } from './houseWorld'
 import type { Level, LevelLightRig, LevelSpawn } from './types'
+import { collisionCreatures } from '../creatures/collisionWorld'
 
 /*
   Nuketown: the Black Ops map, a 1950s cul-de-sac built on a nuclear test site
@@ -1725,6 +1726,33 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
 
   const FLAT: SandboxGround = { lattice: () => 0, heightAt: () => 0 }
 
+  /** Nuketown's walkers: mannequins that stroll loops of the street and the
+      sidewalks, fall over when shot or blasted and get up again (creatures/).
+      The loops are the open ground round the van and the bus (probed with
+      the collision set, see notes/creatures.md); a pair walk each, opposite
+      ways round */
+  const loopRect = (x0: number, x1: number, z0: number, z1: number, cw: boolean) => {
+    const pts: Array<[number, number]> = []
+    const along = (ax: number, az: number, bx: number, bz: number) => {
+      const n = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az) / 6))
+      for (let i = 0; i < n; i++) pts.push([ax + ((bx - ax) * i) / n + NUKE_ORIGIN.x, az + ((bz - az) * i) / n + NUKE_ORIGIN.z])
+    }
+    along(x0, z0, x1, z0)
+    along(x1, z0, x1, z1)
+    along(x1, z1, x0, z1)
+    along(x0, z1, x0, z0)
+    return cw ? pts : pts.reverse()
+  }
+  const LOOP_A = { x0: -17, x1: -3, z0: -3, z1: 15 }
+  const LOOP_C = { x0: 20, x1: 44, z0: -16, z1: -11 }
+  const LOOP_D = { x0: 24, x1: 44, z0: 12, z1: 16 }
+  const loop = (r: { x0: number; x1: number; z0: number; z1: number }, cw: boolean) => loopRect(r.x0, r.x1, r.z0, r.z1, cw)
+  const walkers = [LOOP_A, LOOP_A, LOOP_C, LOOP_C, LOOP_D, LOOP_D].map((r, i) => {
+    const pts = loop(r, i % 2 === 0)
+    const start = pts[(i % 2 ? Math.floor(pts.length / 2) : 0) % pts.length]
+    return { kind: 'walker', x: start[0], z: start[1], loop: pts }
+  })
+
   /** how far inside a roof the lens is, eased over the doorstep, as the
       sky does it at home: the sky light is damped indoors, where the roof
       would have kept it out */
@@ -1754,18 +1782,19 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
     rig.bg.copy(rig.fog.color)
   }
 
+  const collisionSet = makeCollisionSet(
+    {
+      minX: NUKE_ORIGIN.x + MID.x0,
+      maxX: NUKE_ORIGIN.x + MID.x1,
+      minZ: NUKE_ORIGIN.z + YARD_N.z0,
+      maxZ: NUKE_ORIGIN.z + YARD_S.z1,
+    },
+    boxes,
+  )
   const level: Level = {
     id: 'nuketown',
     groundY: 0,
-    collision: makeCollisionSet(
-      {
-        minX: NUKE_ORIGIN.x + MID.x0,
-        maxX: NUKE_ORIGIN.x + MID.x1,
-        minZ: NUKE_ORIGIN.z + YARD_N.z0,
-        maxZ: NUKE_ORIGIN.z + YARD_S.z1,
-      },
-      boxes,
-    ),
+    collision: collisionSet,
     get spawn() {
       let k = Math.floor(pickSpawn() * SPAWNS.length)
       if (k === lastSpawn) k = (k + 1 + Math.floor(pickSpawn() * (SPAWNS.length - 1))) % SPAWNS.length
@@ -1790,6 +1819,7 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
     timeOfDay: 0.4,
     gravity: 1,
     sandbox: { ground: FLAT },
+    creatures: collisionCreatures({ collision: collisionSet, floorY: 0.1, residents: walkers }),
     outdoors: true,
     air: true,
     surfaceAt: (x, z, feetY, wet) => {

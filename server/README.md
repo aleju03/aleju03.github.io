@@ -566,3 +566,58 @@ comes from the validated `world-prop-explosion`: up to 90 x sqrt(power)
 (0.3..1.2) falling off linearly to `min(radius, 24)`, half to the caster
 themselves and only in pvp; other players are hurt only if the caster fired
 a rocket in the last eight seconds or the blast came from a prop (a barrel).
+
+### Creatures
+
+`src/creatures.js` (one instance per room, built in `buildRoom`) is a relay and
+a referee, not a simulation: the animals and monsters are stepped by ONE
+client per scope, the host, because the world they walk on (Cubeland's blocks,
+a map's collision) is a pure function this process does not have. Scope is
+`ws.world.level`; types are in `src/game/net/creatureProtocol.ts`; the
+client's side is `src/game/creatures/` and `notes/creatures.md`.
+
+- **Host.** The longest-present player of the scope (the level within the
+  room), reassigned to the next longest the moment they leave or change level.
+  A newcomer never displaces a host. S to C `world-creature-host {level, host,
+  on, peaceful}` goes to the whole scope on every change and to a joiner on
+  arrival (`host` 0: nobody); `on` and `peaceful` are the scope's switches.
+- **Snapshots.** C to S `world-creatures {level, rows}` from the host only, about
+  8 Hz: at most 64 rows `[id, kind, x*10, y*10, z*10, yaw*100, hp, flags]`, all
+  integers, `id` 1..65000, `kind` below the table's size (9, mirrored in
+  `KIND_COUNT`), coordinates within 100000, `flags` low three bits the state.
+  A row that fails, a duplicate id, an over-long array or a snapshot from a
+  non-host drops the whole snapshot. Valid ones replace the scope's table (kept
+  only so a late joiner or a new host has something to start from) and are
+  relayed to everyone but the sender. A joiner is sent the table on arrival.
+- **Deaths.** C to S `world-creature-die {level,id,kind,x,y,z,by}` from the host,
+  30 a second; removes the row and is relayed (`by` 1: a player killed it, so
+  the drops fall).
+- **Damage to a creature.** C to S `world-creature-hit {level,id,amount,kx,kz}`
+  from any non-host: the creature must be in the table (and not an arrow), the
+  reporter's pose within 340 units of its last reported position, `amount`
+  clamped to 0.1..60, the shove to +-40, 24 a second per socket and 120 a second
+  per scope. It is forwarded to the host alone as `world-creature-hit {...,
+  from}`, which applies it.
+- **Damage by a creature.** C to S `world-creature-attack {level,id,victim,atk}`
+  from the host only (`atk` 0 melee, 1 arrow, 2 blast). `id` names the attacker
+  (for an arrow, the arrow itself); the server checks the row exists and is of
+  the right kind (zombie, arrow, creeper), that its last reported position is
+  within 7.5, 12 or 17 units of the victim's pose, that this blow is not a
+  repeat (a zombie's are 0.7 s apart per victim, an arrow and a creeper's blast
+  once each), and the per-socket (20/s) and per-scope (30/s) rate. **The amount
+  is the server's**: 5 for a blow, 4 for an arrow, up to 45 falling off
+  linearly to 11 units for a blast. It is applied with `health.hurt(victim, n,
+  {by: 0, kind: 'mob'})` (pvp is irrelevant) and, if any was taken, the victim
+  is sent S to C `world-creature-knock {level,vx,vz}` (at most 24 u/s).
+- **Spawning by request.** C to S `world-creature-spawn {level,kind,x,z}` (the
+  console's `/spawnmob`) from a non-host: a spawnable kind, a spot within 80
+  units of the asker, three a second; forwarded to the host as
+  `world-creature-spawn {..., from}`.
+- **Switches.** C to S `world-creature-cmd {level,cmd}` with `cmd` one of `on`,
+  `off`, `clear`, `peaceful`, `war`: only the host or an admin (anybody else is
+  answered `world-creature-no {reason}`), four a second. `off` and `clear`
+  empty the table and send everyone an empty `world-creatures` (which is also
+  how the host learns to clear its simulation).
+
+Everything is bounded: 64 rows a table, one table a scope, the cooldown map
+capped at 512 keys, a scope forgotten with its last player.
