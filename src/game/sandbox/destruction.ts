@@ -62,10 +62,25 @@ import type { ImpactEvent, Prop, PropId, Sandbox, Vec3Like } from './sandbox'
   Small shards shrink away after `SHARD_LIFE`, like gibs; anything big stays,
   which is what makes the ruin somewhere you can walk into.
 
-  What a destruction *is* stays plain data for the shared world: a building
-  id, a point, a power, a radius, a direction and a seed per event (`log`),
-  and the set of piece keys each building has lost (the ruins' `ruined`). The
-  wire is not built; the record it would carry is.
+  What a destruction *is* stays plain data, and that is what the shared world
+  carries (net/remoteDamage.ts). Two things travel. The *record* of each blow
+  (`DamageRecord`: a building id, a point, a power, a radius, the throw and a
+  seed) is how a peer who is watching sees the same show: it replays the blow
+  through the same `hurt`, and the pieces a blow lifts, and the storeys that
+  fail under them, follow from it deterministically. Blasts are not
+  recorded on the wire, because the explosion itself already travels and
+  lands here through `onExplosion` like a local one. The *truth* is the set
+  of piece keys each building has lost (the ruins' `ruined`), which every
+  client reports and the server keeps as a union, so whatever physics made
+  two clients' collapses differ, the holes end up the same: `absorb` lifts
+  what somebody else lost and this client has not, after a grace that lets
+  the local replay get there first.
+
+  A replayed event is `remote`, and a remote event is a show only: its
+  rubble breaks up and settles as usual but damages no building (the peer
+  who caused it reports what its own rubble broke), it is not recorded again
+  and it is nobody's to undo. Online, undo takes rubble away but puts no
+  wall back, because the hole is everyone's now.
 */
 
 /* ------------------------------------------------------------ the kinds -- */
@@ -139,6 +154,10 @@ const SPAWNS_PER_SLICE = 12
 const BREAKS_PER_SLICE = 6
 /** a prop's impulse (kg*u/s) per unit of damage against a wall */
 const IMPULSE_PER_DAMAGE = 380
+/** seconds a piece somebody else lost may stay standing here before it is
+    simply taken out: long enough for the replayed blow's own slices and a
+    failing storey's first crushes (`HOLD`) to lift it with the full show */
+const ABSORB_GRACE = 1.2
 
 /* ------------------------------------------------------------ the record -- */
 
@@ -154,18 +173,26 @@ export interface DamageRecord {
   /** damage at the centre, explosion.ts's units */
   power: number
   radius: number
-  /** which way it was travelling (vehicles, props), unit, or zero */
+  /** the direction `hurt` throws the pieces along (unit for a blast or a
+      vehicle, a prop's own velocity for an impact), or zero for outward */
   dx: number
   dy: number
   dz: number
+  /** the throw's scale, and whether it was a ram carrying on through: the
+      rest of what `hurt` was called with, so a peer can call it again */
+  k: number
+  ram: boolean
   seed: number
   /** simulation time */
   t: number
 }
 
 export interface Destruction {
-  /** damage every building within `radius` of a point; returns pieces broken */
-  damageAt: (at: Vec3Like, power: number, radius: number, how?: DamageRecord['how'], dir?: Vec3Like) => number
+  /** damage every building within `radius` of a point; returns pieces broken.
+      `remote` marks it as somebody else's blow being shown here */
+  damageAt: (
+    at: Vec3Like, power: number, radius: number, how?: DamageRecord['how'], dir?: Vec3Like, remote?: boolean,
+  ) => number
   /** bring a building down from its ground storey. `from` is where the
       failure starts (it leans that way); omitted, it drops straight down */
   collapse: (s: Standing, from?: Vec3Like) => boolean
@@ -173,6 +200,16 @@ export interface Destruction {
   nearest: (at: Vec3Like, r: number) => Standing | null
   /** everything that has happened, oldest first */
   readonly log: readonly DamageRecord[]
+  /** a blow this client dealt that a peer must replay to see it (not
+      blasts, which travel as explosions): the shared world's hook */
+  onRecord: ((r: DamageRecord) => void) | null
+  /** show somebody else's blow: false when the building is not built here */
+  replay: (r: Omit<DamageRecord, 'seq' | 't'>) => boolean
+  /** somebody else's building lost these piece keys: remembered at once,
+      and lifted from the building here (if it stands in a loaded chunk)
+      after a grace for the local replay to get there first, or at once and
+      without a sound or a body when `quiet` (a late join's catch-up) */
+  absorb: (building: string, keys: readonly number[], quiet: boolean) => void
   readonly stats: {
     lumps: number
     awake: number
@@ -252,6 +289,8 @@ interface Ev {
   entry: HistoryEntry | null
   live: Set<PropId>
   dead: boolean
+  /** somebody else's blow, shown here (see the header) */
+  remote: boolean
 }
 
 interface Job {
@@ -391,17 +430,25 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
 
   /* --------------------------------------------------------- events -- */
 
-  const newEvent = (rec: Omit<DamageRecord, 'seq' | 't'>): Ev => {
+  const newEvent = (rec: Omit<DamageRecord, 'seq' | 't'>, remote = false): Ev => {
     const r: DamageRecord = { ...rec, seq: seq++, t: now }
     log.push(r)
     if (log.length > 400) log.shift()
-    return { rec: r, w: [], lifted: new Map(), entry: null, live: new Set(), dead: false }
+    return { rec: r, w: [], lifted: new Map(), entry: null, live: new Set(), dead: false, remote }
+  }
+
+  /** tell the shared world about a blow of ours (a blast travels as itself) */
+  const announce = (ev: Ev) => {
+    if (!ev.remote && ev.rec.how !== 'blast') d.onRecord?.(ev.rec)
   }
 
   const history = () => historyOf(sb)
 
   const undoEvent = (ev: Ev) => {
     ev.dead = true
+    // online the hole is everyone's (the server keeps a union of what every
+    // building lost), so undo clears the rubble and leaves the wall down
+    if (sb.network?.online) return
     for (const [w, list] of ev.lifted) {
       if (!ruins.get(w.s.rec.id)) continue
       ruins.restore(w.o, list)
@@ -417,6 +464,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   /** a lump joins its event's undo entry */
   const own = (ev: Ev, id: PropId) => {
     ev.live.add(id)
+    if (ev.remote) return
     const h = history()
     if (!ev.entry) {
       const label = ev.rec.how === 'collapse' || ev.rec.how === 'command'
@@ -431,7 +479,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     let l = ev.lifted.get(w)
     if (!l) ev.lifted.set(w, (l = []))
     l.push(...list)
-    if (!ev.entry) {
+    if (!ev.entry && !ev.remote) {
       // an event that throws nothing still has something to undo
       ev.entry = history().record({
         label: { en: 'demolition', es: 'demolición' }, undo: () => undoEvent(ev),
@@ -1022,44 +1070,119 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     return broke.length
   }
 
-  const damageAt: Destruction['damageAt'] = (at, power, radius, how = 'command', dir) => {
+  const damageAt: Destruction['damageAt'] = (at, power, radius, how = 'command', dir, remote = false) => {
     const p = new THREE.Vector3(at.x, at.y, at.z)
     const d = dir ? new THREE.Vector3(dir.x, dir.y, dir.z) : null
+    // (measured once: normalised inside the loop, every building after the
+    // first was thrown at the minimum)
+    const speed = d ? d.length() : 0
+    if (d && speed > 1e-3) d.multiplyScalar(1 / speed)
     let n = 0
     for (const s of ruins.near(p.x, p.y, p.z, radius, nearList).slice()) {
-      const ev = newEvent({
-        building: s.rec.id, how, x: p.x, y: p.y, z: p.z, power, radius,
-        dx: d?.x ?? 0, dy: d?.y ?? 0, dz: d?.z ?? 0, seed: (rnd() * 0x7fffffff) | 0,
-      })
-      const speed = d ? d.length() : 0
-      if (d && speed > 1e-3) d.multiplyScalar(1 / speed)
       // render and timber is pushed over by a blast rather than fired across
       // the lot as confetti
       const blastK = s.rec.grade === 0 ? 5 : 9
-      n += hurt(s, ev, p, power, radius, d, how === 'blast' ? blastK : Math.max(4, speed * 0.55))
+      const k = how === 'blast' ? blastK : Math.max(4, speed * 0.55)
+      const ev = newEvent({
+        building: s.rec.id, how, x: p.x, y: p.y, z: p.z, power, radius,
+        dx: d?.x ?? 0, dy: d?.y ?? 0, dz: d?.z ?? 0, k, ram: false, seed: (rnd() * 0x7fffffff) | 0,
+      }, remote)
+      n += hurt(s, ev, p, power, radius, d, k)
+      announce(ev)
     }
     return n
   }
 
-  const collapse: Destruction['collapse'] = (s, from) => {
+  const collapseFrom = (s: Standing, from: Vec3Like | undefined, remote: boolean, seed?: number) => {
     const w = wreckOf(s)
     if (!w) return false
     const frac = w.o.frac
     const f = from
       ? new THREE.Vector3(from.x, from.y, from.z)
       : new THREE.Vector3((frac.min.x + frac.max.x) / 2, frac.y0, (frac.min.z + frac.max.z) / 2)
-    const ev = newEvent({
-      building: s.rec.id, how: 'collapse', x: f.x, y: f.y, z: f.z, power: 0, radius: 0,
-      dx: 0, dy: 0, dz: 0, seed: (rnd() * 0x7fffffff) | 0,
-    })
-    ev.w.push(w)
     // the lowest storey with walls in it lets go
     let iy = 0
     while (iy < w.cap0.length && w.cap0[iy] <= 0) iy++
     if (iy >= w.cap0.length || w.failed[iy]) return false
+    const ev = newEvent({
+      building: s.rec.id, how: 'collapse', x: f.x, y: f.y, z: f.z, power: 0, radius: 0,
+      dx: 0, dy: 0, dz: 0, k: 0, ram: false, seed: seed ?? (rnd() * 0x7fffffff) | 0,
+    }, remote)
+    ev.w.push(w)
     failStorey(w, ev, iy, f)
     sb.solidsChanged()
+    announce(ev)
     return true
+  }
+  const collapse: Destruction['collapse'] = (s, from) => collapseFrom(s, from, false)
+
+  const replay: Destruction['replay'] = (r) => {
+    const s = ruins.get(r.building)
+    if (!s) return false
+    if (r.how === 'collapse') return collapseFrom(s, r, true, r.seed)
+    const ev = newEvent({ ...r }, true)
+    const dir = r.dx || r.dy || r.dz ? new THREE.Vector3(r.dx, r.dy, r.dz) : null
+    hurt(s, ev, new THREE.Vector3(r.x, r.y, r.z), r.power, r.radius, dir, r.k, r.ram)
+    return true
+  }
+
+  /* -------------------------------------------------- somebody else's -- */
+
+  /** buildings with pieces somebody else lost, and when to catch them up */
+  const absorbing: Array<{ t: number; id: string; quiet: boolean }> = []
+
+  const absorb: Destruction['absorb'] = (id, keys, quiet) => {
+    if (!keys.length) return
+    ruins.mark(id, keys)
+    absorbing.push({ t: now + (quiet ? 0 : ABSORB_GRACE), id, quiet })
+  }
+
+  /** lift whatever this building has lost elsewhere and still has here */
+  const catchUp = (id: string, quiet: boolean) => {
+    const s = ruins.get(id)
+    const gone = ruins.ruined.get(id)
+    // not built here: its chunk lifts the lot when it arms
+    if (!s || !gone?.size) return
+    if (!s.open) {
+      // taken apart a slice at a time like any blow's building, then caught up
+      let job = opening.get(s)
+      if (!job) opening.set(s, (job = { it: ruins.opening(s, OPEN_SLICE_WORK), then: [] }))
+      job.then.push(() => catchUp(id, quiet))
+      return
+    }
+    const w = wreckOf(s)
+    if (!w) return
+    const list: number[] = []
+    for (const key of gone) {
+      const i = w.o.byKey.get(key)
+      if (i !== undefined && w.o.alive[i]) list.push(i)
+    }
+    if (!list.length) return
+    for (const i of list) w.hp[i] = 0
+    ruins.lift(w.o, list)
+    // a storey that has lost its walls has failed, as it did for whoever
+    // brought it down, so a later blow here does not fail it a second time
+    for (let iy = 0; iy < w.failed.length; iy++) {
+      if (w.failed[iy] || w.cap0[iy] <= 0 || wallVol(w, iy) >= w.cap0[iy] * FAIL[w.grade]) continue
+      for (let k = iy; k < w.failed.length; k++) w.failed[k] = 1
+      break
+    }
+    if (!quiet) {
+      // what the replay did not get to drops out where it stood
+      const ev = newEvent({
+        building: id, how: 'collapse', x: 0, y: 0, z: 0, power: 0, radius: 0,
+        dx: 0, dy: 0, dz: 0, k: 0, ram: false, seed: (rnd() * 0x7fffffff) | 0,
+      }, true)
+      ev.w.push(w)
+      makeRoom(list.length)
+      const comps = components(w, list)
+      comps.sort((x, y) => w.pieces[x[0]].min.y - w.pieces[y[0]].min.y)
+      for (const comp of comps) spawnLump(w, ev, levelOf(w, comp), comp, null, null, null, 0.4)
+      const pc = w.pieces[list[0]]
+      tintOf(list.map((i) => w.pieces[i]), tint)
+      sb.fx.plume(pc.center, Math.min(8, pc.max.x - pc.min.x + 2), tint[0] * 1.1, tint[1] * 1.08, tint[2] * 1.05)
+    }
+    sb.solidsChanged()
   }
 
   const nearest: Destruction['nearest'] = (at, r) => {
@@ -1259,9 +1382,13 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     if (e.with === "solid" && e.solid && e.speed > 6) {
       const own = ruins.owner(e.solid)
       if (!own) return
+      const lump = lumps.get(e.id)
+      // somebody else's rubble is a show here: what it broke where it was
+      // real arrives as that peer's own record. And a prop another client
+      // simulates is that client's to hit things with
+      if (lump ? lump.ev.remote : !sb.isAuthority(e.id)) return
       // rubble smaller than a wall section does not bring the next building
       // down, or one tower takes the whole of downtown with it
-      const lump = lumps.get(e.id)
       if (lump && lump.level > (lump.w.s === own.s ? 2 : 1)) return
       // ...and only while it is falling: a slab come to rest against the
       // building next door, rocking in the heap, chewed it down knock by
@@ -1339,7 +1466,7 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       }
       sb.wake(L.id)
     }
-    damageAt(e, 70 * e.power, e.radius * 0.8, 'blast')
+    damageAt(e, 70 * e.power, e.radius * 0.8, 'blast', undefined, e.remote)
   })
 
   const offRemove = sb.onRemove((p: Prop) => {
@@ -1361,6 +1488,17 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
   const offSlice = sb.onAfterSlice((h) => {
     const t0 = performance.now()
     now += h
+    // what somebody else's buildings lost, once the grace for our own
+    // replay of it has run out
+    for (let k = 0; k < absorbing.length;) {
+      const a = absorbing[k]
+      if (a.t > now) {
+        k++
+        continue
+      }
+      absorbing.splice(k, 1)
+      catchUp(a.id, a.quiet)
+    }
     // A heavy thing flying at a building that has not been opened yet: open
     // it now, a slice at a time, so that by the time it arrives the pieces
     // are there to be broken and the hit costs nothing. Checked every few
@@ -1405,10 +1543,6 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       const p = sb.get(e.id)
       if (!p) continue
       sb.getVelocity(e.id, vIn)
-      const ev = newEvent({
-        building: s.rec.id, how: 'impact', x: e.x, y: e.y, z: e.z, power: dmg, radius: 0,
-        dx: vIn.x, dy: vIn.y, dz: vIn.z, seed: (rnd() * 0x7fffffff) | 0,
-      })
       // as wide as what hit: a barrier broadside takes a bay, a brick a hole
       const r = Math.min(5, Math.max(1.4, Math.max(p.extents.x, p.extents.y, p.extents.z) * 1.15))
       // the face it struck, pointing into the solid, and so the velocity it
@@ -1427,7 +1561,13 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       // rubble landing on a building waits for it to be opened like a blast
       // does; a thrown prop is a ram and cannot (see `ahead` below)
       const ram = !lumps.has(e.id)
-      const broke = hurt(s, ev, tmpV.set(e.x, e.y, e.z), dmg, r, vPre.lengthSq() > 1 ? vPre.clone() : null, 1, ram)
+      const fly = vPre.lengthSq() > 1
+      const ev = newEvent({
+        building: s.rec.id, how: 'impact', x: e.x, y: e.y, z: e.z, power: dmg, radius: r,
+        dx: fly ? vPre.x : 0, dy: fly ? vPre.y : 0, dz: fly ? vPre.z : 0, k: 1, ram, seed: (rnd() * 0x7fffffff) | 0,
+      })
+      const broke = hurt(s, ev, tmpV.set(e.x, e.y, e.z), dmg, r, fly ? vPre.clone() : null, 1, ram)
+      announce(ev)
       // a prop that went *through* keeps most of its way: what it hit gave
       if (broke && !lumps.has(e.id)) {
         sb.setVelocity(e.id, vPre.multiplyScalar(0.72))
@@ -1450,10 +1590,12 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
       tmpA.addScaledVector(ram.dir, Math.max(p.extents.x, p.extents.z) * 0.8)
       const ev = newEvent({
         building: ram.s.rec.id, how: 'impact', x: tmpA.x, y: tmpA.y, z: tmpA.z, power: ram.dmg, radius: ram.r,
-        dx: ram.dir.x, dy: ram.dir.y, dz: ram.dir.z, seed: (rnd() * 0x7fffffff) | 0,
+        dx: ram.dir.x * ram.speed, dy: ram.dir.y * ram.speed, dz: ram.dir.z * ram.speed, k: 1, ram: true,
+        seed: (rnd() * 0x7fffffff) | 0,
       })
       const broke = hurt(ram.s, ev, tmpA.clone(), ram.dmg, ram.r, ram.dir.clone().multiplyScalar(ram.speed), 1, true)
       if (broke) {
+        announce(ev)
         ram.speed *= 0.85
         ram.dmg *= 0.85
         if (along < ram.speed) sb.setVelocity(id, vIn.addScaledVector(ram.dir, ram.speed - along))
@@ -1634,6 +1776,9 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     damageAt,
     collapse,
     nearest,
+    onRecord: null,
+    replay,
+    absorb,
     get log() {
       return log
     },

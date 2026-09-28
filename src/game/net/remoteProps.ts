@@ -9,6 +9,9 @@
  * Claims stop the old simulator and acknowledge its final pose and velocity
  * before the server enables the next. Break debris is cosmetic, using the
  * existing particle pools rather than another set of network rigid bodies.
+ * A peer's blast is replayed here flagged `remote`: it pushes the bodies
+ * this client simulates and cracks the buildings it has (remoteDamage.ts
+ * keeps those agreeing), and it is never sent back.
  */
 import * as THREE from 'three'
 import type { Sandbox, Prop } from '../sandbox/sandbox'
@@ -218,7 +221,7 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
             // Applying effects does not grant authority over remote props.
             l.applying = false
             replaying = true
-            try { sb.explode({ x: m.at[0], y: m.at[1], z: m.at[2] }, m.power, m.radius) }
+            try { sb.explode({ x: m.at[0], y: m.at[1], z: m.at[2] }, m.power, m.radius, true) }
             finally { replaying = false; l.applying = true }
           }
           break
@@ -350,7 +353,7 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
       if (b && authority(l, e.id)) send({ type: 'world-prop-break', level: name, id: b.net.id, epoch: b.net.epoch, how: e.how })
     })
     sb.onExplosion((e) => {
-      if (l.applying || replaying || !you || active !== name) return
+      if (l.applying || replaying || e.remote || !you || active !== name) return
       const b = e.source === null ? undefined : l.local.get(e.source)
       send({ type: 'world-prop-explosion', level: name, id: b?.net.id, epoch: b?.net.epoch, at: [e.x, e.y, e.z], power: e.power, radius: e.radius })
     })

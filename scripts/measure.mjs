@@ -17,6 +17,8 @@
                                            destruction
     node scripts/measure.mjs world-effects shared portals, crossings and jump clouds
     node scripts/measure.mjs prop-sync     shared props, handoffs, joints, cleanup and idle traffic
+    node scripts/measure.mjs damage-sync   shared world damage: replayed blows, the ruins
+                                           union, felled props and a late join
     node scripts/measure.mjs console       every console command run headless
                                            against a real sandbox, and noclip
     node scripts/measure.mjs fracture      every building in a few town blocks
@@ -200,7 +202,7 @@ if (bad) process.exitCode = 1
 
 const FILE_REPORTS = [
   'physics', 'console', 'fracture', 'bodies', 'body', 'seats', 'prop-sync',
-  'world-effects', 'streaming', 'pedestrians', 'collision',
+  'world-effects', 'streaming', 'pedestrians', 'collision', 'damage-sync',
 ]
 const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]

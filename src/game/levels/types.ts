@@ -2,7 +2,7 @@ import type * as THREE from 'three'
 import type { CollisionSet, Solid } from '../physics/collision'
 import type { StepSurface } from '../core/sfx'
 import type { SandboxGround } from '../sandbox/ground'
-import type { Ruins } from '../world/debris'
+import type { Felling, Ruins } from '../world/debris'
 
 /*
   The level contract. A level is a walkable place: it owns its collision
@@ -62,6 +62,8 @@ export interface LevelSandbox {
   chunkSolids?: (cx: number, cz: number) => readonly Solid[] | null
   /** the buildings that come apart (sandbox/destruction.ts), if any */
   ruins?: () => Ruins | null
+  /** the trees and posts a car knocks down, for the shared world */
+  felling?: () => Felling | null
 }
 
 /** the shared lights a level may commandeer while the player is inside */

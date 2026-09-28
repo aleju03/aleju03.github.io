@@ -24,6 +24,9 @@
   while one client simulates each machine or connected contraption. Prop
   records and compact movement batches live in propProtocol.ts; the same
   server and frontend release must understand both halves of the wire.
+  What players break is the third: the planet itself still never travels,
+  but the ids of the buildings' lost pieces and of the felled trees do,
+  kept by the server as a union per level (damageProtocol.ts).
 */
 
 /** the id the server hands a socket for as long as it stays in the world.
@@ -269,6 +272,7 @@ export interface WorldBring {
 export type WorldServerMessage =
   | import('./effectProtocol').EffectServerMessage
   | import('./propProtocol').PropServerMessage
+  | import('./damageProtocol').DamageServerMessage
   | WorldShove
   | WorldBring
   | WorldGrab
@@ -294,6 +298,7 @@ export type VoiceSignal =
 export type WorldClientMessage =
   | import('./effectProtocol').EffectClientMessage
   | import('./propProtocol').PropClientMessage
+  | import('./damageProtocol').DamageClientMessage
   /** `look` rides the join so a body is never drawn in the wrong colours even
       for the one tick between arriving and repainting */
   | { type: 'world-join'; level: string; look?: string }

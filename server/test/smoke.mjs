@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { propSmoke } from './props.mjs';
 import { effectsSmoke } from './worldEffects.mjs';
+import { damageSmoke } from './worldDamage.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -47,9 +48,10 @@ function connect(url) {
         resolve(msg);
       });
     });
-  // Skip broadcast chatter (rooms/users/typing) until a given type arrives.
+  // Skip broadcast chatter (rooms/users/typing, world ticks and the level
+  // snapshots every world-level brings) until a given type arrives.
   const nextOf = async (type, label) => {
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       const msg = await next(label);
       if (msg.type === type) return msg;
     }
@@ -95,6 +97,7 @@ async function main() {
   const url = `ws://127.0.0.1:${port}/ws`;
 
   await effectsSmoke(url, connect);
+  await damageSmoke(url, connect);
   await propSmoke(url, connect);
 
   // 1. Guest hello: gets a guest name and the room list.

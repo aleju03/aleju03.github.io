@@ -55,11 +55,14 @@ export interface ExplosionEvent {
   source: PropId | null
   /** props it pushed */
   pushed: number
+  /** somebody else's blast, replayed here from the wire: everything it
+      touches is ours to move and show, but not ours to report again */
+  remote: boolean
 }
 
 export interface Explosions {
   /** set one off. Returns what the subscribers were told */
-  explode: (at: Vec3Like, power?: number, radius?: number, source?: PropId | null) => ExplosionEvent
+  explode: (at: Vec3Like, power?: number, radius?: number, source?: PropId | null, remote?: boolean) => ExplosionEvent
   onExplosion: (fn: (e: ExplosionEvent) => void) => () => void
 }
 
@@ -159,7 +162,7 @@ export const createExplosions = (
     sb.setVelocity(id, lin, ang)
   }
 
-  const explode = (c: Vec3Like, power = 1, radius = 16, source: PropId | null = null): ExplosionEvent => {
+  const explode = (c: Vec3Like, power = 1, radius = 16, source: PropId | null = null, remote = false): ExplosionEvent => {
     const R = Math.max(1, radius)
     hitList.length = 0
     sb.queryBall(c, R, (p) => {
@@ -205,7 +208,7 @@ export const createExplosions = (
     }
     fx.explosion(c, power, R)
     boom(power, c.x, c.y, c.z)
-    const e: ExplosionEvent = { x: c.x, y: c.y, z: c.z, power, radius: R, source, pushed }
+    const e: ExplosionEvent = { x: c.x, y: c.y, z: c.z, power, radius: R, source, pushed, remote }
     for (const fn of fns) fn(e)
     return e
   }

@@ -75,6 +75,7 @@ import {
 } from '../../game/net/protocol'
 import { createWorldEffects } from '../../game/net/worldEffects'
 import { createPropNetwork } from '../../game/net/remoteProps'
+import { createDamageNetwork } from '../../game/net/remoteDamage'
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
@@ -1911,6 +1912,8 @@ export default function CrtScene({
           (m) => net?.prop(m),
           (en, es) => pushFeed({ tone: 'err', text: bilingual(en, es) }),
         )
+        // what players break: the buildings' lost pieces and the felled trees
+        const damageNet = createDamageNetwork((m) => net?.damage(m))
         const worldEffects = createWorldEffects({
           send: (m) => net?.effect(m),
           level: () => levels.current.id,
@@ -1946,7 +1949,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') { propNet.offline(); worldEffects.offline() }
+              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -1955,6 +1958,7 @@ export default function CrtScene({
             onMessage: (msg) => {
               propNet.receive(msg)
               worldEffects.receive(msg)
+              damageNet.receive(msg)
               switch (msg.type) {
                 case 'world-welcome':
                   remote.welcome(msg.you, msg.tick, msg.players)
@@ -2089,6 +2093,7 @@ export default function CrtScene({
         const leaveWorld = () => {
           propNet.offline()
           worldEffects.offline()
+          damageNet.offline()
           voice?.dispose()
           voice = null
           voicePreviewRef.current = null
@@ -2894,6 +2899,7 @@ export default function CrtScene({
             if (level === from) return
             propNet.setLevel(level.id)
             worldEffects.setLevel(level.id)
+            damageNet.setLevel(level.id)
             net?.setLevel(level.id)
             // the server frees a chair at a level change: take it back
             if (craft?.spacecraft) {
@@ -2932,6 +2938,7 @@ export default function CrtScene({
             // walked away from, and they are still drawing us
             propNet.setLevel(level.id)
             worldEffects.setLevel(level.id)
+            damageNet.setLevel(level.id)
             net?.setLevel(level.id)
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
@@ -4439,7 +4446,7 @@ export default function CrtScene({
           // the buildings come apart: blasts, rubble, the car and the
           // console all reach them through the world's ruins
           const ruins = o.ruins?.()
-          if (ruins) mod.attachDestruction(sb, ruins)
+          damageNet.attach(level.id, sb, ruins ? mod.attachDestruction(sb, ruins) : null, o.felling?.() ?? null)
           // a blast knocks down whoever it reaches: the walker (not from a
           // seat, not mid-cut) through the same rig.hit a car uses, and the
           // town's pedestrians through the same seam. The maths is the

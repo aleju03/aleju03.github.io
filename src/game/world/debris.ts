@@ -32,7 +32,11 @@ import { fractureSteps, type Fractured, type StructureRec } from './fracture'
     coordinates, so a rebuilt chunk grows its trees back. The set of
     flattened props is kept here by a position-stable id and re-applied when
     a chunk is armed, exactly the way world/shopDoors.ts keeps a door you
-    left ajar. A reload replants the forest.
+    left ajar. A reload replants the forest. Online, that id is also what the
+    shared world agrees on (`Felling`, and net/remoteDamage.ts): a car that
+    fells a tree here reports the id, and a tree somebody else felled is
+    thrown here from the same foot, or just taken out if it went down before
+    we arrived. Only the fact of it travels; the trunk's flight is local.
   - **Debris collides with the world, not the other way round.** The rod is
     pushed out of the collision set but registers no box of its own, like the
     ragdoll. A felled trunk is scenery you drive over, and a box list that
@@ -94,6 +98,18 @@ export interface SmashSet {
   geos?: THREE.BufferGeometry[]
 }
 
+/** the props a vehicle has knocked down, as the shared world sees them */
+export interface Felling {
+  /** every prop id flattened this session, ours and everyone's */
+  readonly felled: ReadonlySet<string>
+  /** a vehicle here knocked one down (not called for `fell`) */
+  onFell: ((id: string, dx: number, dz: number, speed: number) => void) | null
+  /** somebody else did: thrown the way they hit it when it stands in a
+      loaded chunk and `speed` is over zero, otherwise simply gone (and gone
+      from any chunk that loads later) */
+  fell: (id: string, dx: number, dz: number, speed: number) => void
+}
+
 export interface DebrisHandles {
   /** a chunk has just been built: arm its props, and re-flatten anything
       this session already flattened there */
@@ -104,6 +120,8 @@ export interface DebrisHandles {
   clear: () => void
   /** the buildings: what is standing, taking one apart, and what is gone */
   ruins: Ruins
+  /** the props: what has been knocked down, for the shared world */
+  felling: Felling
 }
 
 interface Opts {
@@ -115,7 +133,7 @@ interface Opts {
   groundAt: (x: number, z: number) => number
   /** the snap, as a callback: this module must stay importable headless and
       core/sfx reaches for an AudioContext at module load */
-  onSnap?: (hard: number) => void
+  onSnap?: (hard: number, x: number, z: number) => void
   trackDisposable: (d: { dispose: () => void }) => void
 }
 
@@ -239,8 +257,10 @@ const collapse = (src: THREE.BufferGeometry, span: Span) => {
   (cell and facing, the same on every tier), so a chunk rebuilt after a ring
   exit or a tier change re-opens the building and lifts the same pieces
   before anything can see it: the ruin is still a ruin, only the rubble is
-  gone. `ruined` is that record, as plain data, and is the thing a shared
-  world would have to agree on.
+  gone. `ruined` is that record, as plain data, and it is what the shared
+  world agrees on (net/remoteDamage.ts): `version` tells a watcher it moved,
+  and `mark` writes in somebody else's losses so a chunk armed later comes
+  back with them already lifted.
 */
 
 /** a building or landmark as the ruins know it */
@@ -288,6 +308,12 @@ export interface Ruins {
   restore: (o: Opened, pieces: readonly number[]) => void
   /** building id -> piece keys lifted this session: what a ruin *is* */
   readonly ruined: ReadonlyMap<string, ReadonlySet<number>>
+  /** bumped whenever `ruined` changes, so a watcher can skip the scan */
+  readonly version: number
+  /** record keys as lifted without touching a building (somebody else's
+      damage): a chunk armed from here on lifts them, and one already armed
+      is the caller's to catch up (sandbox/destruction.ts's `absorb`) */
+  mark: (id: string, keys: Iterable<number>) => void
   /** a vehicle drove into a building hard enough to count: set by
       destruction, and while it is unset buildings are simply solid */
   onHit: ((s: Standing, piece: number, x: number, y: number, z: number,
@@ -386,7 +412,19 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
     }
   }
 
+  let version = 0
   const ruins: Ruins & { arm: (set: SmashSet) => void } = {
+    get version() {
+      return version
+    },
+    mark: (id, keys) => {
+      let rec = ruined.get(id)
+      if (!rec) ruined.set(id, (rec = new Set()))
+      const n = rec.size
+      for (const k of keys) rec.add(k)
+      if (rec.size !== n) version++
+      else if (!rec.size) ruined.delete(id)
+    },
     near: (x, y, z, r, out = []) => {
       out.length = 0
       for (const s of standing.values()) {
@@ -491,6 +529,7 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
         if (!o.alive[i]) continue
         o.alive[i] = 0
         const pc = o.frac.pieces[i]
+        if (!rec.has(pc.key)) version++
         rec.add(pc.key)
         if (pc.d && o.mesh) collapse(o.mesh.geometry, [pc.d[0], pc.d[1], 0, 0])
         if (pc.g && o.glass) collapse(o.glass.geometry, [pc.g[0], pc.g[1], 0, 0])
@@ -505,7 +544,7 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
         if (o.alive[i]) continue
         o.alive[i] = 1
         const pc = o.frac.pieces[i]
-        rec?.delete(pc.key)
+        if (rec?.delete(pc.key)) version++
         if (pc.d && o.mesh) writeSpan(o.mesh.geometry, pc.d[0], pc.frags, false)
         if (pc.g && o.glass) writeSpan(o.glass.geometry, pc.g[0], pc.frags, true)
         const s = o.solids[i]
@@ -603,8 +642,9 @@ export function buildDebris(opts: Opts): DebrisHandles {
   /** lift a prop out of its chunk and throw it. The contact point the
       Breakable contract reports is not needed here — a prop pivots on the
       foot it was stamped at, wherever it was struck */
-  const launch = (s: Smashable, set: SmashSet, dx: number, dz: number, speed: number) => {
+  const launch = (s: Smashable, set: SmashSet, dx: number, dz: number, speed: number, remote = false) => {
     gone.add(s.id)
+    if (!remote) felling.onFell?.(s.id, dx, dz, speed)
     s.box.breaks = undefined
     s.box.makeEmpty()
 
@@ -682,26 +722,65 @@ export function buildDebris(opts: Opts): DebrisHandles {
     root.add(group)
     bodies.push(body)
     if (bodies.length > POOL) retire(bodies.shift() as Body)
-    onSnap?.(Math.min(1, speed / 26))
+    // (where, because a prop somebody else felled may be down the street)
+    onSnap?.(Math.min(1, speed / 26), s.x, s.z)
   }
 
   const ruins = createRuins()
 
+  /** a prop taken out without a body: its box emptied, its spans collapsed */
+  const flatten = (s: Smashable, set: SmashSet) => {
+    s.box.breaks = undefined
+    s.box.makeEmpty()
+    for (const layer of Object.keys(s.spans) as SmashLayer[]) {
+      const span = s.spans[layer]
+      const mesh = set.meshes[layer]
+      if (span && mesh) collapse(mesh.geometry, span)
+    }
+  }
+
+  /** the latest armed set per chunk key: where a prop somebody else felled
+      is looked up (its id opens with the chunk's key) */
+  const sets = new Map<string, SmashSet>()
+  /** a chunk still in the ring: its group hangs off the streamer's root */
+  const loaded = (set: SmashSet) => {
+    const m = set.meshes.detail ?? set.meshes.leaf
+    return !!m?.parent?.parent
+  }
+
+  const felling: Felling = {
+    felled: gone,
+    onFell: null,
+    fell: (id, dx, dz, speed) => {
+      if (gone.has(id)) return
+      const set = sets.get(id.slice(0, id.indexOf(':')))
+      const s = set && loaded(set) ? set.props.find((p) => p.id === id) : undefined
+      if (!s || !set) {
+        // not built here: the chunk flattens it when it arms
+        gone.add(id)
+        return
+      }
+      const l = Math.hypot(dx, dz)
+      if (speed > 0 && l > 1e-3) launch(s, set, dx / l, dz / l, speed, true)
+      else {
+        gone.add(id)
+        flatten(s, set)
+      }
+    },
+  }
+
   const handles: DebrisHandles = {
     ruins,
+    felling,
     arm: (set) => {
       ruins.arm(set)
+      sets.set(set.key, set)
       for (const s of set.props) {
         if (gone.has(s.id)) {
           // it was flattened before this chunk was last rebuilt: put it back
           // the way the player left it, without the debris (which is still
           // lying where it fell, or has been retired out of the pool)
-          s.box.makeEmpty()
-          for (const layer of Object.keys(s.spans) as SmashLayer[]) {
-            const span = s.spans[layer]
-            const mesh = set.meshes[layer]
-            if (span && mesh) collapse(mesh.geometry, span)
-          }
+          flatten(s, set)
           continue
         }
         s.box.breaks = {

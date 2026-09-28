@@ -103,6 +103,7 @@ export function makeHomeLevels(
       splash: outside.splash,
       chunkSolids: outside.chunkSolids,
       ruins: outside.ruins,
+      felling: outside.felling,
     },
     vehicles: true,
     crowd: true,

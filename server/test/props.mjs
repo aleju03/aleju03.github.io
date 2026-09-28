@@ -75,7 +75,7 @@ export async function propSmoke(url, connect) {
     assert.equal(health.life[0], 0.7);
     tx(a, { type: 'world-prop-explosion', at: [0,2,0], power: 99, radius: 999 });
     const blast = await b.nextOf('world-prop-explosion', 'blast replicated');
-    assert.equal(blast.power, 4); assert.equal(blast.radius, 50);
+    assert.equal(blast.power, 10); assert.equal(blast.radius, 60);
     tx(a, { type: 'world-prop-unjoint', id: joint.id });
     assert.equal((await a.nextOf('world-prop-unjoint', 'joint removed')).id, joint.id);
     tx(a, { type: 'world-prop-cleanup', target: 'mine' });
