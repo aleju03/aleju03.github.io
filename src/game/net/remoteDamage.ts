@@ -27,6 +27,11 @@
  *   after a ring exit comes back already ruined. Whatever this client broke
  *   before that (offline, or in a level the server has since forgotten) is
  *   reported straight back, so the union heals itself.
+ *
+ * The union shrinks once: the admin's `rebuild`. Destruction's `onReset`
+ * sends `world-rebuild`, and this side forgets what it had heard and sent
+ * for the level, so new damage to the same pieces is reported afresh; the
+ * server clears its copy and everyone else there rebuilds (`reset(true)`).
  */
 import type { DamageRecord, Destruction } from '../sandbox/destruction'
 import type { Sandbox } from '../sandbox/sandbox'
@@ -162,6 +167,14 @@ export function createDamageNetwork(send: (m: DamageClientMessage) => void, now 
         if (r.how !== 'blast' && live(name, l)) send({ type: 'world-damage', level: name, ...toWire(r) })
       }
     }
+    if (dmg) {
+      dmg.onReset = () => {
+        l.known.clear()
+        l.felled.clear()
+        l.version = -1
+        if (live(name, l)) send({ type: 'world-rebuild', level: name })
+      }
+    }
     if (felling) {
       felling.onFell = (id, dx, dz, speed) => {
         if (!live(name, l)) return
@@ -200,6 +213,12 @@ export function createDamageNetwork(send: (m: DamageClientMessage) => void, now 
         l.felled.add(m.id)
         l.felling?.fell(m.id, m.dir[0] ?? 0, m.dir[1] ?? 0, m.speed)
         break
+      case 'world-rebuild':
+        l.known.clear()
+        l.felled.clear()
+        l.version = -1
+        l.dmg?.reset(true)
+        break
       case 'world-damage':
         if (m.from === you || !l.dmg) break
         l.dmg.replay({
@@ -216,7 +235,7 @@ export function createDamageNetwork(send: (m: DamageClientMessage) => void, now 
       if (m.type === 'world-welcome') {
         you = m.you
         for (const l of levels.values()) l.ready = false
-      } else if (m.type === 'world-ruins' || m.type === 'world-ruin' || m.type === 'world-fell' || m.type === 'world-damage') {
+      } else if (m.type === 'world-ruins' || m.type === 'world-ruin' || m.type === 'world-fell' || m.type === 'world-damage' || m.type === 'world-rebuild') {
         receive(m)
       }
     },

@@ -3597,6 +3597,8 @@ export default function CrtScene({
           // whatever this machine is driven into goes over
           impacts.track(fleet.all, pausedNow ? 0 : dt)
           if (level.crowd) outside.knockPeople(impacts)
+          // ...and a crate on the physgun is solid to them too
+          if (level.crowd && sandbox && !pausedNow) outside.pressPeople(sandbox)
           // v swaps the boom for the cockpit. It is not the walk's saved
           // third-person preference — a car has two views and neither is the
           // one the pause menu's toggle means
@@ -4465,6 +4467,8 @@ export default function CrtScene({
             rig.hit(impact.impulse, impact.point)
           }
           if (level.crowd) outside.knockPeople(impacts)
+          // ...and a crate on the physgun is solid to them too
+          if (level.crowd && sandbox && !pausedNow) outside.pressPeople(sandbox)
           // ...and its prompt is the lowest-priority one: the machine and a
           // door both win, because both are things you are standing right at
           // (and not to a flyer: a car offered to somebody passing overhead

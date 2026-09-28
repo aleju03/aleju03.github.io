@@ -1845,6 +1845,7 @@ function handleMessage(ws, msg) {
     case 'world-damage':
     case 'world-ruin':
     case 'world-fell':
+    case 'world-rebuild':
       worldDamage.handle(ws, msg);
       break;
     case 'world-blocks':

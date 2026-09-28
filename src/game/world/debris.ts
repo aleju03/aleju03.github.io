@@ -118,6 +118,10 @@ export interface DebrisHandles {
   update: (dt: number) => void
   /** drop the lot (teardown) */
   clear: () => void
+  /** forget every ruin and every felled prop, and the bodies still lying
+      about: a chunk armed after this comes back whole. The chunks already
+      armed are the caller's to rebuild (the streamer's `rebuild`) */
+  forget: () => void
   /** the buildings: what is standing, taking one apart, and what is gone */
   ruins: Ruins
   /** the props: what has been knocked down, for the shared world */
@@ -318,6 +322,10 @@ export interface Ruins {
       destruction, and while it is unset buildings are simply solid */
   onHit: ((s: Standing, piece: number, x: number, y: number, z: number,
     dx: number, dz: number, speed: number) => void) | null
+  /** `rebuild`: put every building and prop back as it was generated. Set
+      by whoever owns the chunks (outsideWorld wires it to the streamer);
+      null where nothing can be rebuilt */
+  reset: (() => void) | null
   /** solids were added or emptied: the world re-shelves its collision set */
   onSolids: (() => void) | null
   /** the closing speed that breaks through a structure of this grade, or
@@ -342,7 +350,7 @@ const standBox = (rec: StructureRec, set: SmashSet) => {
   return b
 }
 
-const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
+const createRuins = (): Ruins & { arm: (set: SmashSet) => void; forget: () => void } => {
   const standing = new Map<string, Standing>()
   const ruined = new Map<string, Set<number>>()
   const owners = new WeakMap<Solid, { s: Standing; piece: number }>()
@@ -413,9 +421,15 @@ const createRuins = (): Ruins & { arm: (set: SmashSet) => void } => {
   }
 
   let version = 0
-  const ruins: Ruins & { arm: (set: SmashSet) => void } = {
+  const ruins: Ruins & { arm: (set: SmashSet) => void; forget: () => void } = {
     get version() {
       return version
+    },
+    reset: null,
+    forget: () => {
+      ruined.clear()
+      standing.clear()
+      version++
     },
     mark: (id, keys) => {
       let rec = ruined.get(id)
@@ -799,6 +813,12 @@ export function buildDebris(opts: Opts): DebrisHandles {
     clear: () => {
       for (const b of bodies) retire(b)
       bodies.length = 0
+    },
+    forget: () => {
+      ruins.forget()
+      gone.clear()
+      sets.clear()
+      handles.clear()
     },
   }
   // every debris geometry is made at runtime, so the scene's disposer cannot

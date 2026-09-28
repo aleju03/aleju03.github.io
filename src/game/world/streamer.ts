@@ -186,6 +186,10 @@ export interface WorldHandles {
   /** a chunk's solids changed shape or number since it was built (a
       building taken apart into pieces): re-shelve the collision set */
   resolid: () => void
+  /** drop every loaded chunk and build the near ones again on the spot,
+      the rest queued as usual: `rebuild`, after debris has forgotten what
+      was broken. A hitch, paid once, on a command */
+  rebuild: () => void
   /** the nearest `max` light fixtures to (x, z) in the loaded chunks, as
       world xyz triples into `out`; returns how many. For the look's lamp
       pools. Walks a 5x5 of chunks, so ask when the walker has moved rather
@@ -927,6 +931,13 @@ export function buildWorld(opts: Opts): WorldHandles {
     farStats: () => ({ ...far.stats(), pending: far.pending }),
     resolid: () => {
       if (Number.isFinite(curX)) refreshSolids(curX, curZ)
+    },
+    rebuild: () => {
+      if (!Number.isFinite(curX)) return
+      cancelBuild()
+      for (const c of [...chunks.values()]) drop(c)
+      restream(curX, curZ, PRIME_RADIUS)
+      refreshSolids(curX, curZ)
     },
     nearLamps,
     setNight: (night) => {

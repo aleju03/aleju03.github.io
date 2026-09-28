@@ -161,6 +161,9 @@ export interface OutsideHandles {
   /** let the movers an impact watch is tracking knock the town's
       pedestrians over. A no-op until the world is attached */
   knockPeople: (watch: ImpactWatch) => void
+  /** the sandbox's props against the crowd: shoved aside or bowled over
+      (world/pedestrians.ts's `pressProps`) */
+  pressPeople: (sb: import('../sandbox/sandbox').Sandbox) => void
   /** the town's pedestrians as bodies a grab beam can take by a limb
       (the physgun); empty until the world is attached */
   people: () => Iterable<{ key: string; rig: GrabHandle }>
@@ -389,6 +392,11 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
         trackDisposable,
       })
       debris.ruins.onSolids = () => world.resolid()
+      // `rebuild`: forget what was broken, then build the ring again whole
+      debris.ruins.reset = () => {
+        debris.forget()
+        world.rebuild()
+      }
       const world = streamer.buildWorld({
         scene: groundRoot,
         obstacles,
@@ -932,6 +940,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     ruins: () => w?.debris.ruins ?? null,
     felling: () => w?.debris.felling ?? null,
     knockPeople: (watch) => w?.pedestrians.knock(watch),
+    pressPeople: (sb) => w?.pedestrians.pressProps(sb),
     people: () => (w ? w.pedestrians.grabbable() : []),
     crowd: {
       get size() {

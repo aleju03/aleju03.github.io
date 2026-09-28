@@ -10,6 +10,7 @@ import {
 import { blockedAt, makeCollisionSet, type Solid } from '../physics/collision'
 import type { RagdollEnv } from '../player/ragdoll'
 import type { Impact, ImpactWatch } from '../player/impacts'
+import type { Sandbox } from '../sandbox/sandbox'
 import { createBodyPress, type PressHost } from '../player/bodyPress'
 import {
   bodyExtent, posedPoints, MAX_POINTS, type BodyExtent, type Bumpable, type Bump,
@@ -61,6 +62,14 @@ import { inReserved } from './grid'
   could be pushed straight into a bystander until one bean stood inside the
   other.
 
+  **And the sandbox's props are solid to them** (`pressProps`, once a frame
+  from the scene). The crowd is not in Rapier, so nothing stopped a crate or
+  a bin, held on the physgun or not, from passing straight through somebody.
+  Now a prop overlapping a standing body shoves it out the shortest way and
+  staggers it along (the prop gives nothing: the beam does not, and a crate
+  does not care), and one driven into a body fast enough, heavy enough,
+  knocks it flat the way a car does, the blow scaled by what the prop weighs.
+
   **The pavement is the path.** There is no navmesh and there should not be
   one: `settlements.ts` already answers "is this the sidewalk slab" for any
   point in the world (`roadAt().walk`), which is a field, not a graph, so a
@@ -87,6 +96,9 @@ export interface PedestrianHandles {
   /** let anything the watch is tracking (a car, mostly) bowl people over.
       Call after the watch has been told where the movers are this frame */
   knock: (watch: ImpactWatch) => void
+  /** the sandbox's props against the crowd: shoved out of, and bowled
+      over by (see the header). Once a frame, after `update` */
+  pressProps: (sb: Sandbox) => void
   /** everyone out on the pavement, as bodies a grab beam can take by a
       limb. Taking one knocks them flat the way a car does, so the crowd's
       own tick hands the body to the ragdoll and stands it up afterwards */
@@ -149,6 +161,12 @@ const ANIMATE_FAR = 80
 
 /** how tall a body the wall test asks about */
 const BODY_H = 4.2
+/** a prop closing on somebody faster than this, u/s, and at least this
+    heavy, knocks them flat (`pressProps`); slower, it shoves them aside.
+    A prop this heavy hits with a car's blow, a lighter one with its share */
+const PROP_KNOCK_SPEED = 7
+const PROP_KNOCK_MASS = 4
+const PROP_FULL_MASS = 40
 /** leaned into on the first frame of a bump: the step out of the walker's
     way, units/s, on top of the stagger back */
 const SIDESTEP = 3
@@ -887,6 +905,67 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     },
   }
 
+  /* ---- props against people (a bin on the physgun) --------------------- */
+  const propPos = new THREE.Vector3()
+  const propQuat = new THREE.Quaternion()
+  const propInv = new THREE.Quaternion()
+  const propRot = new THREE.Matrix4()
+  const axisPt = new THREE.Vector3()
+  const nearPt = new THREE.Vector3()
+  const pressProps = (sb: Sandbox) => {
+    for (let i = 0; i < crowd.length; i++) {
+      const p = crowd[i]
+      if (!p.live || p.down) continue
+      const r = p.ext.radius
+      axisPt.set(p.x, p.y + BODY_H * 0.5, p.z)
+      sb.queryBall(axisPt, BODY_H * 0.5 + r + 1.5, (prop) => {
+        if (p.down || !sb.getTransform(prop.id, propPos, propQuat)) return
+        const e = prop.extents
+        // the prop's own height in the world, off its turned extents: is it
+        // anywhere between this body's feet and head?
+        const m = propRot.makeRotationFromQuaternion(propQuat).elements
+        const hy = Math.abs(m[1]) * e.x + Math.abs(m[5]) * e.y + Math.abs(m[9]) * e.z
+        if (propPos.y - hy > p.y + BODY_H || propPos.y + hy < p.y + 0.15) return
+        // the point of the body's axis level with the prop, and the nearest
+        // point of the prop's box to it
+        axisPt.set(p.x, Math.min(p.y + BODY_H, Math.max(p.y, propPos.y)), p.z)
+        nearPt.copy(axisPt).sub(propPos).applyQuaternion(propInv.copy(propQuat).invert())
+        nearPt.set(
+          Math.max(-e.x, Math.min(e.x, nearPt.x)),
+          Math.max(-e.y, Math.min(e.y, nearPt.y)),
+          Math.max(-e.z, Math.min(e.z, nearPt.z)),
+        ).applyQuaternion(propQuat).add(propPos)
+        let nx = p.x - nearPt.x
+        let nz = p.z - nearPt.z
+        const dist = Math.hypot(nx, nz)
+        if (dist >= r) return
+        let depth = r - dist
+        if (dist > 1e-3) {
+          nx /= dist
+          nz /= dist
+        } else {
+          // the axis is inside the box: out away from its middle
+          nx = p.x - propPos.x
+          nz = p.z - propPos.z
+          const l = Math.hypot(nx, nz) || 1
+          nx /= l
+          nz /= l
+          depth = r
+        }
+        const v = prop.body.linvel()
+        const closing = v.x * nx + v.z * nz
+        // driven in hard by something with weight to it: over they go
+        if (closing > PROP_KNOCK_SPEED && prop.mass >= PROP_KNOCK_MASS) {
+          const k = Math.min(1, prop.mass / PROP_FULL_MASS)
+          pressHost.knock(i, v.x * 1.1 * k, 2 + closing * 0.3 * k, v.z * 1.1 * k, p.x - nx * r, p.y + BODY_H * 0.4, p.z - nz * r)
+          return
+        }
+        nudge(p, nx * depth, nz * depth)
+        if (closing > 0.5) pressHost.stagger(i, nx * closing, nz * closing)
+      })
+    }
+  }
+
   const stage = (spots: readonly { x: number; z: number; yaw: number; pause?: number }[]) => {
     crowd.forEach((p, i) => {
       const s = spots[i]
@@ -930,7 +1009,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
   })
 
   return {
-    update, knock, grabbable, bumpable, stage,
+    update, knock, pressProps, grabbable, bumpable, stage,
     groupOf: (i) => crowd[i]?.group ?? null,
     lying: (i, out) => {
       const p = crowd[i]

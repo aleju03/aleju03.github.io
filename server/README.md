@@ -293,6 +293,9 @@ forgotten ruin reports it again from its next snapshot.
 - C to S `world-fell {level,id,dir:[dx,dz],speed}`, 40/s. Stored once; S to C
   the same to everyone else, `dir` normalised and `speed` clamped to 0..60
   (0, or no direction, means just take it out).
+- C to S `world-rebuild {level}`, admin only, 2/s: the level's ruins and
+  felled props are cleared from the union, and S to C `world-rebuild {level}`
+  tells everyone else there to put their town back (the `rebuild` command).
 - C to S `world-damage {level,b,how,at:[x,y,z],power,radius,dir:[x,y,z],k,ram,seed}`,
   a blow a peer should replay: `how` is `impact`, `vehicle`, `command` or
   `collapse` (a blast travels as `world-prop-explosion`). Relayed within 200

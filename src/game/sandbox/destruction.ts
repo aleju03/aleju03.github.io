@@ -238,6 +238,13 @@ export interface Destruction {
   onRecord: ((r: DamageRecord) => void) | null
   /** show somebody else's blow: false when the building is not built here */
   replay: (r: Omit<DamageRecord, 'seq' | 't'>) => boolean
+  /** put everything back (`rebuild`): the rubble taken away, and the
+      level's ruins told to rebuild the buildings and props whole
+      (`ruins.reset`). `remote` is somebody else's rebuild arriving; a local
+      one also tells `onReset`. False where only the rubble could go */
+  reset: (remote?: boolean) => boolean
+  /** a rebuild this client did, for the shared world to pass on */
+  onReset: (() => void) | null
   /** somebody else's building lost these piece keys: remembered at once,
       and lifted from the building here (if it stands in a loaded chunk)
       after a grace for the local replay to get there first, or at once and
@@ -2051,6 +2058,20 @@ export const attachDestruction = (sb: Sandbox, ruins: Ruins): Destruction => {
     collapse,
     nearest,
     onRecord: null,
+    onReset: null,
+    reset: (remote = false) => {
+      for (const L of [...lumps.values()]) removeLump(L)
+      wrecks.clear()
+      jobs.length = 0
+      opening.clear()
+      watch.clear()
+      flying.clear()
+      rams.clear()
+      const whole = !!ruins.reset
+      ruins.reset?.()
+      if (!remote) d.onReset?.()
+      return whole
+    },
     replay,
     absorb,
     get log() {
@@ -2178,6 +2199,22 @@ registerCommand({
     }
     if (!dmg.collapse(t.s, from)) return ctx.fail(msg('that one is already down', 'ese ya está en el suelo'))
     ctx.ok(msg('timber!', '¡cuidado, que cae!'))
+  },
+})
+
+registerCommand({
+  name: 'rebuild',
+  aliases: ['repair', 'restore'],
+  help: msg(
+    'put every building and tree back the way the world made them, and clear away the rubble (in a shared world, the admin only: it is everyone\'s town)',
+    'vuelve a levantar cada edificio y cada árbol como los hizo el mundo, y retira los escombros (en un mundo compartido, solo el administrador: el pueblo es de todos)'),
+  run: (ctx) => {
+    const { dmg } = needDestruction(ctx)
+    if (ctx.host.online?.() && !ctx.host.admin?.()) {
+      return ctx.fail(msg('only the admin can rebuild a shared town', 'solo el administrador puede reconstruir un pueblo compartido'))
+    }
+    if (!dmg.reset()) return ctx.ok(msg('rubble cleared; nothing here can be rebuilt', 'escombros retirados; aquí no hay nada que reconstruir'))
+    ctx.ok(msg('good as new', 'como nuevo'))
   },
 })
 

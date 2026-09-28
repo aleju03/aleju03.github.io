@@ -39,8 +39,33 @@ function bounds() {
   assert.equal(out.at(-1).ruins.length, 0, 'an empty level expires');
 }
 
+/** `rebuild`: only the admin can empty a level's union, and everyone else
+    there is told to put their town back */
+function rebuild() {
+  let t = 0;
+  const guest = { world: { id: 1, level: 'town', x: 0, y: 0, z: 0 } };
+  const admin = { isAdmin: true, world: { id: 2, level: 'town', x: 0, y: 0, z: 0 } };
+  const players = new Map([[1, guest], [2, admin]]), out = [];
+  const d = createWorldDamage({ players, send: (to, m) => out.push({ to, m }), now: () => t });
+  d.handle(guest, { type: 'world-ruin', level: 'town', b: B, keys: [1, 2] });
+  d.handle(guest, { type: 'world-fell', level: 'town', id: '3,4:S7', dir: [0, 0], speed: 0 });
+  t += 1000;
+  d.handle(guest, { type: 'world-rebuild', level: 'town' });
+  d.snapshot(guest);
+  assert.equal(out.at(-1).m.ruins.length, 1, 'a guest cannot rebuild');
+  out.length = 0;
+  d.handle(admin, { type: 'world-rebuild', level: 'town' });
+  const told = out.filter(({ m }) => m.type === 'world-rebuild');
+  assert.deepEqual(told.map(({ to }) => to), [guest], 'everyone else in the level is told, not the admin');
+  d.snapshot(guest);
+  const snap = out.at(-1).m;
+  assert.equal(snap.ruins.length, 0, 'the ruins are gone');
+  assert.equal(snap.felled.length, 0, 'and the felled props');
+}
+
 export async function damageSmoke(url, connect) {
   bounds();
+  rebuild();
   const peers = [];
   const join = async (level) => {
     const c = connect(url); peers.push(c); c.seen = [];
@@ -112,7 +137,7 @@ export async function damageSmoke(url, connect) {
     assert.equal((await late.nextOf('world-ruins', 'moon ruins')).ruins.length, 0);
     late.send({ type: 'world-level', level: 'dmg-test' });
     assert.equal((await late.nextOf('world-ruins', 'back again')).ruins.length, 1);
-    console.log('damage: union of lost pieces and felled props, validation, relayed blows, rate limits, caps, expiry and late-join snapshots passed');
+    console.log('damage: union of lost pieces and felled props, validation, relayed blows, rate limits, caps, expiry, late-join snapshots and the admin rebuild passed');
   } finally {
     for (const c of peers) c.ws.close();
   }

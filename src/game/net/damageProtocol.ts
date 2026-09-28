@@ -27,10 +27,13 @@ export type DamageClientMessage = { level: string } & (
   | ({ type: 'world-damage' } & DamageWire)
   | { type: 'world-ruin'; b: string; keys: number[] }
   | { type: 'world-fell'; id: string; dir: number[]; speed: number }
+  /** admin only: put the level's town back (`rebuild`) */
+  | { type: 'world-rebuild' }
 )
 export type DamageServerMessage = { level: string } & (
   | ({ type: 'world-damage'; from: number } & DamageWire)
   | { type: 'world-ruin'; b: string; keys: number[] }
   | { type: 'world-fell'; id: string; dir: number[]; speed: number }
   | { type: 'world-ruins'; ruins: Array<[string, number[]]>; felled: string[] }
+  | { type: 'world-rebuild' }
 )

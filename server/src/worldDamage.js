@@ -17,6 +17,10 @@
  * forgotten first), MAX_KEYS pieces per building, and a level nobody has
  * stood in for EMPTY_TTL_MS is forgotten entirely. A client still holding
  * a forgotten ruin reports it again when it next receives a snapshot.
+ *
+ * The one way the union shrinks is the admin's `rebuild` (`world-rebuild`):
+ * the level's ruins and felled props are dropped here and everyone else in
+ * it is told to put their town back, which also empties what they report.
  */
 export const MAX_BUILDINGS = 256;
 export const MAX_KEYS = 4096;
@@ -104,6 +108,13 @@ export function createWorldDamage({ players, send, now = Date.now }) {
         const len = Math.hypot(m.dir[0], m.dir[1]);
         const dir = len > 1e-3 ? [round(m.dir[0] / len), round(m.dir[1] / len)] : [0, 0];
         others(ws, { type: 'world-fell', id: m.id, dir, speed: len > 1e-3 ? round(clamp(m.speed, 0, 60)) : 0 });
+      } else if (m.type === 'world-rebuild') {
+        // everyone's town, so the admin's call only
+        if (!ws.isAdmin || !allow(ws, 'rebuild', 2)) return;
+        const l = level(w.level);
+        l.ruins.clear();
+        l.felled.clear();
+        others(ws, { type: 'world-rebuild' });
       } else if (m.type === 'world-damage') {
         if (!allow(ws, 'damage', 60) || typeof m.b !== 'string' || !ID_RE.test(m.b) || !HOWS.has(m.how)) return;
         const at = Array.isArray(m.at) && m.at.length === 3 && m.at.every(finite) ? m.at : null;
