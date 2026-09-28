@@ -89,6 +89,10 @@ import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
 import { getRoomState, subscribeRoom } from './worldRoom'
 import RoomChip from './RoomChip'
+import { createHealthState, type HealthState } from '../../game/player/health'
+import { deathSound, hurtSound, respawnSound } from '../../game/player/healthSfx'
+import '../../game/sandbox/healthCommands'
+import HealthHud from './HealthHud'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
 import { PIXEL_LINES_K, PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
 import { snapPixelProofs, type PixelProofs } from './pixelProofs'
@@ -422,6 +426,8 @@ export default function CrtScene({
   const [blockPics, setBlockPics] = useState<Map<string, string> | null>(null)
   /** what the crosshair is on (Crosshair.tsx) */
   const [aim, setAim] = useState<CrosshairAim>('none')
+  /** hit points and the killfeed (HealthHud.tsx): the store and a name lookup */
+  const [healthHud, setHealthHud] = useState<{ state: HealthState; nameOf: (id: number) => string } | null>(null)
   /** the channel the set is showing, while you are sitting in front of it */
   const [tvChannel, setTvChannel] = useState<string | null>(null)
   const [locked, setLocked] = useState(false)
@@ -1897,6 +1903,17 @@ export default function CrtScene({
         })
         const shoveTaker = createShoveTaker()
         /*
+          Hit points (game/player/health.ts): the server keeps the numbers,
+          this remembers them, and the reactions (the flop of a death, the
+          walk back to the spawn, the sounds) are wired below the console's
+          host, which they use.
+        */
+        const health = createHealthState({ level: () => levels.current.id })
+        setHealthHud({
+          state: health,
+          nameOf: (id) => remote.roster.get(id)?.name ?? '?',
+        })
+        /*
           The physgun on other players (game/net/grab.ts): the same deal as a
           shove. Our beam streams where their limb should be and their client
           pins its own ragdoll to it; their beam does the same to us, and we
@@ -2074,7 +2091,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); social.offline(); tools?.weapons.offline() }
+              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); social.offline(); tools?.weapons.offline(); health.offline() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -2088,8 +2105,11 @@ export default function CrtScene({
               social.receive(msg)
               // shots, hits and who is holding what (sandbox/tools/weapons.ts)
               tools?.receive(msg)
+              health.receive(msg)
               switch (msg.type) {
                 case 'world-welcome':
+                  // god mode is ours to declare, and a new socket has forgotten
+                  if (godMode) net?.health({ type: 'world-health-cmd', cmd: 'god', on: true })
                   remote.welcome(msg.you, msg.tick, msg.players)
                   // what we spawn from here on is ours by the server's name
                   // for us, which is what undo and cleanup filter on
@@ -2586,7 +2606,7 @@ export default function CrtScene({
             floor, so the console and the noclip key do too: the body stands
             up on the spot, at once, where the ragdoll came to rest */
         const standNow = () => {
-          if (!rig.down) return
+          if (!rig.down || health.dead) return
           rig.getupSpot(getupPt)
           const level = levels.current
           chase.drop()
@@ -2672,8 +2692,19 @@ export default function CrtScene({
             return walk.noclip
           },
           god: (on) => {
-            if (on !== undefined) godMode = on
+            if (on !== undefined && on !== godMode) {
+              godMode = on
+              // the server refuses a hurt god (and a god in a fight)
+              net?.health({ type: 'world-health-cmd', cmd: 'god', on })
+            }
             return godMode
+          },
+          health: {
+            read: () => ({ hp: health.hp, max: health.max, dead: health.dead, pvp: health.pvp, online: net !== null }),
+            kill: () => { net?.health({ type: 'world-health-cmd', cmd: 'kill' }); return net !== null },
+            hurt: (n) => { net?.health({ type: 'world-health-cmd', cmd: 'hurt', n }); return net !== null },
+            heal: () => { net?.health({ type: 'world-health-cmd', cmd: 'heal' }); return net !== null },
+            pvp: (on) => { net?.health({ type: 'world-health-cmd', cmd: 'pvp', on }); return net !== null },
           },
           thirdPerson: (on) => {
             const now = on ?? prefsRef.current.third
@@ -2743,6 +2774,53 @@ export default function CrtScene({
           },
         }
         const sbConsole = createConsole(host)
+        /*
+          What hit points make the body do. A death is the ordinary ragdoll
+          with the recovery held (the wantsUp test above): out of whatever we
+          were in, thrown away from whoever did it, and left in a heap until
+          the server says we are back. The respawn is the level's own spawn
+          (or the spot a mode chose), scattered a little so a fight's
+          survivors do not all stand up on one tile.
+        */
+        health.on((e) => {
+          if (e.type === 'hurt') {
+            hurtSound(e.amount)
+          } else if (e.type === 'died') {
+            deathSound()
+            if (levels.frozen) return
+            if (fleet.riding) leaveVehicle()
+            if (seating.current) leaveSeat()
+            leavePartSeat()
+            setNoclip(false)
+            const from = e.by ? remote.players.get(e.by) : null
+            let dx = Math.sin(walk.yaw)
+            let dz = Math.cos(walk.yaw)
+            if (from) {
+              const ax = camera.position.x - from.x
+              const az = camera.position.z - from.z
+              const len = Math.hypot(ax, az)
+              if (len > 0.01) { dx = ax / len; dz = az / len }
+            }
+            rig.flop(dx * 8, 5, dz * 8)
+          } else if (e.type === 'respawn') {
+            respawnSound()
+            const level = levels.current
+            const at = e.x !== undefined && e.z !== undefined
+              ? { x: e.x, z: e.z, yaw: walk.yaw }
+              : level.house
+                ? { x: 5.5, z: -2.6, yaw: 0 }
+                : { x: level.spawn.x, z: level.spawn.z, yaw: level.spawn.yaw }
+            const clear = (cx: number, cz: number) => {
+              const floor = spawnY(level, cx, cz)
+              return !blockedAt(cx, cz, floor, floor + EYE, level.collision, EYE * 0.12)
+            }
+            const p = scatterSpawn(at.x, at.z, 1 + Math.floor(Math.random() * 8), clear)
+            host.teleport?.(p.x, p.z, level.house ? undefined : level.spawn.y, at.yaw)
+          } else if (e.type === 'refused') {
+            if (e.cmd === 'god') godMode = false
+            pushFeed({ tone: 'err', text: bilingual('not while pvp is on', 'no mientras el pvp está activo') })
+          }
+        })
         consoleRef.current = sbConsole
         sbConsole.onPrint((l) => pushFeed(l))
         // the console line's enter: a slash runs a command, anything else is
@@ -3079,6 +3157,7 @@ export default function CrtScene({
             worldEffects.setLevel(level.id)
             damageNet.setLevel(level.id)
             blockNet.setLevel(level.id)
+            health.newLevel()
             net?.setLevel(level.id)
             // the server frees a chair at a level change: take it back
             if (craft?.spacecraft) reclaimSeat(craft.id)
@@ -3118,6 +3197,7 @@ export default function CrtScene({
             worldEffects.setLevel(level.id)
             damageNet.setLevel(level.id)
             blockNet.setLevel(level.id)
+            health.newLevel()
             net?.setLevel(level.id)
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
@@ -3717,6 +3797,8 @@ export default function CrtScene({
               }
             }
             remote.sample(now, dt)
+            health.tick(dt)
+            avatarEnv.hpOf = health.vitalsOf
             avatarEnv.collision = level.collision
             avatarEnv.ceilingY = level.ceilingY
             avatars.update(remote, dt, avatarEnv)
@@ -3953,6 +4035,11 @@ export default function CrtScene({
           if (portalsOn) portalWalk!.after(step.vx, step.vy, step.vz)
           // a fall that is too far to land lands you flat instead, carried on
           // with whatever speed you came in with
+          // a hard landing is reported for the server to weigh (health.js
+          // believes it only as far as the drop it watched us make)
+          if (step.landing > 30 && !sitting && !walk.noclip && !godMode && !health.dead) {
+            net?.health({ type: 'world-fall', speed: Math.round(step.landing * 10) / 10 })
+          }
           if (step.landing > FALL_FLOP && !rig.down && !sitting && !godMode) {
             rig.flop(step.vx, Math.min(6, step.landing * 0.15), step.vz)
           }
@@ -4155,6 +4242,7 @@ export default function CrtScene({
           const wantsUp =
             rig.ragdolling &&
             rig.settled &&
+            !health.dead &&
             (flopNow ||
               held(input.keys, 'forward') || held(input.keys, 'back') ||
               held(input.keys, 'left') || held(input.keys, 'right') || held(input.keys, 'jump'))
@@ -4910,6 +4998,7 @@ export default function CrtScene({
                 // reports), who else is here and what their beams are doing
                 __input: input,
                 __remote: remote,
+                __health: health,
                 __avatars: avatars,
                 __grabTaker: grabTaker,
                 // the view from the air: what the fog, the far field and the
@@ -5991,6 +6080,10 @@ export default function CrtScene({
           onPin={(on) => pinMenuRef.current?.(on)}
           onClose={() => closeMenuRef.current?.()}
         />
+      )}
+      {/* hit points, the killfeed and the death sheet (HealthHud.tsx) */}
+      {roam && walking && !paused && healthHud && (
+        <HealthHud state={healthHud.state} nameOf={healthHud.nameOf} />
       )}
       {/* the crosshair, whenever there is a walk to aim: also with the
           mouse freed for the catalogue, because that is exactly when you

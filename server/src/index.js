@@ -27,6 +27,7 @@ import { createWorldBlocks } from './worldBlocks.js';
 import { createWorldRooms, createLimiter, normalizeRoom, PUBLIC_ROOM } from './worldRooms.js';
 import { createWeapons } from './weapons.js';
 import { createWorldSocial } from './worldSocial.js';
+import { createHealth } from './health.js';
 
 // ---------------------------------------------------------------- config
 
@@ -951,11 +952,20 @@ setInterval(() => {
 function buildRoom(room) {
   const players = room.players;
   room.social = createWorldSocial({ players, send, name: displayName, eject: leaveWorld, store: friendStore, isPrivate: () => !room.isPublic });
-  room.props = createPropRegistry({ players, send, access: room.social.protection, onRemove: (level, ids) => room.effects.removeProps(level, ids) });
+  room.props = createPropRegistry({
+    players,
+    send,
+    access: room.social.protection,
+    onRemove: (level, ids) => room.effects.removeProps(level, ids),
+    onBlast: (ws, blast) => room.health.blast(ws, blast),
+  });
   room.effects = createWorldEffects({ players, send, prop: room.props.get });
   room.damage = createWorldDamage({ players, send });
   // Cubeland's broken and placed blocks, the last word per block (worldBlocks.js)
   room.blocks = createWorldBlocks({ players, send, claims: room.social.claims });
+  // hit points, death, respawn, pvp and the scoreboard (health.js): one per
+  // room, so pvp, the counters and the killfeed never cross rooms
+  room.health = createHealth({ players, send });
   // the pistol, the crossbow and the rocket launcher: shots and hits relayed
   // to the level, checked for honesty (weapons.js)
   room.weapons = createWeapons({
@@ -963,6 +973,7 @@ function buildRoom(room) {
     send,
     seated: (id) => worldSeated(room, id),
     flying: (w) => (w.f & W_FLY) !== 0,
+    health: room.health,
   });
   // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
   // `hand` is whoever has an *empty* machine on their physgun (or is letting it
@@ -1196,6 +1207,7 @@ function worldTick() {
   for (const room of worldRooms) {
     room.props.tick();
     room.effects.tick();
+    room.health.tick();
     if (!room.dirty || room.players.size === 0) continue;
     room.dirty = false;
     tickRoom(room);
@@ -1317,6 +1329,7 @@ function handleWorldJoin(ws, msg) {
   room.damage.snapshot(ws);
   room.blocks.snapshot(ws);
   room.weapons.snapshot(ws);
+  room.health.snapshot(ws);
   worldBroadcast(room, { type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   room.dirty = true;
   startWorldTicker();
@@ -1369,6 +1382,7 @@ function leaveWorld(ws) {
   room.effects.leave(w.id);
   room.damage.left(w.level);
   room.blocks.left(w.level);
+  room.health.left(w.id, w.level);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(room, w.id);
@@ -1400,6 +1414,7 @@ function handleWorldMove(ws, msg) {
   w.pitch = msg.pitch;
   w.gait = finite(msg.gait) ? Math.max(0, Math.min(1, msg.gait)) : 0;
   w.f = Number.isInteger(msg.f) ? msg.f & W_FLAGS : 0;
+  w.room.health.pose(ws);
   // both optional, and absent from older clients: absence is "neither"
   w.e = Number.isInteger(msg.e) && msg.e > 0 && msg.e < W_EMOTE_MAX ? msg.e : 0;
   w.pt = finite(msg.py) && finite(msg.pp);
@@ -1440,6 +1455,8 @@ function handleWorldLevel(ws, msg) {
   room.blocks.snapshot(ws);
   room.weapons.snapshot(ws);
   if (previousLevel !== w.level) room.weapons.moved(ws, previousLevel);
+  if (previousLevel !== w.level) room.health.moved(ws, previousLevel);
+  room.health.snapshot(ws);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(room, w.id)) announceSeats(room);
   room.dirty = true;
@@ -1992,6 +2009,10 @@ function handleMessage(ws, msg) {
     case 'world-shot-hit':
     case 'world-wield':
       roomOf(ws)?.weapons.handle(ws, msg, strike);
+      break;
+    case 'world-fall':
+    case 'world-health-cmd':
+      roomOf(ws)?.health.handle(ws, msg, strike);
       break;
     case 'world-prop-spawn':
     case 'world-prop-move':

@@ -42,7 +42,7 @@ const r4 = (n) => Math.round(n * 10000) / 10000;
 const vec3 = (a, limit) =>
   Array.isArray(a) && a.length === 3 && a.every(finite) && a.every((v) => Math.abs(v) <= limit) ? a : null;
 
-export function createWeapons({ players, send, seated, flying, now = Date.now }) {
+export function createWeapons({ players, send, seated, flying, health = null, now = Date.now }) {
   const rates = new WeakMap();
   const allow = (ws, kind, cap) => {
     let r = rates.get(ws);
@@ -95,7 +95,8 @@ export function createWeapons({ players, send, seated, flying, now = Date.now })
         const len = Math.hypot(d[0], d[1], d[2]);
         if (len < 0.5 || len > 2) return;
         if (Math.hypot(o[0] - w.x, o[2] - w.z) > ORIGIN_REACH || Math.abs(o[1] - w.y) > ORIGIN_REACH) return;
-        if (seated(w.id)) return;
+        if (seated(w.id) || health?.isDead(ws)) return;
+        health?.shot(ws, m.w);
         const out = {
           type: 'world-shot', level: w.level, id: w.id, w: m.w, seq: m.seq,
           o: o.map(r2), d: d.map((v) => r4(v / len)),
@@ -141,6 +142,7 @@ export function createWeapons({ players, send, seated, flying, now = Date.now })
         if (!v || victim === ws || v.level !== w.level) return;
         if (Math.hypot(v.x - at[0], v.z - at[2]) > VICTIM_REACH || Math.abs(v.y - at[1]) > VICTIM_REACH) return;
         out.player = m.player;
+        health?.hit(ws, victim, m.w, at);
         const vel = vec3(m.v, 1e4);
         if (!vel) return strike(ws);
         if (!seated(v.id) && !flying(v)) {

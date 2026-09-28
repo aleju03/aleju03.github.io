@@ -526,3 +526,43 @@ the shooter's level. `w` is 0 pistol, 1 crossbow, 2 rocket
 
 A malformed number or array is a strike; everything else that fails a check
 is dropped in silence, because shots are a stream.
+
+### Health, death and respawn
+
+`src/health.js` keeps hit points (100 each), regeneration (8 hp/s after five
+quiet seconds), death (3 s to respawn, 2 s of spawn protection that ends
+early if you shoot) and a per-level scoreboard, all keyed by `ws.world.level`.
+`damage(ws, amount, {by, kind})` is the one entry point; see
+`notes/health.md` for the API other modules call. Damage from another player
+lands only where the level's `pvp` flag is on (default off: weapons still
+knock players about and hurt nobody); falls, `/hurt`, `/kill` and the
+environment hurt regardless. Types are in `src/game/net/healthProtocol.ts`.
+
+- C to S `world-fall {speed}`: a landing speed (units/s). Believed only up to
+  `sqrt(2 * 34 * drop) * 1.15 + 3` where `drop` is the height above the
+  player's current pose that the server saw in the last twenty seconds; nothing
+  under 32 u/s hurts, then 3 hp per u/s. Ignored while flying or dead; two a
+  second.
+- C to S `world-health-cmd {cmd, n?, on?}`: `kill`, `hurt` (`n` 1..500),
+  `heal`, `god` (`on`), `pvp` (`on`), all for the sender's own level and body,
+  six a second. `heal` and `god` are refused with `world-health-no` while pvp
+  is on (the admin excepted); turning pvp on clears everyone's god mode.
+- S to C `world-hp {level, rows:[[id,hp,max,flags],...]}`: changed rows only,
+  coalesced once per world tick. `flags` bit 0 dead, bit 1 spawn-protected.
+  A late arrival gets the rows of everyone hurt.
+- S to C `world-death {level,id,by,kind,sc}`: `by` is the killer (0: the
+  environment or oneself), `kind` a lowercase tag (`pistol`, `crossbow`,
+  `rocket`, `blast`, `fall`, `lava`, `kill`, ...), `sc` the changed scoreboard
+  rows `[id,kills,deaths,score]`.
+- S to C `world-respawn {level,id,x?,z?}`: back on your feet; the client goes
+  to its level's spawn unless a mode's `onRespawn` hook named a spot.
+- S to C `world-pvp {level,on,by}` and `world-scores {level,rows}` (on
+  arrival, and empty after a `reset`).
+
+Damage numbers: pistol 12, crossbow 45, x1.5 for a hit above 3.4 units over
+the victim's feet. A hit only counts if a shot of that weapon paid for it in
+the last eight seconds (credits are spent whether or not pvp is on). A blast
+comes from the validated `world-prop-explosion`: up to 90 x sqrt(power)
+(0.3..1.2) falling off linearly to `min(radius, 24)`, half to the caster
+themselves and only in pvp; other players are hurt only if the caster fired
+a rocket in the last eight seconds or the blast came from a prop (a barrel).

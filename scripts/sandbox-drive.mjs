@@ -105,6 +105,14 @@
                                       crate; links counted (must be 0).
                                       Shots to ~/.cache/overhaul/emotes
                                       (--emote-out)
+    npm run drive -- health           hit points offline: /health, /hurt, /heal, /pvp
+                                      and /kill answer what they must with no
+                                      server, the bar and the death sheet stay
+                                      away, and the hurt/died/respawn events
+                                      driven by hand put up the bar, the
+                                      killfeed and the sheet (shots health-*).
+                                      The two-client drive is
+                                      scripts/health-drive.mjs
     npm run drive -- portal           the portal gun: taken from the catalogue's
                                       tools tab, a blue and an orange portal
                                       opened on two walls downtown and each
@@ -799,6 +807,31 @@ try {
     await shot('console-closed')
     await run('cleanup')
     await sleep(300)
+  }
+
+  if (WHAT.includes('health')) {
+    console.log('health')
+    await look(null, -0.1)
+    for (const l of ['health', 'hurt 20', 'heal', 'pvp on', 'kill']) {
+      console.log(`  > ${l}: ${(await run(l)).join(' / ')}`)
+      await sleep(200)
+    }
+    // the store, fed the server's own messages by hand
+    await evaluate(`(() => { const h = window.__health, lv = window.__levels.current.id
+      h.receive({ type: 'world-welcome', you: 1, tick: 66, slot: 0, players: [] })
+      h.receive({ type: 'world-pvp', level: lv, on: true, by: 0 })
+      h.receive({ type: 'world-hp', level: lv, rows: [[1, 42, 100, 0]] })
+      h.receive({ type: 'world-death', level: lv, id: 7, by: 1, kind: 'rocket', sc: [[7, 0, 1, 0], [1, 1, 0, 1]] })
+      h.receive({ type: 'world-death', level: lv, id: 1, by: 0, kind: 'lava', sc: [[1, 1, 1, 1]] })
+      return true })()`)
+    await sleep(600)
+    await shot('health-down')
+    await evaluate(`(() => { const h = window.__health, lv = window.__levels.current.id
+      h.receive({ type: 'world-respawn', level: lv, id: 1 })
+      h.receive({ type: 'world-hp', level: lv, rows: [[1, 100, 100, 2]] }); return true })()`)
+    await sleep(600)
+    await shot('health-back')
+    await evaluate('window.__health.offline()')
   }
 
   if (WHAT.includes('menu')) {

@@ -217,6 +217,36 @@ const dictionaries = {
         },
         weaponTail: '{slot3} next weapon · {slot1} hands · {slot2} tools',
       },
+      // hit points, the killfeed and the death screen (components/os/HealthHud.tsx)
+      health: {
+        hp: 'hp',
+        protectedTag: 'protected',
+        pvpOn: 'pvp on: shots and blasts hurt',
+        pvpOff: 'pvp off',
+        pvpBy: '{name} turned pvp on',
+        pvpOffBy: '{name} turned pvp off',
+        refusedPvp: 'not while pvp is on',
+        respawnIn: 'back in {n}',
+        knockedOutBy: 'you were knocked out by {name}',
+        // when there is nobody to blame: by kind, `env` for any other
+        knockedOut: {
+          fall: 'you fell too far',
+          lava: 'you went swimming in lava',
+          fire: 'you burned',
+          mob: 'something ate you',
+          crash: 'you crashed',
+          kill: 'you gave up',
+          hurt: 'you hurt yourself',
+          blast: 'you blew yourself up',
+          env: 'you were knocked out',
+        } as Record<string, string>,
+        // the feed: "{by} [kind] {victim}", or "{victim} [kind]" with no one to blame
+        kinds: {
+          pistol: 'pistol', crossbow: 'crossbow', rocket: 'rocket', blast: 'blast', fall: 'fall',
+          lava: 'lava', fire: 'fire', mob: 'creature', crash: 'crash', kill: 'gave up', hurt: 'ouch', env: 'out',
+        } as Record<string, string>,
+        you: 'you',
+      },
       // the emote wheel (components/os/EmoteWheel.tsx), in player/emotes.ts's
       // EMOTES order, clockwise from the top; `hub` is the middle, which
       // plays nothing and stops whatever is playing
@@ -571,6 +601,34 @@ const dictionaries = {
           rocket: 'lanzacohetes · {grab} disparar',
         },
         weaponTail: '{slot3} siguiente arma · {slot1} manos · {slot2} herramientas',
+      },
+      // vida, el registro de bajas y la pantalla de muerte (components/os/HealthHud.tsx)
+      health: {
+        hp: 'vida',
+        protectedTag: 'protegido',
+        pvpOn: 'pvp activado: los disparos y las explosiones hieren',
+        pvpOff: 'pvp desactivado',
+        pvpBy: '{name} activó el pvp',
+        pvpOffBy: '{name} desactivó el pvp',
+        refusedPvp: 'no mientras el pvp está activo',
+        respawnIn: 'vuelves en {n}',
+        knockedOutBy: '{name} te dejó fuera de combate',
+        knockedOut: {
+          fall: 'caíste desde muy alto',
+          lava: 'te bañaste en lava',
+          fire: 'te quemaste',
+          mob: 'algo te comió',
+          crash: 'chocaste',
+          kill: 'te rendiste',
+          hurt: 'te hiciste daño',
+          blast: 'te volaste en pedazos',
+          env: 'quedaste fuera de combate',
+        } as Record<string, string>,
+        kinds: {
+          pistol: 'pistola', crossbow: 'ballesta', rocket: 'cohete', blast: 'explosión', fall: 'caída',
+          lava: 'lava', fire: 'fuego', mob: 'criatura', crash: 'choque', kill: 'se rindió', hurt: 'ay', env: 'fuera',
+        } as Record<string, string>,
+        you: 'tú',
       },
       emotes: {
         names: ['saludar', 'pulgar arriba', 'aplaudir', 'reír', 'bailar', 'saltar de alegría', 'músculo', 'mano a la cara', 'sentarse'],
