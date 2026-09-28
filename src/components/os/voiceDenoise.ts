@@ -33,7 +33,16 @@ export async function createDenoiser(ctx: AudioContext): Promise<RnnoiseWorkletN
       await ctx.audioWorklet.addModule(workletUrl)
       registered.add(ctx)
     }
-    return new RnnoiseWorkletNode(ctx, { maxChannels: 1, wasmBinary: wasm })
+    const node = new RnnoiseWorkletNode(ctx, { maxChannels: 1, wasmBinary: wasm })
+    // mono in, so mono out. Left at the defaults a worklet takes the mic as
+    // stereo and answers with as many channels as it was given, but it only
+    // denoises the first (`maxChannels`): the voice came out of the left ear
+    // alone, and lopsided to everyone listening. A mono output is spread to
+    // both by whatever it plugs into
+    node.channelCount = 1
+    node.channelCountMode = 'explicit'
+    node.channelInterpretation = 'speakers'
+    return node
   } catch {
     // a failed fetch is not remembered, so the next mic-on tries again
     binary = null
