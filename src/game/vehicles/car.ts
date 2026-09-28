@@ -141,14 +141,15 @@ import type { VehicleMaterials } from './materials'
   so the reported rev climbs to 0.96 and drops to 0.63..0.74 on every upshift,
   which is the sawtooth the sound synth needs. Top speed is set by where the
   torque curve crosses the drag curve, so it is a consequence rather than a
-  clamp — 15.5 * 0.77 of drive against 0.006416 * v^2 + 1.4 of drag balances
+  clamp — 24 * 0.77 of drive against 0.010675 * v^2 + 1.4 of drag balances
   at 40 u/s, which is 69 km/h at real scale and 6.8 times running pace, and
   reads as fast in a world whose eye height is 1.7 m. What limits the launch
-  is not the engine but LONG_GRIP: the first two gears would otherwise pull
-  0.9 g off the line, so drive is capped at what the contact patches will take
-  (15 u/s^2 scaled by the surface), which is also what makes a beach a beach.
-  Measured: 40.3 u/s terminal, 0 to 38 in 5.7 s, and 28.5 units of braking
-  distance from the top (1.5 s), over a nose that dives 4.1 degrees.
+  is not the engine but LONG_GRIP, scaled by the surface. Both torque and
+  grip must beat the heavy world gravity: the old 15 u/s^2 grip ceiling left
+  only 9.9 on grass, stalling on a 15-degree hill even at full throttle.
+  The 36 ceiling and stronger low gears now pull away on 35-degree grass,
+  and reverse has a low ratio too so a car can back out of a hillside.
+  `npm run measure -- car` checks those starts, road speed and braking.
 
   Cornering is a kinematic bicycle model with a grip ceiling and a separate
   lateral-velocity state, which is the cheapest formulation that can actually
@@ -601,23 +602,24 @@ const TOP_SPEED = 40 // 19.2 m/s = 69 km/h, 6.8x running pace
 const REV_TOP = 12
 /** road speed each gear runs out at */
 const GEAR_TOP = [9, 16.5, 24, 31.5, 40]
-/** and the torque multiplier it pulls with. A compressed spread, not a real
-    gearbox's — first gear at a true ratio would be 0.6 g off the line */
+/** torque multipliers: low gears pull against hills, higher gears trade
+    that force for road speed */
 const GEAR_GAIN = [2.35, 1.72, 1.34, 1.12, 1.0]
-const POWER = 15.5
+const REVERSE_GAIN = 2
+const POWER = 24
 /** balances POWER * torque(1) against rolling drag at exactly TOP_SPEED, so
     the top speed is where two curves cross rather than where a clamp bites:
-    (15.5 * 0.77 - 1.4) / 40^2 */
-const AERO = 0.006416
-/** the tyres, not the engine, are what limits a standing start. 15 u/s^2 is
-    0.72 g, which is a good street tyre on dry asphalt and — read through
-    SURFACE_FEEL.grip — is also what makes sand feel like wading */
-const LONG_GRIP = 15
+    (24 * 0.77 - 1.4) / 40^2. The extra torque improves pulling power without
+    outrunning the steering and brakes' intended road speed. */
+const AERO = 0.010675
+/** Enough tyre force to climb the hills the grade gate permits. At 36,
+    grass has 23.76 u/s^2 against 19.5 of gravity on a 35-degree slope.
+    The old 15 cap left grass with 9.9: it stalled at just 15 degrees. */
+const LONG_GRIP = 36
 const ENGINE_BRAKE = 2.2
 /** what a *stopped* car's tyres hold before they let it slide, as tan(slope).
-    It is neither LONG_GRIP (capped low on purpose so a launch does not read
-    as a dragster) nor BRAKE: it is the peak a dry tyre gives before it breaks
-    away, and 1.05 — 46.4 degrees — is chosen so the car holds any slope it
+    This is the peak a stationary tyre gives before it breaks away, and
+    1.05 — 46.4 degrees — is chosen so the car holds any slope it
     could have got onto under its own power. The climb gate stops it at
     MAX_GRADE, 37 degrees; a machine that can drive up 37 and then slide back
     down it would be absurd, so the hold has to be the larger number */
@@ -629,8 +631,8 @@ const HOLD_SPEED = 0.5
     (2.5) and a cactus (7) yield to a lean; a birch (15) does not, and a
     mature broadleaf (26) is what the world stops you with */
 const SHOVE_MAX = 10
-/** and how much work it takes, per unit of limit. Drive force on grass caps
-    around 10, so a bush goes in a third of a second and a dead tree in one */
+/** and how much work it takes, per unit of limit. More pulling power also
+    helps shove through light undergrowth; mature trunks remain solid. */
 const SHOVE_COST = 1.4
 const BRAKE = 22 // 10.6 m/s^2, about 1.08 g: a good hatch on dry asphalt
 const HAND_LONG = 9
@@ -1341,21 +1343,18 @@ export function buildCar(opts: CarOpts): Vehicle {
         gear === 0 ? throttleKey * 0.22 : 0,
       )
     if (grounded && shiftT <= 0) {
-      if (gear < 0 && backKey) drive = -POWER * 0.9 * torqueAt(rev)
+      if (gear < 0 && backKey) drive = -POWER * REVERSE_GAIN * torqueAt(rev)
       else if (throttleKey && gear >= 0) drive = POWER * GEAR_GAIN[gear] * torqueAt(rev)
-      // what the contact patches will actually take. Without this the first
-      // two gears pull 0.9 g and the car leaves like a dragster
+      // Surface grip still limits how much engine force reaches the ground.
       const tract = LONG_GRIP * feel.grip
       drive = clamp(drive, -tract, tract)
     }
 
     /* rolling and aero drag, plus engine braking when nothing is asked for.
        Rolling resistance fades out at low speed, and that is not cosmetic:
-       sand drags at 8.5 and its grip caps traction at 15 * 0.5 = 7.5, so a
-       constant rolling term made the car literally unable to pull away on a
-       beach. Scaling it in over the first 12 u/s leaves sand topping out at a
-       jog — wading, which is the intent — while keeping the terminal speeds
-       on every surface exactly where the full drag figure puts them */
+       loose ground must let the car pull away before charging its full
+       rolling loss. Scaling it in over the first 12 u/s keeps that start
+       smooth while retaining the surface's full drag at road speed. */
     const speedAbs = Math.abs(f)
     let resist = feel.drag * clamp(0.35 + speedAbs / 12, 0.35, 1) + AERO * f * f
     if (grounded && !throttleKey && !backKey) resist += ENGINE_BRAKE

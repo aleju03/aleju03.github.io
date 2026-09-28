@@ -36,6 +36,7 @@ import { BEAVER, HELMET_HAT, SPACESUIT } from '../../src/game/player/look'
     npm run shoot -- body:motion          filmstrips: walk, run, jump, big fall,
                                           knocked flat, getting up, idle
     npm run shoot -- body:strip:ragdoll   one of those strips on its own
+    npm run shoot -- body:strip:launch    a fast throw carrying through landing
     npm run shoot -- body:fp              what the first-person lens sees of
                                           your own body, looking down
     npm run shoot -- body:size            how big a bean is: beside a house
@@ -559,6 +560,18 @@ const ACTIONS: Record<string, {
         a.rig.hit(new THREE.Vector3(0, 4, 11).multiplyScalar(a.rig.mass), hip.add(new THREE.Vector3(0, 0.3, -0.5)))
       }
       tick(a, st.env, { speed: f < 18 ? WALK : 0 })
+    },
+  },
+  // /launch at its default power: keep carrying and tumbling after landing.
+  launch: {
+    frames: [0.3, 0.6, 0.9, 1.15, 1.45, 1.8, 2.4, 3.5],
+    cam: [Math.PI / 2, 13, 3],
+    run: (a, st, f) => {
+      if (f === 18) {
+        a.rig.group.updateMatrixWorld(true)
+        a.rig.flop(28, 10, 0)
+      }
+      tick(a, st.env)
     },
   },
   // a sprinting body clipped hard by something big, seen from above so the

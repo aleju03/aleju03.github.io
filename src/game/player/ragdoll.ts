@@ -96,11 +96,11 @@ export interface Ragdoll {
 
 const SUBSTEP = 1 / 120
 const RELAX = 4
-const DRAG = 0.45 // per-second velocity bleed, air and rolling both
-const FLOOR_GRIP = 0.3 // fraction of planar slide a floor touch eats, per pass
+const DRAG = 0.12 // light air resistance; contacts do the braking on landing
+const FLOOR_FRICTION = 1.15 // tangential impulse / normal impulse
 /** a floor touch keeps this much of the speed it arrived with, as long as it
     arrived fast enough for a bounce to be a bounce rather than a buzz */
-const BOUNCE = 0.28
+const BOUNCE = 0.42
 const BOUNCE_MIN = 2.5
 
 export function createRagdoll(
@@ -116,11 +116,22 @@ export function createRagdoll(
   const inv = new Float32Array(n).map((_, i) => 1 / (masses?.[i] ?? 1))
   const rest = new Float32Array(links.length)
   const floors = new Float32Array(n)
+  const contactImpulse = new Float32Array(n)
   const pinTo: Array<THREE.Vector3 | null> = new Array(n).fill(null)
   const pinK = new Float32Array(n)
   let driveTo: THREE.Vector3[] | null = null
   let driveK: Float32Array | null = null
   const delta = new THREE.Vector3()
+  const center = new THREE.Vector3()
+  const offset = new THREE.Vector3()
+  const velocity = new THREE.Vector3()
+  const angular = new THREE.Vector3()
+  const tangent = new THREE.Vector3()
+  const torque = new THREE.Vector3()
+  const spin = new THREE.Vector3()
+  const impulse = new THREE.Vector3()
+  const inertia = new THREE.Matrix3()
+  const totalMass = Array.from(inv).reduce((sum, w) => sum + 1 / w, 0)
   let carry = 0 // leftover frame time under one substep
   let speed = 0
 
@@ -161,6 +172,7 @@ export function createRagdoll(
     const { ceilingY, collision } = env
     const keep = 1 - DRAG * SUBSTEP
     let travel = 0
+    contactImpulse.fill(0)
     for (let i = 0; i < n; i++) {
       const p = pts[i]
       delta.subVectors(p, prev[i]).multiplyScalar(keep)
@@ -214,9 +226,10 @@ export function createRagdoll(
           p.y = floor
           if (vy < 0) q.y = vy < -BOUNCE_MIN ? floor + vy * BOUNCE * SUBSTEP : floor
           else q.y += lift
-          // ground friction: eat most of the slide, keep a little roll
-          q.x += (p.x - q.x) * FLOOR_GRIP
-          q.z += (p.z - q.z) * FLOOR_GRIP
+          // Solver passes revisit the same contact. Keep one impulse budget
+          // per substep, rather than multiplying away speed on every pass.
+          contactImpulse[i] = Math.max(contactImpulse[i], grav * SUBSTEP,
+            -vy * (vy < -BOUNCE_MIN ? 1 + BOUNCE : 1))
         }
         if (ceilingY !== undefined && p.y > ceilingY - r) {
           p.y = ceilingY - r
@@ -247,10 +260,13 @@ export function createRagdoll(
             const exitT = top + r - p.y
             const m = Math.min(exitL, exitR, exitN, exitF, exitT)
             if (m === exitT) {
+              const vy = (p.y - q.y) / SUBSTEP
+              const lift = top + r - p.y
               p.y = top + r
-              if (q.y < p.y) q.y = p.y
-              q.x += (p.x - q.x) * FLOOR_GRIP
-              q.z += (p.z - q.z) * FLOOR_GRIP
+              if (vy < 0) q.y = vy < -BOUNCE_MIN ? p.y + vy * BOUNCE * SUBSTEP : p.y
+              else q.y += lift
+              contactImpulse[i] = Math.max(contactImpulse[i], grav * SUBSTEP,
+                -vy * (vy < -BOUNCE_MIN ? 1 + BOUNCE : 1))
             } else if (m === exitL || m === exitR) {
               const x = m === exitL ? box.min.x - r : box.max.x + r
               q.x += x - p.x
@@ -263,6 +279,57 @@ export function createRagdoll(
           }
         }
       }
+    }
+    // Friction acts at the surface of the collider, below its joint. A
+    // center-only particle impulse misses that lever arm: a broad bean can
+    // slide on its belly forever without ever turning over. Share a contact
+    // impulse through the cloud's mass and inertia, preserving the limbs'
+    // relative motion while converting translation into rotation.
+    if (!contactImpulse.some((j) => j > 0)) return
+    center.set(0, 0, 0)
+    for (let i = 0; i < n; i++) center.addScaledVector(pts[i], 1 / inv[i])
+    center.divideScalar(totalMass)
+    let xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0
+    angular.set(0, 0, 0)
+    for (let i = 0; i < n; i++) {
+      const m = 1 / inv[i]
+      offset.subVectors(pts[i], center)
+      const { x, y, z } = offset
+      xx += m * (y * y + z * z)
+      yy += m * (x * x + z * z)
+      zz += m * (x * x + y * y)
+      xy -= m * x * y
+      xz -= m * x * z
+      yz -= m * y * z
+      velocity.subVectors(pts[i], prev[i]).divideScalar(SUBSTEP)
+      angular.addScaledVector(torque.crossVectors(offset, velocity), m)
+    }
+    inertia.set(xx, xy, xz, xy, yy, yz, xz, yz, zz).invert()
+    angular.applyMatrix3(inertia)
+    for (let i = 0; i < n; i++) {
+      if (contactImpulse[i] === 0) continue
+      const p = pts[i]
+      const q = prev[i]
+      offset.set(0, -radii[i], 0)
+      tangent.crossVectors(angular, offset)
+      velocity.subVectors(p, q).divideScalar(SUBSTEP)
+      tangent.add(velocity).setY(0)
+      const slide = tangent.length()
+      if (slide < 1e-6) continue
+      tangent.multiplyScalar(1 / slide)
+      offset.add(p).sub(center)
+      torque.crossVectors(offset, tangent)
+      spin.copy(torque).applyMatrix3(inertia)
+      const effectiveInvMass = 1 / totalMass + torque.dot(spin)
+      const j = Math.min(slide / effectiveInvMass, FLOOR_FRICTION * contactImpulse[i] / inv[i])
+      impulse.copy(tangent).multiplyScalar(-j / totalMass)
+      spin.multiplyScalar(-j)
+      for (let k = 0; k < n; k++) {
+        offset.subVectors(pts[k], center)
+        velocity.crossVectors(spin, offset).add(impulse)
+        prev[k].addScaledVector(velocity, -SUBSTEP)
+      }
+      angular.add(spin)
     }
   }
 

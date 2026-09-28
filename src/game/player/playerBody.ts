@@ -2484,7 +2484,7 @@ export function buildPlayerBody(
     // it only shapes how a heap *lands*: after two seconds the body is left
     // alone to come to rest, or the pull would argue with the bones forever
     // and the heap would never count as settled
-    if (len < 0.2 * S || downTime < 0.45 || downTime > 2.2 || grabs > 0) {
+    if (len < 0.2 * S || downTime < 0.45 || downTime > 2.2 || grabs > 0 || rag.motion() > 4) {
       rag.drive(null)
       return
     }
@@ -2542,18 +2542,15 @@ export function buildPlayerBody(
   }
 
   /*
-    Friction on the heap as a whole. A body lying on the ground is not
-    stopped by its particles' own floor grip alone: the face-down roll above
-    is an angular kick the ground turns into rolling, and a round bean
-    rolling reads as a statue skating across the road (measured: a knocked
-    pedestrian drifted 3.5 units at 2.5 u/s for a second and a half after it
-    landed). So once three or more particles are on the floor, the heap's
-    mass-weighted planar velocity is bled away at HEAP_GRIP a second. Only
-    the common motion goes: the roll still turns the body over about its own
-    middle, and the limbs keep flopping and settling relative to it
+    Let a nearly resting heap settle without creeping from the sprawl's
+    pose adjustments. Fade this assistance out before a tumble: braking a
+    fast body here used to kill the entire launch as soon as three joints
+    touched the floor. Moving bodies lose momentum through their contacts.
   */
   const HEAP_GRIP = 14
   const brakeHeap = (dt: number, env: RagdollEnv) => {
+    const settle = 1 - THREE.MathUtils.smoothstep(rag.motion(), 0.9, 3)
+    if (settle <= 0) return
     let touching = 0
     for (let i = 0; i < P_COUNT; i++) {
       const p = rag.pts[i]
@@ -2570,7 +2567,7 @@ export function buildPlayerBody(
       mz += velTmp.z * MASSES[i]
       m += MASSES[i]
     }
-    const k = (1 - Math.exp(-HEAP_GRIP * dt)) / m
+    const k = (1 - Math.exp(-HEAP_GRIP * settle * dt)) / m
     velTmp.set(-mx * k, 0, -mz * k)
     for (let i = 0; i < P_COUNT; i++) rag.kick(i, velTmp)
   }

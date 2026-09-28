@@ -17,6 +17,7 @@
     lean      the body's pitch (pelvis to head, from upright) standing,
               walking and at a full run
     hooks     the sandbox hooks end to end: hit, grab and drag, settle, get up
+    launches  fast throws: landing carry, tumbling, and eventual rest
 
   Nothing here draws. The pictures are `npm run shoot -- body:closeup` and
   friends (scripts/probe/body.ts).
@@ -39,6 +40,68 @@ const meshOf = (r) => {
   let m
   r.group.traverse((o) => { if (o.isSkinnedMesh) m = o })
   return m
+}
+
+if (want('launches')) {
+  const platformEnv = {
+    groundY: -10,
+    collision: makeCollisionSet(env.collision.bounds, [
+      new THREE.Box3(new THREE.Vector3(-1e4, -10, -1e4), new THREE.Vector3(1e4, 0, 1e4)),
+    ]),
+  }
+  const cases = [[0, 60, env], [28, 60, env], [56, 60, env], [112, 60, env],
+    [56, 30, env], [56, 120, env], [56, 60, platformEnv]]
+  let referenceCarry = 0
+  for (const [speed, hz, floorEnv] of cases) {
+    const r = buildPlayerBody(EYE, GRAV)
+    const pose = poseOf()
+    pose.dt = 1 / hz
+    pose.yaw = -Math.PI / 2
+    r.face(pose.yaw)
+    r.group.rotation.y = r.facing + Math.PI
+    for (let i = 0; i < hz / 2; i++) r.update(pose, env)
+    r.group.updateMatrixWorld(true)
+    r.flop(speed, 10, 0)
+    const p = new THREE.Vector3()
+    const center = new THREE.Vector3()
+    const spine = new THREE.Vector3()
+    let landed = -1, landX = 0, carry = 0, settled = -1, pitchTurns = 0
+    let lastPitch = 0
+    for (let i = 0; i < hz * 30; i++) {
+      r.update(pose, floorEnv)
+      center.set(0, 0, 0)
+      let touching = 0
+      for (const limb of r.limbs) {
+        r.limbPos(limb.index, p)
+        if (!Number.isFinite(p.x + p.y + p.z)) throw new Error('Non-finite launch')
+        center.add(p)
+        if (p.y <= limb.radius + 0.04) touching++
+      }
+      center.divideScalar(r.limbs.length)
+      if (landed < 0 && i > hz * 0.2 && touching >= 3) { landed = i; landX = center.x }
+      if (i === landed + hz / 2 && landed >= 0) carry = center.x - landX
+      r.limbPos(1, spine).sub(r.limbPos(0, p)).normalize()
+      // Signed rotation in the launch plane: rocking back and forth must
+      // cancel out, rather than adding up to a supposed full turnover.
+      const pitch = Math.atan2(spine.x, spine.y)
+      if (i > 0) pitchTurns += Math.atan2(Math.sin(pitch - lastPitch), Math.cos(pitch - lastPitch))
+      lastPitch = pitch
+      if (r.settled && i > hz * 2 && settled < 0) settled = i / hz
+    }
+    console.log(`launch ${speed} u/s @ ${hz} Hz (${floorEnv === env ? 'ground' : 'platform'}): landed at ${(landed / hz).toFixed(2)} s, carried ${carry.toFixed(2)} units in the next 0.5 s, forward rolls ${(pitchTurns / (2 * Math.PI)).toFixed(2)}, rested at ${settled.toFixed(2)} s`)
+    const minimumTurns = speed >= 112 ? 2 : speed >= 56 ? 1 : speed >= 28 ? 0.65 : 0
+    if (landed < 0 || carry < speed * 0.15 || settled < 0 || !r.settled || pitchTurns < minimumTurns * 2 * Math.PI) {
+      console.error('  FAIL: launch must carry through landing, tumble, and eventually stay at rest')
+      process.exitCode = 1
+    }
+    if (speed === 56 && floorEnv === env) {
+      if (hz === 60 && floorEnv === env) referenceCarry = carry
+      else if (Math.abs(carry - referenceCarry) > referenceCarry * 0.1) {
+        console.error('  FAIL: landing carry changed by over 10% across frame rates')
+        process.exitCode = 1
+      }
+    }
+  }
 }
 
 /* ------------------------------------------------------------ variants -- */
