@@ -2549,9 +2549,9 @@ export default function CrtScene({
           worldLoaded: () => outside.hasWorld(),
           placesHere: () => !!levels.current.house,
           online: () => net !== null,
-          // `bring`: the admin flag is the one the world socket's hello came
-          // back with (the roster never lists us, so it cannot say; the server
-          // checks again), and anyone on any level can be brought
+          // the admin flag is the one the world socket's hello came back with
+          // (the roster never lists us, so it cannot say; the server checks
+          // again). `bring` is open to everyone, on any level
           admin: () => !!net?.admin,
           roster: () =>
             [...remote.roster].filter(([id]) => id !== remote.you).map(([id, e]) => ({ id, name: e.name })),
@@ -5092,7 +5092,7 @@ export default function CrtScene({
           return levels.goToLoading(loadMapLevel(def.id), spawn) ? 'ok' : 'busy'
         }
         /**
-         * The admin brought us (the console's `bring`): stand where the
+         * Somebody brought us (the console's `bring`): stand where the
          * server said, on the level it said. The same level is a teleport;
          * another is the ordinary cut there, loading its map first if this
          * session has never been, arriving on that spot rather than at the

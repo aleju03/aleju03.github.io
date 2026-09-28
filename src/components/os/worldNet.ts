@@ -94,8 +94,8 @@ export interface WorldNet {
   /** we bumped into this player: the velocity their own client should take
       (game/net/shove.ts). Throttled by the caller, clamped by the server */
   shove: (to: PlayerId, vx: number, vy: number, vz: number) => void
-  /** admin only, and the server is the one that checks: bring this player
-      (or everyone on the level) to where we stand */
+  /** bring this player (or everyone in the world) to where we stand.
+      Anyone may; the server only rate-limits it */
   bring: (to: PlayerId | 'all') => void
   /** our physgun has this player (game/net/grab.ts). Throttled by the
       caller, checked and clamped by the server */

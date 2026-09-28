@@ -785,15 +785,11 @@ async function main() {
   w1.send({ type: 'world-shove', to: welcome1.you, vx: 8, vy: 0, vz: 0 });
   w1.send({ type: 'world-chat', text: 'marker: self' });
   await noShoveBefore(w1, 'a shove at yourself is dropped');
-  // 17c'. Bring. Only the admin can summon somebody, and the summoned client
-  //       is told where to stand, a little way off the admin, on its level
+  // 17c'. Bring. Anyone can summon somebody, and the summoned client is
+  //       told where to stand, a little way off the summoner, on its level
   w1.send({ type: 'world-bring', to: welcome2.you });
-  w1.send({ type: 'world-chat', text: 'marker: not admin' });
-  for (let i = 0; i < 40; i++) {
-    const msg = await w2.next('a guest cannot bring anybody');
-    assert.notEqual(msg.type, 'world-bring', 'a guest brought somebody');
-    if (msg.type === 'world-chat') break;
-  }
+  const byGuest = await w2.nextOf('world-bring', 'a guest brings somebody too');
+  assert.equal(byGuest.from, welcome1.you, 'told which guest brought them');
   dup.send({ type: 'world-join', level: 'overworld' });
   const adminWelcome = await dup.nextOf('world-welcome', 'the admin walks in');
   dup.send({ type: 'world-move', x: 100, y: 7, z: -40, yaw: 0, pitch: 0, gait: 0, f: 1 });

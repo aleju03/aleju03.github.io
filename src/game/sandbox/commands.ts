@@ -1022,13 +1022,12 @@ registerCommand({
     },
   ],
   help: msg(
-    'bring a player, or all, to where you stand, from any map (admin)',
-    'trae a un jugador, o a todos, a donde estás, desde cualquier mapa (administrador)',
+    'bring a player, or all, to where you stand, from any map',
+    'trae a un jugador, o a todos, a donde estás, desde cualquier mapa',
   ),
   run: (ctx) => {
     const host = ctx.host
     if (!host.online?.() || !host.bring) ctx.fail(msg('nobody out here to bring', 'no hay nadie aquí para traer'))
-    if (!host.admin?.()) ctx.fail(msg('only the admin can bring people', 'solo el administrador puede traer gente'))
     const want = ctx.args.join(' ').trim().toLowerCase()
     if (!want) ctx.fail(msg('usage: bring <player|all>', 'uso: bring <jugador|all>'))
     // anybody in the world, not just this level: a friend on another map

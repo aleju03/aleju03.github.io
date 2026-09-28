@@ -1413,17 +1413,16 @@ function handleWorldShove(ws, msg) {
   send(peer, { type: 'world-shove', from: w.id, vx: r2(vx), vy: r2(vy), vz: r2(vz) });
 }
 
-// The admin summons a player, or everyone in the world, to where they stand,
-// whatever level or map they are on: the message carries the admin's level,
-// and a victim somewhere else runs its own cut there. Admin only, because
-// being moved is not something a visitor agreed to; anyone else is dropped
-// in silence (the client already refused them).
-// The server spaces the arrivals in a ring round the admin, so a whole room
+// Anyone summons a player, or everyone in the world, to where they stand,
+// whatever level or map they are on: the message carries the summoner's
+// level, and a victim somewhere else runs its own cut there. It used to be
+// admin only; it is open to everyone now, held back by the shove's rate limit.
+// The server spaces the arrivals in a ring round the summoner, so a whole room
 // brought at once does not land in one heap, and each victim's client moves
 // itself, the same as a shove.
 function handleWorldBring(ws, msg) {
   const w = ws.world;
-  if (!w || !ws.isAdmin) return;
+  if (!w) return;
   const all = msg.to === 'all';
   if (!all && !Number.isInteger(msg.to)) {
     strike(ws);
