@@ -15,6 +15,13 @@
  *
  * Nothing loads the map module for this: edits for a level whose blocks are
  * not attached yet are held and applied on attach.
+ *
+ * Claims: the level declines edits inside somebody else's claim before it
+ * makes them (remoteSocial.ts's mirror), and the server refuses whatever gets
+ * through anyway (a stale mirror, a blast that reached over a border). A
+ * `world-block-refused` names the cells and what the server holds there, and
+ * `revert` puts them back, so no client is left looking at a block that only
+ * it can see.
  */
 import type { BlockNet, WireEdit } from '../levels/cubeland/cubeland'
 import type { BlockClientMessage } from './blockProtocol'
@@ -40,7 +47,11 @@ const toWire = (flat: readonly number[]): WireEdit[] => {
   return out
 }
 
-export function createBlockNetwork(send: (m: BlockClientMessage) => void): BlockNetwork {
+export function createBlockNetwork(
+  send: (m: BlockClientMessage) => void,
+  /** an edit of ours was refused inside somebody's claim: whose */
+  refused: (owner: string) => void = () => {},
+): BlockNetwork {
   let blocks: BlockNet | null = null
   let active = ''
   let joined = false
@@ -65,6 +76,12 @@ export function createBlockNetwork(send: (m: BlockClientMessage) => void): Block
     },
     receive: (m) => {
       if (m.type === 'world-welcome') joined = true
+      if (m.type === 'world-block-refused') {
+        if (m.level !== LEVEL) return
+        blocks?.revert(toWire(m.edits))
+        refused(m.owner)
+        return
+      }
       if (m.type !== 'world-blocks' && m.type !== 'world-blockmap') return
       if (m.level !== LEVEL) return
       const edits = toWire(m.edits)

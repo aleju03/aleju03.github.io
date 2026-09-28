@@ -5,6 +5,7 @@ import { forceMusic, musicNow, type Mood } from '../music'
 import { labelIn, type History } from './history'
 import type { PropKind } from './kinds'
 import type { WorldRules } from './rules'
+import type { SocialHost } from './socialCommands'
 import type { PropId, Sandbox } from './sandbox'
 
 /*
@@ -141,6 +142,8 @@ export interface SandboxHost {
   bring?: (to: number | 'all') => boolean
   /** say something on the shared chat; false offline */
   chat?: (text: string) => boolean
+  /** friends, protection, claims, votes and mutes (socialCommands.ts) */
+  social?: SocialHost
   /** tools the tool slots offer, and handing one over (the physgun piece) */
   tools?: () => string[]
   give?: (tool: string) => boolean

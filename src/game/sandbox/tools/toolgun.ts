@@ -50,7 +50,7 @@ const LABELS: Record<ConstraintType, Msg> = {
 /** how far the tool reaches, units */
 export const TOOL_RANGE = 120
 
-export type ToolgunEventType = 'select' | 'join' | 'cancel' | 'set' | 'remove' | 'fail' | 'mode'
+export type ToolgunEventType = 'select' | 'join' | 'cancel' | 'set' | 'remove' | 'fail' | 'mode' | 'deny'
 export interface ToolgunEvent {
   type: ToolgunEventType
   /** where the shot landed (the tracer's end), world */
@@ -142,11 +142,21 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
     return true
   }
 
+  /** somebody else's prop, and the scope protects it: the gun buzzes and the
+      toast says whose it is (network.denied), and nothing else happens */
+  const forbidden = (prop: Prop | null, point: THREE.Vector3, normal: THREE.Vector3 | null) => {
+    if (!prop || !sb.network?.may || sb.network.may(prop.id)) return false
+    sb.network.denied?.(prop.id)
+    emit('deny', point, normal, prop.id)
+    return true
+  }
+
   const primary = (input: ToolInput) => {
     const hit = sb.raycast(input.aim.eye, input.aim.dir, TOOL_RANGE, { props: true, world: true })
     const point = hit?.point ?? p.copy(input.aim.dir).multiplyScalar(TOOL_RANGE).add(input.aim.eye)
     const prop = hit?.prop ?? null
     const normal = hit?.normal ?? null
+    if (forbidden(prop, point, normal)) return
     if (mode === 'keys') {
       if (prop && con.cycleKeys(prop.id, 1) >= 0) emit('set', point, normal, prop.id)
       else emit('fail', point, normal, -1)
@@ -198,6 +208,7 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
       emit('cancel', point, hit?.normal ?? null, -1)
       return
     }
+    if (forbidden(prop, point, hit?.normal ?? null)) return
     if (!prop) {
       emit('fail', point, hit?.normal ?? null, -1)
       return

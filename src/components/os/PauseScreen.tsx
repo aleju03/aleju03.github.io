@@ -490,6 +490,15 @@ export interface PauseScreenProps {
   tier: { auto: GfxTier; built: GfxTier } | null
   /** and everyone else out there, measured at the same moment */
   people: PersonWhere[]
+  /** who may use whose things (net/remoteSocial.ts): the scope's protection
+      switch, who you have let in, and the toggles. Absent offline */
+  permissions?: {
+    protect: boolean
+    canSwitch: boolean
+    friends: readonly string[]
+    onProtect: (on: boolean) => void
+    onFriend: (name: string, on: boolean) => void
+  }
   /** the map you are on, and going to another one (the sheet closes and the
       cut runs there) */
   map: MapId
@@ -508,6 +517,7 @@ export default function PauseScreen({
   onPixelProofs,
   tier,
   people,
+  permissions,
   map,
   onMap,
   identity,
@@ -939,6 +949,27 @@ export default function PauseScreen({
                   </span>
                   <Note>{tp.sayHint}</Note>
                 </div>
+                {permissions && (
+                  <div className="mt-3 flex items-baseline justify-between gap-4">
+                    <Note>{tp.protectLabel}</Note>
+                    <button
+                      type="button"
+                      disabled={!permissions.canSwitch}
+                      aria-pressed={permissions.protect}
+                      title={tp.protectHint}
+                      onClick={() => permissions.onProtect(!permissions.protect)}
+                      className="font-display relative px-1 py-0.5 text-[20px] uppercase disabled:cursor-not-allowed"
+                      style={{ color: permissions.protect ? INK : INK_SOFT }}
+                    >
+                      {permissions.protect ? tp.on : tp.off}
+                      <span
+                        aria-hidden
+                        className={`absolute -inset-x-2.5 -inset-y-1.5 ${permissions.protect ? 'opacity-100' : 'opacity-0'}`}
+                        style={CIRCLED}
+                      />
+                    </button>
+                  </div>
+                )}
                 {people.length === 0 ? (
                   <p className="mt-4 font-display text-[22px] uppercase" style={{ color: `${INK}55` }}>
                     {tp.nobody}
@@ -964,6 +995,23 @@ export default function PauseScreen({
                         >
                           {p.name}
                         </span>
+                        {permissions && (
+                          <button
+                            type="button"
+                            aria-pressed={permissions.friends.includes(p.name)}
+                            title={tp.friendHint}
+                            onClick={() => permissions.onFriend(p.name, !permissions.friends.includes(p.name))}
+                            className="font-display relative px-1 py-0.5 text-[17px] uppercase"
+                            style={{ color: permissions.friends.includes(p.name) ? INK : INK_SOFT }}
+                          >
+                            {tp.friend}
+                            <span
+                              aria-hidden
+                              className={`absolute -inset-x-2 -inset-y-1 ${permissions.friends.includes(p.name) ? 'opacity-100' : 'opacity-0'}`}
+                              style={CIRCLED}
+                            />
+                          </button>
+                        )}
                         {p.dist === undefined || p.bearing === undefined ? (
                           <Note>{tp.elsewhere}</Note>
                         ) : (

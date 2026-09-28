@@ -366,7 +366,17 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
 
   /* ------------------------------------------------------- grab/drop -- */
 
+  /** the last grab was refused because the prop is somebody else's: the
+      miss that follows is a denial, not a whiff */
+  let refusedHold = false
   const grabProp = (p: Prop, point: THREE.Vector3, aim: Aim) => {
+    if (sb.network?.may && !sb.network.may(p.id)) {
+      refusedHold = true
+      sb.network.denied?.(p.id)
+      view.end.copy(point)
+      view.normal.set(0, 0, 0)
+      return false
+    }
     if (sb.network && !sb.network.claim(p.id, 'hand')) return false
     if (p.mode === 'kinematic') return false
     if (p.mode === 'frozen') {
@@ -653,11 +663,12 @@ export function createPhysgun(o: PhysgunOpts): Physgun {
       // holding the trigger sweeps: the beam takes the first thing it
       // touches, the way GMod's does, rather than only what was under the
       // crosshair on the frame the button went down
+      refusedHold = false
       if (inp.fire && !spent && !tryGrab(aim)) {
         view.mode = 'miss'
-        if (fireDown) emit('miss', view.end.x, view.end.y, view.end.z)
+        if (fireDown) emit(refusedHold ? 'deny' : 'miss', view.end.x, view.end.y, view.end.z)
       }
-      if (reloadDown) unfreezeAt(aim)
+      if (reloadDown && !unfreezeAt(aim) && refusedHold) emit('deny', view.end.x, view.end.y, view.end.z)
     }
     if (!(prop || rig) && (!inp.fire || spent)) view.mode = 'off'
   }

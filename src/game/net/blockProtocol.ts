@@ -20,3 +20,6 @@ export type BlockClientMessage = {
 export type BlockServerMessage =
   | { type: 'world-blocks'; level: string; from: number; edits: number[]; blast: boolean }
   | { type: 'world-blockmap'; level: string; edits: number[] }
+  /** edits refused inside somebody's claim: x, y, z and the value the server
+      holds there (-1: the generated terrain), so the sender puts it back */
+  | { type: 'world-block-refused'; level: string; edits: number[]; owner: string }

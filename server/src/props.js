@@ -316,7 +316,7 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       if ([...l.joints.values()].some((j) => j.a === p.id && j.b === b.id && j.kind === m.kind && JSON.stringify(j.frames) === JSON.stringify(frames))) return;
       const j = { id: jointSeq++, a: p.id, b: b.id, kind: m.kind, frames };
       l.joints.set(j.id, j);
-      broadcast(w.level, { type: 'world-prop-joint', joint: j, nonce: m.nonce });
+      broadcast(w.level, { type: 'world-prop-joint', joint: j, nonce: m.nonce, from: w.id });
     } else if (m.type === 'world-prop-unjoint') {
       const j = l.joints.get(m.id);
       const ja = l.props.get(j?.a), jb = l.props.get(j?.b);

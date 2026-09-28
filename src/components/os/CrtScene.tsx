@@ -82,6 +82,8 @@ import { createWorldEffects } from '../../game/net/worldEffects'
 import { createPropNetwork } from '../../game/net/remoteProps'
 import { createDamageNetwork } from '../../game/net/remoteDamage'
 import { createBlockNetwork } from '../../game/net/remoteBlocks'
+import { createSocialNetwork, describe as describeNote } from '../../game/net/remoteSocial'
+import '../../game/sandbox/socialCommands'
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
@@ -464,6 +466,9 @@ export default function CrtScene({
   }, [notice])
   /** and its list of everyone else out there, taken at the same moment */
   const [people, setPeople] = useState<PersonWhere[]>([])
+  // who may use whose things, as the pause sheet's people page shows it
+  const [permState, setPermState] = useState({ protect: true, canSwitch: false, friends: [] as string[] })
+  const permRef = useRef<{ protect: (on: boolean) => void; friend: (name: string, on: boolean) => void } | null>(null)
   // the prompt buttons route here; E does the same through the input service
   const enterRef = useRef<(() => void) | null>(null)
   const leaveRef = useRef<(() => void) | null>(null)
@@ -1988,14 +1993,39 @@ export default function CrtScene({
             walk.push(shoveV.x, 0, shoveV.z)
           }
         }
+        // who may touch whose things (game/net/remoteSocial.ts): the mirror of
+        // the server's friends, protection switch and claims
+        const social = createSocialNetwork((m) => net?.social(m), { admin: () => sessionRef.current?.admin === true })
+        const quiet = (en: string, es: string) => pushFeed({ tone: 'system', text: bilingual(en, es) })
+        permRef.current = {
+          protect: (on) => social.send({ op: 'protect', on }),
+          friend: (name, on) => social.send({ op: on ? 'friend' : 'unfriend', name }),
+        }
+        social.onChange(() =>
+          setPermState({
+            protect: social.protect,
+            canSwitch: sessionRef.current?.admin === true || (social.host !== 0 && social.host === remote.you),
+            friends: [...social.friends],
+          }),
+        )
         const propNet = createPropNetwork(
           (m) => net?.prop(m),
           (en, es) => pushFeed({ tone: 'err', text: bilingual(en, es) }),
+          undefined,
+          {
+            may: social.may,
+            denied: (owner) => quiet(`that belongs to ${owner}`, `eso es de ${owner}`),
+          },
         )
+        /** the chunk column of Cubeland under the walker, once it is built */
+        let blockChunk: ((x: number, z: number) => { cx: number; cz: number }) | null = null
         // what players break: the buildings' lost pieces and the felled trees
         const damageNet = createDamageNetwork((m) => net?.damage(m))
         // Cubeland's blocks: attached when the map is first loaded
-        const blockNet = createBlockNetwork((m) => net?.blocks(m))
+        const blockNet = createBlockNetwork(
+          (m) => net?.blocks(m),
+          (owner) => quiet(`that chunk belongs to ${owner}`, `ese chunk es de ${owner}`),
+        )
         const worldEffects = createWorldEffects({
           send: (m) => net?.effect(m),
           level: () => levels.current.id,
@@ -2031,7 +2061,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); tools?.weapons.offline() }
+              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); social.offline(); tools?.weapons.offline() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -2042,6 +2072,7 @@ export default function CrtScene({
               worldEffects.receive(msg)
               damageNet.receive(msg)
               blockNet.receive(msg)
+              social.receive(msg)
               // shots, hits and who is holding what (sandbox/tools/weapons.ts)
               tools?.receive(msg)
               switch (msg.type) {
@@ -2094,6 +2125,19 @@ export default function CrtScene({
                   }
                   break
                 }
+                // a notice from the server's ownership rules: words, in the
+                // chat rail where a vote is being run and everyone can see it
+                case 'world-social-note': {
+                  const line = describeNote(msg)
+                  if (line) pushFeed({ tone: 'system', text: bilingual(line.en, line.es) })
+                  break
+                }
+                // removed from this world for a while: the walk carries on
+                // alone, and the server says the same again on any rejoin
+                case 'world-kicked':
+                  quiet('you were removed from this world for 10 minutes', 'te sacaron de este mundo por 10 minutos')
+                  leaveWorld()
+                  break
                 case 'world-tick':
                   remote.tick(msg.players, performance.now())
                   if (msg.vehicles) fleetNet.tick(msg.vehicles, performance.now())
@@ -2169,6 +2213,7 @@ export default function CrtScene({
         }
 
         const leaveWorld = () => {
+          social.offline()
           propNet.offline()
           worldEffects.offline()
           damageNet.offline()
@@ -2634,6 +2679,14 @@ export default function CrtScene({
             net.chat(text)
             return true
           },
+          social: {
+            send: (m) => social.send(m),
+            admin: () => sessionRef.current?.admin === true,
+            protect: () => social.protect,
+            friends: () => social.friends,
+            claims: () => social.claims,
+            chunkHere: () => (levels.current.id === 'cubeland' && blockChunk ? blockChunk(headPos.x, headPos.z) : null),
+          },
           clear: () => setFeed([]),
           // the belt's tools by name (`give pistol`, `give ballesta`): handed
           // over if not carried yet, and drawn
@@ -2999,6 +3052,7 @@ export default function CrtScene({
             if (rig.ragdolling) rig.reset()
             if (level === from) return
             propNet.setLevel(level.id)
+            social.setLevel(level.id)
             worldEffects.setLevel(level.id)
             damageNet.setLevel(level.id)
             blockNet.setLevel(level.id)
@@ -3037,6 +3091,7 @@ export default function CrtScene({
             // announced: until it is, we are still drawing the crowd we just
             // walked away from, and they are still drawing us
             propNet.setLevel(level.id)
+            social.setLevel(level.id)
             worldEffects.setLevel(level.id)
             damageNet.setLevel(level.id)
             blockNet.setLevel(level.id)
@@ -4925,6 +4980,14 @@ export default function CrtScene({
               },
             })
             blockNet.attach(built.net)
+            blockChunk = built.net.chunkAt
+            built.net.setClaims({
+              at: social.claimAt,
+              denied: (owner) => quiet(`that chunk belongs to ${owner}`, `ese chunk es de ${owner}`),
+              entered: (c) => {
+                if (c) quiet(c.mine ? 'your claim' : `claimed by ${c.owner}`, c.mine ? 'tu terreno' : `terreno de ${c.owner}`)
+              },
+            })
             built.level.hands?.subscribe((h) => setBlockHud(h))
             // dev only: the drive harness digs, builds and blasts through it
             if (import.meta.env.DEV) Object.assign(window, { __cubeland: built })
@@ -5985,6 +6048,17 @@ export default function CrtScene({
           onPixelProofs={() => pixelProofsRef.current?.() ?? Promise.resolve(null)}
           tier={tierInfo}
           people={people}
+          permissions={
+            mp.status === 'live'
+              ? {
+                  protect: permState.protect,
+                  canSwitch: permState.canSwitch,
+                  friends: permState.friends,
+                  onProtect: (on) => permRef.current?.protect(on),
+                  onFriend: (name, on) => permRef.current?.friend(name, on),
+                }
+              : undefined
+          }
           map={mapHere}
           onMap={(id) => goMapRef.current?.(id)}
           identity={{
