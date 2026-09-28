@@ -127,8 +127,8 @@ export default function HealthHud({
       {/* the bar */}
       {showBar && (
         <div
-          className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2"
-          style={{ transform: 'translateX(-50%) rotate(-0.7deg)' }}
+          className="pointer-events-none absolute bottom-11 z-20"
+          style={{ left: "calc(50% + 100px)", transform: "translateX(-50%) rotate(-0.7deg)" }}
         >
           <div
             className="flex items-center gap-2 px-3 py-[5px] font-mono"

@@ -911,6 +911,9 @@ const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: pro
 const worldDamage = createWorldDamage({ players: worldPlayers, send });
 // hit points, death, respawn, pvp and the scoreboard (health.js): the one
 // entry point everything that hurts a player calls
+// (with rooms this belongs inside buildRoom, next to weapons: one instance per
+// room, reached as room.health; the nine worldHealth.* call sites below become
+// room.health.*, and props' onBlast / weapons' `health` take the room's)
 const worldHealth = createHealth({ players: worldPlayers, send });
 // the pistol, the crossbow and the rocket launcher: shots and hits relayed
 // to the level, checked for honesty (weapons.js)

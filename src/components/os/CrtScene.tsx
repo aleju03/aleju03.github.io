@@ -4861,6 +4861,7 @@ export default function CrtScene({
                 // reports), who else is here and what their beams are doing
                 __input: input,
                 __remote: remote,
+                __health: health,
                 __avatars: avatars,
                 __grabTaker: grabTaker,
                 // the view from the air: what the fog, the far field and the

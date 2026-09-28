@@ -153,7 +153,7 @@ const SEAT_TOP = (DESIGN_CROWN - DESIGN_EYE) * CABIN_FIT
     like the plate's own map: no new program, no per-hit canvas */
 const PIP_W = 0.9
 const PIP_H = 0.11
-const PIP_UP = NAME_UP - 0.24
+const PIP_UP = NAME_UP + 0.21
 const pipTex: (THREE.Texture | undefined)[] = []
 const pipTexture = (eighths: number) => {
   const k = Math.max(0, Math.min(8, eighths))

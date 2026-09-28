@@ -59,6 +59,11 @@ const FALL_SAFE = 32;
 const FALL_HP_PER = 3;
 const GRAVITY = 34;
 const FALL_SLACK = 1.15;
+// how long the highest pose stays the one a fall is measured from
+const PEAK_MS = 20000;
+// a fall is weighed at the first pose after the claim; this is only for a
+// player who never reports another one
+const FALL_WEIGH_MS = 1500;
 const HIT_MAX = 1000;
 const STAT_CAP = 64;
 const KIND_RE = /^[a-z][a-z0-9_]{0,15}$/;
@@ -204,6 +209,17 @@ export function createHealth({ players, send, now = Date.now }) {
     return taken;
   }
 
+  /** believe a landing only as far as the drop we saw: the peak height in the
+      last twenty seconds, minus where the pose that followed the claim is */
+  function weighFall(ws, h) {
+    const claimed = h.fall.speed;
+    h.fall = null;
+    const drop = Math.max(0, h.peakY - ws.world.y) + 3;
+    const cap = Math.sqrt(2 * GRAVITY * drop) * FALL_SLACK + 3;
+    const speed = Math.min(claimed, cap, 200);
+    if (speed > FALL_SAFE && !h.dead) damage(ws, (speed - FALL_SAFE) * FALL_HP_PER, { by: 0, kind: 'fall' });
+  }
+
   function respawn(ws) {
     const h = rec(ws);
     h.hp = MAX_HP;
@@ -339,7 +355,8 @@ export function createHealth({ players, send, now = Date.now }) {
     pose(ws) {
       const h = rec(ws);
       const t = now();
-      if (ws.world.y >= h.peakY || t - h.peakAt > 5000) {
+      if (h.fall) weighFall(ws, h);
+      if (ws.world.y >= h.peakY || t - h.peakAt > PEAK_MS) {
         h.peakY = ws.world.y;
         h.peakAt = t;
       }
@@ -412,6 +429,7 @@ export function createHealth({ players, send, now = Date.now }) {
       for (const ws of players.values()) {
         if (!ws.world) continue;
         const h = rec(ws);
+        if (h.fall && t - h.fall.at >= FALL_WEIGH_MS) weighFall(ws, h);
         if (h.dead) {
           if (t >= h.respawnAt) respawn(ws);
         } else if (h.hp < MAX_HP && t - h.lastHurt >= REGEN_DELAY_MS) {
@@ -432,14 +450,10 @@ export function createHealth({ players, send, now = Date.now }) {
       if (m.type === 'world-fall') {
         if (!finite(m.speed) || m.speed < 0) return strike(ws);
         if (!allow(ws, 'fall', 2) || h.dead) return;
-        // a flyer does not fall, and nobody lands faster than the drop they
-        // were seen to make: the peak height we watched, minus where they are
+        // (weighed a moment later, in tick: the client reports the landing
+        // before the pose that shows it, and the drop is measured to that)
         if (w.f & 64) return;
-        const drop = Math.max(0, h.peakY - w.y) + 3;
-        const cap = Math.sqrt(2 * GRAVITY * drop) * FALL_SLACK + 3;
-        const speed = Math.min(m.speed, cap, 200);
-        if (speed <= FALL_SAFE) return;
-        damage(ws, (speed - FALL_SAFE) * FALL_HP_PER, { by: 0, kind: 'fall' });
+        h.fall = { speed: m.speed, at: now() };
         return;
       }
       if (m.type !== 'world-health-cmd') return;
