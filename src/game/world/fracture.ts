@@ -31,8 +31,10 @@ import { seeded } from '../core/rand'
     because nothing could see inside; now the collapse pancakes onto them and
     the ruin has somewhere to stand.
   - **Cut into cells.** Planes at the storey lines (paired up on tall
-    buildings) and every five to nine units across the plan split every
-    fragment that straddles them. A cut through a closed convex fragment is
+    buildings), every five to sixteen units across the plan (`PIECE_SCALE`,
+    the one knob for how much rubble there is) and, on a low building, a
+    raked plane through each storey split every fragment that straddles
+    them. A cut through a closed convex fragment is
     capped with the convex hull of the cut, painted in the stamp's core
     colour and keeping its surface code, so a broken brick wall shows brick
     edges rather than a hollow box.
@@ -863,8 +865,21 @@ const hashId = (id: string) => {
   return h >>> 0
 }
 
+/**
+ * THE knob for how much rubble a building makes: how big its pieces are,
+ * against the first cut (cells five to nine units across, every storey split
+ * again by a raked plane). At 1 a mid-rise came apart into ~240 pieces, a
+ * tower into ~600, and one big blast downtown carpeted the street in eight
+ * hundred bodies, most of them shards, which was both too many to read as a
+ * ruin and too many for the solver and the draw list. Bigger is fewer,
+ * larger pieces: the plan cells grow by this much (a small building keeps
+ * its five-unit cells, so a car still punches a car-sized hole in a house),
+ * and past a low building the raked cut goes. destruction.ts breaks what
+ * falls down the same hierarchy either way; its shards follow the pieces.
+ */
+export const PIECE_SCALE = 1.8
 const CELL_MIN = 5
-const CELL_MAX = 9
+const CELL_MAX = 9 * PIECE_SCALE
 
 /**
  * Take one recorded building apart: read its stamps out of the chunk's
@@ -1011,7 +1026,7 @@ export function* fractureSteps(
   const ny = Math.max(1, Math.ceil((top - rec.baseY + 0.5) / binH))
   const ex = body.max.x - body.min.x
   const ez = body.max.z - body.min.z
-  const cellOf = (e: number) => Math.min(CELL_MAX, Math.max(CELL_MIN, e / 5))
+  const cellOf = (e: number) => Math.min(CELL_MAX, Math.max(CELL_MIN, (e * PIECE_SCALE) / 5))
   const nx = Math.max(1, Math.round(ex / cellOf(ex)))
   const nz = Math.max(1, Math.round(ez / cellOf(ez)))
   const planes: Plane[] = []
@@ -1020,8 +1035,10 @@ export function* fractureSteps(
   // wall, very little on a tower, where it would wander a whole bay over the
   // height), and every storey is split again by one slanted plane across its
   // middle, so a wall comes away in stepped, raked chunks rather than as
-  // storey-high rectangles. All of it seeded by the building's own id, so the
-  // pieces and their keys are the same on every tier and every machine
+  // storey-high rectangles (on a low building: on anything taller the raked
+  // halves were half its rubble, see PIECE_SCALE). All of it seeded by the
+  // building's own id, so the pieces and their keys are the same on every
+  // tier and every machine
   const rndCut = seeded(hashId(rec.id))
   const midY = (rec.baseY + top) / 2
   const lean = ny <= 2 ? 0.32 : ny <= 4 ? 0.14 : 0.05
@@ -1037,10 +1054,12 @@ export function* fractureSteps(
   // a storey's cut sits half a unit under its floor, so the slab belongs to
   // the storey it is the floor of
   for (let k = 1; k < ny; k++) planes.push({ nx: 0, ny: 1, nz: 0, d: rec.baseY + k * binH - 0.5 })
-  // ...and the raked cut through the middle of each storey tall enough
+  // ...and the raked cut through the middle of each storey tall enough, on
+  // a building low enough for it to read as the crack it is
+  const raked = ny <= 3 || PIECE_SCALE <= 1
   const rakes: Array<Plane | null> = []
   for (let k = 0; k < ny; k++) {
-    if (binH < 3.5) {
+    if (binH < 3.5 || !raked) {
       rakes.push(null)
       continue
     }

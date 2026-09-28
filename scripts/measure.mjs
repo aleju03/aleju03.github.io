@@ -23,6 +23,8 @@
                                            against a real sandbox, and noclip
     node scripts/measure.mjs fracture      every building in a few town blocks
                                            taken apart: pieces, cost, support
+    node scripts/measure.mjs rubble [1,10] /explode into a downtown mid-rise and
+                                           a tower: rubble bodies, draws, frame cost
     node scripts/measure.mjs body          the player character: every variant's
                                            cost and closure, folds across every
                                            filmstrip, the run lean, the hooks
@@ -202,7 +204,7 @@ if (bad) process.exitCode = 1
 
 const FILE_REPORTS = [
   'physics', 'console', 'fracture', 'bodies', 'body', 'seats', 'prop-sync',
-  'world-effects', 'streaming', 'pedestrians', 'collision', 'damage-sync', 'weapons',
+  'world-effects', 'streaming', 'pedestrians', 'collision', 'damage-sync', 'weapons', 'rubble',
 ]
 const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
