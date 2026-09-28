@@ -335,9 +335,9 @@ export const breakSound = (surface: Surface, strength: number, x: number, y: num
   } else if (surface === 'rubber') {
     // a balloon: a sharp crack of noise, the short low pop of the air going
     // (a wet snap, no ring), and a scrap of latex flapping down after it
-    burst(o, 'highpass', 1800, 0.8, 0.8, 0.03)
-    burst(o, 'bandpass', 900 + 300 * s, 0.9, 0.7, 0.09, 0.002, 280)
-    mode(o, 210, 0.7, 0.08, 0, 0.5)
+    burst(o, 'highpass', 1800, 0.8, 0.5, 0.03)
+    burst(o, 'bandpass', 900 + 300 * s, 0.9, 0.45, 0.09, 0.002, 280)
+    mode(o, 210, 0.45, 0.08, 0, 0.5)
     burst(o, 'bandpass', 2400, 1.4, 0.12, 0.06, 0.09, 900)
   } else if (surface === 'melon') {
     mode(o, 95, 1, 0.14, 0, 0.55)

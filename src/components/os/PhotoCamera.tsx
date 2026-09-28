@@ -42,8 +42,8 @@ const NOTE_KEY: Record<PhotoNote, 'saved' | 'copied' | 'copyFailed' | 'nothing'>
 function Brackets({ zoomed }: { zoomed: boolean }) {
   const line = (d: string, key: string) => (
     <g key={key}>
-      <path d={d} stroke="rgba(246,236,208,0.9)" strokeWidth={6} fill="none" strokeLinecap="round" />
-      <path d={d} stroke={INK} strokeWidth={2.4} fill="none" strokeLinecap="round" />
+      <path d={d} stroke="rgba(246,236,208,0.9)" strokeWidth={7} fill="none" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      <path d={d} stroke={INK} strokeWidth={3} fill="none" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
     </g>
   )
   // the frame is a 100 x 56 box (16:9) stretched over the screen
@@ -62,7 +62,7 @@ function Brackets({ zoomed }: { zoomed: boolean }) {
         'M46 25V23H48', 'M52 23H54V25', 'M46 31V33H48', 'M52 33H54V31',
       ].map((d, i) => line(d, `f${i}`))}
       <g opacity={zoomed ? 0.7 : 0.3}>
-        <path d="M33.3 6V50M66.6 6V50M6 18.7H94M6 37.3H94" stroke={INK} strokeWidth={0.4} fill="none" strokeDasharray="1.2 2.2" />
+        <path d="M33.3 6V50M66.6 6V50M6 18.7H94M6 37.3H94" stroke={INK} strokeWidth={1} fill="none" strokeDasharray="4 8" vectorEffect="non-scaling-stroke" />
       </g>
     </svg>
   )

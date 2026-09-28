@@ -137,6 +137,17 @@
                                       own body taken and pulled about and let
                                       go; positions and speeds printed (no NaN,
                                       capped). Shots grab-* beside the others
+    npm run drive -- creative         the creative tools: a crate painted with the
+                                      tool gun (and undone), balloons tied on
+                                      until it lifts, a lamp at night with its
+                                      pool (E switches it), a sign typed
+                                      through the console E opens, dynamite's
+                                      five seconds beside a barrel, and the
+                                      camera's photographs (size, a copy on
+                                      disk, the zoom); the new sounds' peaks;
+                                      links counted (must be 0). Shots to
+                                      ~/.cache/overhaul/creative
+                                      (--creative-out <dir>)
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -175,7 +186,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--rubble-out', '--power', '--building', '--back', '--tag', '--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
+const VALUED = new Set(['--parts', '--creative-out', '--rubble-out', '--power', '--building', '--back', '--tag', '--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -242,7 +253,7 @@ const CODES = {
   KeyQ: ['q', 81], KeyV: ['v', 86], KeyW: ['w', 87], KeyT: ['t', 84], KeyZ: ['z', 90],
   KeyC: ['c', 67], Enter: ['Enter', 13], Tab: ['Tab', 9], Space: [' ', 32],
   ShiftLeft: ['Shift', 16], Slash: ['/', 191], Escape: ['Escape', 27], F5: ['F5', 116],
-  KeyG: ['g', 71], KeyF: ['f', 70], KeyB: ['b', 66],
+  KeyG: ['g', 71], KeyF: ['f', 70], KeyB: ['b', 66], KeyP: ['p', 80],
   Digit1: ['1', 49], Digit2: ['2', 50], Digit3: ['3', 51], Digit4: ['4', 52], Digit5: ['5', 53],
   Digit6: ['6', 54], Digit7: ['7', 55], Digit8: ['8', 56], Digit9: ['9', 57],
 }
@@ -278,7 +289,7 @@ const shot = async (name) => {
 try {
   console.log('booting /world ...')
   await waitFor(
-    () => evaluate(`!!window.__sandbox?.run && !!window.__sandboxWalk &&
+    () => evaluate(`!!window.__sandbox?.run && !!window.__sandboxWalk && !!window.__sandboxCamera && !!window.__tools &&
       /wasd/.test(document.body.innerText)`),
     360, 500, 'the walk and the sandbox',
   )
@@ -2122,6 +2133,315 @@ try {
     const st = await evaluate('[window.__tools.weapons.stuck.length, window.__tools.weapons.projectiles.length]')
     console.log(`  ${st[0]} bolt(s) stuck, ${st[1]} shot(s) still in the air`)
     console.log(`  ${await evaluate('window.__wLinks')} programs linked across the weapons shots`)
+  }
+
+  if (WHAT.includes('creative')) {
+    /*
+      The creative tools for real: a crate painted with the tool gun's paint
+      mode (and undone), balloons tied on with its balloon mode until a crate
+      lifts, a lamp at night with its pool on the ground and E switching it, a
+      sign typed through the console E opens, a stick of dynamite's five
+      seconds beside a barrel, and the camera taking photographs (their size
+      and a copy written to disk). Every shader link is counted from the
+      moment the walk starts (must be 0), and the new sounds' peaks are
+      printed beside a crate's. Shots to ~/.cache/overhaul/creative
+      (--creative-out <dir>).
+    */
+    console.log('creative')
+    const CR_OUT = resolve(flag('creative-out', join(process.env.HOME ?? '.', '.cache/overhaul/creative')))
+    mkdirSync(CR_OUT, { recursive: true })
+    const crShot = async (name) => {
+      const path = join(CR_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    await evaluate(`(() => { window.__cLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__cWrapped) continue; gl.__cWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__cLinks++
+        const src = (gl.getAttachedShaders(p) ?? []).map((sh) => gl.getShaderSource(sh) ?? '').join('\\n')
+        const name = /#define SHADER_NAME ([^\\s]+)/.exec(src)?.[1] ?? [...src.matchAll(/uniform \\S+ (u[A-Z]\\w*)/g)].map((m) => m[1]).slice(0, 4).join(' ')
+        ;(window.__cLinkNames ??= []).push((window.__cPhase || 'start') + ': ' + (name || 'raw') + ' / ' + [...new Set(src.match(/#define (USE_\\w+|NUM_\\w+ \\d+|SHADOWMAP_TYPE_\\w+|DEPTH_PACKING \\d+|IS_\\w+|DITHER\\w*|LOOK_\\w+|[A-Z_]{6,} \\d+)/g) ?? [])].join(',').slice(0, 400))
+        real(p) } } return true })()`)
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const click = async (code = 'Mouse0', ms = 260) => {
+      await hold(code, true)
+      await sleep(ms)
+      await hold(code, false)
+      await sleep(260)
+    }
+    const aimAt = async (x, y, z) => {
+      await evaluate(`(() => { const c = window.__sandboxCamera.position, w = window.__sandboxWalk
+        const dx = ${x} - c.x, dy = ${y} - c.y, dz = ${z} - c.z
+        w.yaw = Math.atan2(-dx, -dz); w.pitch = Math.atan2(dy, Math.hypot(dx, dz)); return true })()`)
+      await sleep(400)
+    }
+    const posOf = (id) => evaluate(`(() => { const p = window.__sandbox.get(${id}); if (!p) return null
+      const t = p.body.translation(); return [t.x, t.y, t.z] })()`)
+    // a kind set down `d` ahead and `s` to the right of the lens
+    const ahead = (kind, d, s, extra = '') => evaluate(`(() => { const sb = window.__sandbox, c = window.__sandboxCamera.position, y = window.__sandboxWalk.yaw
+      const fx = -Math.sin(y), fz = -Math.cos(y), x = c.x + fx * ${d} - fz * ${s}, z = c.z + fz * ${d} + fx * ${s}
+      return sb.spawn('${kind}', { x, y: sb.restY('${kind}', x, z) + 0.3, z }${extra ? ', ' + extra : ''}) })()`)
+    const cr = (js) => evaluate(`(() => { const cr = window.__creative(); return ${js} })()`)
+    const PARTS = flag('parts', 'paint,balloons,lamp,sign,dynamite,camera,sounds')
+    const part = (n) => PARTS.split(',').includes(n)
+    const until = (js, label, tries = 120) => waitFor(() => evaluate(js), tries, 500, label)
+    await evaluate('window.__sandbox.clear(), true')
+    await stand()
+    await look(0.6, -0.05)
+    await evaluate('window.__tools.select(2)')
+    await sleep(500)
+    const yaw0 = await evaluate('window.__sandboxWalk.yaw')
+
+    /* ---------------------------------------------------------- paint -- */
+    if (part('paint')) {
+    console.log(' paint')
+    await evaluate("window.__cPhase = 'paint'")
+    await evaluate("window.__tools.toolgun.setMode('paint')")
+    const crates = []
+    for (const s of [-4.5, 0, 4.5]) crates.push(await ahead('crate', 10, s, `{ yaw: ${yaw0} }`))
+    await sleep(2500)
+    const painted = []
+    for (const [i, colour] of [[0, 0], [1, 6], [2, 4]]) {
+      // the wheel's job: step the palette to the colour, then click the crate
+      await evaluate(`(() => { const g = window.__tools.toolgun; while (g.color !== ${colour}) g.stepColor(1); return true })()`)
+      const at = await posOf(crates[i])
+      await aimAt(at[0], at[1], at[2])
+      await click()
+      painted.push(await cr(`cr.tagOf(${crates[i]}).paint`))
+    }
+    console.log(`  paint indexes after three clicks: ${painted.join(', ')} (want 1, 7, 5)`)
+    const tints = await evaluate(`[${crates.join(',')}].map((id) => { const t = window.__sandbox.get(id).mesh.tint; return t ? t.getHexString() : null })`)
+    console.log(`  tints on the proxies: ${tints.join(', ')}`)
+    await aimAt(...(await posOf(crates[1])))
+    await look(yaw0, -0.05)
+    await sleep(600)
+    await crShot('paint')
+    // undo takes the last one back, and the console paints too
+    await tap('KeyZ', 200)
+    await sleep(600)
+    console.log(`  after Z the last crate's paint is ${await cr(`cr.tagOf(${crates[2]}).paint`)} (want 0)`)
+    await aimAt(...(await posOf(crates[2])))
+    await run('paint pink')
+    console.log(`  /paint pink: ${await cr(`cr.tagOf(${crates[2]}).paint`)} (want 10)`)
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* ------------------------------------------------------- balloons -- */
+    if (part('balloons')) {
+    console.log(' balloons')
+    await evaluate("window.__cPhase = 'balloons'")
+    await look(yaw0, -0.05)
+    await evaluate("window.__tools.toolgun.setMode('balloon')")
+    const load = await ahead('crate', 9, 0, `{ yaw: ${yaw0} }`)
+    await sleep(2500)
+    const y0 = (await posOf(load))[1]
+    for (const colour of [0, 4, 6]) {
+      await evaluate(`(() => { const g = window.__tools.toolgun; while (g.color !== ${colour}) g.stepColor(1); return true })()`)
+      const at = await posOf(load)
+      await aimAt(at[0], at[1] + 0.3, at[2])
+      await click()
+    }
+    console.log(`  balloons alive: ${await cr('cr.balloons')} (want 3)`)
+    await until(`window.__sandbox.get(${load}).body.translation().y > ${y0 + 4}`, 'the crate to rise', 600)
+    const ys = (await posOf(load))[1]
+    console.log(`  crate rose ${(ys - y0).toFixed(1)} units on three balloons`)
+    {
+      // back off a few steps and look at the crate with its balloons above it
+      const at = await posOf(load)
+      await aimAt(at[0], at[1] + 3.2, at[2])
+    }
+    await sleep(800)
+    await crShot('balloons')
+    await tap('KeyZ', 200)
+    await sleep(500)
+    console.log(`  Z takes the last balloon back: ${await cr('cr.balloons')} left (want 2)`)
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* ----------------------------------------------------------- lamp -- */
+    if (part('lamp')) {
+    console.log(' lamp')
+    await evaluate("window.__cPhase = 'lamp'")
+    await evaluate('window.__tools.select(0)')
+    await run('time night')
+    await look(yaw0, -0.08)
+    const lamp = await ahead('lamp', 5, 0, `{ yaw: ${yaw0} }`)
+    await sleep(3500)
+    const bulb = await evaluate(`(() => { const t = window.__sandbox.get(${lamp}).body.translation(); return [t.x, t.y + 1.0, t.z] })()`)
+    const pools = () => evaluate(`(() => { const l = window.__look.lights; const out = []
+      for (let i = 0; i < l.count; i++) out.push([l.pools[i * 4], l.pools[i * 4 + 1], l.pools[i * 4 + 2], l.pools[i * 4 + 3], l.weights[i]])
+      return out })()`)
+    const near = (list) => list.some((p) => Math.hypot(p[0] - bulb[0], p[1] - bulb[1], p[2] - bulb[2]) < 0.6 && p[4] > 0.5)
+    await aimAt(bulb[0], bulb[1] - 0.6, bulb[2])
+    await sleep(800)
+    const on = await pools()
+    console.log(`  lamp on at night: ${on.length} pool(s), the lamp's is among them: ${near(on)}`)
+    console.log(`  prompt: "${await evaluate(`(document.body.innerText.match(/switch the lamp \\w+/) ?? [''])[0]`)}"`)
+    await crShot('lamp-on-night')
+    await tap('KeyE', 200)
+    await sleep(6000)
+    const off = await pools()
+    console.log(`  after E: off flag ${await cr(`cr.tagOf(${lamp}).off`)}, lamp's pool present: ${near(off)}`)
+    await crShot('lamp-off-night')
+    await tap('KeyE', 200)
+    await sleep(9000)
+    console.log(`  E again: pool back: ${near(await pools())}`)
+    await run('time 10:30')
+    await sleep(2500)
+    await aimAt(bulb[0], bulb[1] - 0.5, bulb[2])
+    await crShot('lamp-day')
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* ----------------------------------------------------------- sign -- */
+    if (part('sign')) {
+    console.log(' sign')
+    await evaluate("window.__cPhase = 'sign'")
+    await look(yaw0, -0.05)
+    const sign = await ahead('sign', 5.5, 0, `{ yaw: ${yaw0} }`)
+    await sleep(2500)
+    const sp = await posOf(sign)
+    await aimAt(sp[0], sp[1] + 0.7, sp[2])
+    console.log(`  prompt: "${await evaluate(`(document.body.innerText.match(/write on the sign/) ?? [''])[0]`)}"`)
+    await tap('KeyE', 200)
+    await sleep(800)
+    const seeded = await evaluate(`(document.querySelector('input,textarea')?.value) ?? null`)
+    console.log(`  E opens the console with: ${JSON.stringify(seeded)}`)
+    await type('HELLO WORLD FROM THE SANDBOX')
+    await sleep(300)
+    await tap('Enter', 150)
+    await sleep(1500)
+    console.log(`  sign text: ${JSON.stringify(await cr(`cr.tagOf(${sign}).text`))}`)
+    console.log(`  sign body: ${JSON.stringify(await evaluate(`(() => { const p = window.__sandbox.get(${sign}); if (!p) return 'gone'; const t = p.body.translation(); return { at: [t.x, t.y, t.z], visible: p.mesh?.visible, geo: !!p.mesh?.geo, parked: p.parked, mode: p.mode, batches: window.__sandbox.stats.batches, instances: window.__sandbox.stats.instances } })()`))}`)
+    console.log(`  tiles: ${await evaluate(`(async () => { const s = await import('/src/game/sandbox/creative/signs.ts'); return JSON.stringify(s.tileStats()) })()`)}`)
+    await look(yaw0, -0.05)
+    await aimAt(sp[0], sp[1] + 0.7, sp[2])
+    await crShot('sign')
+    await evaluate(`window.__sandboxCamera.position.constructor && true`)
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* ------------------------------------------------------- dynamite -- */
+    if (part('dynamite')) {
+    console.log(' dynamite')
+    await evaluate("window.__cPhase = 'dynamite'")
+    await look(yaw0, -0.05)
+    await evaluate(`window.__cBooms = []; window.__sandbox.onExplosion((e) => window.__cBooms.push({ t: window.__sandbox.stats.time, power: e.power })); true`)
+    const tnt = await ahead('dynamite', 5, 0, `{ yaw: ${yaw0} }`)
+    const bar = await ahead('barrel_explosive', 9, 3)
+    await sleep(2500)
+    const tp = await posOf(tnt)
+    await aimAt(tp[0], tp[1], tp[2])
+    console.log(`  prompt: "${await evaluate(`(document.body.innerText.match(/light the fuse/) ?? [''])[0]`)}"`)
+    const t0 = await evaluate('window.__sandbox.stats.time')
+    await tap('KeyE', 200)
+    const lit = await evaluate(`window.__sandbox.get(${tnt}).data.life?.fuse ?? null`)
+    console.log(`  fuse after E: ${lit === null ? 'none' : lit.toFixed(2)} s`)
+    await until(`(window.__sandbox.get(${tnt})?.data.life?.fuse ?? 9) < 3.6`, 'the fuse to burn down', 100)
+    await crShot('dynamite-burning')
+    await until('window.__cBooms.length > 0', 'the blast', 200)
+    const booms = await evaluate('window.__cBooms')
+    console.log(`  blast after ${(booms[0].t - t0).toFixed(2)} s of simulated time, power ${booms[0].power}`)
+    await crShot('dynamite-blast')
+    await waitFor(() => evaluate(`!window.__sandbox.get(${bar})`), 120, 500, 'the barrel to go').catch(() => {})
+    console.log(`  barrel beside it: ${await evaluate(`window.__sandbox.get(${bar}) ? 'still there' : 'gone (chained)'`)}`)
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* --------------------------------------------------------- camera -- */
+    if (part('camera')) {
+    console.log(' camera')
+    await evaluate("window.__cPhase = 'camera'")
+    await stand()
+    await look(yaw0, 0.02)
+    await ahead('crate', 12, -3)
+    await ahead('barrel', 14, 3)
+    await ahead('lamp', 9, 0)
+    await sleep(2500)
+    await evaluate('window.__photos.clear()')
+    await evaluate('window.__tools.select(7)')
+    await sleep(1200)
+    console.log(`  in hand: ${await evaluate('window.__tools.tool')}, viewfinder up: ${await evaluate('window.__photos.get().held')}`)
+    await crShot('camera-viewfinder')
+    await click('Mouse0', 260)
+    await until('window.__photos.get().photos.length > 0 && !!window.__photos.get().photos[0].url', 'the photograph', 60)
+    const photo = await evaluate('(() => { const p = window.__photos.get().photos[0]; return { w: p.w, h: p.h, bytes: p.bytes } })()')
+    console.log(`  photograph ${photo.w}x${photo.h}, PNG ${photo.bytes} bytes`)
+    await sleep(700)
+    await crShot('camera-print-developing')
+    // the picture itself, written out and looked at
+    const b64 = await evaluate(`(async () => { const b = window.__photos.get().photos[0].blob
+      const buf = new Uint8Array(await b.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 8192) s += String.fromCharCode(...buf.subarray(i, i + 8192))
+      return btoa(s) })()`)
+    writeFileSync(join(CR_OUT, 'photo-0.png'), Buffer.from(b64, 'base64'))
+    console.log(`  wrote ${join(CR_OUT, 'photo-0.png')}`)
+    // and it is not a blank rectangle
+    const varied = await evaluate(`(async () => { const img = new Image(); img.src = window.__photos.get().photos[0].url; await img.decode()
+      const c = document.createElement('canvas'); c.width = 64; c.height = 40; const g = c.getContext('2d'); g.drawImage(img, 0, 0, 64, 40)
+      const d = g.getImageData(0, 0, 64, 40).data; const seen = new Set(); for (let i = 0; i < d.length; i += 4) seen.add((d[i] >> 4) * 256 + (d[i + 1] >> 4) * 16 + (d[i + 2] >> 4))
+      return seen.size })()`)
+    console.log(`  distinct colours in the photograph: ${varied} (a blank frame has 1)`)
+    await sleep(3500)
+    await crShot('camera-print-developed')
+    // right click: the hand-held zoom
+    await click('Mouse2', 260)
+    await until('window.__tools.camera.zoom > 2.6', 'the zoom', 60)
+    console.log(`  zoom ${(await evaluate('window.__tools.camera.zoom')).toFixed(2)}x, lens ${(await evaluate('window.__sandboxCamera.fov')).toFixed(1)} degrees`)
+    await sleep(600)
+    await crShot('camera-zoom')
+    await click('Mouse0', 260)
+    await sleep(1000)
+    await tap('KeyP', 200)
+    await sleep(500)
+    console.log(`  photographs held: ${await evaluate('window.__photos.get().photos.length')}, note: ${await evaluate('JSON.stringify(window.__photos.get().note)')}`)
+    await click('Mouse2', 260)
+    await evaluate('window.__tools.select(0)')
+    }
+
+    // (a control for the link count: the console opened with t, on its own)
+    if (part('chat')) {
+      console.log(' chat')
+      await evaluate("window.__cPhase = 'chat'")
+      await look(yaw0, -0.05)
+      await tap('KeyT', 200)
+      await sleep(800)
+      await type('/help')
+      await tap('Enter', 150)
+      await sleep(2500)
+    }
+
+    /* --------------------------------------------------------- sounds -- */
+    const levels = await evaluate(`(async () => {
+      const snd = await import('/src/game/sandbox/impactSounds.ts')
+      const c = await import('/src/game/sandbox/creative/sfx.ts')
+      const out = {}
+      const at = { x: 0.5, y: 0, z: -1 }
+      const m = async (name, fn) => {
+        const r = await snd.measureSound(() => { snd.setEar(0, 0, 0); fn() }, 2)
+        out[name] = r.peak.toFixed(3)
+      }
+      await m('crate hit', () => snd.impactSound('wood', 1, 30, at.x, at.y, at.z))
+      await m('crate break', () => snd.breakSound('wood', 1, at.x, at.y, at.z))
+      await m('balloon pop', () => snd.breakSound('rubber', 1, at.x, at.y, at.z))
+      await m('barrel boom', () => snd.boom(1, at.x, at.y, at.z))
+      await m('lamp click', () => c.lampClick(at.x, at.y, at.z, true))
+      await m('paint spray', () => c.paintSpray(at.x, at.y, at.z))
+      await m('sign chalk', () => c.signWrite(at.x, at.y, at.z))
+      await m('fuse tick', () => c.fuseTick(at.x, at.y, at.z, 0.2))
+      await m('fuse tick (last)', () => c.fuseTick(at.x, at.y, at.z, 1))
+      await m('shutter', () => c.shutter(at.x, at.y, at.z))
+      await m('balloon tie', () => c.tieSqueak(at.x, at.y, at.z))
+      return out
+    })()`)
+    console.log(`  peaks: ${Object.entries(levels).map(([k, v]) => `${k} ${v}`).join(', ')}`)
+    console.log(`  ${await evaluate('window.__cLinks')} programs linked across the whole walk (must be 0)`)
+    for (const n of (await evaluate('window.__cLinkNames ?? []'))) console.log(`    linked ${n}`)
+    await evaluate('window.__sandbox.clear(), true')
   }
 
   if (WHAT.includes('nuketown')) {

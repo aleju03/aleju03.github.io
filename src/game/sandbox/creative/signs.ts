@@ -204,6 +204,7 @@ export const signGeometry = (tile: number): THREE.BufferGeometry => {
   // the posts, then the board on them: the face towards +z carries the tile,
   // the back and the rim are painted wood
   for (const x of [-1, 1]) m.box([x * (w / 2 - 0.5), -0.55, 0], [0.24, 1.1, 0.2], wood)
+  m.box([0, -1.0, 0], [w - 0.6, 0.2, 1.2], wood)
   m.box([0, 0.72 + 0.0, 0], [w, h, d], { pz: { cell: tileName(tile) }, all: { cell: 'white', tint: '#c9a874' } })
   g = m.geometry()
   geos.set(tile, g)

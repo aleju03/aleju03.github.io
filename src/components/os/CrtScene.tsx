@@ -2225,8 +2225,13 @@ export default function CrtScene({
         }
         /** E on a lamp, a stick of dynamite or a sign (sandbox/creative): a
             sign opens the console with `/sign` and its words already typed */
+        let creativeUseAt = 0
         const workCreative = () => {
           if (reachPropNow === null || !sandbox || !sandboxMod) return false
+          // a held E repeats: one switch per press, not a flicker
+          const at = performance.now()
+          if (at - creativeUseAt < 450) return sandboxMod.creativeOf(sandbox).verb(reachPropNow, 'en') !== null
+          creativeUseAt = at
           const cr = sandboxMod.creativeOf(sandbox)
           const r = cr.use(reachPropNow)
           if (r === 'sign') openChat(`/sign ${cr.tagOf(reachPropNow).text}`)

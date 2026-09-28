@@ -70,6 +70,9 @@ def('sign', {
       { shape: { type: 'box', hx: B.w / 2, hy: B.h / 2, hz: B.d / 2 }, at: [0, 0.72, 0] },
       { shape: { type: 'box', hx: 0.12, hy: CDIMS.sign.post / 2, hz: 0.1 }, at: [-(B.w / 2 - 0.5), -0.55, 0] },
       { shape: { type: 'box', hx: 0.12, hy: CDIMS.sign.post / 2, hz: 0.1 }, at: [B.w / 2 - 0.5, -0.55, 0] },
+      // a weighted foot plank under both posts, so it stands where it is put
+      // and does not go over on its back like a thin board
+      { shape: { type: 'box', hx: B.w / 2 - 0.3, hy: 0.1, hz: 0.6 }, at: [0, -1.0, 0], w: 5 },
     ],
   } satisfies ShapeSpec,
   mass: 14,
