@@ -2307,6 +2307,29 @@ try {
       }
       await run('noclip')
     }
+    // streaming: a jump to ground nothing has been meshed on, shot while
+    // its chunks are still dissolving in, and again once the ring is full
+    if (want('stream')) {
+      await run('noclip')
+      await cube(`let y = 0; for (let by = 95; by >= 0; by--) if (C.store.get(-300, by, 200)) { y = by * 2 + 2; break }
+        window.__sandbox.console.host.teleport(-599, -40000 + 401, y + 30, 0.4); return true`)
+      await look(0.4, -0.25)
+      await sleep(1200)
+      await shot('cube-streaming')
+      const t1 = Date.now()
+      let meshes = 0
+      for (let k = 0; k < 40; k++) {
+        await sleep(1000)
+        const n = await cube(`let n = 0; C.root.traverse((o) => { if (o.name === 'cube-chunk') n++ }); return n`)
+        if (n === meshes && k > 3) break
+        meshes = n
+      }
+      const st = await cube(`let n = 0, t = 0; C.root.traverse((o) => { if (o.isMesh && o.name.startsWith('cube-') && o.geometry.index) { n++; t += o.geometry.index.count / 3 } }); return [n, t]`)
+      console.log(`  the view filled in ~${((Date.now() - t1) / 1000).toFixed(0)} s (headless): ${st[0]} meshes, ${Math.round(st[1] / 1000)}k triangles`)
+      await shot('cube-streamed')
+      await run('noclip')
+      await sleep(500)
+    }
     if (want('aerial')) {
       await run('noclip')
       await cube('const s = L.spawn; window.__sandbox.console.host.teleport(s.x - 40, s.z + 40, s.y + 70, 0.8); return true')

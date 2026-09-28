@@ -239,6 +239,7 @@ const maskBio = new Uint8Array(CHUNK * H)
 export const meshChunk = (
   c: ChunkData,
   neighbour: (dx: number, dz: number) => ChunkData,
+  far = false,
 ): { solid: MeshArrays | null; water: MeshArrays | null } => {
   // the padded copy
   for (let dz = -1; dz <= 1; dz++)
@@ -301,8 +302,11 @@ export const meshChunk = (
           const face = d === 1 ? (s > 0 ? 0 : 2) : 1
           const layer = LAYER[id * 3 + face]
           const light = skyAt(nb[0], nb[1], nb[2])
+          // far off, the inside of a cave is nothing anybody can see
+          if (far && light < 9) continue
           let ao: number
-          if (!liquid) {
+          if (far && !liquid) ao = 0xff
+          else if (!liquid) {
             ao = 0
             const n0 = pi(nb[0], nb[1], nb[2])
             const su = STRIDE[u]
@@ -357,8 +361,9 @@ export const meshChunk = (
     }
   }
 
-  // the plants: two crossed cards, each drawn from both sides
-  for (let y = 0; y < H; y++)
+  // the plants: two crossed cards, each drawn from both sides (not far off,
+  // where a meadow of them is a few pixels of noise)
+  if (!far) for (let y = 0; y < H; y++)
     for (let z = 0; z < CHUNK; z++)
       for (let x = 0; x < CHUNK; x++) {
         const id = pad[pi(x, y, z)]

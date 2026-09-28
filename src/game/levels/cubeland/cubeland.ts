@@ -15,7 +15,8 @@ import { gfx } from '../../world/quality'
 import type { HandsHud, Level, LevelLightRig, LevelSpawn } from '../types'
 import { Biome, CHUNK, H, SEA, columnAt } from './gen'
 import { meshChunk, type MeshArrays } from './mesher'
-import { terrainMaterials } from './material'
+import { fadeClock, terrainMaterials } from './material'
+import { PREBORN } from '../../world/fade'
 import { CHUNK_W, chunkKey, createVoxelStore, isSolid, type VoxelStore } from './world'
 
 /*
@@ -32,10 +33,14 @@ import { CHUNK_W, chunkKey, createVoxelStore, isSolid, type VoxelStore } from '.
   blasts, the network's handle on the edits and what the scene reads.
 
   - **Streaming.** Chunks are meshed nearest first inside the tier's view
-    distance (quality.ts's `cubeView`) under a few milliseconds a frame, and
-    a chunk somebody just changed is rebuilt before anything else, the same
-    frame, so a block breaks under the cursor rather than a beat later. The
-    fog closes at the edge of what is meshed, the way it does there.
+    distance (quality.ts's `cubeView`, up to the sky dome) under a few
+    milliseconds a frame, and each one dissolves in over a second through
+    the open world's own dither (world/fade.ts) rather than appearing. Only
+    the near ring is meshed in full; past it a chunk is a far mesh with no
+    corner shading, no cave walls and no plants, a ninth of the quads, and
+    it is swapped for the full one as you come close. A chunk somebody just
+    changed is rebuilt before anything else, the same frame, so a block
+    breaks under the cursor rather than a beat later.
   - **Scale.** A block is two units (sandbox/blocks.ts's B), so the eye
     (3.84) is just under two blocks up and a two-high tunnel is walked
     through stooping by nothing. A hop has to clear one block with time to
@@ -108,7 +113,14 @@ interface Drawn {
   solid: THREE.Mesh | null
   water: THREE.Mesh | null
   dirty: boolean
+  /** meshed as the far ring is: no corner shading, no caves, no plants */
+  far: boolean
 }
+
+/** chunks round the walker meshed in full; past this, the far ring's cheap
+    mesh (a ninth of the quads), and back to full a chunk inside it */
+const NEAR = 4.5
+const FAR_AT = 6
 
 /** a texture's average colour, linear, for the chips a broken block throws */
 const chipColour = new Map<string, [number, number, number]>()
@@ -156,8 +168,9 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
   /* ------------------------------------------------------------ meshes -- */
 
   const drawn = new Map<number, Drawn>()
-  const geometry = (a: MeshArrays) => {
+  const geometry = (a: MeshArrays, birth: number) => {
     const g = new THREE.BufferGeometry()
+    g.setAttribute('aBirth', new THREE.BufferAttribute(new Float32Array(a.position.length / 3).fill(birth), 1))
     g.setAttribute('position', new THREE.BufferAttribute(a.position, 3))
     g.setAttribute('normal', new THREE.BufferAttribute(a.normal, 3, true))
     g.setAttribute('aTex', new THREE.BufferAttribute(a.tex, 2))
@@ -184,15 +197,20 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     d.water = null
   }
   const neighbourOf = (cx: number, cz: number) => (dx: number, dz: number) => store.chunk(cx + dx, cz + dz)
-  const build = (cx: number, cz: number) => {
+  /** (re)mesh a chunk. `fade` dissolves it in (a chunk arriving at the edge
+      of the view); a chunk already on screen being re-meshed (an edit, a
+      change of detail) and the ring primed under the card do not */
+  const build = (cx: number, cz: number, far: boolean, fade: boolean) => {
     const k = chunkKey(cx, cz)
     let d = drawn.get(k)
-    if (!d) drawn.set(k, (d = { solid: null, water: null, dirty: false }))
+    if (!d) drawn.set(k, (d = { solid: null, water: null, dirty: false, far }))
     unmesh(d)
     d.dirty = false
-    const out = meshChunk(store.chunk(cx, cz), neighbourOf(cx, cz))
+    d.far = far
+    const birth = fade ? fadeClock.value : PREBORN
+    const out = meshChunk(store.chunk(cx, cz), neighbourOf(cx, cz), far)
     if (out.solid) {
-      const m = new THREE.Mesh(geometry(out.solid), mats.solid)
+      const m = new THREE.Mesh(geometry(out.solid, birth), mats.solid)
       m.castShadow = true
       m.receiveShadow = true
       m.name = 'cube-chunk'
@@ -201,7 +219,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       d.solid = m
     }
     if (out.water) {
-      const m = new THREE.Mesh(geometry(out.water), mats.water)
+      const m = new THREE.Mesh(geometry(out.water, birth), mats.water)
       m.receiveShadow = true
       m.renderOrder = 1
       m.name = 'cube-water'
@@ -695,16 +713,14 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
   /** mesh what is missing near (cx, cz), nearest first, for `budget` ms */
   const stream = (cx: number, cz: number, budget: number) => {
     const t0 = performance.now()
-    // what somebody just changed, first and whole
-    let rebuilt = 0
+    const late = () => performance.now() - t0 > budget
+    // what somebody just changed: close by at once, whatever it costs, so a
+    // block breaks under the cursor; further off inside the budget
     for (const [k, d] of drawn) {
       if (!d.dirty) continue
       const kx = Math.floor(k / 65536) - 32768
       const kz = (k % 65536) - 32768
-      if (Math.abs(kx - cx) <= 2 && Math.abs(kz - cz) <= 2 || rebuilt < 2 || performance.now() - t0 < budget) {
-        build(kx, kz)
-        rebuilt++
-      }
+      if ((Math.abs(kx - cx) <= 2 && Math.abs(kz - cz) <= 2) || !late()) build(kx, kz, d.far, false)
     }
     const r = view()
     if (wantAt.cx !== cx || wantAt.cz !== cz || wantAt.r !== r) {
@@ -714,27 +730,33 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       for (const [k, d] of drawn) {
         const kx = Math.floor(k / 65536) - 32768
         const kz = (k % 65536) - 32768
-        if (Math.hypot(kx - cx, kz - cz) > r + 2) {
+        if (Math.hypot(kx - cx, kz - cz) > r + 1.5) {
           unmesh(d)
           drawn.delete(k)
         }
       }
       for (let kx = cx - r - 8; kx <= cx + r + 8; kx++)
         for (let kz = cz - r - 8; kz <= cz + r + 8; kz++) {
-          if (Math.hypot(kx - cx, kz - cz) <= r + 4) continue
+          if (Math.hypot(kx - cx, kz - cz) <= r + 3) continue
           if (store.peek(kx, kz)) store.drop(kx, kz)
         }
     }
+    // nearest first: what is missing fades in; what has come inside the
+    // near ring gets its full mesh, and what has left it the cheap one,
+    // both swapped in place
     for (const [x, z] of wanted) {
-      if (performance.now() - t0 > budget) break
-      if (drawn.has(chunkKey(x, z))) continue
-      build(x, z)
+      if (late()) break
+      const d = drawn.get(chunkKey(x, z))
+      const dist = Math.hypot(x - cx, z - cz)
+      if (!d) build(x, z, dist > NEAR, true)
+      else if (d.far && dist <= NEAR) build(x, z, false, false)
+      else if (!d.far && dist > FAR_AT) build(x, z, true, false)
     }
     // the walker's boxes for the ring it may step into next, ahead of the
     // step (merging a chunk's is a few milliseconds; cached once made)
     for (let dz = -2; dz <= 2; dz++)
       for (let dx = -2; dx <= 2; dx++) {
-        if (performance.now() - t0 > budget) return
+        if (late()) return
         if (store.inWorld(cx + dx, cz + dz)) store.boxesOf(cx + dx, cz + dz)
       }
   }
@@ -776,12 +798,12 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
   const prime = (x: number, z: number, r: number) => {
     const cx = chunkOf(x)
     const cz = chunkOfZ(z)
-    for (const [kx, kz] of rings(cx, cz, r)) if (!drawn.has(chunkKey(kx, kz))) build(kx, kz)
+    for (const [kx, kz] of rings(cx, cz, r)) if (!drawn.has(chunkKey(kx, kz))) build(kx, kz, Math.hypot(kx - cx, kz - cz) > NEAR, false)
     refreshBoxes(cx, cz)
   }
   {
     const s = spawnFor()
-    prime(s.x, s.z, 3)
+    prime(s.x, s.z, 6)
   }
 
   /* ---------------------------------------------------------------- day -- */
@@ -859,7 +881,8 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     update: (dt, p) => {
       const cx = chunkOf(p.x)
       const cz = chunkOfZ(p.z)
-      stream(cx, cz, 3.5)
+      fadeClock.value = performance.now() / 1000
+      stream(cx, cz, 4)
       refreshBoxes(cx, cz)
       // (the lens is the walker's eye, 3.84 over the soles)
       waterNow = findWater(p, p.y - 3.84)

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { TEXTURES, TEX_SIZE, paintTexture } from '../../sandbox/blocks'
+import { FADE_FRAG_ALPHA, FADE_FRAG_DISSOLVE, FADE_VERT_BODY, FADE_VERT_HEAD, fadeFragHead } from '../../world/fade'
 
 /*
   The two materials Cubeland's ground is drawn with: the blocks, and the
@@ -24,6 +25,12 @@ import { TEXTURES, TEX_SIZE, paintTexture } from '../../sandbox/blocks'
   would give its shadow pass the colour map at these block-unit coordinates,
   and a tree's shadow would be a lottery of holes. Leaves cast whole.
 
+  **Chunks fade in** the way the open world's do (world/fade.ts): each
+  vertex carries the time its chunk was meshed (`aBirth`) and the solid
+  pass dissolves it in through the same screen-door dither against
+  `fadeClock`, the water by alpha. A chunk re-meshed on screen is stamped
+  PREBORN and simply swaps.
+
   **Glow** is a per-vertex flag (the glowstone) that adds the texture's own
   colour to the emitted light, at the look's HDR, so it burns in a cave.
 
@@ -42,18 +49,27 @@ export interface TerrainMats {
   texture: THREE.DataArrayTexture
 }
 
+/** the clock the fade compares a chunk's birth against, seconds (the level
+    advances it every frame) */
+export const fadeClock = { value: 0 }
+
 const inject = (key: string) => (shader: THREE.WebGLProgramParametersWithUniforms, tex: THREE.DataArrayTexture) => {
   shader.uniforms.uBlocks = { value: tex }
+  shader.uniforms.uTime = fadeClock
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
-      '#include <common>\nattribute vec2 aTex;\nattribute vec2 aBlk;\nvarying vec2 vTex;\nvarying vec2 vBlk;',
+      `#include <common>\nattribute vec2 aTex;\nattribute vec2 aBlk;\nvarying vec2 vTex;\nvarying vec2 vBlk;\n${FADE_VERT_HEAD}`,
     )
-    .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vTex = aTex * 0.125;\n  vBlk = aBlk;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>\n  vTex = aTex * 0.125;\n  vBlk = aBlk;\n${FADE_VERT_BODY}`)
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
-      '#include <common>\nuniform highp sampler2DArray uBlocks;\nvarying vec2 vTex;\nvarying vec2 vBlk;',
+      `#include <common>\nuniform highp sampler2DArray uBlocks;\nvarying vec2 vTex;\nvarying vec2 vBlk;\n${fadeFragHead(true)}`,
+    )
+    .replace(
+      key === 'water' ? '#include <opaque_fragment>' : '#include <clipping_planes_fragment>',
+      key === 'water' ? `#include <opaque_fragment>\n${FADE_FRAG_ALPHA}` : `#include <clipping_planes_fragment>\n${FADE_FRAG_DISSOLVE}`,
     )
     .replace(
       '#include <map_fragment>',
