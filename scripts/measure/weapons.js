@@ -49,7 +49,7 @@ run(0.02, true, 'pistol')
 sb.getVelocity(crate, v)
 check(events.some((e) => e.type === 'hit' && e.what === 'prop'), 'a pistol round hits the crate')
 check(v.length() > 0.2, 'and pushes it', v.length().toFixed(2) + ' u/s')
-check(w.ammo('pistol') === 11, 'one round spent', String(w.ammo('pistol')))
+check(!events.some((e) => e.type === 'reload' || e.type === 'empty'), 'the pistol never reloads')
 run(1, false, 'pistol')
 for (let i = 0; i < 5 && sb.get(crate); i++) { aimAt(crate); run(0.3, true, 'pistol') }
 check(!sb.get(crate), 'a few rounds break a crate')

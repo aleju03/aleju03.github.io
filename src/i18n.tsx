@@ -207,7 +207,7 @@ const dictionaries = {
         // a weapon out (sandbox/tools/weapons.ts): what the buttons do, then
         // the way back to the other tools
         weapons: {
-          pistol: 'pistol · {grab} fire (hold) · {unfreeze} reload',
+          pistol: 'pistol · {grab} fire (hold)',
           crossbow: 'crossbow · {grab} loose a bolt',
           rocket: 'rocket launcher · {grab} fire',
         },
@@ -519,7 +519,7 @@ const dictionaries = {
         seat: 'wasd conducir · {jump} propulsores y subir · {sprint} reversa y bajar · i/k u/j o/l flechas: teclas de piezas · {use} levantarte',
         toolTail: '{slot2} siguiente herramienta · {undo} deshacer · {spawnMenu} piezas',
         weapons: {
-          pistol: 'pistola · {grab} disparar (mantén) · {unfreeze} recargar',
+          pistol: 'pistola · {grab} disparar (mantén)',
           crossbow: 'ballesta · {grab} soltar un virote',
           rocket: 'lanzacohetes · {grab} disparar',
         },

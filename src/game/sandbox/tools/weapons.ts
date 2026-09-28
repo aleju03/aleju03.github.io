@@ -18,8 +18,9 @@ import type { ToolInput } from './types'
   crosshair, the first thing on it takes a small push and a knock in the
   breakables' currency (a crate goes in three, a red barrel catches on the
   first and goes on the second), a player a stumble, and a tracer runs from
-  the muzzle to the hit. Twelve to a magazine, held down it fires about
-  seven a second, R or an empty magazine reloads. The crossbow looses a
+  the muzzle to the hit. It never runs dry: held down it fires about seven
+  a second for as long as you hold it (the magazine and reload are still
+  here, behind `clip: 0`, if a clip is ever wanted back). The crossbow looses a
   bolt that flies an arc under a third of the level's gravity and sticks
   where it lands, in the ground, a wall or a prop (and rides the prop from
   then on); a prop takes a hard shove and a blow that breaks a crate
@@ -75,7 +76,8 @@ interface Spec {
   auto: boolean
 }
 export const SPECS: Record<WeaponId, Spec> = {
-  pistol: { interval: 0.14, clip: 12, reload: 1.1, auto: true },
+  // the pistol never runs dry: the owner wanted it to just keep shooting
+  pistol: { interval: 0.14, clip: 0, reload: 0, auto: true },
   crossbow: { interval: 1.15, clip: 0, reload: 0, auto: false },
   rocket: { interval: 1.25, clip: 0, reload: 0, auto: false },
 }
@@ -615,7 +617,7 @@ export function createWeapons(o: WeaponWorld): Weapons {
     }
     const spec = SPECS[w]
     // R reloads a magazine that is not full
-    if (w === 'pistol' && input.reload && !reloadWas && reloading === 0 && rounds.pistol < spec.clip) {
+    if (w === 'pistol' && spec.clip > 0 && input.reload && !reloadWas && reloading === 0 && rounds.pistol < spec.clip) {
       reloading = spec.reload
       emit({ type: 'reload', w })
     }
@@ -623,7 +625,7 @@ export function createWeapons(o: WeaponWorld): Weapons {
     const pull = input.fire && (spec.auto || !fireWas)
     fireWas = input.fire
     if (!pull || cool[w] > 0) return
-    if (w === 'pistol') {
+    if (w === 'pistol' && spec.clip > 0) {
       if (reloading > 0) return
       if (rounds.pistol <= 0) {
         reloading = spec.reload
@@ -636,7 +638,7 @@ export function createWeapons(o: WeaponWorld): Weapons {
     cool[w] = spec.interval
     fire(w, input, muzzle)
     // the last round out starts the reload by itself
-    if (w === 'pistol' && rounds.pistol === 0) {
+    if (w === 'pistol' && spec.clip > 0 && rounds.pistol === 0) {
       reloading = spec.reload
       emit({ type: 'reload', w })
     }
