@@ -4933,15 +4933,17 @@ export default function CrtScene({
           // announce ourselves while the stand-up glide plays, so the roster
           // and the first snapshots have landed by the time the controls do
           joinWorld()
-          // push back from the desk and rise to standing height: a quarter
-          // second, because anything longer is a wait between you and the walk. The /world entrance
+          // push back from the desk and rise to standing height in one move,
+          // straight off the glass: half a second reads as standing up, and
+          // it used to be two moves (a retreat, then the rise) that together
+          // were a wait between you and the walk. The /world entrance
           // never sat down, so it opens standing instead of gliding up out
           // of a chair nobody watched it push back from
           const s0 = performance.now()
           const from = camera.position.clone()
           const standTick = () => {
             if (disposed || !roaming) return
-            const t = instant ? 1 : Math.min(1, (performance.now() - s0) / 240)
+            const t = instant ? 1 : Math.min(1, (performance.now() - s0) / 500)
             camera.position.lerpVectors(from, SPAWN, EASE(t))
             const aim = lookAngles(camera.position, front)
             camera.rotation.set(aim.pitch, aim.yaw, 0)

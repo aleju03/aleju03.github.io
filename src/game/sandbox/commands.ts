@@ -780,8 +780,8 @@ registerCommand({
       ctx.print({ tone: 'help', text: msg(`/${usage(c, 'en')}`, `/${usage(c, 'es')}`), right: c.help })
     }
     ctx.out(msg(
-      'tab completes, up and down go back through what you typed',
-      'tab completa, arriba y abajo repiten lo que escribiste',
+      'tab completes; up and down pick from the list and enter takes it, or go back through what you typed',
+      'tab completa; arriba y abajo eligen de la lista y enter la toma, o repiten lo que escribiste',
     ))
   },
 })

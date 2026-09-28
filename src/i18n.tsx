@@ -154,7 +154,7 @@ const dictionaries = {
       console: {
         placeholder: 'say something, or /help',
         placeholderOffline: 'type /help for the commands',
-        keys: 'enter sends · tab completes · esc closes',
+        keys: '↑↓ picks · enter sends · tab completes · esc closes',
         offline: 'nobody out here to hear it',
         nobody: 'nobody else out here',
         nearby: 'nearby',
@@ -451,7 +451,7 @@ const dictionaries = {
       console: {
         placeholder: 'di algo, o /help',
         placeholderOffline: 'escribe /help para ver los comandos',
-        keys: 'enter envía · tab completa · esc cierra',
+        keys: '↑↓ elige · enter envía · tab completa · esc cierra',
         offline: 'no hay nadie aquí que lo escuche',
         nobody: 'no hay nadie más por aquí',
         nearby: 'cerca',
