@@ -12,6 +12,7 @@ import { buildBackrooms } from '../../game/levels/backrooms'
 import { buildDeskRoom } from '../../game/levels/deskRoom'
 import { fleetLevelAt, makeHomeLevels } from '../../game/levels/homeLevels'
 import { createLevelSystem } from '../../game/levels/levelSystem'
+import { findMap, mapOf, MAPS, type MapId } from '../../game/levels/maps'
 import type { Level, LevelLightRig } from '../../game/levels/types'
 import { buildPaperPlane } from '../../game/props/paperPlane'
 import type { HouseModels } from '../../game/levels/houseWorld'
@@ -421,6 +422,8 @@ export default function CrtScene({
       rather than unmounted — and it is not built at all until the first pause,
       which keeps it off the stand-up frame */
   const [everPaused, setEverPaused] = useState(false)
+  /** the map the walk was on when the menu went up (levels/maps.ts) */
+  const [mapHere, setMapHere] = useState<MapId>('home')
   const [prefs, setPrefs] = useState(loadPrefs)
   /** what the GPU sniff decided and what the world was actually built at; they
       differ exactly when the visitor has overruled the sniff. Set once, when
@@ -534,6 +537,8 @@ export default function CrtScene({
   /** the working furniture's button: a cupboard, the television, a cushion */
   const propRef = useRef<(() => void) | null>(null)
   const resumeRef = useRef<(() => void) | null>(null)
+  /** go to a map from the pause sheet (see goMap in the scene) */
+  const goMapRef = useRef<((id: MapId) => void) | null>(null)
   const failRef = useRef(onFail)
   const stageRef = useRef(onStage)
   const interactRef = useRef(onInteract)
@@ -1971,7 +1976,7 @@ export default function CrtScene({
           send: (m) => net?.effect(m),
           level: () => levels.current.id,
           world: (id) => {
-            const l = homeLevels.find((l) => l.id === id)
+            const l = homeLevels.find((l) => l.id === id) ?? mapLevels.find((l) => l.id === id)
             return l ? { boxes: l.collision.boxes, sb: sandboxes.get(id)?.sb ?? null } : null
           },
           cloud: (id, at) => sandboxes.get(id)?.sb.fx.cloud(at),
@@ -2310,6 +2315,7 @@ export default function CrtScene({
             // nearest first, and whoever is off in another level last
             others.sort((a, b) => (a.dist ?? Infinity) - (b.dist ?? Infinity))
             setPeople(others)
+            setMapHere(mapOf(levels.current.id))
             // and the first pause is what builds the screen at all — see the
             // everPaused declaration
             setEverPaused(true)
@@ -2352,7 +2358,7 @@ export default function CrtScene({
           // E: get out of whatever you are in, else the machine's prompt, else
           // a door's, else climb into whatever is parked in front of you
           onUse: () => {
-            if (loadingWorld) return true
+            if (loadingWorld || loadingMap) return true
             // while the beam holds something E is its rotate modifier
             if (tools?.capturesUse && !fleet.riding) return true
             if (fleet.riding) {
@@ -2547,6 +2553,9 @@ export default function CrtScene({
             headPos.set(x, feet + EYE, z)
           },
           home: () => ({ x: SPAWN.x, z: SPAWN.z, y: spawnY(levels.current, SPAWN.x, SPAWN.z, deskRoom.floorY) }),
+          // the maps (levels/maps.ts) and the cut to one
+          maps: () => MAPS.map((m) => ({ id: m.id, here: mapOf(levels.current.id) === m.id })),
+          goMap: (id) => goMap(id),
           // the escape hatch (`unstuck`): out of whatever you are in, off
           // noclip, and on your feet on the front path at home. From another
           // level it is the ordinary cut home, landing on the same spot
@@ -3039,6 +3048,7 @@ export default function CrtScene({
           hemi,
           moon,
           windowSpill,
+          sun: outside.sun,
           setMoonPool: (o) => {
             moonSpillMat.opacity = o
           },
@@ -3050,8 +3060,11 @@ export default function CrtScene({
         // cycle, and handing it this instead of nothing is what stops its paint
         // and headlamps arriving one frame's worth of midday behind the room
         let lastSky: OutsideState | null = null
-        const applyLight = (at: THREE.Vector3 = camera.position) => {
-          const sky = outside.update(at, todPin ?? undefined)
+        /** `level` composes the light for one that is not live yet (a map
+            being warmed under the cut's card, at its own hour) */
+        const applyLight = (at: THREE.Vector3 = camera.position, level: Level = levels.current) => {
+          // (a map with its own hour pins the sky to it; the console's pin wins)
+          const sky = outside.update(at, todPin ?? level.timeOfDay)
           // the console's fog: thicker is nearer, never further than the
           // world streams (fogK is at least 1, see commands.ts's `fog`)
           sky.fogNear /= fogK
@@ -3083,7 +3096,7 @@ export default function CrtScene({
           // the day, and the night table's drained chroma would grey it out
           look.setMood(sky.night * (1 - sky.twilight))
           dressAir(sky)
-          levels.current.overrideLight?.(lightRig)
+          level.overrideLight?.(lightRig)
           // the globes light themselves the way the ground under them is lit,
           // so the planet from orbit and the far field over it agree
           globeSun.copy(outside.sun.color).multiplyScalar(outside.sun.intensity)
@@ -3620,7 +3633,8 @@ export default function CrtScene({
           // The compositor animates the cover. Rendering here would race the
           // shader warm-up, draw its staged tools, and keep the GPU busy with
           // frames nobody can see. Also keep held movement out of the cut.
-          if (loadingWorld) {
+          // (A map loading under the level cut's card sleeps it the same way.)
+          if (loadingWorld || loadingMap) {
             lastT = now
             nextFrame = now
             edges.update(input.keys)
@@ -4823,6 +4837,155 @@ export default function CrtScene({
             if (!disposed) stageRef.current?.(null)
           }
         }
+        /*
+          The maps (levels/maps.ts). Home is the levels built at boot; every
+          other map is a module nobody downloads until they pick it. Picking
+          one runs the ordinary blackout cut, but the card goes up at once and
+          the swap waits under it (levelSystem's goToLoading) while the map is
+          imported, built and paid for: its merged soup draws with the open
+          world's own chunk materials, so the programs already exist once the
+          world has been warmed, and all that is left is one unculled draw
+          into a pixel for its buffers. The walk sleeps through that like it
+          does through the front door's load, so nothing renders a map that
+          is half uploaded and nobody walks about under the card.
+        */
+        let loadingMap = false
+        /** the maps loaded this session, joined to the level system */
+        const mapLevels: Level[] = []
+        const MAP_BUILDERS: Partial<Record<MapId, () => Promise<{ root: THREE.Object3D; level: Level }>>> = {
+          nuketown: async () => {
+            const mod = await import('../../game/levels/nuketown')
+            return mod.buildNuketown({
+              parent: scene!,
+              trackTexture: disposer.texture,
+              trackDisposable: disposer.add,
+              venue: outside.setVenue,
+              homeUpdate: (dt, p) => {
+                house.update(dt)
+                backrooms.update(dt, p, false)
+              },
+            })
+          },
+        }
+        /**
+         * A map's covered compile and first draw, in the light it will be seen
+         * in: composed at the map's hour with the Earth's ground put away, and
+         * everything that goes along (the body, the belt, the map's sandbox)
+         * staged in front of the warm camera for a compile and one unculled
+         * draw into a pixel. Its soup reuses the chunks' programs and the
+         * scene's light counts do not change on the way (the fleet puts a
+         * machine a world away out of the picture by layer, keeping its
+         * headlights), so this should link nothing; what it does pay is the
+         * map's buffer uploads, here rather than on the first frames of the
+         * walk. Home's light is put back after.
+         */
+        const warmMap = async (root: THREE.Object3D, level: Level, sb: Sandbox | null) => {
+          if (!webgl || !scene) return
+          const at = level.spawn
+          root.visible = true
+          const sbShown = sb?.root.visible ?? false
+          if (sb) sb.root.visible = true
+          const bodyWas = body.visible
+          body.visible = true
+          warmCam.fov = prefsRef.current.fov
+          warmCam.aspect = W / H
+          warmCam.rotation.order = 'YXZ'
+          warmCam.updateProjectionMatrix()
+          warmCam.position.set(at.x, EYE, at.z)
+          warmCam.rotation.set(0, at.yaw, 0)
+          warmCam.updateMatrixWorld(true)
+          outside.setVenue('away')
+          applyLight(warmCam.position, level)
+          tools?.stage(warmCam)
+          avatars.stage(warmCam)
+          const unculled: THREE.Object3D[] = []
+          try {
+            await webgl.compileAsync(scene, warmCam).catch(() => {})
+            if (disposed || !webgl || !scene) return
+            for (const r of sb ? [root, sb.root] : [root]) {
+              r.traverse((o) => {
+                if (isDrawable(o) && o.frustumCulled) {
+                  o.frustumCulled = false
+                  unculled.push(o)
+                }
+              })
+            }
+            webgl.getSize(warmSize)
+            webgl.setScissorTest(true)
+            webgl.setScissor(0, 0, 1, 1)
+            webgl.setViewport(0, 0, 1, 1)
+            webgl.render(scene, warmCam)
+          } finally {
+            for (const o of unculled) o.frustumCulled = true
+            tools?.unstage()
+            avatars.unstage()
+            body.visible = bodyWas
+            if (webgl) {
+              webgl.setScissorTest(false)
+              webgl.setViewport(0, 0, warmSize.x, warmSize.y)
+            }
+            // the level shows it on arrival, and its sandbox with it
+            root.visible = false
+            if (sb) sb.root.visible = sbShown
+            outside.setVenue('earth')
+            applyLight(camera.position)
+          }
+        }
+        const loadMapLevel = async (id: MapId): Promise<Level | null> => {
+          const build = MAP_BUILDERS[id]
+          if (!build) return null
+          loadingMap = true
+          try {
+            // the world first: the map draws with its materials, and a visit
+            // from the room tier would otherwise link them mid-cut
+            if (!outside.hasWorld()) {
+              await ensureWorld()
+              if (disposed) return null
+              await warmForRoam(camera.position.clone())
+            }
+            if (disposed || !scene) return null
+            const built = await build()
+            if (disposed || !scene) return null
+            // its sandbox now rather than on arrival, so its props are in
+            // the covered compile (switchSandboxTo shows it when it is live)
+            const sb = sandboxFor(built.level)
+            if (sb) sb.root.visible = false
+            await warmMap(built.root, built.level, sb)
+            if (disposed) return null
+            mapLevels.push(built.level)
+            return built.level
+          } catch (e) {
+            console.error('map failed to load', e)
+            return null
+          } finally {
+            loadingMap = false
+          }
+        }
+        /** the house's own spawn, upstairs in the computer room, as the cut
+            home from a map lands it */
+        const homeSpawn = (earth: Level) => ({
+          x: SPAWN.x,
+          z: SPAWN.z,
+          yaw: lookAngles(SPAWN, front).yaw,
+          y: spawnY(earth, SPAWN.x, SPAWN.z, deskRoom.floorY),
+        })
+        /** go to a map: the cut there (loading it under the card the first
+            time), or back home to the computer room */
+        const goMap = (id: string): 'ok' | 'here' | 'busy' | 'unknown' => {
+          const def = findMap(id)
+          if (!def) return 'unknown'
+          if (mapOf(levels.current.id) === def.id) return 'here'
+          if (levels.frozen || loadingMap || loadingWorld || !fps) return 'busy'
+          if (fleet.riding) leaveVehicle()
+          if (seating.current) leaveSeat()
+          leavePartSeat()
+          setNoclip(false)
+          standNow()
+          const known = levels.get(def.level)
+          const spawn = known?.house ? homeSpawn(known) : undefined
+          if (known) return levels.goTo(def.level, spawn) ? 'ok' : 'busy'
+          return levels.goToLoading(loadMapLevel(def.id), spawn) ? 'ok' : 'busy'
+        }
         /**
          * Bake the sun's shadow map once, under the cover.
          *
@@ -5240,7 +5403,7 @@ export default function CrtScene({
         }
         // the door prompt button routes here (E does the same via input)
         doorRef.current = () => {
-          if (loadingWorld) return
+          if (loadingWorld || loadingMap) return
           if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
           if (!outside.hasWorld() && atExteriorDoor(headPos)) void loadWorldCovered()
         }
@@ -5273,6 +5436,12 @@ export default function CrtScene({
         resumeRef.current = () => {
           setPauseNow(false)
           input.tryLock()
+        }
+        // a ticket on the pause sheet: the sheet goes away, the cut runs
+        goMapRef.current = (id) => {
+          resumeRef.current?.()
+          const r = goMap(id)
+          if (r === 'busy') pushFeed({ tone: 'err', text: bilingual('not now: something is in the way', 'ahora no: algo está en medio') })
         }
 
         const onResize = () => {
@@ -5476,6 +5645,7 @@ export default function CrtScene({
       doorRef.current = null
       propRef.current = null
       resumeRef.current = null
+      goMapRef.current = null
       pixelProofsRef.current = null
       enterRef.current = null
       leaveRef.current = null
@@ -5715,6 +5885,8 @@ export default function CrtScene({
           onPixelProofs={() => pixelProofsRef.current?.() ?? Promise.resolve(null)}
           tier={tierInfo}
           people={people}
+          map={mapHere}
+          onMap={(id) => goMapRef.current?.(id)}
           identity={{
             look,
             onLook: setLook,

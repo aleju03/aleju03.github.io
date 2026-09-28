@@ -71,6 +71,9 @@ export interface LevelLightRig {
   hemi: THREE.HemisphereLight
   moon: THREE.DirectionalLight
   windowSpill: THREE.SpotLight
+  /** the sky's sun, as the sky pass left it (a level with a sun of its own
+      turns it up or tints it; it keeps casting either way) */
+  sun: THREE.DirectionalLight
   /** the moonlight pool on the bedroom floor */
   setMoonPool: (opacity: number) => void
   fog: THREE.Fog
@@ -116,6 +119,10 @@ export interface Level {
   seamTo: (p: THREE.Vector3) => { to: string; spawn?: LevelSpawn; shift?: LevelShift } | null
   /** impose the level's own light mood after the shared sky pass */
   overrideLight?: (rig: LevelLightRig) => void
+  /** the sky's clock pinned while you are here (0..1, 0.5 noon), for a map
+      that is always the same hour; absent, the planet's own day. The
+      console's `time` still wins */
+  timeOfDay?: number
 
   /* ---- what this level has (see the header): all default to none ---- */
 

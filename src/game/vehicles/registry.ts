@@ -193,7 +193,8 @@ export interface FleetTickOpts {
   /** where the walker is, for prompts and for culling distant machines */
   playerPos: THREE.Vector3
   /** a level with the fleet in it is live. Level 0 has no vehicles in it
-      and never will */
+      and never will, and nor does a map; the machines are put out of the
+      picture there (setAway) */
   outdoors: boolean
 }
 
@@ -368,6 +369,29 @@ interface Entry {
   placedUntil: number
   /** the level it stands in (see the header); empty until first placed */
   level: string
+  /** the machine's own objects, lights left out, listed once at build
+      before any passenger is hung in a seat (see setAway) */
+  own: THREE.Object3D[]
+  /** out of the picture: another level, or a level with no fleet */
+  away: boolean
+}
+
+/*
+  A machine a world away (in another level, or anywhere while the live level
+  has no fleet) is taken out of the picture by layer, not by visibility. Its
+  root carries the car's headlight spots, and a light leaving the scene
+  changes NUM_SPOT_LIGHTS in every lit program's configuration: hiding the
+  root relinked the scene's programs the first time anybody went to the
+  Moon, the backrooms or a map by night (src/game/CLAUDE.md: hide a
+  subtree's drawables, not its root). Its own objects go to a layer no camera
+  draws and no ray tests; the lights stay, at whatever the day gave them,
+  lighting nothing a world away.
+*/
+const AWAY_LAYER = 31
+const setAway = (e: Entry, away: boolean) => {
+  if (e.away === away) return
+  e.away = away
+  for (const o of e.own) o.layers.set(away ? AWAY_LAYER : 0)
 }
 
 interface Carry {
@@ -480,7 +504,11 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       v, box, hull, step: null, emit: 0,
       net: null, voiced: false, carry: null, heldRemote: false, asked: -10,
       order: null, placedUntil: -1, level: '',
+      own: [], away: false,
     }
+    v.root.traverse((o) => {
+      if (!(o as THREE.Light).isLight) e.own.push(o)
+    })
     entries.push(e)
     byId.set(v.id, e)
   }
@@ -818,7 +846,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     let best: { key: string; t: number } | null = null
     let bestT = within
     for (const e of entries) {
-      if (e.carry || !grabbable(e) || !e.v.root.visible) continue
+      if (e.carry || !grabbable(e) || e.away || !e.v.root.visible) continue
       const v = e.v
       // the ray in the machine's own frame, against its bounds: the hull's
       // stations are a taper inside them, and a beam wants the body, not a
@@ -968,7 +996,6 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
 
   const tick = (o: FleetTickOpts): FleetStep => {
     const dt = Math.min(0.05, o.dt)
-    root.visible = o.outdoors
     result.driving = null
     result.riding = null
     result.prompt = null
@@ -989,6 +1016,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       for (const e of entries) {
         hush(e)
         if (e.carry) handBack(e)
+        setAway(e, true)
       }
       effects.update(dt)
       return result
@@ -1042,7 +1070,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
         // a world away: not drawn, not heard, not offered, nothing to bump
         // into. A pose from the wire is still followed (netStep is a copy),
         // so it is where its driver left it when we get there
-        e.v.root.visible = false
+        setAway(e, true)
         hush(e)
         if (held) heldTick(e, e.net!)
         else {
@@ -1052,7 +1080,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
         e.box.makeEmpty()
         continue
       }
-      e.v.root.visible = true
+      setAway(e, false)
       if (held) {
         heldTick(e, e.net!)
         continue
@@ -1216,6 +1244,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       // straight after this, and a machine a tick before this one hid (it
       // was nowhere yet) would have its programs linked mid-walk instead
       e.v.root.visible = true
+      setAway(e, false)
       // a few slices of settling so a machine is resting on its springs the
       // first time anyone lays eyes on it rather than dropping onto them
       for (let i = 0; i < 40; i++) e.v.update(env, false)

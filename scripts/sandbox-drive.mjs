@@ -10,7 +10,13 @@
                                       a first spawn, a change of look (the
                                       beaver, a cap, the headset), a break, a
                                       fuse and a chain
-                                      of bangs (must be 0)
+                                      of bangs, and a trip to Nuketown and
+                                      back (loaded under the cut's card,
+                                      looked round, a crate blown up there)
+                                      (must be 0)
+    npm run drive -- nuketown         the Nuketown map: the street from each
+                                      end and the living room of the yellow
+                                      house (shots nuketown-*.png)
     npm run drive -- space            the way up and to the Moon: the street's
                                       frame cost, a crate dropped from 20 up, a
                                       noclip climb shot at the stratosphere, the
@@ -969,6 +975,18 @@ try {
       setTimeout(() => window.__input.keys.delete('Mouse0'), ${ms + 900});`
     total += await phase('weapons drawn and fired', `${fireAt(0, 4)} ${fireAt(1300, 5)} ${fireAt(2600, 6)}
       setTimeout(() => window.__tools.select(0), 6500)`, 7000)
+    // a map and back (levels/maps.ts): the module loads, builds and warms
+    // under the cut's card, so the whole trip must link nothing
+    total += await phase('map nuketown (loaded under the card)', `window.__sandbox.run('map nuketown')`, 7000)
+    total += await phase('nuketown, looking round', `(() => { const w = window.__sandboxWalk; let k = 0;
+      const id = setInterval(() => { w.yaw += 0.45; if (++k > 14) clearInterval(id) }, 140) })()`, 3000)
+    total += await phase('nuketown, a crate and a barrel blown up', `{ ${ahead}
+      const b = put('barrel_explosive', 12, 0); put('crate', 14, 2);
+      setTimeout(() => window.__sandbox.damage(b, 1000), 400) }`, 3000)
+    await shot('links-nuketown')
+    total += await phase('map home', `window.__sandbox.run('map home')`, 4000)
+    total += await phase('home again, looking round', `(() => { const w = window.__sandboxWalk; let k = 0;
+      const id = setInterval(() => { w.yaw += 0.45; if (++k > 14) clearInterval(id) }, 140) })()`, 3000)
     const names = await evaluate('window.__links')
     for (const n of names) console.log(`    linked ${n}`)
     const seen = await evaluate('[window.__wrapped, window.__booms, window.__breaks]')
@@ -2104,6 +2122,28 @@ try {
     const st = await evaluate('[window.__tools.weapons.stuck.length, window.__tools.weapons.projectiles.length]')
     console.log(`  ${st[0]} bolt(s) stuck, ${st[1]} shot(s) still in the air`)
     console.log(`  ${await evaluate('window.__wLinks')} programs linked across the weapons shots`)
+  }
+
+  if (WHAT.includes('nuketown')) {
+    // the map's three views: down the street from each end, and inside
+    console.log('nuketown')
+    console.log(`  ${(await run('map nuketown')).join(' / ')}`)
+    await sleep(7000)
+    await stand()
+    const O = -24000
+    const at = async (name, x, z, yaw, pitch) => {
+      await evaluate(`window.__sandbox.console.host.teleport(${O + x}, ${z}, undefined, ${yaw})`)
+      await sleep(1800)
+      await look(yaw, pitch)
+      await sleep(600)
+      await shot(name)
+    }
+    await at('nuketown-west-end', -64, 1, -Math.PI / 2, -0.04)
+    await at('nuketown-east-end', 64, -1, Math.PI / 2, -0.04)
+    // the yellow house's living room, from beside the sofa toward the stairs
+    await at('nuketown-inside', -5, 31, 1.15, -0.05)
+    console.log(`  ${(await run('map home')).join(' / ')}`)
+    await sleep(3000)
   }
 
   if (WHAT.includes('pause')) {

@@ -114,6 +114,12 @@ levels/
   moon.ts            the Moon's ground: craters on five scales, a lattice on
                      the world grid the walker and the sandbox both stand on,
                      a horizon that curves away, boulders; built on arrival
+  maps.ts            the maps picked from the pause sheet or `map <id>`:
+                     'home' (the three levels above) and 'nuketown'. Pure
+  nuketown.ts        a 1950s test-site cul-de-sac, a map: loaded on first
+                     pick, built and warmed under the cut's card (levelSystem's
+                     goToLoading), drawn with the chunks' own materials so it
+                     links nothing, standing far off at NUKE_ORIGIN
   houseWorld.ts      the house + yard, two storeys (walls, stairs, slab, roof,
                      doors, furniture placement); owns the property line
                      inward. The computer room is upstairs, at UP

@@ -15,6 +15,11 @@ import type { Level, LevelShift, LevelSpawn } from './types'
   swap with no offset, for a portal that places the player itself. reset() is the
   no-ceremony path home — sitting down or leaving the room mid-level snaps
   straight back to the home level's spawn with no cut.
+
+  A map (levels/maps.ts) is a level nobody pays for until they pick it, so
+  the system also takes levels after construction: `goToLoading` raises the
+  card at once and holds the swap under it until the level's loader settles,
+  then adds it and carries on with the ordinary cut, timed from the swap.
 */
 
 const SWAP_MS = 220
@@ -53,6 +58,13 @@ export interface LevelSystem {
       nobody moved (a portal carries the walker itself, in the new level's
       coordinates): false if a cut is running or the level is unknown */
   cross: (id: string) => boolean
+  /** the ordinary cut to a level that is still being built: the card goes
+      up now and the swap waits under it for `ready`, which resolves with the
+      level (added for the rest of the session) or null, which drops the card
+      again with nobody moved. False if a cut is already running */
+  goToLoading: (ready: Promise<Level | null>, spawn?: LevelSpawn) => boolean
+  /** a level added after construction, or one of the first ones, by id */
+  get: (id: string) => Level | undefined
 }
 
 export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
@@ -62,8 +74,9 @@ export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
   let current = home
   let cut: {
     t0: number
-    to: Level
-    spawn: LevelSpawn
+    /** null while the level is still loading (goToLoading) */
+    to: Level | null
+    spawn: LevelSpawn | null
     swapped: boolean
     fading: boolean
   } | null = null
@@ -77,20 +90,24 @@ export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
     },
     tick: (now, p, live) => {
       if (cut) {
-        const t = now - cut.t0
-        if (!cut.swapped && t >= SWAP_MS) {
+        let t = now - cut.t0
+        if (!cut.swapped && t >= SWAP_MS && cut.to) {
           cut.swapped = true
+          // a load may have held the card up past its time: the fade is
+          // timed from the swap, not from the pick
+          cut.t0 = Math.max(cut.t0, now - SWAP_MS)
           current.leave()
           const from = current
           current = cut.to
           current.enter()
-          opts.onSwapped(current, cut.spawn, from)
+          opts.onSwapped(current, cut.spawn ?? current.spawn, from)
+          t = now - cut.t0
         }
         if (cut.swapped && !cut.fading && t >= FADE_MS) {
           cut.fading = true
           opts.onCover(false)
         }
-        if (t >= DONE_MS) cut = null
+        if (cut.swapped && t >= DONE_MS) cut = null
         return
       }
       if (!live) return
@@ -119,6 +136,25 @@ export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
       opts.onCutStart()
       return true
     },
+    goToLoading: (ready, spawn) => {
+      if (cut) return false
+      const mine = { t0: performance.now(), to: null as Level | null, spawn: spawn ?? null, swapped: false, fading: false }
+      cut = mine
+      opts.onCover(true)
+      opts.onCutStart()
+      const drop = () => {
+        if (cut !== mine) return
+        cut = null
+        opts.onCover(false)
+      }
+      ready.then((level) => {
+        if (!level) return drop()
+        byId.set(level.id, level)
+        if (cut === mine) mine.to = level
+      }, drop)
+      return true
+    },
+    get: (id) => byId.get(id),
     cross: (id) => {
       const to = byId.get(id)
       if (!to || cut) return false
