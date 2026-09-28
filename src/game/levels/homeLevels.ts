@@ -5,7 +5,7 @@ import { BR } from './backrooms'
 import type { OutsideHandles } from './outsideWorld'
 import { makeCollisionSet } from '../physics/collision'
 import type { Level } from './types'
-import { MOON_ORIGIN, MOON_WALK } from './space'
+import { MOON_LEAVE, MOON_ORIGIN, MOON_WALK } from './space'
 
 /*
   The three levels the game ships today, adapted onto the Level contract:
@@ -39,12 +39,26 @@ import { MOON_ORIGIN, MOON_WALK } from './space'
     the air taken out and the globe hung in it, and it has a sandbox of its
     own standing on its own lattice, at a sixth of the gravity. It stands
     far off in the scene, so nothing of the overworld's is inside its far
-    plane, and it declares no fleet, no crowd, no house and no air.
+    plane. It declares the fleet (a machine is in one level at a time, and
+    ordering one pulls it here) but no crowd, no house and no air.
 
   All of them keep the house and the backrooms modules ticking every frame no
   matter which side you're on: doors keep easing shut upstairs while you're
   below, and the seam keeps whispering upstairs while you're not.
 */
+
+/** which of these levels a point is in, for a machine somebody else is
+    driving: the wire carries the fleet's poses with no level, and the Moon
+    is a square of its own far off in the scene (space.ts). A point inside
+    that square and under the height the Moon is left at is on the Moon;
+    anything else is the overworld (a car driven 55 km out on Earth into the
+    same square would read as lunar to everybody else, which nobody does) */
+export const fleetLevelAt = (x: number, y: number, z: number) =>
+  Math.abs(x - MOON_ORIGIN.x) <= MOON_WALK + 200 &&
+  Math.abs(z - MOON_ORIGIN.z) <= MOON_WALK + 200 &&
+  y < MOON_LEAVE + 1000
+    ? 'moon'
+    : 'overworld'
 
 export function makeHomeLevels(
   house: HouseHandles,
@@ -184,10 +198,14 @@ export function makeHomeLevels(
     },
     gravity: 1 / 6,
     sandbox: { ground: outside.moon.ground },
-    // the ship flies here, and lands, under a sixth of the gravity
-    spacecraft: true,
+    // the whole fleet, under a sixth of the gravity: the ship lands here,
+    // and a car ordered here is a lunar rover (it floats over crater rims)
+    vehicles: true,
     outdoors: true,
     surfaceAt: () => 'regolith',
+    // regolith crunches underfoot, but a tyre on it wants to go:
+    // sand's drag is wading pace, and a rover that crawls is no rover
+    driveSurface: () => 'stone',
   }
 
   return [overworld, level0, moon]
