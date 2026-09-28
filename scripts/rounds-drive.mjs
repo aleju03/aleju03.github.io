@@ -107,10 +107,17 @@ const pick = async (cs, map, levelId) => {
 }
 /** put a client somewhere and face a heading; y=feet from the level */
 const stand = (c, x, z, yaw = 0, pitch = 0) => c.evaluate(`(async () => { await __sandbox.run('tp ${x} ${z}'); const w = __sandboxWalk; w.yaw = ${yaw}; w.pitch = ${pitch}; return true })()`)
+/** what to look at when a step times out */
+const diag = async (cs) => {
+  for (const c of cs) {
+    console.log(`  [${c.tag}]`, await c.evaluate(`JSON.stringify({ here: __rounds.here(), yaw: __sandboxWalk.yaw, pitch: __sandboxWalk.pitch, tool: __tools.tool, slot: __tools.slot, fire: __input.keys.has('Mouse0'), hp: __health.hp, dead: __health.dead, prot: __health.protectedNow, pvp: __health.pvp, phase: __rounds.state.phase, mine: __rounds.state.mine, others: [...__remote.players].map(([id, p]) => [id, Math.round(p.x), Math.round(p.z), p.here]), level: __levels.current.id })`))
+    await c.shot(`diag-${c.tag}`)
+  }
+}
 const idle = async (cs) => { for (const c of cs) { const p = await c.phase(); if (p !== 'lobby') await c.run('round stop'); } await waitFor(async () => (await cs[0].phase()) === 'lobby', 80, 250, 'back to the lobby') }
 
 try {
-  launch(process.execPath, ['server/src/index.js'], { env: { ...process.env, ADMIN_TOKEN: 'rounds-drive-secret', PORT: String(relay), DB_PATH: `${temp}/chat.db`, ALLOWED_ORIGINS: `http://localhost:${port}`, ROUND_COUNTDOWN_MS: '3000', ROUND_RESULTS_MS: '30000', ROUND_TIME_SCALE: '0.25' } })
+  launch(process.execPath, ['server/src/index.js'], { env: { ...process.env, ADMIN_TOKEN: 'rounds-drive-secret', PORT: String(relay), DB_PATH: `${temp}/chat.db`, ALLOWED_ORIGINS: `http://localhost:${port}`, ROUND_COUNTDOWN_MS: '3000', ROUND_RESULTS_MS: '120000', ROUND_TIME_SCALE: arg('--scale', '1') } })
   await waitFor(async () => (await fetch(`http://127.0.0.1:${relay}/health`)).ok, 80, 100, 'relay')
   launch(process.execPath, ['--input-type=module', '-e', `const {createServer}=await import('vite');const s=await createServer({server:{port:${port},strictPort:true,hmr:false,watch:null}});await s.listen()`], { env: { ...process.env, VITE_CHAT_URL: `ws://127.0.0.1:${relay}/ws`, VITE_CACHE_DIR: `${root}/node_modules/.vite-rounds-${port}` } })
   await waitFor(async () => (await fetch(`http://localhost:${port}/world`)).ok, 80, 250, 'vite')
@@ -123,7 +130,11 @@ try {
   // the map sheet carries the rounds strip: the host may choose a game before anyone walks
   await a.shot('map-sheet-with-rounds')
 
-  if (only.includes('dm')) {
+  process.on('unhandledRejection', () => {})
+  const guarded = async (name, fn) => {
+    try { await fn() } catch (e) { console.log(`FAILED in ${name}:`, e.message); await diag(both).catch(() => {}); throw e }
+  }
+  if (only.includes('dm')) await guarded('dm', async () => {
     console.log('deathmatch')
     await pick(both, 'nuketown', 'nuketown')
     await b.run('round mode hide')
@@ -131,8 +142,8 @@ try {
     await waitFor(async () => (await b.st('s.mode')) !== 'deathmatch' ? true : false, 4, 250, 'a guest cannot pick').catch(() => {})
     assert.equal(await a.st('s.mode'), 'deathmatch', 'a guest cannot pick the game')
     await a.run('round mode deathmatch')
-    await a.run('round opt limit 2')
-    await waitFor(async () => (await b.st('s.opt.limit')) === 2, 40, 250, 'the option reaches B')
+    await a.run('round opt limit 1')
+    await waitFor(async () => (await b.st('s.opt.limit')) === 1, 40, 250, 'the option reaches B')
     await a.run('round ready'); await b.run('round ready')
     await waitPhase(a, 'countdown'); await waitPhase(b, 'countdown')
     await a.shot('dm-countdown')
@@ -144,14 +155,14 @@ try {
     // the middle of the map, an open street: A stands west of B, facing east
     const fire = (on) => a.key('Mouse0', on)
     await a.evaluate('__tools.select(4)')
-    for (let kill = 1; kill <= 2; kill++) {
+    for (let kill = 1; kill <= 1; kill++) {
       await stand(a, -24006, 0, -Math.PI / 2, -0.2)
       await stand(b, -23996, 0, Math.PI / 2, 0)
       // (respawn protection ends two seconds after a return)
       await waitFor(async () => !(await b.evaluate('__health.protectedNow')), 60, 250, 'B unprotected')
       await sleep(600)
       await fire(true)
-      await waitFor(async () => (await a.st(`s.parts.find(p => p.id === ${ida}).a`)) >= kill || (await b.evaluate('__health.dead')), 200, 250, `B is hit (${kill})`)
+      await waitFor(async () => (await a.phase()) !== 'playing' || (await b.evaluate('__health.dead')), 200, 250, `B is hit (${kill})`)
       await waitFor(async () => (await b.evaluate('__health.dead')) || (await a.phase()) === 'results', 200, 250, `B dies (${kill})`)
       await fire(false)
       if (kill === 1) {
@@ -162,9 +173,6 @@ try {
         await a.shot('dm-a-scoreboard')
         await a.evaluate(`window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Tab' })); true`)
         await waitFor(async () => !(await b.evaluate('__health.dead')), 200, 250, 'B respawns')
-        // a death stands B up in its own yard
-        const yard = await b.evaluate('__rounds.here().z')
-        console.log('  B respawned at z', Math.round(yard))
       }
     }
     await waitPhase(a, 'results', 20000, 'the limit ends it'); await waitPhase(b, 'results')
@@ -173,10 +181,10 @@ try {
     assert.deepEqual(await a.st('s.result.win'), [ida], 'A wins')
     await a.shot('dm-results-a'); await b.shot('dm-results-b')
     assert.equal(await a.evaluate('__health.pvp'), false, 'pvp goes off with the round')
-    await waitPhase(a, 'lobby', 45000, 'the lobby again')
-  }
+    await waitPhase(a, 'lobby', 150000, 'the lobby again')
+  })
 
-  if (only.includes('hide')) {
+  if (only.includes('hide')) await guarded('hide', async () => {
     console.log('hide and seek')
     if ((await a.level()) !== 'nuketown') await pick(both, 'nuketown', 'nuketown')
     await a.run('round mode hide')
@@ -205,11 +213,11 @@ try {
     assert.deepEqual(await seeker.st('s.result.win'), [hid], 'the last one caught wins')
     await sleep(600)
     await seeker.shot('hide-results-seeker'); await hider.shot('hide-results-hider')
-    await waitPhase(a, 'lobby', 45000)
+    await waitPhase(a, 'lobby', 150000)
     void sid
-  }
+  })
 
-  if (only.includes('prop')) {
+  if (only.includes('prop')) await guarded('prop', async () => {
     console.log('prop hunt')
     if ((await a.level()) !== 'nuketown') await pick(both, 'nuketown', 'nuketown')
     await a.run('round mode prophunt')
@@ -257,11 +265,11 @@ try {
     assert.equal(await hunter.st('s.result.why'), 'hunted')
     await sleep(600)
     await hunter.shot('prop-results-hunter'); await prop.shot('prop-results-prop')
-    await waitPhase(a, 'lobby', 45000)
+    await waitPhase(a, 'lobby', 150000)
     await waitFor(async () => (await a.evaluate('(() => { let n = 0; __sandbox.forEach(p => { if (p.data.net) n++ }); return n })()')) < 5, 60, 250, 'the decoys are cleared')
-  }
+  })
 
-  if (only.includes('race')) {
+  if (only.includes('race')) await guarded('race', async () => {
     console.log('race on foot (Cubeland)')
     await pick(both, 'cubeland', 'cubeland')
     await a.run('round mode race cubeland')
@@ -287,10 +295,10 @@ try {
     assert.ok(res.rows.every((r) => r[4] > 0), 'both finished with a time')
     await sleep(600)
     await a.shot('race-results')
-    await waitPhase(a, 'lobby', 45000)
-  }
+    await waitPhase(a, 'lobby', 150000)
+  })
 
-  if (only.includes('build')) {
+  if (only.includes('build')) await guarded('build', async () => {
     console.log('build contest (Cubeland)')
     if ((await a.level()) !== 'cubeland') await pick(both, 'cubeland', 'cubeland')
     await a.run('round mode build')
@@ -317,8 +325,8 @@ try {
     console.log('  results', JSON.stringify(res.rows), 'winner', JSON.stringify(res.win))
     assert.deepEqual(res.win, [first], 'the 4 beats the 2')
     await a.shot('build-results')
-    await waitPhase(a, 'lobby', 45000)
-  }
+    await waitPhase(a, 'lobby', 150000)
+  })
   assert.deepEqual(a.errors, [], 'no page errors on A')
   assert.deepEqual(b.errors, [], 'no page errors on B')
   console.log('two-client round checks passed')

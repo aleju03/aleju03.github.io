@@ -67,7 +67,7 @@ export function createRounds({
     phase: 'lobby',
     mode: 'deathmatch',
     level: MODES.deathmatch.levels[0],
-    opt: {},
+    opt: { ...MODES.deathmatch.options },
     debug: false,
     ready: new Set(),
     parts: new Map(), // id -> participant row
@@ -436,7 +436,7 @@ export function createRounds({
         st.obj = {};
         st.result = null;
         st.debug = false;
-        st.opt = {};
+        st.opt = { ...MODES.deathmatch.options };
         st.mode = 'deathmatch';
         st.level = MODES.deathmatch.levels[0];
       }
