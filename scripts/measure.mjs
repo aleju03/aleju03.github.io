@@ -204,7 +204,7 @@ if (bad) process.exitCode = 1
 
 const FILE_REPORTS = [
   'physics', 'console', 'fracture', 'bodies', 'body', 'car', 'seats', 'prop-sync',
-  'world-effects', 'streaming', 'pedestrians', 'collision', 'damage-sync', 'weapons', 'rubble',
+  'world-effects', 'streaming', 'pedestrians', 'collision', 'damage-sync', 'weapons', 'rubble', 'creative',
 ]
 const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]

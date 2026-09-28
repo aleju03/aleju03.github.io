@@ -44,7 +44,7 @@ import { PALETTE, cleanSign, decodeTag, encodeTag, tagKey, type Tag } from './ta
 */
 
 /** the lift of one balloon, kg*u/s^2: three lift a big crate, one a small */
-export const LIFT = 300
+export const LIFT = 520
 /** the speed a balloon stops gaining at, u/s */
 const TERMINAL = 22
 /** the lift fades to nothing between these heights */
