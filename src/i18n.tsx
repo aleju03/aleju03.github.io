@@ -340,6 +340,9 @@ const dictionaries = {
       mapNames: { home: 'home', nuketown: 'nuketown', cubeland: 'cubeland' },
       mapBlurbs: { home: 'the house and the planet', nuketown: 'a test-site cul-de-sac, 1957', cubeland: 'a world of blocks to dig, build and blow up' },
       mapHere: 'you are here',
+      // the sheet a walk starts on (MapPicker.tsx)
+      pickTitle: 'where to?',
+      pickHint: 'pick a map to play on · the number keys work too · change it any time from the pause menu',
     },
   },
   es: {
@@ -632,6 +635,8 @@ const dictionaries = {
       mapNames: { home: 'casa', nuketown: 'nuketown', cubeland: 'cubolandia' },
       mapBlurbs: { home: 'la casa y el planeta', nuketown: 'un callejón en un sitio de pruebas, 1957', cubeland: 'un mundo de bloques para cavar, construir y volar' },
       mapHere: 'estás aquí',
+      pickTitle: '¿a dónde?',
+      pickHint: 'elige un mapa para jugar · también con las teclas de número · cámbialo cuando quieras desde el menú de pausa',
     },
   },
 }

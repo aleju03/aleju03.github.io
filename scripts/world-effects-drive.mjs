@@ -68,6 +68,9 @@ async function chrome(i) {
   await send('Page.addScriptToEvaluateOnNewDocument', { source: shim })
   await send('Page.navigate', { url: `http://localhost:${port}/world` })
   await waitFor(() => evaluate('!!window.__sandbox?.ready && window.__sandbox.network?.online'), 360, 250, `sandbox ${i}`)
+  // a walk starts on the map sheet (MapPicker.tsx): stay home
+  await waitFor(() => evaluate('!!window.__pickMap'), 80, 250, `map sheet ${i}`)
+  await evaluate('window.__pickMap("home"); true')
   console.log(`Chrome ${i} connected`)
   return { send, evaluate, errors }
 }

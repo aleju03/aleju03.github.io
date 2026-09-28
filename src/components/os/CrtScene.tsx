@@ -59,6 +59,7 @@ import SandboxConsole, { type FeedLine } from './SandboxConsole'
 import Crosshair, { type CrosshairAim } from './Crosshair'
 import SpawnMenu, { type CatalogueSource, type OrderLine } from './SpawnMenu'
 import BlockBar from './BlockBar'
+import MapPicker from './MapPicker'
 import ToolSwitcher, { type BeltState } from './ToolSwitcher'
 import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
@@ -422,6 +423,9 @@ export default function CrtScene({
   const [locked, setLocked] = useState(false)
   // esc mid-walk frees the mouse and raises the pause menu
   const [paused, setPaused] = useState(false)
+  /** the walk has just begun and is held on the map sheet (MapPicker.tsx):
+      the world is paused behind it, the pause sheet is not shown */
+  const [choosing, setChoosing] = useState(false)
   /** the pause screen has been up at least once this session. It carries a
       second WebGL context (the character preview), so once built it is hidden
       rather than unmounted — and it is not built at all until the first pause,
@@ -553,6 +557,8 @@ export default function CrtScene({
   const resumeRef = useRef<(() => void) | null>(null)
   /** go to a map from the pause sheet (see goMap in the scene) */
   const goMapRef = useRef<((id: MapId) => void) | null>(null)
+  /** a print on the map sheet: that map, or the world let go of */
+  const pickMapRef = useRef<((id: MapId) => void) | null>(null)
   const failRef = useRef(onFail)
   const stageRef = useRef(onStage)
   const interactRef = useRef(onInteract)
@@ -2339,7 +2345,7 @@ export default function CrtScene({
             // and the first pause is what builds the screen at all — see the
             // everPaused declaration
             setEverPaused(true)
-          }
+          } else setChoosing(false)
           setPaused(on)
         }
 
@@ -5335,8 +5341,12 @@ export default function CrtScene({
                 flagDeskShadows(camera.position)
                 house.flagShadows(camera.position)
               }
-              input.tryLock()
               setWalking(true)
+              // the walk starts on the map sheet (MapPicker.tsx), with the
+              // world held still behind it: a map is picked before anybody
+              // is put anywhere. The pointer is taken when one is
+              setChoosing(true)
+              setPauseNow(true)
               lastT = performance.now()
               raf = requestAnimationFrame(walkTick)
               return
@@ -5509,6 +5519,13 @@ export default function CrtScene({
           setPauseNow(false)
           input.tryLock()
         }
+        // a print on the map sheet: the map you are on lets go of the world,
+        // any other runs the cut there (which lets go of it too)
+        pickMapRef.current = (id) => {
+          if (mapOf(levels.current.id) === id) resumeRef.current?.()
+          else goMapRef.current?.(id)
+        }
+        if (import.meta.env.DEV) Object.assign(window, { __pickMap: (id: MapId) => pickMapRef.current?.(id) })
         // a ticket on the pause sheet: the sheet goes away, the cut runs
         goMapRef.current = (id) => {
           resumeRef.current?.()
@@ -5960,7 +5977,7 @@ export default function CrtScene({
           cost is paid once, on a frame where the world is already stopped. */}
       {roam && walking && everPaused && (
         <PauseScreen
-          open={paused}
+          open={paused && !choosing}
           multiplayer={mp.status === 'live'}
           prefs={prefs}
           onPrefs={setPrefs}
@@ -5995,6 +6012,10 @@ export default function CrtScene({
           onLeave={onLeave}
           onResume={() => resumeRef.current?.()}
         />
+      )}
+      {/* where to: the sheet every walk starts on (MapPicker.tsx) */}
+      {roam && walking && paused && choosing && (
+        <MapPicker here={mapHere} onPick={(id) => pickMapRef.current?.(id)} />
       )}
       {roam && walking && !paused && near && (
         <button

@@ -23,6 +23,11 @@
                                       living room, the yellow house's front
                                       window and straight down from noclip
                                       (shots nuketown-*.png)
+    npm run drive -- mapcards         the map sheet's pictures, each map with the
+                                      HUD hidden (shots mapcard-*.png; see
+                                      public/os/maps/README.md). Any run with
+                                      --picker also shoots the sheet itself,
+                                      which every walk now starts on
     npm run drive -- cubeland [--only a,b]
                                       Cubeland: the spawn from four headings
                                       and the air, a block broken and a tower
@@ -289,11 +294,16 @@ const shot = async (name) => {
 
 try {
   console.log('booting /world ...')
+  // a walk starts on the map sheet (MapPicker.tsx), with the world held
+  // still: stay home (a scenario that wants another map goes there itself)
   await waitFor(
-    () => evaluate(`!!window.__sandbox?.run && !!window.__sandboxWalk &&
-      /wasd/.test(document.body.innerText)`),
-    360, 500, 'the walk and the sandbox',
+    () => evaluate(`!!window.__sandbox?.run && !!window.__sandboxWalk && !!window.__pickMap &&
+      /where to|a dónde/i.test(document.body.innerText)`),
+    360, 500, 'the walk, the sandbox and the map sheet',
   )
+  if (has('picker')) await shot('map-picker')
+  await evaluate('window.__pickMap("home"); true')
+  await waitFor(() => evaluate('/wasd/.test(document.body.innerText)'), 60, 250, 'the walk')
   await evaluate('window.__sandbox.whenReady')
   if (has('debug')) {
     await evaluate(`window.__log = []; const L = (m) => window.__log.push(m + ' ' + (performance.now() | 0));
@@ -2249,6 +2259,64 @@ try {
       await evaluate('for (const [g, n] of window.__hid) g.setDrawRange(0, n); true')
       await run('noclip')
     }
+    console.log(`  ${(await run('map home')).join(' / ')}`)
+    await sleep(3000)
+  }
+
+  if (WHAT.includes('mapcards')) {
+    /*
+      The pictures on the map sheet (MapPicker.tsx): each map from a spot
+      that says what it is, with the page's own HUD hidden, written as
+      shots/sandbox/mapcard-<id>*.png for scripts/map-cards.py to crop into
+      public/os/maps/<id>.webp. A few candidates each; the script takes the
+      ones named in it.
+    */
+    console.log('mapcards')
+    const bare = (on) => evaluate(`(() => { let s = document.getElementById('__bare'); if (!s) { s = document.createElement('style'); s.id = '__bare'; document.head.appendChild(s) }
+      s.textContent = ${on ? "'body * { visibility: hidden !important } canvas { visibility: visible !important }'" : "''"}; return true })()`)
+    await run('time 0.42')
+    // home: the house from the street, over the front gate
+    for (const [n, x, z, y, yaw, pitch] of [['home-a', -6, -11, 7, 4.08, -0.12], ['home-b', -12, -16, 10, 4.2, -0.16], ['home-c', 2, -20, 9, 3.6, -0.14]]) {
+      await run('noclip')
+      await evaluate(`window.__sandbox.console.host.teleport(${x}, ${z}, ${y}, ${yaw}); true`)
+      await look(yaw, pitch)
+      await sleep(3500)
+      await bare(true)
+      await shot(`mapcard-${n}`)
+      await bare(false)
+      await run('noclip')
+    }
+    // nuketown: its loading screen's view down the street
+    console.log(`  ${(await run('map nuketown')).join(' / ')}`)
+    await sleep(8000)
+    for (const [n, x, z, yaw, pitch] of [['nuketown-a', 43.8, -6, 1.87, -0.02], ['nuketown-b', 30, 16, 1.9, -0.05]]) {
+      await evaluate(`window.__sandbox.console.host.teleport(${-24000 + x}, ${z}, undefined, ${yaw}); true`)
+      await sleep(1500)
+      await look(yaw, pitch)
+      await sleep(800)
+      await bare(true)
+      await shot(`mapcard-${n}`)
+      await bare(false)
+    }
+    // cubeland: over the spawn's woods toward whatever is past them
+    console.log(`  ${(await run('map cubeland')).join(' / ')}`)
+    await sleep(10000)
+    await run('time 0.42')
+    await run('noclip')
+    // (the block in hand is drawn in the scene, not the page)
+    await evaluate(`window.__scene.getObjectByName('cube-held').material.visible = false; true`)
+    // (block coordinates: the snowy taiga off the spawn, and the badlands
+    // against the desert, each from a little over the ground)
+    for (const [n, bx, bz, up, yaw, pitch] of [['cubeland-a', -300, 200, 24, 0.4, -0.22], ['cubeland-b', 232, -190, 20, 2.6, -0.2], ['cubeland-c', 150, 20, 26, 0.3, -0.25]]) {
+      await evaluate(`(() => { const C = window.__cubeland; let y = 0; for (let by = 95; by >= 0; by--) if (C.store.get(${bx}, by, ${bz})) { y = by * 2 + 2; break }
+        window.__sandbox.console.host.teleport(${bx * 2 + 1}, ${-40000 + bz * 2 + 1}, y + ${up}, ${yaw}); return true })()`)
+      await look(yaw, pitch)
+      await sleep(12000)
+      await bare(true)
+      await shot(`mapcard-${n}`)
+      await bare(false)
+    }
+    await run('noclip')
     console.log(`  ${(await run('map home')).join(' / ')}`)
     await sleep(3000)
   }
