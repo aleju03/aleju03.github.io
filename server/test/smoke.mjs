@@ -15,6 +15,8 @@ import { damageSmoke } from './worldDamage.mjs';
 import { weaponsSmoke } from './weapons.mjs';
 import { roomsSmoke } from './worldRooms.mjs';
 import { healthSmoke, healthRoomsSmoke } from './health.mjs';
+import { buildsSmoke, buildsRateSmoke } from './builds.mjs';
+import { persistSmoke } from './persist.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -85,6 +87,8 @@ function startServer(port = '0') {
         // rooms: a short grace and a small private cap, so death and fullness are cheap to test
         WORLD_ROOM_GRACE_MS: '300',
         WORLD_ROOM_MAX_PLAYERS: '3',
+        // the gallery's cap test publishes twenty builds in a row
+        BUILDS_PUBLISH_MAX: '1000',
       },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
@@ -112,6 +116,9 @@ async function main() {
   await healthRoomsSmoke(url, connect);
   console.log('0. world rooms: isolation of roster, ticks, chat, signals, props, damage and seats; join errors; death and rebirth; creation limits');
   await protectionSmoke(url, connect);
+  await persistSmoke();
+  console.log('0b. persisted Cubeland edits: written, debounced, restored after a restart, private rooms left out');
+  await buildsRateSmoke();
 
   // 1. Guest hello: gets a guest name and the room list.
   const guest = connect(url);
@@ -465,6 +472,23 @@ async function main() {
   assert.equal(rows[0].value, 'aula');
   assert.equal(rows[0].count, 2);
   console.log('16. breakdown aggregates a custom event property');
+
+  // 16c. The builds gallery: browse as a guest, publish as an account, caps,
+  //      refusals, pulls, deletion by author and by admin (test/builds.mjs)
+  const bob = connect(url);
+  await bob.opened;
+  bob.send({ type: 'hello' });
+  await bob.nextOf('hello-ok', 'bob hello-ok');
+  bob.send({ type: 'register', username: 'bob', password: 'hunter2' });
+  const bobReg = await bob.nextOf('auth-ok', 'bob auth-ok');
+  await buildsSmoke({
+    base: httpBase,
+    origin,
+    user: { token: reg.token, name: 'alice' },
+    other: { token: bobReg.token, name: 'bob' },
+    admin: { token: adminOk.token },
+  });
+  console.log('19. builds gallery: guests browse, accounts publish (20 cap, rate limit), refusals, pulls count once, author and admin delete');
 
   // 16b. Geo: with no edge header, the browser's timezone resolves the country.
   await capture({

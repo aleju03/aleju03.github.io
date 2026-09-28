@@ -11,8 +11,8 @@
 
 type Msg = { en: string; es: string }
 
-export type ToolMode = 'weld' | 'axis' | 'rope' | 'nocollide' | 'keys' | 'remove'
-export const TOOL_MODES: readonly ToolMode[] = ['weld', 'axis', 'rope', 'nocollide', 'keys', 'remove']
+export type ToolMode = 'weld' | 'axis' | 'rope' | 'nocollide' | 'keys' | 'remove' | 'copy' | 'paste'
+export const TOOL_MODES: readonly ToolMode[] = ['weld', 'axis', 'rope', 'nocollide', 'keys', 'remove', 'copy', 'paste']
 
 
 export const MODE_NAMES: Record<ToolMode, Msg> = {
@@ -22,6 +22,8 @@ export const MODE_NAMES: Record<ToolMode, Msg> = {
   nocollide: { en: 'no-collide', es: 'sin choque' },
   keys: { en: 'keys', es: 'teclas' },
   remove: { en: 'remove', es: 'quitar' },
+  copy: { en: 'copy', es: 'copiar' },
+  paste: { en: 'paste', es: 'pegar' },
 }
 
 /** what the hint tape says the clicks do, by mode and step (0: nothing
@@ -51,6 +53,14 @@ const STEPS: Record<ToolMode, [Msg, Msg]> = {
     { en: 'lmb remove a prop · rmb strip its joints', es: 'clic izq quita un objeto · clic der quita sus uniones' },
     { en: '', es: '' },
   ],
+  copy: [
+    { en: 'lmb copy a prop and all it is joined to · rmb copy just it', es: 'clic izq copia un objeto y todo lo unido · clic der solo él' },
+    { en: '', es: '' },
+  ],
+  paste: [
+    { en: 'copy something first (r to the copy mode)', es: 'copia algo primero (r al modo copiar)' },
+    { en: 'lmb place it · wheel or e turn it · rmb forget it', es: 'clic izq lo coloca · rueda o e lo gira · clic der lo olvida' },
+  ],
 }
 
 /** the hint line for a `state`, in either language */
@@ -61,7 +71,7 @@ export const toolgunLine = (state: string, lang: 'en' | 'es', keysLabel?: string
   const step = STEPS[m][s === '1' ? 1 : 0][lang]
   const tag = lang === 'es' ? 'pistola' : 'tool gun'
   const next = lang === 'es' ? 'r modo' : 'r mode'
-  const on = m === 'keys' && keysLabel ? ` (${keysLabel})` : ''
+  const on = (m === 'keys' || m === 'paste') && keysLabel ? ` (${keysLabel})` : ''
   return `${tag}: ${name[lang]}${on} · ${step} · ${next}`
 }
 
@@ -69,8 +79,8 @@ export const toolgunLine = (state: string, lang: 'en' | 'es', keysLabel?: string
 export const toolgunScreen = (state: string, lang: 'en' | 'es', keysLabel?: string | null): [string, string] => {
   const [m, s] = state.split(':') as [ToolMode, string]
   const name = MODE_NAMES[m]?.[lang] ?? ''
-  const two = m !== 'keys' && m !== 'remove'
-  const sub = m === 'keys' ? (keysLabel ?? '') : two ? (s === '1' ? 'B' : 'A') : ''
+  const two = m !== 'keys' && m !== 'remove' && m !== 'copy' && m !== 'paste'
+  const sub = m === 'keys' || m === 'paste' ? (keysLabel ?? '') : two ? (s === '1' ? 'B' : 'A') : ''
   return [name.toUpperCase(), sub.toUpperCase()]
 }
 

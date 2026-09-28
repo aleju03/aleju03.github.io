@@ -28,6 +28,8 @@ import { createWorldRooms, createLimiter, normalizeRoom, PUBLIC_ROOM } from './w
 import { createWeapons } from './weapons.js';
 import { createWorldSocial } from './worldSocial.js';
 import { createHealth } from './health.js';
+import { createBuildGallery } from './builds.js';
+import { createWorldPersistence } from './worldPersist.js';
 
 // ---------------------------------------------------------------- config
 
@@ -356,6 +358,12 @@ function createToken(userId) {
   stmt.insertToken.run(token, userId, Date.now());
   return token;
 }
+
+// ------------------------------------------------- persisted Cubeland edits
+// The public room's block edits are written to `world_blocks` (worldPersist.js)
+// and loaded at boot. Wired in buildRoom for the PUBLIC room only.
+// Private rooms stay ephemeral; props are never persisted (see the header).
+const worldPersist = createWorldPersistence({ db });
 
 // ---------------------------------------------------------------- helpers
 
@@ -962,7 +970,12 @@ function buildRoom(room) {
   room.effects = createWorldEffects({ players, send, prop: room.props.get });
   room.damage = createWorldDamage({ players, send });
   // Cubeland's broken and placed blocks, the last word per block (worldBlocks.js)
-  room.blocks = createWorldBlocks({ players, send, claims: room.social.claims });
+  // Only the PUBLIC room's edits persist (worldPersist.js); a private room's world dies with it.
+  const blocks = createWorldBlocks({ players, send: worldPersist.wrapSend(send), claims: room.social.claims });
+  if (room.isPublic) {
+    room.blocks = worldPersist.attach(blocks);
+    worldPersist.restore(blocks);
+  } else room.blocks = blocks;
   // hit points, death, respawn, pvp and the scoreboard (health.js): one per
   // room, so pvp, the counters and the killfeed never cross rooms
   room.health = createHealth({ players, send });
@@ -1697,6 +1710,23 @@ const ytSearch = createYouTubeSearch({
   enabled: (process.env.YT_SEARCH ?? 'on') !== 'off',
 });
 
+// ------------------------------------------------------- published builds
+// The public gallery of blueprints (builds.js): REST beside the video search
+// and the analytics capture, its own table in this database. A bearer token is
+// resolved the way `hello` resolves one, so an account (or the admin) can
+// publish and delete and a guest can only browse.
+const buildGallery = createBuildGallery({
+  db,
+  allowedOrigins: ALLOWED_ORIGINS,
+  publishMax: Number(process.env.BUILDS_PUBLISH_MAX ?? 5),
+  authenticate: (token) => {
+    if (isAdminToken(token)) return { username: ADMIN_USERNAME, admin: true };
+    const row = stmt.userByToken.get(token);
+    if (!row || Date.now() - row.token_at > TOKEN_TTL_MS) return null;
+    return { username: row.username, admin: false };
+  },
+});
+
 // Admin sockets watching the live event feed -> their unsubscribe function.
 const analyticsWatchers = new Map();
 
@@ -2098,10 +2128,10 @@ const server = http.createServer((req, res) => {
     res.end('ok');
     return;
   }
-  // Two public routes, tried in turn: the browser's video search, then the
-  // analytics capture. Analytics *reads* happen over the authenticated
+  // Three public routes, tried in turn: the browser's video search, the
+  // builds gallery, then the analytics capture. Analytics *reads* happen over the authenticated
   // WebSocket, never here.
-  const routes = [ytSearch, analytics].filter(Boolean);
+  const routes = [ytSearch, buildGallery, analytics].filter(Boolean);
   (async () => {
     for (const route of routes) {
       if (await route.handleHttp(req, res)) return;
@@ -2238,6 +2268,7 @@ function shutdown() {
   for (const ws of wss.clients) ws.terminate();
   wss.close(() => {
     server.close(async () => {
+      worldPersist.flushSync();
       db.close();
       // flushes the last second of buffered events before the process goes
       await analytics?.stop().catch(() => {});

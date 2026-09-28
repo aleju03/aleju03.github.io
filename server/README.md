@@ -25,6 +25,7 @@ v2 replaced the old 1:1 messenger protocol entirely, so deploy the server and th
 | `WORLD_MAX_ROOMS` | no | `200` | Private world rooms alive at once (see "World rooms") |
 | `WORLD_ROOM_MAX_PLAYERS` | no | `16` | Players per private room. The public room keeps its own cap (32) |
 | `WORLD_ROOM_GRACE_MS` | no | `30000` | How long an empty private room lives before it is forgotten, props and all |
+| `BUILDS_PUBLISH_MAX` | no | `5` | Builds one account may publish (or re-publish) per ten minutes; the smoke test raises it |
 | `YT_SEARCH` | no | `on` | Set to `off` to unmount the browser's video search. Nothing else depends on it |
 
 ## Video search
@@ -401,6 +402,26 @@ password is its HMAC). A static credential in the frontend bundle would be a
 public password for your relay's bandwidth. Any coturn-compatible provider works.
 Note this is the one setting that puts audio through a server you pay for: only
 the calls that cannot connect directly are relayed, but those are real bytes.
+
+## Published builds
+
+The public gallery of blueprints (`src/game/sandbox/blueprint/`), `src/builds.js`. REST beside the video search and the analytics capture, in this database's `builds` table; origin-checked against `ALLOWED_ORIGINS`, JSON in and out. Guests browse; publishing and deleting carry the session token as `Authorization: Bearer <token>` (the same token `hello` resumes), resolved by index.js.
+
+| Route | Auth | Does |
+| --- | --- | --- |
+| `GET /builds?sort=new\|top&page=N` | none | `{builds: [{id, name, author, props, spawns, at, thumb}], total, page, size: 10, sort}`; `thumb` is a small PNG data URL (or `""`), no codes in the list |
+| `GET /builds/:id` | none | the same row plus `code`. Counts one spawn per IP and build per ten minutes |
+| `POST /builds` `{name, code, thumb?}` | account | `201 {id, replaced: false}`; re-publishing a name replaces it (`200 {replaced: true}`) and costs no slot |
+| `DELETE /builds/:id` | author, or admin | `{ok: true}` |
+| `OPTIONS /builds…` | none | CORS preflight (`GET, POST, DELETE`, `authorization`) |
+
+Errors are `{error}`: `login` (401), `forbidden` (403), `not_found` (404), `name`/`code`/`thumb`/`bad_request` (400), `too_large` (413), `limit` (409, the 20-build cap; `limit: 20` rides along), `rate` (429), `forbidden_origin` (403), `method` (405).
+
+Bounds: name 40 characters after the chat's sanitiser (control characters out, one line); code at most 64 KB and a `BP1.` share code (base64url of zlib-deflated JSON, `src/game/sandbox/blueprint/code.ts`) that inflates to at most 1 MB and passes the same structural walk the client's importer applies, strictly (unknown kinds against `PROP_KINDS`, 1-300 props, at most 1,200 joints, numbers in range, quaternions nonzero, joints naming two different props); thumbnail a PNG data URL of at most 20 KB whose bytes begin with the PNG signature. An account holds at most 20 builds, 5 accepted publishes per ten minutes (`BUILDS_PUBLISH_MAX`) and 30 attempts per ten minutes (each costs an inflate); reads are 90 a minute per IP. The author is always the account name. `test/builds.mjs` runs it against the real server.
+
+## Persisted Cubeland edits
+
+`src/worldPersist.js` writes the public room's block edits to the `world_blocks` table (one row per level: edits packed six bytes each, zlib-deflated; 250,000 edits is about 800 KB) and loads them at boot, so the shared Cubeland survives a restart. Debounced 30 s after the first change, written off-thread, skipped when the bytes have not changed, and written synchronously on `SIGINT`/`SIGTERM`. Private rooms stay ephemeral, and props are deliberately not persisted (live physics state owned by one browser at a time, and per-owner protection records that mean nothing after a restart). It wraps the room's `worldBlocks` module from outside (`wrapSend`, `attach`, `restore`); the wiring is documented in `notes/saves.md`. `test/persist.mjs` restarts the module in-process.
 
 ## Run locally
 

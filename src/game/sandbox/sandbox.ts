@@ -30,6 +30,8 @@ export { renderThumbnails } from './thumbnails'
 // destruction registers its rubble kinds and its console commands on import,
 // and the scene attaches it to the world's ruins once both exist
 export { attachDestruction, destructionOf, type Destruction, type DamageRecord } from './destruction'
+// registers the duplicator's console commands (copy, paste, save, load, builds, publish)
+import './blueprint/commands'
 import { setEar, setEarFallback } from './impactSounds'
 
 /*
