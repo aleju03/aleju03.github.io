@@ -215,7 +215,16 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   const beam = o.parent ? createBeam(o.parent) : null
   const vm = o.parent ? createViewmodel(o.parent) : null
   const sfx: PhysgunSfx | null = (o.sound ?? !!o.parent) ? createPhysgunSfx() : null
-  const weapons = createWeapons({ sb: () => sb, vehicles: o.vehicles, ...o.weapons })
+  const weapons = createWeapons({
+    sb: () => sb, vehicles: o.vehicles, ...o.weapons,
+    // rockets and bolts go through a pair that stays in this level
+    portal: (eye, dir, reach) => {
+      const w = o.portalWorld?.()
+      if (!w) return null
+      const e = portals.rayEnters(w.level, eye, dir, reach)
+      return e && e.to.level === w.level ? e : null
+    },
+  })
   const weaponView = o.parent && vm ? createWeaponView(o.parent, weapons, vm) : null
   const weaponSfx = (o.sound ?? !!o.parent) ? createWeaponSfx() : null
   const offWeapons = weapons.on((e) => {

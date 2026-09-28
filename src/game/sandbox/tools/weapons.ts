@@ -38,6 +38,11 @@ import type { ToolInput } from './types'
   the blast, each authority pushes its own props, and each player's own
   client knocks itself over.
 
+  **Rockets and bolts go through portals.** A projectile whose step meets an
+  open oval (or the collision box pad that stands proud of it) comes out of
+  the partner carried by the pair, speed kept, the way a prop does; a pair
+  that leads into another level is a wall to it. The pistol's ray does not.
+
   **A shot starts at the eye and is drawn from the gun.** A projectile flies
   the crosshair's own ray, so it lands where the crosshair said; what is
   drawn starts at the muzzle and eases onto that ray over a few frames
@@ -117,6 +122,8 @@ const ROCKET_RANGE = 420
 export const ROCKET_POWER = 1
 export const ROCKET_RADIUS = 14
 
+/** how far past a frame's step a projectile looks for a portal's pad */
+const PORTAL_LOOK = 2
 /** a remote copy that met something waits this long for the verdict */
 const PARK_WAIT = 1.5
 /** a player's body, for a ray: radius and height over the feet */
@@ -149,6 +156,19 @@ export interface WeaponWorld {
   send?: (m: WeaponClientMessage) => void
   /** a shot of somebody else's struck us: our own body, our own call */
   shoved?: (vx: number, vy: number, vz: number) => void
+  /** the first open portal a ray goes into within `reach`, leading out
+      somewhere in this same level (portals.ts's `rayEnters`) */
+  portal?: (eye: THREE.Vector3, dir: THREE.Vector3, reach: number) => PortalEntry | null
+}
+
+/** what `portal` answers: how far along the ray, where it goes in, the two
+    ovals, and the map from one side to the other */
+export interface PortalEntry {
+  t: number
+  at: THREE.Vector3
+  from: { n: THREE.Vector3; inset: number }
+  to: { n: THREE.Vector3; inset: number }
+  M: THREE.Matrix4
 }
 
 export interface Projectile {
@@ -672,6 +692,21 @@ export function createWeapons(o: WeaponWorld): Weapons {
       if (len > 1e-6) {
         seg.multiplyScalar(1 / len)
         const h = trace(p.pos, seg, len, p.mine ? (p.w === 'rocket' ? 'probe' : 'knock') : 'none', BOLT_SHOVE, p.mine ? 0 : p.shooter)
+        // an open portal ahead: its wall's collision box stands a pad proud
+        // of the oval, so a hit on that pad is going in, not a hit
+        const e = o.portal?.(p.pos, seg, len + PORTAL_LOOK)
+        const pad = e ? (e.from.inset + 0.06) / Math.max(0.2, -seg.dot(e.from.n)) : 0
+        if (e && e.t - pad <= len && !(h && h.t < e.t - pad)) {
+          // out of the partner, carried by the pair, and past its own pad
+          const speed = p.vel.length()
+          p.vel.transformDirection(e.M)
+          tmp.copy(p.vel)
+          p.vel.multiplyScalar(speed)
+          p.pos.copy(e.at).applyMatrix4(e.M)
+            .addScaledVector(tmp, (e.to.inset + 0.06) / Math.max(0.2, tmp.dot(e.to.n)))
+          p.off.set(0, 0, 0)
+          continue
+        }
         if (h) {
           if (p.mine) {
             projectiles.splice(i, 1)

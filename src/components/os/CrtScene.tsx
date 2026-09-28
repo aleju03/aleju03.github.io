@@ -1538,6 +1538,16 @@ export default function CrtScene({
           boardVehicle(id, seat)
         }
 
+        /** take back the chair we are sitting in, which the server freed at
+            a level change. Marked as a claim in flight, so the table that
+            announces it empty does not throw us out before the answer lands */
+        const reclaimSeat = (id: VehicleId) => {
+          const idx = WIRE_VEHICLES.indexOf(id)
+          if (idx < 0 || !net) return
+          seatWanted = { id, seat: fleet.seat }
+          net.seat(idx, fleet.seat)
+        }
+
         /** actually get in. Either the server said so, or there is no server */
         const boardVehicle = (id: VehicleId, seat: number) => {
           if (fleet.riding || levels.frozen || rig.down) return
@@ -1776,12 +1786,18 @@ export default function CrtScene({
             return
           }
           if (!held && riding) {
+            // a level change frees our chair on the server before our claim
+            // to it lands (reclaimSeat): that table is out of date, not a
+            // verdict. The answer to the claim is the next one
+            if (seatWanted?.id === riding.id) return
             // ejected: the socket dropped and came back, or the server never
             // agreed in the first place
             leaveVehicle()
             return
           }
           if (held && riding) {
+            // a re-claim answered (reclaimSeat): nothing left in flight
+            if (seatWanted?.id === riding.id) seatWanted = null
             if (held.vehicle !== riding.id) {
               leaveVehicle()
               return
@@ -2059,8 +2075,12 @@ export default function CrtScene({
                 case 'world-seat-denied':
                   // somebody was a round trip quicker to the door
                   if (seatWanted) {
+                    // (a chair we were already sitting in, taken back across a
+                    // level change and lost in between: get out after all)
+                    const inIt = fleet.riding?.id === seatWanted.id
                     seatWanted = null
-                    setNotice('that seat is taken')
+                    if (inIt) leaveVehicle()
+                    else setNotice('that seat is taken')
                   }
                   break
                 case 'world-chat':
@@ -2942,10 +2962,7 @@ export default function CrtScene({
             damageNet.setLevel(level.id)
             net?.setLevel(level.id)
             // the server frees a chair at a level change: take it back
-            if (craft?.spacecraft) {
-              const idx = WIRE_VEHICLES.indexOf(craft.id)
-              if (idx >= 0) net?.seat(idx, fleet.seat)
-            }
+            if (craft?.spacecraft) reclaimSeat(craft.id)
             walk.gravityScale = rules.gravity * gravityOf(level)
             switchSandboxTo(level)
           },
@@ -2997,8 +3014,7 @@ export default function CrtScene({
             // again (the server freed it at the level change)
             const craft = fleet.riding
             if (craft?.spacecraft && fleet.warpRiding(spot.x, Math.max(floorAt + 20, spawn.y ?? floorAt + 60), spot.z, spawn.yaw)) {
-              const idx = WIRE_VEHICLES.indexOf(craft.id)
-              if (idx >= 0) net?.seat(idx, fleet.seat)
+              reclaimSeat(craft.id)
             }
             // the new level's gravity, and its own sandbox (or none)
             walk.gravityScale = rules.gravity * gravityOf(level)

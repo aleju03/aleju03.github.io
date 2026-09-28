@@ -11,6 +11,7 @@ import { createSandbox, KINDS } from '../../src/game/sandbox/sandbox.ts'
 import { makeCollisionSet } from '../../src/game/physics/collision.ts'
 import { createWeapons } from '../../src/game/sandbox/tools/weapons.ts'
 import { emptyInput } from '../../src/game/sandbox/tools/types.ts'
+import { createPortals } from '../../src/game/sandbox/tools/portals.ts'
 
 let fails = 0
 const check = (ok, what, detail = '') => { if (!ok) fails++; console.log((ok ? 'PASS' : 'FAIL') + '  ' + what + (detail ? '  (' + detail + ')' : '')) }
@@ -26,7 +27,9 @@ for (let i = 0; i < 120; i++) sb.tick({ dt: 1 / 60, active: true, focus: { x: X,
 const events = []
 const booms = []
 sb.onExplosion((e) => booms.push(e))
-const w = createWeapons({ sb: () => sb })
+// a pair high in the air: in facing the shooter, out facing east
+const portals = createPortals()
+const w = createWeapons({ sb: () => sb, portal: (eye, dir, reach) => portals.rayEnters('overworld', eye, dir, reach) })
 w.on((e) => events.push(e))
 const input = emptyInput({ eye: new THREE.Vector3(), dir: new THREE.Vector3(0, 0, -1), yaw: 0 })
 const aimAt = (id) => {
@@ -73,5 +76,15 @@ input.aim.dir.set(0, 1, 0)
 run(0.02, true, 'rocket')
 run(8, false, 'rocket')
 check(booms.length === 2 && booms[1].y > gy + 300, 'a rocket at nothing goes off at its range', booms[1] ? (booms[1].y - gy).toFixed(0) : '')
+const up = new THREE.Vector3(0, 1, 0)
+portals.placeAt(0, 'overworld', new THREE.Vector3(X, gy + 40, Z - 30), new THREE.Vector3(0, 0, 1), up)
+portals.placeAt(1, 'overworld', new THREE.Vector3(X + 300, gy + 40, Z), new THREE.Vector3(1, 0, 0), up)
+input.aim.eye.set(X, gy + 40, Z)
+input.aim.dir.set(0, 0, -1)
+run(0.02, true, 'rocket')
+run(0.6, false, 'rocket')
+const r = w.projectiles[0]
+check(r && r.pos.x > X + 300 && r.vel.x > 0 && Math.abs(r.vel.z) < 1, 'a rocket into one portal flies out of the other',
+  r ? 'at x+' + (r.pos.x - X).toFixed(0) + ', heading ' + r.vel.toArray().map((n) => n.toFixed(0)).join(' ') : 'none in the air')
 console.log(fails ? fails + ' FAILED' : 'all passed')
 if (fails) process.exitCode = 1
