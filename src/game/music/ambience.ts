@@ -94,7 +94,7 @@ export function createAmbience(ctx: AudioContext, out: AudioNode): Ambience {
   }
   const wind = noiseChain('bandpass', 500, 0.7)
   const windLow = noiseChain('lowpass', 180, 0.7)
-  const leaves = noiseChain('highpass', 3200, 0.5)
+  const leaves = noiseChain('bandpass', 2200, 0.9)
   const surf = noiseChain('lowpass', 700, 0.6)
   const surfHiss = noiseChain('bandpass', 2400, 0.4)
 
@@ -174,11 +174,17 @@ export function createAmbience(ctx: AudioContext, out: AudioNode): Ambience {
         gustWant = Math.min(1, Math.max(0.1, gustWant + (Math.random() - 0.5) * 0.7))
       }
       gust = ease(gust, gustWant, dt, 1.2)
-      const w = cur.wind * (0.45 + 0.8 * gust)
-      wind.g.gain.setTargetAtTime(w * 0.09, now, 0.12)
-      wind.f.frequency.setTargetAtTime(320 + 520 * gust + 400 * high, now, 0.2)
-      windLow.g.gain.setTargetAtTime(w * 0.12, now, 0.12)
-      leaves.g.gain.setTargetAtTime(cur.leaves * gust * gust * 0.05, now, 0.1)
+      // Calm air is quiet. A wind that never dropped below half its level
+      // read as static on the street: a steady band of noise with nothing
+      // coming and going in it. Now the audible wind is the gusts over a low
+      // rumble, the bandpass stays under 700 Hz near the ground, and the
+      // leaves are a soft band only while a gust is in them, never a hiss
+      const g2 = Math.max(0, gust - 0.3) / 0.7
+      const w = cur.wind * (0.15 + 0.85 * g2 * g2)
+      wind.g.gain.setTargetAtTime(w * 0.04, now, 0.25)
+      wind.f.frequency.setTargetAtTime(260 + 260 * gust + 500 * high, now, 0.3)
+      windLow.g.gain.setTargetAtTime(cur.wind * (0.4 + 0.6 * gust) * 0.09, now, 0.25)
+      leaves.g.gain.setTargetAtTime(cur.leaves * g2 * g2 * g2 * 0.02, now, 0.15)
 
       // surf: a wave every six to ten seconds, rising slow and falling slower
       swellClock -= dt
@@ -189,7 +195,7 @@ export function createAmbience(ctx: AudioContext, out: AudioNode): Ambience {
       swell = Math.max(0, swell - dt / 7)
       const wave = Math.sin(Math.PI * Math.min(1, (1 - swell) * 1.6)) ** 2
       surf.g.gain.setTargetAtTime(cur.surf * (0.25 + 0.75 * wave) * 0.16, now, 0.25)
-      surfHiss.g.gain.setTargetAtTime(cur.surf * wave * wave * 0.035, now, 0.2)
+      surfHiss.g.gain.setTargetAtTime(cur.surf * wave * wave * 0.018, now, 0.2)
 
       // birds: a call every one to five seconds, fewer as the day fades
       birdClock -= dt
