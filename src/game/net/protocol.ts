@@ -256,6 +256,7 @@ export interface WorldGrab {
 }
 
 export type WorldServerMessage =
+  | import('./effectProtocol').EffectServerMessage
   | import('./propProtocol').PropServerMessage
   | WorldShove
   | WorldGrab
@@ -279,6 +280,7 @@ export type VoiceSignal =
   | { kind: 'ice'; candidate: RTCIceCandidateInit }
 
 export type WorldClientMessage =
+  | import('./effectProtocol').EffectClientMessage
   | import('./propProtocol').PropClientMessage
   /** `look` rides the join so a body is never drawn in the wrong colours even
       for the one tick between arriving and repainting */

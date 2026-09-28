@@ -327,3 +327,41 @@ chat.example.com {
 The frontend needs `VITE_CHAT_URL=wss://chat.example.com/ws` at build time. Without it, the AlejOS login screen still offers Guest, the Chat Rooms app falls back to the mail composer, and analytics capture goes quiet, since `src/analytics.ts` derives its capture endpoint from the same variable (`wss://…/ws` → `https://…/peeko/capture`), so there is no second URL to configure.
 
 To log in as admin, use the reserved username with `ADMIN_TOKEN` as the password on the AlejOS login screen. That session, and only that one, gets the **peeko** entry in the Start menu: the traffic dashboard.
+
+### Portals and double-jump clouds
+
+`src/worldEffects.js` owns at most one blue/orange pair per world socket.
+Portals persist across level changes and are removed when their owner leaves
+or disconnects. A prop's removal also closes portals anchored to it. The
+server holds frames in memory, not rendered images or geometry.
+
+- C to S `world-portal {color,portal}` places or updates colour 0 or 1;
+  `portal:null` closes it. The owner is always the sending socket. A portal
+  is `{serial,level,frame,ground,inset,skin,ready,site,anchor}`. `frame` is
+  `[x,y,z,nx,ny,nz,ux,uy,uz]`, a position, outward normal and up vector.
+  `serial` changes for a new placement. `site` is null, `moon` or `earth`.
+  `anchor` is null or `{prop,frame}`, using a shared prop id and a frame in
+  that body's coordinates. House surfaces publish their moving world frame.
+- S to C `world-portal {level,owner,portals:[blue,orange]}` updates one pair.
+  Only clients whose level touches the old or new pair receive it. Both
+  endpoints are included so a cross-level portal has its destination frame.
+  A pair no longer touching that recipient's level is sent as `[null,null]`.
+- S to C `world-portals {level,pairs:[{owner,portals},...]}` is the full portal
+  snapshot after joining or changing level. Hop effects are never replayed.
+- S to C `world-portal-denied {color,serial}` rejects an invalid placement.
+  The client closes only that attempted placement, not a newer shot.
+- C to S `world-air-hop {level,seq,x,y,z}` reports the double-jump cloud at
+  the player's feet. S to C adds `id`, derived from the socket, and sends to
+  other players in the same level. It is not stored. Duplicate sequence
+  numbers, positions more than 20 units from the last player pose, and
+  more than three events per second are dropped. Clients delay the cloud
+  by two ticks to match avatar playback and discard it after a level cut.
+
+Portal requests are limited to 24/s, frames must be finite with independent
+normal/up vectors, dimensions and offsets are clamped, and referenced props
+must exist in that level. New ordinary placements must be within 440 units
+of the player. Cross-level sky shots are restricted to the authored Moon
+slab or garage-door site; existing endpoints can continue following their
+surface after the owner crosses. Same-level prop anchors follow the normal
+prop stream. For viewers in the other level, the server derives their world
+frame from the stored prop transform and sends updates only when it changes.

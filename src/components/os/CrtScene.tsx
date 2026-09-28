@@ -73,6 +73,7 @@ import {
   WIRE_VEHICLES,
   WORLD_MAX_TEXT_LEN,
 } from '../../game/net/protocol'
+import { createWorldEffects } from '../../game/net/worldEffects'
 import { createPropNetwork } from '../../game/net/remoteProps'
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
@@ -1907,6 +1908,15 @@ export default function CrtScene({
           (m) => net?.prop(m),
           (en, es) => pushFeed({ tone: 'err', text: bilingual(en, es) }),
         )
+        const worldEffects = createWorldEffects({
+          send: (m) => net?.effect(m),
+          level: () => levels.current.id,
+          world: (id) => {
+            const l = homeLevels.find((l) => l.id === id)
+            return l ? { boxes: l.collision.boxes, sb: sandboxes.get(id)?.sb ?? null } : null
+          },
+          cloud: (id, at) => sandboxes.get(id)?.sb.fx.cloud(at),
+        })
         const syncVoice = () => {
           if (!voice) return
           setVoiceHud({
@@ -1933,7 +1943,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') propNet.offline()
+              if (status !== 'live') { propNet.offline(); worldEffects.offline() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -1941,6 +1951,7 @@ export default function CrtScene({
               setRename(result.ok ? { pending: false, error: null } : { pending: false, error: result.error }),
             onMessage: (msg) => {
               propNet.receive(msg)
+              worldEffects.receive(msg)
               switch (msg.type) {
                 case 'world-welcome':
                   remote.welcome(msg.you, msg.tick, msg.players)
@@ -2074,6 +2085,7 @@ export default function CrtScene({
 
         const leaveWorld = () => {
           propNet.offline()
+          worldEffects.offline()
           voice?.dispose()
           voice = null
           voicePreviewRef.current = null
@@ -2724,6 +2736,7 @@ export default function CrtScene({
           })
           const p = tools.portals.list[color]
           if (!shot.ok || !p) return false
+          p.site = 'earth'
           // (taken from the Moon, the Earth's side is lit by the Moon's sun:
           // no lift, whatever time it is at home)
           portalMoon.snapshotFrom(p, scene, 1)
@@ -2757,7 +2770,7 @@ export default function CrtScene({
           ground: new THREE.Color(), hemi: 0, moon: 0 }
         const SPACE_HEMI = new THREE.Color('#1c2130')
         const portalCross = (to: Portal, vcam: THREE.PerspectiveCamera): ReturnType<NonNullable<PortalHooks['cross']>> => {
-          const got = portalMoon?.view(to, vcam) ?? null
+          const got = portalMoon?.view(to, vcam, scene) ?? null
           if (!got || 'snapshot' in got || !scene) return got
           const fog = scene.fog as THREE.Fog
           const bg = scene.background as THREE.Color
@@ -2869,6 +2882,7 @@ export default function CrtScene({
             if (rig.ragdolling) rig.reset()
             if (level === from) return
             propNet.setLevel(level.id)
+            worldEffects.setLevel(level.id)
             net?.setLevel(level.id)
             // the server frees a chair at a level change: take it back
             if (craft?.spacecraft) {
@@ -2906,6 +2920,7 @@ export default function CrtScene({
             // announced: until it is, we are still drawing the crowd we just
             // walked away from, and they are still drawing us
             propNet.setLevel(level.id)
+            worldEffects.setLevel(level.id)
             net?.setLevel(level.id)
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
@@ -3203,17 +3218,19 @@ export default function CrtScene({
         const renderPortals = () => {
           const pv = tools?.portalView
           if (!pv || !webgl || !scene || !roaming) return
+          worldEffects.tick()
           portalMoon?.tick()
           // an open floor portal cuts its oval out of the grass and the
           // wildflowers (world/wind.ts's holes), and they grow back when it closes
-          const holesKey = `${tools!.portals.version}:${levels.current.id}`
+          const holesKey = `${tools!.portals.version}:${levels.current.id}:${Math.floor(camera.position.x / 10)}:${Math.floor(camera.position.z / 10)}`
           if (holesKey !== portalHolesKey) {
             portalHolesKey = holesKey
             const holes: { c: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[] = []
-            for (const p of tools!.portals.list) {
+            for (const p of tools!.portals.all) {
               if (!p || p.level !== levels.current.id || p.n.y < 0.6) continue
               holes.push({ c: p.pos, a: p.right.clone().multiplyScalar(tools!.portals.hw), b: p.up.clone().multiplyScalar(tools!.portals.hh) })
             }
+            holes.sort((a, b) => a.c.distanceToSquared(camera.position) - b.c.distanceToSquared(camera.position))
             outside.groundHoles(holes)
           }
           const it = look.fitNow()
@@ -3861,6 +3878,7 @@ export default function CrtScene({
           }
           // the mid-air hop kicks a little cloud out from under the feet
           if (step.airHop) {
+            worldEffects.airHop(camera.position.x, walk.feetY, camera.position.z)
             sandbox?.fx.cloud({ x: camera.position.x, y: walk.feetY, z: camera.position.z })
             spawnPop(0.4)
           }
@@ -4497,6 +4515,7 @@ export default function CrtScene({
               self: () => (seating.current || fleet.riding ? null : { key: 'self', rig }),
             })
             tools.setHandColor(lookRef.current.shell)
+            worldEffects.attach(tools.portals)
             portalWalk = toolsMod.createPortalWalk({
               portals: tools.portals,
               walk,
@@ -4571,6 +4590,7 @@ export default function CrtScene({
                   wheelApi.current?.aim(x, y)
                 },
                 __tools: tools,
+                __worldEffects: worldEffects,
                 __portalWalk: portalWalk,
                 __portalMoon: portalMoon,
                 __portalHouseHit: portalHouseHit,
@@ -4701,6 +4721,7 @@ export default function CrtScene({
           // the tool belt's gun, beam, glows and rim shells, in front of the
           // warm camera for the compile and the one-pixel draw below
           tools?.stage(warmCam)
+          avatars.stage(warmCam)
           // ...and the globes (the planet from orbit and the Moon), so the
           // first climb out of the air links nothing mid-flight
           outside.warmSpace(true)
@@ -4755,6 +4776,7 @@ export default function CrtScene({
             }
           } finally {
             tools?.unstage()
+            avatars.unstage()
             outside.warmSpace(false)
             if (webgl) {
               webgl.setScissorTest(false)

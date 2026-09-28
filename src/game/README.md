@@ -1450,8 +1450,15 @@ drawn through this world's machinery:
   look up out of each other into the Moon's black, starred sky, which is
   what reads as black ovals. There are no portals in the backrooms, which
   have no sandbox.
-- **Local only.** Portals are not on the wire; each player's pair is their
-  own.
+- **Shared pairs.** Each player owns their own blue/orange pair. The relay
+  sends placements, closes and late-join snapshots through `world-portal`
+  and `world-portals`; `net/worldEffects.ts` installs remote frames into the
+  same crossing and collision queries. Anyone can see and use the pair.
+  Prop anchors use shared ids and follow the prop stream. Remote ovals reuse
+  the warmed shader; four targets serve the nearest visible views, with
+  farther ovals showing their swirl. The nearest eight ground openings cut
+  vegetation, with that capacity compiled at boot. Pairs close when their
+  owner disconnects, but survive walking between levels.
 
 ### The console, the keys and undo
 
@@ -2072,3 +2079,15 @@ every one of them has a failure you can see in a harness shot.
   reload, because nothing writes: the whole thing is a pure function of
   coordinates. That is what makes the save-state story easy when it comes
   (store the diffs, not the world) and why it hasn't been started.
+
+### Shared portal and hop-effect checks
+
+`npm run measure -- world-effects` exercises the real relay, portal queries
+and Rapier bodies in Node: independent owners, walking through a remote
+pair, local collision openings, moving prop anchors, late join, removal and
+hop playback delay. `node scripts/world-effects-drive.mjs` runs two separate
+Chrome processes against one private relay and Vite, using real portal-gun
+surface fits and keyboard-driven walking and double jumping. It also checks
+that remote portal materials do not link new shader programs. The cloud is
+an ephemeral `world-air-hop` event, shown two ticks late with the avatar;
+portal pairs are snapshotted, but old clouds are never replayed.

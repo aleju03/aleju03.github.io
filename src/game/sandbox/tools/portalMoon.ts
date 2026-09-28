@@ -94,7 +94,7 @@ export interface PortalMoon {
    * dress the scene as the Moon for a pass, or hand back the Earth's
    * snapshot, or null for the swirl.
    */
-  view: (to: Portal, vcam: THREE.PerspectiveCamera) =>
+  view: (to: Portal, vcam: THREE.PerspectiveCamera, scene?: THREE.Scene | null) =>
     | { restore: () => void; far: number }
     | { snapshot: THREE.Texture; viewProj: THREE.Matrix4; gain: number }
     | null
@@ -186,13 +186,21 @@ export function createPortalMoon(o: PortalMoonOpts): PortalMoon {
     o.view.setParent(e.color, p?.site === 'moon' ? link.root() : null)
   })
 
+  const prepared = new WeakSet<Portal>()
   const tick = () => {
-    for (const p of portals.list) {
-      if (!p || p.site !== 'moon' || p.ready) continue
-      const other = portals.list[1 - p.color]
+    for (const p of portals.all) {
+      if (!p || p.level !== 'moon') continue
+      if (p.site === 'moon') {
+        build()
+        if (slabBox) p.hosts = [slabBox]
+      }
+      if (prepared.has(p)) continue
+      // Read the partner even while this endpoint is not ready yet.
+      const other = portals.all.find((q) => q && q.owner === p.owner && q.color !== p.color)
+      p.ready = false
       const ax = other && other.level !== 'moon' ? other.pos.x : 0
       const az = other && other.level !== 'moon' ? other.pos.z : 0
-      if (link.prepare(ax, az, 2)) p.ready = true
+      if (link.prepare(ax, az, 2)) { p.ready = true; prepared.add(p) }
     }
   }
 
@@ -217,10 +225,10 @@ export function createPortalMoon(o: PortalMoonOpts): PortalMoon {
     link.land(PORTAL_EARTH_DIR)
     snapshotFrom(from, scene, gain)
   }
-  const snapshotFrom = (from: Portal, scene: THREE.Scene | null, gain = 1) => {
+  const snapshotFrom = (from: Portal, scene: THREE.Scene | null, gain = 1, target = snapRT, projection = snapVP) => {
     snapGain = gain
     const r = o.renderer
-    if (!r || !snapRT || !scene) return
+    if (!r || !target || !scene) return
     // from just in front of the Earth portal, looking out of it
     snapCam.position.copy(from.pos).addScaledVector(from.n, 0.2)
     snapCam.up.copy(Math.abs(from.n.y) > 0.7 ? from.up : at.set(0, 1, 0))
@@ -234,21 +242,44 @@ export function createPortalMoon(o: PortalMoonOpts): PortalMoon {
     const ovals = o.view?.root ?? null
     const shown = ovals?.visible ?? false
     if (ovals) ovals.visible = false
-    r.setRenderTarget(snapRT)
+    r.setRenderTarget(target)
     r.render(scene, snapCam)
     r.setRenderTarget(prev)
     if (ovals) ovals.visible = shown
     // a direction lookup: the view's turn only, never its place
     rot.extractRotation(snapCam.matrixWorld).invert()
-    snapVP.multiplyMatrices(snapCam.projectionMatrix, rot)
+    projection.multiplyMatrices(snapCam.projectionMatrix, rot)
     snapped = true
   }
 
-  const view: PortalMoon['view'] = (to, vcam) => {
+  // Only visible views allocate a snapshot. Four entries match the portal
+  // renderer's pass budget and cannot grow with everyone who ever joined.
+  const remoteSnapshots = new Map<string, { rt: THREE.WebGLRenderTarget; vp: THREE.Matrix4; frame: string }>()
+  const view: PortalMoon['view'] = (to, vcam, scene) => {
     // any portal on the Moon is seen live, the scene dressed as the Moon
     if (to.level === 'moon') {
       const restore = link.dress(vcam.position)
       return restore ? { restore, far: MOON_FAR } : null
+    }
+    if (to.owner && snapRT && scene) {
+      const key = `${to.owner}:${to.color}`
+      let shot = remoteSnapshots.get(key)
+      if (!shot) {
+        if (remoteSnapshots.size >= 4) {
+          const first = remoteSnapshots.keys().next().value!
+          remoteSnapshots.get(first)!.rt.dispose(); remoteSnapshots.delete(first)
+        }
+        shot = { rt: snapRT.clone(), vp: new THREE.Matrix4(), frame: '' }
+      }
+      remoteSnapshots.delete(key); remoteSnapshots.set(key, shot)
+      const frame = to.basis.elements.map(v => v.toFixed(2)).join(',')
+      if (frame !== shot.frame) {
+        const restore = link.dressEarth()
+        snapshotFrom(to, scene, 1, shot.rt, shot.vp)
+        restore?.()
+        shot.frame = frame
+      }
+      return { snapshot: shot.rt.texture, viewProj: shot.vp, gain: 1 }
     }
     // from the Moon back to the Earth: the picture taken on the way out
     if (snapped && snapRT) return { snapshot: snapRT.texture, viewProj: snapVP, gain: snapGain }
@@ -279,6 +310,8 @@ export function createPortalMoon(o: PortalMoonOpts): PortalMoon {
     dispose: () => {
       offOpen()
       snapRT?.dispose()
+      for (const shot of remoteSnapshots.values()) shot.rt.dispose()
+      remoteSnapshots.clear()
       for (const g of geos) g.dispose()
       slab?.removeFromParent()
       if (slabBox) {

@@ -62,6 +62,10 @@ import type { Prop, Sandbox } from '../sandbox'
   the physgun, a frozen or parked one, and anything crossing into another
   level (props belong to their level's sandbox).
 
+  Remote pairs share these same crossing and collision queries; only the
+  local pair answers to the gun. The network installs plain frames and
+  resolves their hosts against this client's own collision set.
+
   A portal belongs to the level it was opened in, and the pair may span two
   (the Moon: `placeAt` opens one on a fixed spot there). Whether a crossing
   may change level is the caller's business, which is the one place that can
@@ -107,6 +111,11 @@ export type PortalAnchor =
   | { kind: 'prop'; sb: Sandbox; id: number; local: THREE.Matrix4 }
 
 export interface Portal {
+  /** zero is this client; other ids own independent remote pairs */
+  owner: number
+  serial: number
+  /** a local portal whose supporting prop is in another network level */
+  streamedFrame: THREE.Matrix4 | null
   readonly color: PortalColor
   /** the level it was opened in */
   level: string
@@ -164,7 +173,29 @@ export interface PortalCrossing {
   to: Portal
 }
 
+export interface PortalPlacement {
+  serial: number
+  level: string
+  pos: THREE.Vector3
+  n: THREE.Vector3
+  up: THREE.Vector3
+  ground: boolean
+  inset: number
+  skin: number
+  ready: boolean
+  site: string | null
+  hosts: Solid[]
+  anchor: PortalAnchor | null
+}
+
 export interface Portals {
+  /** every player's pair, local first; each pair keeps its own partner */
+  readonly all: readonly (Portal | null)[]
+  setRemote: (owner: number, color: PortalColor, p: PortalPlacement | null) => void
+  clearRemote: (owner?: number) => void
+  /** recompute local collision hosts from a received plane */
+  hostsAt: (p: Portal, boxes: readonly Solid[]) => void
+
   /** [blue, orange] */
   readonly list: readonly (Portal | null)[]
   /** fire one colour down a ray; opens it or fizzles */
@@ -507,6 +538,17 @@ export const soupAround = (
 export function createPortals(): Portals {
   const list: (Portal | null)[] = [null, null]
   let version = 0
+  let serial = 0
+  const remote = new Map<number, (Portal | null)[]>()
+  let cachedVersion = -1
+  let combined: (Portal | null)[] = []
+  const all = () => {
+    if (cachedVersion !== version) {
+      combined = [...list, ...[...remote.values()].flat()]
+      cachedVersion = version
+    }
+    return combined
+  }
   const fns = new Set<(e: PortalEvent) => void>()
   const ev: PortalEvent = { type: 'open', color: 0, point: new THREE.Vector3(), prop: -1 }
   const emit = (type: PortalEventType, color: PortalColor, point: THREE.Vector3, prop = -1) => {
@@ -518,7 +560,7 @@ export function createPortals(): Portals {
   }
 
   const make = (color: PortalColor): Portal => ({
-    color, level: '', pos: new THREE.Vector3(), n: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0),
+    owner: 0, serial: ++serial, streamedFrame: null, color, level: '', pos: new THREE.Vector3(), n: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0),
     right: new THREE.Vector3(1, 0, 0), hosts: [], ground: false, inset: 0, ready: true, anchor: null, skin: 0, site: null, age: 0,
     basis: new THREE.Matrix4(), inv: new THREE.Matrix4(),
   })
@@ -962,8 +1004,9 @@ export function createPortals(): Portals {
   }
 
   const partner = (p: Portal) => {
-    const other = list[1 - p.color]
-    return other && list[p.color] === p && p.ready && other.ready ? other : null
+    const pair = p.owner ? remote.get(p.owner) : list
+    const other = pair?.[1 - p.color]
+    return other && pair?.[p.color] === p && p.ready && other.ready ? other : null
   }
 
   const transform = (from: Portal, out: THREE.Matrix4) => {
@@ -978,7 +1021,7 @@ export function createPortals(): Portals {
   const aperture = (level: string, center: THREE.Vector3) => {
     for (const b of marked) b.through = false
     marked.length = 0
-    for (const p of list) {
+    for (const p of all()) {
       if (!p || p.level !== level || !partner(p) || !p.hosts.length) continue
       toPortal(p, center, lp)
       // in front of it (a floor portal's centre stands a body's half-height
@@ -993,7 +1036,7 @@ export function createPortals(): Portals {
   }
 
   const hole = (level: string, x: number, z: number) => {
-    for (const p of list) {
+    for (const p of all()) {
       if (!p || !p.ground || p.level !== level || p.n.y < 0.45 || !partner(p)) continue
       // (x, z) dropped onto the portal's plane
       const y = p.pos.y - ((x - p.pos.x) * p.n.x + (z - p.pos.z) * p.n.z) / p.n.y
@@ -1007,7 +1050,7 @@ export function createPortals(): Portals {
   const la = new THREE.Vector3()
   const lb = new THREE.Vector3()
   const crossing = (level: string, a0: THREE.Vector3, a1: THREE.Vector3): PortalCrossing | null => {
-    for (const p of list) {
+    for (const p of all()) {
       if (!p || p.level !== level) continue
       const to = partner(p)
       if (!to) continue
@@ -1089,7 +1132,7 @@ export function createPortals(): Portals {
 
   const linkedIn = (level: string) => {
     const out: Portal[] = []
-    for (const p of list) if (p && p.level === level && partner(p)) out.push(p)
+    for (const p of all()) if (p && p.level === level && partner(p)) out.push(p)
     return out
   }
 
@@ -1109,6 +1152,34 @@ export function createPortals(): Portals {
 
   return {
     list,
+    get all() { return all() },
+    setRemote: (owner, color, spec) => {
+      let pair = remote.get(owner)
+      if (!pair) { pair = [null, null]; remote.set(owner, pair) }
+      if (!spec) { if (pair[color]) { pair[color] = null; version++ }; return }
+      let p = pair[color]
+      if (!p || p.serial !== spec.serial) { p = make(color); pair[color] = p; version++ }
+      p.owner = owner
+      p.serial = spec.serial
+      p.level = spec.level
+      p.pos.copy(spec.pos); p.n.copy(spec.n); p.up.copy(spec.up)
+      p.right.crossVectors(p.up, p.n).normalize()
+      p.ground = spec.ground; p.inset = spec.inset; p.skin = spec.skin
+      p.ready = spec.ready; p.site = spec.site
+      p.hosts = spec.hosts; p.anchor = spec.anchor
+      setBasis(p)
+    },
+    clearRemote: (owner) => {
+      if (owner === undefined) remote.clear()
+      else remote.delete(owner)
+      version++
+      for (const b of marked) b.through = false
+      marked.length = 0
+    },
+    hostsAt: (p, boxes) => {
+      collectHosts(p.pos, p.n, p.up, p.right, boxes)
+      p.hosts = [...fitHosts]
+    },
     fire,
     placeAt,
     close: (color) => {
@@ -1127,11 +1198,11 @@ export function createPortals(): Portals {
     transform,
     linkedIn,
     anyIn: (level) => {
-      for (const p of list) if (p && p.level === level && partner(p)) return true
+      for (const p of all()) if (p && p.level === level && partner(p)) return true
       return false
     },
     tick: (dt) => {
-      for (const p of list) if (p) p.age += dt
+      for (const p of all()) if (p) p.age += dt
     },
     aperture,
     hole,
@@ -1149,7 +1220,7 @@ export function createPortals(): Portals {
     },
     rayEnters: (level, eye, dir, reach) => {
       let best: { t: number; at: THREE.Vector3; from: Portal; to: Portal; M: THREE.Matrix4 } | null = null
-      for (const p of list) {
+      for (const p of all()) {
         if (!p || p.level !== level) continue
         const to = partner(p)
         if (!to) continue
@@ -1165,26 +1236,29 @@ export function createPortals(): Portals {
       return best
     },
     follow: () => {
-      for (const p of list) {
+      for (const p of all()) {
         const a = p?.anchor
-        if (!p || !a) continue
-        if (a.kind === 'prop') {
+        if (!p || (!a && !p.streamedFrame)) continue
+        if (p.streamedFrame) fm.copy(p.streamedFrame)
+        else if (a?.kind === 'prop') {
           if (!a.sb.get(a.id) || !a.sb.getTransform(a.id, fp, fq)) {
-            closeOne(p.color)
+            if (p.owner) { remote.get(p.owner)![p.color] = null; version++ }
+            else closeOne(p.color)
             continue
           }
           fm.compose(fp, fq, FONE)
-        } else {
+        } else if (a?.kind === 'object') {
           let root: THREE.Object3D = a.obj
           while (root.parent) root = root.parent
           if (!(root as THREE.Scene).isScene) {
-            closeOne(p.color)
+            if (p.owner) { remote.get(p.owner)![p.color] = null; version++ }
+            else closeOne(p.color)
             continue
           }
           a.obj.updateWorldMatrix(true, false)
           fm.copy(a.obj.matrixWorld)
         }
-        fm.multiply(a.local)
+        if (!p.streamedFrame && a) fm.multiply(a.local)
         if (fm.equals(p.basis)) continue
         p.basis.copy(fm)
         p.inv.copy(fm).invert()

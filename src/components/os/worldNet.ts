@@ -37,6 +37,7 @@ const NICK_KEY = 'alejos-nick'
 export type WorldStatus = 'offline' | 'connecting' | 'live'
 
 export interface WorldNet {
+  effect: (message: import('../../game/net/effectProtocol').EffectClientMessage) => void
   prop: (message: import('../../game/net/propProtocol').PropClientMessage) => void
   readonly status: WorldStatus
   /** the ICE servers the server handed over at join; the STUN/TURN set voice
@@ -308,6 +309,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   else queueMicrotask(() => opts.onStatus('offline'))
 
   return {
+    effect: (message) => { if (joined) raw(message) },
     prop: (message) => { if (joined) raw(message) },
     get status() {
       return status

@@ -21,6 +21,7 @@ import Database from 'better-sqlite3';
 import { createAnalytics } from './analytics.js';
 import { createYouTubeSearch } from './ytsearch.js';
 import { createPropRegistry } from './props.js';
+import { createWorldEffects } from './worldEffects.js';
 
 // ---------------------------------------------------------------- config
 
@@ -894,7 +895,8 @@ const worldShoveRate = new WeakMap();
 const worldGrabRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
-const propRegistry = createPropRegistry({ players: worldPlayers, send });
+const propRegistry = createPropRegistry({ players: worldPlayers, send, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
+const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: propRegistry.get });
 
 // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
 // `hand` is whoever has an *empty* machine on their physgun (or is letting it
@@ -1112,6 +1114,7 @@ function handleWorldVehicle(ws, msg) {
 // the client can reconcile against what the server thinks it said.
 function worldTick() {
   propRegistry.tick();
+  worldEffects.tick();
   if (!worldDirty || worldPlayers.size === 0) return;
   worldDirty = false;
   const byLevel = new Map();
@@ -1209,6 +1212,7 @@ function handleWorldJoin(ws, msg) {
     ...(worldFleet.some((v) => v.seats.some(Boolean)) ? { seats: worldSeatTable() } : {}),
   });
   propRegistry.join(ws);
+  worldEffects.snapshot(ws);
   worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   worldDirty = true;
   startWorldTicker();
@@ -1220,6 +1224,7 @@ function leaveWorld(ws) {
   ws.world = null;
   worldPlayers.delete(w.id);
   propRegistry.leave(w.id, w.level);
+  worldEffects.leave(w.id);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(w.id);
@@ -1271,6 +1276,7 @@ function handleWorldLevel(ws, msg) {
   w.level = msg.level;
   propRegistry.leave(w.id, previousLevel);
   propRegistry.join(ws);
+  worldEffects.snapshot(ws);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(w.id)) announceSeats();
   worldDirty = true;
@@ -1764,6 +1770,10 @@ function handleMessage(ws, msg) {
     case 'duel-rematch':
       handleDuelRematch(ws);
       return;
+    case 'world-portal':
+    case 'world-air-hop':
+      worldEffects.handle(ws, msg);
+      break;
     case 'world-prop-spawn':
     case 'world-prop-move':
     case 'world-prop-ack':

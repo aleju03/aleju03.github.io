@@ -76,6 +76,9 @@ export interface AvatarEnv {
 }
 
 export interface RemoteAvatars {
+  /** compile name/badge sprites under the covered world warm-up */
+  stage: (camera: THREE.Camera) => void
+  unstage: () => void
   root: THREE.Group
   /** draw one frame of whatever the store currently believes */
   update: (world: RemoteWorld, dt: number, env: AvatarEnv) => void
@@ -258,6 +261,16 @@ interface Avatar {
 export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   const root = new THREE.Group()
   root.userData.dynamic = true // people move; never freeze this subtree
+  // A player first seen through a portal may also be the first visible
+  // nameplate. Keep its mapped sprite program warm even in an empty lobby.
+  const warmMap = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1)
+  warmMap.colorSpace = THREE.SRGBColorSpace
+  warmMap.needsUpdate = true
+  const warm = makeSprite(warmMap, 0.01, 1)
+  warm.visible = false
+  warm.frustumCulled = false
+  warm.userData.dynamic = true
+  root.add(warm)
   const avatars = new Map<PlayerId, Avatar>()
   // reused every frame across every body — a crowd must not feed the GC
   const pose: PlayerPose = {
@@ -383,6 +396,13 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
 
   return {
     root,
+    stage: (camera) => {
+      camera.updateMatrixWorld()
+      warm.position.set(0, 0, -4).applyMatrix4(camera.matrixWorld)
+      warm.visible = true
+      warm.updateMatrix()
+    },
+    unstage: () => { warm.visible = false },
 
     update(world, dt, worldEnv) {
       const now = performance.now()
@@ -586,6 +606,8 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     },
 
     dispose() {
+      warm.material.dispose()
+      warmMap.dispose()
       for (const id of [...avatars.keys()]) despawn(id)
       badgeTex?.dispose()
       badgeTex = null

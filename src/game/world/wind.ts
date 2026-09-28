@@ -83,8 +83,8 @@ const TRAMPLES = 12
 /** how far a step's influence reaches, world units */
 const TRAMPLE_R = 1.35
 
-/** how many holes the field can have cut in it: a portal pair */
-const HOLES = 2
+/** Fixed at boot: the nearest shared floor portals cut the vegetation. */
+const HOLES = 8
 
 export const trampleUniforms = {
   uTramples: {
@@ -102,7 +102,7 @@ export const trampleUniforms = {
 /**
  * Cut (or clear) the holes: each an oval lying on the ground, centre and its
  * two half-axes in world units (the grass and flowers inside it, plus the
- * margin, are not drawn). Pass fewer than two and the rest switch off.
+ * margin, are not drawn). Pass fewer than eight and the rest switch off.
  */
 export const setGroundHoles = (
   holes: readonly { c: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[], margin = 0.3,

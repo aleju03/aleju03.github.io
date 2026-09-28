@@ -7,7 +7,7 @@ import { emptyInput, type RigEntry, type ToolInput, type VehicleGrab } from './t
 import { createViewmodel, type Viewmodel } from './viewmodel'
 import { createToolgun, toolgunScreen, type Toolgun } from './toolgun'
 import { contraptionOf, type Contraption } from '../contraption/contraption'
-import { createPortals, type PortalColor, type Portals, type PortalWorld } from './portals'
+import { createPortals, type Portal, type PortalColor, type Portals, type PortalWorld } from './portals'
 import { createPortalSfx } from './portalSfx'
 import { createPortalView, type PortalView } from './portalView'
 
@@ -322,6 +322,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
   const vInput: ToolInput = { ...emptyInput(vAim), aim: vAim }
   const holdM = new THREE.Matrix4()
   let holdVia = -1
+  let holdPair: { from: Portal; to: Portal } | null = null
   let viaNow = false
   const entryAt = new THREE.Vector3()
   const exitAt = new THREE.Vector3()
@@ -333,10 +334,12 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     const w = o.portalWorld?.()
     // a hold taken through a pair lets go if the pair changes
     if (physgun.holding && holdVia >= 0 && holdVia !== portals.version) {
-      physgun.release(false)
-      holdVia = -1
+      if (!holdPair || portals.partner(holdPair.from) !== holdPair.to) {
+        physgun.release(false)
+        holdVia = -1
+      } else holdVia = portals.version
     }
-    if (!physgun.holding) holdVia = -1
+    if (!physgun.holding) { holdVia = -1; holdPair = null }
     let M: THREE.Matrix4 | null = null
     let near = 0
     if (w) {
@@ -353,6 +356,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
         const own = blk?.prop && e.from.anchor?.kind === 'prop' && e.from.anchor.id === blk.prop.id
         if (!(blk && !own && blk.distance < e.t - inDepth)) {
           M = e.M
+          if (!physgun.holding) holdPair = { from: e.from, to: e.to }
           outDir.copy(input.aim.dir).transformDirection(e.M)
           near = e.t + (e.to.inset + 0.06) / Math.max(0.2, outDir.dot(e.to.n))
           entryAt.copy(e.at)

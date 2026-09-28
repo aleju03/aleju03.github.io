@@ -40,8 +40,10 @@ import { ovalR, PORTAL_HH, PORTAL_HW, toPortal, type Portal, type Portals } from
   away and show the inside of the wall for a frame), the oval draws as a
   full-screen quad of the view instead, at a depth behind the gun.
 
-  All of it is one ShaderMaterial per colour on the same program, plus the
-  render target per colour, compiled under the boot cover by `stage()` with
+  Remote ovals clone the two warmed materials and reuse their shader
+  program. Four render targets serve the nearest visible views; farther
+  ovals retain their coloured swirl without another scene pass. The two
+  original materials are compiled under the boot cover by `stage()` with
   the belt's other parts. A pair that spans two levels (the Moon) renders
   through `hooks.cross`, which dresses the scene as the far level for the
   one pass and undresses it after, or shows the snapshot it hands back. A
@@ -57,6 +59,8 @@ const RIM = 1.09
 export const PORTAL_COLORS = [new THREE.Color(0.12, 0.78, 3.6), new THREE.Color(3.6, 1.05, 0.08)] as const
 /** past this the pass is not worth it: the fog has the far side anyway */
 const VIEW_RANGE = 320
+/** Nearest visible views share a fixed target budget, even in a full lobby. */
+const MAX_PASSES = 4
 
 const VERT = /* glsl */ `
 uniform float uFull;
@@ -183,7 +187,7 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
     rt.scissorTest = true
     return rt
   }
-  const rts = [makeRT(), makeRT()]
+  const rts = Array.from({ length: MAX_PASSES }, makeRT)
   const mats = [0, 1].map((i) =>
     new THREE.ShaderMaterial({
       name: 'portal',
@@ -218,6 +222,41 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
     return mesh
   })
   const parents: (THREE.Object3D | null)[] = [null, null]
+  const remoteSlots = new Map<string, number>()
+  const slotKeys: (string | null)[] = ['local:0', 'local:1']
+  const current: (Portal | null)[] = [null, null]
+  const syncSlots = () => {
+    current[0] = portals.list[0]; current[1] = portals.list[1]
+    const live = new Set(portals.all.filter((p) => p?.owner).map((p) => `${p!.owner}:${p!.color}`))
+    for (const [key, i] of remoteSlots) if (!live.has(key)) {
+      meshes[i].removeFromParent(); meshes[i].visible = false
+      mats[i].dispose(); current[i] = null; slotKeys[i] = null
+      remoteSlots.delete(key)
+    }
+    for (const p of portals.all) {
+      if (!p?.owner) continue
+      const key = `${p.owner}:${p.color}`
+      let i = remoteSlots.get(key)
+      if (i === undefined) {
+        i = slotKeys.findIndex((k, index) => index >= 2 && k === null)
+        if (i < 0) i = slotKeys.length
+        // Cloning uniforms retains the already-warmed shader program.
+        const sampled = mats[p.color].uniforms.uMap.value
+        mats[p.color].uniforms.uMap.value = dummy
+        mats[i] = mats[p.color].clone()
+        mats[p.color].uniforms.uMap.value = sampled
+        mats[i].uniforms.uMap.value = dummy
+        const mesh = new THREE.Mesh(geo, mats[i])
+        mesh.name = `portal-${key}`
+        mesh.matrixAutoUpdate = false; mesh.userData.dynamic = true
+        mesh.castShadow = false; mesh.receiveShadow = false
+        root.add(mesh); meshes[i] = mesh; parents[i] = null
+        slotKeys[i] = key; remoteSlots.set(key, i)
+      }
+      current[i] = p
+    }
+  }
+
 
   const vcam = new THREE.PerspectiveCamera()
   const lens = new THREE.PerspectiveCamera()
@@ -347,13 +386,14 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
     time = now
     stats.passes = 0
     stats.pixels = 0
+    syncSlots()
     const want: { i: number; p: Portal; to: Portal; full: boolean; r: typeof rect }[] = []
     camera.updateMatrixWorld()
     pv.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
     frustum.setFromProjectionMatrix(pv)
     cam.setFromMatrixPosition(camera.matrixWorld)
-    for (let i = 0; i < 2; i++) {
-      const p = portals.list[i]
+    for (let i = 0; i < current.length; i++) {
+      const p = current[i]
       const mesh = meshes[i]
       const mat = mats[i]
       const u = mat.uniforms
@@ -387,6 +427,8 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
       want.push({ i, p, to, full, r })
     }
     if (!want.length) return
+    want.sort((a, b) => Number(b.full) - Number(a.full) || cam.distanceToSquared(a.p.pos) - cam.distanceToSquared(b.p.pos))
+    want.length = Math.min(want.length, MAX_PASSES)
     const prevTarget = rr.getRenderTarget()
     hooks?.begin?.()
     // every oval shows its swirl during the passes (no recursion)
@@ -397,7 +439,7 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
     }
     for (let k = 0; k < want.length; k++) {
       const { i, p, to, r } = want[k]
-      const rt = rts[i]
+      const rt = rts[k]
       if (rt.width !== w || rt.height !== h) rt.setSize(w, h)
       // the lens, carried through the pair
       portals.transform(p, M)
@@ -452,7 +494,7 @@ export function createPortalView(portals: Portals, parent: THREE.Object3D, rende
       const { i, full } = want[k]
       const u = mats[i].uniforms
       u.uMode.value = modes[k]
-      if (modes[k] === 1) u.uMap.value = rts[i].texture
+      if (modes[k] === 1) u.uMap.value = rts[k].texture
       else if (modes[k] === 2) u.uMap.value = (mats[i].userData.snap as THREE.Texture) ?? dummy
       if (full && modes[k]) {
         u.uFull.value = 1

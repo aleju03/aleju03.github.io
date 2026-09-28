@@ -19,7 +19,7 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n);
 const idOK = (n) => Number.isSafeInteger(n) && n > 0;
 const vec = (v, n, cap) => Array.isArray(v) && v.length === n && v.every(finite) ? v.map((x) => clamp(x, -cap, cap)) : null;
 
-export function createPropRegistry({ players, send, now = Date.now }) {
+export function createPropRegistry({ players, send, now = Date.now, onRemove = () => {} }) {
   const levels = new Map();
   const rates = new WeakMap();
   const spawns = new WeakMap();
@@ -63,6 +63,7 @@ export function createPropRegistry({ players, send, now = Date.now }) {
     for (const id of ids) { l.props.delete(id); l.dirty.delete(id); }
     for (const [id, j] of l.joints) if (ids.includes(j.a) || ids.includes(j.b)) l.joints.delete(id);
     broadcast(name, { type: 'world-prop-remove', ids });
+    onRemove(name, ids);
   };
   const grant = (name, ps, who, lock = null) => {
     for (const p of ps) {
@@ -240,7 +241,7 @@ export function createPropRegistry({ players, send, now = Date.now }) {
       broadcast(w.level, { type: m.type, id: j.id });
     }
   };
-  return { join, leave, handle, tick: () => {
+  return { get: (name, id) => levels.get(name)?.props.get(id), join, leave, handle, tick: () => {
     for (const [name, l] of levels) {
       if (!l.dirty.size) continue;
       broadcast(name, { type: 'world-prop-move', rows: [...l.dirty.values()] });
