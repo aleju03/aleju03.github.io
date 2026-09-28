@@ -2,6 +2,8 @@ import * as THREE from 'three'
 import { contraptionOf, type ConstraintType, type Contraption } from '../contraption/contraption'
 import { KEY_PAIRS } from '../contraption/parts'
 import { historyOf } from '../history'
+import { clipboard } from '../blueprint/clipboard'
+import { createDuplicator } from '../blueprint/dupe'
 import type { Prop, PropId, Sandbox } from '../sandbox'
 import type { ToolInput } from './types'
 import { TOOL_MODES, type ToolMode } from './toolgunText'
@@ -32,6 +34,11 @@ type Msg = { en: string; es: string }
     keys       click a thruster, wheel or hoverball to step it to its next
                key pair; right click reverses it
     remove     click a prop to remove it; right click strips its joints
+    copy       click a prop: it and everything joined to it go to the
+               clipboard as a blueprint; right click takes that one prop
+    paste      the clipboard as a ghost on the crosshair (blueprint/dupe.ts);
+               left click places it as one undo entry, the wheel or E turns
+               it, right click forgets it
   In the four two-click modes, right click cancels a first click, or with
   none pending takes that mode's joints off whatever it is aimed at.
 
@@ -63,6 +70,9 @@ export interface Toolgun {
   readonly mode: ToolMode
   setMode: (m: ToolMode) => void
   cycle: (dir: number) => void
+  /** paste mode is showing a ghost, so the wheel turns it and does not
+      change tools */
+  readonly wantsWheel: boolean
   /** the first prop of a two-click mode, once picked */
   readonly pending: PropId | null
   /** one frame; the gun is out and live */
@@ -87,6 +97,9 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
   let altWas = false
   let modeWas = false
   let aimedKeys: string | null = null
+  const dupe = createDuplicator(sb)
+  /** where the paste ghost is, this frame */
+  let pasteAt: THREE.Vector3 | null = null
   const fns = new Set<(e: ToolgunEvent) => void>()
   const ev: ToolgunEvent = { type: 'fail', point: new THREE.Vector3(), normal: new THREE.Vector3(0, 1, 0), prop: -1 }
   const emit = (type: ToolgunEventType, point: THREE.Vector3 | null, normal: THREE.Vector3 | null, prop: PropId) => {
@@ -152,6 +165,15 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
       else emit('fail', point, normal, -1)
       return
     }
+    if (mode === 'copy') {
+      emit(dupe.copy(prop, false) ? 'select' : 'fail', point, normal, prop?.id ?? -1)
+      return
+    }
+    if (mode === 'paste') {
+      const done = pasteAt ? dupe.paste(pasteAt) : false
+      emit(done ? 'join' : 'fail', point, normal, -1)
+      return
+    }
     if (mode === 'remove') {
       if (prop) {
         const id = prop.id
@@ -193,6 +215,16 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
     const hit = sb.raycast(input.aim.eye, input.aim.dir, TOOL_RANGE, { props: true, world: true })
     const point = hit?.point ?? p.copy(input.aim.dir).multiplyScalar(TOOL_RANGE).add(input.aim.eye)
     const prop = hit?.prop ?? null
+    if (mode === 'paste') {
+      const had = !!clipboard.get()
+      dupe.clear()
+      emit(had ? 'cancel' : 'fail', point, hit?.normal ?? null, -1)
+      return
+    }
+    if (mode === 'copy') {
+      emit(dupe.copy(prop, true) ? 'select' : 'fail', point, hit?.normal ?? null, prop?.id ?? -1)
+      return
+    }
     if (pending) {
       pending = null
       emit('cancel', point, hit?.normal ?? null, -1)
@@ -238,6 +270,15 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
       const st = hit?.prop ? con.part(hit.prop.id) : null
       aimedKeys = st && st.keys >= 0 ? `${KEY_PAIRS[st.keys].label}${st.flip ? ' rev' : ''}` : null
     } else aimedKeys = null
+    // paste keeps its ghost on whatever the crosshair is on
+    if (mode === 'paste') {
+      const hit = sb.raycast(input.aim.eye, input.aim.dir, TOOL_RANGE, { props: true, world: true })
+      pasteAt = dupe.hover(input, hit)
+      aimedKeys = dupe.label
+    } else {
+      pasteAt = null
+      dupe.hide()
+    }
   }
 
   return {
@@ -260,8 +301,12 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
     get pending() {
       return pending?.id ?? null
     },
+    get wantsWheel() {
+      return mode === 'paste' && dupe.wantsWheel
+    },
     update,
     cancel: () => {
+      dupe.hide()
       pending = null
       fireWas = altWas = modeWas = false
     },
@@ -273,13 +318,17 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
       sb = next
       con = contraptionOf(next)
       pending = null
+      dupe.retarget(next)
     },
     get aimedKeys() {
       return aimedKeys
     },
     get state() {
-      return `${mode}:${pending ? 1 : 0}`
+      return `${mode}:${pending || (mode === 'paste' && clipboard.get()) ? 1 : 0}`
     },
-    dispose: () => fns.clear(),
+    dispose: () => {
+      fns.clear()
+      dupe.dispose()
+    },
   }
 }

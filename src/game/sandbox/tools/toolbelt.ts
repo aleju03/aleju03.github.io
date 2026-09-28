@@ -488,7 +488,7 @@ export function createToolbelt(o: ToolbeltOpts): Toolbelt {
     // a click that brought the tool back (a pause, a seat) is not a grab
     if (!lastActive && input.fire) input.fire = false
     lastActive = true
-    if (!physgun.holding && input.wheel) {
+    if (!physgun.holding && input.wheel && !(SLOTS[slot] === 'toolgun' && toolgun.wantsWheel)) {
       cycle(input.wheel > 0 ? 1 : -1)
       input.wheel = 0
     }
