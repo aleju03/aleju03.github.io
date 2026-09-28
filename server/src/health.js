@@ -79,6 +79,8 @@ export function createHealth({ players, send, now = Date.now }) {
   const rates = new WeakMap();
   const deathFns = new Set();
   const respawnFns = new Set();
+  // a mode's veto over who may hurt whom (rounds.js): fn(victim, {by, kind}) -> boolean
+  let guard = null;
   let lastTick = now();
 
   const scope = (name) => {
@@ -158,7 +160,9 @@ export function createHealth({ players, send, now = Date.now }) {
     const level = w.level;
     h.hp = 0;
     h.dead = true;
-    h.respawnAt = now() + RESPAWN_MS;
+    // a mode may name its own delay, or none at all (Infinity: down for the round)
+    const wait = scope(level).respawnMs;
+    h.respawnAt = wait === undefined ? now() + RESPAWN_MS : now() + wait;
     dirty.add(ws);
     const killer = source.by && source.by !== w.id ? players.get(source.by) : null;
     const k = killer?.world?.level === level ? killer : null;
@@ -198,6 +202,7 @@ export function createHealth({ players, send, now = Date.now }) {
     const forced = kind === 'kill';
     if (!forced) {
       if (h.god || now() < h.protUntil) return 0;
+      if (guard && !guard(ws, { by, kind })) return 0;
       // the environment and yourself always hurt; another player only in pvp
       if (by && by !== ws.world.id && !scope(ws.world.level).pvp) return 0;
     }
@@ -301,6 +306,20 @@ export function createHealth({ players, send, now = Date.now }) {
     onRespawn(fn) {
       respawnFns.add(fn);
       return () => respawnFns.delete(fn);
+    },
+    /** a mode's veto: fn(victim, {by, kind}) returns false to refuse the damage.
+        A forced `kill` skips it, as it skips god and protection */
+    setGuard(fn) {
+      guard = typeof fn === 'function' ? fn : null;
+    },
+    /** how long the dead of a scope stay down: ms, Infinity for the round, or
+        null for the default (3 s) */
+    setRespawn(name, ms) {
+      scope(name).respawnMs = ms === null || ms === undefined ? undefined : ms;
+    },
+    /** bring one player back now (a round resets its dead) */
+    revive(ws) {
+      if (ws.world && rec(ws).dead) respawn(ws);
     },
     /** new round: counters to zero, everyone alive and whole */
     reset(name) {

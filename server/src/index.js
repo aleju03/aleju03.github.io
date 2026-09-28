@@ -28,6 +28,7 @@ import { createWorldRooms, createLimiter, normalizeRoom, PUBLIC_ROOM } from './w
 import { createWeapons } from './weapons.js';
 import { createWorldSocial } from './worldSocial.js';
 import { createHealth } from './health.js';
+import { createRounds } from './rounds.js';
 
 // ---------------------------------------------------------------- config
 
@@ -917,6 +918,13 @@ function handleDuelRematch(ws) {
 // world-join and is the whole of a player's server-side state (its `room` is
 // the room object, never the wire; `ws.room` is the unrelated chat room).
 
+// the round clock's waits, in ms; the environment shortens them for tests
+const envMs = (name) => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 50 ? n : undefined;
+};
+const ROUND_TIMING = { countdownMs: envMs('ROUND_COUNTDOWN_MS'), resultsMs: envMs('ROUND_RESULTS_MS') };
+
 let worldSeq = 1;
 const worldPlayers = new Map(); // id -> ws, every room: the ticker's and the total cap's view
 const worldMoveRate = new WeakMap(); // ws -> [timestamps]
@@ -974,7 +982,22 @@ function buildRoom(room) {
     seated: (id) => worldSeated(room, id),
     flying: (w) => (w.f & W_FLY) !== 0,
     health: room.health,
+    rounds: () => room.rounds,
   });
+  // rounds: lobby, countdown, play, results (rounds.js). Built after health,
+  // props and claims, which it borrows settings from; weapons ask it through
+  // the getter above, health asks it through the guard and the death hook
+  room.rounds = createRounds({
+    players,
+    send,
+    health: room.health,
+    props: room.props,
+    claims: room.social.claims,
+    isPublic: () => room.isPublic,
+    ...ROUND_TIMING,
+  });
+  room.health.setGuard((victim, source) => room.rounds.guard(victim, source));
+  room.health.onDeath((e) => room.rounds.died(e));
   // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
   // `hand` is whoever has an *empty* machine on their physgun (or is letting it
   // settle after one), and is its authority exactly as a driver is, which is
@@ -1208,6 +1231,7 @@ function worldTick() {
     room.props.tick();
     room.effects.tick();
     room.health.tick();
+    room.rounds.tick();
     if (!room.dirty || room.players.size === 0) continue;
     room.dirty = false;
     tickRoom(room);
@@ -1330,6 +1354,7 @@ function handleWorldJoin(ws, msg) {
   room.blocks.snapshot(ws);
   room.weapons.snapshot(ws);
   room.health.snapshot(ws);
+  room.rounds.snapshot(ws);
   worldBroadcast(room, { type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   room.dirty = true;
   startWorldTicker();
@@ -1383,6 +1408,7 @@ function leaveWorld(ws) {
   room.damage.left(w.level);
   room.blocks.left(w.level);
   room.health.left(w.id, w.level);
+  room.rounds.left(ws, w.id);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(room, w.id);
@@ -1415,6 +1441,7 @@ function handleWorldMove(ws, msg) {
   w.gait = finite(msg.gait) ? Math.max(0, Math.min(1, msg.gait)) : 0;
   w.f = Number.isInteger(msg.f) ? msg.f & W_FLAGS : 0;
   w.room.health.pose(ws);
+  w.room.rounds.pose(ws);
   // both optional, and absent from older clients: absence is "neither"
   w.e = Number.isInteger(msg.e) && msg.e > 0 && msg.e < W_EMOTE_MAX ? msg.e : 0;
   w.pt = finite(msg.py) && finite(msg.pp);
@@ -1457,6 +1484,7 @@ function handleWorldLevel(ws, msg) {
   if (previousLevel !== w.level) room.weapons.moved(ws, previousLevel);
   if (previousLevel !== w.level) room.health.moved(ws, previousLevel);
   room.health.snapshot(ws);
+  if (previousLevel !== w.level) room.rounds.moved(ws, previousLevel);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(room, w.id)) announceSeats(room);
   room.dirty = true;
@@ -2013,6 +2041,10 @@ function handleMessage(ws, msg) {
     case 'world-fall':
     case 'world-health-cmd':
       roomOf(ws)?.health.handle(ws, msg, strike);
+      break;
+
+    case 'world-round-cmd':
+      roomOf(ws)?.rounds.handle(ws, msg, strike);
       break;
     case 'world-prop-spawn':
     case 'world-prop-move':

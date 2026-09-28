@@ -332,7 +332,41 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       broadcast(w.level, { type: m.type, id: j.id });
     }
   };
-  return { get: (name, id) => levels.get(name)?.props.get(id), join, leave, handle, sweep, tick: () => {
+  /**
+   * Props a mode puts into a level (rounds.js: the prop hunt's decoys). They
+   * belong to nobody ('system': no owner cap, no orphan clock, open to every
+   * hand whatever protection says) and are simulated by whoever stands there
+   * first, like any prop whose owner left. `rows` are {kind, x, y, z, yaw?,
+   * scale?} in world units; returns the ids made. Bounded like a client's
+   * spawns: at most 200 a call, and never past the level's cap.
+   */
+  const spawnSystem = (name, rows) => {
+    const l = level(name);
+    const who = peers(name)[0]?.world.id ?? 0;
+    const made = [];
+    for (const r of rows.slice(0, 200)) {
+      if (!r || !PROP_KINDS.has(r.kind) || !finite(r.x) || !finite(r.y) || !finite(r.z)) continue;
+      if (l.props.size >= LEVEL_CAP) break;
+      const half = (finite(r.yaw) ? r.yaw : 0) / 2;
+      const row = pose([0, 0, r.x * 100, r.y * 100, r.z * 100, 0, Math.sin(half) * 10000, 0, Math.cos(half) * 10000, 0], seq, 1);
+      if (!row) continue;
+      const prop = { id: seq++, owner: 0, name: 'round', authority: who, epoch: 1, kind: r.kind,
+        scale: finite(r.scale) ? clamp(r.scale, 0.2, 4) : 1, pose: row, lock: null, part: null, life: null, share: true };
+      keys.set(prop, 'system');
+      l.props.set(prop.id, prop);
+      made.push(prop.id);
+      broadcast(name, { type: 'world-prop-spawn', prop, nonce: 0 });
+    }
+    return made;
+  };
+  /** a mode takes its own props back (ids already gone are skipped) */
+  const removeSystem = (name, ids) => {
+    const l = levels.get(name);
+    const gone = l ? ids.filter((id) => l.props.has(id)) : [];
+    if (gone.length) remove(name, gone);
+    return gone.length;
+  };
+  return { get: (name, id) => levels.get(name)?.props.get(id), spawnSystem, removeSystem, join, leave, handle, sweep, tick: () => {
     sweep();
     for (const [name, l] of levels) {
       if (!l.dirty.size) continue;

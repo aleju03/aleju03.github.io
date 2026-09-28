@@ -82,6 +82,17 @@ export function createClaims({ players, send, protection, now = Date.now, name =
 
   return {
     at, refresh, publish,
+    /** a mode's plot (rounds.js's build contest): give a column to `ws` whatever
+        the per-owner cap says, replacing any claim there. Undone by `free` */
+    assign: (n, cx, cz, ws) => {
+      if (!int(cx) || !int(cz) || !ws.world) return;
+      level(n).set(`${cx},${cz}`, { key: protection.ident(ws), name: name(ws), orphanAt: 0 });
+      refresh(n);
+    },
+    free: (n, cx, cz) => {
+      const l = levels.get(n);
+      if (l?.delete(`${cx},${cz}`)) refresh(n);
+    },
     /** null when `ws` may edit the block column, else the claim that says no */
     check: (ws, bx, bz) => {
       const c = at(ws.world.level, bx, bz);
