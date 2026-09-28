@@ -17,6 +17,7 @@ import { roomsSmoke } from './worldRooms.mjs';
 import { healthSmoke, healthRoomsSmoke } from './health.mjs';
 import { buildsSmoke, buildsRateSmoke } from './builds.mjs';
 import { persistSmoke } from './persist.mjs';
+import { creaturesSmoke } from './creatures.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -119,6 +120,8 @@ async function main() {
   await persistSmoke();
   console.log('0b. persisted Cubeland edits: written, debounced, restored after a restart, private rooms left out');
   await buildsRateSmoke();
+  await creaturesSmoke(url, connect);
+  console.log('0c. creatures: host designation and handoff, relay, bounds, hit validation, mob attacks through health, switches');
 
   // 1. Guest hello: gets a guest name and the room list.
   const guest = connect(url);

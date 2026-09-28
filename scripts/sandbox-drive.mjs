@@ -28,6 +28,12 @@
                                       public/os/maps/README.md). Any run with
                                       --picker also shoots the sheet itself,
                                       which every walk now starts on
+    npm run drive -- creatures        the living things: a herd by day in Cubeland, the dark's
+                                      zombies, creeper and skeleton at night, a creeper's
+                                      crater (blocks counted), a kill's drops, /mobs and
+                                      /spawnmob, and Nuketown's walkers shot down and
+                                      getting up; links counted (must be 0). Shots
+                                      creatures-*. Two clients: scripts/creatures-drive.mjs
     npm run drive -- cubeland [--only a,b]
                                       Cubeland: the spawn from four headings
                                       and the air, a block broken and a tower
@@ -2872,6 +2878,168 @@ try {
     await sleep(3000)
   }
 
+  if (WHAT.includes('creatures')) {
+    /*
+      The living things (src/game/creatures/), single client: a herd of pigs,
+      cows, sheep and chickens by day in Cubeland, the dark's zombies,
+      creeper and skeleton at night (the hour pinned with `time`), a creeper
+      blowing a crater (blocks counted before and after), a kill's drops, the
+      console's /mobs and /spawnmob, and Nuketown's walkers shot down and
+      getting back up. Shader links counted from arrival (must be 0). The two
+      client checks (host handoff, the second client hurting one, a mob
+      hurting a person through the health system) are scripts/creatures-drive.mjs.
+    */
+    console.log('creatures')
+    await evaluate(`(() => {
+      const gl = [...document.querySelectorAll('canvas')].find((c) => c.width > 64 && c.getContext('webgl2')).getContext('webgl2')
+      window.__cLinks = 0
+      if (!gl.__cubeWrapped) { const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__cLinks++; return real(p) }; gl.__cubeWrapped = true }
+      return true
+    })()`)
+    console.log(`  ${(await run('map cubeland')).join(' / ')}`)
+    await sleep(9000)
+    await evaluate('window.__cLinks = 0; true')
+    await stand()
+    await run('time 0.4')
+    // a bare meadow to stage the shots on: the first 17x17-block square of
+    // plain grass (no trunk or leaf above it, level to a block) round the spawn
+    const meadow = await evaluate(`(() => {
+      const C = window.__cubeland, G = C.blockId('grass'), s = C.level.spawn
+      const plants = ['tall_grass', 'poppy', 'dandelion', 'fern', 'blue_orchid', 'cornflower', 'oxeye_daisy', 'sugar_cane', 'dead_bush', 'red_mushroom', 'brown_mushroom'].map((k) => C.blockId(k))
+      const top = (x, z) => { for (let y = 95; y >= 0; y--) { const b = C.store.get(x, y, z); if (b && !plants.includes(b)) return y } return -1 }
+      const bx0 = Math.floor(s.x / 2), bz0 = Math.floor((s.z + 40000) / 2)
+      for (let r = 0; r < 300; r += 6) for (let a = 0; a < 16; a++) {
+        const cx = bx0 + Math.round(Math.cos(a / 16 * 6.283) * r), cz = bz0 + Math.round(Math.sin(a / 16 * 6.283) * r), y0 = top(cx, cz)
+        if (y0 < 0) continue
+        let ok = true
+        for (let dz = -6; dz <= 6 && ok; dz += 2) for (let dx = -6; dx <= 6 && ok; dx += 2) {
+          const t = top(cx + dx, cz + dz)
+          if (Math.abs(t - y0) > 2 || C.store.get(cx + dx, t, cz + dz) !== G) ok = false
+        }
+        if (ok) return [cx, cz, y0]
+      }
+      return null
+    })()`)
+    console.log(`  meadow: ${JSON.stringify(meadow)}`)
+    if (meadow) {
+      await evaluate(`window.__sandbox.console.host.teleport(${meadow[0] * 2 + 1}, ${-40000 + meadow[1] * 2 + 1}, ${(meadow[2] + 1) * 2 + 0.2}, 0); true`)
+      await sleep(4000)
+      await stand()
+    }
+    const D = (js) => evaluate(`(() => { const D = window.__creatures(), cam = window.__sandboxCamera, w = window.__sandboxWalk, C = window.__cubeland, sb = window.__sandbox;
+      const ahead = (d, side = 0) => ({ x: cam.position.x - Math.sin(w.yaw) * d + Math.cos(w.yaw) * side, z: cam.position.z - Math.cos(w.yaw) * d - Math.sin(w.yaw) * side });
+      ${js} })()`)
+    // headless draws a frame or two a second, so the sim's clock crawls: where a
+    // rule needs seconds of it (a fuse, a burn, a fallen mannequin) it is stepped by hand
+    const ff = (secs) => D(`for (let i = 0; i < ${Math.round(secs * 30)}; i++) D.sim.update(1 / 30); return true`)
+    console.log('  ' + (await D('return JSON.stringify(D.count())')))
+    // the wild by day: wait for the spawner to lay down a herd of its own
+    let wild = 0
+    for (let k = 0; k < 40 && wild < 4; k++) {
+      await sleep(2000)
+      wild = await D('return D.count().passive')
+    }
+    console.log(`  the spawner alone laid down ${wild} calm animals by day (${await D('return D.count().hostile')} hostile)`)
+    await D(`D.sim.clear(); return true`)
+    // a herd, placed: two of each in a loose group ahead
+    await D(`for (const [k, n] of [['pig', 5], ['cow', 3], ['sheep', 4], ['chicken', 4]]) for (let i = 0; i < n; i++) {
+      const p = ahead(12 + Math.random() * 10, (Math.random() - 0.5) * 18); D.sim.spawn(k, p.x, p.z) } return true`)
+    await look(0, -0.12)
+    await sleep(6000)
+    console.log('  ' + (await run('mobs count')).join(' / '))
+    console.log(`  ${await D('return JSON.stringify(D.view.stats)')} parts drawn; ${await evaluate('window.__sandbox.stats.batches')} batches`)
+    await shot('creatures-herd')
+    // a hit flashes and shoves and sends the herd running
+    await D(`const c = [...D.sim.creatures.values()].find((c) => c.kind.id === 'pig'); if (c) D.sim.hit(c.id, 3, 4, 0, true); return true`)
+    await sleep(500)
+    await shot('creatures-hit')
+    // drops: a kill by a player leaves its drops as gib props
+    const drops0 = await D(`let n = 0; sb.forEach((p) => { if (p.data.mob) n++ }); return n`)
+    await D(`for (const c of [...D.sim.creatures.values()]) if (c.kind.id === 'pig' || c.kind.id === 'sheep') D.sim.hit(c.id, 99, 0, 0, true); return true`)
+    await sleep(3000)
+    const drops1 = await D(`let n = 0; sb.forEach((p) => { if (p.data.mob) n++ }); return n`)
+    console.log(`  kills dropped ${drops1 - drops0} props (gibs)`)
+    await shot('creatures-drops')
+    // night: the dark breeds hostiles, and a lit spot is safe
+    await run('mobs peaceful')
+    await run('time 0.97')
+    await D(`D.sim.clear(); return true`)
+    await sleep(500)
+    console.log('  peaceful: ' + (await run('spawnmob zombie')).join(' / '))
+    await run('mobs hostile')
+    let dark = 0
+    for (let k = 0; k < 45 && dark < 3; k++) {
+      await sleep(2000)
+      dark = await D('return D.count().hostile')
+    }
+    console.log(`  the dark bred ${dark} hostile at night`)
+    await D(`D.sim.clear(); const kinds = ['zombie', 'zombie', 'skeleton', 'creeper', 'zombie']; kinds.forEach((k, i) => { const p = ahead(16 + i * 3, (i - 2) * 6); D.sim.spawn(k, p.x, p.z) }); return true`)
+    await look(0, -0.08)
+    await sleep(4000)
+    await shot('creatures-night')
+    // by day a zombie burns away
+    await run('time 0.4')
+    const burnHp = await D(`const z = [...D.sim.creatures.values()].find((c) => c.kind.id === 'zombie'); return z ? [z.hp, z.burning] : null`)
+    await ff(6)
+    await sleep(1000)
+    const burnHp2 = await D(`const z = [...D.sim.creatures.values()].find((c) => c.kind.id === 'zombie'); return z ? [z.hp, z.burning] : 'gone'`)
+    console.log(`  a zombie in daylight: ${JSON.stringify(burnHp)} then ${JSON.stringify(burnHp2)}`)
+    // a creeper blows a crater: blocks in a ball counted around where it stands
+    await D(`D.sim.clear(); window.__boom = 0; window.__off = sb.onExplosion(() => window.__boom++); window.__ed = C.net.all().length; return true`)
+    const before = await D(`const p = ahead(9); window.__crater = p; let n = 0; const bx = Math.floor(p.x / 2), bz = Math.floor((p.z + 40000) / 2), by = Math.floor(cam.position.y / 2) - 1;
+      for (let y = by - 6; y <= by + 6; y++) for (let z = bz - 6; z <= bz + 6; z++) for (let x = bx - 6; x <= bx + 6; x++) if (C.store.get(x, y, z)) n++
+      // on the player's own level, wherever round the meadow that is
+      let made = null
+      for (let t = 0; t < 80 && !made; t++) {
+        const an = Math.random() * 6.283, d = 7 + Math.random() * 4
+        const c = D.sim.spawn('creeper', cam.position.x + Math.cos(an) * d, cam.position.z + Math.sin(an) * d)
+        if (c && Math.abs(c.y - w.feetY) < 0.6) made = c; else if (c) D.sim.remove(c.id)
+      }
+      window.__made = !!made; return n`)
+    let boom = false
+    for (let k = 0; k < 40 && !boom; k++) {
+      await ff(0.5)
+      await sleep(400)
+      if (await D(`return [...D.sim.creatures.values()].some((c) => c.kind.id === 'creeper' && c.st === 4)`)) await shot('creatures-fuse')
+      boom = await D(`return window.__boom > 0`)
+    }
+    await sleep(1200)
+    const after = await D(`const p = window.__crater; let n = 0; const bx = Math.floor(p.x / 2), bz = Math.floor((p.z + 40000) / 2), by = Math.floor(cam.position.y / 2) - 1;
+      for (let y = by - 6; y <= by + 6; y++) for (let z = bz - 6; z <= bz + 6; z++) for (let x = bx - 6; x <= bx + 6; x++) if (C.store.get(x, y, z)) n++
+      return n`)
+    console.log(`  (creeper placed: ${await evaluate('window.__made')})`)
+    console.log('  creeper now: ' + await D(`const c = [...D.sim.creatures.values()].find((c) => c.kind.id === 'creeper'); return JSON.stringify(c ? [c.x, c.y, c.z, c.st, c.fuse, c.want, c.gy, cam.position.x, cam.position.y, cam.position.z, D.count()] : 'gone')`))
+    console.log(`  the creeper went off: ${boom} (${await evaluate('window.__boom')} explosions); ${await D('return C.net.all().length - window.__ed')} block edits from it (blocks in the ball ${before} -> ${after})`)
+    await look(0, -0.3)
+    await sleep(1500)
+    await shot('creatures-crater')
+    console.log(`  programs linked since arrival in Cubeland: ${await evaluate('window.__cLinks')} (must be 0)`)
+    // Nuketown: six mannequins strolling; one shot down gets back up
+    await run('mobs clear')
+    console.log(`  ${(await run('map nuketown')).join(' / ')}`)
+    await waitFor(() => evaluate('window.__levels.current.id === "nuketown" && !!window.__creatures()'), 120, 1000, 'Nuketown')
+    await sleep(3000)
+    await evaluate('window.__cLinks = 0; true')
+    await stand()
+    await sleep(3000)
+    console.log('  ' + (await D('return JSON.stringify(D.count())')))
+    await D(`const s = window.__levels.current.spawn; return true`)
+    await sleep(6000)
+    await shot('creatures-walkers')
+    await D(`const ws = [...D.sim.creatures.values()].filter((c) => c.kind.id === 'walker'); window.__downed = ws[0]?.id; for (const c of ws.slice(0, 3)) D.sim.hit(c.id, 99, 4, 2, true); return ws.length`)
+    await sleep(2500)
+    await shot('creatures-fallen')
+    const down = await D(`const c = D.sim.creatures.get(window.__downed); return c ? c.st : -1`)
+    let up = false
+    for (let k = 0; k < 20 && !up; k++) {
+      await ff(1)
+      await sleep(500)
+      up = await D(`const c = D.sim.creatures.get(window.__downed); return !!c && c.st !== 5`)
+    }
+    console.log(`  a shot walker was down (state ${down}) and ${up ? 'got back up' : 'did NOT get up'}`)
+    await shot('creatures-risen')
+    console.log(`  programs linked since arrival in Nuketown: ${await evaluate('window.__cLinks')} (must be 0)`)
+  }
   if (WHAT.includes('cubeland')) {
     /*
       Cubeland: the spawn from four headings and from the air, then the
@@ -4557,5 +4725,7 @@ try {
     for (const e of probe.errors.slice(0, 10)) console.log(`  ${String(e).split('\n')[0]}`)
   }
 } finally {
+  // (printed here as well as above, so a scenario that threw shows why)
+  if (probe.errors.length && process.exitCode === undefined) for (const e of probe.errors.slice(0, 6)) console.log(`  page error: ${String(e).split('\n')[0]}`)
   probe.close()
 }

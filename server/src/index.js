@@ -30,6 +30,7 @@ import { createWorldSocial } from './worldSocial.js';
 import { createHealth } from './health.js';
 import { createBuildGallery } from './builds.js';
 import { createWorldPersistence } from './worldPersist.js';
+import { createCreatures } from './creatures.js';
 
 // ---------------------------------------------------------------- config
 
@@ -979,6 +980,8 @@ function buildRoom(room) {
   // hit points, death, respawn, pvp and the scoreboard (health.js): one per
   // room, so pvp, the counters and the killfeed never cross rooms
   room.health = createHealth({ players, send });
+  // the creatures' host, relay and referee (creatures.js): it simulates nothing
+  room.creatures = createCreatures({ players, send, health: room.health });
   // the pistol, the crossbow and the rocket launcher: shots and hits relayed
   // to the level, checked for honesty (weapons.js)
   room.weapons = createWeapons({
@@ -1343,6 +1346,7 @@ function handleWorldJoin(ws, msg) {
   room.blocks.snapshot(ws);
   room.weapons.snapshot(ws);
   room.health.snapshot(ws);
+  room.creatures.snapshot(ws);
   worldBroadcast(room, { type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   room.dirty = true;
   startWorldTicker();
@@ -1396,6 +1400,7 @@ function leaveWorld(ws) {
   room.damage.left(w.level);
   room.blocks.left(w.level);
   room.health.left(w.id, w.level);
+  room.creatures.left(w.id, w.level);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(room, w.id);
@@ -1470,6 +1475,8 @@ function handleWorldLevel(ws, msg) {
   if (previousLevel !== w.level) room.weapons.moved(ws, previousLevel);
   if (previousLevel !== w.level) room.health.moved(ws, previousLevel);
   room.health.snapshot(ws);
+  if (previousLevel !== w.level) room.creatures.moved(ws, previousLevel);
+  room.creatures.snapshot(ws);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(room, w.id)) announceSeats(room);
   room.dirty = true;
@@ -2043,6 +2050,14 @@ function handleMessage(ws, msg) {
     case 'world-fall':
     case 'world-health-cmd':
       roomOf(ws)?.health.handle(ws, msg, strike);
+      break;
+    case 'world-creatures':
+    case 'world-creature-die':
+    case 'world-creature-hit':
+    case 'world-creature-attack':
+    case 'world-creature-spawn':
+    case 'world-creature-cmd':
+      roomOf(ws)?.creatures.handle(ws, msg);
       break;
     case 'world-prop-spawn':
     case 'world-prop-move':
