@@ -84,6 +84,11 @@ export interface HandsFrame {
   /** the hands are out and usable (on foot, not sitting, not paused) */
   active: boolean
   firstPerson: boolean
+  /** the walk, for the bob of what is in hand: 0..1 of its speed, its step
+      clock (WalkStep's `stride`) and whether the feet are down */
+  gait?: number
+  stride?: number
+  grounded?: boolean
 }
 
 /** what a hotbar shows: the kinds in it and which one is in hand */
@@ -149,6 +154,11 @@ export interface Level {
       hovering a hand's width over a hillside is the visible cost of a
       groundYAt that disagrees with the mesh by an interpolation error. */
   groundYAt?: (x: number, z: number) => number
+  /** noclip stops at the ground here instead of passing through it: there
+      is nothing under this level's ground to fly to (no backrooms, no level
+      beneath), and under a black sky flying into a crater rim showed only
+      black and the undersides of a few triangles. The Moon */
+  noclipFloor?: boolean
   /** the waterline, for levels that have one. Ground below it is a sea, lake
       or river bed, and a body far enough under it swims. */
   waterY?: number

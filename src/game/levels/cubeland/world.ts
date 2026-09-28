@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { AIR, B, BEDROCK, BLOCKS } from '../../sandbox/blocks'
 import type { Solid } from '../../physics/collision'
+import type { VoxelGrid } from '../../physics/voxelSweep'
 import type { PhysicsWorld, RCollider } from '../../sandbox/physics'
 import { GROUPS } from '../../sandbox/physics'
 import { CHUNK, H, generateChunk, idx, scanTop, type ChunkData } from './gen'
@@ -21,7 +22,10 @@ import { CHUNK, H, generateChunk, idx, scanTop, type ChunkData } from './gen'
   is a point), and flagged `walkOnly`: the sandbox's props meet the blocks
   through the voxel colliders instead, flush and without the shoulder. A
   column only stops where its blocks do, so every box's top is open air and
-  every one is a floor.
+  every one is a floor. The same blocks are also handed to the walk as a
+  grid (`walkGrid`), which it sweeps through before it asks the boxes
+  anything, because a box push-out lets a fast enough tick through a hill
+  (physics/voxelSweep.ts).
 
   **The props' colliders** are Rapier's own voxel shape, one per chunk, made
   when the sandbox's ground ring reaches the chunk and dropped when it
@@ -76,6 +80,19 @@ export interface VoxelStore {
 
 /** the walker's shoulder: how far a box stands proud of the block */
 const PAD = 0.42
+
+/** the blocks as the walk's sweep reads them: the same solids as the boxes
+    (a cell grown by the shoulder is a padded box), outside the world open
+    air so a sweep never generates a chunk nobody will see, and below it
+    bedrock */
+export const walkGrid = (store: VoxelStore): VoxelGrid => ({
+  size: B,
+  ox: store.ox,
+  oz: store.oz,
+  half: PAD,
+  solid: (bx, by, bz) =>
+    by < 0 || (by < H && store.inWorld(Math.floor(bx / CHUNK), Math.floor(bz / CHUNK)) && SOLID[store.get(bx, by, bz)] === 1),
+})
 
 export const createVoxelStore = (o: { ox: number; oz: number; radius: number }): VoxelStore => {
   const chunks = new Map<number, ChunkData>()

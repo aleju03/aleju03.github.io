@@ -294,15 +294,18 @@ const shot = async (name) => {
 
 try {
   console.log('booting /world ...')
-  // a walk starts on the map sheet (MapPicker.tsx), with the world held
-  // still: stay home (a scenario that wants another map goes there itself)
+  // a walk starts at home (a scenario that wants another map goes there
+  // itself); the map sheet is the pause menu's "change map"
   await waitFor(
-    () => evaluate(`!!window.__sandbox?.run && !!window.__sandboxWalk && !!window.__pickMap &&
-      /where to|a dónde/i.test(document.body.innerText)`),
-    360, 500, 'the walk, the sandbox and the map sheet',
+    () => evaluate(`!!window.__sandbox?.run && !!window.__sandboxWalk && !!window.__pickMap`),
+    360, 500, 'the walk and the sandbox',
   )
-  if (has('picker')) await shot('map-picker')
-  await evaluate('window.__pickMap("home"); true')
+  if (has('picker')) {
+    await evaluate('window.__openMaps(); true')
+    await waitFor(() => evaluate('/where to|a dónde/i.test(document.body.innerText)'), 40, 250, 'the map sheet')
+    await shot('map-picker')
+    await evaluate('window.__pickMap("home"); true')
+  }
   await waitFor(() => evaluate('/wasd/.test(document.body.innerText)'), 60, 250, 'the walk')
   await evaluate('window.__sandbox.whenReady')
   if (has('debug')) {

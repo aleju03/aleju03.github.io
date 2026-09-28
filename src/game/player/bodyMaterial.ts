@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { DEFAULT_LOOK, FUR_SWATCHES, PHONES_RED, type PlayerLook } from './look'
-import { B, boneRestWorld, faceWindow } from './bodyShape'
+import { B, BUN_DIP, BUN_HI, boneRestWorld, faceWindow } from './bodyShape'
 
 /*
   The one material a body is drawn with, and the reason a repaint is free.
@@ -20,9 +20,10 @@ import { B, boneRestWorld, faceWindow } from './bodyShape'
     vertex shader hands the fragment shader the vertex's bind-pose position
     (`vBind`, taken before skinning, so it rides the body however it bends),
     and the face panel, the two pill eyes, the five expressions and the
-    five outfits (spots, stripes, overalls, the spacesuit, with its chest
-    unit, patch and flag, and the beaver's fur, belly and paws), the scales
-    on the beaver's tail and the helmet's gold visor are small 2D and 3D
+    outfits (spots, stripes, overalls, the spacesuit, with its chest
+    unit, patch and flag, the beaver's fur, belly and paws, and the hot
+    dog's mustard), the scales on the beaver's tail, the glint on a pair
+    of sunglasses and the helmet's gold visor are small 2D and 3D
     distance functions of it. A shape
     painted this way is crisp at any mesh resolution, blinks by scaling one
     uniform, and costs no geometry variant: `uFace`, `uLid` and `uCostume`
@@ -35,7 +36,8 @@ import { B, boneRestWorld, faceWindow } from './bodyShape'
     instead leaves the skin open, and from above an open skin is a hollow
     cup with the road visible down each leg. The headgear is discarded, and
     so is everything else that is not the bean: the beaver's ears, snout
-    and tail and the headphones, which sit right beside the lens and would
+    and tail, the hot dog's bun and mustache, the sunglasses and the
+    headphones, which sit right beside the lens and would
     otherwise be the inside of an earcup filling the screen. The shadow pass
     draws with three's own depth material, which knows nothing of any of
     this, so the body still casts whole.
@@ -65,6 +67,14 @@ const BEAVER_CREAM = '#ecd9b4'
 const PHONES_BLACK = '#222126'
 /** the tail is the fur gone leathery: darker and greyer */
 const TAIL_LEATHER = new THREE.Color('#3a302a')
+/** the hot dog's bun: a golden crust, two posterize steps over the sausage
+    red so the two read apart, and lighter at its rim, where the crumb is */
+const BUN_CRUST = '#d2944c'
+/** the sunglasses: a black frame, a hair off pure black like the headset,
+    and dark slate lenses a couple of steps over it, so the frame reads
+    round them */
+const SHADES_FRAME = '#18171c'
+const SHADES_LENS = '#323a48'
 
 /** the beaver's and the headset's paints, from the look: the fur (and the
     tail darkened from it), and the headset's metal in the colour its
@@ -108,6 +118,8 @@ export function makeBodyMaterial(look: PlayerLook = DEFAULT_LOOK): BodyMaterial 
   const pal = [
     FACE_LIGHT, look.shell, look.trim, look.accent, look.glow, INK, CHEEK, GLINT, HAIR, SUIT_WHITE, SUIT_GREY,
     FUR_SWATCHES[0], BEAVER_CREAM, FUR_SWATCHES[0], PHONES_BLACK, PHONES_RED,
+    // 16 is the retired head flag, stamped on nothing
+    INK, BUN_CRUST, SHADES_FRAME, SHADES_LENS,
   ].map((c) => new THREE.Color(c))
   faceFor(look.glow, pal[0])
   gearPaint(look, pal)
@@ -173,7 +185,7 @@ if (uHideHead > 0.5) {
       .replace(
         '#include <common>',
         `#include <common>
-uniform vec3 uPal[16];
+uniform vec3 uPal[20];
 uniform float uGlowK;
 uniform float uHideHead;
 uniform float uFaceLift;
@@ -355,6 +367,23 @@ if (role == 1) {
     // the belly: a cream oval down the front of the trunk
     float bellyD = length(vec2(vBind.x / 0.36, (vBind.y - 1.1) / 0.46)) - 1.0;
     bodyCol = mix(bodyCol, uPal[12], aaStep(bellyD * 0.3) * step(0.0, vBind.z) * trunk);
+  } else if (costume == 6) {
+    /*
+      The hot dog: the body colour is the sausage, and down its front runs
+      a squiggle of mustard in the detail colour, from under the mustache
+      to the seat, with a thin dark edge so it reads as something lying on
+      the sausage rather than a stripe printed into it. The bun and the
+      mustache are modelled (bodyShape's hotdogPieces).
+    */
+    float yy = vBind.y;
+    float wave = 0.15 * sin((yy - 0.62) * 21.0);
+    float slope = 0.15 * 21.0 * cos((yy - 0.62) * 21.0);
+    float md = abs(vBind.x - wave) / sqrt(1.0 + slope * slope);
+    // tapered off at both ends, where the drizzle starts and runs out
+    float hw = 0.042 * smoothstep(0.55, 0.7, yy) * (1.0 - smoothstep(1.66, 1.8, yy));
+    float onFront = step(0.1, vBind.z) * trunk;
+    trimK = aaStep((md - hw) * 0.5) * onFront;
+    bodyCol = mix(bodyCol, bodyCol * 0.55, aaStep((abs(md - hw - 0.008) - 0.008) * 0.5) * onFront * step(0.004, hw));
   }
   bodyCol = mix(bodyCol, uPal[2], trimK);
 
@@ -366,6 +395,9 @@ if (role == 1) {
   float e = length(fq / uWin.xy);
   facePanel = aaStep((e - 0.9) * uWin.y) * front * (1.0 - uHideHead);
   vec3 panel = uPal[0];
+  // the hot dog's face is the sausage's own skin, a touch lighter, rather
+  // than a panel set into it
+  if (costume == 6) panel = uPal[1] * 1.08;
   bool helmet = int(uHat + 0.5) == 8;
   if (helmet) {
     // under the helmet the face panel is the visor: gold glass with the
@@ -405,6 +437,19 @@ if (role == 13) {
   vec2 f = abs(fract(g) - 0.5);
   bodyCol = mix(bodyCol, bodyCol * 0.5, aaStep((min(f.x, f.y) - 0.09) * 0.085));
 }
+// the bun: lighter toward its rim, where a bun shows its crumb
+if (role == 17) {
+  float rimY = ${BUN_HI.toFixed(3)} - ${BUN_DIP.toFixed(3)} * exp(-pow(vBind.x / 0.28, 2.0));
+  bodyCol = mix(bodyCol, vec3(0.93, 0.76, 0.5), smoothstep(rimY - 0.14, rimY - 0.04, vBind.y) * 0.7);
+}
+// the sunglasses' lenses: the sky caught across the top of each, and one
+// hard diagonal glint
+if (role == 19) {
+  float lx = abs(vBind.x);
+  bodyCol = mix(bodyCol, bodyCol * 1.6 + vec3(0.02, 0.03, 0.05), smoothstep(uWin.z + 0.0, uWin.z + 0.1, vBind.y));
+  float gl = abs(lx * 0.8 + (vBind.y - uWin.z) - 0.2 * uWin.x - 0.04) - 0.012;
+  bodyCol = mix(bodyCol, uPal[7] * 0.85, aaStep(gl) * step(0.12 * uWin.x, lx));
+}
 diffuseColor.rgb = bodyCol;`,
       )
       .replace(
@@ -421,7 +466,7 @@ totalEmissiveRadiance += diffuseColor.rgb * uFaceLift * (facePanel * (0.07 + 0.2
 totalEmissiveRadiance += diffuseColor.rgb * uGummy * (0.55 + 0.45 * (1.0 - rim));`,
       )
   }
-  material.customProgramCacheKey = () => 'playerBody-v7'
+  material.customProgramCacheKey = () => 'playerBody-v8'
 
   return {
     material,

@@ -47,10 +47,12 @@ import { FADE_FRAG_ALPHA, FADE_FRAG_DISSOLVE, FADE_VERT_BODY, FADE_VERT_HEAD, fa
   channel over one) and is doubled here with the texel. The vertex format
   is the mesher's (the layer, the flags and the two lights are aBlk's four
   bytes): 16-bit positions and texture
-  coordinates in eighths of a block (the mesh is scaled; the texture
+  coordinates in sixteenths of a block (the mesh is scaled; the texture
   coordinate is scaled here), byte normals and colours, and the layer and
   glow as two bytes. Each material has its own program key, and both are
-  compiled under the map's card with everything else.
+  compiled under the map's card with everything else. A third, the block in
+  hand (`heldMaterial`), is the solid one's shader with the depth squeezed
+  and the lighting fixed to the view.
 */
 
 export interface TerrainMats {
@@ -79,7 +81,7 @@ const inject = (key: string) => (shader: THREE.WebGLProgramParametersWithUniform
       `#include <common>\nattribute vec2 aTex;\nattribute vec4 aBlk;\nvarying vec2 vTex;\nvarying vec4 vBlk;\nuniform float uTime;\n${FADE_VERT_HEAD}`,
     )
     .replace('#include <begin_vertex>', `#include <begin_vertex>
-  vTex = aTex * 0.125;
+  vTex = aTex * 0.0625;
   vBlk = aBlk;
   // liquids move: a slow shimmer on a still one, a quick run on a flowing one
   float liquidF = mod(floor(aBlk.y / 2.0), 2.0);
@@ -157,4 +159,45 @@ export const terrainMaterials = (): TerrainMats => {
   }
   shared = { solid: make('solid'), water: make('water'), texture }
   return shared
+}
+
+let held: THREE.MeshStandardMaterial | null = null
+
+/** the block in hand (held.ts): the solid material's shader and array
+    texture, so a held block is painted and lit exactly as the same block in
+    the ground, with two changes. Its depth is squeezed into the front of the
+    range, as the gun's is (sandbox/tools/viewmodel.ts), so it is never
+    inside a wall. And every face is lit as if it faced the sky: the sun and
+    the sky light it the way they light the top of the ground under your
+    feet, whichever way you turn, and the faces are told apart by the fixed
+    shade held.ts bakes into each one, which is how the famous game lights
+    what you hold (a turn toward the sun would otherwise flip which side is
+    bright and swap the posterize's bands mid-turn). Its own program, one of
+    the four the map links under its card */
+export const heldMaterial = (): THREE.MeshStandardMaterial => {
+  if (held) return held
+  const { texture } = terrainMaterials()
+  const m = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 1,
+    metalness: 0,
+    emissive: new THREE.Color(0, 0, 0),
+  })
+  const fn = inject('solid')
+  m.onBeforeCompile = (shader) => {
+    fn(shader, texture)
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <defaultnormal_vertex>',
+        '#include <defaultnormal_vertex>\n  transformedNormal = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);',
+      )
+      .replace(
+        '#include <project_vertex>',
+        '#include <project_vertex>\n  gl_Position.z = -gl_Position.w + (gl_Position.z + gl_Position.w) * 0.25;',
+      )
+  }
+  m.customProgramCacheKey = () => 'cube-held'
+  m.name = 'cube-held'
+  held = m
+  return m
 }

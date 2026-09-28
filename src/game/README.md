@@ -83,6 +83,11 @@ player/
                      must fire when they arrive, not after they are drawn
                      inside somebody). Lean (push apart), charge, tackle,
                      stomp, trample, through one indexed `Bumpable` interface
+  bodyPress.ts       the crowd against itself, once a frame: standing bodies
+                     as cylinders, heaps as the ragdoll's particles, pushed
+                     apart by weight. A held body (physgun) takes none of a
+                     contact, so it shoves people; fast enough, it knocks
+                     them flat
   emotes.ts          the emote wheel's nine emotes (b) as pose layers: per
                      moment, hips, trunk, head and mitten targets the rig
                      blends over its own pose and solves with the arm IK;
@@ -111,8 +116,9 @@ levels/
                      height where the ground bends, the sky thins and the
                      ground goes, noclip's speed with height, the Moon's
                      size, distance and seams. Pure, imported by the room tier
-  moon.ts            the Moon's ground: craters on five scales, a lattice on
-                     the world grid the walker and the sandbox both stand on,
+  moon.ts            the Moon's ground: craters on six scales, a lattice on
+                     the world grid carrying the *drawn* rings' triangles, so
+                     the walker, the sandbox and the mesh agree everywhere,
                      a horizon that curves away, boulders; built on arrival
   maps.ts            the maps picked from the pause sheet or `map <id>`:
                      'home' (the three levels above), 'nuketown' and
@@ -549,7 +555,9 @@ world/
                   into one knocks it flat; it lies there, then gets up. So
                   does a player sprinting, hopping or landing on one (it is a
                   Bumpable, player/bodyContact.ts); walked into, it is pushed
-                  aside and staggers, and lying down it is trampled
+                  aside and staggers, and lying down it is trampled. They
+                  also meet each other (player/bodyPress.ts): walks veer
+                  apart, and a body on the physgun shoves or bowls them
   quality.ts      the graphics tier: every density and budget knob, read at
                   build time, plus the GPU sniff that picks between them. New
                   knobs go in the record, not beside it. The visitor can

@@ -10,6 +10,7 @@ import {
 import { blockedAt, makeCollisionSet, type Solid } from '../physics/collision'
 import type { RagdollEnv } from '../player/ragdoll'
 import type { Impact, ImpactWatch } from '../player/impacts'
+import { createBodyPress, type PressHost } from '../player/bodyPress'
 import {
   bodyExtent, posedPoints, MAX_POINTS, type BodyExtent, type Bumpable, type Bump,
 } from '../player/bodyContact'
@@ -50,6 +51,15 @@ import { inReserved } from './grid'
   flop a car does when charged, tackled or landed on. A body lying in the
   road is trampled: walked through, it takes a kick. All of it is local
   session state, so this client is the authority and nothing travels.
+
+  **And they bump each other** (`player/bodyPress.ts`, once a frame after
+  everyone has moved): two walks that meet split the overlap and veer off,
+  a heap lying in the way is shoved aside particle by particle, and a body
+  on the physgun is a club rather than a ghost: the beam does not give, so
+  whoever it is pushed into takes the whole push, is staggered off by it,
+  and past a swing's worth of speed is knocked flat. Without it a held body
+  could be pushed straight into a bystander until one bean stood inside the
+  other.
 
   **The pavement is the path.** There is no navmesh and there should not be
   one: `settlements.ts` already answers "is this the sidewalk slab" for any
@@ -147,6 +157,8 @@ const SIDESTEP = 3
     the limb (the rest of the heap gets a quarter of it through rig.hit) */
 const SLAP = 3.2
 const SLAP_GAP = 0.14
+/** how far a body walking into another turns off it, radians */
+const VEER = 0.55
 /** how fast a stagger bleeds away, per second */
 const STAGGER_GRIP = 4.5
 /** a trample: the share of the walker's velocity a body lying underfoot is
@@ -254,6 +266,8 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
     fur: Math.floor(rnd() * FUR_SWATCHES.length) % FUR_SWATCHES.length,
     // a headset on about one in five
     phones: rnd() < 0.2 ? 1 + (Math.floor(rnd() * (PHONES.length - 1)) % (PHONES.length - 1)) : 0,
+    // sunglasses on about one in six
+    shades: rnd() < 0.16 ? 1 : 0,
   })
 
   /* the world's solids, wrapped for `blockedAt`. Infinite bounds: those are
@@ -429,6 +443,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       Out in the countryside every one of them fails every frame, and
       `findSpot` is 26 tries at four field lookups each */
   let retryIn = 0
+  const press = createBodyPress()
 
   /** the crowd's tick count, which is what a body's cached points are stamped with */
   let tick = 0
@@ -580,6 +595,8 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
         animateWalking(p)
       }
     }
+    // everyone has moved: now they meet each other (see the header)
+    press.step(pressHost)
   }
 
   const getup = new THREE.Vector3()
@@ -678,6 +695,20 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
 
   /* ---- bumping into people (player/bodyContact.ts) ---------------------- */
   const chest = new THREE.Vector3()
+  /** move a standing body by (dx, dz), unless there is a wall there: the
+      same test their own walk steers by, so a body is never pushed into a
+      shop */
+  const nudge = (p: Person, dx: number, dz: number) => {
+    const x = p.x + dx
+    const z = p.z + dz
+    const y = groundAt(x, z)
+    if (blockedAt(x, z, y, y + BODY_H, solids, 0.5)) return false
+    p.x = x
+    p.z = z
+    p.y = y
+    p.group.position.set(x, y, z)
+    return true
+  }
   const bumpable: Bumpable = {
     get size() {
       return crowd.length
@@ -715,18 +746,7 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
       }
       return p.npts
     },
-    nudge: (i, dx, dz) => {
-      const p = crowd[i]
-      const x = p.x + dx
-      const z = p.z + dz
-      const y = groundAt(x, z)
-      if (blockedAt(x, z, y, y + BODY_H, solids, 0.5)) return false
-      p.x = x
-      p.z = z
-      p.y = y
-      p.group.position.set(x, y, z)
-      return true
-    },
+    nudge: (i, dx, dz) => nudge(crowd[i], dx, dz),
     hit: (i: number, b: Bump) => {
       const p = crowd[i]
       if (b.kind === 'lean') {
@@ -802,6 +822,68 @@ export function buildPedestrians(opts: BuildOpts): PedestrianHandles {
         n++
       }
       return n
+    },
+  }
+
+  /* ---- bumping into each other (player/bodyPress.ts) -------------------- */
+  const pressHost: PressHost = {
+    get size() {
+      return crowd.length
+    },
+    body: (i, out) => {
+      const p = crowd[i]
+      if (!p.live) return false
+      if (p.down) {
+        out.kind = 'heap'
+        out.cloud = p.rig.cloud
+        out.held = p.rig.held
+        return true
+      }
+      out.kind = 'stand'
+      out.cloud = null
+      out.held = false
+      out.x = p.x
+      out.z = p.z
+      out.feetY = p.y
+      out.vx = p.vx
+      out.vz = p.vz
+      out.radius = p.ext.radius
+      out.height = p.ext.height
+      return true
+    },
+    shove: (i, dx, dz) => nudge(crowd[i], dx, dz),
+    // carried off at least this fast along it: the stagger a walker's lean
+    // gives, topped up rather than stacked, so a body held against them for
+    // a second is walked back steadily rather than fired off
+    stagger: (i, vx, vz) => {
+      const p = crowd[i]
+      const k = Math.hypot(vx, vz)
+      if (k < 1e-4) return
+      const ux = vx / k
+      const uz = vz / k
+      const along = p.sx * ux + p.sz * uz
+      if (along >= k) return
+      p.sx += ux * (k - along)
+      p.sz += uz * (k - along)
+    },
+    knock: (i, vx, vy, vz, px, py, pz) => {
+      const p = crowd[i]
+      fell(p)
+      hit.impulse.set(vx, vy, vz).multiplyScalar(p.rig.mass)
+      hit.point.set(px, py, pz)
+      p.rig.hit(hit.impulse, hit.point)
+      p.airborne = true
+    },
+    // walking into somebody: turn off them, to whichever side takes the walk
+    // further from them (a head-on pair both turn the same way round and
+    // pass), and hold the new heading a moment
+    veer: (i, nx, nz) => {
+      const p = crowd[i]
+      if (p.settle > 0) return
+      const l = fwdX(p.yaw + VEER) * nx + fwdZ(p.yaw + VEER) * nz
+      const r = fwdX(p.yaw - VEER) * nx + fwdZ(p.yaw - VEER) * nz
+      p.yaw += l <= r ? VEER : -VEER
+      p.settle = 0.8
     },
   }
 

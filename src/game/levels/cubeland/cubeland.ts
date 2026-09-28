@@ -3,12 +3,10 @@ import {
   AIR, B, BLOCKS, BLOCK_BY_KEY, COBBLE, GRAVEL, LAVA_FLOW, OBSIDIAN, SAND, STONE, TNT, WATER, WATER_FLOW,
   blockKind, blockOfKind, paintTexture, type BlockDef,
 } from '../../sandbox/blocks'
-import { propMaterial } from '../../sandbox/art'
 import { KINDS } from '../../sandbox/kinds'
 import { blastThrow } from '../../sandbox/explosion'
 import { breakSound, impactSound } from '../../sandbox/impactSounds'
 import type { Prop, Sandbox } from '../../sandbox/sandbox'
-import type { BatchProxy } from '../../sandbox/batch'
 import { invalidateCollisionBoxes, makeCollisionSet, type Solid } from '../../physics/collision'
 import type { StepSurface } from '../../core/sfx'
 import { gfx } from '../../world/quality'
@@ -16,8 +14,9 @@ import type { HandsHud, Level, LevelLightRig, LevelSpawn } from '../types'
 import { Biome, CHUNK, H, SEA, columnAt } from './gen'
 import { meshChunk, type MeshArrays } from './mesher'
 import { daylight, fadeClock, terrainMaterials } from './material'
+import { createHeldItem } from './held'
 import { PREBORN } from '../../world/fade'
-import { CHUNK_W, chunkKey, createVoxelStore, isSolid, type VoxelStore } from './world'
+import { CHUNK_W, chunkKey, createVoxelStore, isSolid, walkGrid, type VoxelStore } from './world'
 
 /*
   Cubeland: a world of blocks, generated the way the famous one is and
@@ -51,7 +50,9 @@ import { CHUNK_W, chunkKey, createVoxelStore, isSolid, type VoxelStore } from '.
     left click breaks it (a thud and chips in its own colours), right click
     places the block in hand against the face you are looking at, and the
     wheel steps along the hotbar. Picking a block in the catalogue puts it
-    in hand. Hold either button to keep going, as there.
+    in hand. Hold either button to keep going, as there. What is in hand is
+    drawn in the lower right, bobbing with the step and swinging on every
+    use, in the famous game's own pose (cubeland/held.ts).
   - **Blasts.** Any explosion in the sandbox (a rocket, a barrel, a lit TNT
     block) takes out a ball of blocks, softer ones further, bedrock and
     obsidian never, and throws a couple of dozen of them as real props, the
@@ -169,6 +170,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
 
   const toBlock = (x: number, y: number, z: number, out: THREE.Vector3) =>
     out.set(Math.floor((x - CUBE_ORIGIN.x) / B), Math.floor(y / B), Math.floor((z - CUBE_ORIGIN.z) / B))
+  const strikeAt = new THREE.Vector3()
   const blockAt = (x: number, y: number, z: number) =>
     store.get(Math.floor((x - CUBE_ORIGIN.x) / B), Math.floor(y / B), Math.floor((z - CUBE_ORIGIN.z) / B))
   /** a block's centre, world units */
@@ -192,7 +194,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
   }
   const placeMesh = (m: THREE.Mesh, cx: number, cz: number) => {
     m.position.set(CUBE_ORIGIN.x + cx * CHUNK_W, 0, CUBE_ORIGIN.z + cz * CHUNK_W)
-    m.scale.setScalar(B / 8)
+    m.scale.setScalar(B / 16)
     m.updateMatrix()
     m.matrixAutoUpdate = false
     m.updateMatrixWorld(true)
@@ -253,6 +255,8 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     maxZ: CUBE_ORIGIN.z + WORLD_R * CHUNK_W - 1,
   }
   const collision = makeCollisionSet(bounds, boxes)
+  // ...and the blocks themselves, which the walk sweeps through first
+  collision.voxels = walkGrid(store)
   let boxAt = { cx: NaN, cz: NaN }
   let boxesStale = true
   const refreshBoxes = (cx: number, cz: number) => {
@@ -532,17 +536,24 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
     }
   }
 
+  /** a TNT block lit where it stands: it pops loose with its fuse burning,
+      whether it was punched or shot */
+  const lightTnt = (bx: number, by: number, bz: number) => {
+    if (!sb) return
+    edit(bx, by, bz, AIR)
+    const pid = spawnLoose(BLOCKS[TNT], bx, by, bz, tmp.set(0, 5, 0), undefined, false)
+    if (pid >= 0) sb.ignite(pid)
+    unsupported(bx, by, bz, false)
+    wakeAround(bx, by, bz)
+  }
+
   const breakBlock = (bx: number, by: number, bz: number) => {
     const id = store.get(bx, by, bz)
     const def = BLOCKS[id]
     if (!id || def.liquid || def.hardness === Infinity) return false
     if (id === TNT && sb) {
       // punched TNT is lit, not broken
-      edit(bx, by, bz, AIR)
-      const pid = spawnLoose(def, bx, by, bz, tmp.set(0, 5, 0), undefined, false)
-      if (pid >= 0) sb.ignite(pid)
-      unsupported(bx, by, bz, false)
-      wakeAround(bx, by, bz)
+      lightTnt(bx, by, bz)
       return true
     }
     edit(bx, by, bz, AIR)
@@ -640,44 +651,14 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
   o.trackDisposable(outline.material as THREE.Material)
   root.add(outline)
 
-  // the block in hand, drawn in front of everything like the viewmodel is
-  // (its depth squeezed toward the near plane, see tools/viewmodel.ts)
-  const heldMat = propMaterial().clone()
-  heldMat.onBeforeCompile = (shader) => {
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <project_vertex>',
-      '#include <project_vertex>\n  gl_Position.z = -gl_Position.w + (gl_Position.z + gl_Position.w) * 0.25;',
-    )
-  }
-  heldMat.customProgramCacheKey = () => 'cube-held'
-  o.trackDisposable(heldMat)
-  const held = new THREE.Mesh(new THREE.BufferGeometry(), heldMat)
-  held.name = 'cube-held'
-  held.userData.dynamic = true
-  held.frustumCulled = false
-  held.castShadow = false
-  root.add(held)
-  let heldKind = ''
-  const heldGeo = (kind: string) => {
-    const k = KINDS[kind]
-    const m = k?.mesh?.() as (BatchProxy & THREE.Mesh) | undefined
-    return m ? ((m as BatchProxy).geo ?? (m as THREE.Mesh).geometry ?? null) : null
-  }
-  const setHeld = (kind: string) => {
-    if (kind === heldKind) return
-    heldKind = kind
-    const g = heldGeo(kind)
-    if (g) held.geometry = g
-  }
-  setHeld(hud.kinds[0])
-  let swing = 0
+  // the block in hand, drawn and moved as the famous game does it (held.ts)
+  const held = createHeldItem({ store, blockOf: blockOfKind, trackDisposable: o.trackDisposable, first: hud.kinds[0] })
+  root.add(held.mesh)
   let fireT = 0
   let altT = 0
   let fireWas = false
   let altWas = false
   let wasActive = false
-  const qTmp = new THREE.Quaternion()
-  const eTmp = new THREE.Euler()
   const dirTmp = new THREE.Vector3()
 
   const hands = {
@@ -685,7 +666,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       const cam = f.camera
       if (!f.active) {
         outline.visible = false
-        held.visible = false
+        held.hide()
         wasActive = false
         fireWas = altWas = false
         return
@@ -714,9 +695,11 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       fireT -= f.dt
       altT -= f.dt
       if (f.fire && h && (!fireWas || fireT <= 0)) {
-        if (breakBlock(h.x, h.y, h.z)) swing = 1
+        if (breakBlock(h.x, h.y, h.z)) held.swing()
         fireT = REPEAT
       }
+      // (a punch at the air still swings, as there)
+      else if (f.fire && !fireWas && !h) held.swing()
       // right: place against the face
       if (f.alt && h && (!altWas || altT <= 0)) {
         altT = REPEAT
@@ -737,7 +720,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
             f.feetY < (py + 1) * B && cam.position.y + 0.2 > py * B
           if (free && py >= 0 && py < H && (!def.solid || !body)) {
             if (edit(px, py, pz, def.id) >= 0) {
-              swing = 1
+              held.swing()
               centre(px, py, pz, tmp)
               impactSound(def.sound, 0.55, def.mass, tmp.x, tmp.y, tmp.z)
               wakeAround(px, py, pz)
@@ -747,24 +730,15 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       }
       fireWas = f.fire
       altWas = f.alt
-      // the block in hand, bottom right, swinging down on every use
-      setHeld(hud.kinds[hud.sel])
-      held.visible = f.firstPerson
-      if (held.visible) {
-        swing = Math.max(0, swing - f.dt * 5)
-        const s = Math.sin(swing * Math.PI)
-        // sized off the lens, so it sits in the same corner at any fov
-        const d = 0.5
-        const k = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2) * d
-        tmp.set(0.58 * k * cam.aspect, -0.6 * k - s * 0.12 * k, -d + s * 0.06).applyQuaternion(cam.quaternion).add(cam.position)
-        held.position.copy(tmp)
-        eTmp.set(-0.2 - s * 0.7, 0.62, 0.06)
-        qTmp.setFromEuler(eTmp)
-        held.quaternion.copy(cam.quaternion).multiply(qTmp)
-        held.scale.setScalar(0.17 * k)
-        held.updateMatrix()
-        held.updateMatrixWorld()
-      }
+      // the block in hand, lower right, bobbing with the step, trailing a
+      // turn and swinging on every use (held.ts)
+      if (f.firstPerson) {
+        toBlock(cam.position.x, cam.position.y, cam.position.z, tmp)
+        held.update({
+          camera: cam, dt: f.dt, kind: hud.kinds[hud.sel], bx: tmp.x, by: tmp.y, bz: tmp.z,
+          gait: f.gait ?? 0, stride: f.stride ?? 0, grounded: f.grounded ?? true,
+        })
+      } else held.hide()
     },
     choose: (kind: string) => {
       const def = blockOfKind(kind)
@@ -1117,7 +1091,7 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
       root.visible = false
       o.venue('earth')
       outline.visible = false
-      held.visible = false
+      held.hide()
     },
     update: (dt, p) => {
       const cx = chunkOf(p.x)
@@ -1184,6 +1158,12 @@ export function buildCubeland(o: CubelandOpts): Cubeland {
           const lz = e.z - CUBE_ORIGIN.z
           if (Math.abs(lx) > WORLD_R * CHUNK_W + 50 || Math.abs(lz) > WORLD_R * CHUNK_W + 50) return
           carve(e.x, e.y, e.z, e.power, e.radius)
+        })
+        // a bullet or a bolt into a TNT block lights it, as a punch does:
+        // the block is the one just past the face the shot met
+        s.onStrike((at, dir) => {
+          const c = toBlock(at.x + dir.x * 0.05, at.y + dir.y * 0.05, at.z + dir.z * 0.05, strikeAt)
+          if (store.get(c.x, c.y, c.z) === TNT) lightTnt(c.x, c.y, c.z)
         })
         s.onRemove((p) => {
           falling.delete(p.id)

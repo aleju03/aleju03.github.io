@@ -409,6 +409,35 @@ const foliage = (p: Px, cols: number[], holes: number) => {
     for (let x = 0; x < TEX_SIZE; x++) if (p.rnd() < holes) p.set(x, y, 0, 0)
 }
 
+/** a pail from the side, its liquid showing in the mouth: how a bucket is
+    drawn as an item, a flat painting with thickness rather than a block */
+const bucket = (p: Px, liquid: number[]) => {
+  p.clear()
+  const RIM = 0x44484c
+  const BODY = 0xa4aab0
+  const LIGHT = 0xd4d9dd
+  const SHADE = 0x7c8288
+  const pour = () => liquid[Math.floor(p.rnd() * liquid.length)]
+  for (let x = 4; x < 12; x++) p.set(x, 2, RIM)
+  p.set(3, 3, RIM)
+  p.set(12, 3, RIM)
+  for (let x = 4; x < 12; x++) p.set(x, 3, pour())
+  p.set(2, 4, RIM)
+  p.set(13, 4, RIM)
+  for (let x = 3; x < 13; x++) p.set(x, 4, pour())
+  // the lip, then the pail tapering to its foot
+  for (let x = 2; x < 14; x++) p.set(x, 5, x === 2 || x === 13 ? RIM : LIGHT)
+  for (let y = 6; y < 14; y++) {
+    const i = Math.floor((y - 6) / 3)
+    const l = 3 + i
+    const r = 12 - i
+    p.set(l, y, RIM)
+    p.set(r, y, RIM)
+    for (let x = l + 1; x < r; x++) p.set(x, y, x === l + 1 ? LIGHT : x >= r - 2 ? SHADE : BODY)
+  }
+  for (let x = 5; x <= 10; x++) p.set(x, 14, RIM)
+}
+
 const wools: Record<string, (p: Px) => void> = {}
 for (const [k, , , col] of WOOLS) {
   const c = hex(col)
@@ -822,6 +851,10 @@ const PAINTERS: Record<string, (p: Px) => void> = {
     p.speck(0x9a2a04, 0.05)
   },
   ...wools,
+  // (after the wools: nothing in the world is painted with these, they are
+  // the buckets as they are held, levels/cubeland/held.ts)
+  bucket_water: (p) => bucket(p, [0x3b6ed8, 0x4478e0, 0x6f9cf0]),
+  bucket_lava: (p) => bucket(p, [0xe86a14, 0xd4520c, 0xffc050]),
 }
 
 /** every texture name, in a fixed order: a layer of the terrain's array
@@ -852,6 +885,8 @@ const BACKING: Record<string, number> = {
   leaves: 0x2c521a, birch_leaves: 0x4a6a2e, spruce_leaves: 0x1f361d, glass: 0xa9c8d2,
   jungle_leaves: 0x1c4a0c, acacia_leaves: 0x3a4a10, dark_leaves: 0x1c3a0e, cherry_leaves: 0xb07090,
   tall_grass: 0x4f822a, poppy: 0x3f7a26, dandelion: 0x4a8a2a, dead_bush: 0x7a5a30,
+  // (the flame's tip leaves one pixel of its top row open)
+  torch: 0xffd060,
 }
 
 /* ---------------------------------------------------------- the props -- */
@@ -913,9 +948,13 @@ for (const b of BLOCKS) {
         .mesh()
     }
     if (b.shape === 'torch') {
+      // to the pixel (B / 16 = 0.125 a pixel): the painting's stick is
+      // columns 7 and 8 and its bottom ten rows, the flame the three above,
+      // so the cuts are exact sixteenths or they catch a transparent column
+      // (painted solid on the atlas) down the side of the stick
       return model()
-        .box([0, -0.2, 0], [0.26, 1.3, 0.26], { cell: cellName(b.side), sub: [0.43, 0, 0.57, 0.62] })
-        .box([0, 0.55, 0], [0.3, 0.3, 0.3], { cell: cellName(b.side), sub: [0.43, 0.62, 0.57, 0.8] })
+        .box([0, -0.1875, 0], [0.25, 1.25, 0.25], { cell: cellName(b.side), sub: [7 / 16, 0, 9 / 16, 10 / 16] })
+        .box([0, 0.625, 0], [0.25, 0.375, 0.25], { cell: cellName(b.side), sub: [7 / 16, 10 / 16, 9 / 16, 13 / 16] })
         .mesh()
     }
     return model()
@@ -930,7 +969,7 @@ for (const b of BLOCKS) {
   registerKind({
     id: blockKind(b),
     label: b.name.en.toLowerCase(),
-    shape: b.liquid ? { type: 'cylinder', r: 0.64, hh: 0.6 } : b.shape === 'torch' ? { type: 'box', hx: 0.15, hy: 0.78, hz: 0.15 } : { type: 'box', hx: h, hy: h, hz: h },
+    shape: b.liquid ? { type: 'cylinder', r: 0.64, hh: 0.6 } : b.shape === 'torch' ? { type: 'box', hx: 0.13, hy: 0.81, hz: 0.13 } : { type: 'box', hx: h, hy: h, hz: h },
     mass: b.mass,
     friction: 0.7,
     restitution: 0.05,

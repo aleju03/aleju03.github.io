@@ -31,7 +31,9 @@ import { seeded } from '../core/rand'
     target with its own strength. The get-up is built on it (the body hauls
     itself toward the standing pose under gravity, so it wobbles up rather
     than blending), and nothing stops a caller using it for anything else.
-  - `shift(d)` moves the whole cloud rigidly, velocities untouched.
+  - `shift(d)` moves the whole cloud rigidly, velocities untouched, and
+    `move(i, d)` one particle the same way (two bodies pushed apart by a
+    caller that sees both of them: player/bodyPress.ts).
 
   Contacts obey the rule in src/game/CLAUDE.md: a correction that moves a
   particle moves its previous position with it, or the lift becomes free
@@ -92,6 +94,10 @@ export interface Ragdoll {
   drive: (targets: THREE.Vector3[] | null, k?: Float32Array) => void
   /** move the whole cloud rigidly */
   shift: (d: THREE.Vector3) => void
+  /** move one particle, velocity untouched: its previous position goes with
+      it (see the header), so a contact settled from outside the sim, by a
+      caller pushing two bodies apart, is a displacement and not a launch */
+  move: (i: number, d: THREE.Vector3) => void
 }
 
 const SUBSTEP = 1 / 120
@@ -366,6 +372,10 @@ export function createRagdoll(
         pts[i].add(d)
         prev[i].add(d)
       }
+    },
+    move: (i, d) => {
+      pts[i].add(d)
+      prev[i].add(d)
     },
   }
 }

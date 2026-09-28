@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import {
   drain, ellipsoid, roundCone, segDist, smax, smin, surfaceNetsSteps, type Field,
 } from './isoSurface'
+import { BEAVER, HOTDOG, type PlayerLook } from './look'
 
 /*
   The drawing of the player character: one skinned surface, built once per
@@ -53,8 +54,9 @@ import {
   painted in the fragment shader (`bodyMaterial.ts`) from the vertex's bind
   position, because a painted shape on a smooth surface is crisp at any
   resolution and costs no variant. A variant is a (headgear, build, gear)
-  triple, gear being the two things worn with any hat (the beaver's tail,
-  ears and snout, and the headphones: see GEAR_BEAVER); the headgear and
+  triple, gear being the things worn with any hat (the beaver's tail, ears
+  and snout, the hot dog's bun and mustache, the headphones and the
+  sunglasses: see GEAR_BEAVER); the headgear and
   gear pieces are their own closed fields polygonized at a finer step and
   concatenated into the same buffer, so a body is still one draw call
   whatever it wears.
@@ -277,10 +279,18 @@ export const ROLE = {
   PHONES: 14,
   /** the headphones' metal: forks, sliders, the rings and logos on the cups */
   PHONES_METAL: 15,
+  /** the hot dog's bun */
+  BUN: 17,
+  /** the sunglasses' frame */
+  SHADES: 18,
+  /** the sunglasses' lenses, printed with a glint */
+  LENS: 19,
 } as const
 /** no longer stamped on any vertex (the lens hides the whole body), kept so
     the role layout is stable */
 export const HEAD_FLAG = 16
+/** how many roles there are: the length of the material's palette */
+export const ROLE_COUNT = 20
 
 /* ------------------------------------------------------------- the bean -- */
 
@@ -1209,11 +1219,18 @@ const hatBuild = (fr: Frame, kind: number): HatBuild => {
 /* -------------------------------------------------- worn with any hat -- */
 
 /** what a variant wears besides its headgear, as bits: the beaver's
-    modelled parts and the headphones. Both go with any hat, which is why
-    they are not hats */
+    modelled parts, the headphones, the hot dog's bun and mustache and the
+    sunglasses. All of them go with any hat, which is why they are not hats */
 export const GEAR_BEAVER = 1
 export const GEAR_PHONES = 2
-export const GEAR_COUNT = 4
+export const GEAR_HOTDOG = 4
+export const GEAR_SHADES = 8
+export const GEAR_COUNT = 16
+/** the gear a look wears: what picks its geometry along with its headgear
+    and build */
+export const lookGear = (l: PlayerLook): number =>
+  (l.costume === BEAVER ? GEAR_BEAVER : 0) | (l.costume === HOTDOG ? GEAR_HOTDOG : 0) |
+  ((l.phones ?? 0) > 0 ? GEAR_PHONES : 0) | (l.shades ? GEAR_SHADES : 0)
 
 /** how far along a ray from o (direction d, unit) the outermost inside of
     a field lies, marching in from `far` and then bisecting: the outside of
@@ -1650,11 +1667,180 @@ const phonesPieces = (fr: Frame, hug: Field, bandZ: number): PieceJob[] => {
   })
 }
 
+/*
+  The hot dog, after agustin51's salchicha: the bean is the sausage (the
+  body colour, printed with a mustard squiggle down its front by the
+  material, costume 6), standing in a tall bun that wraps its back and
+  sides, with a big handlebar mustache under its nose.
+
+  The bun is the bean's own field pushed out into a thick layer, puffier
+  across the middle, cut off at the front behind the arms (a hanging arm
+  and its mitten stand clear in front of it; a swing back goes into it, as
+  it would into a real bun), a little over the seat at the bottom, and at
+  the top along a line that rises at the sides and dips at the back, so from
+  the front it is two halves either side of the sausage and the sausage's
+  top stands out of it. It is weighted off the skin like any hood, so it
+  bends and tumbles with the bean it holds. The mustache is a chain of round
+  cones pressed into the face below the eyes, bushy in the middle and curled
+  up at the tips, in the detail colour (the mustard's); under the space
+  helmet (`hug` null) there is no mustache, since the visor covers the face.
+*/
+const BUN_LO = 0.5
+/** the bun's rim at the sides, and how far it dips at the back: the
+    material lightens the crust toward that line */
+export const BUN_HI = 1.98
+export const BUN_DIP = 0.18
+const BUN_CUT = -0.2
+const hotdogPieces = (fr: Frame, hug: Field | null): PieceJob[] => {
+  const { bd } = fr
+  const jobs: PieceJob[] = []
+  const T0 = 0.16
+  const TB = 0.08
+  const G = 0.012
+  const bun: Field = (x, y, z) => {
+    const u = Math.max(0, Math.min(1, (y - BUN_LO) / (BUN_HI - BUN_LO)))
+    const t = T0 + TB * Math.sin(Math.PI * u)
+    let d = Math.abs(fr.bean(x, y, z) - G - t / 2) - t / 2
+    d = smax(d, z - BUN_CUT, 0.12)
+    d = smax(d, y - (BUN_HI - BUN_DIP * Math.exp(-((x / 0.28) ** 2))), 0.1)
+    return smax(d, BUN_LO - y, 0.1)
+  }
+  const R = bd.a + 0.45
+  jobs.push(gearPiece(fr, bun, [-R, BUN_LO - 0.15, -(bd.a * bd.zs + 0.45)], [R, BUN_HI + 0.1, BUN_CUT + 0.15], ROLE.BUN, undefined, 0.04))
+  if (!hug) return jobs
+
+  const { w, h, y: fy } = fr.face
+  const my = fy - 0.56 * h
+  const front = (x: number, y: number) => outermost(fr.bean, x, y, 0, 0, 0, 1, 1.2)
+  // along one half, from the middle out: x as a share of the face's
+  // half-width, height over the mustache's line, radius
+  const LINE: Array<[number, number, number]> = [
+    [0, 0.012, 0.046], [0.22, 0, 0.06], [0.46, -0.012, 0.052], [0.66, -0.006, 0.036], [0.8, 0.032, 0.025], [0.77, 0.068, 0.017],
+  ]
+  jobs.push(...lazyJobs(1, function* () {
+    const cones: Field[] = []
+    for (const s of [1, -1]) {
+      yield
+      const P = LINE.map(([fx, dy, r]) => {
+        const x = s * fx * w
+        const y = my + dy
+        return { x, y, z: front(x, y) + 0.45 * r, r }
+      })
+      for (let i = 0; i + 1 < P.length; i++) {
+        const a = P[i]
+        const b = P[i + 1]
+        cones.push(roundCone(a.x, a.y, a.z, b.x, b.y, b.z, a.r, b.r))
+      }
+    }
+    const f: Field = (x, y, z) => {
+      let d = cones[0](x, y, z)
+      for (let i = 1; i < cones.length; i++) d = smin(d, cones[i](x, y, z), 0.025)
+      return d
+    }
+    return f
+  }, (f) => gearPiece(fr, f, [-w - 0.1, my - 0.12, 0.1], [w + 0.1, my + 0.14, 0.9], ROLE.TRIM, undefined, 0.018)))
+  return jobs
+}
+
+/*
+  The sunglasses: a pair of black wayfarers, worn with anything but the
+  space helmet. Two big lenses over the eyes, each a trapezoid wider at the
+  top and flared up at the outer corner, set in a thick black frame whose
+  brow is heavier than its rim, a short bridge between them, and a temple
+  from each outer corner back along the side of whatever the head is
+  wearing (`hug`: over a hood, under a headset's cups). The front is
+  curved a little round the face and set out from it by the deepest point
+  of the face under the lenses, so it clears the face window's lip on every
+  build. The lenses sit a little back in the frame, which is what gives the
+  look's outline a crease to draw round them, and are dark slate rather
+  than black, two posterize steps off the frame, with a glint the material
+  prints across them. Rigid on the head bone, like the headset.
+*/
+const shadesPieces = (fr: Frame, hug: Field): PieceJob[] => {
+  const { w, h, y: fy } = fr.face
+  const cx = 0.4 * w
+  const cy = fy + 0.07 * h
+  const lw = 0.3 * w
+  const lh = 0.32 * h
+  /** how far the front wraps back round the face with distance from the nose */
+  const WRAP = 0.8
+  /** the frame's half-depth and the lens's */
+  const TF = 0.026
+  const TL = 0.01
+  const HB = B.HEAD
+  // a lens outline, in the face's plane: negative inside. qx is outward from
+  // the lens's own centre, so both sides share it
+  const lens2 = (x: number, y: number) => {
+    const qx = Math.abs(x) - cx
+    const qy = y - cy
+    const outer = qx - (lw - 0.3 * (lh - qy))
+    const inner = -qx - (lw - 0.05 * (lh - qy))
+    const top = qy - lh - 0.035 * Math.max(0, qx / lw)
+    const bottom = -qy - lh
+    const rr = 0.028
+    const a = Math.max(outer, inner) + rr
+    const b = Math.max(top, bottom) + rr
+    return Math.min(Math.max(a, b), 0) + len(Math.max(a, 0), Math.max(b, 0)) - rr
+  }
+  /** a 2D outline extruded `t` either side of the curved front, edges rounded */
+  const slab = (d2: number, x: number, z: number, z0: number, t: number, rr: number) => {
+    const a = d2 + rr
+    const b = Math.abs(z - (z0 - WRAP * x * x)) - t + rr
+    return Math.min(Math.max(a, b), 0) + len(Math.max(a, 0), Math.max(b, 0)) - rr
+  }
+  interface Rig {
+    frame: Field
+    lens: Field
+    box: Box
+  }
+  return lazyJobs<Rig>(2, function* () {
+    // the front stands off the deepest point of the face under the lenses
+    let z0 = -Infinity
+    for (let i = 0; i <= 6; i++) {
+      yield
+      const x = cx - lw - 0.03 + ((2 * lw + 0.06) * i) / 6
+      for (let j = 0; j <= 4; j++) {
+        const y = cy - lh - 0.03 + ((2 * lh + 0.06) * j) / 4
+        z0 = Math.max(z0, outermost(hug, x, y, 0, 0, 0, 1, 1.4) + 0.022 + TF + WRAP * x * x)
+      }
+    }
+    const brow = (y: number) => 0.022 + 0.022 * smooth(cy + 0.2 * lh, cy + lh, y)
+    const bridge = roundCone(-(cx - lw) - 0.01, cy + 0.5 * lh, z0 + 0.004, cx - lw + 0.01, cy + 0.5 * lh, z0 + 0.004, 0.022, 0.022)
+    // the temples: from the hinge at each outer corner, over the side of
+    // the head at the brow's height, their ends sunk into it
+    const yT = cy + 0.55 * lh
+    const temples: Field[] = []
+    for (const s of [1, -1]) {
+      yield
+      const hx = s * (cx + lw + 0.005)
+      const H = new THREE.Vector3(hx, yT, z0 - WRAP * hx * hx - 0.012)
+      const at = (th: number, off: number) => {
+        const dx = s * Math.sin(th)
+        const dz = Math.cos(th)
+        const r = outermost(hug, 0, yT, 0, dx, 0, dz, 1.4)
+        return new THREE.Vector3(dx * (r + off), yT, dz * (r + off))
+      }
+      temples.push(tube([H, at(0.95, 0.034), at(1.25, 0.022), at(1.5, -0.015)], 0.018))
+    }
+    const frame: Field = (x, y, z) => {
+      const d2 = lens2(x, y)
+      const ring = Math.max(d2 - brow(y), -d2)
+      return Math.min(slab(ring, x, z, z0, TF, 0.01), bridge(x, y, z), temples[0](x, y, z), temples[1](x, y, z))
+    }
+    // a hair into the frame all round, so there is no gap, and set back
+    const lens: Field = (x, y, z) => slab(lens2(x, y) - 0.006, x, z + 0.012, z0, TL, 0.006)
+    // wide enough for a temple over a hood, which is the widest the head gets
+    const X = fr.rx(yT) + 0.14
+    const box: Box = [[-X, cy - lh - 0.1, -0.1], [X, cy + lh + 0.1, z0 + 0.1]]
+    return { frame, lens, box }
+  }, (r, i) => gearPiece(fr, i ? r.lens : r.frame, r.box[0], r.box[1], i ? ROLE.LENS : ROLE.SHADES, undefined, 0.012, HB))
+}
+
 /* ------------------------------------------------------------ variants -- */
 
 /** the outfits (`look.ts`'s COSTUMES) and the faces are painted by the
     material from uniforms, not drawn: see bodyMaterial.ts */
-export const COSTUME_COUNT = 6
+export const COSTUME_COUNT = 7
 export const FACE_COUNT = 5
 
 /** one geometry per (headgear, build, gear), built on first use and shared
@@ -1662,11 +1848,13 @@ export const FACE_COUNT = 5
     between these: same attribute layout, same material, so a swap is a
     buffer rebind and never a relink. Never dispose them: module state.
     The first HAT_COUNT * BUILD_COUNT slots are gear 0, the ones the idle
-    warm-up builds; a beaver or a headset is built when somebody wears one */
+    warm-up builds; a beaver, a hot dog, a headset or a pair of sunglasses
+    is built when somebody wears one */
 const SHARED: Array<THREE.BufferGeometry | null> = new Array(HAT_COUNT * BUILD_COUNT * GEAR_COUNT).fill(null)
-/** the helmet takes no headphones, so its phones variants are its bare ones */
+/** the helmet takes no headphones and no sunglasses, so those variants of
+    it are its bare ones */
 const gearFor = (kind: number, gear: number) =>
-  (kind === HELMET ? gear & ~GEAR_PHONES : gear) & (GEAR_COUNT - 1)
+  (kind === HELMET ? gear & ~(GEAR_PHONES | GEAR_SHADES) : gear) & (GEAR_COUNT - 1)
 const keyOf = (kind: number, b: number, gear: number) => (gearFor(kind, gear) * HAT_COUNT + kind) * BUILD_COUNT + b
 /** how long the last variant took to build, ms (the measure prints it) */
 export let lastBuildMs = 0
@@ -1683,7 +1871,9 @@ function* variantSteps(kind: number, b: number, gear = 0): Generator<void, THREE
   const hat = hatBuild(fr, kind)
   const jobs = [...hat.jobs]
   if (gear & GEAR_BEAVER) jobs.push(...beaverPieces(fr, hat.hug))
+  if (gear & GEAR_HOTDOG) jobs.push(...hotdogPieces(fr, hat.hug))
   if (gear & GEAR_PHONES && hat.hug) jobs.push(...phonesPieces(fr, hat.hug, hat.bandZ))
+  if (gear & GEAR_SHADES && hat.hug) jobs.push(...shadesPieces(fr, hat.hug))
   for (const job of jobs) {
     const piece = yield* job()
     if (piece.idx.length) pieces.push(piece)
@@ -1776,7 +1966,7 @@ const enqueue = (kind: number, b: number, gear = 0) => {
   queue.push({ key, gen: variantSteps(kind, b, gear) })
 }
 /** the variant, if it is built; otherwise it is queued and this is null.
-    `gear` is GEAR_BEAVER | GEAR_PHONES */
+    `gear` is any of the GEAR_ bits (see `lookGear`) */
 export const requestBodyGeometry = (hat: number, buildIndex: number, gear = 0): THREE.BufferGeometry | null => {
   const kind = clampHat(hat)
   const b = clampBuild(buildIndex)

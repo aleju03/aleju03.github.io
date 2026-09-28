@@ -4,7 +4,7 @@ import {
   DESIGN_LENS, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../../game/player/playerBody'
 import { makeCollisionSet } from '../../game/physics/collision'
-import { GEAR_BEAVER, GEAR_PHONES, pumpBodyBuilds, requestBodyGeometry } from '../../game/player/bodyShape'
+import { lookGear, pumpBodyBuilds, requestBodyGeometry } from '../../game/player/bodyShape'
 import { makeGlowTexture } from '../../game/core/textures'
 import type { RagdollEnv } from '../../game/player/ragdoll'
 import { CIRCLED, INK, INK_SOFT, MARK } from './paper'
@@ -13,6 +13,8 @@ import {
   ACCENT_SWATCHES,
   BEAVER,
   FUR_SWATCHES,
+  HOTDOG,
+  dressHotdog,
   GLOW_SWATCHES,
   SHELL_SWATCHES,
   TRIM_SWATCHES,
@@ -101,11 +103,7 @@ const WARDROBE_BUILD_MS = 9
 /** is the geometry this look wears already built? (see bodyShape's queue:
     asking queues it, so a snapshot that is not ready now will be soon) */
 const geometryReady = (l: PlayerLook) =>
-  requestBodyGeometry(
-    l.hat ?? 0,
-    l.build ?? 0,
-    (l.costume === BEAVER ? GEAR_BEAVER : 0) | ((l.phones ?? 0) > 0 ? GEAR_PHONES : 0),
-  ) !== null
+  requestBodyGeometry(l.hat ?? 0, l.build ?? 0, lookGear(l)) !== null
 
 function BodyPreview({
   look,
@@ -658,6 +656,13 @@ export default function WorldIdentity({
 
   const dirty = draft.trim() !== name && draft.trim().length > 0
 
+  // an outfit put on over the rest of the look. The hot dog is the one
+  // exception: picked from another outfit it comes as the reference wears
+  // it (a red-orange sausage, mustard, sunglasses), and its snapshot shows
+  // it that way; the body and detail pots still repaint it afterwards
+  const outfitOn = (costume: number): PlayerLook =>
+    costume === HOTDOG && look.costume !== HOTDOG ? dressHotdog(look) : { ...look, costume }
+
   return (
     // no stage, no card, no field: the body stands on the screen and the
     // knobs are written beside it. On a narrow viewport the two stack and the
@@ -847,9 +852,9 @@ export default function WorldIdentity({
             onPick={(hat) => onLook({ ...look, hat })}
             onPeek={setPeek}
           />
-          {/* the headphones are worn over whatever the row above picked (the
-              helmet leaves them off), and the shape is the whole body: two
-              short rows, so they share a line */}
+          {/* the headphones and the sunglasses are worn over whatever the row
+              above picked (the helmet leaves them off), and the shape is the
+              whole body: three short rows, so they share a line */}
           <div className="flex flex-wrap gap-x-6 gap-y-3">
             <Snaps
               label={t.look.phones}
@@ -859,6 +864,16 @@ export default function WorldIdentity({
               variant={(phones) => ({ ...look, phones })}
               store={thumbs}
               onPick={(phones) => onLook({ ...look, phones })}
+              onPeek={setPeek}
+            />
+            <Snaps
+              label={t.look.shades}
+              names={t.look.shadesKinds}
+              value={look.shades ? 1 : 0}
+              frame="head"
+              variant={(shades) => ({ ...look, shades })}
+              store={thumbs}
+              onPick={(shades) => onLook({ ...look, shades })}
               onPeek={setPeek}
             />
             <Snaps
@@ -877,9 +892,9 @@ export default function WorldIdentity({
             names={t.look.costumes}
             value={look.costume}
             frame="body"
-            variant={(costume) => ({ ...look, costume })}
+            variant={outfitOn}
             store={thumbs}
-            onPick={(costume) => onLook({ ...look, costume })}
+            onPick={(costume) => onLook(outfitOn(costume))}
             onPeek={setPeek}
           />
         </div>

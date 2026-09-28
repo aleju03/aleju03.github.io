@@ -39,11 +39,17 @@ import { BIOMES, CHUNK, H, type ChunkData } from './gen'
   water is a staircase of thin slabs, as there.
 
   **The format** is small because the whole visible world is in it:
-  positions and texture coordinates are 16-bit integers in eighths of a
-  block (the mesh is scaled by B/8), normals are bytes, colour is three
+  positions and texture coordinates are 16-bit integers in sixteenths of
+  a block (the mesh is scaled by B/16), normals are bytes, colour is three
   bytes (at half scale, so a tint can go over one), and four more bytes are
   the texture layer, the flags (glows, is a liquid, is flowing), the sky
-  light and the block light: about twenty-two bytes a vertex.
+  light and the block light: about twenty-two bytes a vertex. Sixteenths
+  because that is one pixel of a painting: in eighths a torch's two-pixel
+  stick (columns 7 and 8) rounded to columns 8 and 9, half of every face
+  sampled the transparent column beside it and was discarded, and a torch
+  drew as two thin splinters with a gap between them and its flame
+  stretched a pixel too tall. Anything cut to the pixel (the torch, and
+  whatever small shape comes next) needs the pixel to be representable.
 */
 
 /* the region a chunk is meshed from: itself and the eight round it, which
@@ -112,8 +118,9 @@ const WHITE: [number, number, number] = [1, 1, 1]
 
 const AO = [0.5, 0.68, 0.84, 1]
 /** sky light 0..15 to a brightness (material.ts undoes exactly this to find
-    the albedo block light shines on: keep the two in step) */
-const LIGHT = Array.from({ length: 16 }, (_, l) => 0.1 + 0.9 * Math.pow(l / 15, 1.5))
+    the albedo block light shines on: keep the two in step; held.ts lights
+    the block in hand on it too) */
+export const LIGHT = Array.from({ length: 16 }, (_, l) => 0.1 + 0.9 * Math.pow(l / 15, 1.5))
 
 /** the flags byte */
 const F_GLOW = 1
@@ -166,14 +173,14 @@ const makeStore = () => {
       layer: number, flags: number, sky: number, block: number,
     ) => {
       if (n >= cap) grow()
-      pos[n * 3] = Math.round(x * 8)
-      pos[n * 3 + 1] = Math.round(y * 8)
-      pos[n * 3 + 2] = Math.round(z * 8)
+      pos[n * 3] = Math.round(x * 16)
+      pos[n * 3 + 1] = Math.round(y * 16)
+      pos[n * 3 + 2] = Math.round(z * 16)
       nor[n * 3] = nx * 127
       nor[n * 3 + 1] = ny * 127
       nor[n * 3 + 2] = nz * 127
-      tex[n * 2] = Math.round(u * 8)
-      tex[n * 2 + 1] = Math.round(v * 8)
+      tex[n * 2] = Math.round(u * 16)
+      tex[n * 2 + 1] = Math.round(v * 16)
       // at half scale: a biome's tint may lift a channel over 1, and the
       // material doubles it back (material.ts)
       col[n * 3] = Math.min(255, Math.round(r * 127.5))
@@ -579,9 +586,13 @@ const torch = (id: number, x: number, y: number, z: number, i: number) => {
     if (f === 2) continue
     boxFace(solidStore, f, x + a, y, z + a, x + b, y + 10 / 16, z + b, col, layer, 0, sky, bl[i], [a, 6 / 16, b, 1])
   }
+  // the flame's sides are its three rows of the painting (the tip's lone
+  // pixel leaves a notch); its top is the solid two by two under the tip,
+  // or the cap would have a hole in it onto the culled inside
   for (let f = 0; f < 6; f++) {
     if (f === 3) continue
-    boxFace(solidStore, f, x + a, y + 10 / 16, z + a, x + b, y + 13 / 16, z + b, col, layer, F_GLOW, sky, 15, [a, 3 / 16, b, 6 / 16])
+    const uv = f === 2 ? [a, 4 / 16, b, 6 / 16] : [a, 3 / 16, b, 6 / 16]
+    boxFace(solidStore, f, x + a, y + 10 / 16, z + a, x + b, y + 13 / 16, z + b, col, layer, F_GLOW, sky, 15, uv)
   }
 }
 

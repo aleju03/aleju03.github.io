@@ -2,11 +2,11 @@ import * as THREE from 'three'
 import { createRagdoll, type RagdollEnv } from './ragdoll'
 import { supportY } from '../physics/collision'
 import { seeded } from '../core/rand'
-import { BEAVER, DEFAULT_LOOK, type PlayerLook } from './look'
+import { DEFAULT_LOOK, type PlayerLook } from './look'
 import {
   B, BODY_Y0, BONE_COUNT, buildGirth, BONE_REST, CROWN_OFF, EYE_OFF, HELPERS, HIP_X, HIP_Y,
   NECK_OFF, SHIN, THIGH, WAIST_OFF, bindMatrixWorld, fallbackBodyGeometry, requestBodyGeometry,
-  tickBodyBuilds, SHOULDER_X, SHOULDER_OFF, UARM, FARM, GEAR_BEAVER, GEAR_PHONES,
+  tickBodyBuilds, SHOULDER_X, SHOULDER_OFF, UARM, FARM, lookGear,
 } from './bodyShape'
 import { makeBodyMaterial } from './bodyMaterial'
 import { emoteDef, emoteFrame, makeEmoteFrame } from './emotes'
@@ -158,6 +158,11 @@ import { createSelfContact, type SelfContact } from './selfContact'
     picked up by an ankle is a ragdoll's whole purpose. `grab(i, null)` lets
     go; a held body never counts as settled.
   - `mass`: what `hit` divides an impulse by.
+  - `cloud` and `held`: every particle of the heap (the thirteen limbs plus
+    the belly and the pack), for a caller settling contacts *between* bodies
+    (player/bodyPress.ts), which no one rig can see. Meaningful while `down`;
+    a move carries the particle's previous position with it, so pushing two
+    heaps apart is never a launch.
 */
 
 export interface PlayerPose {
@@ -199,6 +204,23 @@ export interface PlayerPose {
       same yaw/pitch convention as the view (yaw 0 is -Z, pitch + is up) */
   pointYaw?: number
   pointPitch?: number
+}
+
+/** the whole ragdoll as a caller pushing two bodies apart sees it */
+export interface BodyCloud {
+  /** how many particles (limbs first, in `limbs` order) */
+  readonly count: number
+  /** collision radius and relative mass of particle i (world units) */
+  radius: (i: number) => number
+  mass: (i: number) => number
+  pos: (i: number, out: THREE.Vector3) => THREE.Vector3
+  /** units/s */
+  velocity: (i: number, out: THREE.Vector3) => THREE.Vector3
+  pinned: (i: number) => boolean
+  /** displace particle i, velocity untouched */
+  move: (i: number, d: THREE.Vector3) => void
+  /** add velocity to particle i, units/s */
+  kick: (i: number, dv: THREE.Vector3) => void
 }
 
 /** a point on the body a physics world, a grab beam or a camera can use */
@@ -281,6 +303,11 @@ export interface PlayerRig {
   grab: (i: number, target: THREE.Vector3 | null, k?: number) => void
   /** what `hit` divides an impulse by */
   readonly mass: number
+  /** the ragdoll's particles, read and pushed from outside (see the header).
+      Only meaningful while `down` */
+  readonly cloud: BodyCloud
+  /** something is holding a limb (a grab beam, a freeze pin) */
+  readonly held: boolean
   /** one frame of sitting: the slumped body breathes, the head lolls and
       turns, and the head, belly and mittens jiggle with whatever the seat is
       doing (they are simulated in world space, so a car's braking throws them
@@ -566,9 +593,10 @@ export function buildPlayerBody(
   // --- the mesh -------------------------------------------------------------
   const paint = makeBodyMaterial(look)
   // the geometry is the one for this body's headgear, build and gear (the
-  // beaver's modelled parts, the headphones); a repaint that changes any of
+  // beaver's modelled parts, the hot dog's bun and mustache, the headphones,
+  // the sunglasses); a repaint that changes any of
   // them swaps it (see setLook)
-  const gearOf = (l: PlayerLook) => (l.costume === BEAVER ? GEAR_BEAVER : 0) | ((l.phones ?? 0) > 0 ? GEAR_PHONES : 0)
+  const gearOf = lookGear
   let hatNow = look.hat ?? 0
   let buildNow = look.build ?? 0
   let gearNow = gearOf(look)
@@ -697,6 +725,16 @@ export function buildPlayerBody(
   const limbs: BodyLimb[] = LIMB_NAMES.map((name, index) => ({
     name, index, radius: radii[index],
   }))
+  const cloud: BodyCloud = {
+    count: P_COUNT,
+    radius: (i) => radii[i],
+    mass: (i) => MASSES[i],
+    pos: (i, out) => out.copy(rag.pts[i]),
+    velocity: (i, out) => rag.velocity(i, out),
+    pinned: (i) => rag.pinned(i),
+    move: (i, d) => rag.move(i, d),
+    kick: (i, dv) => rag.kick(i, dv),
+  }
 
   // --- state ----------------------------------------------------------------
   type Mode = 'up' | 'down' | 'rising'
@@ -2866,7 +2904,8 @@ export function buildPlayerBody(
       personaFor(next)
       // the outfit's print, the face and the colours are uniforms; the
       // headgear, the build and the gear (the beaver's tail, ears and snout,
-      // the headphones) are geometry
+      // the hot dog's bun and mustache, the headphones, the sunglasses) are
+      // geometry
       paint.setLook(next)
       paint.setFace(persona.face)
       const hat = next.hat ?? 0
@@ -2919,6 +2958,10 @@ export function buildPlayerBody(
       return actId ? actW * actF.k : 0
     },
     limbPos,
+    cloud,
+    get held() {
+      return grabs > 0
+    },
     nearestLimb: (p) => {
       let best = 0
       let bestD = Infinity

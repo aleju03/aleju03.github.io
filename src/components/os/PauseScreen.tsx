@@ -11,7 +11,6 @@ import {
 import { PROOF_H, PROOF_W, type PixelProofs } from './pixelProofs'
 import { VOICE_FILTERS, type VoiceFilter } from './voiceFilters'
 import type { GfxTier } from '../../game/world/quality'
-import { MAPS, type MapId } from '../../game/levels/maps'
 
 /*
   The pause screen is a sheet of paper pinned to the bedroom wall.
@@ -40,10 +39,9 @@ import { MAPS, type MapId } from '../../game/levels/maps'
     behind the selected row are authored SVG paths and lopsided radii, so
     nothing on the sheet is machine-straight except the type.
   - **You are a Polaroid** clipped to it. See `WorldIdentity.tsx`.
-  - **The maps are ticket stubs** tacked under the menu, one per place to
-    play (`game/levels/maps.ts`), the one you are on ringed in marker like
-    every other choice on the sheet. Picking another puts the sheet away
-    and runs the ordinary blackout cut there.
+  - **The maps are not on it.** Where to play is its own sheet
+    (`MapPicker.tsx`), with a picture of each; the menu carries one line,
+    "change map", that swaps this sheet for that one.
   - **The pixel size is three prints of your own view**, drawn by the game
     at each size the moment the settings page opens (`pixelProofs.ts`), and
     every graphics knob carries a pencilled line saying what it changes and
@@ -385,90 +383,6 @@ function PixelPrints({
   )
 }
 
-/** a ticket's notches: a half-round bite out of each end, the way a stub
-    torn off a roll has them. A mask rather than drawn circles, so the paper
-    behind shows through the bites */
-const NOTCHES =
-  'radial-gradient(circle at 0 50%, transparent 5px, #000 5.5px) left / 51% 100% no-repeat, ' +
-  'radial-gradient(circle at 100% 50%, transparent 5px, #000 5.5px) right / 51% 100% no-repeat'
-
-/**
-  One map, as a ticket stub: a scrap of card a shade yellower than the sheet,
-  tacked on a little crooked, with a perforated stub carrying its number and
-  the place written on it by hand. The one you are on is ringed in marker;
-  the others lift when the pointer is over them, like the prints do.
-*/
-function Ticket({
-  n,
-  name,
-  blurb,
-  here,
-  hereNote,
-  tilt,
-  onPick,
-}: {
-  n: number
-  name: string
-  blurb: string
-  here: boolean
-  hereNote: string
-  tilt: number
-  onPick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onPick}
-      aria-pressed={here}
-      className="group relative block w-full text-left"
-    >
-      {/* the shadow on a wrapper: a mask clips its own element's box-shadow */}
-      <span
-        className="block transition-transform duration-150 group-hover:-translate-y-0.5"
-        style={{ rotate: `${tilt}deg`, filter: 'drop-shadow(0 3px 3px rgba(30,20,10,0.35))' }}
-      >
-        <span
-          className="flex items-stretch"
-          style={{
-            background: 'linear-gradient(160deg, #f4e9c9, #e4d3a8)',
-            mask: NOTCHES,
-            WebkitMask: NOTCHES,
-          }}
-        >
-          <span
-            className="grid w-6 shrink-0 place-items-center font-mono text-[9px]"
-            style={{
-              color: INK_SOFT,
-              borderRight: `2px dashed ${INK}40`,
-              writingMode: 'vertical-rl',
-            }}
-          >
-            {`no ${String(n).padStart(2, '0')}`}
-          </span>
-          <span className="min-w-0 flex-1 px-2.5 py-1.5">
-            <span
-              className="font-display block truncate text-[20px] leading-none uppercase"
-              style={{ color: here ? INK : INK_SOFT }}
-            >
-              {name}
-            </span>
-            <span className="mt-1 block font-mono text-[10px] leading-tight" style={{ color: INK_SOFT }}>
-              {here ? hereNote : blurb}
-            </span>
-          </span>
-        </span>
-      </span>
-      <span
-        aria-hidden
-        className={`pointer-events-none absolute -inset-x-1.5 -inset-y-1 transition-opacity ${
-          here ? 'opacity-100' : 'opacity-0'
-        }`}
-        style={CIRCLED}
-      />
-    </button>
-  )
-}
-
 export interface PauseScreenProps {
   /** the menu is actually up. False keeps it mounted, and the character
       preview's WebGL context alive, while hiding it outright */
@@ -490,10 +404,8 @@ export interface PauseScreenProps {
   tier: { auto: GfxTier; built: GfxTier } | null
   /** and everyone else out there, measured at the same moment */
   people: PersonWhere[]
-  /** the map you are on, and going to another one (the sheet closes and the
-      cut runs there) */
-  map: MapId
-  onMap: (id: MapId) => void
+  /** put this sheet away for the map sheet (MapPicker.tsx) */
+  onMaps: () => void
   identity: Omit<WorldIdentityProps, 'active'>
   onLeave?: () => void
   onResume: () => void
@@ -508,8 +420,7 @@ export default function PauseScreen({
   onPixelProofs,
   tier,
   people,
-  map,
-  onMap,
+  onMaps,
   identity,
   onLeave,
   onResume,
@@ -690,30 +601,9 @@ export default function PauseScreen({
             ))}
             <Rule className="my-3 w-24" color={`${INK}66`} />
             <Row label={tp.resume} trailing={<Note>esc</Note>} onClick={onResume} />
+            <Row label={tp.changeMap} onClick={onMaps} />
             {onLeave && <Row label={tp.leave} onClick={onLeave} />}
 
-            {/* the maps: ticket stubs tacked under the menu, the one you are
-                on ringed. Another one puts the sheet away and cuts there */}
-            <Rule className="mt-3 mb-2 w-24" color={`${INK}66`} />
-            <span className="font-display text-[21px] uppercase" style={{ color: INK }}>
-              {tp.maps}
-            </span>
-            <div className="mt-2 flex flex-col gap-3 pr-1.5 pl-0.5">
-              {MAPS.map((m, i) => (
-                <Ticket
-                  key={m.id}
-                  n={i + 1}
-                  name={tp.mapNames[m.id]}
-                  blurb={tp.mapBlurbs[m.id]}
-                  here={m.id === map}
-                  hereNote={tp.mapHere}
-                  tilt={[-1.4, 1.1, -0.7][i % 3]}
-                  onPick={() => {
-                    if (m.id !== map) onMap(m.id)
-                  }}
-                />
-              ))}
-            </div>
           </nav>
 
           {/* the page. The character one is never unmounted, since its preview

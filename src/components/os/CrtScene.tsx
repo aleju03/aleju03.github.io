@@ -423,8 +423,8 @@ export default function CrtScene({
   const [locked, setLocked] = useState(false)
   // esc mid-walk frees the mouse and raises the pause menu
   const [paused, setPaused] = useState(false)
-  /** the walk has just begun and is held on the map sheet (MapPicker.tsx):
-      the world is paused behind it, the pause sheet is not shown */
+  /** the map sheet (MapPicker.tsx) is up in place of the pause sheet, the
+      world still paused behind it: the pause menu's "change map" */
   const [choosing, setChoosing] = useState(false)
   /** the pause screen has been up at least once this session. It carries a
       second WebGL context (the character preview), so once built it is hidden
@@ -555,7 +555,7 @@ export default function CrtScene({
   /** the working furniture's button: a cupboard, the television, a cushion */
   const propRef = useRef<(() => void) | null>(null)
   const resumeRef = useRef<(() => void) | null>(null)
-  /** go to a map from the pause sheet (see goMap in the scene) */
+  /** go to a map (see goMap in the scene) */
   const goMapRef = useRef<((id: MapId) => void) | null>(null)
   /** a print on the map sheet: that map, or the world let go of */
   const pickMapRef = useRef<((id: MapId) => void) | null>(null)
@@ -2124,6 +2124,10 @@ export default function CrtScene({
                 case 'world-signal':
                   voice?.accept(msg.from, msg.data)
                   break
+                // the admin brought us to them, maybe from another map
+                case 'world-bring':
+                  broughtTo(msg.level, msg.x, msg.y, msg.z)
+                  break
                 // somebody bumped into us: our own body, our own call
                 case 'world-shove':
                   takeShove(msg.vx, msg.vy, msg.vz)
@@ -2538,6 +2542,16 @@ export default function CrtScene({
           worldLoaded: () => outside.hasWorld(),
           placesHere: () => !!levels.current.house,
           online: () => net !== null,
+          // `bring`: the admin flag is ours on the roster (the server checks
+          // again), and anyone on any level can be brought
+          admin: () => remote.you !== null && !!remote.roster.get(remote.you)?.admin,
+          roster: () =>
+            [...remote.roster].filter(([id]) => id !== remote.you).map(([id, e]) => ({ id, name: e.name })),
+          bring: (to) => {
+            if (!net) return false
+            net.bring(to)
+            return true
+          },
           // the head and gaze as of the last frame: commands run from DOM
           // events, when the chase boom may be holding the camera
           // (on foot the gaze is read off the walk's own yaw and pitch, which
@@ -3865,6 +3879,7 @@ export default function CrtScene({
             frozen: levels.frozen || rig.down || !!sitting,
             groundY: level.groundY,
             groundAt: portalsOn ? portalWalk!.ground(level) : level.groundYAt,
+            flyFloor: level.noclipFloor ? level.groundYAt : undefined,
             // (a block world's ceiling is wherever the blocks are overhead)
             ceilingY: level.ceilingAt ? level.ceilingAt(camera.position.x, camera.position.z, walk.feetY) : level.ceilingY,
             waterY: level.waterY,
@@ -4496,6 +4511,7 @@ export default function CrtScene({
             level.hands.update({
               camera, feetY: walk.feetY, fire: toolIn.fire, alt: toolIn.alt, wheel: handsWheel, dt,
               active: toolsLive && !pausedNow && !!tools && tools.tool === 'hands', firstPerson: chase.dist <= 1.2,
+              gait: step.gait, stride: step.stride, grounded: step.grounded,
             })
           }
           handsWheel = 0
@@ -5064,6 +5080,34 @@ export default function CrtScene({
           return levels.goToLoading(loadMapLevel(def.id), spawn) ? 'ok' : 'busy'
         }
         /**
+         * The admin brought us (the console's `bring`): stand where the
+         * server said, on the level it said. The same level is a teleport;
+         * another is the ordinary cut there, loading its map first if this
+         * session has never been, arriving on that spot rather than at the
+         * map's own spawn. Dropped if a cut is already running or we are not
+         * on our feet in the walk (at the desk, say).
+         */
+        const broughtTo = (level: string, x: number, y: number, z: number) => {
+          if (!fps) return
+          if (level === levels.current.id) {
+            host.teleport?.(x, z, y)
+            return
+          }
+          if (levels.frozen || loadingMap || loadingWorld) return
+          const known = levels.get(level)
+          const def = MAPS.find((m) => m.level === level)
+          if (!known && !def) return
+          if (fleet.riding) leaveVehicle()
+          if (seating.current) leaveSeat()
+          leavePartSeat()
+          setNoclip(false)
+          standNow()
+          setPauseNow(false)
+          const spawn = { x, z, y, yaw: walk.yaw }
+          if (known) levels.goTo(level, spawn)
+          else levels.goToLoading(loadMapLevel(def!.id), spawn)
+        }
+        /**
          * Bake the sun's shadow map once, under the cover.
          *
          * The sun is hand-managed (`shadow.autoUpdate = false`) like every other
@@ -5341,12 +5385,10 @@ export default function CrtScene({
                 flagDeskShadows(camera.position)
                 house.flagShadows(camera.position)
               }
+              // every walk starts at home, which is already built around
+              // you; the other maps are the pause menu's "change map"
+              input.tryLock()
               setWalking(true)
-              // the walk starts on the map sheet (MapPicker.tsx), with the
-              // world held still behind it: a map is picked before anybody
-              // is put anywhere. The pointer is taken when one is
-              setChoosing(true)
-              setPauseNow(true)
               lastT = performance.now()
               raf = requestAnimationFrame(walkTick)
               return
@@ -5525,8 +5567,17 @@ export default function CrtScene({
           if (mapOf(levels.current.id) === id) resumeRef.current?.()
           else goMapRef.current?.(id)
         }
-        if (import.meta.env.DEV) Object.assign(window, { __pickMap: (id: MapId) => pickMapRef.current?.(id) })
-        // a ticket on the pause sheet: the sheet goes away, the cut runs
+        if (import.meta.env.DEV) {
+          Object.assign(window, {
+            __pickMap: (id: MapId) => pickMapRef.current?.(id),
+            // the pause menu's "change map", for harnesses that shoot the sheet
+            __openMaps: () => {
+              setPauseNow(true)
+              setChoosing(true)
+            },
+          })
+        }
+        // the cut to another map: the sheet goes away, the cut runs
         goMapRef.current = (id) => {
           resumeRef.current?.()
           const r = goMap(id)
@@ -5985,8 +6036,7 @@ export default function CrtScene({
           onPixelProofs={() => pixelProofsRef.current?.() ?? Promise.resolve(null)}
           tier={tierInfo}
           people={people}
-          map={mapHere}
-          onMap={(id) => goMapRef.current?.(id)}
+          onMaps={() => setChoosing(true)}
           identity={{
             look,
             onLook: setLook,
@@ -6013,7 +6063,7 @@ export default function CrtScene({
           onResume={() => resumeRef.current?.()}
         />
       )}
-      {/* where to: the sheet every walk starts on (MapPicker.tsx) */}
+      {/* where to: the map sheet, from the pause menu (MapPicker.tsx) */}
       {roam && walking && paused && choosing && (
         <MapPicker here={mapHere} onPick={(id) => pickMapRef.current?.(id)} />
       )}

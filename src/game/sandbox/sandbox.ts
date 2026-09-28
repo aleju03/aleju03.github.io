@@ -226,6 +226,11 @@ export interface Sandbox {
   shatter: (id: PropId) => boolean
   /** light an explosive's fuse */
   ignite: (id: PropId) => void
+  /** a shot (a bullet, a bolt) struck the world itself rather than a prop:
+      where, and which way it was going. A level whose ground can be set off
+      listens (Cubeland lights a TNT block it hits) */
+  strike: (at: Vec3Like, dir: Vec3Like) => void
+  onStrike: (fn: (at: Vec3Like, dir: Vec3Like) => void) => () => void
   /** the particles, for anything else that wants dust or sparks */
   readonly fx: Fx
   /** where the listener is (the camera) and which way is right, once a
@@ -318,6 +323,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
   let reservedId = 1
   const queued: Array<(l: Live) => void> = []
   const beforeFns = new Set<(h: number) => void>()
+  const strikeFns = new Set<(at: Vec3Like, dir: Vec3Like) => void>()
   const afterFns = new Set<(h: number) => void>()
   // the facade owns the listener sets, so a subscription made before Rapier
   // landed is as good as one made after; the props module gets one forwarder
@@ -611,6 +617,13 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     ignite: (id) => {
       if (!sb.isAuthority(id)) sb.network?.hit(id, 0, true)
       else life.ignite(id)
+    },
+    strike: (at, dir) => {
+      for (const fn of strikeFns) fn(at, dir)
+    },
+    onStrike: (fn) => {
+      strikeFns.add(fn)
+      return () => strikeFns.delete(fn)
     },
     fx: effects,
     ear: (x, y, z, rx = 0, rz = 0) => setEar(x, y, z, rx, rz),

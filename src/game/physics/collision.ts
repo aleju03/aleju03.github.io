@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import type { VoxelGrid } from './voxelSweep'
 
 /*
   Walk-mode collision. Every solid is an axis-aligned Box3, and the model
@@ -286,6 +287,10 @@ export interface CollisionSet {
   bounds: WorldBounds
   /** the moving solids, when a sandbox is attached to this set */
   dynamic?: DynamicSolids
+  /** the static solids as a grid as well, where they are one (Cubeland): the
+      walk sweeps through it cell by cell rather than trusting the push-out
+      here, which a fast enough tick passes clean through (voxelSweep.ts) */
+  voxels?: VoxelGrid
 }
 
 export const makeCollisionSet = (bounds: WorldBounds, boxes: Solid[] = []): CollisionSet => ({

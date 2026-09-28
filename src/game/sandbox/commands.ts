@@ -133,11 +133,14 @@ export interface SandboxHost {
   time?: (tod: number | null) => void
   /** multiply the fog's thickness (1 normal) */
   fog?: (k: number) => void
-  /** everyone else in the world */
+  /** everyone else on this level, where they stand */
   players?: () => PlayerInfo[]
+  /** everyone else in the world, on any level or map */
+  roster?: () => { id: number; name: string }[]
   /** logged in as the site's owner, which is what `bring` asks for */
   admin?: () => boolean
-  /** ask the server to bring a player (or everyone here) to us; false offline */
+  /** ask the server to bring a player (or everyone, from any level) to us;
+      false offline */
   bring?: (to: number | 'all') => boolean
   /** say something on the shared chat; false offline */
   chat?: (text: string) => boolean
@@ -1015,12 +1018,12 @@ registerCommand({
   args: [
     {
       name: 'who', nameEs: 'quién', type: 'text',
-      choices: (host) => ['all', ...(host.players?.().map((p) => p.name) ?? [])],
+      choices: (host) => ['all', ...(host.roster?.() ?? host.players?.() ?? []).map((p) => p.name)],
     },
   ],
   help: msg(
-    'bring a player, or all, to where you stand (admin)',
-    'trae a un jugador, o a todos, a donde estás (administrador)',
+    'bring a player, or all, to where you stand, from any map (admin)',
+    'trae a un jugador, o a todos, a donde estás, desde cualquier mapa (administrador)',
   ),
   run: (ctx) => {
     const host = ctx.host
@@ -1028,9 +1031,11 @@ registerCommand({
     if (!host.admin?.()) ctx.fail(msg('only the admin can bring people', 'solo el administrador puede traer gente'))
     const want = ctx.args.join(' ').trim().toLowerCase()
     if (!want) ctx.fail(msg('usage: bring <player|all>', 'uso: bring <jugador|all>'))
-    const players = host.players?.() ?? []
+    // anybody in the world, not just this level: a friend on another map
+    // is cut over to this one
+    const players = host.roster?.() ?? host.players?.() ?? []
     if (want === 'all') {
-      if (!players.length) ctx.fail(msg('nobody else on this level', 'no hay nadie más en este nivel'))
+      if (!players.length) ctx.fail(msg('nobody else out here', 'no hay nadie más aquí'))
       host.bring!('all')
       ctx.ok(msg(`brought ${players.length} ${plural(players.length, 'player')}`,
         `trajiste a ${players.length} ${pluralEs(players.length, 'jugador')}`))
@@ -1038,7 +1043,7 @@ registerCommand({
     }
     const who = players.find((p) => p.name.toLowerCase() === want) ??
       players.find((p) => p.name.toLowerCase().startsWith(want))
-    if (!who) ctx.fail(msg(`nobody called "${want}" on this level`, `nadie llamado "${want}" en este nivel`))
+    if (!who) ctx.fail(msg(`nobody called "${want}" out here`, `nadie llamado "${want}" aquí`))
     host.bring!(who!.id)
     ctx.ok(msg(`brought ${who!.name}`, `trajiste a ${who!.name}`))
   },

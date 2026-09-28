@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { CollisionSet } from '../physics/collision'
 import { resolveXZ, supportY, surfaceAbove } from '../physics/collision'
+import { voxelBegin, voxelCeiling, voxelLift, voxelSupport, voxelSweepXZ } from '../physics/voxelSweep'
 import { axis, held } from '../sandbox/bindings'
 
 /*
@@ -42,8 +43,9 @@ import { axis, held } from '../sandbox/bindings'
   inline loop.
 
   And `noclip` is Garry's Mod's free flight, the third integrator in here and
-  the simplest: no collision, no gravity, no ground. You fly where you look
-  (pitch included, so W at the sky climbs), jump rises and c sinks straight
+  the simplest: no collision, no gravity, no ground (except on a level that
+  hands in a `flyFloor`, the Moon, which has nothing under its ground to fly
+  into). You fly where you look (pitch included, so W at the sky climbs), jump rises and c sinks straight
   up and down, sprint is fast and ctrl is slow (the key table's fly* rows). Velocity chases the
   wished one through an exponential ease, quicker to speed up than to coast
   down, which is what makes it feel like a body with a little mass rather
@@ -54,6 +56,14 @@ import { axis, held } from '../sandbox/bindings'
   the feet already below the support. Letting go inside a building (a roof
   landed on a little too low, a wall flown into) stands you on top of it:
   the first walk tick after a flight asks collision.ts's `surfaceAbove`.
+
+  Where the level's solids are a grid (a CollisionSet with `voxels`,
+  Cubeland), every move is swept through it before the boxes are asked
+  anything: the planar step per axis, the rise under the first block over
+  the head, the landing on the first block top under the feet, and feet
+  found inside a block are lifted out of the top of it. The push-out alone
+  let a fast tick through a hillside and then down through the stone into
+  the caves; physics/voxelSweep.ts has the story. Noclip skips all of it.
 */
 
 /** the mid-air hop's launch speed as a share of a jump's: height goes with
@@ -86,6 +96,10 @@ export interface WalkStepOpts {
       the planar step resolves, so it reports the ground actually arrived at.
       Takes precedence over `groundY`, which stays the fallback. */
   groundAt?: (x: number, z: number) => number
+  /** noclip's floor, where the level has one (Level.noclipFloor): the
+      flight rides up over this ground at standing eye height instead of
+      passing through it. Absent, noclip goes through everything */
+  flyFloor?: (x: number, z: number) => number
   /** the flat ceiling over it, where the level has one: the hop bonks off it
       instead of carrying the lens through */
   ceilingY?: number
@@ -121,6 +135,11 @@ export interface WalkStep {
   /** a sole landed this tick — one per bob cycle, at the bottom of the dip.
       The sim only reports it; the scene decides what a step sounds like */
   footfall: boolean
+  /** the step clock the bob and the footfalls run on: it rises by one a bob
+      cycle (one step) with the distance walked on the ground, and a footfall
+      lands each time it passes .75. Anything that moves in step with the
+      feet (what Cubeland's hands hold) reads its phase off this */
+  stride: number
   /** the one mid-air hop fired this tick: the scene puffs a cloud under it */
   airHop: boolean
   /** the body is in water over its chest: buoyancy owns the vertical, planar
@@ -250,7 +269,7 @@ export function createWalkController(
   // reused across ticks: the walk loop runs at 60Hz and shouldn't feed the GC
   const step: WalkStep = {
     planar: 0, gait: 0, grounded: true, duck: false, run: false, moved: false,
-    vx: 0, vz: 0, vy: 0, landing: 0, support: 0, footfall: false, airHop: false,
+    vx: 0, vz: 0, vy: 0, landing: 0, support: 0, footfall: false, stride: 0, airHop: false,
     swimming: false, wet: 0, flying: false,
   }
 
@@ -280,6 +299,15 @@ export function createWalkController(
     const rate = want > 0 ? (braking ? 9 : 5.5) : 2.6
     fly.lerp(wish, 1 - Math.exp(-rate * dt))
     rig.position.addScaledVector(fly, dt)
+    // a level with nothing under its ground holds the lens at standing eye
+    // height over it, so a flight into a slope rides up it
+    if (o.flyFloor) {
+      const floor = o.flyFloor(rig.position.x, rig.position.z) + tune.eye
+      if (rig.position.y < floor) {
+        rig.position.y = floor
+        if (fly.y < 0) fly.y = 0
+      }
+    }
     crouchK += (0 - crouchK) * (1 - Math.exp(-11 * dt))
     feetY = rig.position.y - tune.eye
     vy = fly.y
@@ -504,6 +532,11 @@ export function createWalkController(
       }
       // ease the velocity so steps start and stop with a little weight
       vel.lerp(want, 1 - Math.exp(-10 * dt))
+      // where the planar step starts, for a voxel sweep of the whole of it
+      const vox = !!collision.voxels
+      const fromX = rig.position.x
+      const fromZ = rig.position.z
+      if (vox) voxelBegin(collision)
       rig.position.addScaledVector(vel, dt)
       const driftX = rig.position.x
       const driftZ = rig.position.z
@@ -533,7 +566,19 @@ export function createWalkController(
         }
       }
       const stepUp = grounded ? tune.step : 0
+      // a grid is swept, so no speed and no dt carries the body through a
+      // block; the push-out below then only has the bounds and props to do
+      if (vox) voxelSweepXZ(collision, rig.position, fromX, fromZ, feetY, feetY + tune.eye, stepUp)
       resolveXZ(rig.position, collision, feetY, feetY + tune.eye, stepUp)
+      if (vox) {
+        // feet inside a block all the same (one put there, a stand-up out of
+        // a ragdoll): out of the top, never through the bottom
+        const up = voxelLift(collision, rig.position.x, rig.position.z, feetY, tune.eye)
+        if (up !== null) {
+          feetY = up
+          if (vy < 0) vy = 0
+        }
+      }
       // a wall met mid-drift takes that axis of the drift away
       if (drift.x !== 0 && Math.abs(rig.position.x - driftX) < Math.abs(drift.x * dt) * 0.5) drift.x = 0
       if (drift.z !== 0 && Math.abs(rig.position.z - driftZ) < Math.abs(drift.z * dt) * 0.5) drift.z = 0
@@ -550,13 +595,12 @@ export function createWalkController(
       const floorY = groundAt
         ? groundAt(rig.position.x, rig.position.z)
         : groundY
-      const support = supportY(
-        rig.position.x,
-        rig.position.z,
-        feetY + (grounded ? tune.step : 0.02),
-        collision,
-        floorY,
-      )
+      const reach = feetY + (grounded ? tune.step : 0.02)
+      const boxTop = supportY(rig.position.x, rig.position.z, reach, collision, floorY)
+      // (the grid's answer is the same one, unless the step outran the ring
+      // of boxes the level keeps round the walker)
+      const support = vox ? voxelSupport(collision, rig.position.x, rig.position.z, reach, boxTop) : boxTop
+      const feetFrom = feetY
       // space jumps; holding it bunny-hops off each landing
       const jumpNow = !frozen && held(keys, 'jump')
       const jumpPress = jumpNow && !jumpWas
@@ -618,6 +662,14 @@ export function createWalkController(
         feetY += (support - feetY) * (1 - Math.exp(-20 * dt))
         if (Math.abs(support - feetY) < 1e-4) feetY = support
       }
+      // a rise, however fast, stops under the first block over the head
+      if (vox && feetY > feetFrom) {
+        const head = voxelCeiling(collision, rig.position.x, rig.position.z, feetFrom + tune.eye, feetY + tune.eye)
+        if (head < feetY + tune.eye) {
+          feetY = Math.max(feetFrom, head - tune.eye)
+          if (vy > 0) vy = 0
+        }
+      }
       // a low ceiling stops the rise: the lens keeps CROWN under it, which is
       // what stands between a hop and a look through the tiles. Outside the
       // airborne branch on purpose — climbing onto something under a low
@@ -640,6 +692,7 @@ export function createWalkController(
       const strideNow = Math.floor(bobT + 0.25)
       step.footfall = grounded && strideNow !== stride
       stride = strideNow
+      step.stride = bobT
       const gait = Math.min(1, planar / speed)
       rig.position.y =
         feetY +

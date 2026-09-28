@@ -264,6 +264,8 @@ export interface WorldGrab {
 export interface WorldBring {
   type: 'world-bring'
   from: PlayerId
+  /** the admin's level: somewhere else is a cut there first */
+  level: string
   x: number
   y: number
   z: number
@@ -343,7 +345,7 @@ export type WorldClientMessage =
       Relayed to them alone, clamped, rate-limited, and dropped unless the
       two of us are within WORLD_SHOVE_REACH of each other and on foot */
   | { type: 'world-shove'; to: PlayerId; vx: number; vy: number; vz: number }
-  /** admin only: bring this player (or everyone on my level) to me */
+  /** admin only: bring this player (or everyone, on any level) to me */
   | { type: 'world-bring'; to: PlayerId | 'all' }
   /** my physgun has this player by `limb`: see WorldGrab. Relayed to them
       alone while the two of us are within the beam's reach and they are on

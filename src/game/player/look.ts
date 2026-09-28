@@ -10,10 +10,11 @@
   bucket hat, a party hat, a hard hat, a printed bandana, nothing, a hood, or
   a space helmet with its life-support pack), which of five builds (bean,
   chubby, slim, tall, stubby), which outfit (none, spots, stripes,
-  overalls, a spacesuit, a beaver onesie in one of three furs), the outfits
-  being printed on the one surface by the material rather than modelled (the
-  beaver's tail, ears, snout and teeth are the exception), and whether a
-  pair of headphones is worn over whatever is on the head. The expression is hashed
+  overalls, a spacesuit, a beaver onesie in one of three furs, a hot dog),
+  the outfits being printed on the one surface by the material rather than
+  modelled (the beaver's tail, ears, snout and teeth and the hot dog's bun
+  and mustache are the exception), whether a pair of headphones is worn
+  over whatever is on the head, and whether a pair of sunglasses is. The expression is hashed
   from the whole look (see playerBody's persona), which is why it needs no
   field of its own.
 
@@ -62,6 +63,30 @@
   Every pack sent before the beaver has a clear red pair and an outfit of
   at most four, so it decodes exactly as it did, with `fur` and `phones` 0.
 
+  **The hot dog and the sunglasses ran out of clear bits, and ride in the
+  body colour's distance from its swatch.** Every bit that is clear in a
+  whole palette was spoken for (the map above), and no bit of `shell` is
+  clear in all eight body swatches, so a raw bit there would have put
+  sunglasses on half of every look already out there. What *is* true of
+  every pack a client has ever sent from the sheet is that its body colour
+  is one of the eight swatches exactly. So the two new flags are XORed into
+  the body colour: red bit 0 is the sunglasses (`shades`), green bit 0 adds
+  eight to the outfit (the hot dog is outfit wire value 8, so its low three
+  bits are 0). `unpackLook` reads a body colour that *is* a swatch as no
+  flags, and one that is a swatch with some of those two bits flipped as
+  those flags and the swatch; anything else (an old, off-palette colour)
+  is read as no flags and left as it is. So every old pack decodes exactly
+  as it did (short of an off-palette colour lying exactly one of those bits
+  from a swatch, which no palette this sheet has ever offered does: checked
+  against all four), and a client that predates
+  this reads a hot dog as a plain bean in sausage red and misses the
+  sunglasses, a body colour off by 1/255. The one cost is that the flags can
+  only ride on a swatch: `packLook` snaps an off-palette body colour to the
+  nearest swatch when it has a flag to carry.
+
+    shell   red   bit 0     sunglasses, relative to the swatch
+            green bit 0     outfit + 8 (the hot dog), relative to the swatch
+
   The four field names are older than this body (they were a robot's shell,
   trim, accent joints and eye glow) and they stay, because they are the wire
   format: renaming them would change what every client sends.
@@ -105,6 +130,8 @@ export interface PlayerLook {
   /** the headphones, worn over any headgear: 0 none, else an index into
       PHONES for the colour of their metal and rings */
   phones: number
+  /** a pair of black wayfarers, worn with anything: 0 none, 1 on */
+  shades: number
 }
 
 /** the headgear, in wire order (see the header: the index rides in the low
@@ -113,7 +140,7 @@ export const HATS = ['band', 'cap', 'bucket', 'party', 'hardhat', 'bandana', 'no
 export type HatKind = (typeof HATS)[number]
 /** the outfits, in wire order: they ride in the low two bits of `trim`, the
     spacesuit in an extension bit of `accent` */
-export const COSTUMES = ['none', 'spots', 'stripes', 'overalls', 'spacesuit', 'beaver'] as const
+export const COSTUMES = ['none', 'spots', 'stripes', 'overalls', 'spacesuit', 'beaver', 'hotdog'] as const
 /** the astronaut, both halves: what "suit up" puts on */
 export const HELMET_HAT = 8
 export const SPACESUIT = 4
@@ -124,6 +151,22 @@ export const BEAVER = 5
     Warm and fairly saturated for the same reason the body swatches are: a
     dull brown goes to grey through the posterize */
 export const FUR_SWATCHES = ['#8a5230', '#5a3620', '#b07838'] as const
+/** the hot dog, after agustin51's salchicha: the sausage is the body
+    colour (its arms and legs too), the mustard squiggle down its front and
+    the handlebar mustache are the detail colour, and the bun is its own
+    fixed golden brown (see bodyShape's hotdogPieces). Its index in
+    COSTUMES; on the wire it is outfit value 8 (see the header) */
+export const HOTDOG = 6
+const HOTDOG_WIRE = 8
+/** the colours it comes in when picked: a red-orange sausage and mustard.
+    Both are swatches, so the pickers still move them */
+export const SAUSAGE = '#d2452f'
+export const MUSTARD = '#e0a218'
+/** the hot dog as the reference wears it: sausage and mustard, and
+    sunglasses on. What picking it from the sheet puts on, over the rest of
+    the look */
+export const dressHotdog = (look: PlayerLook): PlayerLook =>
+  ({ ...look, costume: HOTDOG, shell: SAUSAGE, trim: MUSTARD, shades: 1 })
 /** what the headphones' metal forks, sliders and cup rings are painted in,
     by `phones` value: none, the gaming-headset red, the detail colour, the
     hat colour */
@@ -146,6 +189,7 @@ export const DEFAULT_LOOK: PlayerLook = {
   build: 0,
   fur: 0,
   phones: 0,
+  shades: 0,
 }
 
 /** beans are painted saturated on purpose: the game is rendered at a low
@@ -215,6 +259,42 @@ const withLowRed = (hex: string, bits: number) => {
   return r.toString(16).padStart(2, '0') + hex.slice(2)
 }
 const lowRed = (hex: string) => parseInt(hex.slice(0, 2), 16) & 3
+/** the body colour's two flags, as XOR masks on its 24 bits (see the header) */
+const SHADES_BIT = 0x010000
+const HOTDOG_BIT = 0x000100
+const SHELL_INTS = SHELL_SWATCHES.map((h) => parseInt(h.slice(1), 16))
+const toHex = (n: number) => n.toString(16).padStart(6, '0')
+/** the swatch nearest a colour, for a body colour that has a flag to carry
+    and is not one of them */
+const nearestShell = (n: number) => {
+  let best = SHELL_INTS[0]
+  let bestD = Infinity
+  for (const s of SHELL_INTS) {
+    const d = (((n >> 16) & 255) - ((s >> 16) & 255)) ** 2 + (((n >> 8) & 255) - ((s >> 8) & 255)) ** 2 +
+      ((n & 255) - (s & 255)) ** 2
+    if (d < bestD) {
+      bestD = d
+      best = s
+    }
+  }
+  return best
+}
+/** a body colour and its flags, as it travels */
+const withShellFlags = (hex: string, flags: number) => {
+  const n = parseInt(hex, 16)
+  if (!flags) return hex
+  return toHex((SHELL_INTS.includes(n) ? n : nearestShell(n)) ^ flags)
+}
+/** the inverse: the flags a body colour carries, and the colour without them.
+    Only a swatch with some of the two bits flipped carries any */
+const shellFlags = (hex: string): { flags: number; hex: string } => {
+  const n = parseInt(hex, 16)
+  if (SHELL_INTS.includes(n)) return { flags: 0, hex }
+  for (const m of [SHADES_BIT, HOTDOG_BIT, SHADES_BIT | HOTDOG_BIT]) {
+    if (SHELL_INTS.includes(n ^ m)) return { flags: m, hex: toHex(n ^ m) }
+  }
+  return { flags: 0, hex }
+}
 /** a headgear colour with every bit that carries something cleared */
 const bareAccent = (hex: string) => withLowRed(withLowGreen(withLowBlue(hex, 0), 0), 0)
 const clampIdx = (v: unknown, n: number) =>
@@ -227,12 +307,15 @@ export function packLook(look: PlayerLook): string {
   const costume = clampIdx(look.costume, COSTUMES.length) ?? 0
   const build = clampIdx(look.build, BUILDS.length) ?? 0
   const phones = clampIdx(look.phones, PHONES.length) ?? 0
-  // the outfit's wire value: the beaver is 5, 6 or 7 by its fur
-  const wear = costume === BEAVER ? BEAVER + (clampIdx(look.fur, FUR_SWATCHES.length) ?? 0) : costume
+  const shades = look.shades ? 1 : 0
+  // the outfit's wire value: the beaver is 5, 6 or 7 by its fur, the hot dog 8
+  const wear = costume === BEAVER ? BEAVER + (clampIdx(look.fur, FUR_SWATCHES.length) ?? 0)
+    : costume === HOTDOG ? HOTDOG_WIRE : costume
   return FIELDS.map((f) => {
     const hex = hex6(look[f]) ?? hex6(DEFAULT_LOOK[f])!
+    if (f === 'shell') return withShellFlags(hex, (shades ? SHADES_BIT : 0) | (wear & 8 ? HOTDOG_BIT : 0))
     if (f === 'accent') {
-      return withLowRed(withLowGreen(withLowBlue(hex, hat & 7), (hat >> 3) | ((wear >> 2) << 1)), phones)
+      return withLowRed(withLowGreen(withLowBlue(hex, hat & 7), (hat >> 3) | (((wear >> 2) & 1) << 1)), phones)
     }
     if (f === 'trim') return withLowBlue(hex, wear & 3, 2)
     if (f === 'glow') return withLowBlue(hex, build)
@@ -255,10 +338,13 @@ export function unpackLook(packed: unknown): PlayerLook {
   out.hat = Math.min(bits + 8 * (ext & 1), HATS.length - 1)
   out.phones = lowRed(out.accent.slice(1))
   out.accent = `#${bareAccent(out.accent.slice(1))}`
-  // wire values 5..7 are the beaver in its three furs
-  const wear = lowBlue(out.trim, 2) + 4 * (ext >> 1)
-  out.costume = Math.min(wear, BEAVER)
-  out.fur = Math.max(0, wear - BEAVER)
+  const sf = shellFlags(out.shell.slice(1))
+  out.shell = `#${sf.hex}`
+  out.shades = sf.flags & SHADES_BIT ? 1 : 0
+  // wire values 5..7 are the beaver in its three furs, 8 and up the hot dog
+  const wear = lowBlue(out.trim, 2) + 4 * (ext >> 1) + (sf.flags & HOTDOG_BIT ? 8 : 0)
+  out.costume = wear >= HOTDOG_WIRE ? HOTDOG : Math.min(wear, BEAVER)
+  out.fur = wear >= HOTDOG_WIRE ? 0 : Math.max(0, wear - BEAVER)
   out.trim = `#${withLowBlue(out.trim.slice(1), 0, 2)}`
   out.build = lowBlue(out.glow, 3) % BUILDS.length
   out.glow = `#${withLowBlue(out.glow.slice(1), 0)}`
@@ -281,6 +367,7 @@ export function sanitizeLook(raw: unknown): PlayerLook {
   out.build = clampIdx(src.build, BUILDS.length) ?? 0
   out.fur = clampIdx(src.fur, FUR_SWATCHES.length) ?? 0
   out.phones = clampIdx(src.phones, PHONES.length) ?? 0
+  out.shades = src.shades ? 1 : 0
   return out
 }
 
@@ -288,7 +375,7 @@ export function looksEqual(a: PlayerLook, b: PlayerLook): boolean {
   return (
     FIELDS.every((f) => a[f].toLowerCase() === b[f].toLowerCase()) &&
     a.hat === b.hat && a.costume === b.costume && a.build === b.build &&
-    a.fur === b.fur && a.phones === b.phones
+    a.fur === b.fur && a.phones === b.phones && (a.shades ?? 0) === (b.shades ?? 0)
   )
 }
 
@@ -297,7 +384,7 @@ export function looksEqual(a: PlayerLook, b: PlayerLook): boolean {
     would be happy to meet in the street */
 export function randomLook(rnd: () => number = Math.random): PlayerLook {
   const pick = <T>(list: readonly T[]) => list[Math.floor(rnd() * list.length) % list.length]
-  return {
+  const look: PlayerLook = {
     shell: pick(SHELL_SWATCHES),
     trim: pick(TRIM_SWATCHES),
     accent: pick(ACCENT_SWATCHES),
@@ -308,5 +395,10 @@ export function randomLook(rnd: () => number = Math.random): PlayerLook {
     fur: Math.floor(rnd() * FUR_SWATCHES.length) % FUR_SWATCHES.length,
     // headphones on about one surprise in three
     phones: rnd() < 0.34 ? 1 + (Math.floor(rnd() * 3) % 3) : 0,
+    // sunglasses on about one in five
+    shades: rnd() < 0.2 ? 1 : 0,
   }
+  // a hot dog is never without them
+  if (look.costume === HOTDOG) look.shades = 1
+  return look
 }

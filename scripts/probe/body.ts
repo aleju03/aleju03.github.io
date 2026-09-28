@@ -11,7 +11,7 @@ import {
 } from '../../src/game/player/playerBody'
 import type { RagdollEnv } from '../../src/game/player/ragdoll'
 import { setBodyBuildSync } from '../../src/game/player/bodyShape'
-import { DEFAULT_LOOK, type PlayerLook } from '../../src/game/player/look'
+import { DEFAULT_LOOK, dressHotdog, type PlayerLook } from '../../src/game/player/look'
 import { createVehicleMaterials } from '../../src/game/vehicles/materials'
 import { buildCar } from '../../src/game/vehicles/car'
 import { buildHeli } from '../../src/game/vehicles/heli'
@@ -46,6 +46,8 @@ import { BEAVER, HELMET_HAT, SPACESUIT } from '../../src/game/player/look'
                                           colourings, front, back and close
     npm run shoot -- body:gear            the beaver and the headset, over
                                           every headgear
+    npm run shoot -- body:hotdog          the hot dog four ways round, and the
+                                          sunglasses over other looks
     npm run shoot -- body:moon            astronauts on the Moon, the Earth
                                           hanging in its sky
     npm run shoot -- body:seat            seated in the car, the boat and the
@@ -855,6 +857,36 @@ const gear = (spec: BodySpec, snap: Snap) => {
   }
 }
 
+/** the hot dog as it is picked (sausage, mustard, sunglasses) four ways
+    round, then the sunglasses over other looks: a hat, a hood under a
+    headset, the beaver, and the hot dog in a cap, repainted */
+const HOTDOG_LOOK: PlayerLook = dressHotdog({ ...DEFAULT_LOOK, hat: 6 })
+const SHADES_LOOKS: PlayerLook[] = [
+  { ...DEFAULT_LOOK, shades: 1 },
+  { ...DEFAULT_LOOK, hat: 7, phones: 1, shades: 1, shell: '#3f9a38', accent: '#e86810', build: 2 },
+  { ...OWNER_LOOK, shades: 1 },
+  { ...HOTDOG_LOOK, hat: 1, shell: '#e0a21a', trim: '#d2452c', build: 1 },
+  { ...HOTDOG_LOOK, hat: 8 },
+]
+const hotdog = (spec: BodySpec, snap: Snap) => {
+  const [tw, th] = spec.tile
+  const st = stage(spec.tod)
+  const a = actor(st, HOTDOG_LOOK, st.x, st.z, 0)
+  for (let f = 0; f < 120; f++) tick(a, st.env)
+  const at = new THREE.Vector3(st.x, st.gy + 2.1, st.z)
+  for (const [label, b] of [['front', Math.PI], ['three-quarter', Math.PI - 0.7], ['side', -Math.PI / 2], ['back', 0.35]] as const) {
+    snap(`hot dog: ${label}`, camAt(tw, th, at, b, 10, 0.9, 32))
+  }
+  st.scene.remove(a.rig.group)
+  for (const look of SHADES_LOOKS) {
+    const p = actor(st, look, st.x, st.z, 0)
+    for (let f = 0; f < 120; f++) tick(p, st.env)
+    snap(`hat ${look.hat} outfit ${look.costume} shades ${look.shades}`,
+      camAt(tw, th, new THREE.Vector3(st.x, st.gy + 2.3, st.z), Math.PI - 0.6, 9, 1.1, 34))
+    st.scene.remove(p.rig.group)
+  }
+}
+
 /** the headset on every build under four headgears (bare, the cap on a
     beaver, the hood, the bucket hat), straight from the front, where a cup
     standing off the head shows as daylight */
@@ -981,6 +1013,7 @@ export const shootBody = (spec: BodySpec) => {
     if (a.startsWith('folds')) return n + FOLD_SHOTS.length
     if (a === 'wardrobe') return n + WARDROBE.length
     if (a === 'gear') return n + 4 + GEAR_LOOKS.length
+    if (a === 'hotdog') return n + 4 + SHADES_LOOKS.length
     if (a === 'phones') return n + 5 * PHONES_HATS.length
     return n
   }, 0)
@@ -1071,6 +1104,7 @@ export const shootBody = (spec: BodySpec) => {
     }
     else if (a === 'wardrobe') run(wardrobe)
     else if (a === 'gear') run(gear)
+    else if (a === 'hotdog') run(hotdog)
     else if (a === 'phones') run(phonesSheet)
     else if (a.startsWith('folds')) run((sp, sn) => folds(sp, sn, Number(a.split(':')[1] ?? 0)))
     else throw new Error(`unknown body target "${a}"`)

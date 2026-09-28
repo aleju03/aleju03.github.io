@@ -107,12 +107,13 @@ if (want('launches')) {
 /* ------------------------------------------------------------ variants -- */
 if (want('variants')) {
   console.log('variants (headgear x build): verts, tris, ms to build from nothing;')
-  console.log('then every headgear with the beaver (+b), the headphones (+p) and both (+bp), on the bean')
+  console.log('then every headgear with the beaver (+b), the headphones (+p) and both (+bp), the hot dog (+h),')
+  console.log('the sunglasses (+s), and the hot dog in both (+hps), on the bean')
   const names = ['band', 'cap', 'bucket', 'party', 'hardhat', 'bandana', 'none', 'hood', 'helmet']
   const builds = Array.from({ length: BUILD_COUNT }, (_, b) => b)
   const rows = []
   for (let h = 0; h < HAT_COUNT; h++) rows.push({ h, gear: 0, label: names[h], builds })
-  for (const [gear, tag] of [[1, '+b'], [2, '+p'], [3, '+bp']]) {
+  for (const [gear, tag] of [[1, '+b'], [2, '+p'], [3, '+bp'], [4, '+h'], [8, '+s'], [14, '+hps']]) {
     for (let h = 0; h < HAT_COUNT; h++) rows.push({ h, gear, label: names[h] + tag, builds: [0] })
   }
   let worstMs = 0

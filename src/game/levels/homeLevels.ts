@@ -165,6 +165,8 @@ export function makeHomeLevels(
     id: 'moon',
     groundY: -1e5,
     groundYAt: outside.moon.groundYAt,
+    // nothing is under the regolith but black sky: noclip rides over it
+    noclipFloor: true,
     // the walkable square: past it the ground curves away into the horizon
     collision: makeCollisionSet(
       {

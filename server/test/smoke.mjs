@@ -803,11 +803,18 @@ async function main() {
   assert.equal(brought.from, adminWelcome.you, 'told who brought them');
   assert.ok(Math.hypot(brought.x - 100, brought.z + 40) < 4, 'lands beside the admin');
   assert.equal(brought.y, 7, 'at the admin feet height');
+  assert.equal(typeof brought.level, 'string', 'told which level to come to');
+  // from another map: the bring still reaches them, carrying the admin's level
+  w2.send({ type: 'world-level', level: 'cubeland' });
+  dup.send({ type: 'world-bring', to: welcome2.you });
+  const across = await w2.nextOf('world-bring', 'the admin brings a player off another map');
+  assert.notEqual(across.level, 'cubeland', 'sent to the admin level, not their own');
+  w2.send({ type: 'world-level', level: brought.level });
   dup.send({ type: 'world-bring', to: 'all' });
   await w1.nextOf('world-bring', 'bring all reaches everyone on the level');
   await w2.nextOf('world-bring', 'bring all reaches the other walker too');
   dup.send({ type: 'world-leave' });
-  console.log("17c'. bring: guests are ignored, the admin brings one or all");
+  console.log("17c'. bring: guests are ignored, the admin brings one or all, from any level");
   // 17d. Grabs. The physgun on a player is a stream relayed to the victim
   //      alone, inside the beam's reach, never at somebody flying, and a
   //      throw is clamped; a release always goes through.

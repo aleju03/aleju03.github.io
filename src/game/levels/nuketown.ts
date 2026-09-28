@@ -313,6 +313,13 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
   const floors: Floor[] = []
   /** the houses' and garages' footprints, for the light indoors */
   const roofs: Array<{ x0: number; x1: number; z0: number; z1: number }> = []
+  /** every underside a body can stand beneath (the slab between the
+      storeys, the ceiling upstairs, the garage's, the porch canopy, the
+      balcony), for the level's `ceilingAt`. A box alone cannot stop a hop:
+      the walk only ever pushes out of one sideways, so a head rising into
+      the slab was shoved across the room, and into the upper ceiling, which
+      had no box, it simply went, eye and all, into the attic */
+  const ceilings: Array<{ x0: number; x1: number; z0: number; z1: number; y: number }> = []
 
   /* ---------------------------------------------------------- helpers -- */
 
@@ -544,6 +551,11 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
       const [x0, x1, z0, z1] = rect(u0, u1, v0, v1)
       floor(x0, x1, z0, z1, s, y0, y1)
     }
+    /** an underside at height `y` over this rectangle: a hop stops under it */
+    const hc = (u0: number, u1: number, v0: number, v1: number, y: number) => {
+      const [x0, x1, z0, z1] = rect(u0, u1, v0, v1)
+      ceilings.push({ x0, x1, z0, z1, y })
+    }
     /** a piece of furniture: drawn and solid; its top a floor unless not */
     const furn = (
       u0: number, u1: number, y0: number, y1: number, v0: number, v1: number,
@@ -746,10 +758,15 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
       hb(u0, u1, CEIL_H, CEIL_H + 0.28, v0, v1, PAL.ceiling)
       hb(u0, u1, CEIL_H + 0.28, UP, v0, v1, look.carpet, SURF.none)
       hs(u0, u1, CEIL_H, UP, v0, v1, true)
+      hc(u0, u1, v0, v1, CEIL_H)
     }
     hf(-W, W, 0, D, 'carpet', UP - 0.5, UP + 3)
-    // the ceiling upstairs, which outside is the soffit under the eaves
+    // the ceiling upstairs, which outside is the soffit under the eaves;
+    // noStand, like the garage's, since the attic over it is nowhere to be,
+    // but a box, so a prop thrown upstairs meets it instead of the roof
     hb(-W - 1.1, W + 1.1, EAVE - 0.14, EAVE + 0.06, -1.1, D + 1.1, PAL.trim)
+    hs(-W - 1.1, W + 1.1, EAVE - 0.14, EAVE + 0.06, -1.1, D + 1.1)
+    hc(-W - 1.1, W + 1.1, -1.1, D + 1.1, EAVE - 0.14)
     /*
       A front gable: the ridge runs back from the street, so the triangle of
       siding faces the circle. The slopes are two thin slabs rather than a
@@ -874,6 +891,8 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
     hs(W + T, G1 - T, 0, 0.25, T, GD - T, true)
     hf(W, G1, 0, GD, 'stone')
     hb(W + T, G1 + 0.8, CEIL_H - 0.14, CEIL_H + 0.02, -0.8, GD + 0.8, PAL.trim)
+    hs(W + T, G1 + 0.8, CEIL_H - 0.14, CEIL_H + 0.02, -0.8, GD + 0.8)
+    hc(W + T, G1 + 0.8, -0.8, GD + 0.8, CEIL_H - 0.14)
     // its roof runs along the street, eaves front and back
     const GSPAN = GD / 2 + 0.8
     const GRISE = 2.3
@@ -903,6 +922,7 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
     hf(-8.2, -3.6, -3, 0, 'stone')
     hb(-8.6, -2.6, 5.0, 5.25, -3.4, -T, PAL.trim)
     hs(-8.6, -2.6, 5.0, 5.25, -3.4, -T, true)
+    hc(-8.6, -2.6, -3.4, -T, 5.0)
     hb(-3.05, -2.75, 0.45, 5.0, -3.3, -3.0, PAL.trim, SURF.none)
     hb(-3.05, -2.75, 0.45, 5.0, -0.5, -T, PAL.trim, SURF.none)
     for (let k = -3; k <= 5; k++) {
@@ -975,6 +995,7 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
     const BV = D + 6
     hb(B0, B1, UP - 0.4, UP, D + T, BV, PAL.deck, SURF.plank)
     hs(B0, B1, UP - 0.4, UP, D + T, BV, true)
+    hc(B0, B1, D + T, BV, UP - 0.4)
     hf(B0, B1, D, BV, 'wood', UP - 1, UP + 3)
     for (const u of [B0 + 0.25, -6, B1 - 0.25]) {
       hb(u - 0.2, u + 0.2, 0, UP - 0.4, BV - 0.45, BV - 0.05, PAL.stair, SURF.bark)
@@ -1789,6 +1810,18 @@ export function buildNuketown(o: NuketownOpts): Nuketown {
     // a desert morning, all day: the sun two thirds of the way up
     timeOfDay: 0.4,
     gravity: 1,
+    // the lowest underside over the lens that is still over the head: one
+    // more than a step above the soles, so the slab a body is climbing onto
+    // at the head of the stairs is underfoot, not overhead
+    ceilingAt: (x, z, feetY) => {
+      const lx = x - NUKE_ORIGIN.x
+      const lz = z - NUKE_ORIGIN.z
+      let lo = Infinity
+      for (const c of ceilings) {
+        if (c.y > feetY + 1 && c.y < lo && lx >= c.x0 && lx <= c.x1 && lz >= c.z0 && lz <= c.z1) lo = c.y
+      }
+      return lo
+    },
     sandbox: { ground: FLAT },
     outdoors: true,
     air: true,

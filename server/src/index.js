@@ -1413,9 +1413,11 @@ function handleWorldShove(ws, msg) {
   send(peer, { type: 'world-shove', from: w.id, vx: r2(vx), vy: r2(vy), vz: r2(vz) });
 }
 
-// The admin summons a player, or everyone on their level, to where they
-// stand. Admin only, because being moved is not something a visitor agreed
-// to; anyone else is dropped in silence (the client already refused them).
+// The admin summons a player, or everyone in the world, to where they stand,
+// whatever level or map they are on: the message carries the admin's level,
+// and a victim somewhere else runs its own cut there. Admin only, because
+// being moved is not something a visitor agreed to; anyone else is dropped
+// in silence (the client already refused them).
 // The server spaces the arrivals in a ring round the admin, so a whole room
 // brought at once does not land in one heap, and each victim's client moves
 // itself, the same as a shove.
@@ -1431,11 +1433,11 @@ function handleWorldBring(ws, msg) {
   const peers = [];
   if (all) {
     for (const peer of worldPlayers.values()) {
-      if (peer !== ws && peer.world.level === w.level) peers.push(peer);
+      if (peer !== ws) peers.push(peer);
     }
   } else {
     const peer = worldPlayers.get(msg.to);
-    if (peer && peer !== ws && peer.world.level === w.level) peers.push(peer);
+    if (peer && peer !== ws) peers.push(peer);
   }
   const ring = 2.5 + Math.max(0, peers.length - 6) * 0.3;
   peers.forEach((peer, i) => {
@@ -1443,6 +1445,7 @@ function handleWorldBring(ws, msg) {
     send(peer, {
       type: 'world-bring',
       from: w.id,
+      level: w.level,
       x: r2(w.x - Math.sin(a) * ring),
       y: r2(w.y),
       z: r2(w.z - Math.cos(a) * ring),

@@ -258,13 +258,16 @@ const dictionaries = {
       shape: 'shape',
       builds: ['bean', 'chubby', 'slim', 'tall', 'stubby'],
       outfit: 'outfit',
-      costumes: ['none', 'spots', 'stripes', 'overalls', 'spacesuit', 'beaver'],
+      costumes: ['none', 'spots', 'stripes', 'overalls', 'spacesuit', 'beaver', 'hot dog'],
       // the beaver's three furs, in look.ts's FUR_SWATCHES order
       fur: 'fur',
       // headphones worn over any headgear, and what colour their metal is
       // (look.ts's PHONES order: none, red, the detail colour, the hat colour)
       phones: 'phones',
       phonesKinds: ['none', 'red', 'detail', 'hat'],
+      // a pair of sunglasses worn with anything: off, on
+      shades: 'shades',
+      shadesKinds: ['none', 'sunglasses'],
       // one tap into the helmet and the spacesuit, keeping your colours
       suitUp: 'suit up',
       surprise: 'surprise me',
@@ -335,8 +338,9 @@ const dictionaries = {
       nobody: 'nobody else, just now',
       elsewhere: 'somewhere else',
       menuKeys: '↑↓ menu',
-      // the maps, as ticket stubs pinned under the menu (levels/maps.ts ids)
-      maps: 'maps',
+      // the pause menu's way to the map sheet, and the sheet's words
+      // (MapPicker.tsx; levels/maps.ts ids)
+      changeMap: 'change map',
       mapNames: { home: 'home', nuketown: 'nuketown', cubeland: 'cubeland' },
       mapBlurbs: { home: 'the house and the planet', nuketown: 'a test-site cul-de-sac, 1957', cubeland: 'a world of blocks to dig, build and blow up' },
       mapHere: 'you are here',
@@ -569,10 +573,12 @@ const dictionaries = {
       shape: 'forma',
       builds: ['frijol', 'gordito', 'flaco', 'alto', 'rechoncho'],
       outfit: 'traje',
-      costumes: ['nada', 'lunares', 'rayas', 'overol', 'traje espacial', 'castor'],
+      costumes: ['nada', 'lunares', 'rayas', 'overol', 'traje espacial', 'castor', 'salchicha'],
       fur: 'pelaje',
       phones: 'audífonos',
       phonesKinds: ['no', 'rojos', 'detalle', 'gorro'],
+      shades: 'lentes',
+      shadesKinds: ['no', 'lentes de sol'],
       suitUp: 'a la luna',
       surprise: 'sorpréndeme',
       wardrobe: 'ropero',
@@ -631,7 +637,7 @@ const dictionaries = {
       nobody: 'nadie más, por ahora',
       elsewhere: 'en otra parte',
       menuKeys: '↑↓ menú',
-      maps: 'mapas',
+      changeMap: 'cambiar mapa',
       mapNames: { home: 'casa', nuketown: 'nuketown', cubeland: 'cubolandia' },
       mapBlurbs: { home: 'la casa y el planeta', nuketown: 'un callejón en un sitio de pruebas, 1957', cubeland: 'un mundo de bloques para cavar, construir y volar' },
       mapHere: 'estás aquí',

@@ -579,6 +579,8 @@ export function createWeapons(o: WeaponWorld): Weapons {
       relay = true
     }
     if (h.what !== 'prop') puff(w, h)
+    // the world itself may be something a shot sets off (Cubeland's TNT)
+    if (h.what === 'world') sb.strike(at, d)
     // the pistol's shot already said where it went; a bolt always says
     if (relay || bolt) send(msg)
     emit({ type: 'hit', w, mine: true, what: h.what, surface: h.surface, x: at.x, y: at.y, z: at.z })

@@ -27,13 +27,24 @@ import { MOON_ORIGIN, MOON_R, MOON_WALK } from './space'
   - **the walkable square** (MOON_WALK either side of the origin) is the
     lattice the sandbox's heightfields and `groundYAt` both read, on the
     overworld's own GRID and origin, so a crate rests on the drawn triangle
-    and the walker stands on it (the "mesh and collision agree" rule).
+    and the walker stands on it (the "mesh and collision agree" rule). The
+    lattice holds the *drawn* height, not the field: past the finest ring
+    the mesh's cells are 8 to 64 units, which skip whole craters, and a
+    lattice of the raw field put the walker up to thirty units under the
+    drawn chord (measured: the eye was under the ground over a ninth of the
+    outer ring, which you saw as black sky and a few upturned triangles).
+    Every ring's cells are whole multiples of GRID cells split along the
+    same diagonal, so sampling a coarse ring's triangles at the lattice and
+    interpolating that the fine way reproduces the coarse triangle exactly
+    (`moonLattice`), and the ring vertices themselves come from the one
+    function the lattice does (`ringVertex`).
   - **everywhere** the ground falls away on the Moon's own sphere (MOON_R),
     exactly, so this patch is a piece of the ball you flew in over: from
     space it sits on world/globe.ts's Moon, which carries on past its edge,
     and the approach lands on it with no cut (levels/outsideWorld.ts).
-  - **the mesh** is four nested square rings of square cells (4, 8, 16 and
-    64 units), each ring's outer edge welded to the next one's vertices, so
+  - **the mesh** is four nested square rings of square cells (RINGS: 4, 8,
+    16 and 64 units), each ring's outer edge welded to the next one's
+    straight edges, so
     no cell is ever stretched (a tensor grid of widening rows smeared every
     crater wall into streaks) and no seam cracks open onto the black sky.
   - **the regolith** is grey: the vertex colour carries the crater albedo,
@@ -164,14 +175,102 @@ export const moonAlbedo = (u: number, v: number) => {
   return Math.min(0.85, Math.max(0.12, g))
 }
 
-const cache = new Map<number, number>()
-/** the height at lattice point (i, j) of world/grid.ts's GRID, cached like
-    the terrain's: the sandbox's heightfields and groundYAt both read it */
-export const moonLattice = (i: number, j: number) => {
-  const key = (i + 1048576) * 2097152 + (j + 1048576)
-  const hit = cache.get(key)
+/** rings of square cells about the landing site: cell edge and half-width,
+    world units. Each cell is a whole number of GRID cells and each half a
+    whole number of the next ring's cells, which is what lets the lattice
+    carry every ring's triangles exactly (see moonLattice) */
+const RINGS = [
+  { cell: 4, half: 640 },
+  { cell: 8, half: 1280 },
+  { cell: 16, half: 2560 },
+  { cell: 64, half: MOON_PATCH },
+] as const
+/** the same, in lattice steps */
+const RINGS_G = RINGS.map((r) => ({ c: r.cell / GRID, h: r.half / GRID }))
+/** the lattice point the rings are centred on (the landing site, snapped) */
+const CI = Math.round((MOON_ORIGIN.x - OFF_X) / GRID)
+const CJ = Math.round((MOON_ORIGIN.z - OFF_Z) / GRID)
+
+const mod = (a: number, n: number) => ((a % n) + n) % n
+const keyOf = (i: number, j: number) => (i + 1048576) * 2097152 + (j + 1048576)
+
+const rawCache = new Map<number, number>()
+/** the field itself at lattice point (i, j), cached: every ring vertex is one */
+const rawLattice = (i: number, j: number) => {
+  const key = keyOf(i, j)
+  const hit = rawCache.get(key)
   if (hit !== undefined) return hit
   const h = moonHeight(OFF_X + i * GRID, OFF_Z + j * GRID)
+  if (rawCache.size > 250000) rawCache.clear()
+  rawCache.set(key, h)
+  return h
+}
+
+/** ring k's vertex at lattice point (i, j), which is on that ring's grid:
+    the field, except along the ring's outer edge, where every vertex the
+    next ring does not have is welded onto the straight line between the two
+    it does, so the two rings' edges are one polyline and no crack opens */
+const ringVertex = (k: number, i: number, j: number) => {
+  const next = RINGS_G[k + 1]
+  if (next) {
+    const h = RINGS_G[k].h
+    const C = next.c
+    const gi = i - CI
+    const gj = j - CJ
+    // an edge running along z, then one running along x (a corner is on
+    // both and on the next ring's grid, so it is the field)
+    if (Math.abs(gi) === h) {
+      const m = mod(gj, C)
+      if (m) return rawLattice(i, j - m) + (rawLattice(i, j - m + C) - rawLattice(i, j - m)) * (m / C)
+    } else if (Math.abs(gj) === h) {
+      const m = mod(gi, C)
+      if (m) return rawLattice(i - m, j) + (rawLattice(i - m + C, j) - rawLattice(i - m, j)) * (m / C)
+    }
+  }
+  return rawLattice(i, j)
+}
+
+const cache = new Map<number, number>()
+/** the *drawn* height at lattice point (i, j) of world/grid.ts's GRID,
+    cached like the terrain's: the sandbox's heightfields and groundYAt both
+    read it. In the finest ring that is the field; further out it is the
+    coarse ring's triangle over the point, split along the same (0,0)-(1,1)
+    diagonal, so the fine interpolation of these samples is that triangle
+    exactly and the walker stands on the ground you see, not on a crater the
+    mesh is too coarse to have drawn */
+export const moonLattice = (i: number, j: number) => {
+  const key = keyOf(i, j)
+  const hit = cache.get(key)
+  if (hit !== undefined) return hit
+  const gi = i - CI
+  const gj = j - CJ
+  const a = Math.max(Math.abs(gi), Math.abs(gj))
+  // the finest ring over the point (on a ring's rim both answers agree: the
+  // inner one's welded edge is the outer one's straight cell edge)
+  let k = 0
+  while (k < RINGS_G.length && a > RINGS_G[k].h) k++
+  let h: number
+  if (k === RINGS_G.length) h = rawLattice(i, j)
+  else {
+    const c = RINGS_G[k].c
+    const mi = mod(gi, c)
+    const mj = mod(gj, c)
+    if (!mi && !mj) h = ringVertex(k, i, j)
+    else {
+      const i0 = i - mi
+      const j0 = j - mj
+      const u = mi / c
+      const v = mj / c
+      const h00 = ringVertex(k, i0, j0)
+      if (v < u) {
+        const h10 = ringVertex(k, i0 + c, j0)
+        h = h00 + (h10 - h00) * u + (v ? (ringVertex(k, i0 + c, j0 + c) - h10) * v : 0)
+      } else {
+        const h01 = ringVertex(k, i0, j0 + c)
+        h = h00 + (u ? (ringVertex(k, i0 + c, j0 + c) - h01) * u : 0) + (h01 - h00) * v
+      }
+    }
+  }
   if (cache.size > 200000) cache.clear()
   cache.set(key, h)
   return h
@@ -300,63 +399,36 @@ export const buildMoon = (opts: {
   const { obstacles } = opts
   let built = false
 
-  /** rings of square cells about the landing site: cell edge, half-width */
-  const RINGS = [
-    { cell: 4, half: 640 },
-    { cell: 8, half: 1280 },
-    { cell: 16, half: 2560 },
-    { cell: 64, half: MOON_PATCH },
-  ]
   // a generator, so the approach can build it a few milliseconds a frame
   function* buildGround() {
     // the centre on the world lattice, so the finest ring is the lattice
-    // itself and collision reads the drawn triangles
-    const cx = OFF_X + Math.round((MOON_ORIGIN.x - OFF_X) / GRID) * GRID
-    const cz = OFF_Z + Math.round((MOON_ORIGIN.z - OFF_Z) / GRID) * GRID
+    // itself, every ring's vertices are lattice points, and collision reads
+    // the drawn triangles (moonLattice)
     for (let k = 0; k < RINGS.length; k++) {
       const { cell, half } = RINGS[k]
       const hole = k > 0 ? RINGS[k - 1].half : 0
       const n = Math.round(half / cell)
+      const c = RINGS_G[k].c
       const side = n * 2 + 1
       const pos = new Float32Array(side * side * 3)
       const col = new Float32Array(side * side * 3)
-      const coarse = k + 1 < RINGS.length ? RINGS[k + 1].cell / cell : 1
       for (let j = 0; j < side; j++) {
         for (let i = 0; i < side; i++) {
-          const x = cx + (i - n) * cell
-          const z = cz + (j - n) * cell
+          const li = CI + (i - n) * c
+          const lj = CJ + (j - n) * c
+          const x = OFF_X + li * GRID
+          const z = OFF_Z + lj * GRID
           const o = (j * side + i) * 3
           pos[o] = x
           pos[o + 2] = z
-          pos[o + 1] = k === 0
-            ? moonLattice(Math.round((x - OFF_X) / GRID), Math.round((z - OFF_Z) / GRID))
-            : moonHeight(x, z)
+          // the field, and along the outer edge the weld onto the next ring
+          pos[o + 1] = ringVertex(k, li, lj)
           const g = moonAlbedo(x - MOON_ORIGIN.x, z - MOON_ORIGIN.z)
           col[o] = g * TINT.r
           col[o + 1] = g * TINT.g
           col[o + 2] = g * TINT.b
         }
         if (j % 8 === 7) yield
-      }
-      // weld the outer edge to the coarser ring's vertices: every vertex the
-      // coarser ring does not have takes the height of the straight line
-      // between the two it does, so the edges are one polyline
-      if (coarse > 1) {
-        const edge = (i: number, j: number, di: number, dj: number) => {
-          const t = ((di ? i : j) % coarse) / coarse
-          if (t === 0) return
-          const i0 = di ? i - (i % coarse) : i
-          const j0 = dj ? j - (j % coarse) : j
-          const a = (j0 * side + i0) * 3 + 1
-          const b = ((j0 + dj * coarse) * side + (i0 + di * coarse)) * 3 + 1
-          pos[(j * side + i) * 3 + 1] = pos[a] + (pos[b] - pos[a]) * t
-        }
-        for (let q = 0; q < side; q++) {
-          edge(q, 0, 1, 0)
-          edge(q, side - 1, 1, 0)
-          edge(0, q, 0, 1)
-          edge(side - 1, q, 0, 1)
-        }
       }
       const idx: number[] = []
       for (let j = 0; j < side - 1; j++) {

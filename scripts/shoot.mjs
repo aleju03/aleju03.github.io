@@ -76,6 +76,9 @@ targets
   body:gear            the beaver and the headset: a beaver in a blue cap with
                        the headset over it four ways round, the headset over
                        every other headgear, and the three furs
+  body:hotdog          the hot dog four ways round, then the sunglasses over
+                       a bare bean, a hood under a headset, the beaver, and
+                       the hot dog in a cap and under the helmet
   body:folds[:<n>]     eight poses with every folded triangle of the skin
                        painted red over it (pair with --raw); n picks one of
                        the lineup's six looks (4 wears the hood)

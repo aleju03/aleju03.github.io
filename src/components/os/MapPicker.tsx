@@ -5,13 +5,12 @@ import { useI18n } from '../../i18n'
 import { INK, INK_SOFT, MARK, PAPER, stockTexture } from './paper'
 
 /*
-  Where to? The map you play on is picked before you are put in the world:
-  standing up from the desk (or arriving at /world) stops on this sheet
-  with the world held still behind it, and a print of each map is pinned to
-  it. Picking one runs the level cut there (CrtScene's goMap), or, for the
-  map you are already on, just lets go of the world; a click on the game
-  behind it counts as staying. The pause sheet's ticket stubs are the way
-  to change your mind later.
+  Where to? The map sheet, raised by the pause menu's "change map" in place
+  of the pause sheet, with the world held still behind it and a print of
+  each map pinned to it. Every walk starts at home, which is already built
+  around you when you stand up, so nothing asks before that. Picking a map
+  runs the level cut there (CrtScene's goMap), or, for the map you are
+  already on, just lets go of the world, and so does esc.
 
   It is the pause sheet's stationery (paper.ts): a sheet of the same stock,
   a title in the display face, and each map a photo print with a white
