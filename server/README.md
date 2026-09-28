@@ -238,8 +238,9 @@ authority until its acknowledgement arrives.
   followed by the removal. Splinters use existing cosmetic particle pools
   on all clients, with no local colliders influencing shared bodies.
 - C to S `world-prop-explosion {id?,epoch?,at:[x,y,z],power,radius}` requires
-  source authority, or a free blast within 90 units of the caller. Power is
-  clamped to 0.1..4, radius to 1..50. S to C
+  source authority, or a free blast within 170 units of the caller (the
+  console aims 150 out). Power is clamped to 0.1..10, radius to 1..60, the
+  console's own range, so a peer's replay is the same blast. S to C
   `world-prop-explosion {from,at,power,radius}` plays the effect and lets each
   prop's authority apply its own impulse and damage, including chain fuses.
 - C to S `world-prop-remove {id}` removes only the sender's own prop. Undo
@@ -266,6 +267,41 @@ the same prop and group identity. A future portal protocol can store its
 level, owner, surface and frame alongside this registry. Cross-level prop
 migration would need a server-approved atomic move of a connected group
 between registries, including ownership, joints and epochs.
+
+### World damage
+
+`src/worldDamage.js` keeps what each level has lost, as a union: for each
+ruined building (its position-stable id, `cx,cz:Bhx,hz`), the fracture keys
+of the pieces gone, and the ids of felled trees, cacti and lamp posts. It
+holds no geometry and never interprets an id beyond its shape. Every client
+reports what it has that the union lacks and receives only what is new, so
+the order and number of reports do not matter and every client converges on
+the same holes. Blows being watched are relayed and never stored. In memory
+only: at most 256 ruined buildings per level (the oldest forgotten first),
+4,096 piece keys per building and 4,096 felled props per level, and a level
+nobody has been in for fifteen minutes is dropped. A client still holding a
+forgotten ruin reports it again from its next snapshot.
+
+- S to C `world-ruins {level,ruins:[[b,[keys]],...],felled:[ids]}` follows
+  `world-welcome` and every `world-level`: the end state, applied without a
+  sound or a body. Explosions are never replayed to a late arrival.
+- C to S `world-ruin {level,b,keys}`: pieces this client has lifted. Keys are
+  integers 0..2^31, at most 1,024 a message, 60 messages/s. S to C
+  `world-ruin {level,b,keys}` to everyone else, with only the keys new to
+  the union (nothing if none were).
+- C to S `world-fell {level,id,dir:[dx,dz],speed}`, 40/s. Stored once; S to C
+  the same to everyone else, `dir` normalised and `speed` clamped to 0..60
+  (0, or no direction, means just take it out).
+- C to S `world-damage {level,b,how,at:[x,y,z],power,radius,dir:[x,y,z],k,ram,seed}`,
+  a blow a peer should replay: `how` is `impact`, `vehicle`, `command` or
+  `collapse` (a blast travels as `world-prop-explosion`). Relayed within 200
+  units of the sender's last pose, 60/s, with power clamped to 0..1500,
+  radius 0..40, `dir` components ±200 and `k` 0..60. S to C adds `from`.
+
+Ids must look like `cx,cz:` then a capital and digits, commas, colons or
+minus signs. Keys and ids cannot be checked against the world here, so a
+hand-written client could mark buildings broken; the caps bound what that
+costs.
 
 
 Voice needs a path between two browsers, and a minority of visitors, both ends

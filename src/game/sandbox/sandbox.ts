@@ -209,8 +209,9 @@ export interface Sandbox {
   readonly focus: THREE.Vector3
 
   /* what props do besides move (breakables.ts, explosion.ts) */
-  /** a blast: radial impulse, damage (chains other explosives), fx, boom */
-  explode: (at: Vec3Like, power?: number, radius?: number) => ExplosionEvent
+  /** a blast: radial impulse, damage (chains other explosives), fx, boom.
+      `remote` is a peer's blast replayed from the wire (net/remoteProps.ts) */
+  explode: (at: Vec3Like, power?: number, radius?: number, remote?: boolean) => ExplosionEvent
   /** every blast, after it has pushed the props: knock people flat, crack
       buildings (explosion.ts's blastImpact/blastWatch do the maths) */
   onExplosion: (fn: (e: ExplosionEvent) => void) => () => void
@@ -593,7 +594,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
     },
     random,
     stateHash: () => (live ? `${live.props.stateHash()}@${live.pw.time.toFixed(4)}` : ''),
-    explode: (at, power = 1, radius = 16) => explosions.explode(at, power, radius, null),
+    explode: (at, power = 1, radius = 16, remote = false) => explosions.explode(at, power, radius, null, remote),
     onExplosion: (fn) => explosions.onExplosion(fn),
     onBreak: (fn) => life.onBreak(fn),
     damage: (id, amount, from) => {

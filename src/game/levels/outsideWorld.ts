@@ -71,6 +71,9 @@ import {
   it, and hides it the moment real terrain arrives.
 */
 
+/** how far off a felled prop's snap is still heard, units (full within 12) */
+const SNAP_EARSHOT = 60
+
 /** the lazily-loaded half: everything in src/game/world the room does not need */
 type WorldModules = {
   globe: typeof import('../world/globe')
@@ -147,6 +150,8 @@ export interface OutsideHandles {
   /** the buildings out here as destruction sees them (world/debris.ts's
       ruins), or null until the world is attached */
   ruins: () => import('../world/debris').Ruins | null
+  /** ...and the props a car has knocked down, likewise */
+  felling: () => import('../world/debris').Felling | null
   /** let the movers an impact watch is tracking knock the town's
       pedestrians over. A no-op until the world is attached */
   knockPeople: (watch: ImpactWatch) => void
@@ -365,7 +370,13 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
         parent: groundRoot,
         obstacles,
         groundAt: terrain.terrainY,
-        onSnap: propSnap,
+        // the snap is not spatialised, so one down the street (somebody
+        // else's car, net/remoteDamage.ts) is quieter by distance and one
+        // past earshot is not heard at all
+        onSnap: (hard, x, z) => {
+          const d = Math.hypot(x - heard.x, z - heard.z)
+          if (d < SNAP_EARSHOT) propSnap(hard * Math.min(1, (SNAP_EARSHOT - d) / (SNAP_EARSHOT - 12)))
+        },
         trackDisposable,
       })
       debris.ruins.onSolids = () => world.resolid()
@@ -416,6 +427,8 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   }
 
   let active = true
+  /** where the last update's camera was: how far off a felled prop snaps */
+  const heard = new THREE.Vector3()
   /** what the last update saw from the camera, for the look and the lens */
   const view = {
     alt: 0, reach: 0, far: viewFarFor(0), space: 0, fly: 1, curve: 0, near: 0.1,
@@ -567,6 +580,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
   }
 
   const update = (camPos: THREE.Vector3, todOverride?: number) => {
+    heard.copy(camPos)
     if (venue === 'moon') return updateMoon(camPos, todOverride)
     const live = active && !!w
     if (live) track(camPos, q)
@@ -905,6 +919,7 @@ export function buildOutsideWorld(opts: BuildOpts): OutsideHandles {
     hasWorld: () => w !== null,
     chunkSolids: (cx, cz) => (w ? w.world.solidsIn(cx, cz) : null),
     ruins: () => w?.debris.ruins ?? null,
+    felling: () => w?.debris.felling ?? null,
     knockPeople: (watch) => w?.pedestrians.knock(watch),
     people: () => (w ? w.pedestrians.grabbable() : []),
     crowd: {

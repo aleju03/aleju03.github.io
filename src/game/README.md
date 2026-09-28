@@ -1615,11 +1615,11 @@ npm run measure -- fracture              every building and landmark taken apart
 /damage [power]                          a hole in the wall you look at
 ```
 
-A destruction *is* plain data, for the shared world that does not carry it
-yet: `destruction.log` (building id, how, point, power, radius, direction,
-seed, time per event) and `ruins.ruined` (building id to lifted piece keys).
-The pieces an event lifts follow from the record; the rubble's flight does not
-and would travel like any other prop.
+A destruction *is* plain data, and the shared world carries it (see "Shared
+world damage" under Multiplayer): `destruction.log` (building id, how, point,
+power, radius, the throw, seed, time per event) and `ruins.ruined` (building
+id to lifted piece keys). The pieces an event lifts follow from the record;
+the rubble's flight does not, and stays each client's own.
 
 ## Multiplayer
 
@@ -1794,8 +1794,8 @@ geometry and batcher for remote and local props. Scale and mass travel.
 Arbitrary custom meshes and environmental rubble are outside the registry.
 Breaks, explosions, health and fuses travel; online splinters are particles
 with no physics, so cosmetic debris cannot change another authority's
-simulation. Procedural building fracture remains local: this protocol owns
-catalogue props, not the planet's building damage registry.
+simulation. Building fracture and felled trees are not catalogue props and
+do not ride this protocol; they have their own (below).
 
 Verification: `npm run measure -- prop-sync` runs the real client stores and
 Rapier bodies against the registry in Node. `node scripts/prop-sync-drive.mjs`
@@ -1804,6 +1804,48 @@ throw endpoints, tests claims, joints, explosion, late join and cleanup,
 and measures JSON bytes per second with 200 resting props and ten moving.
 `npm run drive -- links` covers program reuse in the real renderer.
 
+
+### Shared world damage
+
+What players break is broken for everyone on the level. `net/remoteDamage.ts`
+is the headless store, `net/damageProtocol.ts` the records and
+`server/src/worldDamage.js` the relay; the JSON is in `server/README.md`.
+Nothing about the planet travels even so: a building is its position-stable
+id, a lost piece its fracture key (cell and facing, the same on every tier),
+and a felled tree, cactus or lamp post its Smashable id.
+
+- **The truth is a union.** Every client reports the piece keys it has lifted
+  that the server has not heard (`world-ruin`, a 10 Hz diff of
+  `ruins.ruined`), and every felled prop (`world-fell`). The server keeps
+  the union per level and passes on only what is new; a client lifts what it
+  is missing through destruction's `absorb`, after a 1.2 s grace so its own
+  replay of the blow gets there first with the full show. A union does not
+  care about order or duplicates, so however two clients' rubble disagreed,
+  they end with the same holes.
+- **The show is a replay.** A blow to a building (a car, a thrown prop, a
+  falling storey's rubble, `/damage`, `/collapse`) goes out as a
+  `world-damage` record and peers call the same `hurt` with it; the storeys
+  that fail under it follow deterministically. Blasts are not recorded,
+  because the explosion already travels (`world-prop-explosion`) and lands in
+  destruction's `onExplosion` flagged `remote`. A remote event's rubble
+  damages no building (its owner reports what its own rubble broke), is not
+  recorded again and is nobody's undo. A felled prop is thrown from the same
+  foot the same way on every client; its flight diverges and does not matter.
+- **Late join is the end state, quietly.** `world-ruins` follows every
+  `world-welcome` and `world-level` with the whole union, applied with no
+  bang and no rubble, the way a chunk rebuilt after a ring exit comes back
+  already ruined. The client then reports straight back anything it holds
+  that the server does not (broken offline, or in a level the server has
+  forgotten), so the union heals itself.
+- **Online, undo takes rubble away but puts no wall back.** The hole is
+  everyone's.
+
+The server's caps are 256 ruined buildings per level (oldest forgotten
+first), 4,096 pieces per building and 4,096 felled props per level, and a
+level nobody has been in for fifteen minutes is forgotten. Verification:
+`npm run measure -- damage-sync` runs two clients (and then a late third)
+against the real server modules in Node and checks a console blow, a
+relayed blast, a felled prop and a late join leave identical ruins.
 
 ## The look
 

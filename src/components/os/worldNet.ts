@@ -39,6 +39,8 @@ export type WorldStatus = 'offline' | 'connecting' | 'live'
 export interface WorldNet {
   effect: (message: import('../../game/net/effectProtocol').EffectClientMessage) => void
   prop: (message: import('../../game/net/propProtocol').PropClientMessage) => void
+  /** what the world lost: net/remoteDamage.ts's records */
+  damage: (message: import('../../game/net/damageProtocol').DamageClientMessage) => void
   readonly status: WorldStatus
   /** the ICE servers the server handed over at join; the STUN/TURN set voice
       opens peers with. Empty until `world-welcome` lands */
@@ -311,6 +313,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   return {
     effect: (message) => { if (joined) raw(message) },
     prop: (message) => { if (joined) raw(message) },
+    damage: (message) => { if (joined) raw(message) },
     get status() {
       return status
     },

@@ -207,8 +207,9 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       if (!at || !finite(m.power) || !finite(m.radius) || !allow(ws, 'blast', 20)) return;
       // A source is still registered until its break event. Free blasts are
       // allowed near the caller (the console and weapons use the same seam).
-      if (p ? (p.authority !== w.id && p.transfer?.waiting !== w.id) || p.epoch !== m.epoch : Math.hypot(at[0] - w.x, at[1] - w.y, at[2] - w.z) > 90) return;
-      broadcast(w.level, { type: m.type, from: w.id, at, power: clamp(m.power, 0.1, 4), radius: clamp(m.radius, 1, 50) });
+      // The console aims 150 units out at up to power 10 (radius 16 * sqrt 10).
+      if (p ? (p.authority !== w.id && p.transfer?.waiting !== w.id) || p.epoch !== m.epoch : Math.hypot(at[0] - w.x, at[1] - w.y, at[2] - w.z) > 170) return;
+      broadcast(w.level, { type: m.type, from: w.id, at, power: clamp(m.power, 0.1, 10), radius: clamp(m.radius, 1, 60) });
     } else if (m.type === 'world-prop-meta') {
       if (!p || p.authority !== w.id || p.epoch !== m.epoch || p.transfer) return;
       const part = vec(m.part, 4, 1e6);

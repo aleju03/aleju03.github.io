@@ -22,6 +22,7 @@ import { createAnalytics } from './analytics.js';
 import { createYouTubeSearch } from './ytsearch.js';
 import { createPropRegistry } from './props.js';
 import { createWorldEffects } from './worldEffects.js';
+import { createWorldDamage } from './worldDamage.js';
 
 // ---------------------------------------------------------------- config
 
@@ -880,6 +881,9 @@ function handleDuelRematch(ws) {
 //      alone, who pins their own ragdoll to it
 //   7. sandbox props: per-level ownership, claims, joints and dirty poses;
 //      props.js arbitrates while one browser simulates each connected group
+//   8. world damage: the union of what each level has lost (building piece
+//      keys, felled props), kept and snapshotted by worldDamage.js, plus the
+//      blows being watched, relayed and never stored
 //
 // Sockets stay in the world independently of chat: `ws.world` is set by
 // world-join and is the whole of a player's server-side state.
@@ -897,6 +901,7 @@ let worldTicker = null;
 let worldDirty = false;
 const propRegistry = createPropRegistry({ players: worldPlayers, send, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
 const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: propRegistry.get });
+const worldDamage = createWorldDamage({ players: worldPlayers, send });
 
 // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
 // `hand` is whoever has an *empty* machine on their physgun (or is letting it
@@ -1213,6 +1218,7 @@ function handleWorldJoin(ws, msg) {
   });
   propRegistry.join(ws);
   worldEffects.snapshot(ws);
+  worldDamage.snapshot(ws);
   worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   worldDirty = true;
   startWorldTicker();
@@ -1225,6 +1231,7 @@ function leaveWorld(ws) {
   worldPlayers.delete(w.id);
   propRegistry.leave(w.id, w.level);
   worldEffects.leave(w.id);
+  worldDamage.left(w.level);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(w.id);
@@ -1277,6 +1284,8 @@ function handleWorldLevel(ws, msg) {
   propRegistry.leave(w.id, previousLevel);
   propRegistry.join(ws);
   worldEffects.snapshot(ws);
+  worldDamage.left(previousLevel);
+  worldDamage.snapshot(ws);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(w.id)) announceSeats();
   worldDirty = true;
@@ -1773,6 +1782,11 @@ function handleMessage(ws, msg) {
     case 'world-portal':
     case 'world-air-hop':
       worldEffects.handle(ws, msg);
+      break;
+    case 'world-damage':
+    case 'world-ruin':
+    case 'world-fell':
+      worldDamage.handle(ws, msg);
       break;
     case 'world-prop-spawn':
     case 'world-prop-move':
