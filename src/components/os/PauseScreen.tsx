@@ -10,6 +10,7 @@ import {
 } from './roamPrefs'
 import { PROOF_H, PROOF_W, type PixelProofs } from './pixelProofs'
 import { VOICE_FILTERS, type VoiceFilter } from './voiceFilters'
+import { GATE_ON_LEVEL, canPickSpeaker } from './proximityVoice'
 import type { GfxTier } from '../../game/world/quality'
 
 /*
@@ -42,6 +43,12 @@ import type { GfxTier } from '../../game/world/quality'
   - **The maps are not on it.** Where to play is its own sheet
     (`MapPicker.tsx`), with a picture of each; the menu carries one line,
     "change map", that swaps this sheet for that one.
+  - **Voice is Discord's panel on paper**: which microphone and which
+    speaker as pencilled lists, the two volumes as dials, and a mic test
+    whose meter is a row of pencil strokes that ink in as you talk, with a
+    notch where open mic starts sending. The test is `proximityVoice`'s,
+    so what you hear is what a neighbour hears; it stops when the sheet
+    goes away.
   - **The pixel size is three prints of your own view**, drawn by the game
     at each size the moment the settings page opens (`pixelProofs.ts`), and
     every graphics knob carries a pencilled line saying what it changes and
@@ -284,6 +291,141 @@ function Dial({
   )
 }
 
+/** the browser's audio devices, read while the sheet is up and again
+    whenever one is plugged in or the microphone is first allowed (`bump`):
+    until then a page is told how many there are but not their names */
+function useAudioDevices(active: boolean, bump: number) {
+  const [list, setList] = useState<MediaDeviceInfo[]>([])
+  useEffect(() => {
+    const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined
+    if (!active || !md?.enumerateDevices) return
+    let live = true
+    const read = () => {
+      md.enumerateDevices().then((d) => live && setList(d), () => {})
+    }
+    read()
+    md.addEventListener('devicechange', read)
+    return () => {
+      live = false
+      md.removeEventListener('devicechange', read)
+    }
+  }, [active, bump])
+  return list
+}
+
+/**
+  A device list: the names written out in pencil, the one in force swiped
+  with the marker like the menu's rows. The system default is always first
+  and is what '' means; Chrome's own "default" and "communications" aliases
+  are left out, since they are that same entry twice more.
+*/
+function Devices({
+  label,
+  hint,
+  kind,
+  all,
+  value,
+  fallback,
+  unnamed,
+  onPick,
+}: {
+  label: string
+  hint?: string
+  unnamed: string
+  kind: MediaDeviceKind
+  all: MediaDeviceInfo[]
+  value: string
+  fallback: string
+  onPick: (id: string) => void
+}) {
+  const own = all.filter((d) => d.kind === kind && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications')
+  const named = own.some((d) => d.label)
+  const rows = [{ id: '', label: fallback }, ...(named ? own.map((d) => ({ id: d.deviceId, label: d.label })) : [])]
+  // a saved device that is not plugged in reads as the default, which is
+  // what the voice graph falls back to
+  const on = rows.some((r) => r.id === value) ? value : ''
+  return (
+    <div className="min-w-0">
+      <span className="font-display text-[21px] uppercase" style={{ color: INK }}>
+        {label}
+      </span>
+      {hint && <Hint>{hint}</Hint>}
+      <div className="mt-1 flex flex-col">
+        {rows.map((r) => (
+          <button
+            key={r.id || 'default'}
+            type="button"
+            onClick={() => onPick(r.id)}
+            aria-pressed={on === r.id}
+            className="group relative truncate py-[3px] pl-5 text-left font-mono text-[12px] transition-transform duration-150 hover:translate-x-0.5"
+            style={{ color: on === r.id ? INK : INK_SOFT }}
+            title={r.label}
+          >
+            <span
+              aria-hidden
+              className={`absolute -inset-x-1 inset-y-[2px] -z-10 transition-opacity ${
+                on === r.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-30'
+              }`}
+              style={{ background: `${MARK}55`, borderRadius: '8px 11px 7px 12px', transform: 'rotate(-0.4deg)' }}
+            />
+            <span aria-hidden className="absolute left-1" style={{ color: MARK, opacity: on === r.id ? 1 : 0 }}>
+              ▸
+            </span>
+            {r.label}
+          </button>
+        ))}
+      </div>
+      {!named && own.length > 0 && <Hint>{unnamed}</Hint>}
+    </div>
+  )
+}
+
+/**
+  The mic test's meter: a row of pencil strokes that ink in with the
+  marker as you talk, from the voice graph's own analyser after your volume
+  dial, and a notch over the stroke where open mic starts sending. It reads
+  the level straight off the graph on its own frame loop, so only this row
+  repaints while you talk.
+*/
+const BARS = 44
+function MicMeter({ on, level }: { on: boolean; level: () => number }) {
+  const [lit, setLit] = useState(0)
+  useEffect(() => {
+    if (!on) return
+    let raf = 0
+    let held = 0
+    const tick = () => {
+      const v = level()
+      // up at once, down like a needle
+      held = v > held ? v : held * 0.88 + v * 0.12
+      setLit(Math.round(held * BARS))
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [on, level])
+  const notch = Math.round(GATE_ON_LEVEL * BARS)
+  return (
+    <div className="relative flex h-7 flex-1 items-end gap-[3px]" aria-hidden>
+      {Array.from({ length: BARS }, (_, i) => (
+        <span
+          key={i}
+          className="w-[3px] flex-1 rounded-full"
+          style={{
+            height: `${62 + ((i * 7) % 5) * 7}%`,
+            transform: `rotate(${((i * 5) % 3) - 1}deg)`,
+            background: on && i < lit ? MARK : `${INK}22`,
+          }}
+        />
+      ))}
+      <span
+        className="absolute -top-1.5 h-2 w-[2px]"
+        style={{ left: `calc(${notch / BARS} * 100%)`, background: INK }}
+      />
+    </div>
+  )
+}
+
 /**
   The pixel size, dealt out as three prints of your own view: the middle of
   the frame behind the sheet, drawn at each size and blown up twice (see
@@ -393,7 +535,8 @@ export interface PauseScreenProps {
   onPrefs: (next: (p: RoamPrefs) => RoamPrefs) => void
   /** play your own filtered voice back to you for a few seconds; resolves
       when it has finished */
-  onVoicePreview: () => Promise<void>
+  /** the mic test, reaching into the scene's voice graph */
+  mic: { test: (on: boolean) => Promise<boolean>; level: () => number }
   /** the view behind the sheet, drawn once at each pixel size and cropped
       (pixelProofs.ts); null when nothing is drawing */
   onPixelProofs: () => Promise<PixelProofs | null>
@@ -416,7 +559,7 @@ export default function PauseScreen({
   multiplayer,
   prefs,
   onPrefs,
-  onVoicePreview,
+  mic,
   onPixelProofs,
   tier,
   people,
@@ -427,7 +570,20 @@ export default function PauseScreen({
 }: PauseScreenProps) {
   const { t, language } = useI18n()
   const [page, setPage] = useState<Page>('character')
-  const [hearing, setHearing] = useState(false)
+  // the mic test: up, refused, and a bump that re-reads the devices once
+  // the microphone has been allowed and their names can be read
+  const [testing, setTesting] = useState(false)
+  const [testFailed, setTestFailed] = useState(false)
+  const [devBump, setDevBump] = useState(0)
+  const devices = useAudioDevices(open && page === 'settings', devBump)
+  const micTest = mic.test
+  // the test is private and only lives while it is on the page you are
+  // reading: closing the sheet or turning the page switches it off
+  useEffect(() => {
+    if (testing && !(open && page === 'settings')) {
+      void micTest(false).then(() => setTesting(false))
+    }
+  }, [open, page, testing, micTest])
   const fxWords = VOICE_FILTERS.map((id, i) => ({ id, label: t.sandbox.voiceFx.names[i] }))
   const tp = t.pause
   const pages: Array<{ id: Page; label: string }> = [
@@ -754,13 +910,36 @@ export default function PauseScreen({
                   />
                 </div>
 
-                {/* One dial per direction, and no per-person mixer: the mesh
-                    is proximity-mixed, so whose voice is loud is already
-                    answered by where they are standing. 100% is a working
-                    level rather than a maximum, and the gain that makes it
-                    one lives in `proximityVoice`, under a limiter */}
+                {/* Discord's voice panel, on paper: which microphone and
+                    which speaker, then one dial per direction, and no
+                    per-person mixer: the mesh is proximity-mixed, so whose
+                    voice is loud is already answered by where they are
+                    standing. 100% is a working level rather than a maximum,
+                    and the gain that makes it one lives in
+                    `proximityVoice`, under a limiter */}
                 {multiplayer && (
                   <div className="grid gap-x-10 gap-y-7 sm:col-span-2 sm:grid-cols-2">
+                    <Devices
+                      label={tp.micDevice}
+                      kind="audioinput"
+                      all={devices}
+                      value={prefs.micDevice}
+                      fallback={tp.systemDefault}
+                      unnamed={tp.devicesHint}
+                      onPick={(micDevice) => onPrefs((p) => ({ ...p, micDevice }))}
+                    />
+                    {canPickSpeaker() && (
+                      <Devices
+                        label={tp.speakerDevice}
+                        hint={tp.speakerHint}
+                        kind="audiooutput"
+                        all={devices}
+                        value={prefs.outDevice}
+                        fallback={tp.systemDefault}
+                        unnamed={tp.devicesHint}
+                        onPick={(outDevice) => onPrefs((p) => ({ ...p, outDevice }))}
+                      />
+                    )}
                     <Dial
                       label={tp.mic}
                       value={prefs.micVol}
@@ -783,29 +962,52 @@ export default function PauseScreen({
                         onPrefs((p) => ({ ...p, voiceVol: Math.round(v * 100) / 100 }))
                       }
                     />
+                    {/* the mic test: you, played back through the same trim,
+                        gate and filter everybody else hears, at a
+                        neighbour's level, for as long as it is on */}
+                    <div className="sm:col-span-2">
+                      <div className="flex items-center gap-6">
+                        <button
+                          type="button"
+                          aria-pressed={testing}
+                          onClick={() => {
+                            const on = !testing
+                            setTestFailed(false)
+                            setTesting(on)
+                            void mic.test(on).then((ok) => {
+                              if (!on) return
+                              if (!ok) {
+                                setTesting(false)
+                                setTestFailed(true)
+                              }
+                              // allowed now: the devices can be named
+                              setDevBump((n) => n + 1)
+                            })
+                          }}
+                          className="font-display relative shrink-0 px-1 py-0.5 text-[20px] uppercase"
+                          style={{ color: INK }}
+                        >
+                          {testing ? tp.micTestStop : `▸ ${tp.micTest}`}
+                          <span
+                            aria-hidden
+                            className={`absolute -inset-x-2.5 -inset-y-1.5 transition-opacity ${testing ? 'opacity-100' : 'opacity-0'}`}
+                            style={CIRCLED}
+                          />
+                        </button>
+                        <MicMeter on={testing} level={mic.level} />
+                      </div>
+                      <Hint>
+                        {testFailed ? tp.micTestFail : testing ? `${tp.micTestHint} · ▾ ${tp.gateNote}` : tp.micTestHint}
+                      </Hint>
+                    </div>
                     {/* what everybody else hears you through. The filter is
                         applied on this machine before the voice leaves it
                         (`voiceFilters.ts`), so the only honest way to show it
-                        is to play it back: the pencil note on the right is a
-                        button that does, privately, for a few seconds */}
+                        is to play it back, which is what the mic test above
+                        does */}
                     <div className="sm:col-span-2">
                       <Choice<VoiceFilter>
                         label={t.sandbox.voiceFx.label}
-                        note={
-                          <button
-                            type="button"
-                            disabled={hearing}
-                            onClick={() => {
-                              setHearing(true)
-                              void onVoicePreview().finally(() => setHearing(false))
-                            }}
-                            className="underline decoration-dotted underline-offset-2 disabled:no-underline"
-                          >
-                            <Note>
-                              {hearing ? t.sandbox.voiceFx.listening : `▸ ${t.sandbox.voiceFx.preview}`}
-                            </Note>
-                          </button>
-                        }
                         options={fxWords}
                         value={prefs.voiceFx}
                         onPick={(voiceFx) => onPrefs((p) => ({ ...p, voiceFx }))}

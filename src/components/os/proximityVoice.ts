@@ -44,11 +44,24 @@ import { createVoiceFx, type VoiceFilter } from './voiceFilters'
   between the gate and the send limiter, so it is applied on *this* side and
   every listener hears it with nothing added to the protocol. Its two ends
   are fixed nodes and a switch is a crossfade behind them, which is what makes
-  it live mid-call. The radio's squelch is keyed off this gate closing. The
-  sheet's "hear yourself" preview (`preview()`) holds the gate open, mutes the
-  send so the test stays private, and routes the filtered voice to your own
-  speakers for a few seconds, arming the microphone for the duration if it
-  was off.
+  it live mid-call. The radio's squelch is keyed off this gate closing.
+
+  The sheet's mic test (`test()`, Discord's "Mic Test") holds the gate open,
+  mutes the send so the test stays private, and routes the filtered voice to
+  your own speakers until it is switched off, arming the microphone for the
+  duration if it was off; `level()` is its meter. The monitor carries the
+  same makeup and the same speaker dial a nearby voice gets, so you hear
+  yourself at the level somebody standing next to you does. It used to go
+  out at unity, ~9 dB under that (the makeup is x2.8), which read as "I can
+  barely hear myself".
+
+  Devices are the visitor's too (`roamPrefs.micDevice`/`outDevice`, '' for
+  the system default). A new microphone is only a new source node in front
+  of the trim, since peers carry the destination's track and never the
+  microphone's (below), so switching mid-call needs no `replaceTrack`. The
+  speaker is `AudioContext.setSinkId`, which moves the shared context and so
+  everything the walk plays, not only the voices; where the browser has no
+  `setSinkId` (Firefox, Safari) the sheet offers no picker at all.
 
   Two details that are load-bearing and look like mistakes:
 
@@ -113,10 +126,16 @@ const GATE_RAMP = 0.015
 
 const MODE_KEY = 'alejos-voice-mode'
 
-/** how long "hear yourself" listens, and how long the monitor stays up after
-    the gate shuts so a squelch or a cave's tail is heard out */
-const PREVIEW_MS = 4000
-const PREVIEW_TAIL_MS = 900
+/** where the open-mic gate opens, on the mic test's meter (0..1 over
+    METER_FLOOR_DB..0 dBFS), so the sheet can mark it */
+const METER_FLOOR_DB = -66
+export const GATE_ON_LEVEL = 1 - VAD_ON_DB / METER_FLOOR_DB
+
+/** the speaker picker needs `AudioContext.setSinkId` (Chromium 110+) */
+type SinkContext = AudioContext & { setSinkId?: (id: string) => Promise<void> }
+export const canPickSpeaker = () =>
+  typeof AudioContext !== 'undefined' &&
+  typeof (AudioContext.prototype as SinkContext).setSinkId === 'function'
 
 export type VoiceMode = 'open' | 'ptt'
 
@@ -154,9 +173,14 @@ export interface ProximityVoice {
     camera: THREE.Camera,
     dt: number,
   ) => void
-  /** play your own filtered voice back to you for a few seconds, privately:
-      the send is muted for the duration. Resolves when it is over */
-  preview: () => Promise<void>
+  /** the mic test: play your own filtered voice back to you, privately (the
+      send is muted), until it is switched off. Arms the microphone for the
+      duration if it was off; false when it could not be opened */
+  test: (on: boolean) => Promise<boolean>
+  readonly testing: boolean
+  /** how loud the microphone is right now after its trim, 0..1 for a meter
+      (METER_FLOOR_DB..0 dBFS); 0 with the mic off */
+  level: () => number
   /** a world-signal came back off the socket */
   accept: (from: PlayerId, data: VoiceSignal) => void
   dispose: () => void
@@ -174,6 +198,9 @@ export interface ProximityVoiceOpts {
   levels: () => { mic: number; out: number }
   /** the voice filter, read fresh every frame like the dials */
   filter: () => VoiceFilter
+  /** the chosen microphone and speaker ('' the system default), read fresh
+      every frame like the dials; a change is acted on, not re-set */
+  devices: () => { mic: string; out: string }
   /** the ICE servers to open the next peer with, read fresh each time: the
       server hands them over at join, and a TURN credential in them expires */
   ice: () => RTCIceServer[]
@@ -245,7 +272,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
   const send = ctx ? ctx.createGain() : null
   const outLimit = ctx ? limiterIn(ctx) : null
   const outDest = ctx ? ctx.createMediaStreamDestination() : null
-  // the preview's tap: the filtered voice, back to this machine's speakers
+  // the mic test's tap: the filtered voice, back to this machine's speakers
   const monitor = ctx ? ctx.createGain() : null
   if (gate && fx && send && outDest && outLimit) {
     gate.gain.value = 0
@@ -268,8 +295,9 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     bus.gain.value = VOICE_MAKEUP
     bus.connect(limiter)
     limiter.connect(ctx.destination)
-    // the monitor skips the bus's makeup (a voice at zero distance with no
-    // panner in front of it needs none) but not its limiter
+    // the monitor skips the bus (its gain is set per test to the bus's own
+    // makeup times the dial, with no panner to lose level in) but not its
+    // limiter
     if (fx && monitor) {
       monitor.gain.value = 0
       fx.output.connect(monitor)
@@ -277,10 +305,21 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     }
   }
   let previewing = false
+  /** the mic test is up, and whether it had to arm the microphone itself */
+  let testArmed = false
+  let testTimer = 0
   // what the graph is currently set to, so a per-frame read is two compares
   let micVol = 1
   let outVol = 1
   const clampVol = (v: number) => (v > VOL_MAX ? VOL_MAX : v > 0 ? v : 0)
+  /** the monitor's level while testing: a nearby voice's (makeup times the
+      speaker dial), which is the honest answer to "how do I sound" */
+  const monitorGain = () => VOICE_MAKEUP * outVol
+  // the devices in force: what the microphone was opened on and where the
+  // context is playing. A change in the prefs is acted on once
+  let micDevice = ''
+  let outDevice = ''
+  let switching = false
   const applyLevels = () => {
     if (!ctx) return
     const want = opts.levels()
@@ -293,8 +332,20 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     if (o !== outVol) {
       outVol = o
       bus?.gain.setTargetAtTime(VOICE_MAKEUP * o, ctx.currentTime, 0.02)
+      if (previewing) monitor?.gain.setTargetAtTime(monitorGain(), ctx.currentTime, 0.02)
     }
     fx?.set(opts.filter())
+    const dev = opts.devices()
+    if (dev.out !== outDevice) {
+      outDevice = dev.out
+      const sink = (ctx as SinkContext).setSinkId
+      // a speaker that has gone away plays on the default rather than nowhere
+      if (sink) void sink.call(ctx, dev.out).catch(() => sink.call(ctx, '').catch(() => {}))
+    }
+    if (dev.mic !== micDevice && !switching) {
+      micDevice = dev.mic
+      if (enabled) void switchMic()
+    }
   }
 
   // scratch, reused per frame
@@ -416,19 +467,54 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     changed()
   }
 
+  /** the microphone asked for: the chosen one, or the system's own when
+      that one has been unplugged since it was picked */
+  const openMic = async () => {
+    const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    if (micDevice) {
+      try {
+        return await navigator.mediaDevices.getUserMedia({ audio: { ...audio, deviceId: { exact: micDevice } } })
+      } catch (e) {
+        if (!(e instanceof DOMException) || (e.name !== 'OverconstrainedError' && e.name !== 'NotFoundError')) throw e
+      }
+    }
+    return navigator.mediaDevices.getUserMedia({ audio })
+  }
+
+  /** another microphone, mid-call: only the source in front of the trim
+      changes. Peers carry the destination's track, so nobody renegotiates */
+  const switchMic = async () => {
+    if (!ctx || !trim || switching) return
+    switching = true
+    try {
+      const stream = await openMic()
+      if (!enabled) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
+      micSource?.disconnect()
+      mic?.getTracks().forEach((t) => t.stop())
+      mic = stream
+      micSource = ctx.createMediaStreamSource(stream)
+      micSource.connect(trim)
+      error = null
+    } catch {
+      // the old microphone is still connected; say so and keep it
+      error = 'That microphone could not be opened'
+    } finally {
+      switching = false
+      changed()
+    }
+  }
+
   const startMic = async () => {
     if (!ctx || opening) return
     opening = true
     error = null
     changed()
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      })
+      micDevice = opts.devices().mic
+      const stream = await openMic()
       if (ctx.state === 'suspended') await ctx.resume()
       mic = stream
       micSource = ctx.createMediaStreamSource(stream)
@@ -455,6 +541,22 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     }
   }
 
+  /** the mic test over: monitor down, send back up, and the microphone
+      handed back if the test was what opened it */
+  const endTest = () => {
+    if (!ctx || !send || !monitor) return
+    if (!previewing) return
+    previewing = false
+    window.clearInterval(testTimer)
+    setGate(false)
+    const t = ctx.currentTime
+    monitor.gain.setTargetAtTime(0, t, GATE_RAMP)
+    send.gain.setTargetAtTime(1, t, GATE_RAMP)
+    if (testArmed && enabled) stopMic()
+    testArmed = false
+    changed()
+  }
+
   /** RMS of the last analyser frame, in dBFS */
   const micLevelDb = () => {
     if (!analyser || !samples) return -Infinity
@@ -474,7 +576,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       return mode
     },
     get speaking() {
-      // a preview holds the gate open with the send muted: nobody is hearing
+      // a mic test holds the gate open with the send muted: nobody is hearing
       // it, so nobody should see the speaking mark either
       return speaking && !previewing
     },
@@ -596,32 +698,40 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
       }
     },
 
-    async preview() {
-      if (!available || !ctx || !send || !monitor || previewing) return
-      // a click on the sheet is the gesture getUserMedia wants, so a preview
+    get testing() {
+      return previewing
+    },
+
+    async test(on) {
+      if (!available || !ctx || !send || !monitor) return false
+      if (!on) {
+        endTest()
+        return true
+      }
+      if (previewing) return true
+      // a click on the sheet is the gesture getUserMedia wants, so a test
       // with the mic off arms it for the duration and hands it back after
       const armed = !enabled
       if (armed) await startMic()
-      if (!enabled) return
+      if (!enabled) return false
       if (ctx.state === 'suspended') await ctx.resume()
-      fx?.set(opts.filter())
+      applyLevels()
       previewing = true
+      testArmed = armed
       const t = ctx.currentTime
       send.gain.setTargetAtTime(0, t, GATE_RAMP)
-      monitor.gain.setTargetAtTime(1, t, GATE_RAMP)
+      monitor.gain.setTargetAtTime(monitorGain(), t, GATE_RAMP)
       setGate(true)
+      // the walk is paused under the sheet, so nothing is calling update():
+      // the dials, the filter and the devices are followed from here instead
+      testTimer = window.setInterval(applyLevels, 50)
       changed()
-      await new Promise((r) => setTimeout(r, PREVIEW_MS))
-      // shut the gate first, so the squelch and the reverb tail play out on
-      // the monitor, and only then take the monitor down and the send back up
-      previewing = false
-      setGate(false)
-      await new Promise((r) => setTimeout(r, PREVIEW_TAIL_MS))
-      const t2 = ctx.currentTime
-      monitor.gain.setTargetAtTime(0, t2, GATE_RAMP)
-      send.gain.setTargetAtTime(1, t2, GATE_RAMP)
-      if (armed && enabled) stopMic()
-      changed()
+      return true
+    },
+
+    level() {
+      const db = micLevelDb()
+      return db > METER_FLOOR_DB ? 1 - db / METER_FLOOR_DB : 0
     },
 
     accept(from, data) {
@@ -652,6 +762,7 @@ export function createProximityVoice(opts: ProximityVoiceOpts): ProximityVoice {
     },
 
     dispose() {
+      endTest()
       for (const id of [...peers.keys()]) closePeer(id)
       stopMic()
       trim?.disconnect()

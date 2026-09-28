@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import * as THREE from 'three'
@@ -88,7 +88,7 @@ import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from 
 import PauseScreen, { type PersonWhere } from './PauseScreen'
 import { PIXEL_LINES_K, PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
 import { snapPixelProofs, type PixelProofs } from './pixelProofs'
-import { createProximityVoice, type VoiceMode } from './proximityVoice'
+import { createProximityVoice, type ProximityVoice, type VoiceMode } from './proximityVoice'
 import type { Session } from './osContext'
 import { track } from '../../analytics'
 import { EmoteWheel, PointMark, type EmoteWheelApi } from './EmoteWheel'
@@ -564,6 +564,11 @@ export default function CrtScene({
   const interactRef = useRef(onInteract)
   const liveRef = useRef(screenLive)
   const prefsRef = useRef(prefs)
+  /** the sheet's mic test, stable across renders so its effects don't churn */
+  const micTest = useMemo(() => ({
+    test: (on: boolean) => voiceRef.current?.test(on) ?? Promise.resolve(false),
+    level: () => voiceRef.current?.level() ?? 0,
+  }), [])
   /** the frame counter's number, written straight into the DOM twice a
       second by walkTick: a React render per reading would be the counter
       costing frames it is counting */
@@ -578,9 +583,9 @@ export default function CrtScene({
       state lives out here rather than inside the closure */
   const applyLookRef = useRef<((look: PlayerLook) => void) | null>(null)
   const setNickRef = useRef<((name: string) => void) | null>(null)
-  // the pause sheet's "hear yourself", which has to reach the voice graph
-  // living inside the scene effect; null whenever there is no world to share
-  const voicePreviewRef = useRef<(() => Promise<void>) | null>(null)
+  // the pause sheet's mic test, which has to reach the voice graph living
+  // inside the scene effect; null whenever there is no world to share
+  const voiceRef = useRef<ProximityVoice | null>(null)
   // the pause sheet's pixel-size proofs, answered by the next drawn frame
   // (see pixelProofs.ts); null whenever nothing 3D is drawing
   const pixelProofsRef = useRef<(() => Promise<PixelProofs | null>) | null>(null)
@@ -2161,6 +2166,7 @@ export default function CrtScene({
               out: prefsRef.current.voiceVol,
             }),
             filter: () => prefsRef.current.voiceFx,
+            devices: () => ({ mic: prefsRef.current.micDevice, out: prefsRef.current.outDevice }),
             // read per peer, not captured: a reconnect brings a fresh TURN
             // credential and the old one may already have expired
             ice: () => net?.ice ?? [],
@@ -2169,7 +2175,7 @@ export default function CrtScene({
           })
           syncVoice()
           setNickRef.current = (name) => net?.setNick(name)
-          voicePreviewRef.current = () => voice?.preview() ?? Promise.resolve()
+          voiceRef.current = voice
         }
 
         const leaveWorld = () => {
@@ -2179,7 +2185,7 @@ export default function CrtScene({
           blockNet.offline()
           voice?.dispose()
           voice = null
-          voicePreviewRef.current = null
+          voiceRef.current = null
           net?.close()
           net = null
           setNickRef.current = null
@@ -6032,7 +6038,7 @@ export default function CrtScene({
           multiplayer={mp.status === 'live'}
           prefs={prefs}
           onPrefs={setPrefs}
-          onVoicePreview={() => voicePreviewRef.current?.() ?? Promise.resolve()}
+          mic={micTest}
           onPixelProofs={() => pixelProofsRef.current?.() ?? Promise.resolve(null)}
           tier={tierInfo}
           people={people}

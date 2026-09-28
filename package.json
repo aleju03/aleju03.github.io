@@ -14,7 +14,8 @@
     "music": "node scripts/music-render.mjs",
     "steps": "node scripts/steps.mjs",
     "engine": "node scripts/engine.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:server": "bash scripts/deploy-server.sh"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",

@@ -83,6 +83,11 @@ export interface RoamPrefs {
   /** and how loud everyone else comes back. Not per person: the mesh is
       proximity-mixed, so the useful knob is the whole room's */
   voiceVol: number
+  /** which microphone and which speaker, by the browser's device id; ''
+      is the system default. A device that has gone away since falls back
+      to the default rather than failing (`proximityVoice`) */
+  micDevice: string
+  outDevice: string
   /** the soundtrack (game/music), and the world's own sound under it */
   musicVol: number
   ambVol: number
@@ -131,7 +136,7 @@ const CAP_DEFAULT_KEY = 'alejos-roam-cap-default'
 const OLD_CAP_DEFAULT = 160
 const PREFS_DEFAULT: RoamPrefs = {
   fov: 60, sens: 1, third: false, cap: 120, detail: 'auto', scale: 1,
-  pixels: 'medium', micVol: 1, voiceVol: 1, musicVol: 1, ambVol: 1, voiceFx: 'none',
+  pixels: 'medium', micVol: 1, voiceVol: 1, micDevice: '', outDevice: '', musicVol: 1, ambVol: 1, voiceFx: 'none',
   fps: false,
 }
 
@@ -156,6 +161,8 @@ export const loadPrefs = (): RoamPrefs => {
         third: p.third === true,
         micVol: vol(p.micVol, PREFS_DEFAULT.micVol),
         voiceVol: vol(p.voiceVol, PREFS_DEFAULT.voiceVol),
+        micDevice: typeof p.micDevice === 'string' ? p.micDevice.slice(0, 200) : '',
+        outDevice: typeof p.outDevice === 'string' ? p.outDevice.slice(0, 200) : '',
         musicVol: vol(p.musicVol, PREFS_DEFAULT.musicVol),
         ambVol: vol(p.ambVol, PREFS_DEFAULT.ambVol),
         voiceFx: VOICE_FILTERS.includes(p.voiceFx as VoiceFilter)
