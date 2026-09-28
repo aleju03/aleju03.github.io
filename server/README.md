@@ -244,23 +244,70 @@ authority until its acknowledgement arrives.
   console's own range, so a peer's replay is the same blast. S to C
   `world-prop-explosion {from,at,power,radius}` plays the effect and lets each
   prop's authority apply its own impulse and damage, including chain fuses.
-- C to S `world-prop-remove {id}` removes only the sender's own prop. Undo
-  uses this path. S to C `world-prop-remove {ids}` removes bodies and their
+- C to S `world-prop-remove {id}` removes a prop the sender may use as its
+  owner would (own, a friend's, shared, or protection off; see Ownership
+  below). Undo uses this path. S to C `world-prop-remove {ids}` removes bodies and their
   incident constraints, also used for cleanup and breakage.
 - C to S `world-prop-cleanup {target}`: `mine`, `all`, or a player name.
   Mine uses the server's ownership registry, independent of undo history.
   All requires admin or being the only player in this level. A name always
   requires admin, and matches stored spawner names case-insensitively.
-- S to C `world-prop-denied {op,reason,nonce?}` reports `admin`, `limit`,
-  `name`, `busy`, `reach`, `invalid`, or `rate`. Spawn refusals remove the
-  pending body; cleanup permission and cap refusals print English/Spanish
-  messages in the console feed.
+- S to C `world-prop-denied {op,reason,nonce?,id?,owner?,cap?}` reports
+  `admin`, `limit` (with the per-owner `cap`), `name`, `busy`, `reach`,
+  `invalid`, `rate`, or `protected` (with the prop's `id` and its `owner`'s
+  name). Spawn refusals remove the pending body; cleanup permission and cap
+  refusals print English/Spanish messages in the console feed; `protected`
+  is a quiet "that belongs to NAME" and the tool's denied buzz.
 
 Leaving or changing levels retains props. The first remaining player in the
 level becomes authority; with nobody left authority is zero and the last
-pose stays parked. The first arrival takes over parked bodies. Ownership
-retains the original session id, so reconnecting with a new id does not
-silently adopt old props; the admin can clean those by the retained name.
+pose stays parked. The first arrival takes over parked bodies. A departed
+owner's props wait five minutes (an account's next socket adopts them back
+by its identity; a guest's identity is its socket, so a guest's do not come
+back) and are then removed, announced with an ordinary `world-prop-remove`.
+
+### Ownership, friends, claims, votes
+
+`src/protection.js`, `src/claims.js`, assembled per world by
+`src/worldSocial.js` and consulted by `props.js` (`access`) and
+`worldBlocks.js` (`claims`). Identity is the account (`u:name`) or, for a
+guest, the socket (`s:n`). Everything is scoped by `ws.world.level`.
+
+- Protection is on by default in every scope. Only the owner, the owner's
+  friends, an admin, or anyone when the prop is `share`d (or a toy kind that
+  starts open: ball, cone, melon, soda_can, bottle) may claim a prop for the
+  hand, seat or keys, remove it, weld/rope/axis it (both ends), unweld it, or
+  set its part keys. Bumping (`collision` claims), blasts and hits stay free.
+  `/protect on|off` is C to S `world-social {op:'protect',on}`, accepted from
+  the scope's first player (lowest world id) or an admin.
+- C to S `world-prop-share {ids?,all?,on}` sets the flag on the sender's own
+  props (an admin's on anyone's); a stranger's attempt is `protected`.
+- Caps: 150 props per owner in a public world, 400 in a private one (the
+  `isPrivate` callback), and a token bucket of 100 spawns refilling at 30 a
+  second, answered `limit`/`rate`. `cleanup mine` removes the caller's
+  identity's props, `all` needs an admin unless alone, a name needs an admin.
+- C to S `world-social {op}`: `friend|unfriend {name}` (one-way grant, at most
+  32, stored in `world_friends` for registered grantors and grantees, in
+  memory for guests), `votekick {name}`, `vote {yes}`, `kick {name}` (admin),
+  `mute {name,minutes?}` / `unmute {name}` (admin), `claim|unclaim {cx,cz}`.
+  Rate limited at 24 per 5 seconds. S to C `world-social {protect,host,
+  friends,grantedBy}` (personal, sent on any change) and
+  `world-social-note {code,...}` (a code and numbers; the browser words them).
+- Vote: one per scope, twenty seconds, opened by any member with at least
+  three others present, needs `max(3, floor(voters/2)+1)` yes among everyone
+  but the accused, and ends early when it can no longer pass. A pass is a
+  ten-minute ban from the scope: S to C `world-kicked {level,until,by}` and
+  the socket is removed from the world; a rejoin gets `world-kicked` again.
+  Admins cannot be voted out and can `kick` (the same ban).
+- Mute is timed (default 10 minutes, at most a day) and stops `world-chat`
+  (`error muted`) and `world-signal` relays.
+- Claims: a claim is one 16x16 block chunk column, full height, at most 4 per
+  owner. S to C `world-claims {claims:[[cx,cz,owner,allowed,mine]]}` is
+  personal. In `worldBlocks.js` an edit (or blast) in a claim its sender may
+  not edit is dropped cell by cell, and the sender gets `world-block-refused
+  {edits:[x,y,z,held]...,owner}` where `held` is the server's block there or
+  -1 for the generated terrain, so the client puts it back. An owner who left
+  keeps their claims five minutes.
 
 Portals are outside this protocol. Same-level prop crossings already go
 through the sandbox's transform setter and send the teleport flag, keeping

@@ -16,7 +16,8 @@
  *             correction puts the block back on B; A never saw it. A friends
  *             B and the same dig goes through and reaches A.
  *
- * Shots go to shots/sandbox (--out <dir>): protection-*.png.
+ * PROTECTION_ONLY=cubeland skips the home half (headless is slow: the whole
+ * run is ~15 minutes). Shots go to shots/sandbox (--out <dir>): protection-*.png.
  */
 import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -110,6 +111,7 @@ try {
   await waitFor(() => a.evaluate('!!window.__social'), 40, 250, 'the social mirror')
 
   /* ------------------------------------------------------------- home -- */
+if (process.env.PROTECTION_ONLY !== 'cubeland') {
   await run(a, 'tp -32 -331')
   await run(b, 'tp -28 -331')
   await sleep(1500)
@@ -169,19 +171,25 @@ try {
   await fire(false)
   await b.evaluate('clearInterval(__gunTimer); __gun.release(false); __gun.dispose()')
   await run(a, 'unshare all')
+}
 
   /* --------------------------------------------------------- cubeland -- */
   console.log('to cubeland ...')
   await Promise.all([run(a, 'map cubeland'), run(b, 'map cubeland')])
   await Promise.all([a, b].map((c) => waitFor(() => c.evaluate('!!window.__cubeland && __cubeland.store.loaded > 4'), 160, 500, `cubeland ${c.nick}`)))
   await sleep(4000)
-  // both stand in the middle of one chunk
+  // both stand at the spawn (on land), in one chunk
   const centre = await a.evaluate(`(() => {
-    const h = __sandbox.console.host, c = __cubeland.net.chunkAt(h.here().x, h.here().z)
-    return { cx: c.cx, cz: c.cz, x: c.cx * 32 + 16, z: -40000 + c.cz * 32 + 16 }
+    const sp = __cubeland.level.spawn, c = __cubeland.net.chunkAt(sp.x, sp.z)
+    return { cx: c.cx, cz: c.cz, x: sp.x, z: sp.z }
   })()`)
   await a.evaluate(`__sandbox.console.host.teleport(${centre.x}, ${centre.z}, undefined, 0)`)
-  await b.evaluate(`__sandbox.console.host.teleport(${centre.x + 3}, ${centre.z + 3}, undefined, 0)`)
+  const near = await b.evaluate(`(() => {
+    const n = __cubeland.net
+    const same = (dx) => { const c = n.chunkAt(${centre.x} + dx, ${centre.z} + dx); return c.cx === ${centre.cx} && c.cz === ${centre.cz} }
+    return same(1) ? 1 : -1
+  })()`)
+  await b.evaluate(`__sandbox.console.host.teleport(${centre.x + near}, ${centre.z + near}, undefined, 0)`)
   await sleep(2500)
   await run(a, 'claim')
   await waitFor(() => b.evaluate(`__social.claims.some((c) => c.cx === ${centre.cx} && c.cz === ${centre.cz} && !c.allowed)`), 80, 100, 'the claim reaches B')
@@ -211,10 +219,15 @@ try {
   // 1. the client declines
   const t1 = await dig(b)
   await sleep(500)
-  await press(b)
-  await sleep(1200)
+  let toast = false
+  for (let k = 0; k < 6 && !toast; k++) {
+    await press(b)
+    await sleep(700)
+    toast = /chunk belongs to alpha/i.test(await feed(b))
+  }
   assert.equal(await at(b, t1), t1.before, 'the block is still there on B')
-  assert.ok(/belongs to alpha/i.test(await feed(b)), 'the toast names the owner')
+  if (!toast) console.log('DEBUG', JSON.stringify(await b.evaluate(`(() => { const C = window.__cubeland, cam = window.__sandboxCamera; return { pos: cam.position.toArray(), claims: __social.claims, hud: C.level.hands.hud && 1, feed: document.body.innerText.slice(-400) } })()`)))
+  assert.ok(toast, 'the toast names the owner')
   console.log(`B's dig at ${t1.bx},${t1.by},${t1.bz} declined by the client`)
   await b.shot('claim-declined')
 
