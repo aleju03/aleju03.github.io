@@ -35,7 +35,7 @@
  * code is data, and the client re-validates it on the way in anyway.
  */
 import zlib from 'node:zlib';
-import { PROP_KINDS, cleanTag } from './props.js';
+import { isPropKind, cleanTag } from './props.js';
 
 export const MAX_CODE = 64 * 1024;
 export const MAX_THUMB = 20 * 1024;
@@ -78,7 +78,7 @@ export function checkCode(code) {
   if (json.p.length < 1 || json.p.length > MAX_PROPS || json.j.length > MAX_JOINTS) return null;
   for (const r of json.p) {
     if (!Array.isArray(r) || (r.length !== 13 && r.length !== 14)) return null;
-    if (typeof r[0] !== 'string' || !PROP_KINDS.has(r[0])) return null;
+    if (typeof r[0] !== 'string' || !isPropKind(r[0])) return null;
     if (!within(r[1], 0.2, 4) || !within(r[2], 0, 20000)) return null;
     if (r[3] !== 0 && r[3] !== 1) return null;
     for (let i = 4; i < 7; i++) if (!within(r[i], -400, 400)) return null;

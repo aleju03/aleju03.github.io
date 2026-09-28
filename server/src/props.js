@@ -26,6 +26,11 @@ const SPAWN_BURST = 100;
 const SPAWN_PER_SEC = 30;
 const LEVEL_CAP = 2000;
 const WORLD_CAP = 8000;
+/** Cubeland's loose blocks are `block_<key>` (src/game/sandbox/blocks.ts): a
+    dozen dozen kinds that grow with the block table, so the prefix is the
+    allowlist rather than a list here that would go stale */
+export const isBlockKind = (k) => typeof k === 'string' && /^block_[a-z0-9_]{1,40}$/.test(k);
+export const isPropKind = (k) => PROP_KINDS.has(k) || isBlockKind(k);
 export const PROP_KINDS = new Set(`crate crate_small pallet plank barrel trashcan sawblade pipe hydrant cone ball bucket milk_crate lawn_chair wheelie_bin chair table couch bathtub mattress door tv melon bottle soda_can portal_panel block barrier cinder sawhorse girder stop_sign tyre engine barrel_explosive gascan propane dumpster fridge vending streetlamp container plate_s plate_m plate_l beam_s beam_l thruster wheel hoverball seat balloon lamp sign dynamite`.split(' '));
 const TYPES = new Set(['weld', 'axis', 'rope', 'nocollide']);
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
@@ -190,7 +195,7 @@ export function createPropRegistry({ players, send, now = Date.now, onRemove = (
       return;
     }
     if (m.type === 'world-prop-spawn') {
-      if (!idOK(m.nonce) || !PROP_KINDS.has(m.kind)) return deny(ws, m.type, 'invalid', m.nonce);
+      if (!idOK(m.nonce) || !isPropKind(m.kind)) return deny(ws, m.type, 'invalid', m.nonce);
       let seen = spawns.get(ws);
       if (!seen) spawns.set(ws, seen = new Map());
       const key = `${w.level}:${m.nonce}`;

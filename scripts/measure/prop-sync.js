@@ -7,11 +7,14 @@ import assert from 'node:assert/strict'
 import { createSandbox } from '../../src/game/sandbox/sandbox.ts'
 import { createPropNetwork } from '../../src/game/net/remoteProps.ts'
 import { CATALOGUE } from '../../src/game/sandbox/catalogue.ts'
-import { createPropRegistry, PROP_KINDS } from '../../server/src/props.js'
+import { createPropRegistry, PROP_KINDS, isPropKind } from '../../server/src/props.js'
 import { makeCollisionSet } from '../../src/game/physics/collision.ts'
 import { historyOf } from '../../src/game/sandbox/history.ts'
 import { contraptionOf } from '../../src/game/sandbox/contraption/contraption.ts'
-assert.deepEqual([...PROP_KINDS].sort(), CATALOGUE.map(k=>k.id).sort(), 'server allowlist matches every catalogue kind')
+// (Cubeland's block_* kinds are allowed by prefix, not listed)
+assert.deepEqual([...PROP_KINDS].sort(), CATALOGUE.map(k=>k.id).filter(id=>!id.startsWith('block_')).sort(), 'server allowlist matches every catalogue kind')
+assert.ok(CATALOGUE.filter(k=>k.id.startsWith('block_')).every(k=>isPropKind(k.id)), 'server accepts every block kind')
+assert.ok(!isPropKind('block_') && !isPropKind('block_../x') && !isPropKind('blockX'), 'and nothing that merely resembles one')
 let time = 0
 const sent = []
 const players = new Map(), inbound = [], outbound = []
