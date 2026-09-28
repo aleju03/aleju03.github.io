@@ -1,6 +1,7 @@
-import { useEffect, useReducer, useState } from 'react'
+import { useEffect, useReducer, useState, useSyncExternalStore } from 'react'
 import type { HealthState } from '../../game/player/health'
 import { useI18n } from '../../i18n'
+import { photoStore } from './photoStore'
 
 /*
   Hit points, drawn as stationery like the rest of the walk's HUD: a strip of
@@ -92,11 +93,16 @@ export default function HealthHud({
     return () => window.clearTimeout(id)
   }, [pvpNote])
 
+  const photoHeld = useSyncExternalStore(photoStore.subscribe, () => photoStore.get().held)
   const share = Math.max(0, Math.min(1, state.hp / state.max))
   const showBar = state.engaged && !state.dead
   const name = (id: number, mine: boolean) => (mine ? h.you : nameOf(id))
   const left = state.respawnIn()
   const kind = (k: string) => h.kinds[k] ?? h.kinds.env
+
+  // the camera in hand clears the frame: no bars, feed or notes over a photo
+  // (the death sheet still comes through)
+  if (photoHeld && !state.dead) return null
 
   return (
     <>

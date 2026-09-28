@@ -35,6 +35,8 @@ import { BARRIER_PROFILE, DIMS, MODELS } from './models'
 export type Category =
   | 'wood' | 'metal' | 'plastic' | 'furniture' | 'food'
   | 'construction' | 'vehicle' | 'explosive' | 'big'
+  /** balloons, lamps, signs: creative/kinds.ts registers them */
+  | 'fun'
   /** contraption parts: contraption/parts.ts registers them and the tab */
   | 'parts'
   /** Cubeland's blocks: blocks.ts registers them and the tab */
@@ -61,6 +63,7 @@ export const CATEGORIES: Array<{ id: Category; name: Names }> = [
   { id: 'vehicle', name: { en: 'Car parts', es: 'Autopartes' } },
   { id: 'explosive', name: { en: 'Explosives', es: 'Explosivos' } },
   { id: 'big', name: { en: 'Big stuff', es: 'Cosas grandes' } },
+  { id: 'fun', name: { en: 'Fun', es: 'Diversión' } },
 ]
 
 export const CATALOGUE: CatalogueEntry[] = []

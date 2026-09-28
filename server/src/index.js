@@ -2054,6 +2054,7 @@ function handleMessage(ws, msg) {
     case 'world-prop-break':
     case 'world-prop-explosion':
     case 'world-prop-meta':
+    case 'world-prop-tag':
     case 'world-prop-joint':
     case 'world-prop-unjoint':
     case 'world-prop-share':

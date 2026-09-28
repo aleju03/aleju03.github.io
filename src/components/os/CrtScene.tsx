@@ -63,6 +63,8 @@ import MapPicker from './MapPicker'
 import { builds } from './buildsStore'
 import { buildNotices } from '../../game/sandbox/blueprint/clipboard'
 import ToolSwitcher, { type BeltState } from './ToolSwitcher'
+import PhotoCamera from './PhotoCamera'
+import { photoStore } from './photoStore'
 import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/quality'
@@ -421,6 +423,8 @@ export default function CrtScene({
   /** the tool gun's readout: its `mode:step` and the keys it is aimed at */
   const [toolLine, setToolLine] = useState<{ state: string; keys: string | null } | null>(null)
   const [weaponLine, setWeaponLine] = useState<WeaponTool | null>(null)
+  /** the camera is in hand: its keys are on the tape */
+  const [cameraOut, setCameraOut] = useState(false)
   /** what is in your hands, for the switcher; `n` counts changes */
   const [belt, setBelt] = useState<BeltState>({ slot: 0, portal: false, n: 0 })
   /** Cubeland's hotbar, once the map has been loaded (BlockBar.tsx) */
@@ -1515,6 +1519,9 @@ export default function CrtScene({
         let partSeatRequest: { id: number; until: number } | null = null
         let toolLineNow = ''
         let weaponLineNow: WeaponTool | null = null
+        /** the camera took a photograph: copy the canvas after the next render */
+        let photoWant = false
+        let cameraOutNow = false
         /** the belt slot the switcher last showed; the belt starts on hands */
         let beltSlotNow = 0
         /** props still scaling in from a spawn, and how long that takes */
@@ -2336,6 +2343,20 @@ export default function CrtScene({
           input.clearKeys() // nothing stays latched while the line has the keys
           input.releaseLock()
         }
+        /** E on a lamp, a stick of dynamite or a sign (sandbox/creative): a
+            sign opens the console with `/sign` and its words already typed */
+        let creativeUseAt = 0
+        const workCreative = () => {
+          if (reachPropNow === null || !sandbox || !sandboxMod) return false
+          // a held E repeats: one switch per press, not a flicker
+          const at = performance.now()
+          if (at - creativeUseAt < 450) return sandboxMod.creativeOf(sandbox).verb(reachPropNow, 'en') !== null
+          creativeUseAt = at
+          const cr = sandboxMod.creativeOf(sandbox)
+          const r = cr.use(reachPropNow)
+          if (r === 'sign') openChat(`/sign ${cr.tagOf(reachPropNow).text}`)
+          return r !== null
+        }
         let menuNow = false
         /** the catalogue's find line has the keyboard (see SpawnMenu.tsx) */
         let menuPinned = false
@@ -2521,6 +2542,7 @@ export default function CrtScene({
               }
               if (takeSeat()) return true
               if (takePartSeat()) return true
+              if (workCreative()) return true
             }
             if (vehicleNow) {
               enterVehicle(vehicleNow.id, vehicleNow.seat)
@@ -3343,6 +3365,12 @@ export default function CrtScene({
         const lampBuf = new Float32Array(16 * 3)
         const lampRadii = new Float32Array(16)
         const worldLamps = new Float32Array(16 * 3)
+        // the lamps people have set down (sandbox/creative): a few pools of
+        // their own, ahead of the street's
+        const PROP_POOLS = 4
+        const propLamps = new Float32Array(PROP_POOLS * 3)
+        const propLampR = new Float32Array(PROP_POOLS)
+        let lampVer = -1
         const houseDist = new Float32Array(16)
         /*
           What the look is actually handed: every lamp still showing, with
@@ -3387,6 +3415,12 @@ export default function CrtScene({
             lampBuf[j * 3 + 2] = lz
             lampRadii[j] = src[i * 4 + 3]
           }
+          if (sandbox && sandboxMod) {
+            const k = sandboxMod.creativeOf(sandbox).lampPools(p.x, p.z, propLamps, propLampR, Math.min(PROP_POOLS, WANT_MAX - n))
+            lampBuf.set(propLamps.subarray(0, k * 3), n * 3)
+            lampRadii.set(propLampR.subarray(0, k), n)
+            n += k
+          }
           const m = outside.nearLamps(p.x, p.z, worldLamps, WANT_MAX - n)
           lampBuf.set(worldLamps.subarray(0, m * 3), n * 3)
           lampRadii.fill(8.5, n, n + m)
@@ -3409,6 +3443,15 @@ export default function CrtScene({
           const open = !!levels.current.outdoors
           const p = camera.position
           airAskAge++
+          // a lamp set down, taken up or switched shows at once, not at the
+          // next scheduled look
+          if (sandbox && sandboxMod) {
+            const v = sandboxMod.creativeOf(sandbox).lampVersion
+            if (v !== lampVer) {
+              lampVer = v
+              airAskAge = 999
+            }
+          }
           if (
             !Number.isFinite(airAskX) || airAskAge > 45 ||
             (p.x - airAskX) ** 2 + (p.z - airAskZ) ** 2 > 36
@@ -3553,6 +3596,13 @@ export default function CrtScene({
           applyLight()
           renderPortals()
           look.render(scene, camera)
+          // a photograph: the canvas is copied here, in the task that drew
+          // it, because a WebGL canvas without preserveDrawingBuffer is blank
+          // by the next one (photoStore.ts)
+          if (photoWant) {
+            photoWant = false
+            photoStore.capture(webgl.domElement)
+          }
           if (proofWaiters.length) {
             const sc = scene
             const waiting = proofWaiters
@@ -4059,7 +4109,8 @@ export default function CrtScene({
             ceilingY: level.ceilingAt ? level.ceilingAt(camera.position.x, camera.position.z, walk.feetY) : level.ceilingY,
             waterY: level.waterY,
             collision: level.collision,
-            fovBase: prefsRef.current.fov,
+            // the camera's hand-held zoom narrows the lens (tools/camera.ts)
+            fovBase: tools ? tools.camera.fov(prefsRef.current.fov) : prefsRef.current.fov,
           })
           // ...and whatever went into one comes out of the other
           if (portalsOn) portalWalk!.after(step.vx, step.vy, step.vz)
@@ -4148,6 +4199,23 @@ export default function CrtScene({
             if (tl !== toolLineNow) {
               toolLineNow = tl
               setToolLine(tl ? { state: tools.toolgun.state, keys: tools.toolgun.aimedKeys } : null)
+            }
+            // the camera: a click asked for a photograph (taken after the
+            // next render, in the same task), the zoom, the viewfinder and
+            // the keys that save and copy the last one
+            {
+              const cam = toolsLive && tools.tool === 'camera'
+              if (cam !== cameraOutNow) {
+                cameraOutNow = cam
+                setCameraOut(cam)
+                photoStore.setHeld(cam)
+              }
+              photoStore.setZoom(tools.camera.zoom)
+              if (tools.camera.takeShot()) photoWant = true
+              if (cam) {
+                if (edges.pressed('photoSave')) photoStore.save()
+                if (edges.pressed('photoCopy')) void photoStore.copy()
+              }
             }
             // a change of what is in your hands, however it came (a key, the
             // wheel, `give`, the catalogue): the tags come down (ToolSwitcher.tsx)
@@ -4609,6 +4677,10 @@ export default function CrtScene({
                 // a contraption seat in reach, in any level with a sandbox
                 (reachPropNow !== null && !walk.noclip && tools?.contraption.isSeat(reachPropNow)
                   ? 'sit in the seat'
+                  : null) ??
+                // a lamp to switch, a fuse to light, a sign to write on
+                (reachPropNow !== null && sandbox && sandboxMod && !walk.noclip
+                  ? sandboxMod.creativeOf(sandbox).verb(reachPropNow, langRef.current)
                   : null)
           if (propVerb !== propVerbNow) {
             propVerbNow = propVerb
@@ -5016,6 +5088,9 @@ export default function CrtScene({
                   wheelApi.current?.aim(x, y)
                 },
                 __tools: tools,
+                // the camera's photographs, and the balloon/lamp/sign controller
+                __photos: photoStore,
+                __creative: (sb?: Sandbox) => sandboxMod?.creativeOf((sb ?? sandbox)!),
                 __worldEffects: worldEffects,
                 __portalWalk: portalWalk,
                 __portalMoon: portalMoon,
@@ -5720,6 +5795,7 @@ export default function CrtScene({
             propSwing = 1.1
             return
           }
+          if (workCreative()) return
           takeSeat()
         }
         enterRef.current = () => {
@@ -6023,6 +6099,8 @@ export default function CrtScene({
                 : weaponLine
                   ? tapeLine(keyHint(`${t.sandbox.hud.weapons[weaponLine]} · ${
                       t.sandbox.hud.weaponTail} · ${t.sandbox.hud.pauses}`, language))
+                : cameraOut
+                  ? tapeLine(keyHint(`${t.sandbox.hud.camera} · ${t.sandbox.hud.pauses}`, language))
                 : toolLine
                   ? // the tool gun out: what its two buttons do in this mode, now
                     tapeLine(keyHint(`${toolgunLine(toolLine.state, language, toolLine.keys)} · ${
@@ -6166,6 +6244,7 @@ export default function CrtScene({
           }}
         />
       )}
+      {roam && walking && <PhotoCamera paused={paused} />}
       {roam && walking && (
         <ToolSwitcher
           belt={belt}

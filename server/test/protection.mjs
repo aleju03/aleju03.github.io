@@ -117,6 +117,25 @@ function unit() {
     const ball = r.spawn(owner, 'ball');
     assert.equal(ball.share, true);
     assert.equal(r.spawn(owner, 'barrel').share, false);
+    // the creative tags (paint, a lamp's switch, a sign's words) follow the same rule
+    {
+      const sign = r.spawn(owner, 'sign');
+      assert.equal(sign.share, false, 'a sign is not a toy');
+      const lamp = r.spawn(owner, 'lamp'), dyn = r.spawn(owner, 'dynamite');
+      assert.ok(lamp.id && dyn.id, 'the new kinds go through the ordinary spawn');
+      const tag = (who, prop, t) => { const m = r.log.length; r.tx(who, { type: 'world-prop-tag', id: prop.id, tag: t }); return r.denials(who, m); };
+      let dd = tag(stranger, sign, [3, 0, 72, 73]);
+      assert.equal(dd[0]?.reason, 'protected', 'a stranger cannot paint or write');
+      assert.equal(r.registry.get('r', sign.id).tag, null, 'and nothing changed');
+      assert.equal(tag(owner, sign, [3, 0, 72, 73]).length, 0);
+      assert.deepEqual(r.registry.get('r', sign.id).tag, [3, 0, 72, 73], 'the owner may');
+      assert.equal(tag(friend, sign, [4, 0]).length, 1, 'a stranger-to-owner friend socket is still refused before the grant');
+      r.social(owner, { op: 'friend', name: 'friend' });
+      assert.equal(tag(friend, lamp, [0, 1]).length, 0, 'a friend may switch the lamp');
+      r.tx(owner, { type: 'world-prop-share', ids: [dyn.id], on: true });
+      assert.equal(tag(stranger, dyn, [2, 0]).length, 0, 'a shared prop may be painted by anyone');
+      r.social(owner, { op: 'unfriend', name: 'friend' });
+    }
     // the switch: only the first player or an admin, and off means free for all
     const t = r.spawn(owner);
     r.social(stranger, { op: 'protect', on: false });

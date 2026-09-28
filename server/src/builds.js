@@ -35,7 +35,7 @@
  * code is data, and the client re-validates it on the way in anyway.
  */
 import zlib from 'node:zlib';
-import { PROP_KINDS } from './props.js';
+import { PROP_KINDS, cleanTag } from './props.js';
 
 export const MAX_CODE = 64 * 1024;
 export const MAX_THUMB = 20 * 1024;
@@ -77,7 +77,7 @@ export function checkCode(code) {
   if (!json || typeof json !== 'object' || json.v !== 1 || !Array.isArray(json.p) || !Array.isArray(json.j)) return null;
   if (json.p.length < 1 || json.p.length > MAX_PROPS || json.j.length > MAX_JOINTS) return null;
   for (const r of json.p) {
-    if (!Array.isArray(r) || r.length !== 13) return null;
+    if (!Array.isArray(r) || (r.length !== 13 && r.length !== 14)) return null;
     if (typeof r[0] !== 'string' || !PROP_KINDS.has(r[0])) return null;
     if (!within(r[1], 0.2, 4) || !within(r[2], 0, 20000)) return null;
     if (r[3] !== 0 && r[3] !== 1) return null;
@@ -90,6 +90,7 @@ export function checkCode(code) {
     if (len < 0.25) return null;
     if (r[11] !== -1 && !isInt(r[11], 0, KEY_PAIRS - 1)) return null;
     if (r[12] !== 0 && r[12] !== 1) return null;
+    if (r.length === 14 && (r[13] === null || cleanTag(r[13]) === undefined)) return null;
   }
   for (const r of json.j) {
     if (!Array.isArray(r) || r.length !== 20) return null;

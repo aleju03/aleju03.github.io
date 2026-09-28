@@ -258,6 +258,8 @@ const dictionaries = {
           rocket: 'rocket launcher · {grab} fire',
         },
         weaponTail: '{slot3} next weapon · {slot1} hands · {slot2} tools',
+        // the camera out (sandbox/tools/camera.ts)
+        camera: 'camera · {grab} take a photo · {freeze} zoom · wheel sets the zoom · {photoSave} save the last · {photoCopy} copy it · {slot2} next tool',
       },
       // hit points, the killfeed and the death screen (components/os/HealthHud.tsx)
       health: {
@@ -305,8 +307,20 @@ const dictionaries = {
         columns: ['hands', 'tools', 'weapons'],
         names: {
           hands: 'hands', physgun: 'physgun', toolgun: 'tool gun', portalgun: 'portal gun',
-          pistol: 'pistol', crossbow: 'crossbow', rocket: 'rocket launcher',
+          pistol: 'pistol', crossbow: 'crossbow', rocket: 'rocket launcher', camera: 'camera',
         },
+      },
+      // the camera's viewfinder and photo strip (components/os/PhotoCamera.tsx)
+      photo: {
+        zoom: 'zoom',
+        developing: 'developing',
+        saved: 'saved to your downloads',
+        copied: 'copied to the clipboard',
+        copyFailed: 'the browser would not copy it',
+        nothing: 'take a photo first',
+        gallery: 'photos',
+        download: 'save',
+        copy: 'copy',
       },
       // the voice filter on the pause sheet (components/os/voiceFilters.ts),
       // in VOICE_FILTERS order
@@ -683,6 +697,7 @@ const dictionaries = {
           rocket: 'lanzacohetes · {grab} disparar',
         },
         weaponTail: '{slot3} siguiente arma · {slot1} manos · {slot2} herramientas',
+        camera: 'cámara · {grab} tomar una foto · {freeze} zoom · la rueda cambia el zoom · {photoSave} guardar la última · {photoCopy} copiarla · {slot2} siguiente herramienta',
       },
       // vida, el registro de bajas y la pantalla de muerte (components/os/HealthHud.tsx)
       health: {
@@ -721,8 +736,19 @@ const dictionaries = {
         columns: ['manos', 'herramientas', 'armas'],
         names: {
           hands: 'manos', physgun: 'pistola física', toolgun: 'pistola de herramientas', portalgun: 'pistola de portales',
-          pistol: 'pistola', crossbow: 'ballesta', rocket: 'lanzacohetes',
+          pistol: 'pistola', crossbow: 'ballesta', rocket: 'lanzacohetes', camera: 'cámara',
         },
+      },
+      photo: {
+        zoom: 'zoom',
+        developing: 'revelando',
+        saved: 'guardada en tus descargas',
+        copied: 'copiada al portapapeles',
+        copyFailed: 'el navegador no quiso copiarla',
+        nothing: 'toma una foto primero',
+        gallery: 'fotos',
+        download: 'guardar',
+        copy: 'copiar',
       },
       voiceFx: {
         label: 'tu voz',

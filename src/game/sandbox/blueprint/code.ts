@@ -2,6 +2,7 @@ import {
   FRAME_LEN, JOINT_TYPES, MAX_JOINTS, MAX_PROPS, isKnownKind, legalKeys,
   type Blueprint, type BpJoint, type BpProp,
 } from './blueprint'
+import { cleanTag } from '../creative/tags'
 
 /*
   The share code: a blueprint as one paste-able string.
@@ -11,7 +12,7 @@ import {
   The version prefix is checked before anything is inflated, so a future
   format is refused by name rather than misread. The JSON is columnar rows
   (`{v, n, p: [[kind, scale, mass, frozen, x, y, z, qx, qy, qz, qw, keys,
-  flip], ...], j: [[type, a, b, f0..f16], ...]}`), which deflates to a few
+  flip, tag?], ...], j: [[type, a, b, f0..f16], ...]}`), which deflates to a few
   bytes a prop; 'deflate' is zlib framing, so the server can inflate it with
   node:zlib to check a published build without knowing anything about
   kinds.
@@ -112,6 +113,7 @@ export const toJson = (bp: Blueprint) => ({
   n: bp.name,
   p: bp.props.map((p) => [
     p.kind, p.scale, p.mass, p.frozen ? 1 : 0, ...p.pos, ...p.quat, p.keys, p.flip ? 1 : 0,
+    ...(p.tag ? [p.tag] : []),
   ]),
   j: bp.joints.map((j) => [JOINT_TYPES.indexOf(j.type), j.a, j.b, ...j.frames]),
 })
@@ -151,7 +153,7 @@ export function fromJson(raw: unknown, known: (kind: string) => boolean = isKnow
   if (o.p.length < 1 || o.p.length > MAX_PROPS) throw new BlueprintError('props')
   if (o.j.length > MAX_JOINTS) throw new BlueprintError('joints')
   const props: BpProp[] = o.p.map((row: unknown) => {
-    if (!Array.isArray(row) || row.length !== 13) throw new BlueprintError('shape')
+    if (!Array.isArray(row) || (row.length !== 13 && row.length !== 14)) throw new BlueprintError('shape')
     const kind = row[0]
     if (typeof kind !== 'string' || kind.length > 32 || !known(kind)) throw new BlueprintError('kind', String(kind).slice(0, 32))
     const m = num(row[2], 0, 20000)
@@ -167,6 +169,7 @@ export function fromJson(raw: unknown, known: (kind: string) => boolean = isKnow
       quat: [round4(q[0] / len), round4(q[1] / len), round4(q[2] / len), round4(q[3] / len)],
       keys: row[11] === -1 ? -1 : legalKeys(row[11]),
       flip: row[12] === 1,
+      ...(row.length === 14 && cleanTag(row[13]) ? { tag: cleanTag(row[13])! } : {}),
     }
   })
   const joints: BpJoint[] = o.j.map((row: unknown) => {

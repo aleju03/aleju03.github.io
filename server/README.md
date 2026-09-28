@@ -215,11 +215,13 @@ motion omits velocities. A final sleeping pose is sent once; unchanged props
 produce no traffic. Other clients interpolate two ticks behind, never
 extrapolate, and keep the Rapier body kinematic.
 
-A prop record is `{id,owner,name,authority,epoch,kind,scale,mass,pose,lock,part,life,transfer?}`.
+A prop record is `{id,owner,name,authority,epoch,kind,scale,mass,pose,lock,part,life,tag,transfer?}`.
 `owner` is the spawner's world-session id, separate from authority. `name` is
 retained for admin cleanup after the spawner leaves. `lock` is null, `hand`,
 `seat` or `keys`. `part` is null or `[keyPair,flip,targetHeight,fire]`;
 `life` is null or `[health,fuseSeconds,detonationSeconds,initialFuseSeconds]`.
+`tag` is null or the creative record `[paint,flags,...chars]` (see
+`world-prop-tag`).
 A pending `transfer` is `{to,lock,waiting}`, where `waiting` is the previous
 authority until its acknowledgement arrives.
 
@@ -251,6 +253,15 @@ authority until its acknowledgement arrives.
   health/fuses from the authority. Only the owner can change key bindings
   and flip; a driver can update motion-related part state. The result is a
   `world-prop-state`. Fuse countdowns are quantized to fifths of a second.
+- C to S `world-prop-tag {id,tag}` sets a prop's creative record: `tag` is
+  null or `[paint,flags,...chars]` (paint 0..12 is the tool gun's palette and
+  a balloon's colour; flags bit 0 is a lamp switched off; chars are a sign's
+  text, at most 40 code points from printable ASCII and the Spanish set). Anyone
+  within reach (90 units) may set it, whoever owns or simulates the prop;
+  the server normalises it (blanks squeezed and trimmed), rejects anything
+  outside those bounds with `world-prop-denied invalid`, limits it to 12 per
+  second, and announces the prop in a `world-prop-state`. A `tag` field on
+  every prop of a snapshot, spawn or state carries it to late joiners.
 - C to S `world-prop-joint {id,b,kind,frames,nonce}` joins two props owned and
   simulated by the sender. `kind` is `weld`, `axis`, `rope`, or `nocollide`.
   `frames` is 17 numbers: anchor A (3), anchor B (3), relative frame B

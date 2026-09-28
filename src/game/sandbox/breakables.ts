@@ -129,7 +129,7 @@ gibKind('drum', 3, 0.5, 0.15)
 gibKind('sheet', 3, 0.5, 0.15)
 
 const DEBRIS: Partial<Record<Surface, 'wood' | 'glass' | 'melon' | 'plastic' | 'metal'>> = {
-  wood: 'wood', glass: 'glass', melon: 'melon', plastic: 'plastic', metal: 'metal', drum: 'metal', sheet: 'metal',
+  wood: 'wood', glass: 'glass', melon: 'melon', plastic: 'plastic', metal: 'metal', drum: 'metal', sheet: 'metal', rubber: 'plastic',
 }
 
 /** seconds a fresh gib passes through other props (props.ts's `phase`) */
@@ -282,7 +282,7 @@ export const createLife = (
     if (!p?.kind.explodes || !sb.isAuthority(id)) return
     const s = stateOf(id)
     if (s.fuse >= 0 || s.boom >= 0) return
-    s.fuse = fuse ?? FUSE + sb.random() * FUSE_JITTER
+    s.fuse = fuse ?? p.kind.explodes.fuse ?? FUSE + sb.random() * FUSE_JITTER
     s.lit = s.fuse
     const t = p.body.translation()
     igniteSound(t.x, t.y, t.z, s.fuse)

@@ -15,6 +15,7 @@ import { contraptionOf } from '../../src/game/sandbox/contraption/contraption.ts
 import { buildCar } from '../../src/game/sandbox/contraption/build.ts'
 import { capture, connectedTo, place, setPropCap, MAX_PROPS } from '../../src/game/sandbox/blueprint/blueprint.ts'
 import { encodeBlueprint, decodeBlueprint, toJson, BlueprintError } from '../../src/game/sandbox/blueprint/code.ts'
+import { creativeOf } from '../../src/game/sandbox/creative/creative.ts'
 import { createPropRegistry } from '../../server/src/props.js'
 
 const mk = async () => {
@@ -171,6 +172,38 @@ assert.equal(historyOf(sb).undo(), null, 'nothing else on the stack')
   const missing = place(capped, { name: '', props: [{ ...bp.props[0], kind: 'nuke' }], joints: [] }, { at })
   assert.ok(!missing.ok && missing.reason === 'kind')
   console.log('cap: refused with room', r.room, '; toobig and unknown kind refused')
+}
+
+/* ------------------ paint, a lamp's switch and a sign's words ride along -- */
+{
+  const s = await mk()
+  const cr = creativeOf(s)
+  const crate = s.spawn('crate', { x: 0, y: 1, z: 0 })
+  const lamp = s.spawn('lamp', { x: 3, y: 1, z: 0 })
+  const sign = s.spawn('sign', { x: -3, y: 1, z: 0 })
+  const plain = s.spawn('crate_small', { x: 0, y: 1, z: 3 })
+  step([s], 5)
+  cr.paint(crate, 7)
+  cr.use(lamp)
+  cr.write(sign, 'Hello  world')
+  const got2 = capture(s, [crate, lamp, sign, plain], 'creative')
+  assert.ok(got2.ok)
+  const tagged = got2.bp.props.filter((q) => q.tag)
+  assert.equal(tagged.length, 3, 'three props carry a tag, the plain one none')
+  const round = await decodeBlueprint(await encodeBlueprint(got2.bp))
+  assert.deepEqual(round.props.map((q) => q.tag ?? null), got2.bp.props.map((q) => q.tag ?? null), 'the code keeps the tags')
+  // a forged tag is cleaned, not trusted
+  const forged = await decodeBlueprint(await deflate(JSON.stringify({ ...toJson(round), p: toJson(round).p.map((r, i) => (i === 0 ? [...r.slice(0, 13), [99, 0, 10, 65]] : r)) })))
+  assert.deepEqual(forged.props[0].tag, [0, 0, 65], 'a forged tag is cleaned to what the record allows')
+  const t2 = await mk()
+  const put = place(t2, round, { at: { x: 0, y: 0, z: 0 } })
+  assert.ok(put.ok)
+  const back2 = put.ids.map((id) => ({ kind: t2.get(id).kind.id, tag: creativeOf(t2).tagOf(id) }))
+  assert.equal(back2.find((q) => q.kind === 'crate').tag.paint, 7, 'paint pasted')
+  assert.equal(back2.find((q) => q.kind === 'lamp').tag.off, true, 'the lamp is still switched off')
+  assert.equal(back2.find((q) => q.kind === 'sign').tag.text, 'Hello world', 'the sign keeps its words')
+  assert.equal(back2.find((q) => q.kind === 'crate_small').tag.paint, 0)
+  console.log('creative tags: paint, lamp switch and sign text survive capture, code and paste')
 }
 
 /* ------------------------------------------- a second client sees it ---- */

@@ -3,6 +3,7 @@ import { CATALOGUE } from '../catalogue'
 import { contraptionOf, type ConstraintType } from '../contraption/contraption'
 import { KEY_PAIRS } from '../contraption/parts'
 import { historyOf } from '../history'
+import { cleanTag } from '../creative/tags'
 import { KINDS } from '../kinds'
 import type { PropId, Sandbox, Vec3Like } from '../sandbox'
 
@@ -69,6 +70,9 @@ export interface BpProp {
   /** a part's key pair (KEY_PAIRS index) and whether it is reversed; -1 none */
   keys: number
   flip: boolean
+  /** the creative tag (creative/tags.ts): paint, a lamp's switch, a sign's
+      words; absent when the prop has none */
+  tag?: number[]
 }
 export interface BpJoint {
   type: ConstraintType
@@ -167,6 +171,7 @@ export function capture(sb: Sandbox, ids: readonly PropId[], name = ''): Capture
       quat: [r4(r.q.x), r4(r.q.y), r4(r.q.z), r4(r.q.w)],
       keys: st ? st.keys : -1,
       flip: st ? st.flip : false,
+      ...(cleanTag(r.p.data.tag) ? { tag: cleanTag(r.p.data.tag)! } : {}),
     }
   })
   const joints: BpJoint[] = []
@@ -217,13 +222,15 @@ export function place(sb: Sandbox, bp: Blueprint, o: PlaceOpts): Placed {
   for (const p of bp.props) {
     v.set(p.pos[0], p.pos[1], p.pos[2]).applyQuaternion(qy)
     q.set(p.quat[0], p.quat[1], p.quat[2], p.quat[3]).premultiply(qy)
-    const data = p.keys >= 0 ? { part: { keys: p.keys, flip: p.flip } } : undefined
+    const data: Record<string, unknown> = {}
+    if (p.keys >= 0) data.part = { keys: p.keys, flip: p.flip }
+    if (p.tag) data.tag = p.tag.slice()
     ids.push(sb.spawn(p.kind, { x: o.at.x + v.x, y: o.at.y + v.y + DROP, z: o.at.z + v.z }, {
       quaternion: { x: q.x, y: q.y, z: q.z, w: q.w },
       scale: p.scale,
       mass: p.mass > 0 ? p.mass : undefined,
       frozen: p.frozen,
-      data,
+      data: Object.keys(data).length ? data : undefined,
     }))
   }
   let joints = 0

@@ -87,6 +87,17 @@ export const BINDINGS = {
   /** the tool gun (column 2): r steps to its next mode (reload, like Garry's
       Mod's own tool gun has no better key for it); shift+r steps back */
   toolMode: ['KeyR'],
+  /** the tool gun's paint and balloon modes: the palette one step back and
+      forward (the wheel does the same). Comma and period as well as the
+      brackets, because the brackets are an AltGr chord on some layouts */
+  colorPrev: ['BracketLeft', 'Comma'],
+  colorNext: ['BracketRight', 'Period'],
+
+  /** the camera out (tools/camera.ts): save or copy the last photograph.
+      The pointer is locked on foot, so the strip's buttons cannot be clicked;
+      these do the same. P and Y are the two letters nothing else took */
+  photoSave: ['KeyP'],
+  photoCopy: ['KeyY'],
 
   /* --- contraptions ---------------------------------------------------- */
   /** the keys a thruster, wheel or hoverball can be set to answer to
