@@ -1,5 +1,5 @@
 import type * as THREE from 'three'
-import type { Level, LevelSpawn } from './types'
+import type { Level, LevelShift, LevelSpawn } from './types'
 
 /*
   Which level is live, and the noclip cut that moves the player between
@@ -8,7 +8,11 @@ import type { Level, LevelSpawn } from './types'
   (fast cover); under the cover the worlds swap (leave/enter, collision
   set, spawn) at SWAP_MS; the card starts its slow fade at FADE_MS and the
   machine retires at DONE_MS. The scene owns the card itself and anything
-  renderer-side (shadow re-bakes) through the callbacks. reset() is the
+  renderer-side (shadow re-bakes) through the callbacks. A seam carrying a
+  `shift` is seamless: both levels draw the same picture at that moment, so
+  the swap happens on the spot with no card and no freeze, and the scene
+  carries the player across by the offset (onSeamless); `cross` is the same
+  swap with no offset, for a portal that places the player itself. reset() is the
   no-ceremony path home — sitting down or leaving the room mid-level snaps
   straight back to the home level's spawn with no cut.
 */
@@ -28,6 +32,8 @@ export interface LevelSystemOpts {
   /** the worlds swapped under the cover: place the player at `spawn`
       (the seam's own arrival point, or the level's default), re-bake shadows */
   onSwapped: (level: Level, spawn: LevelSpawn, from: Level) => void
+  /** a seamless seam crossed (see the header): carry the player by `shift` */
+  onSeamless?: (level: Level, shift: LevelShift, from: Level) => void
 }
 
 export interface LevelSystem {
@@ -39,6 +45,14 @@ export interface LevelSystem {
   tick: (now: number, p: THREE.Vector3, live: boolean) => void
   /** snap back to the home level with no cut; returns it if a move happened */
   reset: () => Level | null
+  /** run the ordinary cut to a level, as if a seam had tripped (the
+      console's escape hatch): false if one is already running or the level
+      is unknown */
+  goTo: (id: string, spawn?: LevelSpawn) => boolean
+  /** make a level live on the spot, the way a seamless seam does but with
+      nobody moved (a portal carries the walker itself, in the new level's
+      coordinates): false if a cut is running or the level is unknown */
+  cross: (id: string) => boolean
 }
 
 export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
@@ -84,10 +98,37 @@ export function createLevelSystem(opts: LevelSystemOpts): LevelSystem {
       if (seam) {
         const to = byId.get(seam.to)
         if (!to) return
+        if (seam.shift && opts.onSeamless) {
+          current.leave()
+          const from = current
+          current = to
+          current.enter()
+          opts.onSeamless(current, seam.shift, from)
+          return
+        }
         cut = { t0: now, to, spawn: seam.spawn ?? to.spawn, swapped: false, fading: false }
         opts.onCover(true)
         opts.onCutStart()
       }
+    },
+    goTo: (id, spawn) => {
+      const to = byId.get(id)
+      if (!to || cut) return false
+      cut = { t0: performance.now(), to, spawn: spawn ?? to.spawn, swapped: false, fading: false }
+      opts.onCover(true)
+      opts.onCutStart()
+      return true
+    },
+    cross: (id) => {
+      const to = byId.get(id)
+      if (!to || cut) return false
+      if (to === current) return true
+      current.leave()
+      const from = current
+      current = to
+      current.enter()
+      opts.onSeamless?.(current, { x: 0, y: 0, z: 0 }, from)
+      return true
     },
     reset: () => {
       cut = null

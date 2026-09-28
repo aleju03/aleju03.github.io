@@ -48,6 +48,12 @@ import {
   pinned under a boot does not flutter. Per vertex the whole thing is a
   dozen distance tests, which is cheaper than the sines the wind already
   spends.
+
+  The trample's last word is a hole: up to two ovals on the ground (an open
+  floor portal, sandbox/tools/portals.ts) inside which no blade or flower
+  grows at all, collapsed to its root. They are uniforms the trample's
+  shader always carries, switched off by a zero flag, so opening and closing
+  a portal is a few numbers and never a program.
 */
 
 export const windUniforms = {
@@ -77,12 +83,45 @@ const TRAMPLES = 12
 /** how far a step's influence reaches, world units */
 const TRAMPLE_R = 1.35
 
+/** Fixed at boot: the nearest shared floor portals cut the vegetation. */
+const HOLES = 8
+
 export const trampleUniforms = {
   uTramples: {
     value: Array.from({ length: TRAMPLES }, () => new THREE.Vector4(0, 0, -1e6, 0)),
   },
   /** the live press under the player: xz, strength, radius */
   uPress: { value: new THREE.Vector4(0, 0, 0, 1.15) },
+  /** holes in the field: centre xyz and on (1) or off (0) */
+  uHoleC: { value: Array.from({ length: HOLES }, () => new THREE.Vector4()) },
+  /** ...and the oval's two half-axes on the ground, as xz directions scaled
+      by the inverse of their half-lengths: (ax, az, bx, bz) */
+  uHoleA: { value: Array.from({ length: HOLES }, () => new THREE.Vector4()) },
+}
+
+/**
+ * Cut (or clear) the holes: each an oval lying on the ground, centre and its
+ * two half-axes in world units (the grass and flowers inside it, plus the
+ * margin, are not drawn). Pass fewer than eight and the rest switch off.
+ */
+export const setGroundHoles = (
+  holes: readonly { c: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[], margin = 0.3,
+) => {
+  const C = trampleUniforms.uHoleC.value
+  const A = trampleUniforms.uHoleA.value
+  for (let i = 0; i < HOLES; i++) {
+    const h = holes[i]
+    if (!h) {
+      C[i].w = 0
+      continue
+    }
+    const la = h.a.length() + margin
+    const lb = h.b.length() + margin
+    const ha = Math.hypot(h.a.x, h.a.z) || 1
+    const hb = Math.hypot(h.b.x, h.b.z) || 1
+    C[i].set(h.c.x, h.c.y, h.c.z, 1)
+    A[i].set(h.a.x / ha / la, h.a.z / ha / la, h.b.x / hb / lb, h.b.z / hb / lb)
+  }
 }
 
 let trampleHead = 0
@@ -160,6 +199,21 @@ export const WIND_GLSL = /* glsl */ `
 const TRAMPLE_GLSL = /* glsl */ `
   uniform vec4 uTramples[${TRAMPLES}];
   uniform vec4 uPress;
+  uniform vec4 uHoleC[${HOLES}];
+  uniform vec4 uHoleA[${HOLES}];
+
+  // inside a hole cut in the field (an open floor portal): nothing grows
+  bool inHole(vec3 wPos) {
+    for (int i = 0; i < ${HOLES}; i++) {
+      if (uHoleC[i].w < 0.5) continue;
+      vec3 d = wPos - uHoleC[i].xyz;
+      if (abs(d.y) > 2.0) continue;
+      float u = dot(d.xz, uHoleA[i].xy);
+      float v = dot(d.xz, uHoleA[i].zw);
+      if (u * u + v * v < 1.0) return true;
+    }
+    return false;
+  }
 
   vec2 trample(vec3 wPos, out float pressK) {
     vec2 push = vec2(0.0);
@@ -289,6 +343,8 @@ export const applySway = (mat: THREE.Material, opts: SwayOpts) => {
     if (opts.trample) {
       shader.uniforms.uTramples = trampleUniforms.uTramples
       shader.uniforms.uPress = trampleUniforms.uPress
+      shader.uniforms.uHoleC = trampleUniforms.uHoleC
+      shader.uniforms.uHoleA = trampleUniforms.uHoleA
     }
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -350,6 +406,13 @@ export const applySway = (mat: THREE.Material, opts: SwayOpts) => {
               transformed.y -= dropY;
             `}
           }
+          ${opts.trample ? `
+            // a hole in the field: the whole blade folds to its root, after
+            // everything else has moved it, so nothing is left but a point
+            #ifdef USE_INSTANCING
+              if (inHole(instOrigin)) transformed = vec3(0.0);
+            #endif
+          ` : ''}
         }
         ${opts.surface ? surfaceVertBody() : ''}
         ${opts.fadeIn ? FADE_VERT_BODY : ''}`,

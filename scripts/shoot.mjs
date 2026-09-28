@@ -55,6 +55,30 @@ targets
   landmark:<kind>      nearest lighthouse|windmill|farm|mast|ruins|watertower|
                        stones|cabin|wreck
   landmark:*           one of every landmark kind, as a contact sheet
+  moon:<dx>,<dz>       the Moon's ground (levels/moon.ts) that far off the
+                       landing site, under the sky with space turned up
+  body:lineup          the player character: six looks front and back, and a
+                       row of poses (wave, crouch, jump, sprint, heap, stretch)
+  body:motion          filmstrips of every action below, one row each
+  body:strip:<action>  one filmstrip: walk|run|walkback|runback|runside|turn|jump|land|ragdoll|recover|idle
+  body:fp              the first-person lens looking down at your own body
+  body:seat            seated in the car, boat and helicopter seat nodes
+  body:car             the car alone, five ways round with two aboard; at
+                       night (--tod 0.9) its lamps and beams are on
+  body:heli, body:boat, body:ship  the same for the other three; append
+                       -empty (body:boat-empty) to leave the seats empty
+  body:size            one bean beside a 4.7 doorway and the 3.84 lens line,
+                       and the old eye-scaled size next to it
+  body:closeup         one body close: front, three-quarter, side and back
+  body:wardrobe        every headgear once, close, over the builds and outfits
+  body:phones          the headset on every build under four headgears, from
+                       the front, where a cup off the head shows as daylight
+  body:gear            the beaver and the headset: a beaver in a blue cap with
+                       the headset over it four ways round, the headset over
+                       every other headgear, and the three furs
+  body:folds[:<n>]     eight poses with every folded triangle of the skin
+                       painted red over it (pair with --raw); n picks one of
+                       the lineup's six looks (4 wears the hood)
 
 options
   --out <path>         default shots/<first-target>.png
@@ -76,7 +100,33 @@ options
                        every tile before the shutter opens (try 20). Both
                        are session state and appear in no chunk, so this is
                        the only way to photograph them
+  --raw                skip the pixel look (render/pixelLook.ts): ACES straight
+                       to an antialiased canvas, for a before and after
+  --lines <n>          internal lines per tile for the look (default half the
+                       tile height, an exact 2x). The game draws ~540 on a
+                       1080p screen; --tile 1920x1080 --cols 1 is 1:1 with it
+  --look <json>        override the look's knobs for this shot, e.g.
+                       '{"outline":0.7,"levels":14,"day":{"floor":0.05}}'
+                       (knobs: render/pixelLook.ts, grade: render/grade.ts)
+  --bench <n>          redraw the first tile n times, each forced to finish,
+                       and print the median ms per frame (pair with --raw and
+                       a --tile the size of a real screen to measure fill)
   --pick <x>,<y>       also raycast that pixel of tile 0 and print the hits
+  --pixel <n>          body targets only: draw the look at 1/n of the tile
+                       height instead of the default exact 2x (3 is chunkier)
+  --alt <n[,n...]>     noclip/helicopter view: the camera n units over the
+                       target's ground, backed off along --yaw and pitched
+                       16 degrees down so the horizon is in frame, through
+                       the real streamer (ring, far field, altitude fog and
+                       air). Several heights make a row per target:
+                       --alt 10,40,120,300 town:downtown biome:forest biome:beach
+  --climb <s>          with --alt: fly it. The real streamer ticked at 60 Hz
+                       under its frame budget, s seconds standing at the
+                       target, then a noclip climb (30 u/s up, 20 forward),
+                       a frame at each --alt. --climb 0 takes off at once
+  --far <n>            far-field rings for --alt tiles (default: the tier's,
+                       3 headless); --far 0 is the world without one, for
+                       a before and after
   --keep               leave chrome and vite running (for repeated shots)
 `)
   process.exit(0)
@@ -96,8 +146,8 @@ if (!targets.length) {
 
 const parseTarget = (s) => {
   if (s === 'home') return { kind: 'home' }
-  const [head, arg] = s.split(':')
-  if (arg !== undefined) return { kind: head, arg }
+  const cut = s.indexOf(':')
+  if (cut !== -1) return { kind: s.slice(0, cut), arg: s.slice(cut + 1) }
   const [x, z] = s.split(',').map(Number)
   if (Number.isFinite(x) && Number.isFinite(z)) return { kind: 'at', x, z }
   throw new Error(`cannot parse target "${s}"`)
@@ -123,11 +173,17 @@ const parseProp = (s) => {
 }
 const props = argv.filter((a, i) => argv[i - 1] === '--glb').map(parseProp)
 
-const [tw, th] = String(flag('tile', '900x620')).split('x').map(Number)
+// the character's targets are their own kind of sheet: strips of small tiles
+// eight to a row, or a few wide ones
+const bodyMode = targets.every((t) => t.startsWith('body:'))
+const bodyStrips = bodyMode && targets.every((t) => /^body:(motion|strip:)/.test(t))
+const [tw, th] = String(
+  flag('tile', bodyMode ? (bodyStrips ? '300x380' : '1400x560') : '900x620'),
+).split('x').map(Number)
 const spec = {
   targets: targets.map(parseTarget),
   tile: [tw, th],
-  cols: Number(flag('cols', 3)),
+  cols: Number(flag('cols', bodyMode ? 1 : 3)),
   dist: Number(flag('dist', 52)),
   height: Number(flag('height', 22)),
   eye: has('eye'),
@@ -137,7 +193,15 @@ const spec = {
   tier: String(flag('tier', 'full')),
   props,
   life: Number(flag('life', 0)),
+  raw: has('raw'),
+  lines: Number(flag('lines', 0)),
+  look: JSON.parse(flag('look', '{}')),
+  pixel: Number(flag('pixel', 1)),
+  climb: flag('climb', null) === null ? undefined : Number(flag('climb')),
+  farLevels: flag('far', null) === null ? undefined : Number(flag('far')),
+  alts: flag('alt', null) ? String(flag('alt')).split(',').map(Number) : undefined,
 }
+if (spec.alts) spec.cols = spec.alts.length
 const outPath = resolve(
   flag('out', `shots/${targets[0].replace(/[^a-z0-9]+/gi, '-')}.png`),
 )
@@ -182,11 +246,16 @@ chrome = spawn('google-chrome-stable', [
   `--remote-debugging-port=${CDP}`,
   // the real GPU, not swiftshader: swiftshader renders this at under a frame
   // a second and distorts every ratio you might want to measure
-  '--use-angle=gl',
+  // PROBE_ANGLE=swiftshader rasterizes on the CPU instead, which is a
+  // crude but honest stand-in for a fill-bound iGPU when --bench is asking
+  // what a pass costs per pixel
+  `--use-angle=${process.env.PROBE_ANGLE ?? 'gl'}`,
   '--enable-unsafe-swiftshader',
-  `--window-size=${tw * spec.cols},${th * 4}`,
+  `--window-size=${tw * (bodyStrips ? 8 : spec.cols)},${th * 4}`,
   '--no-first-run',
-  '--user-data-dir=/tmp/world-probe-chrome',
+  // one profile per debugging port: two probes sharing a profile directory
+  // is one chrome, and the second launch hands itself to the first and exits
+  `--user-data-dir=/tmp/world-probe-chrome-${CDP}`,
 ], { stdio: 'ignore' })
 
 const page = await waitFor(async () => {
@@ -207,6 +276,11 @@ ws.onmessage = (e) => {
     // the probe page has no favicon and never will; its 404 is not news
     const e = m.params.entry
     if (!/favicon/.test(`${e.url ?? ''} ${e.text}`)) errors.push(e.text)
+  }
+  // three reports a shader that failed to compile through console.error,
+  // not as an exception, and that failure draws nothing at all
+  if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
+    errors.push(m.params.args.map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 600))
   }
   if (m.method === 'Runtime.exceptionThrown') {
     const d = m.params.exceptionDetails
@@ -237,6 +311,24 @@ await waitFor(() => evaluate('!!window.__probe?.ready'), 120, 250, 'the probe pa
 /* ----------------------------------------------------------------- shoot */
 
 const t0 = Date.now()
+if (bodyMode) {
+  const got = JSON.parse(await evaluate(`JSON.stringify(window.__probe.shootBody(${JSON.stringify(spec)}))`))
+  got.labels.forEach((l, i) => console.log(`${String(i).padStart(3)}  ${l}`))
+  const shot = await send('Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: true,
+    clip: { x: 0, y: 0, width: got.width, height: got.height, scale: 1 },
+  })
+  mkdirSync(dirname(outPath), { recursive: true })
+  writeFileSync(outPath, Buffer.from(shot.result.data, 'base64'))
+  console.log(`\n${outPath}  (${got.width}x${got.height}, ${Date.now() - t0} ms)`)
+  if (errors.length) {
+    console.log('\npage errors:')
+    for (const e of errors.slice(0, 6)) console.log('  ' + e)
+  }
+  ws.close()
+  process.exit(errors.length ? 1 : 0)
+}
 if (props.length) {
   const urls = [...new Set(props.map((p) => p.url))]
   const info = await evaluate(
@@ -259,9 +351,16 @@ for (const r of rows) {
     `${String(r.label).padEnd(22)} ${String(r.x).padStart(7)},${String(r.z).padStart(7)}` +
     `  y ${String(r.y).padStart(7)}  ${r.biome.padEnd(8)}` +
     `${r.district ? ' ' + r.district : ''}  ${r.verts} verts` +
+    (r.draws === undefined ? '' : `  ${r.draws} meshes`) +
+    (r.far ? `  far ${r.far.tiles} tiles ${r.far.tris} tris, reach ${r.far.reach}` +
+      (r.far.fog ? `, fog ${r.far.fog}, lens ${r.far.camFar}` : '') +
+      (r.far.worstMs !== undefined ? `, worst update ${r.far.worstMs} ms` : '') : '') +
     (r.animals === undefined ? '' : `  ${r.animals} animals, ${r.people} people`),
   )
 }
+
+const glErr = await evaluate('window.__probe.glError()')
+if (glErr) errors.push(`GL error ${glErr}: a draw failed validation and drew nothing`)
 
 const cols = Math.min(spec.cols, rows.length)
 const rowsN = Math.ceil(rows.length / cols)
@@ -273,6 +372,12 @@ const shot = await send('Page.captureScreenshot', {
 mkdirSync(dirname(outPath), { recursive: true })
 writeFileSync(outPath, Buffer.from(shot.result.data, 'base64'))
 console.log(`\n${outPath}  (${tw * cols}x${th * rowsN}, ${Date.now() - t0} ms)`)
+
+const benchN = Number(flag('bench', 0))
+if (benchN) {
+  const b = JSON.parse(await evaluate(`JSON.stringify(window.__probe.bench(${benchN}))`))
+  console.log(`\nbench: ${b.median} ms median, ${b.p90} ms p90, drawn at ${b.internal}`)
+}
 
 const pixel = flag('pick', null)
 if (pixel) {

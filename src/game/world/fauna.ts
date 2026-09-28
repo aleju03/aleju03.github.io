@@ -423,9 +423,18 @@ export function buildFauna(opts: BuildOpts): FaunaHandles {
       if (!m.isMesh) return
       m.castShadow = true
       m.receiveShadow = true
-      // a skinned mesh's bounds are its bind pose, which a gallop leaves;
-      // the group is small and always near the camera, so cull by the group
-      m.frustumCulled = false
+      // a skinned mesh's bounds are its bind pose, which a gallop leaves,
+      // and three would otherwise compute them once off whatever pose the
+      // first cull caught. So the sphere is the bind pose's, grown well past
+      // anything a clip reaches, and set rather than computed. Unculled (as
+      // these were) the herd drew from inside the house, behind the lens and
+      // through every wall, each mesh on every frame
+      const g = m.geometry
+      if (!g.boundingSphere) g.computeBoundingSphere()
+      const bs = g.boundingSphere!.clone()
+      bs.radius = bs.radius * 1.6 + 0.5
+      ;(m as THREE.SkinnedMesh).boundingSphere = bs
+      m.frustumCulled = true
     })
     a.group.add(body)
     a.species = species

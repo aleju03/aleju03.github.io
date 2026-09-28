@@ -1,6 +1,6 @@
 import { clamp01, mix, noise2, rand2, siteOf, smoothstep } from './noise'
 import { elevationAt, habitabilityAt, terraceAt, SEA_Y } from './land'
-import { CHUNK, OFF_X, OFF_Z } from './grid'
+import { hit, levelOf, liveOf, MARGIN, networkOf, piecesAt, probe, heightAtD } from './streets'
 
 /*
   Where people live, and the streets they laid.
@@ -17,17 +17,15 @@ import { CHUNK, OFF_X, OFF_Z } from './grid'
   and yards at the edge. The rim is warped by a noise ring so a city reads as a
   sprawl rather than a dartboard.
 
-  Streets are the chunk grid itself (grid.ts), which is the whole trick behind
-  never having to reconcile a road with a chunk seam: every road runs along a
-  chunk border, so a block is exactly one chunk and a building is always
-  interior to one. Two of those lines — the pair nearest the centre — keep
-  going past the town limit as the roads out, which is what gives the player
-  something to follow into the countryside. The full lattice reads as graph
-  paper from the pavement, though — every junction a four-way, every block one
-  chunk — so segAliveK drops whole chunk-edge segments by hash: the grid keeps
-  its downtown mesh and frays toward the rim into T-junctions, corners, dead
-  ends and double blocks. The spines never drop, and neither does anything
-  near the authored home block.
+  Streets are no longer here. They used to be the chunk grid itself, every
+  chunk border a street and every block one chunk, which read as graph paper
+  from the air and as one repeated block from the pavement. The plan now
+  lives in streets.ts, grown once per town (irregular core grid, diagonal
+  avenues, curving suburbs, roads out) and cached; this module keeps the
+  settlement itself (where, how big, which district, how the ground is
+  graded) and answers `roadAt` off that plan. District edges are jittered by
+  a slow noise so the rings between downtown, the walk-ups and the suburbs
+  are gradients rather than circles.
 
   The home town is hand-placed rather than rolled: an unwarped disc centred
   well north of the house, sized so the property lands squarely in the suburb
@@ -80,21 +78,18 @@ const HOME: Town = {
   home: true,
 }
 
-/** how far out of town the spine roads run, as a multiple of the radius */
-const SPINE_REACH = 2.4
-
 /* --------------------------------------------------------------- siting -- */
 
-const siteCache = new Map<string, Town | null>()
+const siteCache = new Map<number, Town | null>()
 
 /** the settlement owned by one cell of the site grid, or null if that cell
     rolled empty or drew unbuildable ground. Memoized: the habitability probe
     behind it costs five elevation samples, and this is asked per terrain
     vertex. */
 const townOfCell = (cx: number, cz: number): Town | null => {
-  const key = `${cx},${cz}`
-  const hit = siteCache.get(key)
-  if (hit !== undefined) return hit
+  const key = (cx + 32768) * 65536 + (cz + 32768)
+  const got = siteCache.get(key)
+  if (got !== undefined) return got
   let town: Town | null = null
   if (cx === 0 && cz === 0) {
     town = HOME
@@ -130,12 +125,30 @@ const rimRadius = (t: Town, dx: number, dz: number, dist: number) => {
 
 const EMPTY: Place = { town: null, d: 99, district: null, padY: 0 }
 
-/**
- * Which settlement claims this point, and how strongly. Returns the nearest
- * town whose rim contains the point; failing that, the nearest one at all
- * (with d > 1), so callers can still ask "how close to town is this".
- */
-export const placeAt = (x: number, z: number): Place => {
+/** a town's own distance at a point: 0 at its centre, 1 on its warped rim */
+export const townD = (t: Town, x: number, z: number) => {
+  const ox = x - t.x
+  const oz = z - t.z
+  const dist = Math.hypot(ox, oz)
+  return dist / rimRadius(t, ox, oz, dist)
+}
+
+/** every settlement whose site cell is next to this point's */
+export const townsNear = (x: number, z: number): Town[] => {
+  const cx = Math.floor(x / SITE_CELL)
+  const cz = Math.floor(z / SITE_CELL)
+  const out: Town[] = []
+  for (let dz = -1; dz <= 1; dz++)
+    for (let dx = -1; dx <= 1; dx++) {
+      const t = townOfCell(cx + dx, cz + dz)
+      if (t) out.push(t)
+    }
+  return out
+}
+
+/** the settlement claiming a point (nearest by town distance), without the
+    grading placeAt also works out */
+export const nearestTown = (x: number, z: number): Town | null => {
   const cx = Math.floor(x / SITE_CELL)
   const cz = Math.floor(z / SITE_CELL)
   let best: Town | null = null
@@ -144,19 +157,40 @@ export const placeAt = (x: number, z: number): Place => {
     for (let dx = -1; dx <= 1; dx++) {
       const t = townOfCell(cx + dx, cz + dz)
       if (!t) continue
-      const ox = x - t.x
-      const oz = z - t.z
-      const dist = Math.hypot(ox, oz)
-      const d = dist / rimRadius(t, ox, oz, dist)
+      const d = townD(t, x, z)
       if (d < bestD) {
         bestD = d
         best = t
       }
     }
+  return best
+}
+
+const S_DISTRICT = 0x61c3
+
+/** the district rings, jittered by a slow noise so neither edge is a
+    circle. The home town calms it within a couple of hundred units of the
+    house, whose block has to stay the suburb it was placed in */
+const districtAt = (t: Town, d: number, x: number, z: number): District | null => {
+  if (d >= 1) return null
+  let j = (noise2(x / 170, z / 170, S_DISTRICT ^ t.seed) - 0.5) * 0.12
+  if (t.home) j *= smoothstep(120, 260, Math.hypot(x, z))
+  const dd = d + j
+  return dd < 0.26 ? 'downtown' : dd < 0.58 ? 'midrise' : 'suburb'
+}
+
+/**
+ * Which settlement claims this point, and how strongly. Returns the nearest
+ * town whose rim contains the point; failing that, the nearest one at all
+ * (with d > 1), so callers can still ask "how close to town is this".
+ */
+export const placeAt = (x: number, z: number): Place => {
+  const best = nearestTown(x, z)
   if (!best) return EMPTY
-  const district: District | null =
-    bestD >= 1 ? null : bestD < 0.26 ? 'downtown' : bestD < 0.58 ? 'midrise' : 'suburb'
-  return { town: best, d: bestD, district, padY: padYAt(x, z, best) }
+  const bestD = townD(best, x, z)
+  return {
+    town: best, d: bestD, district: districtAt(best, bestD, x, z), padY: padYAt(x, z, best),
+  }
 }
 
 /**
@@ -222,264 +256,188 @@ export const CURB_H = 0.15
  * How far out the ground is graded flat for a road (asphalt + walk + verge).
  *
  * This is measured in lattice cells, not in taste. The terrain mesh has a
- * vertex every GRID units and a road centreline always lands on one, so the
- * corridor is only truly flat out to the last *vertex* it pins: at 6.1 the
- * vertex at 8 was still half-graded, the triangle between 4 and 8 sloped back
- * up through the kerb, and the pavement grew a row of terrain teeth along its
- * outer edge. Two whole cells (8.2) pins the vertices at 0, 4 and 8, which
- * puts the last of them a comfortable 3.5 clear of the pavement's edge.
+ * vertex every GRID units, and a straight street is snapped onto a vertex
+ * column (streets.ts), so the corridor is only truly flat out to the last
+ * *vertex* it pins: at 6.1 the vertex at 8 was still half-graded, the
+ * triangle between 4 and 8 sloped back up through the kerb, and the pavement
+ * grew a row of terrain teeth along its outer edge. Two whole cells (8.2)
+ * pins the vertices at 0, 4 and 8. A curving street cannot sit on the
+ * lattice, which is fine now that the deck copies the ground it lies on
+ * rather than floating flat over it (world/streetMesh.ts).
  */
 export const CORRIDOR = 8.2
 /** and how long the ramp back to natural ground is at minimum. Two cells, so
     the shoulder is a bank rather than a step — terrain.ts stretches the run
     further where the corridor cuts deep, exactly the way the town skirt does */
 export const CORRIDOR_EASE = 8
-/** the widest a road's earthwork can get (terrain.ts's REACH); roadAt keeps
-    answering out to CORRIDOR + this so heightAt can shape the whole
-    embankment, and it must stay inside the half-chunk the nearest-line
-    lookup can see */
-const EASE_REACH = 22
-
-/** one street's claim on a point: its centreline and how present it is */
+/** one street's claim on a point, for the earthwork under it */
 export interface RoadArm {
-  axis: 'x' | 'z'
-  /** the constant coordinate of the centreline (its z for an 'x' road).
-      terrain.ts grades a road level across its width by sampling the ground
-      on this line, so a country road follows the hills lengthways and stays
-      flat underfoot the way a real one is cut. */
-  line: number
-  /** distance from the centreline, in units */
+  /** distance from the street's centreline (a turning circle reports it
+      from a ring one lane in from its kerb) */
   dist: number
-  /** the street's presence before the cross-corridor falloff — heightAt
-      rebuilds its own, depth-aware falloff from this */
+  /** the street's presence here: 0 where it has faded (steep ground, the far
+      end of a road out of town), 1 where it is fully built */
   live: number
-  /** how much street continues along the line before it stops — Infinity in
-      the middle of a live run, the distance to the last node where the next
-      segment dropped out or the town ends. The earthwork tapers on it: a
-      street's bench released to nothing by its final node, instead of the
-      4-to-16-unit scarp it otherwise leaves standing across the junction
-      plane wherever a graded street dead-ends on a hillside. */
-  end: number
+  /** the level the street grades toward here: the graded ground along its
+      centreline, so a country road follows the hills lengthways and stays
+      flat underfoot the way a real one is cut */
+  level: number
 }
 
 export interface Road {
   /** 0 no road .. 1 full corridor: what the terrain grades toward */
   grade: number
-  /** distance from the nearest active centreline, in units */
+  /** distance from the nearest live centreline, in units */
   dist: number
-  /** the road runs along this axis ('x' = an east-west street) */
-  axis: 'x' | 'z' | null
-  /** the winner's centreline (see RoadArm.line) */
-  line: number
-  /** the winner's pre-falloff presence (see RoadArm.live) */
+  /** the nearest live street's direction here (unit), and the foot of the
+      distance on its centreline. Streets run any way now, so a caller that
+      wants to walk along one or step onto its pavement reads these */
+  dirX: number
+  dirZ: number
+  footX: number
+  footZ: number
+  /** the winner's presence (see RoadArm.live) */
   live: number
-  /** the winner's remaining live run along its line (see RoadArm.end) */
-  end: number
-  /** the crossing street's claim, where a second one is in earthwork range.
-      heightAt applies both arms in a fixed axis order: which street is
-      *nearest* flips along the diagonal of every block corner, and ground
-      that followed only the winner stepped seven units where that flip
-      crossed a graded skirt — the two streets sit at different levels there */
-  other: RoadArm | null
   /** inside the asphalt */
   asphalt: boolean
   /** on the sidewalk slab */
   walk: boolean
-  /** both an east-west and a north-south street claim this point */
+  /** two different streets both claim this point's pavement or asphalt */
   junction: boolean
 }
 
 const NO_ROAD: Road = {
-  grade: 0, dist: 1e9, axis: null, line: 0, live: 0, end: Infinity, other: null,
+  grade: 0, dist: 1e9, dirX: 1, dirZ: 0, footX: 0, footZ: 0, live: 0,
   asphalt: false, walk: false, junction: false,
 }
 
-/*
-  How steep the ground under a road may get before the tarmac gives out.
-
-  Roads used to be unconditional along their lines, and the terrain paid for
-  it: first as slot canyons (the corridor grading cut through any ridge in the
-  way — capped now in terrain.ts), then, with the cut capped, as asphalt
-  climbing a hillside like a ramp nailed to a wall. The honest behaviour is
-  the one real roads have: they end at the foot of ground too steep to pave.
-
-  Measured off the *graded* profile — raw elevation with the town skirt
-  applied — in coarse cells and memoized by cell, because roadAt runs per
-  terrain vertex and elevationAt is the expensive field stack. Grading is the
-  point: inside a town the shelf has flattened whatever the raw field says,
-  so the gate passes by construction, and on the skirt it reads the actual
-  embankment the road would have to climb. The first version instead read raw
-  ground and blended the fade out wherever town grading was active — which
-  forced the spine up the rim bank at whatever pitch the hillside had, and
-  with a range along the rim that was a lamp-lit ramp nailed to a cliff.
-*/
-const STEEP_CELL = 24
-const steepCache = new Map<number, number>()
-
-const gradedAt = (x: number, z: number) => townGradedHeight(placeAt(x, z), elevationAt(x, z))
-
-const steepCellK = (axis: 'x' | 'z', line: number, cell: number) => {
-  const lineIdx = Math.round((line - (axis === 'z' ? OFF_X : OFF_Z)) / CHUNK)
-  const key = ((lineIdx + 32768) * 262144 + (cell + 100000)) * 2 + (axis === 'z' ? 1 : 0)
-  const hit = steepCache.get(key)
-  if (hit !== undefined) return hit
-  const mid = cell * STEEP_CELL
-  const h0 = axis === 'z' ? gradedAt(line, mid - 14) : gradedAt(mid - 14, line)
-  const h1 = axis === 'z' ? gradedAt(line, mid + 14) : gradedAt(mid + 14, line)
-  const k = smoothstep(0.52, 0.3, Math.abs(h1 - h0) / 28)
-  if (steepCache.size > 40000) steepCache.clear()
-  steepCache.set(key, k)
-  return k
-}
-
-/** the gate at `s`, interpolated between the enclosing cell centres: the
-    per-cell value steps at every cell border, and a step in the gate is a
-    step in the earthwork under it — a scarp drawn across the verge for no
-    reason the walker can see */
-const roadSteepK = (axis: 'x' | 'z', line: number, s: number) => {
-  const u = s / STEEP_CELL - 0.5
-  const c0 = Math.floor(u)
-  return mix(steepCellK(axis, line, c0), steepCellK(axis, line, c0 + 1), u - c0)
-}
-
-/*
-  Which streets of a town's lattice actually got built, decided per segment —
-  one chunk edge between two junctions, hashed by its lattice identity so
-  every chunk that touches it agrees. Downtown keeps most of its mesh, the
-  rings toward the rim lose more, so the grid frays outward the way city
-  tissue does: T-junctions, corners, dead-ended lanes, blocks that run double.
-  The two spine lines are exempt (they are the roads out, and a main street
-  that randomly stopped would strand the whole design), and so is everything
-  near the origin: the approach to the authored property is not the
-  generator's to edit.
-*/
-const S_SEG = 0x9d43
-const segCache = new Map<number, number>()
-
-const segAliveK = (axis: 'x' | 'z', line: number, s: number) => {
-  const offL = axis === 'z' ? OFF_X : OFF_Z
-  const offS = axis === 'z' ? OFF_Z : OFF_X
-  const lineIdx = Math.round((line - offL) / CHUNK)
-  const segIdx = Math.floor((s - offS) / CHUNK)
-  const key = ((lineIdx + 32768) * 131072 + (segIdx + 32768)) * 2 + (axis === 'z' ? 1 : 0)
-  const hit = segCache.get(key)
-  if (hit !== undefined) return hit
-  const mid = offS + (segIdx + 0.5) * CHUNK
-  const mx = axis === 'z' ? line : mid
-  const mz = axis === 'z' ? mid : line
-  let alive = 1
-  if (Math.max(Math.abs(mx), Math.abs(mz)) > 110) {
-    const p = placeAt(mx, mz)
-    if (p.district) {
-      const drop = p.district === 'downtown' ? 0.12 : p.district === 'midrise' ? 0.3 : 0.42
-      if (rand2(lineIdx, segIdx, S_SEG ^ (axis === 'z' ? 0x5b : 0xa7)) < drop) alive = 0
-    }
-  }
-  if (segCache.size > 40000) segCache.clear()
-  segCache.set(key, alive)
-  return alive
-}
-
-/** distance along the line to where the street's live run *hard-stops* — a
-    neighbouring segment dropped from the lattice — if one is close enough
-    for the earthwork taper to care. Only the binary source of street ends
-    counts here: the town-rim and steepness fades are already continuous in
-    `live`, and a taper keyed on them double-counts and, worse, disagrees
-    with them at nodes (a segment straddling the rim is "off" by its
-    midpoint but half-live at its near end, and the earthwork stepped where
-    the two answers met). */
-const armEndAt = (axis: 'x' | 'z', line: number, s: number): number => {
-  const offS = axis === 'z' ? OFF_Z : OFF_X
-  const segIdx = Math.floor((s - offS) / CHUNK)
-  const base = offS + segIdx * CHUNK
-  const u = s - base
-  let end = Infinity
-  if (u < 34 && segAliveK(axis, line, base - CHUNK / 2) === 0) end = u
-  if (CHUNK - u < 34 && segAliveK(axis, line, base + CHUNK * 1.5) === 0) {
-    end = Math.min(end, CHUNK - u)
-  }
-  return end
-}
-
-/** the grid line nearest a coordinate, on the chunk lattice */
-const nearestLine = (v: number, off: number) => off + Math.round((v - off) / CHUNK) * CHUNK
+/** graded ground (the town skirt applied to the raw field): what the
+    streets' steepness gate reads */
+export const gradedAt = (x: number, z: number) => townGradedHeight(placeAt(x, z), elevationAt(x, z))
 
 /**
- * The street network at a point. Inside a settlement every chunk border is a
- * street; outside, only the two spine lines through the centre survive, and
- * they fade out as they run into the countryside so a road never ends in a
- * blunt rectangle of asphalt.
+ * The street network at a point: the nearest live street of the town that
+ * claims it (streets.ts owns the plan). Outside a town only the roads out
+ * survive, and they fade as they run into the countryside so a road never
+ * ends in a blunt rectangle of asphalt.
  */
 export const roadAt = (x: number, z: number, place: Place): Road => {
   const t = place.town
   if (!t) return NO_ROAD
-  const lineX = nearestLine(x, OFF_X)
-  const lineZ = nearestLine(z, OFF_Z)
-  const dToNS = Math.abs(x - lineX) // to a street running north-south
-  const dToEW = Math.abs(z - lineZ) // to a street running east-west
-
-  // how present each street is here: everywhere in town — fading out through
-  // the start of the skirt rather than stopping dead on the rim curve, since
-  // a binary edge here is a wall in the earthwork under the street's end —
-  // and along the two spines for a while past the town limit
-  const spineX = nearestLine(t.x, OFF_X)
-  const spineZ = nearestLine(t.z, OFF_Z)
-  const reach = t.radius * SPINE_REACH
-  const inTown = smoothstep(1.1, 1.0, place.d)
-  const nsLive = Math.max(
-    inTown,
-    lineX === spineX ? smoothstep(reach, reach * 0.82, Math.abs(z - t.z)) : 0,
-  )
-  const ewLive = Math.max(
-    inTown,
-    lineZ === spineZ ? smoothstep(reach, reach * 0.82, Math.abs(x - t.x)) : 0,
-  )
-  if (nsLive <= 0 && ewLive <= 0) return NO_ROAD
-
-  // a hamlet gets a single crossroads, not a full grid: suppress any line
-  // that isn't a spine — and elsewhere the lattice frays by dropped segments
-  const ns0 = t.rank === 'hamlet' && lineX !== spineX ? 0 : nsLive
-  const ew0 = t.rank === 'hamlet' && lineZ !== spineZ ? 0 : ewLive
-  const ns = ns0 > 0 && lineX !== spineX ? ns0 * segAliveK('z', lineX, z) : ns0
-  const ew = ew0 > 0 && lineZ !== spineZ ? ew0 * segAliveK('x', lineZ, x) : ew0
-
-  // spines never drop segments, so they never taper on a neighbour's roll
-  const nsArm: RoadArm | null =
-    ns > 0 && dToNS <= CORRIDOR + EASE_REACH
-      ? {
-          axis: 'z', line: lineX, dist: dToNS,
-          live: ns * roadSteepK('z', lineX, z),
-          end: lineX === spineX ? Infinity : armEndAt('z', lineX, z),
-        }
-      : null
-  const ewArm: RoadArm | null =
-    ew > 0 && dToEW <= CORRIDOR + EASE_REACH
-      ? {
-          axis: 'x', line: lineZ, dist: dToEW,
-          live: ew * roadSteepK('x', lineZ, x),
-          end: lineZ === spineZ ? Infinity : armEndAt('x', lineZ, x),
-        }
-      : null
-  const a = nsArm && nsArm.live > 0.001 ? nsArm : null
-  const b = ewArm && ewArm.live > 0.001 ? ewArm : null
-  if (!a && !b) return NO_ROAD
-  // the nearer live street answers for the surface; the other still shapes
-  // the ground (see Road.other)
-  const w = a && b ? (a.dist <= b.dist ? a : b) : a ?? b!
-  const o = a && b ? (w === a ? b : a) : null
-  return {
-    grade: smoothstep(CORRIDOR + CORRIDOR_EASE, CORRIDOR, w.dist) * w.live,
-    dist: w.dist,
-    axis: w.axis,
-    line: w.line,
-    live: w.live,
-    end: w.end,
-    other: o,
-    asphalt: w.dist <= ROAD_HALF && w.live > 0.3,
-    walk: w.dist > ROAD_HALF && w.dist <= ROAD_HALF + WALK_W && w.live > 0.3,
-    junction:
-      ns > 0 && ew > 0 && dToNS <= ROAD_HALF + WALK_W && dToEW <= ROAD_HALF + WALK_W,
+  const list = piecesAt(networkOf(t), x, z)
+  if (!list) return NO_ROAD
+  let bestD = Infinity
+  let live = 0
+  let fx = 0
+  let fz = 0
+  let dx = 1
+  let dz = 0
+  let near: unknown = null
+  let junction = false
+  const W = ROAD_HALF + WALK_W
+  for (const p of list) {
+    // the bounding box first: a piece whose box is further than both the
+    // best so far and the pavement cannot matter, and most of a cell's list
+    // is exactly that
+    const bx = Math.max(p.x0 - x, 0, x - p.x1)
+    const bz = Math.max(p.z0 - z, 0, z - p.z1)
+    const bd = Math.sqrt(bx * bx + bz * bz)
+    if (bd >= bestD && bd > W) continue
+    const d = probe(p, x, z)
+    if (d > MARGIN) continue
+    if (d >= bestD && d > W) continue
+    const k = liveOf(p, hit.t)
+    if (k <= 0.001) continue
+    if (d <= W && k > 0.3) {
+      if (near === null) near = p.street
+      else if (near !== p.street) junction = true
+    }
+    if (d < bestD) {
+      bestD = d
+      live = k
+      fx = hit.fx
+      fz = hit.fz
+      dx = hit.dx
+      dz = hit.dz
+    }
   }
+  if (bestD === Infinity) return NO_ROAD
+  return {
+    grade: smoothstep(CORRIDOR + CORRIDOR_EASE, CORRIDOR, bestD) * live,
+    dist: bestD, dirX: dx, dirZ: dz, footX: fx, footZ: fz, live,
+    asphalt: bestD <= ROAD_HALF && live > 0.3,
+    walk: bestD > ROAD_HALF && bestD <= ROAD_HALF + WALK_W && live > 0.3,
+    junction,
+  }
+}
+
+/** scratch for roadArms: one row per piece within reach */
+const rowId: number[] = []
+const rowD: number[] = []
+const rowK: number[] = []
+const rowL: number[] = []
+/** how far past a street's nearest segment another of its segments still
+    has a say in its level */
+const BLEND = 6
+
+/**
+ * Every street close enough to shape the ground at a point, as one arm per
+ * street: its nearest distance, and its level and presence blended over its
+ * segments within BLEND of that distance, by weights that are continuous in
+ * position and fade to nothing at the reach, so no segment entering the
+ * lookup, leaving it or becoming the nearest can step the ground. terrain.ts
+ * combines the arms by taking the strongest pull up and the strongest pull
+ * down rather than applying them in turn.
+ *
+ * Both halves were measured rather than chosen. Applied one segment at a
+ * time, a curving road's dozen short segments each pulled by their own full
+ * slack, so on the inside of a bend three or four of them stacked into a
+ * bank three or four times the batter (66 degrees over natural, probed); a
+ * climbing road's segments ahead and behind pulled up and down at once and
+ * doubled it; and two streets ending on one node at the rim of a town
+ * doubled it at every corner.
+ */
+export const roadArms = (x: number, z: number, place: Place, reach: number, out: RoadArm[]) => {
+  out.length = 0
+  const t = place.town
+  if (!t) return out
+  const list = piecesAt(networkOf(t), x, z)
+  if (!list) return out
+  let n = 0
+  for (const p of list) {
+    const d = probe(p, x, z)
+    if (d >= reach) continue
+    rowId[n] = p.street.id
+    rowD[n] = d
+    rowK[n] = liveOf(p, hit.t)
+    rowL[n] = levelOf(p, hit.t)
+    n++
+  }
+  // one street at a time, in id order; a point has a handful of rows at most
+  let prev = -1
+  for (;;) {
+    let id = Infinity
+    for (let i = 0; i < n; i++) if (rowId[i] > prev && rowId[i] < id) id = rowId[i]
+    if (id === Infinity) break
+    prev = id
+    let dmin = Infinity
+    for (let i = 0; i < n; i++) if (rowId[i] === id && rowD[i] < dmin) dmin = rowD[i]
+    let sw = 0
+    let sk = 0
+    let sl = 0
+    for (let i = 0; i < n; i++) {
+      if (rowId[i] !== id) continue
+      const u = 1 - (rowD[i] - dmin) / BLEND
+      if (u <= 0) continue
+      const w = u * u * smoothstep(reach, reach - 4, rowD[i]) + 1e-9
+      sw += w
+      sk += w * rowK[i]
+      sl += w * rowL[i]
+    }
+    const live = sk / sw
+    if (live > 0.001) out.push({ dist: dmin, live, level: sl / sw })
+  }
+  return out
 }
 
 /**
@@ -496,28 +454,22 @@ export const pavedAt = (place: Place, road: Road) => {
   if (road.asphalt || road.walk) return 1
   if (!place.district) return 0
   const off = Math.max(0, road.dist - (ROAD_HALF + WALK_W))
-  const [peak, fade] = place.district === 'downtown'
-    ? [0.98, 40]
-    : place.district === 'midrise' ? [0.85, 15] : [0.35, 3]
+  // continuous in the town distance, so the paving thins as a gradient from
+  // the middle outward rather than stepping at a district ring
+  const d = place.d
+  const core = smoothstep(0.64, 0.5, d)
+  const down = smoothstep(0.32, 0.2, d)
+  const peak = mix(0.35, mix(0.85, 0.98, down), core)
+  const fade = mix(3, mix(15, 40, down), core)
   return clamp01(peak * (1 - off / fade))
 }
 
-/** the buildable interior of a block, i.e. one chunk minus its street
-    corridors. Building placement works in this rectangle. */
-export const blockInset = ROAD_HALF + WALK_W + 1.0
-
-/** how tall a building may stand at this point, in world units. Downtown gets
-    towers, the mid-rise ring gets walk-ups, the suburbs get houses; each
-    tapers toward the ring outside it so a skyline has a shoulder rather than
-    a cliff edge. */
+/** how tall a building may stand at this point, in world units: a peak in
+    the middle of a city that is gone by the edge of downtown, a shoulder of
+    walk-ups, then houses. Continuous in the town distance (streets.ts rolls
+    each lot's own height off the same curve), so a skyline has a shoulder
+    rather than a cliff edge at a district ring. */
 export const buildingHeightAt = (place: Place) => {
   if (!place.town || !place.district) return 0
-  const scale = place.town.rank === 'city' ? 1 : place.town.rank === 'town' ? 0.62 : 0.34
-  if (place.district === 'downtown') {
-    return clamp01(1 - place.d / 0.26) * 118 * scale + 34 * scale
-  }
-  if (place.district === 'midrise') {
-    return smoothstep(0.58, 0.26, place.d) * 40 * scale + 15 * scale
-  }
-  return smoothstep(1.0, 0.58, place.d) * 5 * scale + 8
+  return heightAtD(place.town, place.d)
 }

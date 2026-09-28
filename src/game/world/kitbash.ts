@@ -4,7 +4,10 @@ import type { Solid } from '../physics/collision'
 import type { InteriorRect } from './interiors'
 import type { ShopDoorSpec } from './shopDoors'
 import type { Smashable } from './debris'
+import type { StructureRec } from './fracture'
 import { SURF, type SurfaceId } from './surface'
+import { seeded } from '../core/rand'
+import { hash2 } from './noise'
 
 /*
   The vocabulary every built thing out here is stamped from.
@@ -43,7 +46,8 @@ export interface BuildOut {
   boxes: Solid[]
   /** interiors that want a light; kept tiny, the streamer caps how many burn */
   lamps: Array<{ x: number; y: number; z: number }>
-  /** walk-in footprints, for the interiors registry and the scatter keep-out */
+  /** footprints the grass, the flowers and the scatter keep out of: walk-in
+      floors, and anything flat laid lower than a blade (world/interiors.ts) */
   interiors: InteriorRect[]
   /** hinged leaves for world/shopDoors.ts; ids are assigned by the chunk */
   doors: ShopDoorSpec[]
@@ -51,6 +55,10 @@ export interface BuildOut {
       makes goes in here, a shopfront is not something you drive through, but
       the park trees a block plants instead of housing do */
   smash: Smashable[]
+  /** every building and landmark stamped, recorded so destruction can find
+      it in the soup again (world/fracture.ts). The chunk fills this in around
+      each kit; a kit never touches it */
+  structures?: StructureRec[]
   /**
    * false on the outer ring, where a building is a silhouette on the skyline
    * and nothing more. Window grids are the single most expensive thing the
@@ -59,6 +67,25 @@ export interface BuildOut {
    * parapets still build, because those are the shape you actually read.
    */
   detailed: boolean
+  /**
+   * A part that turns (a windmill's sails). Stamp it, in world space, into
+   * the builder this hands back and the chunk hangs it as a mesh of its own
+   * spinning about the axis (ax, ay, az) through (x, y, z) at `rate` radians
+   * a second. Absent where nothing ticks (the far field's massing), and a kit
+   * then stamps the part into `solid`, stopped where it is.
+   */
+  rotor?: (
+    x: number, y: number, z: number, ax: number, ay: number, az: number, rate: number,
+  ) => MeshBuilder
+  /**
+   * Is a world rectangle clear of every drawn street and its pavement
+   * (chunk.ts's lotClear)? A kit asks before it puts anything past its own
+   * walls toward a street: a lot is an axis-aligned box facing a cardinal,
+   * its street may curve or run up to thirty degrees off that cardinal, and
+   * a flank or a corner of the front yard can reach the carriageway. Absent,
+   * everything is taken to be clear.
+   */
+  clear?: (x0: number, z0: number, x1: number, z1: number) => boolean
 }
 
 /** a footprint to build on: where it is, how big, how tall it wants to be,
@@ -146,8 +173,38 @@ export const GLASS_DARK = '#2e3a44'
 /** and what a lit one reads as after dusk */
 export const GLASS_LIT = '#ffd9a0'
 
+const tint = new THREE.Color()
+/** a colour nudged by `k` (a few percent either way), multiplicatively, so a
+    dark stone or a dark trim cannot clamp to black the way an additive
+    jitter would */
+export const nudge = (hex: string, k: number) =>
+  `#${tint.set(hex).multiplyScalar(k).getHexString()}`
+
 /** pick from a palette with one roll */
 export const pick = <T>(list: T[], r: number) => list[Math.min(list.length - 1, Math.floor(r * list.length))]
+
+/**
+ * A second stream split off a kit's rng with one roll, for the rolls only a
+ * detailed build makes. A chunk is rebuilt when it changes tier, and a kit
+ * that rolled its window lights out of the same stream as its roofline got a
+ * different roofline on the outer ring from the one it had up close, so a
+ * water tank appeared on a roof as you walked toward it. Silhouette rolls
+ * come from the lot's own stream, dressing from the fork. The roll is hashed
+ * rather than used as a seed directly: `seeded` is an LCG, and seeding one
+ * with its parent's next state replays the parent.
+ */
+export const fork = (rng: () => number) =>
+  seeded(hash2(Math.floor(rng() * 4294967296), 0x6b1d, 0x3c7))
+
+/**
+ * The one stream a lot's kit rolls from, seeded on the lot's centre on a
+ * half-unit grid: a pure function of the lot, and not of how many lots were
+ * raised before it. Every consumer that raises a lot (the chunk at any tier,
+ * the far field's impostors) takes it from here, which is what makes them
+ * agree about which building stands there.
+ */
+export const lotStream = (x: number, z: number) =>
+  seeded(hash2(Math.round(x * 2), Math.round(z * 2), 0x7a3e))
 
 /* ------------------------------------------------------- unit primitives -- */
 
@@ -358,12 +415,13 @@ export const shaft = (
 
 /** a beam between two points in space, of square section `t`. Guy wires,
     braces, splayed legs, a fallen mast: anything whose two ends are known and
-    whose angle is not. */
+    whose angle is not. `across` widens it sideways (horizontally across
+    the run) for a flat member, a stair flight or a ramp, rather than a beam */
 export const strut = (
   out: MeshBuilder, hex: string,
   x0: number, y0: number, z0: number,
   x1: number, y1: number, z1: number,
-  t: number, surf: SurfaceId = SURF.none,
+  t: number, surf: SurfaceId = SURF.none, across = t,
 ) => {
   const dx = x1 - x0
   const dy = y1 - y0
@@ -375,10 +433,18 @@ export const strut = (
   const yaw = Math.atan2(dx, dz)
   const pitch = Math.acos(Math.max(-1, Math.min(1, dy / len)))
   put(out, BOX, hex, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2,
-    pitch, yaw, 0, t, len, t, surf)
+    pitch, yaw, 0, across, len, t, surf)
 }
 
 /* ------------------------------------------------------------- collision -- */
+
+/** a footprint the grass and the scatter keep out of (world/interiors.ts):
+    anything a kit lays flat and lower than a blade, a step, an apron, a path,
+    reports one of these or the lawn grows straight up through it. `hx, hz`
+    are world-axis half-extents */
+export const keepOut = (out: BuildOut, x: number, z: number, hx: number, hz: number) => {
+  out.interiors.push({ minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz })
+}
 
 /** an axis-aligned collision box from a centre and half-extents. Callers hand
     it to `noStand()` themselves where the top of the box is thin air. */
@@ -389,3 +455,99 @@ export const aabb = (
     new THREE.Vector3(cx - hx, y0, cz - hz),
     new THREE.Vector3(cx + hx, y1, cz + hz),
   )
+
+/*
+  Roofs you can stand on. A building's collision used to be one noStand box
+  from below the ground to the top of its parapet or its eaves, which is the
+  right answer for a walk (nothing on the street is tall enough to climb onto
+  it) and the wrong one for a flight: land on a roof and the roof was not a
+  floor, the box pushed you out of its nearest wall, and you fell down the
+  outside to the street. Two helpers fix that without giving up the no-ladder
+  rule, because a wall top stays noStand and the roof is its own surface.
+*/
+
+const noStandBox = (b: Solid) => {
+  b.noStand = true
+  return b
+}
+
+/** a flat-roofed mass: one box from `y0` to the roof surface `roofY`, whose
+    top is a floor, and where a parapet or cornice stands `rim` proud of the
+    roof, that rim as four thin noStand boxes round the edge (a rail you hop
+    over, never a floor, and never pushing you off the roof inside it) */
+export const flatRoof = (
+  boxes: Solid[], cx: number, y0: number, cz: number, hx: number, roofY: number, hz: number,
+  rim = 0,
+) => {
+  boxes.push(aabb(cx, y0, cz, hx, roofY, hz))
+  if (rim < 0.05) return
+  const t = 0.35
+  const top = roofY + rim
+  boxes.push(noStandBox(aabb(cx, roofY - 0.5, cz - hz + t / 2, hx, top, t / 2)))
+  boxes.push(noStandBox(aabb(cx, roofY - 0.5, cz + hz - t / 2, hx, top, t / 2)))
+  boxes.push(noStandBox(aabb(cx - hx + t / 2, roofY - 0.5, cz, t / 2, top, hz)))
+  boxes.push(noStandBox(aabb(cx + hx - t / 2, roofY - 0.5, cz, t / 2, top, hz)))
+}
+
+/** each roof shape's half-profile from ridge (0) to eave (1) across its span:
+    height as a fraction of the rise at each breakpoint. One ramp per segment,
+    so a gable is two boxes, a gambrel four, a barrel vault six */
+const PROFILES = new Map<THREE.BufferGeometry, number[][]>([
+  [PRISM, [[0, 1], [1, 0]]],
+  // a hip's ends slope too; read as a gable, its ends overhang a little air
+  [HIP, [[0, 1], [1, 0]]],
+  [GAMBREL, [[0, 1], [0.4, 0.62], [1, 0]]],
+  [BARREL, [[0, 1], [0.5, 0.866], [0.8, 0.6], [1, 0]]],
+])
+
+/**
+ * The standable twin of a roof `put()` with exactly the arguments it was
+ * drawn with (eaves at `py`, ridge along local x, `sx` long, `rise` tall and
+ * `sz` across, turned `ry`): its slopes as ramps (collision.ts's `Ramp`), a
+ * box per segment of the profile with a top that follows the slope, so a
+ * body lands on the shingles and can walk up to the ridge and sit on it.
+ * Kits face a cardinal, so `ry` is snapped to the nearest quarter turn. A
+ * SHED is one ramp, low eave at local -z; PRISM, HIP, GAMBREL and BARREL are
+ * mirrored pairs. The slab under each is a quarter unit deep: whatever the
+ * roof sits on (a noStand mass up to the eaves) is the rest of the building.
+ */
+export const roofSolids = (
+  boxes: Solid[], geo: THREE.BufferGeometry,
+  px: number, py: number, pz: number, ry: number, sx: number, rise: number, sz: number,
+) => {
+  const q = ((Math.round(ry / (Math.PI / 2)) % 4) + 4) % 4
+  // the span axis in the world, and which way along it local +z points
+  // (a turn of ry takes local +z to (sin ry, cos ry))
+  const acrossX = q === 1 || q === 3
+  const dir = q === 0 || q === 1 ? 1 : -1
+  const along = sx / 2
+  const half = sz / 2
+  const top = py + rise
+  const slab = (a0: number, a1: number, h0: number, h1: number) => {
+    // a0, a1 are local z; the world coordinate along the span is dir * z
+    let w0 = dir * a0
+    let w1 = dir * a1
+    let lo = h0
+    let hi = h1
+    if (w0 > w1) {
+      ;[w0, w1] = [w1, w0]
+      ;[lo, hi] = [hi, lo]
+    }
+    const b = acrossX
+      ? aabb(px + (w0 + w1) / 2, py - 0.25, pz, (w1 - w0) / 2, Math.max(lo, hi), along)
+      : aabb(px, py - 0.25, pz + (w0 + w1) / 2, along, Math.max(lo, hi), (w1 - w0) / 2)
+    b.ramp = { axis: acrossX ? 'x' : 'z', lo, hi }
+    boxes.push(b)
+  }
+  if (geo === SHED) {
+    slab(-half, half, py, top)
+    return
+  }
+  const prof = PROFILES.get(geo)
+  if (!prof) return
+  for (let i = 0; i + 1 < prof.length; i++) {
+    const [t0, f0] = prof[i]
+    const [t1, f1] = prof[i + 1]
+    for (const s of [1, -1]) slab(s * t0 * half, s * t1 * half, py + f0 * rise, py + f1 * rise)
+  }
+}

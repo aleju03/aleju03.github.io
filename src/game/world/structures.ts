@@ -2,8 +2,8 @@ import { noStand } from '../physics/collision'
 import { seeded } from '../core/rand'
 import { SURF, type SurfaceId } from './surface'
 import {
-  BALL, BOX, CONE12, CYL12, DOME, GAMBREL, PRISM, SHED, TUBE12,
-  aabb, box, panel, pick, put, shaft, strut, type BuildOut,
+  BALL, BOX, CONE12, CYL8, CYL12, DOME, GAMBREL, PRISM, SHED, TUBE12,
+  aabb, box, fork, keepOut, nudge, panel, pick, put, roofSolids, shaft, strut, taper, type BuildOut,
 } from './kitbash'
 import type { Landmark } from './landmarks'
 
@@ -94,6 +94,11 @@ const solidL = (
   out.boxes.push(stand ? b : noStand(b))
 }
 
+/** a flat footprint the grass keeps out of, in the frame (snapped frames
+    only, like `solidL`) */
+const keepL = (out: BuildOut, s: Site, u: number, v: number, lu: number, lv: number) =>
+  keepOut(out, s.x(u, v), s.z(u, v), s.ex(lu, lv) / 2, s.ez(lu, lv) / 2)
+
 /** a wall quad whose outward local normal is (du, dv) */
 const panelL = (
   out: BuildOut, s: Site, target: 'solid' | 'glass', hex: string,
@@ -132,7 +137,8 @@ const railing = (
 
 /**
  * A banded tower on a headland with a lit lantern in the top of it and the
- * keeper's cottage tucked in behind. The one structure out here that is
+ * keeper's cottage tucked in behind, an oil store across the yard, a flag,
+ * and a whitewashed wall closing the yard. The one structure out here that is
  * legible at night from further away than it is by day, which is the whole
  * argument for building it: the emissive pass already exists for city
  * windows, and one glowing ring on a dark coast is worth more of it than a
@@ -187,6 +193,11 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
     }
   }
   out.boxes.push(noStand(aabb(lm.x, y - 2, lm.z, r0 * 1.18, topY, r0 * 1.18)))
+  // the gallery is a floor (the square inside its ring), the lantern a post
+  // on it, and the lantern's cap a steep perch over that
+  out.boxes.push(aabb(lm.x, y - 2, lm.z, r1 * 1.2, topY + 0.2, r1 * 1.2))
+  out.boxes.push(noStand(aabb(lm.x, topY, lm.z, r1 * 0.7, topY + 3.4, r1 * 0.7)))
+  roofSolids(out.boxes, PRISM, lm.x, topY + 3.45, lm.z, 0, 0.5, 1.9, r1 * 2.2)
 
   // the keeper's cottage, set back from the light and squared up to the world
   const c = site(lm, true)
@@ -197,6 +208,7 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
   boxL(out, c, '#6f6a61', cu, cv, y + 0.35, 8.8, 0.9, 6.8, SURF.paving)
   put(out.solid, PRISM, '#54423a', c.x(cu, cv), y + ch - 0.05, c.z(cu, cv),
     0, c.face, 0, 9.0, 2.8, 6.9, SURF.shingle)
+  roofSolids(out.boxes, PRISM, c.x(cu, cv), y + ch - 0.05, c.z(cu, cv), c.face, 9.0, 2.8, 6.9)
   boxL(out, c, '#41372f', cu + 2.6, cv - 1.6, y + ch + 3.2, 0.9, 3.4, 0.9, SURF.brick)
   if (out.detailed) {
     port(out, c, cu, cv + 3.3, y + 2.3, 1.5, 3.6, 0, 1, false)
@@ -207,74 +219,216 @@ const lighthouse = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
     // the path from the cottage door to the tower foot
     boxL(out, c, '#9a948a', cu * 0.45, cv + 4.6, y + 0.05, Math.abs(cu) * 1.2, 0.1, 1.6,
       SURF.paving)
+    keepL(out, c, cu * 0.45, cv + 4.6, Math.abs(cu) * 1.2, 1.8)
   }
   solidL(out, c, cu, cv, 8.4, 6.4, y - 2, y + ch, false, 0.2)
+
+  // The station round them, which is what turns a tower and a house into a
+  // light *station*: an oil store across the yard from the cottage, a flag
+  // on a mast, and a low whitewashed wall closing the yard, with the cottage
+  // itself standing in as the wall's back corner on its own side
+  const side = Math.sign(cu)
+  const ou = -side * 7.2
+  const ov = -5.8
+  boxL(out, c, WHITE, ou, ov, y + 1.6, 3.4, 3.6, 3.2, SURF.plaster)
+  boxL(out, c, '#6f6a61', ou, ov, y + 0.25, 3.7, 0.5, 3.5, SURF.paving)
+  put(out.solid, SHED, '#54423a', c.x(ou, ov), y + 3.35, c.z(ou, ov),
+    0, c.face + Math.PI, 0, 3.9, 0.9, 3.7, SURF.shingle)
+  roofSolids(out.boxes, SHED, c.x(ou, ov), y + 3.35, c.z(ou, ov), c.face + Math.PI, 3.9, 0.9, 3.7)
+  solidL(out, c, ou, ov, 3.4, 3.2, y - 2, y + 3.35, false, 0.1)
+  if (out.detailed) {
+    const dr = fork(rng)
+    port(out, c, ou, ov + 1.6, y + 1.5, 1.2, 2.5, 0, 1, false)
+    boxL(out, c, '#3a2c1e', ou, ov + 1.66, y + 1.45, 1.1, 2.4, 0.12, SURF.plank)
+    // a hood over the cottage door
+    boxL(out, c, '#54423a', cu, cv + 3.9, y + 4.35, 2.6, 0.2, 1.3, SURF.plank)
+    // the flag
+    const fu = -side * 6.5
+    const fv = 3.2
+    shaft(out.solid, '#d8d2c4', c.x(fu, fv), y, c.z(fu, fv), 0.1, 9.5, 0.06, 6)
+    boxL(out, c, dr() < 0.5 ? LAMP_RED : '#2f3b55', fu + 0.8, fv, y + 8.8, 1.5, 0.9, 0.05)
+    out.boxes.push(noStand(aabb(c.x(fu, fv), y - 1, c.z(fu, fv), 0.2, y + 9.5, 0.2)))
+    // the wall: along the front with a gate in it, down the open flank and
+    // back to the oil store, and down the cottage's flank to its door
+    const wall = (u0: number, v0: number, u1: number, v1: number) => {
+      const lu = Math.abs(u1 - u0) + 0.5
+      const lv = Math.abs(v1 - v0) + 0.5
+      const mu = (u0 + u1) / 2
+      const mv = (v0 + v1) / 2
+      boxL(out, c, WHITE, mu, mv, y + 0.5, lu, 1.0, lv, SURF.plaster)
+      boxL(out, c, '#b8b09e', mu, mv, y + 1.06, lu + 0.1, 0.12, lv + 0.1, SURF.paving)
+      solidL(out, c, mu, mv, lu, lv, y - 1, y + 1.12, false, 0.05)
+    }
+    const fy = 6.5
+    wall(-10.6, fy, -1.3, fy)
+    wall(1.3, fy, 10.6, fy)
+    wall(-side * 10.6, fy, -side * 10.6, ov)
+    wall(side * 10.6, fy, side * 10.6, cv + 3.6)
+    for (const q of [-1, 1]) {
+      boxL(out, c, WHITE, q * 1.5, fy, y + 0.8, 0.8, 1.6, 0.8, SURF.plaster)
+    }
+  }
 }
 
 /* -------------------------------------------------------------- windmill -- */
 
 /**
- * A tower mill: a whitewashed stone cone, a boat-shaped cap and four sails.
- * The sails are stamped where they were left rather than turning, because the
- * chunk soup is baked once and a moving one would have to be its own object
- * with its own draw call; what sells it instead is that the whole assembly is
- * canted to the yaw the site rolled, so no two mills on a plain are pointing
- * the same way and the field reads as weather rather than as a repeat.
+ * A tower mill, working. A tarred stone plinth under a whitewashed or bare
+ * stone tower with a door, a lintel and a stone step at its foot and small
+ * windows climbing it in a spiral, a grain store leaning on its back; a
+ * reefing gallery round its waist on raking struts, where the miller stood
+ * to set the cloth; and on top a boat-shaped cap on a curb, with the
+ * windshaft coming out of the front of it and a fantail on a frame out the
+ * back, the little wheel that turns the whole cap into the wind.
+ *
+ * The sails are the point of it and they are built the way real ones are:
+ * two stocks through the poll end make four sails, each a whip with bars
+ * across it and a hemlath along its outer edge, and on a mill that is
+ * working the cloth is spread on two of them. They turn: the sails and the
+ * poll end are stamped into the chunk's `rotor` builder rather than its
+ * soup, which hangs them as one small mesh of their own spinning about the
+ * windshaft (a draw and a quaternion a frame, for the one mill in sight),
+ * each mill at its own pace off its site seed so two on a plain are never in
+ * step. Where nothing ticks (no `rotor`), they are stamped into the soup at
+ * the angle they stopped at.
  */
 const windmill = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   const s = site(lm, false)
-  const h = 11 + rng() * 4
-  const r0 = 3.4
-  const r1 = 2.3
-  const body = rng() < 0.5 ? WHITE : '#9a9184'
+  const h = 12 + rng() * 4
+  const r0 = 3.6
+  const r1 = 2.4
+  const body = rng() < 0.55 ? WHITE : '#9a9184'
+  const stop = rng() * Math.PI / 2
+  const clothOn = rng() < 0.7
+  const dr = fork(rng)
+  const rAt = (yy: number) => r0 + (r1 - r0) * Math.min(1, Math.max(0, (yy - y - 0.8) / h))
 
-  shaft(out.solid, '#6f6a61', lm.x, y - 0.8, lm.z, r0 * 1.2, 1.6, r0 * 1.12, 12, 0,
-    SURF.paving)
-  shaft(out.solid, body, lm.x, y + 0.8, lm.z, r0, h, r1, 12, 0, SURF.brick)
-  // the stage: a working gallery a third of the way up, which is the detail
-  // that stops the tower reading as a chimney
-  const stageY = y + 0.8 + h * 0.42
-  const stageR = r0 * 0.86
-  shaft(out.solid, DARKWOOD, lm.x, stageY, lm.z, stageR + 0.9, 0.24, stageR + 0.9, 12, 0,
-    SURF.plank)
-  if (out.detailed) railing(out, lm.x, stageY + 0.24, lm.z, stageR + 0.75, 1.0, DARKWOOD)
-
-  // the cap, and the wind shaft coming out of the front of it
+  // the plinth, tarred, and the tower on it
+  shaft(out.solid, '#3f3a34', lm.x, y - 0.8, lm.z, r0 * 1.14, 2.2, r0 * 1.08, 12, 0, SURF.paving)
+  shaft(out.solid, body, lm.x, y + 1.4, lm.z, r0 * 1.02, h - 0.6, r1, 12, 0, SURF.brick)
   const capY = y + 0.8 + h
-  put(out.solid, DOME, ROOF_DARK, lm.x, capY, lm.z, 0, 0, 0,
-    r1 * 2.5, r1 * 2.4, r1 * 2.5, SURF.shingle)
-  const hubOut = r1 * 1.15
-  const hx = lm.x + s.fx * hubOut
-  const hz = lm.z + s.fz * hubOut
-  const hy = capY + r1 * 0.7
-  put(out.solid, CYL12, DARKWOOD, hx, hy, hz, Math.PI / 2, s.face, 0, 0.9, 1.6, 0.9)
 
-  // four sails: a spar out of the hub with slats laid across it
-  const span = 6.5 + rng() * 1.8
-  for (let k = 0; k < 4; k++) {
-    const th = (k / 4) * Math.PI * 2 + 0.35
-    const dx = s.rx * Math.sin(th)
-    const dz = s.rz * Math.sin(th)
-    const dy = Math.cos(th)
-    put(out.solid, BOX, DARKWOOD, hx + dx * span * 0.5, hy + dy * span * 0.5,
-      hz + dz * span * 0.5, 0, s.face, -th, 0.34, span, 0.7, SURF.plank)
-    if (!out.detailed) continue
-    for (let i = 2; i <= 8; i++) {
-      const t = (i / 9) * span
-      const w = 1.7 * (1 - i / 13)
-      put(out.solid, BOX, i % 2 ? '#8d867a' : TIMBER,
-        hx + dx * t, hy + dy * t, hz + dz * t,
-        0, s.face, -th, w, 0.16, 0.42, SURF.plank)
+  // the grain store leaning on its back: a lean-to under a monopitch
+  const b = site(lm, true)
+  const bu = 0
+  const bv = -(r0 + 1.8)
+  boxL(out, b, '#8a7a60', bu, bv, y + 2.0, 5.6, 4.0, 3.6, SURF.plank)
+  put(out.solid, SHED, ROOF_DARK, b.x(bu, bv), y + 3.9, b.z(bu, bv), 0, b.face + Math.PI, 0,
+    6.0, 1.6, 4.0, SURF.shingle)
+  roofSolids(out.boxes, SHED, b.x(bu, bv), y + 3.9, b.z(bu, bv), b.face + Math.PI, 6.0, 1.6, 4.0)
+  solidL(out, b, bu, bv, 5.6, 3.6, y - 1, y + 3.9, false, 0.1)
+
+  // the reefing gallery on raking struts
+  const stageY = y + 0.8 + h * 0.4
+  const stageR = rAt(stageY) + 1.6
+  shaft(out.solid, DARKWOOD, lm.x, stageY, lm.z, stageR, 0.26, stageR, 12, 0, SURF.plank)
+  if (out.detailed) {
+    railing(out, lm.x, stageY + 0.26, lm.z, stageR - 0.15, 1.1, DARKWOOD, 16)
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + 0.2
+      const rr = rAt(stageY - 2.6)
+      strut(out.solid, DARKWOOD,
+        lm.x + Math.cos(a) * rr, stageY - 2.6, lm.z + Math.sin(a) * rr,
+        lm.x + Math.cos(a) * (stageR - 0.3), stageY, lm.z + Math.sin(a) * (stageR - 0.3), 0.2)
     }
   }
 
+  // the cap: a curb ring, and the boat-shaped hood along the windshaft
+  put(out.solid, TUBE12, DARKWOOD, lm.x, capY + 0.2, lm.z, 0, 0, 0, r1 * 2.3, 0.4, r1 * 2.3)
+  put(out.solid, DOME, ROOF_DARK, lm.x - s.fx * 0.3, capY + 0.35, lm.z - s.fz * 0.3,
+    0, s.face, 0, r1 * 2.2, r1 * 1.7, r1 * 3.1, SURF.shingle)
+  put(out.solid, BALL, '#c8ac63', lm.x, capY + 0.35 + r1 * 1.7, lm.z, 0, 0, 0, 0.4, 0.4, 0.4)
+
+  // the windshaft, tipped up a little, and the poll end on it
+  const hubOut = r1 * 1.55
+  const hx = lm.x + s.fx * hubOut
+  const hz = lm.z + s.fz * hubOut
+  const hy = capY + r1 * 0.75
+  put(out.solid, CYL12, DARKWOOD, lm.x + s.fx * hubOut * 0.6, hy - 0.15, lm.z + s.fz * hubOut * 0.6,
+    Math.PI / 2 - 0.12, s.face, 0, 0.8, hubOut * 1.3, 0.8)
+  // the sails and the poll end turn together about the windshaft
+  const rate = -(0.28 + ((lm.seed >>> 3) % 97) / 97 * 0.22)
+  const sail = out.rotor?.(hx, hy, hz, s.fx, 0, s.fz, rate) ?? out.solid
+  put(sail, BOX, '#3a322a', hx, hy, hz, 0, s.face, stop, 1.4, 1.4, 1.2)
+
+  // the fantail out the back: a frame, and a six-bladed wheel on it
+  const tx = lm.x - s.fx * (r1 * 2.2)
+  const tz = lm.z - s.fz * (r1 * 2.2)
+  const ty = capY + r1 * 1.1
+  for (const q of [-1, 1]) {
+    strut(out.solid, DARKWOOD, lm.x - s.fx * r1 * 0.9 + s.rx * q * 0.8, capY + 0.4,
+      lm.z - s.fz * r1 * 0.9 + s.rz * q * 0.8, tx, ty, tz, 0.16)
+  }
   if (out.detailed) {
-    port(out, s, 0, r0 * 0.94, y + 2.6, 1.6, 3.4, 0, 1, false)
-    boxL(out, s, '#3a2c1e', 0, r0 * 1.0, y + 2.4, 1.5, 3.2, 0.16, SURF.plank)
-    for (const a of [1.4, 3.6, 5.1]) {
-      const rr = r0 * 0.94
-      box(out.solid, '#28323a', lm.x + Math.cos(a) * rr, y + 6.4,
-        lm.z + Math.sin(a) * rr, 0.9, 1.2, 0.9, a, SURF.plaster)
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2
+      put(out.solid, BOX, i % 2 ? '#d8cfb8' : TIMBER,
+        tx + s.fx * Math.cos(a) * 0.7, ty + Math.sin(a) * 0.7, tz + s.fz * Math.cos(a) * 0.7,
+        0, s.face + Math.PI / 2, Math.PI / 2 - a, 0.5, 1.4, 0.06)
+    }
+  }
+
+  // the sails
+  const L = Math.min(h - 1.5, 11.5)
+  const sw = 2.3
+  for (let k = 0; k < 4; k++) {
+    const th = stop + (k / 4) * Math.PI * 2
+    const dx = s.rx * Math.sin(th)
+    const dz = s.rz * Math.sin(th)
+    const dy = Math.cos(th)
+    // across the sail, in its plane: the side the cloth is spread to
+    const px = s.rx * Math.cos(th)
+    const pz = s.rz * Math.cos(th)
+    const py = -Math.sin(th)
+    const at = (t: number, o: number, n = 0.2) => [
+      hx + dx * t + px * o + s.fx * n, hy + dy * t + py * o, hz + dz * t + pz * o + s.fz * n,
+    ] as const
+    const [wx, wy, wz] = at(L / 2, 0)
+    put(sail, BOX, DARKWOOD, wx, wy, wz, 0, s.face, -th, 0.36, L, 0.5, SURF.plank)
+    const t0 = L * 0.22
+    const [cx, cy, cz] = at((t0 + L) / 2, sw / 2 + 0.1, 0.12)
+    if (clothOn && k % 2 === 0) {
+      put(sail, BOX, '#d8cfb8', cx, cy, cz, 0, s.face, -th, sw, L - t0, 0.05)
+    }
+    if (!out.detailed) continue
+    // the hemlath along the outer edge and the bars across
+    const [ex, ey, ez] = at((t0 + L) / 2, sw + 0.1)
+    put(sail, BOX, TIMBER, ex, ey, ez, 0, s.face, -th, 0.14, L - t0, 0.14, SURF.plank)
+    for (let t = t0; t <= L + 1e-6; t += (L - t0) / 9) {
+      const [bx, by, bz] = at(t, sw / 2 + 0.05)
+      put(sail, BOX, TIMBER, bx, by, bz, 0, s.face, -th, sw + 0.2, 0.09, 0.1, SURF.plank)
+    }
+    // a leading board on the whip's other side
+    const [lx, ly, lz] = at((t0 + L) / 2, -0.45)
+    put(sail, BOX, TIMBER, lx, ly, lz, 0, s.face, -th, 0.5, L - t0, 0.06, SURF.plank)
+  }
+
+  if (out.detailed) {
+    // the door at the foot, its step, and the windows climbing the tower
+    port(out, s, 0, r0 * 0.96, y + 2.6, 1.7, 3.6, 0, 1, false)
+    boxL(out, s, '#3a2c1e', 0, r0 * 1.02, y + 2.5, 1.6, 3.4, 0.16, SURF.plank)
+    boxL(out, s, '#8b867c', 0, r0 + 0.9, y + 0.15, 2.8, 0.3, 1.4, SURF.paving)
+    for (let i = 0; i < 5; i++) {
+      const a = s.face + 1.1 + i * 1.35
+      const wy = y + 4.2 + i * (h - 5) / 5
+      if (Math.abs(wy - stageY) < 1.2) continue
+      const rr = rAt(wy) + 0.02
+      const nx = Math.sin(a)
+      const nz = Math.cos(a)
+      box(out.solid, '#d8d2c4', lm.x + nx * rr, wy, lm.z + nz * rr, 1.1, 1.5, 0.2, a, SURF.plaster)
+      panel(out.solid, '#28323a', lm.x + nx * (rr + 0.12), wy, lm.z + nz * (rr + 0.12),
+        0.8, 1.2, a)
+      if (dr() < 0.4) {
+        panel(out.glass, LIT, lm.x + nx * (rr + 0.16), wy, lm.z + nz * (rr + 0.16), 0.8, 1.2, a)
+      }
+    }
+    // a spare millstone against the wall, and sacks by the door
+    const ma = s.face + 0.7
+    put(out.solid, CYL12, '#9a948a', lm.x + Math.sin(ma) * (r0 + 0.5), y + 1.3,
+      lm.z + Math.cos(ma) * (r0 + 0.5), 0.2, ma, Math.PI / 2, 2.6, 0.5, 2.6, SURF.paving)
+    for (let i = 0; i < 3; i++) {
+      put(out.solid, BALL, '#b8a888', s.x(-1.9 - i * 0.7, r0 + 0.8), y + 0.45,
+        s.z(-1.9 - i * 0.7, r0 + 0.8), 0, dr() * 3, 0, 0.8, 0.9, 0.7)
     }
   }
   out.boxes.push(noStand(aabb(lm.x, y - 2, lm.z, r0 * 1.1, capY, r0 * 1.1)))
@@ -303,6 +457,8 @@ const farm = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   boxL(out, s, '#6f6a61', bu, bv, y + 0.3, bw + 0.4, 0.8, bd + 0.4, SURF.paving)
   put(out.solid, GAMBREL, '#4e4a44', s.x(bu, bv), y + bh - 0.05, s.z(bu, bv),
     0, s.face, 0, bw * 1.05, bd * 0.52, bd * 1.08, SURF.shingle)
+  roofSolids(out.boxes, GAMBREL, s.x(bu, bv), y + bh - 0.05, s.z(bu, bv), s.face,
+    bw * 1.05, bd * 0.52, bd * 1.08)
   // the cupola on the ridge, with a vent in it
   boxL(out, s, red, bu, bv, y + bh + bd * 0.52 + 0.7, 1.7, 1.6, 1.7, SURF.plank)
   put(out.solid, CONE12, '#4e4a44', s.x(bu, bv), y + bh + bd * 0.52 + 2.2, s.z(bu, bv),
@@ -361,6 +517,7 @@ const farm = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   boxL(out, s, '#6f6a61', hu, hv, y + 0.3, 9.4, 0.8, 7.8, SURF.paving)
   put(out.solid, PRISM, '#4a3c33', s.x(hu, hv), y + fh - 0.05, s.z(hu, hv),
     0, s.face, 0, 9.4, 3.4, 7.8, SURF.shingle)
+  roofSolids(out.boxes, PRISM, s.x(hu, hv), y + fh - 0.05, s.z(hu, hv), s.face, 9.4, 3.4, 7.8)
   boxL(out, s, '#41372f', hu + 3.0, hv - 2.0, y + fh + 3.6, 0.9, 3.2, 0.9, SURF.brick)
   if (out.detailed) {
     // a porch across the front, because a farmhouse always has one
@@ -370,6 +527,7 @@ const farm = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
       boxL(out, s, '#cfc7b4', hu + q * 3.4, hv + 5.6, y + 2.8, 0.22, 5.2, 0.22)
     }
     solidL(out, s, hu, hv + 4.6, 8.0, 2.6, y - 1, y + 0.4, true)
+    keepL(out, s, hu, hv + 4.6, 8.2, 2.8)
     boxL(out, s, '#3d5342', hu, hv + 3.8, y + 2.5, 1.5, 4.6, 0.16, SURF.plank)
     port(out, s, hu - 3.0, hv + 3.75, y + 3.4, 1.5, 1.5, 0, 1, true)
     port(out, s, hu + 3.0, hv + 3.75, y + 3.4, 1.5, 1.5, 0, 1, rng() < 0.6)
@@ -498,6 +656,7 @@ const mast = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
     boxL(out, s, '#b0aca0', hu, 0, y + 1.6, 4.4, 3.2, 3.4, SURF.panel)
     put(out.solid, SHED, METAL, s.x(hu, 0), y + 3.2, s.z(hu, 0), 0, s.face, 0,
       4.7, 0.6, 3.7, SURF.panel)
+    roofSolids(out.boxes, SHED, s.x(hu, 0), y + 3.2, s.z(hu, 0), s.face, 4.7, 0.6, 3.7)
     boxL(out, s, '#4a4640', hu, 1.75, y + 1.4, 1.2, 2.6, 0.14, SURF.panel)
     boxL(out, s, METAL, hu - 1.5, 1.75, y + 2.6, 1.0, 0.7, 0.14, SURF.panel)
     solidL(out, s, hu, 0, 4.4, 3.4, y - 1, y + 3.2, false, 0.15)
@@ -508,95 +667,156 @@ const mast = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
 /* ---------------------------------------------------------------- ruins -- */
 
 /**
- * What is left of something: a rectangle of broken wall with the courses
- * stepping down toward the gaps, a doorway that still has its lintel, a
- * colonnade with most of its columns on the ground, and an altar in the
- * middle. Wall stubs under waist height register standable, because a ruin
- * you can climb about on is worth three you can only walk around.
+ * What is left of a church: the story a ruin needs is *what it was*, and a
+ * rectangle of broken wall of even height never told it. So this is an abbey
+ * with its roof gone. The west front still stands to its gable, a doorway at
+ * the foot and a tall lancet over it you can see the sky through; the nave's
+ * side walls run back from it as piers with the window openings between
+ * them, falling away toward the east end where the apse is a ring of stubs;
+ * a bell tower at one front corner has lost its top; the altar is where an
+ * altar goes, at the far end under where the east window was; and a few
+ * rafters still lean from the wall heads onto the floor, with ivy on the
+ * stone and graves in the grass round it. Low stubs register standable,
+ * because a ruin you can climb about on is worth three you can only walk
+ * around.
  */
 const ruins = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   const s = site(lm, true)
   const stone = rng() < 0.5 ? OLDSTONE : '#a89c86'
-  const hu = 7 + rng() * 3
-  const hv = 5.5 + rng() * 3
+  const dark = '#7d766a'
+  /** half the nave's width, and half its length */
+  const hw = 4.2 + rng() * 1.0
+  const hl = 6.4 + rng() * 1.6
+  /** the whole plan is shifted forward so the apse fits the pad too */
+  const vc = hw * 0.45
+  const front = hl + vc
+  const back = -hl + vc
+  const wallH = 7.6 + rng() * 1.2
+  const gable = rng() < 0.7
+  const towerS = rng() < 0.5 ? 1 : -1
+  const towerH = 10 + rng() * 3.5
+  const dr = fork(rng)
 
-  /** one run of wall, broken into segments of falling height with gaps in it */
-  const wall = (u0: number, v0: number, u1: number, v1: number, gate: boolean) => {
-    const len = Math.hypot(u1 - u0, v1 - v0)
-    const n = Math.max(3, Math.round(len / 1.9))
-    for (let i = 0; i < n; i++) {
-      const t = (i + 0.5) / n
-      if (gate && Math.abs(t - 0.5) < 0.14) continue
-      if (rng() < 0.22) continue
-      const u = u0 + (u1 - u0) * t
-      const v = v0 + (v1 - v0) * t
-      // taller in the middle of a run, gnawed away toward the ends
-      const k = 1 - Math.abs(t - 0.5) * 1.5
-      const h = (0.7 + k * 3.4) * (0.7 + rng() * 0.6)
-      const su = Math.abs(u1 - u0) / n + 0.7
-      const sv = Math.abs(v1 - v0) / n + 0.7
-      boxL(out, s, stone, u, v, y + h / 2, su, h, sv, SURF.brick)
-      solidL(out, s, u, v, su, sv, y - 1, y + h, h < 1.7, 0.05)
-    }
-    if (!gate) return
-    // the doorway that outlived the wall: two jambs and the lintel across
-    const mu = (u0 + u1) / 2
-    const mv = (v0 + v1) / 2
-    const du = (u1 - u0) / len
-    const dv = (v1 - v0) / len
-    for (const q of [-1, 1]) {
-      boxL(out, s, stone, mu + du * q * 1.5, mv + dv * q * 1.5, y + 2.4,
-        Math.abs(du) * 1.1 + 0.9, 4.8, Math.abs(dv) * 1.1 + 0.9, SURF.brick)
-      solidL(out, s, mu + du * q * 1.5, mv + dv * q * 1.5,
-        Math.abs(du) * 1.1 + 0.9, Math.abs(dv) * 1.1 + 0.9, y - 1, y + 4.8)
-    }
-    boxL(out, s, stone, mu, mv, y + 5.3,
-      Math.abs(du) * 4.4 + 1.0, 1.0, Math.abs(dv) * 4.4 + 1.0, SURF.brick)
-  }
-  wall(-hu, hv, hu, hv, true)
-  wall(-hu, -hv, hu, -hv, false)
-  wall(-hu, -hv, -hu, hv, false)
-  wall(hu, -hv, hu, hv, rng() < 0.4)
-
-  // the colonnade: a few still up, more of them in pieces on the floor
-  for (let i = 0; i < 5; i++) {
-    const u = -hu * 0.6 + (i / 4) * hu * 1.2
-    const v = -hv * 0.45
-    if (rng() < 0.45) {
-      const ch = 3.4 + rng() * 2.6
-      shaft(out.solid, stone, s.x(u, v), y, s.z(u, v), 0.62, ch, 0.55, 8, 0, SURF.paving)
-      boxL(out, s, stone, u, v, y + ch + 0.2, 1.6, 0.4, 1.6, SURF.paving)
-      out.boxes.push(noStand(aabb(s.x(u, v), y - 1, s.z(u, v), 0.75, y + ch, 0.75)))
-      continue
-    }
-    if (!out.detailed) continue
-    // toppled: two or three drums lying where they rolled
-    const a = rng() * Math.PI
-    for (let d = 0; d < 2 + Math.floor(rng() * 2); d++) {
-      const ox = Math.cos(a) * d * 1.5 + (rng() - 0.5)
-      const oz = Math.sin(a) * d * 1.5 + (rng() - 0.5)
-      put(out.solid, CYL12, stone, s.x(u, v) + ox, y + 0.6, s.z(u, v) + oz,
-        Math.PI / 2, a + (rng() - 0.5) * 0.4, 0, 1.2, 1.3, 1.2, SURF.paving)
-    }
+  /** a standing piece of wall, collided as what it is */
+  const piece = (u: number, v: number, lu: number, lv: number, y0: number, y1: number) => {
+    boxL(out, s, stone, u, v, (y0 + y1) / 2, lu, y1 - y0, lv, SURF.brick)
+    if (y0 < y + 0.5) solidL(out, s, u, v, lu, lv, y - 1, y1, y1 - y < 1.7, 0.05)
   }
 
-  // the altar, which is also the one thing in here you are meant to stand on
-  boxL(out, s, stone, 0, 0, y + 0.35, 3.2, 0.7, 2.2, SURF.paving)
-  boxL(out, s, '#b5ac9b', 0, 0, y + 0.82, 3.6, 0.26, 2.6, SURF.paving)
-  solidL(out, s, 0, 0, 3.6, 2.6, y - 1, y + 0.95, true)
+  // the west front: two leaves of wall either side of a centre strip, which
+  // holds the doorway, a lintel, a lancet opening and the gable over it all
+  const t = 0.9
+  const cw = 3.2
+  for (const q of [-1, 1]) {
+    piece(q * (hw + cw / 2) / 2, front, hw - cw / 2, t, y, y + wallH)
+  }
+  piece(0, front, cw, t, y + 4.6, y + 5.6)
+  for (const q of [-1, 1]) piece(q * 1.15, front, 0.9, t, y + 5.6, y + wallH)
+  if (gable) {
+    put(out.solid, PRISM, stone, s.x(0, front), y + wallH, s.z(0, front),
+      0, s.face, 0, hw * 2, hw * 0.95, t, SURF.brick)
+    // a cross on the apex, the one thing that says what this was from afar
+    boxL(out, s, dark, 0, front, y + wallH + hw * 0.95 + 0.8, 0.3, 1.6, 0.3)
+    boxL(out, s, dark, 0, front, y + wallH + hw * 0.95 + 1.1, 1.1, 0.3, 0.3)
+  } else {
+    // ...or the gable is down, and the wall head steps where it broke
+    piece(-hw * 0.5, front, hw, t, y + wallH, y + wallH + 1.4)
+    piece(-hw * 0.7, front, hw * 0.5, t, y + wallH + 1.4, y + wallH + 2.3)
+  }
+  // the jambs of the door stand proud of the front, the way a portal does
+  for (const q of [-1, 1]) {
+    boxL(out, s, dark, q * 1.25, front + 0.55, y + 2.4, 0.6, 4.8, 0.3, SURF.brick)
+  }
+
+  // the side walls: a pier every bay with a low sill between, gnawed
+  // lower toward the east, the odd bay gone altogether
+  const bays = Math.max(3, Math.round((hl * 2) / 3.2))
+  const bay = (hl * 2) / bays
+  for (const q of [-1, 1]) {
+    const u = q * hw
+    for (let i = 0; i < bays; i++) {
+      const v0 = front - i * bay
+      const decay = 1 - (i / bays) * (0.55 + rng() * 0.3)
+      if (i > 0 && rng() < 0.16) continue
+      const ph = Math.max(1.0, wallH * decay * (0.8 + rng() * 0.3))
+      piece(u, v0 - 0.55, t, 1.1, y, y + ph)
+      // the sill, and the window's head where the pier is tall enough
+      piece(u, v0 - bay / 2 - 0.3, t, bay - 1.1, y, y + 1.6 + rng() * 0.6)
+      if (ph > 6.2) piece(u, v0 - bay / 2 - 0.3, t, bay - 1.1, y + 5.2, y + ph - 0.2)
+    }
+  }
+
+  // the apse: a half ring of stubs round the east end
+  for (let i = 0; i <= 6; i++) {
+    const a = (i / 6) * Math.PI
+    const u = Math.cos(a) * hw * 0.9
+    const v = back - Math.sin(a) * hw * 0.9
+    const ph = 0.9 + rng() * 2.6
+    boxL(out, s, stone, u, v, y + ph / 2, 1.5, ph, 1.5, SURF.brick)
+    solidL(out, s, u, v, 1.5, 1.5, y - 1, y + ph, ph < 1.7, 0.05)
+  }
+
+  // the tower at a front corner, its top broken off unevenly
+  const tu = towerS * (hw + 1.6)
+  const tv = front - 2.0
+  boxL(out, s, stone, tu, tv, y + towerH / 2, 3.6, towerH, 3.6, SURF.brick)
+  boxL(out, s, stone, tu - towerS * 0.8, tv + 0.6, y + towerH + 0.9, 2.0, 1.8, 2.4, SURF.brick)
+  boxL(out, s, stone, tu + towerS * 0.9, tv - 0.9, y + towerH + 0.4, 1.8, 0.8, 1.8, SURF.brick)
+  solidL(out, s, tu, tv, 3.6, 3.6, y - 1, y + towerH)
+
+  // the altar at the east end, the one thing in here you are meant to stand on
+  const av = back + 1.8
+  boxL(out, s, stone, 0, av, y + 0.35, 3.2, 0.7, 2.0, SURF.paving)
+  boxL(out, s, '#b5ac9b', 0, av, y + 0.82, 3.6, 0.26, 2.4, SURF.paving)
+  solidL(out, s, 0, av, 3.6, 2.4, y - 1, y + 0.95, true)
 
   if (out.detailed) {
+    // the belfry's slit windows, dark, and the lancet's frame over the door
+    for (const q of [-1, 1]) {
+      panelL(out, s, 'solid', '#28303a', tu, tv + 1.8, y + towerH - 2.4 - q * 2.5, 0.5, 1.8, 0, 1)
+    }
+    // the floor it all stood on, still just about readable through the grass,
+    // with an aisle of paler slabs up the middle
+    boxL(out, s, '#93897a', 0, vc, y + 0.03, hw * 2, 0.08, hl * 2, SURF.paving)
+    boxL(out, s, '#a49a88', 0, vc, y + 0.06, 1.8, 0.08, hl * 2 - 1, SURF.paving)
+    // rafters that came down with the roof, leaning from a wall head
+    for (let i = 0; i < 3; i++) {
+      if (dr() < 0.3) continue
+      const q = dr() < 0.5 ? 1 : -1
+      const v = front - (1.5 + dr() * (hl * 0.8))
+      strut(out.solid, DARKWOOD,
+        s.x(q * (hw - 0.6), v), y + 3.6 + dr() * 1.5, s.z(q * (hw - 0.6), v),
+        s.x(-q * (hw * 0.2), v + (dr() - 0.5) * 2), y + 0.2, s.z(-q * (hw * 0.2), v),
+        0.36)
+    }
+    // ivy climbing the stone in a few places
+    for (let i = 0; i < 6; i++) {
+      const q = dr() < 0.5 ? 1 : -1
+      const v = front - dr() * hl * 1.6
+      const ih = 1.5 + dr() * 3.5
+      boxL(out, s, dr() < 0.5 ? '#48673a' : '#3d5a33', q * (hw + 0.5), v, y + ih / 2,
+        0.12, ih, 1.2 + dr() * 1.6)
+    }
     // rubble, thickest where the walls came down
-    for (let i = 0; i < 14; i++) {
-      const u = (rng() - 0.5) * hu * 2.4
-      const v = (rng() - 0.5) * hv * 2.4
-      const r = 0.3 + rng() * 0.6
+    for (let i = 0; i < 12; i++) {
+      const u = (dr() - 0.5) * hw * 2.6
+      const v = vc + (dr() - 0.5) * hl * 2.4
+      const r = 0.3 + dr() * 0.6
       put(out.solid, BOX, stone, s.x(u, v), y + r * 0.4, s.z(u, v),
-        (rng() - 0.5) * 0.5, rng() * 3, (rng() - 0.5) * 0.5, r * 2, r, r * 1.6,
+        (dr() - 0.5) * 0.5, dr() * 3, (dr() - 0.5) * 0.5, r * 2, r, r * 1.6,
         SURF.paving)
     }
-    // the floor it all stood on, still just about readable through the grass
-    boxL(out, s, '#93897a', 0, 0, y + 0.03, hu * 1.8, 0.08, hv * 1.8, SURF.paving)
+    // and the graves: a scatter of headstones in the grass, leaning
+    for (let i = 0; i < 7; i++) {
+      const q = dr() < 0.5 ? 1 : -1
+      const u = q * (hw + 3 + dr() * 2.5)
+      const v = vc + (dr() - 0.5) * hl * 1.6
+      if (Math.abs(u - tu) < 3 && Math.abs(v - tv) < 3) continue
+      const gh = 0.8 + dr() * 0.7
+      put(out.solid, BOX, '#9a948a', s.x(u, v), y + gh / 2 - 0.1, s.z(u, v),
+        (dr() - 0.5) * 0.3, s.face + Math.PI / 2 + (dr() - 0.5) * 0.3, 0,
+        0.7, gh, 0.22, SURF.paving)
+    }
   }
 }
 
@@ -667,61 +887,160 @@ const watertower = (out: BuildOut, lm: Landmark, y: number, rng: () => number) =
 /* -------------------------------------------------------- standing stones -- */
 
 /**
- * A ring of hewn stones with a couple of trilithons still standing and the
- * rest of the circle on its side. Cheap, silent and older than everything
- * around it, which is exactly the note the empty tundra needs: not a
- * building, just evidence.
+ * A henge, four thousand years on. The outer circle was uprights capped by a
+ * continuous ring of lintels; what is left is runs of it still capped where
+ * neighbours both stand, stones leaning where the ground gave, stones flat on
+ * their backs where it gave way, stumps where they were broken up for
+ * building, and a lintel or two lying in the grass under the gap it fell
+ * from. Inside, a horseshoe of great trilithons opens toward the heel stone
+ * standing alone outside the ring on the same axis, with one of the three
+ * down and its lintel beside it, and the altar stone flat in the middle.
+ *
+ * Every stone is its own grey, a few percent either way, with lichen on
+ * some, and they taper, because a box of uniform colour at uniform height
+ * reads as a fence and the one thing this has to read as is *old*. Cheap,
+ * silent and older than everything around it: not a building, evidence.
  */
 const stones = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
-  const n = 9 + Math.floor(rng() * 5)
-  const rad = 8.5 + rng() * 4
+  const n = 14 + Math.floor(rng() * 5)
+  const rad = 9 + rng() * 2.5
   const grey = pick(['#8d867a', '#7d786e', '#9a9184', '#84806f'], rng())
+  const H = 5.6 + rng() * 0.6
+  const dr = fork(rng)
+  /** a slightly tapered block: sarsens were dressed, but never square */
+  const TAPER = taper(0.82, 4)
+  const stoneAt = (
+    x: number, cy: number, z: number, rx: number, ry: number, rz: number,
+    w: number, h: number, t: number, hex: string,
+  ) => put(out.solid, TAPER, hex, x, cy, z, rx, ry + Math.PI / 4, rz, w * 1.414, h, t * 1.414,
+    SURF.paving)
+
+  type State = 'up' | 'lean' | 'down' | 'stump' | 'gone'
+  const states: State[] = []
+  for (let i = 0; i < n; i++) {
+    const r = rng()
+    states.push(r < 0.5 ? 'up' : r < 0.66 ? 'lean' : r < 0.8 ? 'down' : r < 0.92 ? 'stump' : 'gone')
+  }
+  const pos = (i: number) => {
+    const a = (i / n) * Math.PI * 2 + lm.face
+    return [lm.x + Math.cos(a) * rad, lm.z + Math.sin(a) * rad, a] as const
+  }
 
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2 + lm.face
-    const px = lm.x + Math.cos(a) * rad
-    const pz = lm.z + Math.sin(a) * rad
-    const fallen = rng() < 0.24
-    // a megalith has to clear the eye line at 3.55 or the ring reads as
-    // paving slabs somebody dropped, which is exactly how the first probe
-    // shot of this came out against savanna scrub
-    const w = 1.7 + rng() * 1.1
-    const t = 0.75 + rng() * 0.4
-    if (fallen) {
-      const h = 3.4 + rng() * 2.0
-      put(out.solid, BOX, grey, px, y + t * 0.5, pz,
-        Math.PI / 2 + (rng() - 0.5) * 0.2, a + (rng() - 0.5) * 0.9, 0,
-        w, h, t, SURF.paving)
-      out.boxes.push(aabb(px, y - 1, pz, h * 0.5, y + t, h * 0.5))
+    const [px, pz, a] = pos(i)
+    const tone = nudge(grey, 0.88 + rng() * 0.24)
+    const w = 2.0 + rng() * 0.6
+    const t = 1.0 + rng() * 0.3
+    // a stone's face is square to the ring: its width runs along the tangent
+    const yaw = Math.PI / 2 - a
+    const st = states[i]
+    if (st === 'gone') continue
+    if (st === 'stump') {
+      const h = 0.8 + rng() * 1.0
+      stoneAt(px, y + h / 2 - 0.2, pz, (rng() - 0.5) * 0.2, yaw, (rng() - 0.5) * 0.2, w, h, t, tone)
+      out.boxes.push(aabb(px, y - 1, pz, w * 0.55, y + h - 0.2, w * 0.55))
       continue
     }
-    const h = 4.0 + rng() * 2.4
-    // canted a few degrees, because nothing that has stood for that long is
-    // still plumb, and a ring of perfectly upright slabs reads as a fence
-    put(out.solid, BOX, grey, px, y + h / 2 - 0.2, pz,
-      (rng() - 0.5) * 0.14, a, (rng() - 0.5) * 0.14, w, h, t, SURF.paving)
-    out.boxes.push(noStand(aabb(px, y - 1, pz, w * 0.6, y + h - 0.2, w * 0.6)))
-    // every so often a pair holds a lintel up between them
-    if (out.detailed && i % 4 === 0 && rng() < 0.7) {
-      const a2 = ((i + 1) / n) * Math.PI * 2 + lm.face
-      const qx = lm.x + Math.cos(a2) * rad
-      const qz = lm.z + Math.sin(a2) * rad
-      const span = Math.hypot(qx - px, qz - pz)
-      put(out.solid, BOX, grey, (px + qx) / 2, y + h - 0.05, (pz + qz) / 2,
-        0, Math.atan2(qx - px, qz - pz), 0, t * 1.1, 0.7, span + 1.2, SURF.paving)
+    if (st === 'down') {
+      // flat on its back, fallen outward, its foot still by its socket
+      const h = H + rng() * 0.6
+      const ox = Math.cos(a) * (h / 2)
+      const oz = Math.sin(a) * (h / 2)
+      put(out.solid, BOX, tone, px + ox, y + t * 0.4, pz + oz,
+        Math.PI / 2, yaw + (rng() - 0.5) * 0.3, 0, w, h, t, SURF.paving)
+      out.boxes.push(aabb(px + ox, y - 1, pz + oz, h * 0.45, y + t * 0.8, h * 0.45))
+      continue
+    }
+    const h = H + (rng() - 0.5) * 0.4
+    // canted: a little if it stands, a lot if the ground under it gave
+    const cant = st === 'lean' ? (0.22 + rng() * 0.25) * (rng() < 0.5 ? 1 : -1) : (rng() - 0.5) * 0.08
+    stoneAt(px + Math.cos(a) * cant * h * 0.5, y + h / 2 - 0.3, pz + Math.sin(a) * cant * h * 0.5,
+      cant, yaw, (rng() - 0.5) * 0.06, w, h, t, tone)
+    out.boxes.push(noStand(aabb(px, y - 1, pz, w * 0.6, y + h - 0.3, w * 0.6)))
+    if (out.detailed && dr() < 0.45) {
+      // lichen, a pale crust on the weather side
+      const lx = px - Math.cos(a) * (t * 0.52)
+      const lz = pz - Math.sin(a) * (t * 0.52)
+      box(out.solid, dr() < 0.5 ? '#a8ae84' : '#b8a86a', lx, y + 1.2 + dr() * (h - 2.4), lz,
+        w * (0.3 + dr() * 0.3), 0.6 + dr() * 0.9, 0.06, yaw, SURF.none)
     }
   }
-  // the recumbent stone at the centre, flat enough to stand on
-  put(out.solid, BOX, grey, lm.x, y + 0.3, lm.z, 0, lm.face + 0.3, 0,
-    3.4, 0.6, 2.2, SURF.paving)
-  out.boxes.push(aabb(lm.x, y - 1, lm.z, 1.8, y + 0.6, 1.4))
+
+  // the lintels, wherever two neighbours both still stand upright; and under
+  // one gap, the lintel that came down with it
+  let fell = false
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    const [px, pz] = pos(i)
+    const [qx, qz] = pos(j)
+    const span = Math.hypot(qx - px, qz - pz)
+    const yawL = Math.atan2(qx - px, qz - pz)
+    if (states[i] === 'up' && states[j] === 'up') {
+      put(out.solid, BOX, nudge(grey, 0.92 + rng() * 0.12), (px + qx) / 2, y + H + 0.1,
+        (pz + qz) / 2, 0, yawL, 0, 1.1, 0.9, span + 0.9, SURF.paving)
+    } else if (!fell && (states[i] !== 'up' || states[j] !== 'up') && rng() < 0.4) {
+      fell = true
+      const [mx, mz] = [(px + qx) / 2, (pz + qz) / 2]
+      const ix = lm.x + (mx - lm.x) * 0.8
+      const iz = lm.z + (mz - lm.z) * 0.8
+      put(out.solid, BOX, grey, ix, y + 0.35, iz, 0.08, yawL + 0.5, 0.1, 1.1, 0.9, span, SURF.paving)
+      out.boxes.push(aabb(ix, y - 1, iz, span * 0.45, y + 0.8, span * 0.45))
+    }
+  }
+
+  // the horseshoe of trilithons, opening toward the heel stone
+  const tri = [-0.9, 0, 0.9]
+  const downIdx = Math.floor(rng() * 3)
+  for (let k = 0; k < tri.length; k++) {
+    const a = lm.face + Math.PI + tri[k]
+    const r = rad * 0.52
+    const cx = lm.x + Math.cos(a) * r
+    const cz = lm.z + Math.sin(a) * r
+    const yaw = Math.PI / 2 - a
+    const th = H + 1.8 + (k === 1 ? 1.2 : 0)
+    const tx = -Math.sin(a)
+    const tz = Math.cos(a)
+    const tone = nudge(grey, 0.9 + rng() * 0.18)
+    if (k === downIdx) {
+      // one leg still up but leaning hard, the other and the lintel down
+      stoneAt(cx - tx * 1.5, y + th / 2 - 0.4, cz - tz * 1.5, 0.35, yaw, 0.1, 2.2, th, 1.3, tone)
+      out.boxes.push(noStand(aabb(cx - tx * 1.5, y - 1, cz - tz * 1.5, 1.4, y + th, 1.4)))
+      put(out.solid, BOX, tone, cx + tx * 1.5 + Math.cos(a) * 2, y + 0.6, cz + tz * 1.5 + Math.sin(a) * 2,
+        Math.PI / 2, yaw + 0.4, 0, 2.2, th, 1.3, SURF.paving)
+      put(out.solid, BOX, tone, cx - Math.cos(a) * 2.5, y + 0.45, cz - Math.sin(a) * 2.5,
+        0.1, yaw + 0.2, 0, 5.4, 1.0, 1.3, SURF.paving)
+      out.boxes.push(aabb(cx + Math.cos(a) * 1.5, y - 1, cz + Math.sin(a) * 1.5, 3.4, y + 1.2, 3.4))
+      continue
+    }
+    for (const q of [-1, 1]) {
+      stoneAt(cx + tx * q * 1.5, y + th / 2 - 0.3, cz + tz * q * 1.5, (rng() - 0.5) * 0.06, yaw,
+        (rng() - 0.5) * 0.06, 2.2, th, 1.3, tone)
+      out.boxes.push(noStand(aabb(cx + tx * q * 1.5, y - 1, cz + tz * q * 1.5, 1.4, y + th, 1.4)))
+    }
+    put(out.solid, BOX, tone, cx, y + th - 0.1, cz, 0, yaw, 0, 5.6, 1.1, 1.4, SURF.paving)
+  }
+
+  // the heel stone, alone outside the ring on the axis, leaning in
+  {
+    const a = lm.face
+    const r = rad + 6.5
+    const hx = lm.x + Math.cos(a) * r
+    const hz = lm.z + Math.sin(a) * r
+    stoneAt(hx, y + 2.6, hz, -0.18, Math.PI / 2 - a, 0.05, 2.8, 5.6, 2.0, nudge(grey, 0.85))
+    out.boxes.push(noStand(aabb(hx, y - 1, hz, 1.8, y + 5.2, 1.8)))
+  }
+
+  // the altar stone at the centre, flat enough to stand on
+  put(out.solid, BOX, nudge(grey, 1.08), lm.x, y + 0.3, lm.z, 0, lm.face + 0.3, 0,
+    3.8, 0.6, 1.6, SURF.paving)
+  out.boxes.push(aabb(lm.x, y - 1, lm.z, 1.9, y + 0.6, 1.9))
   if (out.detailed) {
-    for (let i = 0; i < 8; i++) {
-      const a = rng() * Math.PI * 2
-      const r = rad * (0.3 + rng() * 0.9)
-      const sc = 0.3 + rng() * 0.4
+    for (let i = 0; i < 10; i++) {
+      const a = dr() * Math.PI * 2
+      const r = rad * (0.3 + dr() * 0.9)
+      const sc = 0.3 + dr() * 0.4
       put(out.solid, BOX, grey, lm.x + Math.cos(a) * r, y + sc * 0.35,
-        lm.z + Math.sin(a) * r, (rng() - 0.5) * 0.4, rng() * 3, (rng() - 0.5) * 0.4,
+        lm.z + Math.sin(a) * r, (dr() - 0.5) * 0.4, dr() * 3, (dr() - 0.5) * 0.4,
         sc * 2, sc, sc * 1.5, SURF.paving)
     }
   }
@@ -765,13 +1084,17 @@ const cabin = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
         SURF.bark)
     }
   }
-  // the gable ends filled in above the walls, and the roof over the lot
+  // the gable ends filled in above the walls, as a prism tucked just inside
+  // the roof: this was a box, and its top corners stood out through both
+  // slopes as a second little roof sitting on the first
   const gY = y + 0.6 + wallH
   const rise = hv * 1.05
-  boxL(out, s, log, 0, 0, gY + rise * 0.4, hu * 2 - 0.2, rise * 0.8, hv * 2 - 0.2,
-    SURF.bark)
+  put(out.solid, PRISM, log, s.x(0, 0), gY - 0.12, s.z(0, 0),
+    0, s.face + Math.PI / 2, 0, hv * 2 - 0.2, rise * 0.94, hu * 2 - 0.2, SURF.bark)
   put(out.solid, PRISM, ROOF_DARK, s.x(0, 0), gY - 0.1, s.z(0, 0),
     0, s.face + Math.PI / 2, 0, hv * 2.3, rise, hu * 2.4, SURF.plank)
+  roofSolids(out.boxes, PRISM, s.x(0, 0), gY - 0.1, s.z(0, 0), s.face + Math.PI / 2,
+    hv * 2.3, rise, hu * 2.4)
   // a stone chimney climbing one flank, past the ridge
   const ch = (rng() < 0.5 ? 1 : -1) * (hu + 0.55)
   // a stack a fifth of the cabin's width reads as a tower bolted to the side
@@ -785,6 +1108,7 @@ const cabin = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
     // the porch: a deck you step onto, two posts and the roof reaching over
     boxL(out, s, DARKWOOD, 0, hv + 1.5, y + 0.7, hu * 2, 0.3, 3.0, SURF.plank)
     solidL(out, s, 0, hv + 1.5, hu * 2, 3.0, y - 1, y + 0.85, true)
+    keepL(out, s, 0, hv + 1.5, hu * 2 + 0.2, 3.2)
     boxL(out, s, ROOF_DARK, 0, hv + 1.6, gY + 0.4, hu * 2.2, 0.24, 3.4, SURF.plank)
     for (const q of [-1, 1]) {
       boxL(out, s, log, q * (hu - 0.5), hv + 2.8, y + (gY + 0.4) / 2 + 0.42,
@@ -826,126 +1150,204 @@ const cabin = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
 /* -------------------------------------------------------------- shipwreck -- */
 
 /**
- * A hull on its side in the shallows. What reads as a wreck at a glance is
- * not a skeleton, it is a *hull with holes in it*, so this is built as a
- * surface: one `hull(t, side, k)` function gives every point on it, the
- * frames are struts up that surface and the planking is strakes running along
- * it, with the upper strakes of one flank simply left out where she stove in.
- * The first cut was a keel with ribs standing off it and three loose planks,
- * and it photographed as a pile of sticks in the sand.
+ * A ship on her side on the beach. What reads as a wreck at a glance is a
+ * *hull with holes in it*, so she is built as a surface: `hull(t, q, k)`
+ * gives every point on it (stern to bow, which side, keel to sheer), laid
+ * over about the keel by the angle she settled at, so one flank is in the
+ * sand and the other faces the sky. The frames are struts up that surface and
+ * the planking is strakes along it; the buried flank keeps its boards, the
+ * one in the air is stove in amidships so her ribs show through, and a few
+ * deck beams still cross her. Her mast is a stump stepped on the keel, snapped
+ * off, with the rest of it and its yard lying in the sand on the side she went
+ * down; the bowsprit is broken short, the rudder hangs off the sternpost,
+ * and what she carried is strewn along the tide line: barrels, a crate, a
+ * coil of rope, an anchor, loose planks.
  *
  * It grades nothing, because a beach flattened under a wreck reads as a car
  * park with a boat parked on it, so the frames take the sand as they find it.
  */
 const wreck = (out: BuildOut, lm: Landmark, y: number, rng: () => number) => {
   const s = site(lm, true)
-  const len = 21 + rng() * 9
-  const beam = 6.4
-  const ribH = 5.2
-  /** how far she went over, as a sideways lean per unit of height */
-  const heel = 0.3 + rng() * 0.26
+  const len = 22 + rng() * 9
+  const beam = 7.2
+  const ribH = 5.6
+  /** how far over she lies, and which flank went into the sand */
+  const roll = 0.8 + rng() * 0.35
+  const lie = rng() < 0.5 ? 1 : -1
+  const stove = 0.28 + rng() * 0.22
   const timber = pick(['#5f5344', '#6b5a44', '#544a3e'], rng())
-  const pale = '#6f6252'
+  const pale = '#7a6c5a'
   const dark = '#463c30'
+  const dr = fork(rng)
+  const cr = Math.cos(roll)
+  const sr = Math.sin(roll)
 
-  /** the keel: stern settled into the sand, bow lifted clear of it. It has to
-      stay within about a unit of the ground the whole way, because everything
-      else is measured up from it */
-  const keelY = (t: number) => y - 0.35 + t * 1.7
-  /** a point on the hull: `t` stern to bow, `q` the side, `k` up the frame.
-      The flare is a quarter sine in `k`, so the sections leave the keel
-      vertical and open out toward the sheer the way a real one does */
-  const hull = (t: number, q: number, k: number) => {
+  /** the keel: stern settled into the sand, bow lifted clear of it */
+  const keelY = (t: number) => y - 0.25 + t * 1.5
+  /** a point on the hull in the site's frame, before the site maps it */
+  const local = (t: number, q: number, k: number) => {
     const taper = Math.sin(t * Math.PI) * 0.72 + 0.28
-    const rise = ribH * taper * k
-    const half = beam * 0.5 * taper * Math.sin(k * Math.PI * 0.5)
-    const v = (t - 0.5) * len
-    const u = q * half + heel * rise
-    return [s.x(u, v), keelY(t) + rise, s.z(u, v)] as const
+    // the sheer: bow and stern stand higher than the waist
+    const sheer = (Math.abs(t - 0.5) * 2) ** 2 * 1.4
+    const h0 = (ribH * taper + sheer) * k
+    const u0 = q * beam * 0.5 * taper * Math.sin(k * Math.PI * 0.5)
+    return {
+      u: u0 * cr + lie * h0 * sr,
+      h: h0 * cr - lie * u0 * sr,
+      v: (t - 0.5) * len,
+    }
+  }
+  const hull = (t: number, q: number, k: number) => {
+    const p = local(t, q, k)
+    return [s.x(p.u, p.v), keelY(t) + p.h, s.z(p.u, p.v)] as const
+  }
+  /** a timber between two hull points, left out if it is wholly in the sand */
+  const member = (
+    a: readonly [number, number, number], b: readonly [number, number, number],
+    hex: string, t: number, across?: number,
+  ) => {
+    if (a[1] < y - 0.5 && b[1] < y - 0.5) return
+    strut(out.solid, hex, a[0], a[1], a[2], b[0], b[1], b[2], t, SURF.plank, across ?? t)
   }
 
-  const N = 9
+  const N = 10
   for (let i = 0; i < N; i++) {
-    const [ax, ay, az] = hull(i / N, 0, 0)
-    const [bx, by, bz] = hull((i + 1) / N, 0, 0)
-    strut(out.solid, dark, ax, ay, az, bx, by, bz, 1.1, SURF.plank)
+    const a = hull(i / N, 0, 0)
+    const b = hull((i + 1) / N, 0, 0)
+    member(a, b, dark, 1.1)
     // walkable along the spine, which is the whole reason to put one of these
     // on a beach the player can reach
-    out.boxes.push(aabb((ax + bx) / 2, y - 2, (az + bz) / 2,
-      1.4, (ay + by) / 2 + 0.6, 1.4))
+    out.boxes.push(aabb((a[0] + b[0]) / 2, y - 2, (a[2] + b[2]) / 2,
+      1.4, (a[1] + b[1]) / 2 + 0.6, 1.4))
   }
 
-  // the frames, two segments each so they curve out of the keel
-  for (let i = 0; i <= N; i++) {
+  // the frames, three segments each so they curve out of the keel
+  for (let i = 1; i < N; i++) {
     const t = i / N
-    if (t < 0.05 || t > 0.95) continue
     for (const q of [-1, 1]) {
-      if (rng() < 0.1) continue
-      for (const [k0, k1] of [[0, 0.5], [0.5, 1]]) {
-        const [ax, ay, az] = hull(t, q, k0)
-        const [bx, by, bz] = hull(t, q, k1)
-        strut(out.solid, timber, ax, ay, az, bx, by, bz, 0.34, SURF.plank)
+      if (rng() < 0.08) continue
+      for (const [k0, k1] of [[0, 0.4], [0.4, 0.75], [0.75, 1]]) {
+        member(hull(t, q, k0), hull(t, q, k1), timber, 0.36)
       }
     }
   }
 
-  // the planking. Gaps between the strakes are not a budget compromise, they
-  // are the look: a hull that has been open to the weather for decades has
-  // lost every other board, and a solid one would read as a boat somebody
-  // left rather than as a wreck
-  const stove = 0.3 + rng() * 0.3
+  // the planking: the flank in the sand keeps its boards; the one in the air
+  // is stove in amidships and has lost every other board besides, which is
+  // the look: a hull open to the weather for decades
   for (const q of [-1, 1])
-    for (const k of [0.15, 0.35, 0.55, 0.75, 0.95]) {
+    for (const k of [0.12, 0.3, 0.48, 0.66, 0.84, 0.98]) {
       for (let i = 0; i < N; i++) {
         const t0 = i / N
         const t1 = (i + 1) / N
-        if (t0 < 0.04 || t1 > 0.96) continue
-        // the flank she came down on keeps her planking; the other is open to
-        // the sky amidships
-        if (q > 0 && k > 0.3 && t0 > stove && t0 < stove + 0.36) continue
-        if (rng() < 0.09) continue
-        const [ax, ay, az] = hull(t0, q, k)
-        const [bx, by, bz] = hull(t1, q, k)
-        strut(out.solid, (i + Math.round(k * 10)) % 2 ? timber : pale,
-          ax, ay, az, bx, by, bz, 0.6, SURF.plank)
+        if (t0 < 0.03 || t1 > 0.97) continue
+        const up = q === -lie
+        if (up && k > 0.2 && t0 > stove && t0 < stove + 0.38) continue
+        if (rng() < (up ? 0.22 : 0.06)) continue
+        member(hull(t0, q, k), hull(t1, q, k), (i + Math.round(k * 10)) % 2 ? timber : pale,
+          0.62, 0.62)
       }
     }
-
-  // the transom across the stern, and the stem post at the bow
-  for (const k of [0.2, 0.5, 0.8]) {
-    const [ax, ay, az] = hull(0.04, -1, k)
-    const [bx, by, bz] = hull(0.04, 1, k)
-    strut(out.solid, pale, ax, ay, az, bx, by, bz, 0.55, SURF.plank)
+  // a few deck beams still spanning her, and a strip of the foredeck on them
+  for (let i = 2; i < N - 1; i += 2) {
+    if (rng() < 0.3) continue
+    member(hull(i / N, -1, 0.96), hull(i / N, 1, 0.96), dark, 0.4)
   }
+  for (const q of [-0.5, 0, 0.5]) {
+    member(hull(0.72, q, 0.97), hull(0.92, q, 0.97), pale, 0.18, 1.1)
+  }
+
+  // the stern: a transom, the sternpost and the rudder hanging off it
+  for (const k of [0.3, 0.6, 0.9]) member(hull(0.03, -1, k), hull(0.03, 1, k), pale, 0.55)
+  member(hull(0.0, 0, 0), hull(0.02, 0, 1.1), dark, 0.6)
   {
-    const [ax, ay, az] = hull(0.99, 0, 0)
-    const [bx, by, bz] = hull(0.92, 0, 1.15)
-    strut(out.solid, dark, ax, ay, az, bx, by, bz, 0.7, SURF.plank)
+    const a = hull(0.0, 0, 0.1)
+    const b = hull(0.0, 0, 0.8)
+    const back = -1.2
+    strut(out.solid, dark, a[0] + s.fx * back, a[1], a[2] + s.fz * back,
+      b[0] + s.fx * back, b[1], b[2] + s.fz * back, 0.3, SURF.plank, 1.8)
+  }
+  // the stem, and the bowsprit broken short
+  member(hull(0.99, 0, 0), hull(0.94, 0, 1.2), dark, 0.7)
+  {
+    const [bx, by, bz] = hull(0.97, 0, 1.1)
+    const e = local(0.97, 0, 1.1)
+    strut(out.solid, dark, bx, by, bz, s.x(e.u, e.v + 5.5), keelY(0.97) + e.h + 1.6,
+      s.z(e.u, e.v + 5.5), 0.45)
   }
 
-  // the mast: a stump still stepped on the keel, and the spar itself lying in
-  // the sand off the bow where it came down
-  const [mx, my, mz] = hull(0.62, 0, 0)
-  strut(out.solid, dark, mx, my, mz,
-    mx + s.rx * heel * 5.4, my + 6.4, mz + s.rz * heel * 5.4, 0.8, SURF.bark)
-  const [fx0, , fz0] = hull(0.3, -1, 0.6)
-  const fx1 = fx0 + s.rx * -9 + s.fx * -6
-  const fz1 = fz0 + s.rz * -9 + s.fz * -6
-  strut(out.solid, dark, fx0, y + 0.3, fz0, fx1, y - 0.4, fz1, 0.7, SURF.bark)
+  // the mast: a stump stepped on the keel, square to the deck she lies on,
+  // snapped off; the rest of it and its yard lie in the sand on her low side
+  const mt = 0.58
+  const [mx, my, mz] = hull(mt, 0, 0)
+  const mdir = local(mt, 0, 1)
+  const md = Math.hypot(mdir.u, mdir.h)
+  const ux = (mdir.u / md) * 7.2
+  const uy = (mdir.h / md) * 7.2
+  const topX = s.x(ux, (mt - 0.5) * len)
+  const topZ = s.z(ux, (mt - 0.5) * len)
+  strut(out.solid, dark, mx, my, mz, topX, my + uy, topZ, 0.8, SURF.bark)
+  // the splintered top of the stump, two slivers at odd angles
+  for (const q of [-1, 1]) {
+    strut(out.solid, pale, topX, my + uy, topZ,
+      topX + s.fx * q * 0.3 + s.rx * 0.2, my + uy + 1.1, topZ + s.fz * q * 0.3 + s.rz * 0.2, 0.22)
+  }
+  const fu = lie * (ribH * sr + 3.2)
+  const fv0 = (mt - 0.5) * len
+  const fx0 = s.x(fu, fv0)
+  const fz0 = s.z(fu, fv0)
+  const fx1 = s.x(fu + lie * 3.5, fv0 - 13)
+  const fz1 = s.z(fu + lie * 3.5, fv0 - 13)
+  strut(out.solid, dark, fx0, y + 0.35, fz0, fx1, y + 0.1, fz1, 0.7, SURF.bark)
   out.boxes.push(noStand(aabb((fx0 + fx1) / 2, y - 2, (fz0 + fz1) / 2,
-    4.0, y + 0.6, 4.0)))
+    Math.abs(fx1 - fx0) / 2 + 0.5, y + 0.8, Math.abs(fz1 - fz0) / 2 + 0.5)))
+  {
+    const yu = fu + lie * 2.0
+    const yv = fv0 - 6
+    strut(out.solid, timber, s.x(yu - 4.5, yv - 0.8), y + 0.25, s.z(yu - 4.5, yv - 0.8),
+      s.x(yu + 4.5, yv + 0.8), y + 0.3, s.z(yu + 4.5, yv + 0.8), 0.4, SURF.bark)
+  }
 
   if (!out.detailed) return
-  // planks washed up around her
+  // what she carried, strewn along the tide line
+  const side = -lie
+  for (let i = 0; i < 4; i++) {
+    const u = side * (4 + dr() * 5)
+    const v = (dr() - 0.5) * len
+    const upright = dr() < 0.5
+    put(out.solid, CYL8, pick(['#6b5a44', '#5a4a38'], dr()), s.x(u, v), y + (upright ? 0.9 : 0.7),
+      s.z(u, v), upright ? 0 : Math.PI / 2, dr() * 3, 0, 1.4, 1.8, 1.4, SURF.plank)
+    out.boxes.push(noStand(aabb(s.x(u, v), y - 1, s.z(u, v), 0.8, y + 1.6, 0.8)))
+  }
+  {
+    const u = side * 6.5
+    const v = len * 0.3
+    put(out.solid, BOX, '#6f6252', s.x(u, v), y + 0.6, s.z(u, v), 0.15, 0.6, 0.1,
+      1.6, 1.3, 1.6, SURF.plank)
+    put(out.solid, TUBE12, '#8a7a5a', s.x(u + 2.2, v - 1.5), y + 0.12, s.z(u + 2.2, v - 1.5),
+      0, 0, 0, 1.8, 0.24, 1.8)
+    put(out.solid, TUBE12, '#8a7a5a', s.x(u + 2.2, v - 1.5), y + 0.3, s.z(u + 2.2, v - 1.5),
+      0, 0, 0, 1.4, 0.2, 1.4)
+  }
+  {
+    // the anchor, half in the sand off the bow
+    const ax = s.x(side * 3, len * 0.5 + 5)
+    const az = s.z(side * 3, len * 0.5 + 5)
+    const iron = '#3a3634'
+    strut(out.solid, iron, ax, y - 0.3, az, ax + s.fx * 2.6, y + 1.8, az + s.fz * 2.6, 0.3)
+    strut(out.solid, iron, ax - s.rx * 1.3, y + 0.4, az - s.rz * 1.3,
+      ax + s.rx * 1.3, y + 0.4, az + s.rz * 1.3, 0.26)
+    put(out.solid, TUBE12, iron, ax + s.fx * 2.9, y + 2.1, az + s.fz * 2.9,
+      Math.PI / 2, s.face, 0, 0.7, 0.14, 0.7)
+  }
   for (let i = 0; i < 9; i++) {
-    const u = (rng() - 0.5) * 16
-    const v = (rng() - 0.5) * (len + 10)
-    put(out.solid, BOX, rng() < 0.5 ? timber : pale, s.x(u, v), y - 0.3,
-      s.z(u, v), (rng() - 0.5) * 0.2, rng() * 3, (rng() - 0.5) * 0.3,
-      0.45, 0.2, 2.0 + rng() * 2.4, SURF.plank)
+    const u = (dr() - 0.5) * 18
+    const v = (dr() - 0.5) * (len + 10)
+    put(out.solid, BOX, dr() < 0.5 ? timber : pale, s.x(u, v), y - 0.3,
+      s.z(u, v), (dr() - 0.5) * 0.2, dr() * 3, (dr() - 0.5) * 0.3,
+      0.45, 0.2, 2.0 + dr() * 2.4, SURF.plank)
   }
 }
-
 
 /* ----------------------------------------------------------------- front -- */
 

@@ -8,10 +8,15 @@
     "build": "tsc -b && vite build && cp dist/index.html dist/404.html",
     "lint": "eslint .",
     "shoot": "node scripts/shoot.mjs",
+    "film": "node scripts/film.mjs",
+    "drive": "node scripts/sandbox-drive.mjs",
     "measure": "node scripts/measure.mjs",
+    "music": "node scripts/music-render.mjs",
+    "steps": "node scripts/steps.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
     "@phosphor-icons/react": "^2.1.10",

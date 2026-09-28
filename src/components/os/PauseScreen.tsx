@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { VehicleId } from '../../game/vehicles/types'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
+import { keyHint } from '../../game/sandbox/bindings'
+import { useI18n } from '../../i18n'
 import {
-  DETAILS, FPS_CAPS, SCALE_MAX, SCALE_MIN, VOL_MAX, VOL_MIN,
-  detailTier, fpsCapLabel, type RoamPrefs,
+  DETAILS, FPS_CAPS, PIXEL_SIZES, SCALE_MAX, SCALE_MIN, VOL_MAX, VOL_MIN,
+  detailTier, type PixelSize, type RoamPrefs,
 } from './roamPrefs'
+import { PROOF_H, PROOF_W, type PixelProofs } from './pixelProofs'
+import { VOICE_FILTERS, type VoiceFilter } from './voiceFilters'
 import type { GfxTier } from '../../game/world/quality'
 
 /*
@@ -36,6 +39,12 @@ import type { GfxTier } from '../../game/world/quality'
     behind the selected row are authored SVG paths and lopsided radii, so
     nothing on the sheet is machine-straight except the type.
   - **You are a Polaroid** clipped to it. See `WorldIdentity.tsx`.
+  - **The pixel size is three prints of your own view**, drawn by the game
+    at each size the moment the settings page opens (`pixelProofs.ts`), and
+    every graphics knob carries a pencilled line saying what it changes and
+    what it costs. The three graphics knobs stay three different kinds of
+    thing (see `roamPrefs.ts`): the pixels and the resolution are live, the
+    detail lands on the next load and the sheet says so.
 
   It is mounted from the first pause of the session onward and merely hidden
   in between, never unmounted: the character preview owns a second WebGL
@@ -44,32 +53,21 @@ import type { GfxTier } from '../../game/world/quality'
   its own page is the one showing.
 */
 
-/** the fleet's compass rose, the same eight points `vehicles/registry.ts`
-    rounds a bearing to, in the same clockwise order */
+/** the compass rose the people page's bearings use: the same eight points
+    `vehicles/registry.ts` rounds a bearing to, in the same clockwise order */
 const COMPASS_DEG: Record<string, number> = {
   N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315,
 }
 
-/** the camera, written out. `third` is a boolean in the prefs and two words
-    here, which is the one place the two shapes have to meet */
-const CAMERAS = [
-  { id: 'first', label: 'first person' },
-  { id: 'third', label: 'third person' },
-] as const
-
-/** the detail tiers, in the order they are written on the sheet, and the word
-    for what a tier actually is once it is running */
-const DETAIL_WORDS = DETAILS.map((id) => ({ id, label: id }))
-const tierWord = (t: GfxTier) => (t === 'high' ? 'full' : 'lean')
-
-/** a volume, in the sheet's own voice: a dial at the bottom of its travel is
-    off, and "0%" is a number pretending that is a quantity */
-const volWord = (v: number) => (v <= 0 ? 'muted' : `${Math.round(v * 100)}%`)
+/** the pixel sizes as the sheet deals them out, biggest pixel first, so the
+    row reads from coarse to fine; the words for them are in the dictionary
+    in the same order */
+const PIXEL_ORDER: readonly PixelSize[] = [...PIXEL_SIZES].reverse()
 
 /** somebody else out in the world, as this screen lists them: who they are,
     what colour they painted their shell, and where they were standing when
-    the menu went up. No bearing means they are in another level, which for
-    now is the backrooms */
+    the menu went up. No bearing means they are in another level: the
+    backrooms or the Moon */
 export interface PersonWhere {
   id: number
   name: string
@@ -79,7 +77,7 @@ export interface PersonWhere {
   bearing?: string
 }
 
-type Page = 'character' | 'settings' | 'fleet' | 'people'
+type Page = 'character' | 'settings' | 'people'
 
 /**
   A row of the menu. The selected one is swiped through with the marker: a
@@ -139,15 +137,28 @@ function Row({
   to be a choice, and because the words are the label — "third person" needs
   no caption and "70%" would.
 */
+/** what a knob changes and what it costs, in plain words, pencilled under
+    its name. Every graphics knob has one, because "render scale" and
+    "detail" are words only somebody who wrote a renderer can read */
+function Hint({ children }: { children: ReactNode }) {
+  return (
+    <p className="mt-0.5 font-mono text-[11px] leading-snug" style={{ color: INK_SOFT }}>
+      {children}
+    </p>
+  )
+}
+
 function Choice<T extends string>({
   label,
   note,
+  hint,
   options,
   value,
   onPick,
 }: {
   label: string
   note?: ReactNode
+  hint?: string
   options: ReadonlyArray<{ id: T; label: string }>
   value: T
   onPick: (v: T) => void
@@ -160,14 +171,15 @@ function Choice<T extends string>({
         </span>
         {note}
       </div>
-      <div className="mt-2 flex flex-wrap gap-7">
+      {hint && <Hint>{hint}</Hint>}
+      <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1">
         {options.map((o) => (
           <button
             key={o.id}
             type="button"
             onClick={() => onPick(o.id)}
             aria-pressed={value === o.id}
-            className="font-display relative px-1 py-0.5 text-[22px] uppercase"
+            className="font-display relative px-1 py-0.5 text-[20px] uppercase"
             style={{ color: value === o.id ? INK : INK_SOFT }}
           >
             {o.label}
@@ -200,6 +212,7 @@ function Choice<T extends string>({
 const THUMB = 18
 function Dial({
   label,
+  hint,
   value,
   min,
   max,
@@ -208,6 +221,7 @@ function Dial({
   onChange,
 }: {
   label: string
+  hint?: string
   value: number
   min: number
   max: number
@@ -227,6 +241,7 @@ function Dial({
           {display}
         </span>
       </div>
+      {hint && <Hint>{hint}</Hint>}
       <div className="relative mt-1.5 flex h-5 items-center">
         {/* the ticks a ruled line would have been drawn against */}
         {[0, 25, 50, 75, 100].map((p) => (
@@ -266,40 +281,102 @@ function Dial({
   )
 }
 
-/** the fleet's badges, drawn in the same pen as the rules */
-function VehicleGlyph({ id }: { id: VehicleId }) {
+/**
+  The pixel size, dealt out as three prints of your own view: the middle of
+  the frame behind the sheet, drawn at each size and blown up twice (see
+  `pixelProofs.ts`, and CrtScene, which takes them). The word under each is
+  its name and the one in force is ringed, like every other choice on the
+  sheet; the prints only replace the guessing.
+
+  Until the first set lands (the next drawn frame, normally) each print is
+  a dark square with its name on it, so the row is usable before it is
+  illustrated.
+*/
+function PixelPrints({
+  label,
+  hint,
+  note,
+  names,
+  proofs,
+  value,
+  onPick,
+}: {
+  label: string
+  hint: string
+  note: string
+  names: readonly string[]
+  proofs: PixelProofs | null
+  value: PixelSize
+  onPick: (v: PixelSize) => void
+}) {
   return (
-    <svg
-      viewBox="0 0 16 16"
-      className="size-7 shrink-0"
-      aria-hidden
-      fill="none"
-      stroke={INK}
-      strokeWidth={1.3}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {id === 'car' && (
-        <>
-          <path d="M2 9.5h12M3 9.5 4.6 6h6.8L13 9.5v2.2H3z" />
-          <circle cx="5.2" cy="11.7" r="1.2" />
-          <circle cx="10.8" cy="11.7" r="1.2" />
-        </>
-      )}
-      {id === 'boat' && (
-        <>
-          <path d="M2.5 10.5h11l-1.6 2.6H4.1z" />
-          <path d="M8 10.5V3l4 4.5H8" />
-        </>
-      )}
-      {id === 'heli' && (
-        <>
-          <path d="M2 4h12M8 4v1.8" />
-          <path d="M4.6 5.8h5.2c1.6 0 2.6 1 2.6 2.3s-1 2.2-2.6 2.2H4.6c-1 0-1.6-.7-1.6-2.2s.6-2.3 1.6-2.3Z" />
-          <path d="M12.4 8h2.2M5 12.3h4.5" />
-        </>
-      )}
-    </svg>
+    <div>
+      <div className="flex items-baseline gap-4">
+        <span className="font-display text-[21px] uppercase" style={{ color: INK }}>
+          {label}
+        </span>
+        <span className="min-w-0 flex-1 font-mono text-[11px]" style={{ color: INK_SOFT }}>
+          {hint}
+        </span>
+        <Note>{note}</Note>
+      </div>
+      <div className="mt-2.5 flex flex-wrap gap-x-7 gap-y-3">
+        {PIXEL_ORDER.map((size, i) => {
+          const on = value === size
+          return (
+            <button
+              key={size}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onPick(size)}
+              className="group relative flex cursor-pointer flex-col items-center gap-1.5"
+            >
+              <span
+                className="block p-1 pb-1.5 transition-transform duration-150 group-hover:-translate-y-0.5"
+                style={{
+                  rotate: `${[-1.6, 0.9, -0.6][i] ?? 0}deg`,
+                  background: 'linear-gradient(160deg, #fbf7ea, #efe7d3)',
+                  boxShadow: '0 4px 9px rgba(30,20,10,0.4)',
+                }}
+              >
+                <span
+                  className="relative grid place-items-center overflow-hidden"
+                  style={{ width: PROOF_W, height: PROOF_H, background: '#221c17' }}
+                >
+                  <span className="font-mono text-[10px]" style={{ color: '#a8977a' }}>
+                    {names[i]}
+                  </span>
+                  {proofs && (
+                    <img
+                      alt=""
+                      src={proofs[size]}
+                      draggable={false}
+                      className="absolute inset-0 h-full w-full"
+                      // nearest neighbour, or the one thing this row exists
+                      // to show is smoothed away by the browser
+                      style={{ imageRendering: 'pixelated' }}
+                    />
+                  )}
+                </span>
+              </span>
+              <span
+                className="font-display relative px-1 text-[20px] uppercase"
+                style={{ color: on ? INK : INK_SOFT }}
+              >
+                {names[i]}
+              </span>
+              <span
+                aria-hidden
+                className={`pointer-events-none absolute -inset-x-2 -inset-y-1.5 transition-opacity ${
+                  on ? 'opacity-100' : 'opacity-0'
+                }`}
+                style={CIRCLED}
+              />
+            </button>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -311,19 +388,19 @@ export interface PauseScreenProps {
   multiplayer: boolean
   prefs: RoamPrefs
   onPrefs: (next: (p: RoamPrefs) => RoamPrefs) => void
+  /** play your own filtered voice back to you for a few seconds; resolves
+      when it has finished */
+  onVoicePreview: () => Promise<void>
+  /** the view behind the sheet, drawn once at each pixel size and cropped
+      (pixelProofs.ts); null when nothing is drawing */
+  onPixelProofs: () => Promise<PixelProofs | null>
   /** what the GPU sniff decided, and what the running world was actually
       built at; they differ exactly when `prefs.detail` has overruled the
       sniff. Null only before the renderer has classified, which cannot
       coincide with a pause */
   tier: { auto: GfxTier; built: GfxTier } | null
-  /** where the machines are, measured when the menu went up */
-  fleet: Array<{ id: VehicleId; label: string; dist: number; bearing: string }>
   /** and everyone else out there, measured at the same moment */
   people: PersonWhere[]
-  /** already at some wheel: recalling a machine from inside another one is a
-      trick nobody asked for and the sim would have to answer for */
-  driving: boolean
-  onRecall: (id: VehicleId, label: string) => void
   identity: Omit<WorldIdentityProps, 'active'>
   onLeave?: () => void
   onResume: () => void
@@ -334,24 +411,60 @@ export default function PauseScreen({
   multiplayer,
   prefs,
   onPrefs,
+  onVoicePreview,
+  onPixelProofs,
   tier,
-  fleet,
   people,
-  driving,
-  onRecall,
   identity,
   onLeave,
   onResume,
 }: PauseScreenProps) {
+  const { t, language } = useI18n()
   const [page, setPage] = useState<Page>('character')
+  const [hearing, setHearing] = useState(false)
+  const fxWords = VOICE_FILTERS.map((id, i) => ({ id, label: t.sandbox.voiceFx.names[i] }))
+  const tp = t.pause
   const pages: Array<{ id: Page; label: string }> = [
-    { id: 'character', label: 'character' },
-    { id: 'settings', label: 'settings' },
-    ...(fleet.length > 0 ? [{ id: 'fleet' as const, label: 'the fleet' }] : []),
+    { id: 'character', label: tp.character },
+    { id: 'settings', label: tp.settings },
     // only when there is a walk to share. Offline the page would be a page
     // about nobody, and the answer would never change
-    ...(multiplayer ? [{ id: 'people' as const, label: 'who is here' }] : []),
+    ...(multiplayer ? [{ id: 'people' as const, label: tp.people }] : []),
   ]
+  const cameras = [
+    { id: 'first', label: tp.firstPerson },
+    { id: 'third', label: tp.thirdPerson },
+  ] as const
+  const detailWords = DETAILS.map((id, i) => ({ id, label: tp.detailNames[i] }))
+  const tierWord = (g: GfxTier) => tp.detailNames[DETAILS.indexOf(g === 'high' ? 'full' : 'lean')]
+  // a dial at the bottom of its travel is off, and "0%" is a number
+  // pretending that is a quantity
+  const volWord = (v: number) => (v <= 0 ? tp.muted : `${Math.round(v * 100)}%`)
+
+  // The pixel proofs, asked for whenever the settings page comes up and
+  // again a moment after the resolution dial settles (it changes what every
+  // size looks like, the pixel choice itself does not: each proof is drawn
+  // at its own size). Kept between visits, so the prints are there at once
+  // and are only ever replaced by newer ones
+  const [proofs, setProofs] = useState<PixelProofs | null>(null)
+  const proofsShowing = open && page === 'settings'
+  const askProofs = useRef(onPixelProofs)
+  useEffect(() => {
+    askProofs.current = onPixelProofs
+  })
+  useEffect(() => {
+    if (!proofsShowing) return
+    let live = true
+    const id = setTimeout(() => {
+      void askProofs.current().then((next) => {
+        if (live && next) setProofs(next)
+      })
+    }, 180)
+    return () => {
+      live = false
+      clearTimeout(id)
+    }
+  }, [proofsShowing, prefs.scale])
   // drawn on the first pause and kept: see paper.ts
   const stock = useMemo(() => paperTexture(), [])
 
@@ -367,15 +480,15 @@ export default function PauseScreen({
     under "auto" the interesting fact is what the sniff came back with, since
     that is invisible everywhere else and is the whole reason for overruling
     it; under an explicit word there is nothing left to disclose, so the line
-    goes back to naming what the knob moves.
+    has nothing to add to the hint under the name, and says nothing.
   */
   const detailNote = !tier
     ? null
     : detailTier(prefs.detail, tier.auto) !== tier.built
-      ? 'on the next load'
+      ? tp.nextLoad
       : prefs.detail === 'auto'
-        ? `it found ${tierWord(tier.auto)}`
-        : 'grass, trees, sky'
+        ? tp.found.replace('{tier}', tierWord(tier.auto))
+        : null
 
   // the arrows walk the menu, because a menu you can only mouse around is a
   // menu that forgot which device it is on. Escape stays CrtScene's (it is
@@ -447,7 +560,7 @@ export default function PauseScreen({
               className="font-display text-[clamp(34px,4.4vw,52px)] leading-none uppercase"
               style={{ color: INK }}
             >
-              paused
+              {tp.paused}
             </h2>
             <Rule className="mt-1 w-[86%]" />
           </div>
@@ -455,12 +568,18 @@ export default function PauseScreen({
               there, saying "paused" without qualification is a lie */}
           <p className="mb-1.5 hidden sm:block">
             <Note>
-              {multiplayer ? 'the world keeps going without you' : 'the world is holding still'}
+              {multiplayer ? tp.shared : tp.still}
             </Note>
           </p>
         </header>
 
-        <div className="flex min-h-0 flex-col gap-8 overflow-y-auto sm:flex-row sm:gap-10">
+        {/* Scrolls when a short window needs it, but never draws a bar: a bar
+            takes its own width out of the columns, the widest option row then
+            wraps onto one more line, and the taller page keeps the bar it
+            caused. That loop had two stable states on a laptop, and whichever
+            one the last relayout (a hover) landed in stuck. Sideways it never
+            scrolls: the rows' hover nudge is not content */}
+        <div className="flex min-h-0 flex-col gap-8 overflow-x-hidden overflow-y-auto [scrollbar-width:none] sm:flex-row sm:gap-10">
           <nav className="flex w-full shrink-0 flex-col gap-0.5 sm:w-44">
             {pages.map((p) => (
               <Row
@@ -471,8 +590,8 @@ export default function PauseScreen({
               />
             ))}
             <Rule className="my-3 w-24" color={`${INK}66`} />
-            <Row label="resume" trailing={<Note>esc</Note>} onClick={onResume} />
-            {onLeave && <Row label="leave" onClick={onLeave} />}
+            <Row label={tp.resume} trailing={<Note>esc</Note>} onClick={onResume} />
+            {onLeave && <Row label={tp.leave} onClick={onLeave} />}
           </nav>
 
           {/* the page. The character one is never unmounted, since its preview
@@ -485,65 +604,42 @@ export default function PauseScreen({
               <WorldIdentity {...identity} active={open && page === 'character'} />
             </div>
 
-            {/* Two columns, because the settings outgrew one: stacked, the
-                frame limiter fell off the bottom of the sheet on a laptop and
-                the right half of the paper was blank the whole time. What is
-                in each is the split itself — how the world looks on the left,
-                what it costs on the right — and the camera sits across the top
-                because it is the one row whose two phrases will not fit in
-                half the width, and because a mode is not a number. Voice runs
-                across the bottom on the same reasoning: it is a third kind of
-                thing (how the world *sounds*), and it is only there at all
-                when there is somebody in it to talk to. */}
+            {/* The pixels across the top, because they are the knob people
+                came looking for and the only one that is shown rather than
+                described: three prints of the view behind the sheet, one per
+                size. Under them two columns, and the split is the point: on
+                the left the three knobs that cost something (how many lines
+                are drawn, how much world is built, how many frames a second),
+                on the right the three that are only about how it feels. Each
+                graphics knob says in pencil under its name what it changes
+                and what it costs, because "render scale" is a word only
+                somebody who wrote a renderer can read. Voice runs across the
+                bottom: a third kind of thing (how the world *sounds*), and
+                only there at all when there is somebody in it to talk to. */}
             {page === 'settings' && (
-              <div className="grid gap-x-10 gap-y-7 sm:grid-cols-2">
+              <div className="grid gap-x-10 gap-y-5 sm:grid-cols-2">
+                {/* how big a pixel of the pixel art is: taste, not cost,
+                    and live, since it is only the size of a target */}
                 <div className="sm:col-span-2">
-                  <Choice
-                    label="camera"
-                    note={<Note>v toggles</Note>}
-                    options={CAMERAS}
-                    value={prefs.third ? 'third' : 'first'}
-                    onPick={(v) => onPrefs((p) => ({ ...p, third: v === 'third' }))}
+                  <PixelPrints
+                    label={tp.pixels}
+                    hint={tp.pixelsHint}
+                    note={tp.pixelProof}
+                    names={tp.pixelNames}
+                    proofs={proofs}
+                    value={prefs.pixels}
+                    onPick={(pixels) => onPrefs((p) => ({ ...p, pixels }))}
                   />
                 </div>
 
-                <div className="flex flex-col gap-7">
+                <div className="flex flex-col gap-5">
+                  {/* ...and how much of that resolution to actually draw. The
+                      opposite kind of knob from detail: one target size, live
+                      on the next frame, and the ceiling the adaptive
+                      governor sheds from */}
                   <Dial
-                    label="field of view"
-                    value={prefs.fov}
-                    min={30}
-                    max={80}
-                    step={1}
-                    display={`${prefs.fov}°`}
-                    onChange={(fov) => onPrefs((p) => ({ ...p, fov }))}
-                  />
-                  <Dial
-                    label="mouse sensitivity"
-                    value={prefs.sens}
-                    min={0.3}
-                    max={3}
-                    step={0.05}
-                    display={`${prefs.sens.toFixed(2)}×`}
-                    onChange={(sens) => onPrefs((p) => ({ ...p, sens }))}
-                  />
-                </div>
-
-                <div className="flex flex-col gap-7">
-                  {/* how much world to build. See detailNote: this one is
-                      baked at construction and cannot be honoured until the
-                      next load, which the sheet says rather than hides */}
-                  <Choice
-                    label="detail"
-                    note={detailNote && <Note>{detailNote}</Note>}
-                    options={DETAIL_WORDS}
-                    value={prefs.detail}
-                    onPick={(detail) => onPrefs((p) => ({ ...p, detail }))}
-                  />
-                  {/* ...and how many pixels to draw it into. The opposite kind
-                      of knob: one number on the renderer, live on the next
-                      frame, and the ceiling the adaptive governor sheds from */}
-                  <Dial
-                    label="render scale"
+                    label={tp.scale}
+                    hint={tp.scaleHint}
                     value={prefs.scale}
                     min={SCALE_MIN}
                     max={SCALE_MAX}
@@ -555,17 +651,88 @@ export default function PauseScreen({
                       onPrefs((p) => ({ ...p, scale: Math.round(v * 100) / 100 }))
                     }
                   />
+                  {/* how much world to build. See detailNote: this one is
+                      baked at construction and cannot be honoured until the
+                      next load, which the sheet says rather than hides */}
+                  <Choice
+                    label={tp.detail}
+                    hint={tp.detailHint}
+                    note={detailNote && <Note>{detailNote}</Note>}
+                    options={detailWords}
+                    value={prefs.detail}
+                    onPick={(detail) => onPrefs((p) => ({ ...p, detail }))}
+                  />
                   {/* the dial rides on the index, not the number: the values
                       are a list of detents and the spacing between them is not
                       linear (30 to 45 is the same throw as 200 to 240) */}
                   <Dial
-                    label="frame limit"
+                    label={tp.cap}
+                    hint={tp.capHint}
                     value={Math.max(0, FPS_CAPS.indexOf(prefs.cap))}
                     min={0}
                     max={FPS_CAPS.length - 1}
                     step={1}
-                    display={fpsCapLabel(prefs.cap)}
+                    display={prefs.cap === 0 ? tp.noLimit : `${prefs.cap} fps`}
                     onChange={(i) => onPrefs((p) => ({ ...p, cap: FPS_CAPS[i] ?? 0 }))}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-5">
+                  <Choice
+                    label={tp.camera}
+                    note={<Note>{tp.cameraToggle}</Note>}
+                    options={cameras}
+                    value={prefs.third ? 'third' : 'first'}
+                    onPick={(v) => onPrefs((p) => ({ ...p, third: v === 'third' }))}
+                  />
+                  <Dial
+                    label={tp.fov}
+                    hint={tp.fovHint}
+                    value={prefs.fov}
+                    min={30}
+                    max={80}
+                    step={1}
+                    display={`${prefs.fov}°`}
+                    onChange={(fov) => onPrefs((p) => ({ ...p, fov }))}
+                  />
+                  <Dial
+                    label={tp.sens}
+                    hint={tp.sensHint}
+                    value={prefs.sens}
+                    min={0.3}
+                    max={3}
+                    step={0.05}
+                    display={`${prefs.sens.toFixed(2)}×`}
+                    onChange={(sens) => onPrefs((p) => ({ ...p, sens }))}
+                  />
+                </div>
+
+                {/* The soundtrack and the world under it, apart, because
+                    the useful answer to "too much music" is rarely "less
+                    wind" (game/music) */}
+                <div className="grid gap-x-10 gap-y-7 sm:col-span-2 sm:grid-cols-2">
+                  <Dial
+                    label={tp.music}
+                    value={prefs.musicVol}
+                    min={VOL_MIN}
+                    max={VOL_MAX}
+                    step={0.05}
+                    display={volWord(prefs.musicVol)}
+                    onChange={(v) =>
+                      onPrefs((p) => ({ ...p, musicVol: Math.round(v * 100) / 100 }))
+                    }
+                  />
+                  <Dial
+                    label={tp.ambience}
+                    hint={tp.ambienceHint}
+                    value={prefs.ambVol}
+                    min={VOL_MIN}
+                    max={VOL_MAX}
+                    step={0.05}
+                    display={volWord(prefs.ambVol)}
+                    onChange={(v) =>
+                      onPrefs((p) => ({ ...p, ambVol: Math.round(v * 100) / 100 }))
+                    }
                   />
                 </div>
 
@@ -577,7 +744,7 @@ export default function PauseScreen({
                 {multiplayer && (
                   <div className="grid gap-x-10 gap-y-7 sm:col-span-2 sm:grid-cols-2">
                     <Dial
-                      label="your microphone"
+                      label={tp.mic}
                       value={prefs.micVol}
                       min={VOL_MIN}
                       max={VOL_MAX}
@@ -588,7 +755,7 @@ export default function PauseScreen({
                       }
                     />
                     <Dial
-                      label="other voices"
+                      label={tp.voices}
                       value={prefs.voiceVol}
                       min={VOL_MIN}
                       max={VOL_MAX}
@@ -598,88 +765,55 @@ export default function PauseScreen({
                         onPrefs((p) => ({ ...p, voiceVol: Math.round(v * 100) / 100 }))
                       }
                     />
+                    {/* what everybody else hears you through. The filter is
+                        applied on this machine before the voice leaves it
+                        (`voiceFilters.ts`), so the only honest way to show it
+                        is to play it back: the pencil note on the right is a
+                        button that does, privately, for a few seconds */}
+                    <div className="sm:col-span-2">
+                      <Choice<VoiceFilter>
+                        label={t.sandbox.voiceFx.label}
+                        note={
+                          <button
+                            type="button"
+                            disabled={hearing}
+                            onClick={() => {
+                              setHearing(true)
+                              void onVoicePreview().finally(() => setHearing(false))
+                            }}
+                            className="underline decoration-dotted underline-offset-2 disabled:no-underline"
+                          >
+                            <Note>
+                              {hearing ? t.sandbox.voiceFx.listening : `▸ ${t.sandbox.voiceFx.preview}`}
+                            </Note>
+                          </button>
+                        }
+                        options={fxWords}
+                        value={prefs.voiceFx}
+                        onPick={(voiceFx) => onPrefs((p) => ({ ...p, voiceFx }))}
+                      />
+                    </div>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* where the machines are. A fixed fleet in an endless world needs
-                this: the boat lives on a coast two and a half kilometres out,
-                and without a bearing that is not a destination, it is a rumour.
-                "call it over" is the way back from having stranded one: it
-                puts the machine on the nearest place it can legally stand,
-                which is why the boat refuses unless there is water in reach */}
-            {page === 'fleet' && (
-              <div className="max-w-lg">
-                <div className="flex items-baseline justify-between gap-4">
-                  <span className="font-display text-[21px] uppercase" style={{ color: INK }}>
-                    where they are
-                  </span>
-                  <Note>e to get in</Note>
-                </div>
-                <ul className="mt-3 flex flex-col">
-                  {fleet.map((v) => (
-                    <li key={v.id} className="flex items-center gap-4 py-3">
-                      <VehicleGlyph id={v.id} />
-                      <span className="min-w-0 flex-1">
-                        <span
-                          className="font-display block truncate text-[24px] uppercase"
-                          style={{ color: INK }}
-                        >
-                          {v.label}
-                        </span>
-                        <Note>
-                          {/* the sim's units are not metres; the same 0.48
-                              scale the rest of the HUD reads distances in */}
-                          {v.dist < 1000
-                            ? `${Math.round(v.dist * 0.48)} m`
-                            : `${(v.dist * 0.00048).toFixed(1)} km`}{' '}
-                          {v.bearing}
-                        </Note>
-                      </span>
-                      {/* a needle already turned: a bearing you have to
-                          translate is a bearing you do not follow */}
-                      <span
-                        aria-hidden
-                        className="grid size-8 shrink-0 place-items-center"
-                        style={{ transform: `rotate(${COMPASS_DEG[v.bearing] ?? 0}deg)` }}
-                      >
-                        <svg viewBox="0 0 12 12" className="size-5">
-                          <path d="M6 1.2 8.8 9 6 7.2 3.2 9Z" fill={MARK} />
-                        </svg>
-                      </span>
-                      {v.dist > 80 && !driving && (
-                        <button
-                          type="button"
-                          onClick={() => onRecall(v.id, v.label)}
-                          className="font-display shrink-0 text-[17px] uppercase underline decoration-dotted underline-offset-4"
-                          style={{ color: INK_SOFT }}
-                        >
-                          call it over
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
               </div>
             )}
 
             {/* who else is out there. The roster is the server's, so this is
                 the same list the chat rail and the plates over their heads
                 are drawn from, and a name here is a name you can shout at.
-                Somebody with no bearing is in another level, which for now
-                means they found the backrooms */}
+                Somebody with no bearing is in another level: they found the
+                backrooms, or flew to the Moon */}
             {page === 'people' && (
               <div className="max-w-lg">
                 <div className="flex items-baseline justify-between gap-4">
                   <span className="font-display text-[21px] uppercase" style={{ color: INK }}>
-                    out here with you
+                    {tp.outHere}
                   </span>
-                  <Note>t to say something</Note>
+                  <Note>{tp.sayHint}</Note>
                 </div>
                 {people.length === 0 ? (
                   <p className="mt-4 font-display text-[22px] uppercase" style={{ color: `${INK}55` }}>
-                    nobody else, just now
+                    {tp.nobody}
                   </p>
                 ) : (
                   <ul className="mt-3 flex flex-col">
@@ -703,7 +837,7 @@ export default function PauseScreen({
                           {p.name}
                         </span>
                         {p.dist === undefined || p.bearing === undefined ? (
-                          <Note>somewhere else</Note>
+                          <Note>{tp.elsewhere}</Note>
                         ) : (
                           <>
                             <Note>
@@ -735,8 +869,7 @@ export default function PauseScreen({
         {/* the footnote at the bottom of the page, in the walk HUD's own voice */}
         <p className="mt-auto">
           <Note>
-            wasd move · space jump · shift run · ctrl crouch · x flop
-            {multiplayer && ' · t chat · m mic'} · ↑↓ menu
+            {keyHint(`${t.sandbox.hud.pauseNote}${multiplayer ? ` · ${t.sandbox.hud.voice}` : ''} · ${tp.menuKeys}`, language)}
           </Note>
         </p>
       </div>

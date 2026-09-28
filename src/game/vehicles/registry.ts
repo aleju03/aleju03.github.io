@@ -13,11 +13,30 @@ import { clamp, clearAt, SURFACE_FEEL } from './chassis'
 import { buildCar } from './car'
 import { buildBoat } from './boat'
 import { buildHeli } from './heli'
+import { buildShip } from './ship'
 import type { DriveEnv, DriveStep, NetPose, Vehicle, VehicleId } from './types'
+import type { Prop, Sandbox } from '../sandbox/sandbox'
+import { registerKind, type PropKind } from '../sandbox/kinds'
 
 /*
-  The fleet: three machines, where they live, and everything that has to
-  happen around them that is not physics.
+  The fleet: four machines, where they live, and everything that has to
+  happen around them that is not physics. The fourth is the ship, which is
+  carried through the Earth-Moon seams with its crew aboard (`shiftRiding`,
+  `warpRiding`).
+
+  **Every machine is in one level at a time**, and the fleet keeps which
+  (`Entry.level`, the id the env it was last placed with carried). Any level
+  that says `vehicles` runs the whole fleet, the Moon included: a car ordered
+  there is delivered onto the regolith and drives at the Moon's gravity,
+  because every ground, water and gravity question a machine asks goes
+  through the env, which the scene re-points at the live level each frame.
+  A machine left on the Moon stays there: back on Earth it is hidden, not
+  ticked and not offered until it is ordered again, which pulls it to
+  wherever you are. The machine you are in is always in your level (that is
+  how the ship crosses a seam). One somebody else is driving or holding is
+  in the level its pose is in (`levelAt`, a pure function of position, since
+  the wire carries no level for the fleet and the Moon stands in a square of
+  its own far off in the scene).
 
   This module is the seam between the vehicles and the scene, and it exists so
   that CrtScene's per-frame conductor gains one call rather than a subsystem.
@@ -89,6 +108,26 @@ import type { DriveEnv, DriveStep, NetPose, Vehicle, VehicleId } from './types'
   nothing at all: `netStep` leaves the machine's own state consistent, so
   local physics picks it up mid-roll and it coasts to a stop.
 
+  **The physgun.** A parked machine is not a prop, so when the beam finds one
+  (`pick`, a ray against its hull's bounds) the fleet stands a dynamic Rapier
+  body in for it (`take`): a convex hull of the same stations the walker
+  collides with, at the machine's weight, spawned where the machine stands.
+  From then on the beam holds it exactly as it holds a crate (lift, spin,
+  throw, freeze), it lands and tumbles and floats like one, and the machine
+  simply rides it: `root` is placed whole from the prop's drawn pose every
+  frame and its own integrator is not run. It is handed back when it is let
+  go and comes to rest the right way up (`handBack`: re-settled on its own
+  springs at that spot and heading); a machine left frozen or on its roof
+  stays a prop until it is grabbed again, and climbing into one rights it
+  where it is. Being a hull, it stands on the plain ground rather than the
+  edge-fixed one, whose contacts let every convex hull through (physics.ts's
+  GROUPS), and its kind carries `floor`, so however hard it is thrown the
+  drawn ground holds its corners up (`npm run measure -- physics carry` and
+  `npm run drive -- throw`). Only an *empty* machine can be taken. On the wire the thrower
+  is its authority through a server-arbitrated claim (`hand`, next to the
+  seats, and it excludes them both ways), the transform is relayed like a
+  driver's, and everybody else places it whole rather than driving it.
+
   A note on world state, because this codebase is otherwise strict about not
   having any: the fleet is **session state**, not world state, and that is
   still true with the server in the picture. The planet remains a pure
@@ -115,6 +154,9 @@ const HOME: Record<VehicleId, { x: number; z: number; yaw: number }> = {
   // twenty-five units off. Re-probed when the mountain retune lifted the
   // raw field — the old spot at (-2279, -614) kept half a unit of water
   boat: { x: -2170, z: -1080, yaw: -0.175 },
+  // the back garden, between the two yard trees and clear of the flower
+  // beds, nose to the house: out of the back door and there it is
+  ship: { x: 0.5, z: 31.5, yaw: 0 },
 }
 
 /** how long the camera takes to move from the player's eye into the seat */
@@ -128,9 +170,14 @@ const SIM_RANGE = 300
 export interface FleetEnvQueries {
   groundAt: (x: number, z: number) => number
   waterY?: number
+  gravity?: number
+  air?: boolean
   collision: DriveEnv['collision']
   surfaceAt: DriveEnv['surfaceAt']
   waveAt: DriveEnv['waveAt']
+  /** the id of the level these answers describe: a machine placed with
+      them is in it, and a tick with them shows only the machines there */
+  level?: string
 }
 
 export interface FleetTickOpts {
@@ -144,7 +191,8 @@ export interface FleetTickOpts {
   fovBase: number
   /** where the walker is, for prompts and for culling distant machines */
   playerPos: THREE.Vector3
-  /** the overworld is live. Level 0 has no vehicles in it and never will */
+  /** a level with the fleet in it is live. Level 0 has no vehicles in it
+      and never will */
   outdoors: boolean
 }
 
@@ -177,6 +225,9 @@ export interface ExitPlace {
   feetY: number
   yaw: number
   pitch: number
+  /** the stand-down spot is in the air (an ejection): the scene floats the
+      walker there rather than dropping them out of the sky */
+  airborne: boolean
 }
 
 /** what the local player is doing with a machine, and what everyone else is
@@ -190,6 +241,13 @@ export interface FleetNetState {
       the interact prompt reads, so a full car offers nothing and a car with a
       driver in it offers the other door */
   taken: Array<[boolean, boolean]>
+  /** per wire-order vehicle, who has it on a physgun: 0 nobody, 1 us, 2
+      somebody else (and then `driven` carries their pose, placed whole) */
+  hand?: number[]
+  /** ask the server for a machine on our physgun, or give it back */
+  claim?: (index: number, on: boolean) => void
+  /** relay the pose of a machine we hold, like a driver's */
+  send?: (index: number, x: number, y: number, z: number, yaw: number, pitch: number, roll: number) => void
 }
 
 export interface VehicleFleet {
@@ -204,11 +262,19 @@ export interface VehicleFleet {
   readonly cockpit: boolean
   /** flip the drive camera between chase and cockpit */
   toggleView: () => void
+  /** a ring of dust kicked up at a point: the sandbox borrows the fleet's
+      particle pool (already compiled, one draw) to set a spawned prop down
+      with. `r` is the footprint's radius, `color` a hex */
+  puff: (x: number, y: number, z: number, r: number, color?: number) => void
   /** mouse-look, same signature the walk controller takes. While driving the
       lens belongs to the boom, not to the suspended walker's head */
   turn: (dx: number, dy: number, sign: 1 | -1, sens: number) => void
   /** the machine a walker at `p` could get into, or null */
   nearest: (p: THREE.Vector3) => Vehicle | null
+  /** the physgun's side of the fleet (sandbox/tools/types.ts's VehicleGrab):
+      the nearest empty machine along a ray, and that machine as a prop */
+  pick: (eye: THREE.Vector3, dir: THREE.Vector3, within: number) => { key: string; t: number } | null
+  take: (key: string, sb: Sandbox) => Prop | null
   /** climb in. `yaw`/`pitch` are the walker's, so the camera can blend;
       `seat` is 0 for the controls and 1 for the other chair */
   enter: (
@@ -221,8 +287,15 @@ export interface VehicleFleet {
   /** slide across without getting out: the passenger of a machine whose
       driver just left takes the wheel where they sit */
   takeSeat: (seat: number) => void
-  /** climb out; null means "not from here" (a helicopter in the air). A
-      passenger may always get out — they are not the one flying it */
+  /** carry the machine we are in through a level cut: put it in the air at
+      the seam's arrival, still, with us aboard (spacecraft only) */
+  warpRiding: (x: number, y: number, z: number, yaw: number) => boolean
+  /** carry the machine we are in across a seamless seam: the same offset the
+      walker is carried by, with its motion kept (spacecraft only) */
+  shiftRiding: (dx: number, dy: number, dz: number) => boolean
+  /** climb out, from anywhere: on the ground beside the door, or (in the
+      air, in space) an ejection the scene turns into a float. Null only when
+      not riding anything */
   leave: (env: FleetEnvQueries) => ExitPlace | null
   /** who is driving what, from the network. Call before `tick` */
   setNet: (state: FleetNetState | null) => void
@@ -235,6 +308,14 @@ export interface VehicleFleet {
   /** bring a machine to the player. Returns false when there is nowhere for
       it to go — a boat with no water within reach, mostly */
   recall: (id: VehicleId, p: THREE.Vector3, env: FleetEnvQueries) => boolean
+  /** the catalogue's order: put this machine at `at` (the crosshair on the
+      ground, or the nearest place it may stand, or float), facing `from`.
+      There is one of each, shared by everyone, so ordering one moves it to
+      you. 'placed' now, 'pending' while the server is asked (with a server
+      in the picture it is claimed, moved, relayed and let go, like a
+      physgun), 'busy' when somebody is in it or has it, 'nowhere' when
+      there is no ground (or water) near enough */
+  order: (id: VehicleId, at: THREE.Vector3, from: THREE.Vector3, env: FleetEnvQueries) => 'placed' | 'pending' | 'busy' | 'nowhere'
   /** put a machine where the server says it was left. Only ever called on
       joining: from then on a driven machine arrives frame by frame and a
       parked one is nobody's business but this client's */
@@ -275,12 +356,73 @@ interface Entry {
   /** its engine is audible: either we are in it, or it is being driven past
       us. Held so start/stop happen on edges rather than every frame */
   voiced: boolean
+  /** standing in the sandbox as a prop: on our physgun, or loose after it */
+  carry: Carry | null
+  /** somebody else has it on their physgun: placed whole off the wire */
+  heldRemote: boolean
+  /** when we last asked the server for it, fleet clock seconds */
+  asked: number
+  /** ordered from the catalogue and waiting on the server's claim: where it
+      is going, and when the order was placed */
+  order: { x: number; z: number; yaw: number; t: number } | null
+  /** placed by an order: keep the claim and keep saying where it is until
+      then, so everybody else hears the new spot before it is let go */
+  placedUntil: number
+  /** the level it stands in (see the header); empty until first placed */
+  level: string
+}
+
+interface Carry {
+  sb: Sandbox
+  id: number
+  /** seconds it has been let go and nearly still */
+  quiet: number
+  /** seconds it has been let go at all */
+  loose: number
+}
+
+/** the carry prop's kind per machine: its weight, how it floats, what it
+    sounds like landing, and its shape (the hull's stations, closed under the
+    machine down to `bottom`). Registered the first time one is taken */
+const carryKinds = new Map<VehicleId, PropKind>()
+export const carryKind = (v: Vehicle): PropKind => {
+  let k = carryKinds.get(v.id)
+  if (k) return k
+  const c = v.carry ?? { mass: 600, density: 1.1, bottom: 0.1 }
+  const pts: number[] = []
+  for (const st of v.hull) {
+    for (const x of [-st.hw, st.hw]) {
+      pts.push(x, Math.max(c.bottom + 0.2, st.top), st.z)
+      pts.push(x, c.bottom, st.z)
+    }
+  }
+  k = registerKind({
+    id: `vehicle:${v.id}`,
+    label: v.label,
+    shape: { type: 'hull', points: pts },
+    mass: c.mass,
+    friction: 0.7,
+    restitution: 0.12,
+    density: c.density,
+    linearDamping: 0.05,
+    angularDamping: 0.4,
+    surface: 'metal',
+    floor: true,
+  })
+  carryKinds.set(v.id, k)
+  return k
 }
 
 interface BuildOpts {
   scene: THREE.Object3D
   /** the shared obstacle list every builder registers into */
   obstacles: Solid[]
+  /** the other levels' obstacle lists the machines can stand in (the
+      Moon's): each machine's box goes in every one, and is empty wherever
+      the machine is not */
+  alsoIn?: Solid[][]
+  /** which level a pose somebody else sent is in, by where it is */
+  levelAt?: (x: number, y: number, z: number) => string
   trackTexture: <T extends THREE.Texture>(t: T) => T
   trackDisposable: <D extends { dispose: () => void }>(d: D) => D
 }
@@ -297,6 +439,7 @@ const DROP = 0.2
 
 export function buildFleet(opts: BuildOpts): VehicleFleet {
   const { scene, obstacles, trackTexture, trackDisposable } = opts
+  const levelAt = opts.levelAt ?? (() => '')
 
   const root = new THREE.Group()
   root.userData.dynamic = true
@@ -323,19 +466,22 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     car: createVehicleVoice('car'),
     boat: createVehicleVoice('boat'),
     heli: createVehicleVoice('heli'),
+    ship: createVehicleVoice('ship'),
   }
 
   const entries: Entry[] = []
   const byId = new Map<VehicleId, Entry>()
-  for (const v of [buildCar({ mats }), buildBoat({ mats }), buildHeli({ mats })]) {
+  for (const v of [buildCar({ mats }), buildBoat({ mats }), buildHeli({ mats }), buildShip({ mats })]) {
     root.add(v.root)
     const box = new THREE.Box3() as Solid
     const hull = makeHull(v.hull, PAD)
     box.hull = hull
     obstacles.push(box)
+    for (const list of opts.alsoIn ?? []) list.push(box)
     const e: Entry = {
       v, box, hull, step: null, emit: 0,
-      net: null, voiced: false,
+      net: null, voiced: false, carry: null, heldRemote: false, asked: -10,
+      order: null, placedUntil: -1, level: '',
     }
     entries.push(e)
     byId.set(v.id, e)
@@ -373,6 +519,8 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
   const fillEnv = (q: FleetEnvQueries) => {
     env.groundAt = q.groundAt
     env.waterY = q.waterY
+    env.gravity = q.gravity
+    env.air = q.air
     env.collision = q.collision
     env.surfaceAt = q.surfaceAt
     env.waveAt = q.waveAt
@@ -409,11 +557,18 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     return last
   }
 
+  const aimNow = { yaw: 0, pitch: 0 }
   const step = (e: Entry, driven: boolean, dt: number, q: FleetEnvQueries) => {
     // its own box must not exist while it is asking the world what is under
     // it — see the header. Emptied, every test in collision.ts fails closed
     e.box.makeEmpty()
     fillEnv(q)
+    // the pilot's aim, for a machine flown by it; nobody else's
+    if (driven && e === active && e.v.view.aim) {
+      aimNow.yaw = cam.yaw
+      aimNow.pitch = cam.pitch
+      env.aim = aimNow
+    } else env.aim = null
     let sub = Math.min(MAX_SUB, Math.max(1, Math.ceil(dt / SUBSTEP)))
     const h = dt / sub
     env.dt = h
@@ -462,6 +617,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     const rz = fx
     const feel = SURFACE_FEEL[s.surface]
 
+    if (v.id === 'ship') return
     if (v.id === 'heli') {
       // downwash: a ring of dust thrown outward under the disc, and only
       // close enough to the ground for there to be anything to throw
@@ -544,6 +700,9 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
   ) => {
     const e = byId.get(v.id)
     if (!e || active) return
+    // climbing into one on the physgun, frozen in the air or on its roof,
+    // rights it where it is first
+    if (e.carry) handBack(e)
     active = e
     seat = which
     mountT = MOUNT_S
@@ -578,10 +737,14 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     if (!active) return null
     const e = active
     const s = e.step
-    // you may not step out of something that is flying — unless you are not
-    // the one flying it, in which case it is the pilot's problem and stepping
-    // out is still a bad idea, so it is refused for both chairs
-    if (e.v.id === 'heli' && s && (!s.grounded || s.altitude > 1.2)) return null
+    /* Getting out is always allowed. It used to be refused while a helicopter
+       or the ship was off the ground ("land first"), which is a trap the
+       moment the machine cannot be landed: a ship left coasting round the
+       planet had nobody able to stop it and nobody able to leave it. Out of
+       something flying is an ejection: the scene floats the walker beside it
+       (`airborne`), a helicopter left without a pilot comes down on its own
+       physics, and the ship keeps its engines up and holds station */
+    const airborne = !!s && (!s.grounded || s.altitude > 1.2)
     fillEnv(q)
     env.dt = SUBSTEP
     const out = new THREE.Vector3()
@@ -594,7 +757,178 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     active = null
     seat = 0
     mountT = 0
-    return { x: out.x, z: out.z, feetY, yaw: cam.yaw, pitch: cam.pitch }
+    return { x: out.x, z: out.z, feetY: airborne ? Math.max(feetY, e.v.root.position.y) : feetY, yaw: cam.yaw, pitch: cam.pitch, airborne }
+  }
+
+  /* ------------------------------------------------------------- carry -- */
+
+  /** seconds, for the claim's throttle; advanced by tick */
+  let clock = 0
+  /** the last env the fleet was ticked with, for a hand-back outside tick */
+  let lastQ: FleetEnvQueries | null = null
+  const cPos = new THREE.Vector3()
+  const cQuat = new THREE.Quaternion()
+  const cLin = new THREE.Vector3()
+  const cAng = new THREE.Vector3()
+  const cUp = new THREE.Vector3()
+  const cEul = new THREE.Euler(0, 0, 0, 'YXZ')
+  const rayO = new THREE.Vector3()
+  const rayD = new THREE.Vector3()
+  const invQ = new THREE.Quaternion()
+
+  const indexOf = (e: Entry) => entries.indexOf(e)
+  const handOf = (e: Entry) => netState?.hand?.[indexOf(e)] ?? 0
+
+  /** nobody in it, nobody else's, and ours to take */
+  const grabbable = (e: Entry) => {
+    if (e === active || e.net || e.heldRemote) return false
+    const t = netState?.taken[indexOf(e)]
+    if (t && (t[0] || t[1])) return false
+    return handOf(e) !== 2
+  }
+
+  /** heading of a whole pose, the walk's convention (0 faces -Z) */
+  const yawOf = (q: THREE.Quaternion) => {
+    cUp.set(0, 0, -1).applyQuaternion(q)
+    return Math.atan2(-cUp.x, -cUp.z)
+  }
+
+  /** back to its own physics: righted onto its springs where it stands.
+      `settle` false for one in another level than ours, whose ground this
+      env is not: it is righted in place and settles when somebody is there */
+  const handBack = (e: Entry, settle = true) => {
+    const c = e.carry
+    const wasRemote = e.heldRemote
+    e.carry = null
+    e.heldRemote = false
+    if (c && c.sb.get(c.id)) c.sb.remove(c.id)
+    const r = e.v.root
+    const yaw = yawOf(r.quaternion)
+    r.rotation.set(0, yaw, 0)
+    if (lastQ && settle) {
+      fillEnv(lastQ)
+      env.dt = SUBSTEP
+      e.box.makeEmpty()
+      e.v.placeAt(r.position.x, r.position.z, yaw, env)
+    }
+    fitBox(e)
+    if (c && !wasRemote && handOf(e) === 1) netState?.claim?.(indexOf(e), false)
+  }
+
+  const pick = (eye: THREE.Vector3, dir: THREE.Vector3, within: number) => {
+    if (!root.visible) return null
+    let best: { key: string; t: number } | null = null
+    let bestT = within
+    for (const e of entries) {
+      if (e.carry || !grabbable(e) || !e.v.root.visible) continue
+      const v = e.v
+      // the ray in the machine's own frame, against its bounds: the hull's
+      // stations are a taper inside them, and a beam wants the body, not a
+      // pixel-perfect edge
+      invQ.copy(v.root.quaternion).invert()
+      rayO.copy(eye).sub(v.root.position).applyQuaternion(invQ)
+      rayD.copy(dir).applyQuaternion(invQ)
+      const lo = [-v.size.halfX, v.carry?.bottom ?? 0, -v.size.halfZ]
+      const hi = [v.size.halfX, v.size.height, v.size.halfZ]
+      const o = [rayO.x, rayO.y, rayO.z]
+      const d = [rayD.x, rayD.y, rayD.z]
+      let t0 = 0
+      let t1 = bestT
+      for (let a = 0; a < 3 && t0 <= t1; a++) {
+        if (Math.abs(d[a]) < 1e-9) {
+          if (o[a] < lo[a] || o[a] > hi[a]) t0 = Infinity
+          continue
+        }
+        let ta = (lo[a] - o[a]) / d[a]
+        let tb = (hi[a] - o[a]) / d[a]
+        if (ta > tb) [ta, tb] = [tb, ta]
+        if (ta > t0) t0 = ta
+        if (tb < t1) t1 = tb
+      }
+      if (t0 <= t1 && t0 < bestT) {
+        bestT = t0
+        best = { key: v.id, t: t0 }
+      }
+    }
+    return best
+  }
+
+  const take = (key: string, sb: Sandbox): Prop | null => {
+    const e = byId.get(key as VehicleId)
+    if (!e || !grabbable(e) || !sb.ready) return null
+    if (e.carry) return e.carry.sb === sb ? sb.get(e.carry.id) ?? null : null
+    // with a server in the picture the machine is taken only once it says
+    // so; the beam keeps sweeping meanwhile, and takes it on that frame
+    if (netState?.claim && handOf(e) !== 1) {
+      if (clock - e.asked > 0.5) {
+        e.asked = clock
+        netState.claim(indexOf(e), true)
+      }
+      return null
+    }
+    const v = e.v
+    const r = v.root
+    const id = sb.spawn(carryKind(v).id, r.position, {
+      quaternion: r.quaternion,
+      // nothing drawn: the prop is a pose for the machine to ride, and an
+      // empty group is what the sandbox interpolates between its slices
+      mesh: new THREE.Group(),
+      data: { vehicle: v.id },
+    })
+    const prop = sb.get(id)
+    if (!prop) return null
+    e.carry = { sb, id, quiet: 0, loose: 0 }
+    // its own mirror must go: a kinematic hull standing where the prop is
+    // would shove it out of itself on the first slice
+    e.box.makeEmpty()
+    hush(e)
+    return prop
+  }
+
+  /** one frame of a machine standing in the sandbox as a prop */
+  const carryTick = (e: Entry, dt: number) => {
+    const c = e.carry!
+    const p = c.sb.get(c.id)
+    if (!p) {
+      // cleaned up, undone or otherwise gone: the machine stays where it was
+      handBack(e)
+      return
+    }
+    if (p.mesh) {
+      cPos.copy(p.mesh.position)
+      cQuat.copy(p.mesh.quaternion)
+    } else c.sb.getTransform(c.id, cPos, cQuat)
+    const r = e.v.root
+    r.position.copy(cPos)
+    r.quaternion.copy(cQuat)
+    e.box.makeEmpty()
+    if (handOf(e) === 1) {
+      cEul.setFromQuaternion(cQuat, 'YXZ')
+      netState?.send?.(indexOf(e), cPos.x, cPos.y, cPos.z, cEul.y, cEul.x, cEul.z)
+    }
+    // settled the right way up after being let go: its own physics again
+    if (p.mode === 'dynamic' && !p.data.beam && !p.parked) {
+      c.sb.getVelocity(c.id, cLin, cAng)
+      const lin = cLin.length()
+      c.quiet = lin < 0.35 && cAng.length() < 0.35 ? c.quiet + dt : 0
+      c.loose += dt
+      const upright = cUp.set(0, 1, 0).applyQuaternion(cQuat).y > 0.9
+      // a boat bobbing on the swell is never quite still
+      if (upright && (c.quiet > 0.6 || (c.loose > 6 && lin < 1.5 && cAng.length() < 0.8))) handBack(e)
+    } else {
+      c.quiet = 0
+      c.loose = 0
+    }
+  }
+
+  /** one frame of a machine somebody else has on their physgun */
+  const heldTick = (e: Entry, p: NetPose) => {
+    e.heldRemote = true
+    const r = e.v.root
+    r.position.set(p.x, p.y, p.z)
+    r.quaternion.setFromEuler(cEul.set(p.pitch, p.yaw, p.roll, 'YXZ'))
+    e.box.makeEmpty()
+    hush(e)
   }
 
   /* --------------------------------------------------------------- tick -- */
@@ -651,8 +985,13 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
 
     if (!o.outdoors) {
       // level 0: the machines are still there, they are just not anywhere the
-      // player can reach. Freeze them rather than paying for them
-      for (const e of entries) hush(e)
+      // player can reach. Freeze them rather than paying for them, and put
+      // anything on a physgun back on its wheels: its prop is in the sandbox
+      // of the level being left
+      for (const e of entries) {
+        hush(e)
+        if (e.carry) handBack(e)
+      }
       effects.update(dt)
       return result
     }
@@ -662,7 +1001,66 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     env.keys = o.keys
     env.frozen = o.frozen
 
+    clock += dt
+    lastQ = o.env
+    hereNow = o.env.level ?? ''
     for (const e of entries) {
+      // which level it is in: ours if we are in it, the pose's if somebody
+      // else is driving or holding it, else wherever it was left
+      if (e === active) e.level = hereNow
+      else if (e.net) e.level = levelAt(e.net.x, e.net.y, e.net.z)
+      // a prop in the sandbox of a level we have left: out of it, as it is
+      if (e.carry && e.level !== hereNow) handBack(e, false)
+      if (e.carry) {
+        carryTick(e, dt)
+        continue
+      }
+      // an order waiting on the server: placed the moment it is ours, given
+      // up if the answer does not come
+      if (e.order) {
+        if (handOf(e) === 1) {
+          placeOrder(e, e.order.x, e.order.z, e.order.yaw)
+          e.order = null
+        } else if (clock - e.order.t > 3) e.order = null
+      }
+      // just placed by an order: say where, for long enough that everybody
+      // hears it, then let it go
+      if (e.placedUntil > 0 && handOf(e) === 1) {
+        const r = e.v.root
+        netState?.send?.(indexOf(e), r.position.x, r.position.y, r.position.z, e.v.yaw, e.v.pitch, e.v.roll)
+        if (clock > e.placedUntil) {
+          e.placedUntil = -1
+          e.asked = clock
+          netState?.claim?.(indexOf(e), false)
+        }
+      } else if (e.placedUntil > 0 && !netState?.claim) e.placedUntil = -1
+      // a claim the server granted after the beam had moved on: give it back
+      if (handOf(e) === 1 && !e.order && e.placedUntil < 0 && clock - e.asked > 2) {
+        e.asked = clock
+        netState?.claim?.(indexOf(e), false)
+      }
+      const held = e.net !== null && (netState?.hand?.[indexOf(e)] ?? 0) === 2
+      if (e.level !== hereNow) {
+        // a world away: not drawn, not heard, not offered, nothing to bump
+        // into. A pose from the wire is still followed (netStep is a copy),
+        // so it is where its driver left it when we get there
+        e.v.root.visible = false
+        hush(e)
+        if (held) heldTick(e, e.net!)
+        else {
+          if (e.heldRemote) handBack(e, false)
+          if (e.net) netStep(e, dt, e.net, o.env)
+        }
+        e.box.makeEmpty()
+        continue
+      }
+      e.v.root.visible = true
+      if (held) {
+        heldTick(e, e.net!)
+        continue
+      }
+      // let go on somebody else's screen: settled where they left it
+      if (e.heldRemote) handBack(e)
       const inside = e === active
       const driven = inside && seat === 0
       const p = e.net
@@ -736,7 +1134,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
       // The passenger gets it too — it is the one control in the cabin that
       // was never the driver's alone
       const hornNow = !o.frozen && o.keys.has('KeyX')
-      if (hornNow && !hornHeld && v.id !== 'heli') vehicleHorn()
+      if (hornNow && !hornHeld && v.id !== 'heli' && !v.spacecraft) vehicleHorn()
       hornHeld = hornNow
       if (s) {
         cam.apply(o.camera, dt, v, s, env, o.fovBase)
@@ -765,6 +1163,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
   /** which chair this machine would put a walker in, or -1 if it is full.
       The wheel first: a machine with nobody in it is one you drive */
   const freeSeat = (e: Entry) => {
+    if (handOf(e) === 2) return -1
     const t = netState?.taken[entries.indexOf(e)]
     if (!t) return 0
     if (!t[0]) return 0
@@ -783,11 +1182,14 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     because crouching is what brought the eye down far enough. The boat and the
     helicopter hid it by reaching 5.
   */
+  /** the level the fleet was last ticked in (see the header) */
+  let hereNow = ''
   const nearest = (p: THREE.Vector3): Vehicle | null => {
     let best: Vehicle | null = null
     let bestD = Infinity
     for (const e of entries) {
       if (e === active) continue
+      if (e.level !== hereNow) continue
       // a machine with both chairs full is scenery, however close you stand
       if (freeSeat(e) < 0) continue
       const q = e.v.root.position
@@ -808,8 +1210,14 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     env.frozen = true
     for (const e of entries) {
       const h = HOME[e.v.id]
+      if (e.carry) handBack(e)
       e.box.makeEmpty()
       e.v.placeAt(h.x, h.z, h.yaw, env)
+      e.level = q.level ?? ''
+      // drawn now, not on the next tick: the boot's warm-up draws the fleet
+      // straight after this, and a machine a tick before this one hid (it
+      // was nowhere yet) would have its programs linked mid-walk instead
+      e.v.root.visible = true
       // a few slices of settling so a machine is resting on its springs the
       // first time anyone lays eyes on it rather than dropping onto them
       for (let i = 0; i < 40; i++) e.v.update(env, false)
@@ -819,24 +1227,23 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     env.frozen = false
   }
 
-  const recall = (id: VehicleId, p: THREE.Vector3, q: FleetEnvQueries) => {
-    const e = byId.get(id)
-    // ...and you may not summon a machine out from under the person driving
-    // it. It is theirs until they park it
-    if (!e || e === active || e.net) return false
-    fillEnv(q)
-    env.dt = SUBSTEP
-    e.box.makeEmpty()
-    const needWater = id === 'boat'
+  /** somewhere this machine may stand (or float) near `c`, tried outward
+      from it: rings from `r0` out, each place checked for water (a boat needs
+      it, the rest refuse it), clearance and a slope it will not slide off,
+      and kept `keep` clear of `from` so it never lands on whoever called it */
+  const findSpot = (e: Entry, cx: number, cz: number, r0: number, from: THREE.Vector3, keep: number, q: FleetEnvQueries) => {
+    // a boat wants water, where there is any: on a level with no sea (the
+    // Moon) it is set down on the ground like the rest, and just sits there
+    const needWater = e.v.id === 'boat' && q.waterY !== undefined
     const clearR = e.v.size.halfZ + 1.5
-    // spiral outward from the player: near enough to walk to, far enough not
-    // to land on their head
-    for (let ring = 0; ring < 9; ring++) {
-      const r = 9 + ring * 7
-      for (let i = 0; i < 12; i++) {
-        const a = (i / 12) * Math.PI * 2 + ring * 0.37
-        const x = p.x + Math.cos(a) * r
-        const z = p.z + Math.sin(a) * r
+    for (let ring = 0; ring < 10; ring++) {
+      const r = ring === 0 ? r0 : r0 + ring * 6
+      const n = r < 0.5 ? 1 : 12
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + ring * 0.37
+        const x = cx + Math.cos(a) * r
+        const z = cz + Math.sin(a) * r
+        if (Math.hypot(x - from.x, z - from.z) < keep) continue
         const g = q.groundAt(x, z)
         const deep = q.waterY !== undefined ? q.waterY - g : -1
         if (needWater ? deep < 1.6 : deep > 0.35) continue
@@ -847,15 +1254,66 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
           Math.abs(q.groundAt(x, z + 3) - g), Math.abs(q.groundAt(x, z - 3) - g),
         )
         if (!needWater && tilt > 1.6) continue
-        // face it back toward whoever called it
-        const yaw = Math.atan2(-(p.x - x), -(p.z - z))
-        e.v.placeAt(x, z, yaw, env)
-        fitBox(e)
-        return true
+        return { x, z }
       }
     }
+    return null
+  }
+
+  const recall = (id: VehicleId, p: THREE.Vector3, q: FleetEnvQueries) => {
+    const e = byId.get(id)
+    // ...and you may not summon a machine out from under the person driving
+    // it. It is theirs until they park it
+    if (!e || e === active || e.net) return false
+    if (e.carry) handBack(e)
+    fillEnv(q)
+    env.dt = SUBSTEP
+    e.box.makeEmpty()
+    // near enough to walk to, far enough not to land on their head
+    const at = findSpot(e, p.x, p.z, 9, p, 6, q)
+    if (at) {
+      // face it back toward whoever called it
+      e.v.placeAt(at.x, at.z, Math.atan2(-(p.x - at.x), -(p.z - at.z)), env)
+      e.level = q.level ?? ''
+    }
     fitBox(e)
-    return false
+    return !!at
+  }
+
+  /** put an ordered machine where it is going, and say so */
+  const placeOrder = (e: Entry, x: number, z: number, yaw: number) => {
+    if (e.carry) handBack(e)
+    if (lastQ) {
+      fillEnv(lastQ)
+      env.dt = SUBSTEP
+      e.box.makeEmpty()
+      e.v.placeAt(x, z, yaw, env)
+      e.level = lastQ.level ?? ''
+    }
+    fitBox(e)
+    hush(e)
+    e.placedUntil = clock + 0.6
+  }
+
+  const order = (id: VehicleId, at: THREE.Vector3, from: THREE.Vector3, q: FleetEnvQueries) => {
+    const e = byId.get(id)
+    if (!e) return 'nowhere' as const
+    if (e === active || e.net || e.heldRemote || freeSeat(e) !== 0) return 'busy' as const
+    const t = netState?.taken[indexOf(e)]
+    if (t && (t[0] || t[1])) return 'busy' as const
+    lastQ = q
+    const spot = findSpot(e, at.x, at.z, 0, from, e.v.size.halfZ + 2.5, q)
+    if (!spot) return 'nowhere' as const
+    // side-on to whoever ordered it, so it is presented rather than aimed
+    const yaw = Math.atan2(-(from.x - spot.x), -(from.z - spot.z)) + Math.PI / 2
+    if (netState?.claim && handOf(e) !== 1) {
+      e.order = { x: spot.x, z: spot.z, yaw, t: clock }
+      e.asked = clock
+      netState.claim(indexOf(e), true)
+      return 'pending' as const
+    }
+    placeOrder(e, spot.x, spot.z, yaw)
+    return 'placed' as const
   }
 
   const placeFromNet = (
@@ -867,10 +1325,12 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
   ) => {
     const e = byId.get(id)
     if (!e || e === active) return
+    if (e.carry) handBack(e)
     fillEnv(q)
     env.dt = SUBSTEP
     e.box.makeEmpty()
     e.v.placeAt(x, z, yaw, env)
+    e.level = q.level ?? ''
     fitBox(e)
   }
 
@@ -888,6 +1348,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
   /* ------------------------------------------------------------ upkeep -- */
 
   const sleep = () => {
+    for (const e of entries) if (e.carry) handBack(e)
     if (active) {
       if (seat === 0) active.v.dismount()
       active = null
@@ -923,10 +1384,37 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     toggleView: () => {
       cam.cockpit = !cam.cockpit
     },
+    puff: (x, y, z, r, color = 0xcdbf9f) => {
+      dustColor.setHex(color)
+      const n = 10 + Math.round(r * 6)
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + fxRand() * 0.5
+        const sp = 2.2 + fxRand() * 2.4
+        effects.emit(
+          x + Math.cos(a) * r * 0.8, y + 0.1, z + Math.sin(a) * r * 0.8,
+          Math.cos(a) * sp, 0.5 + fxRand() * 0.9, Math.sin(a) * sp,
+          dustColor, 0.42, 0.45 + r * 0.25, 2.2, 0.55 + fxRand() * 0.3, 2.6, 0.25,
+        )
+      }
+    },
     turn: (dx, dy, sign, sens) => cam.turn(dx, dy, sign, sens),
     nearest,
+    pick,
+    take,
     enter,
     takeSeat,
+    warpRiding: (x, y, z, yaw) => {
+      const v = active?.v
+      if (!v?.warp) return false
+      v.warp(x, y, z, yaw)
+      return true
+    },
+    shiftRiding: (dx, dy, dz) => {
+      const v = active?.v
+      if (!v?.shift) return false
+      v.shift(dx, dy, dz)
+      return true
+    },
     leave,
     setNet: (state) => {
       netState = state
@@ -937,6 +1425,7 @@ export function buildFleet(opts: BuildOpts): VehicleFleet {
     tick,
     spawnAll,
     recall,
+    order,
     placeFromNet,
     where,
     setDay: (day, night, fog, sunEl) => {

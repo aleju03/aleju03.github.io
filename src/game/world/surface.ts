@@ -18,14 +18,24 @@
   the branch.
 
   The patterns are deliberately analytic — bands, grids, staggered courses —
-  with a single noise call shared between them for grain. Analytic detail
-  survives distance without shimmering (it fades on the same fwidth the eye
-  does), and one hash-noise per fragment is a cost a cold iGPU can carry across
-  a whole city block. Everything modulates the existing lit colour rather than
-  replacing it, so fog, tone mapping and the day cycle all still apply.
+  with a single noise call shared between them for grain, and one hash-noise
+  per fragment is a cost a cold iGPU can carry across a whole city block.
+  Everything modulates the existing lit colour rather than replacing it, so
+  fog, the post pass's tone mapping and the day cycle all still apply.
+
+  The coordinates are snapped to the world texel grid (`render/texel.ts`,
+  sixteen to a unit) before any pattern reads them, which is what makes the
+  look read as pixel art rather than as a vector drawing rendered small: a
+  mortar joint is one texel with a hard edge, a brick is an exact block of
+  them. Where a texel shrinks under a pixel each line gives way to its own
+  coverage (`sfFar`, measured on the unsnapped coordinate), so distance fades
+  a pattern to its average instead of crawling. New treatments must read
+  `u`/`v` after the snap and draw joints with `sfLine`, or they will be the
+  one smooth surface in a world of texels.
 */
 
 import type * as THREE from 'three'
+import { TEXELS_PER_UNIT } from '../render/texel'
 
 export const SURF = {
   /** organic, or anything that would rather be left alone */
@@ -63,9 +73,27 @@ export const surfaceVertHead = (fixed?: number) => /* glsl */ `
   varying vec3 vWNrm;
 `
 
-/** goes after <begin_vertex>, so it sees the final (swayed) position */
-export const surfaceVertBody = (fixed?: number) => /* glsl */ `
-  vSurf = ${fixed === undefined ? 'aSurf' : `float(${fixed})`};
+/**
+ * Goes after <begin_vertex>, so it sees the final (swayed) position.
+ *
+ * The chunk soup's pattern is read in *object* space, not world space. A chunk
+ * is built in world coordinates under an identity transform, so for anything
+ * standing the two are the same number; the difference is everything that
+ * leaves: a felled trunk, a wall panel off a collapsing building. Those keep
+ * their rest-world coordinates in the geometry and are moved by their model
+ * matrix, so their brick courses and bark stay painted on them as they
+ * tumble, instead of the pattern swimming across a moving face and swapping
+ * projection every time it turns past forty-five degrees. The house's fixed
+ * treatment keeps world space: its GLB nodes carry transforms of their own.
+ */
+export const surfaceVertBody = (fixed?: number) => fixed === undefined
+  ? /* glsl */ `
+  vSurf = aSurf;
+  vWPos = transformed;
+  vWNrm = normalize(objectNormal);
+`
+  : /* glsl */ `
+  vSurf = float(${fixed});
   vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
   vWNrm = normalize(mat3(modelMatrix) * objectNormal);
 `
@@ -74,6 +102,14 @@ export const SURFACE_FRAG_HEAD = /* glsl */ `
   varying float vSurf;
   varying vec3 vWPos;
   varying vec3 vWNrm;
+
+  // how many texels of the world grid one screen pixel spans here. Set once
+  // per fragment from the unquantized coordinate, because the quantized one
+  // is a staircase whose derivative is zero or a whole texel
+  float sfFoot;
+  // 0 up close, 1 where a texel is smaller than a pixel: from here on every
+  // pattern gives way to its own average rather than aliasing
+  float sfFar;
 
   float sfHash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -85,12 +121,15 @@ export const SURFACE_FRAG_HEAD = /* glsl */ `
     return mix(mix(sfHash(i), sfHash(i + vec2(1.0, 0.0)), u.x),
                mix(sfHash(i + vec2(0.0, 1.0)), sfHash(i + vec2(1.0, 1.0)), u.x), u.y);
   }
-  // a line of width w every p units, antialiased against the pixel footprint
-  // so a brick course fades out at distance instead of turning into moire
+  // a line of half-width w every p units, drawn on the texel grid: x arrives
+  // snapped to a texel centre, so a joint is a whole number of texels thick
+  // (one, for anything thinner than a texel) with a hard edge, the way it
+  // would be painted. Past the point where a texel is under a pixel it
+  // becomes its own coverage, so a brick course fades instead of crawling
   float sfLine(float x, float p, float w) {
     float d = abs(fract(x / p) - 0.5) * p;
-    float aa = fwidth(x) + 0.004;
-    return 1.0 - smoothstep(w - aa, w + aa, d);
+    float hw = max(w, 0.5 / ${TEXELS_PER_UNIT.toFixed(1)});
+    return mix(step(d, hw), min(1.0, 2.0 * w / p), sfFar);
   }
 `
 
@@ -103,7 +142,14 @@ export const SURFACE_FRAG_BODY = /* glsl */ `
     bool flat_ = an.y > 0.6;
     float u = flat_ ? vWPos.x : (an.x > an.z ? vWPos.z : vWPos.x);
     float v = flat_ ? vWPos.z : vWPos.y;
-    float grain = sfNoise(vec2(u, v) * 3.1);
+    // onto the world texel grid (render/texel.ts): every pattern below is
+    // then evaluated once per texel, and a wall is made of square texels
+    sfFoot = max(fwidth(u), fwidth(v)) * ${TEXELS_PER_UNIT.toFixed(1)};
+    sfFar = smoothstep(0.6, 1.4, sfFoot);
+    u = (floor(u * ${TEXELS_PER_UNIT.toFixed(1)}) + 0.5) / ${TEXELS_PER_UNIT.toFixed(1)};
+    v = (floor(v * ${TEXELS_PER_UNIT.toFixed(1)}) + 0.5) / ${TEXELS_PER_UNIT.toFixed(1)};
+    // texel-scale grain, which is the thing that aliases first
+    float grain = mix(sfNoise(vec2(u, v) * 3.1), 0.5, sfFar * 0.7);
     float k = 1.0;
 
     if (vSurf < 1.5) {
@@ -131,7 +177,8 @@ export const SURFACE_FRAG_BODY = /* glsl */ `
     } else if (vSurf < 5.5) {
       // asphalt: coarse grain, and two polished tracks where the wheels go
       float polish = sfLine(u, 3.2, 0.6) * 0.06;
-      k = 1.0 + (grain - 0.5) * 0.2 + (sfNoise(vec2(u, v) * 11.0) - 0.5) * 0.1 + polish;
+      k = 1.0 + (grain - 0.5) * 0.2
+        + (sfNoise(vec2(u, v) * 11.0) - 0.5) * 0.1 * (1.0 - sfFar) + polish;
     } else if (vSurf < 6.5) {
       // paving: 1.4 slabs with a joint, each one its own shade of grey
       float joint = max(sfLine(u, 1.4, 0.028), sfLine(v, 1.4, 0.028));
@@ -139,7 +186,7 @@ export const SURFACE_FRAG_BODY = /* glsl */ `
       k = (1.0 + (slab - 0.5) * 0.11 + (grain - 0.5) * 0.07) * (1.0 - joint * 0.28);
     } else if (vSurf < 7.5) {
       // bark: fibre running up the trunk, and a slow swell around it
-      float fibre = sfNoise(vec2(u * 9.0, v * 1.1));
+      float fibre = mix(sfNoise(vec2(u * 9.0, v * 1.1)), 0.5, sfFar * 0.7);
       k = 1.0 + (fibre - 0.5) * 0.3 + (sfNoise(vec2(u * 2.2, v * 0.4)) - 0.5) * 0.16;
     } else if (vSurf < 8.5) {
       // plank: boards with a groove between, and grain along them

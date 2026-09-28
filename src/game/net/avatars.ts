@@ -1,8 +1,9 @@
 import * as THREE from 'three'
 import {
-  DESIGN_CROWN, DESIGN_EYE, buildPlayerBody, type PlayerPose, type PlayerRig,
+  CABIN_FIT, DESIGN_CROWN, DESIGN_EYE, buildPlayerBody, type PlayerPose, type PlayerRig,
 } from '../player/playerBody'
 import { unpackLook } from '../player/look'
+import { emoteDef } from '../player/emotes'
 import type { RagdollEnv } from '../player/ragdoll'
 import { makeCollisionSet, type CollisionSet } from '../physics/collision'
 import { canvasTexture } from '../core/textures'
@@ -52,6 +53,12 @@ import type { RemotePlayer, RemoteWorld } from './remotePlayers'
   the two playbacks disagree. Hung off the seat, they are welded to the
   bodywork exactly as the local player's rig is, and every attitude the
   machine has is theirs for free.
+
+  A physgun hold is the one time a ragdoll here is *not* left to itself
+  (`net/grab.ts`). A body somebody else is holding follows the chest its
+  owner streams under the `held` bit; a body this client's own beam holds is
+  `claim`ed, pinned to the beam end as a prediction, and left alone by the
+  stream until the release has had time to come back round.
 */
 
 export interface AvatarEnv {
@@ -69,6 +76,9 @@ export interface AvatarEnv {
 }
 
 export interface RemoteAvatars {
+  /** compile name/badge sprites under the covered world warm-up */
+  stage: (camera: THREE.Camera) => void
+  unstage: () => void
   root: THREE.Group
   /** draw one frame of whatever the store currently believes */
   update: (world: RemoteWorld, dt: number, env: AvatarEnv) => void
@@ -79,8 +89,24 @@ export interface RemoteAvatars {
       canvas the size of the word. A body that has not spawned yet needs
       neither — `update` reads the roster on the way in */
   reskin: (id: PlayerId, entry: { name: string; admin: boolean; look?: string }) => void
+  /** the body drawn for a player, or null before it has spawned: what the
+      walker's contact pass sizes their cylinder from (net/shove.ts) */
+  rigOf: (id: PlayerId) => PlayerRig | null
+  /** this client's physgun has taken (on) or let go of (off) that body:
+      see `Avatar.claimed` */
+  claim: (id: PlayerId, on: boolean) => void
   dispose: () => void
 }
+
+/** how long after this client lets go of a body the victim's own stream
+    is still ignored: a release has to reach them and their next snapshots
+    come back, two ticks behind, before those snapshots mean anything */
+const CLAIM_TAIL_MS = 1500
+/** a body held by somebody else's beam follows the victim's chest this hard */
+const FOLLOW_K = 0.35
+/** a copy's emote this far off its owner's clock is restarted onto it: the
+    same emote begun again, or a copy that started late */
+const EMOTE_SLIP = 0.5
 
 /** past this a body is a pixel and a name plate is unreadable */
 const CULL_DIST = 190
@@ -113,7 +139,7 @@ const BUBBLE_UP = BADGE_UP + 0.36
     hangs the body from its eye so the origin is the face. Everything floating
     over the head moves with it or a driver's name ends up on the ceiling */
 const STAND_TOP = DESIGN_CROWN
-const SEAT_TOP = DESIGN_CROWN - DESIGN_EYE
+const SEAT_TOP = (DESIGN_CROWN - DESIGN_EYE) * CABIN_FIT
 
 /** one speaker glyph, shared by every badge in the world: a cone and two
     arcs, drawn once. Sprite materials still get their own instance so each
@@ -221,11 +247,30 @@ interface Avatar {
   seat: THREE.Object3D | null
   /** the crown height the tags over this head are currently stacked on */
   top: number
+  /** this client's own physgun is pinning the body (net/grab.ts), or let
+      go of it before this time (ms): the prediction is in charge, so the
+      victim's stream is neither followed nor allowed to re-flop it */
+  claimed: boolean
+  claimUntil: number
+  /** held by somebody else's beam: the chest is pinned to this, the
+      victim's own streamed chest */
+  follow: THREE.Vector3
+  following: boolean
 }
 
 export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   const root = new THREE.Group()
   root.userData.dynamic = true // people move; never freeze this subtree
+  // A player first seen through a portal may also be the first visible
+  // nameplate. Keep its mapped sprite program warm even in an empty lobby.
+  const warmMap = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1)
+  warmMap.colorSpace = THREE.SRGBColorSpace
+  warmMap.needsUpdate = true
+  const warm = makeSprite(warmMap, 0.01, 1)
+  warm.visible = false
+  warm.frustumCulled = false
+  warm.userData.dynamic = true
+  root.add(warm)
   const avatars = new Map<PlayerId, Avatar>()
   // reused every frame across every body — a crowd must not feed the GC
   const pose: PlayerPose = {
@@ -239,6 +284,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   /** a seated body's group position is local to the machine, so the distance
       cull has to ask the matrix rather than read the vector */
   const seatWorld = new THREE.Vector3()
+  const chestOf = (a: Avatar) => Math.max(0, a.rig.limbs.findIndex((l) => l.name === 'chest'))
 
   const namePlate = (text: string, admin: boolean) =>
     plaqueTexture(text, {
@@ -271,6 +317,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       nameText: player.name, nameAdmin: player.admin, look: player.look,
       bubble: null, bubbleTex: null, bubbleUntil: 0,
       badgeK: 0, wasDown: false, clock: 0, seat: null, top: STAND_TOP,
+      claimed: false, claimUntil: 0, follow: new THREE.Vector3(), following: false,
     }
     stackTags(a)
     return a
@@ -290,6 +337,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   const reseat = (a: Avatar, seat: THREE.Object3D | null) => {
     if (a.seat === seat) return
     a.seat = seat
+    a.following = false
     a.group.parent?.remove(a.group)
     if (seat) {
       seat.add(a.group)
@@ -303,7 +351,8 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       // other way, exactly as CrtScene turns the local body round
       a.group.rotation.set(0, Math.PI, 0)
       a.rig.reset()
-      a.rig.sit()
+      // only the fleet's seats come through here, and each says its own fit
+      a.rig.sit(seat.userData.fit ?? CABIN_FIT, seat.name === 'passengerSeat', seat.userData.room ?? null)
     } else {
       root.add(a.group)
       a.group.rotation.set(0, 0, 0)
@@ -347,6 +396,13 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
 
   return {
     root,
+    stage: (camera) => {
+      camera.updateMatrixWorld()
+      warm.position.set(0, 0, -4).applyMatrix4(camera.matrixWorld)
+      warm.visible = true
+      warm.updateMatrix()
+    },
+    unstage: () => { warm.visible = false },
 
     update(world, dt, worldEnv) {
       const now = performance.now()
@@ -379,6 +435,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
           const seatVisible = seatWorld.distanceToSquared(worldEnv.eyePos) < CULL_DIST_SQ
           a.group.visible = seatVisible
           if (!seatVisible) continue
+          a.rig.seatedTick(dt)
           const to = player.speaking ? 1 : 0
           a.badgeK += (to - a.badgeK) * (1 - Math.exp(-14 * dt))
           const lit = a.badgeK > 0.02
@@ -399,14 +456,35 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
         // streamed: while it runs, the verlet sim owns the body's placement
         // and the network position is ignored (the rig's own contract). The
         // get-up re-seats the group on whatever the network says by then.
+        const claimed = a.claimed || now < a.claimUntil
         if (player.down && !a.wasDown) {
-          a.rig.flop(player.vx, player.vy + 1.6, player.vz)
+          // a body this client's beam already knocked limp is not thrown again
+          if (!a.rig.down) a.rig.flop(player.vx, player.vy + 1.6, player.vz)
         } else if (!player.down && a.wasDown && a.rig.down) {
+          a.group.position.set(player.x, player.y, player.z)
+          a.group.updateMatrixWorld(true)
+          a.rig.beginRecover()
+        } else if (!player.down && !a.wasDown && !claimed && a.rig.ragdolling && a.rig.settled) {
+          // limp here and standing there: a grab this client made that the
+          // victim refused (god mode, a seat taken a moment earlier). Their
+          // stream is the truth, so get up onto it
           a.group.position.set(player.x, player.y, player.z)
           a.group.updateMatrixWorld(true)
           a.rig.beginRecover()
         }
         a.wasDown = player.down
+        // on the end of somebody else's physgun (net/grab.ts): while the
+        // victim says so, their snapshot is their chest, and this copy is
+        // pulled along it rather than left to tumble where it fell
+        const follow = player.down && player.held && !claimed && a.rig.ragdolling
+        if (follow) {
+          a.follow.set(player.x, player.y, player.z)
+          if (!a.following) a.rig.grab(chestOf(a), a.follow, FOLLOW_K)
+          a.following = true
+        } else if (a.following) {
+          a.rig.grab(chestOf(a), null)
+          a.following = false
+        }
 
         if (!a.rig.ragdolling) {
           if (player.snapped) a.rig.face(player.yaw)
@@ -432,7 +510,26 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
         pose.vz = player.vz
         pose.vy = player.vy
         pose.landing = player.landing
+        pose.fly = player.flying ? 1 : 0
+        // pointing and emotes: the arm is a pose field like the rest; an
+        // emote is started once and left to the rig, and restarted only when
+        // the stream says a different one, or the same one begun again
+        pose.point = player.pointing ? 1 : 0
+        pose.pointYaw = player.pointYaw
+        pose.pointPitch = player.pointPitch
+        // (a whole-body one is never restarted under somebody on the move:
+        // the copy lets go of it by itself the moment they walk off, a beat
+        // before the stream says so)
+        const def = emoteDef(player.emote)
+        const want = def && !(def.full && (player.gait > 0.1 || !player.grounded)) ? def.id : 0
+        if (want !== a.rig.acting) {
+          a.rig.act(want, player.emoteAge)
+        } else if (want && Math.abs(a.rig.actAge - player.emoteAge) > EMOTE_SLIP) {
+          a.rig.act(want, player.emoteAge)
+        }
         env.groundY = worldEnv.groundAt(player.x, player.z)
+        // a tumble follows the ground under each limb, like the local one
+        env.groundAt = worldEnv.groundAt
         a.rig.update(pose, env)
 
         // --- the badge -----------------------------------------------------
@@ -476,6 +573,21 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       a.nameTex = tex
     },
 
+    rigOf(id) {
+      return avatars.get(id)?.rig ?? null
+    },
+
+    claim(id, on) {
+      const a = avatars.get(id)
+      if (!a) return
+      if (on && a.following) {
+        a.rig.grab(chestOf(a), null)
+        a.following = false
+      }
+      if (!on && a.claimed) a.claimUntil = performance.now() + CLAIM_TAIL_MS
+      a.claimed = on
+    },
+
     say(id, text) {
       const a = avatars.get(id)
       if (!a) return
@@ -494,6 +606,8 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     },
 
     dispose() {
+      warm.material.dispose()
+      warmMap.dispose()
       for (const id of [...avatars.keys()]) despawn(id)
       badgeTex?.dispose()
       badgeTex = null

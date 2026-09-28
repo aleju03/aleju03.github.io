@@ -2,10 +2,11 @@ import type { MeshBuilder } from '../core/geometry'
 import { noStand } from '../physics/collision'
 import type { District } from './settlements'
 import type { InteriorRect } from './interiors'
+import { suburbHouse } from './houses'
 import { SURF, type SurfaceId } from './surface'
 import {
-  BARREL, BODY, BOX, CONE4, CYL12, GAMBREL, GLASS_DARK, PRISM, TOWER,
-  TUBE12, aabb, box, panel, pick, put, shaft, type BuildOut, type Lot,
+  BARREL, BODY, BOX, CONE4, CONE12, CYL12, GAMBREL, GLASS_DARK, PLANE, PRISM, TOWER,
+  TUBE12, aabb, box, flatRoof, fork, keepOut, panel, pick, put, roofSolids, shaft, strut, type BuildOut, type Lot,
 } from './kitbash'
 
 export type { BuildOut, Lot } from './kitbash'
@@ -48,36 +49,6 @@ export type { BuildOut, Lot } from './kitbash'
 
 /** how many window bays a wall of this length wants, and where each sits */
 const bays = (span: number, pitch: number) => Math.max(2, Math.floor(span / pitch))
-
-/**
- * A window grid up a flat face. `nx, nz` is the offset from the body centre
- * to the wall plane, `span` the length of that wall, `yaw` its outward
- * facing. Dark glass always goes into the solid pass, and a lit pane only
- * *adds* the emissive copy, so by day every window still reads as a window.
- */
-const grid = (
-  out: BuildOut, cx: number, cz: number,
-  nx: number, nz: number, span: number, yaw: number,
-  y0: number, storeys: number, storeyH: number,
-  w: number, h: number, pitch: number, litRate: number, rng: () => number,
-  dark = '#2a3138', lit = '#ffcf82',
-  skip?: (s: number, along: number) => boolean,
-) => {
-  const n = bays(span, pitch)
-  for (let s = 0; s < storeys; s++)
-    for (let c = 0; c < n; c++) {
-      const along = ((c + 0.5) / n - 0.5) * span * 0.86
-      if (skip?.(s, along)) continue
-      const ax = nx === 0 ? cx + along : cx + nx
-      const az = nz === 0 ? cz + along : cz + nz
-      const wy = y0 + s * storeyH
-      panel(out.solid, dark, ax, wy, az, w, h, yaw)
-      if (rng() < litRate) {
-        panel(out.glass, lit, ax + (nx ? Math.sign(nx) * 0.03 : 0), wy,
-          az + (nz ? Math.sign(nz) * 0.03 : 0), w, h, yaw)
-      }
-    }
-}
 
 /** the four wall planes of an axis-aligned body, as grid() wants them */
 const faces = (w: number, d: number) => [
@@ -123,82 +94,444 @@ const front = (lot: Lot) => {
   }
 }
 
+/* ------------------------------------------------------ facade grammar -- */
+
+/*
+  What stops a block of flats reading as a perforated carton is not more
+  windows, it is rhythm: panes grouped into pairs with a pier between the
+  groups, a ground floor that is a different thing from the storeys over it,
+  a top floor that is smaller again, and a line of stone at every sill that
+  the eye reads as a storey without counting panes. These are the verbs for
+  that. The one rule they keep is about cost: anything that reads on every
+  face is *one* box wrapped round the body (a course is 24 vertices whether
+  it is seen from one street or four), while anything only the front
+  deserves (brackets, piers, a fire escape, frames round the panes) is
+  stamped on the front and nowhere else.
+*/
+
+/** window centres along a wall `span` long: `group` 1 is an even run at
+    `pitch`, 2 is pairs and 3 is triples, each group standing apart from the
+    next by a pier a little wider than the pitch */
+const rhythm = (span: number, pitch: number, group: 1 | 2 | 3): number[] => {
+  const usable = span * 0.84
+  if (group === 1) {
+    const n = Math.max(2, Math.floor(span / pitch))
+    return Array.from({ length: n }, (_, i) => ((i + 0.5) / n - 0.5) * usable)
+  }
+  const inner = pitch * 0.62
+  const run = inner * (group - 1)
+  const n = Math.max(1, Math.floor(usable / (run + pitch * 1.2)))
+  const xs: number[] = []
+  for (let g = 0; g < n; g++) {
+    const gc = ((g + 0.5) / n - 0.5) * usable
+    for (let j = 0; j < group; j++) xs.push(gc + (j - (group - 1) / 2) * inner)
+  }
+  return xs
+}
+
+/**
+ * One storey of panes along one wall of an axis-aligned body (`nx, nz` from
+ * `faces()`). The dark pane goes into the solid pass and a lit copy into the
+ * glass pass on a roll, as everywhere else; `frame` puts a pale surround
+ * behind the pane, four vertices a window and the difference between a sash
+ * and a hole, so the callers only ask for it on the face that fronts the
+ * street.
+ */
+const paneRow = (
+  out: BuildOut, cx: number, cz: number, nx: number, nz: number, yaw: number,
+  xs: number[], y: number, w: number, h: number, litRate: number, rng: () => number,
+  frame?: string, skip?: (along: number) => boolean,
+) => {
+  const sx = Math.sign(nx)
+  const sz = Math.sign(nz)
+  for (const along of xs) {
+    if (skip?.(along)) continue
+    const ax = nx === 0 ? cx + along : cx + nx
+    const az = nz === 0 ? cz + along : cz + nz
+    if (frame) panel(out.solid, frame, ax - sx * 0.02, y, az - sz * 0.02, w + 0.5, h + 0.5, yaw)
+    panel(out.solid, '#2a3138', ax, y, az, w, h, yaw)
+    if (rng() < litRate) {
+      panel(out.glass, '#ffcf82', ax + sx * 0.03, y, az + sz * 0.03, w, h, yaw)
+    }
+  }
+}
+
+/** a band of stone wrapped round all four faces of a body in one box. It is
+    a whole box, not a ring, so the top course of a flat roof *is* the roof */
+const course = (
+  out: BuildOut, x: number, z: number, w: number, d: number,
+  cy: number, h: number, proud: number, hex: string, surf: SurfaceId = SURF.paving,
+) => box(out.solid, hex, x, cy, z, w + proud * 2, h, d + proud * 2, 0, surf)
+
+/**
+ * A timber water tank on a steel frame, the one object that says "city roof"
+ * from any distance: four legs, a deck, a staved barrel and a conical lid,
+ * with two hoops round it up close. It is a silhouette, so it builds on the
+ * outer ring too.
+ */
+const waterTank = (
+  out: BuildOut, x: number, y: number, z: number, r: number, rng: () => number,
+) => {
+  const legH = 2.4 + rng() * 1.2
+  const staves = pick(['#7a5a3e', '#6b4f38', '#86694a', '#5f5347'], rng())
+  const steel = '#3a3c3d'
+  for (const sx of [-1, 1])
+    for (const sz of [-1, 1]) {
+      box(out.solid, steel, x + sx * r * 0.7, y + legH / 2, z + sz * r * 0.7,
+        0.24, legH, 0.24, 0, SURF.none)
+    }
+  box(out.solid, steel, x, y + legH, z, r * 2.1, 0.24, r * 2.1, 0, SURF.paving)
+  const bh = r * 2.1
+  shaft(out.solid, staves, x, y + legH + 0.12, z, r, bh, r * 0.96, 12, 0, SURF.plank)
+  if (out.detailed) {
+    for (const t of [0.28, 0.72]) {
+      put(out.solid, TUBE12, steel, x, y + legH + 0.12 + bh * t, z, 0, 0, 0,
+        r * 2.04, 0.16, r * 2.04)
+    }
+  }
+  put(out.solid, CONE12, '#3b3834', x, y + legH + 0.12 + bh + 0.55, z, 0, 0, 0,
+    r * 2.14, 1.1, r * 2.14, SURF.shingle)
+}
+
+/**
+ * What stands on a flat roof: a stair bulkhead in one corner, often a water
+ * tank in the other, and near enough to see, a few condenser units and an
+ * aerial. Every one of them breaks the single straight line a flat-roofed
+ * block otherwise draws against the sky, which is most of what made the
+ * mid-rise ring read as a bar chart from the air. Kept a couple of units
+ * inside the parapet so nothing overhangs the collision box. `rng` places
+ * the silhouette and `dr` (a `fork` of it) the dressing, so the outer ring
+ * and the near one agree about where the tank is.
+ */
+const rooftop = (
+  out: BuildOut, x: number, z: number, w: number, d: number, top: number,
+  rng: () => number, dr: () => number, tank: number,
+) => {
+  const hw = w / 2 - 2.2
+  const hd = d / 2 - 2.2
+  if (hw < 2 || hd < 2) return
+  const sx = rng() < 0.5 ? 1 : -1
+  const sz = rng() < 0.5 ? 1 : -1
+  const bx = x + sx * (hw - 1.6)
+  const bz = z + sz * (hd - 1.8)
+  box(out.solid, '#5b564e', bx, top + 1.5, bz, 3.2, 3.0, 3.6, 0, SURF.plaster)
+  box(out.solid, '#3f3b36', bx, top + 3.12, bz, 3.7, 0.26, 4.1, 0, SURF.paving)
+  // the roof is a floor now (flatRoof), so what stands on it is solid: the
+  // bulkhead a box to climb, the tank one to walk round
+  out.boxes.push(aabb(bx, top - 0.5, bz, 1.7, top + 3.25, 1.9))
+  if (rng() < tank) {
+    const tx = x - sx * Math.max(0, hw - 2.2)
+    const tz = z - sz * Math.max(0, hd - 2.2)
+    const tr = 1.35 + rng() * 0.4
+    waterTank(out, tx, top, tz, tr, rng)
+    out.boxes.push(noStand(aabb(tx, top - 0.5, tz, tr * 1.05, top + 3.6 + tr * 2.1, tr * 1.05)))
+  }
+  if (!out.detailed) return
+  const units = 1 + Math.floor(dr() * 3)
+  for (let i = 0; i < units; i++) {
+    const ux = x + (dr() - 0.5) * hw
+    const uz = z + (dr() - 0.5) * hd
+    box(out.solid, '#999c98', ux, top + 0.6, uz, 1.8, 1.2, 1.3, 0, SURF.panel)
+    out.boxes.push(aabb(ux, top - 0.5, uz, 0.9, top + 1.2, 0.65))
+    put(out.solid, PLANE, '#34383a', ux, top + 1.22, uz, -Math.PI / 2, 0, 0, 1.0, 1.0, 1)
+  }
+  if (dr() < 0.5) {
+    const ax = x - sx * hw * 0.3
+    const az = z + sz * hd * 0.5
+    shaft(out.solid, '#55595c', ax, top, az, 0.09, 6.0, 0.05, 6)
+    box(out.solid, '#55595c', ax, top + 4.9, az, 2.6, 0.08, 0.08, 0, SURF.none)
+    box(out.solid, '#55595c', ax, top + 5.5, az, 1.7, 0.08, 0.08, 0, SURF.none)
+  }
+}
+
+/**
+ * The iron stair down a walk-up's face, in the face's own frame (`px, pz`
+ * map `o` along the wall and `n` out of it, `fx` is the face normal's x):
+ * a landing at every storey from the first, a rail round its outer edge and
+ * a flight slanting up to the next, the flights zig-zagging as they climb.
+ * It stops a storey up, the way the real ones do with the drop ladder hauled
+ * in, so nothing in it hangs where a walker's head goes; one noStand box from
+ * the first landing up keeps a jump from putting a head through it.
+ */
+const fireEscape = (
+  out: BuildOut, px: (o: number, n: number) => number, pz: (o: number, n: number) => number,
+  fx: number, o: number, y: number, storeys: number, sh: number, yaw: number,
+) => {
+  const iron = '#2c2e2f'
+  const lw = 5.2
+  const ld = 1.5
+  for (let s = 1; s < storeys; s++) {
+    const ly = y + s * sh + 0.25
+    box(out.solid, iron, px(o, ld / 2), ly, pz(o, ld / 2), lw, 0.14, ld, yaw, SURF.none)
+    // the outer rail as one sheet: at this scale a balustrade of bars and a
+    // plate read the same, and the plate is one box
+    box(out.solid, iron, px(o, ld - 0.04), ly + 0.55, pz(o, ld - 0.04), lw, 1.0, 0.06, yaw,
+      SURF.none)
+    for (const e of [-1, 1]) {
+      box(out.solid, iron, px(o + e * (lw / 2 - 0.03), ld / 2), ly + 0.55,
+        pz(o + e * (lw / 2 - 0.03), ld / 2), 0.06, 1.0, ld, yaw, SURF.none)
+    }
+    if (s < storeys - 1) {
+      const dir = s % 2 === 0 ? 1 : -1
+      const a = o - dir * (lw / 2 - 0.8)
+      const b = o + dir * (lw / 2 - 0.8)
+      strut(out.solid, iron,
+        px(a, ld / 2), ly + 0.1, pz(a, ld / 2),
+        px(b, ld / 2), ly + sh, pz(b, ld / 2),
+        0.14, SURF.none, 1.0)
+    }
+  }
+  const hx = fx ? ld / 2 : lw / 2
+  const hz = fx ? lw / 2 : ld / 2
+  out.boxes.push(noStand(aabb(px(o, ld / 2), y + sh, pz(o, ld / 2), hx, y + storeys * sh, hz)))
+}
+
+/**
+ * The ground-floor entrance of a walk-up: a stone surround standing proud of
+ * the band, two leaves and a mullion set into it, a lit transom over them
+ * and a step down to the pavement. Nothing here reaches past +0.25 out of
+ * the wall except the lintel, which is over head height: the block's
+ * collision box is only that much wider than the body, and a door you can
+ * put your arm through is worse than no door.
+ */
+const entrance = (out: BuildOut, lot: Lot, f: ReturnType<typeof front>, y: number) => {
+  box(out.solid, '#4b463f', f.x(0, 0.02), y + 2.55, f.z(0, 0.02),
+    4.4, 5.5, 0.44, lot.face, SURF.paving)
+  for (const s of [-1, 1]) {
+    panel(out.solid, '#2b2b2e', f.x(s * 0.76, 0.26), y + 2.28, f.z(s * 0.76, 0.26),
+      1.36, 4.35, lot.face, SURF.plank)
+  }
+  box(out.solid, '#57524a', f.x(0, 0.14), y + 2.3, f.z(0, 0.14),
+    0.16, 4.4, 0.3, lot.face)
+  panel(out.solid, GLASS_DARK, f.x(0, 0.25), y + 4.75, f.z(0, 0.25), 3.1, 0.6, lot.face)
+  panel(out.glass, '#ffe0ad', f.x(0, 0.28), y + 4.75, f.z(0, 0.28), 3.1, 0.6, lot.face)
+  // the lintel stops short of 5.8: the first-floor windows start at 5.95
+  box(out.solid, '#3f3a34', f.x(0, 0.12), y + 5.55, f.z(0, 0.12),
+    5.0, 0.5, 0.64, lot.face, SURF.paving)
+  const stepX = f.x(0, 0.8)
+  const stepZ = f.z(0, 0.8)
+  box(out.solid, '#8b867c', stepX, y + 0.09, stepZ, 4.4, 0.18, 1.6, lot.face, SURF.paving)
+  keepOut(out, stepX, stepZ, f.fx ? 0.9 : 2.3, f.fx ? 2.3 : 0.9)
+  out.boxes.push(aabb(stepX, y - 1, stepZ,
+    f.fx ? 0.8 : 2.2, y + 0.18, f.fx ? 2.2 : 0.8))
+}
+
+/** the paint each hand of walk-up is built or rendered in */
+const TENEMENT_BRICK = ['#7a4a3a', '#86523e', '#6e4636', '#7d5f4a', '#5f4a3e', '#8b6a50', '#704b40']
+const DECO_RENDER = ['#c9c0ae', '#d4cdbd', '#bfb4a0', '#c8b89c', '#b9b8ad', '#cdbfa6']
+const MODERN_RENDER = ['#9aa19a', '#a8a39a', '#8f9a9e', '#b0aa9c', '#9c948a', '#a39386']
+
 /* --------------------------------------------------------- mid-rise ---- */
 
 /**
- * A walk-up block: a body with a floor band every storey, a window grid on
- * all four faces, a parapet, a roof box or two and a stone entrance.
+ * A walk-up block, in one of three hands, because a mid-rise ring of one kit
+ * at a dozen heights is the copy-paste city seen from the pavement:
+ *
+ * - **tenement**: brick, sash windows in pairs with pale frames on the
+ *   street face, a stone course at every sill, a bracketed cornice, an iron
+ *   fire escape zig-zagging down the front or a flank, and a water tank on
+ *   the roof. The pre-war block every city has a thousand of.
+ * - **deco**: pale render over a rusticated stone ground floor, piers
+ *   running the height of the street face between the bays and standing
+ *   clear of the parapet, a stepped centre over the entrance and a flat
+ *   canopy on it.
+ * - **modern**: a sixties block in render, a dark recessed ground floor,
+ *   ribbon windows wrapped round every face, balconies staggered storey by
+ *   storey on the street side and a deep flat roof slab.
+ *
+ * All three keep the same envelope (storeys of 4.6, one noStand box around
+ * the body) because fracture.ts cuts a walk-up at that storey height.
  */
 export const midriseBlock = (out: BuildOut, lot: Lot) => {
   const { rng } = lot
   const w = lot.w
   const d = lot.d
-  const storeys = Math.max(3, Math.round(lot.height / 4.6))
-  const h = storeys * 4.6
-  const body = pick(BODY, rng())
+  const sh = 4.6
+  const storeys = Math.max(3, Math.round(lot.height / sh))
+  const h = storeys * sh
   const y = lot.baseY
+  const f = front(lot)
+  const r = rng()
+  const style = r < 0.44 ? 'tenement' : r < 0.72 ? 'deco' : 'modern'
+  const dr = fork(rng)
+  const litRate = 0.3 + dr() * 0.45
+  const frontLen = f.fx ? d : w
+  const isFront = (nx: number, nz: number) => Math.sign(nx) === f.fx && Math.sign(nz) === f.fz
+  /** the height a storey's panes are centred on */
+  const rowY = (s: number) => (s === 0 ? y + 3.4 : y + 2.3 + s * sh)
+  /** the door keeps a clear bay on the street face's ground floor */
+  const doorBay = (a: number) => Math.abs(a) < 2.9
 
-  box(out.solid, body, lot.x, y + h / 2 - 0.8, lot.z, w, h + 1.6, d, 0, SURF.brick)
-  // parapet: a slightly wider, darker lip so the roofline has an edge
-  box(out.solid, '#4c4740', lot.x, y + h + 0.35, lot.z, w + 0.5, 0.7, d + 0.5, 0, SURF.paving)
-  // and a stone band at street level, the way a walk-up always has
-  box(out.solid, '#585349', lot.x, y + 1.1, lot.z, w + 0.3, 2.4, d + 0.3, 0, SURF.paving)
-  if (rng() < 0.7) {
-    box(out.solid, '#4c4740', lot.x + (rng() - 0.5) * w * 0.4, y + h + 1.9,
-      lot.z + (rng() - 0.5) * d * 0.4, 3.4, 2.4, 3.0, 0, SURF.plaster)
+  if (style === 'tenement') {
+    const body = pick(TENEMENT_BRICK, rng())
+    const stone = pick(['#8d8578', '#9a9384', '#7f786c'], rng())
+    box(out.solid, body, lot.x, y + h / 2 - 0.8, lot.z, w, h + 1.6, d, 0, SURF.brick)
+    course(out, lot.x, lot.z, w, d, y + 1.1, 2.4, 0.15, '#585349')
+    // the cornice: a frieze, and a deep projecting lip over it
+    course(out, lot.x, lot.z, w, d, y + h - 0.2, 1.0, 0.18, stone)
+    course(out, lot.x, lot.z, w, d, y + h + 0.45, 0.5, 0.7, '#4c4740')
+    if (out.detailed) {
+      const group = dr() < 0.6 ? 2 : 1
+      for (let s = 1; s < storeys; s++) {
+        course(out, lot.x, lot.z, w, d, rowY(s) - 1.35, 0.2, 0.12, stone)
+      }
+      for (const [nx, nz, span, yaw] of faces(w, d)) {
+        const fr = isFront(nx, nz)
+        const xs = rhythm(span, 3.6, fr ? group : 1)
+        for (let s = 0; s < storeys; s++) {
+          const top = s === storeys - 1
+          paneRow(out, lot.x, lot.z, nx, nz, yaw, xs, rowY(s) + (top ? -0.2 : 0),
+            1.45, top ? 1.8 : 2.4, litRate, dr, fr ? '#d9d2c2' : undefined,
+            s === 0 && fr ? doorBay : undefined)
+        }
+      }
+      // brackets under the lip, on the street face only
+      const nb = Math.max(4, Math.round(frontLen / 3))
+      for (let i = 0; i <= nb; i++) {
+        const o = (i / nb - 0.5) * (frontLen - 0.6)
+        box(out.solid, '#4c4740', f.x(o, 0.3), y + h - 0.05, f.z(o, 0.3),
+          0.34, 0.7, 0.6, lot.face, SURF.paving)
+      }
+      entrance(out, lot, f, y)
+      if (dr() < 0.75) {
+        if (frontLen > 14) {
+          // on the front when it is wide enough to clear the door
+          const o = (frontLen / 2 - 3.6) * (dr() < 0.5 ? 1 : -1)
+          fireEscape(out, f.x, f.z, f.fx, o, y, storeys, sh, lot.face)
+        } else {
+          // ...otherwise down a flank, in that flank's own frame
+          const side = dr() < 0.5 ? 1 : -1
+          const gx = f.fz * side
+          const gz = -f.fx * side
+          const half = (gx ? w : d) / 2
+          const px = (o: number, n: number) => lot.x + gx * (half + n) + gz * o
+          const pz = (o: number, n: number) => lot.z + gz * (half + n) - gx * o
+          fireEscape(out, px, pz, gx, (f.fx ? w : d) * 0.12, y, storeys, sh,
+            Math.atan2(gx, gz))
+        }
+      }
+    }
+    rooftop(out, lot.x, lot.z, w, d, y + h + 0.7, rng, dr, 0.8)
+  } else if (style === 'deco') {
+    const body = pick(DECO_RENDER, rng())
+    const stone = pick(['#77716a', '#6c675f', '#827a6d'], rng())
+    box(out.solid, body, lot.x, y + h / 2 - 0.8, lot.z, w, h + 1.6, d, 0, SURF.plaster)
+    // a rusticated ground floor the full storey tall, and a course over it
+    course(out, lot.x, lot.z, w, d, y + sh / 2 - 0.5, sh + 1, 0.2, stone, SURF.brick)
+    course(out, lot.x, lot.z, w, d, y + sh + 0.3, 0.5, 0.3, '#9c958a')
+    course(out, lot.x, lot.z, w, d, y + h + 0.3, 0.6, 0.35, '#8f887c')
+    // the stepped centre over the entrance: two tiers, each narrower
+    for (const [k, rise] of [[0.44, 2.4], [0.2, 4.4]] as const) {
+      const lx = f.fx ? 3.4 : frontLen * k
+      const lz = f.fx ? frontLen * k : 3.4
+      box(out.solid, body, f.x(0, -1.6), y + h + rise / 2, f.z(0, -1.6),
+        lx, rise, lz, 0, SURF.plaster)
+      box(out.solid, '#8f887c', f.x(0, -1.6), y + h + rise + 0.2, f.z(0, -1.6),
+        lx + 0.4, 0.4, lz + 0.4, 0, SURF.paving)
+      out.boxes.push(aabb(f.x(0, -1.6), y + h, f.z(0, -1.6), lx / 2 + 0.2, y + h + rise + 0.4, lz / 2 + 0.2))
+    }
+    if (out.detailed) {
+      for (const [nx, nz, span, yaw] of faces(w, d)) {
+        const fr = isFront(nx, nz)
+        const xs = rhythm(span, fr ? 3.4 : 4.2, 1)
+        // the ground floor's openings are wider and squat, a shop's; the
+        // rustication stands proud of the render, so they sit on its face
+        paneRow(out, lot.x + Math.sign(nx) * 0.2, lot.z + Math.sign(nz) * 0.2,
+          nx, nz, yaw, xs, y + 2.8, 2.2, 2.2, litRate, dr,
+          undefined, fr ? doorBay : undefined)
+        for (let s = 1; s < storeys; s++) {
+          paneRow(out, lot.x, lot.z, nx, nz, yaw, xs, rowY(s), 1.7, 2.6, litRate, dr)
+        }
+        if (!fr) continue
+        // piers between the bays, standing clear of the parapet
+        const pitch = xs.length > 1 ? xs[1] - xs[0] : span
+        for (let i = 0; i <= xs.length; i++) {
+          const o = i === xs.length ? xs[i - 1] + pitch / 2 : xs[i] - pitch / 2
+          box(out.solid, body, f.x(o, 0.22), y + (sh + h + 1.4) / 2, f.z(o, 0.22),
+            f.fx ? 0.44 : 0.7, h + 1.4 - sh, f.fx ? 0.7 : 0.44, 0, SURF.plaster)
+        }
+      }
+      entrance(out, lot, f, y)
+      // a flat canopy over the door, clear of anybody's head
+      box(out.solid, '#3f3a34', f.x(0, 1.2), y + 5.95, f.z(0, 1.2),
+        f.fx ? 2.6 : 6.0, 0.3, f.fx ? 6.0 : 2.6, 0, SURF.paving)
+    }
+    rooftop(out, lot.x, lot.z, w, d, y + h + 0.6, rng, dr, 0.3)
+  } else {
+    const body = pick(MODERN_RENDER, rng())
+    box(out.solid, body, lot.x, y + h / 2 - 0.8, lot.z, w, h + 1.6, d, 0, SURF.plaster)
+    // a dark recessed ground floor and the deep roof slab: the two lines a
+    // sixties block is drawn with
+    course(out, lot.x, lot.z, w, d, y + 2.1, 4.2, 0.06, '#3c4044', SURF.panel)
+    course(out, lot.x, lot.z, w, d, y + h + 0.3, 0.6, 0.9, '#e2ddd2')
+    if (out.detailed) {
+      for (const [nx, nz, span, yaw] of faces(w, d)) {
+        const sx = Math.sign(nx)
+        const sz = Math.sign(nz)
+        // ribbon glazing: one pane a storey, with a white spandrel over it
+        for (let s = 1; s < storeys; s++) {
+          const wy = rowY(s)
+          panel(out.solid, '#2a3138', lot.x + nx, wy, lot.z + nz, span * 0.9, 1.9, yaw)
+          if (dr() < litRate) {
+            panel(out.glass, '#ffd291', lot.x + nx + sx * 0.03, wy, lot.z + nz + sz * 0.03,
+              span * 0.9, 1.9, yaw)
+          }
+        }
+        // the lobby glazing on the dark ground floor, lit all night
+        panel(out.solid, '#243039', lot.x + nx + sx * 0.04, y + 2.3, lot.z + nz + sz * 0.04,
+          span * 0.7, 3.0, yaw)
+        panel(out.glass, '#ffe2ae', lot.x + nx + sx * 0.07, y + 2.3, lot.z + nz + sz * 0.07,
+          span * 0.7, 3.0, yaw)
+      }
+      for (let s = 1; s < storeys; s++) {
+        course(out, lot.x, lot.z, w, d, rowY(s) + 1.3, 0.5, 0.04, '#e2ddd2')
+      }
+      // balconies on the street face, staggered storey by storey so the
+      // face reads as a pattern rather than as a stack of shelves
+      const xs = rhythm(frontLen, 6.0, 1)
+      for (let s = 1; s < storeys; s++) {
+        for (let i = 0; i < xs.length; i++) {
+          if ((i + s) % 2) continue
+          const by = y + s * sh + 0.95
+          box(out.solid, '#d8d2c6', f.x(xs[i], 0.7), by, f.z(xs[i], 0.7),
+            f.fx ? 1.4 : 4.2, 0.24, f.fx ? 4.2 : 1.4, 0, SURF.paving)
+          box(out.solid, '#6f7a7e', f.x(xs[i], 1.36), by + 0.6, f.z(xs[i], 1.36),
+            f.fx ? 0.08 : 4.2, 1.0, f.fx ? 4.2 : 0.08, 0, SURF.panel)
+        }
+      }
+      entrance(out, lot, f, y)
+    }
+    rooftop(out, lot.x, lot.z, w, d, y + h + 0.6, rng, dr, 0.15)
   }
 
-  if (out.detailed) {
-    const f = front(lot)
-    const litRate = 0.3 + rng() * 0.45
-    for (const [nx, nz, span, yaw] of faces(w, d)) {
-      const isFront = Math.sign(nx) === f.fx && Math.sign(nz) === f.fz
-      grid(out, lot.x, lot.z, nx, nz, span, yaw,
-        // the ground-floor row clears the stone band rather than sitting on
-        // its top edge: the band stands 0.15 proud of the wall, so a pane at
-        // 2.3 was a window with its bottom half bricked up
-        y + 3.4, 1, 4.6, 1.8, 1.9, 4.4, litRate, rng,
-        '#2a3138', '#ffcf82',
-        (_s, along) => isFront && Math.abs(along) < 2.9)
-      grid(out, lot.x, lot.z, nx, nz, span, yaw,
-        y + 6.9, storeys - 1, 4.6, 1.8, 1.9, 4.4, litRate, rng)
-    }
+  // the top course is the roof: a floor to land on
+  flatRoof(out.boxes, lot.x, y - 2, lot.z, w / 2 + 0.25, y + h + 0.7, d / 2 + 0.25)
+}
 
-    // The ground-floor entrance: a stone surround standing proud of the band,
-    // two leaves and a mullion set into it, a lit transom over them and a step
-    // down to the pavement. Nothing here reaches past +0.25 out of the wall
-    // except the lintel, which is over head height: the block's collision box
-    // is only that much wider than the body, and a door you can put your arm
-    // through is worse than no door.
-    box(out.solid, '#4b463f', f.x(0, 0.02), y + 2.55, f.z(0, 0.02),
-      4.4, 5.5, 0.44, lot.face, SURF.paving)
-    for (const s of [-1, 1]) {
-      panel(out.solid, '#2b2b2e', f.x(s * 0.76, 0.26), y + 2.28, f.z(s * 0.76, 0.26),
-        1.36, 4.35, lot.face, SURF.plank)
-    }
-    box(out.solid, '#57524a', f.x(0, 0.14), y + 2.3, f.z(0, 0.14),
-      0.16, 4.4, 0.3, lot.face)
-    panel(out.solid, GLASS_DARK, f.x(0, 0.25), y + 4.75, f.z(0, 0.25), 3.1, 0.6, lot.face)
-    panel(out.glass, '#ffe0ad', f.x(0, 0.28), y + 4.75, f.z(0, 0.28), 3.1, 0.6, lot.face)
-    // the lintel stops short of 5.8: the first-floor windows start at 5.95
-    box(out.solid, '#3f3a34', f.x(0, 0.12), y + 5.55, f.z(0, 0.12),
-      5.0, 0.5, 0.64, lot.face, SURF.paving)
-
-    const stepX = f.x(0, 0.8)
-    const stepZ = f.z(0, 0.8)
-    box(out.solid, '#8b867c', stepX, y + 0.09, stepZ, 4.4, 0.18, 1.6, lot.face, SURF.paving)
-    out.boxes.push(aabb(stepX, y - 1, stepZ,
-      f.fx ? 0.8 : 2.2, y + 0.18, f.fx ? 2.2 : 0.8))
+/** glyph-like marks on a sign board: a run of pale blocks of two sizes, so a
+    fascia reads as lettered from across the street without a single letter */
+const glyphs = (
+  out: BuildOut, f: ReturnType<typeof front>, face: number, cy: number, n: number,
+  len: number, dr: () => number,
+) => {
+  const ink = pick(['#e8e0c8', '#f0d890', '#d8e4e0'], dr())
+  const count = Math.max(3, Math.min(9, Math.floor(len / 1.1)))
+  const pitch = Math.min(1.05, len / count)
+  for (let i = 0; i < count; i++) {
+    if (dr() < 0.12) continue
+    const o = (i - (count - 1) / 2) * pitch
+    const tall = dr() < 0.3
+    panel(out.solid, ink, f.x(o, n), cy + (tall ? 0.06 : 0), f.z(o, n),
+      pitch * 0.62, tall ? 0.72 : 0.56, face)
   }
-
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, w / 2 + 0.25, y + h + 0.7, d / 2 + 0.25)))
 }
 
 /**
  * The same envelope with its ground floor given over to trade: piers, a deep
- * glazed band with an awning and a sign over it, apartments in the storeys
- * above. It is the single most common building in any real town centre and
- * the cheapest way to stop a mid-rise ring reading as housing blocks with
+ * glazed band with an awning, a lettered fascia and a blade sign over it,
+ * flats in the storeys above with a cornice and a roof with things on it. It
+ * is the single most common building in any real town centre and the
+ * cheapest way to stop a mid-rise ring reading as housing blocks with
  * nothing to do between them.
  */
 export const mixedUse = (out: BuildOut, lot: Lot) => {
@@ -208,25 +541,38 @@ export const mixedUse = (out: BuildOut, lot: Lot) => {
   const shopH = 6.6
   const storeys = Math.max(2, Math.round((lot.height - shopH) / 4.4))
   const h = shopH + storeys * 4.4
-  const body = pick(BODY, rng())
+  const brick = rng() < 0.5
+  const body = pick(brick ? TENEMENT_BRICK : DECO_RENDER, rng())
   const sign = pick(SIGNS, rng())
   const y = lot.baseY
+  const dr = fork(rng)
 
   box(out.solid, body, lot.x, y + shopH + (h - shopH) / 2, lot.z,
-    w, h - shopH + 0.4, d, 0, SURF.plaster)
+    w, h - shopH + 0.4, d, 0, brick ? SURF.brick : SURF.plaster)
   // the retail base: a darker plinth the glazing is cut out of
   box(out.solid, '#4f4a43', lot.x, y + shopH / 2 - 0.5, lot.z,
     w, shopH + 1, d, 0, SURF.paving)
-  box(out.solid, '#43403a', lot.x, y + h + 0.4, lot.z, w + 0.6, 0.8, d + 0.6, 0, SURF.paving)
-  box(out.solid, '#5c574e', lot.x, y + shopH + 0.2, lot.z,
-    w + 0.4, 0.9, d + 0.4, 0, SURF.paving)
+  course(out, lot.x, lot.z, w, d, y + h - 0.1, 0.9, 0.16, '#8d8578')
+  course(out, lot.x, lot.z, w, d, y + h + 0.5, 0.6, 0.55, '#43403a')
+  course(out, lot.x, lot.z, w, d, y + shopH + 0.2, 0.9, 0.2, '#5c574e')
+  rooftop(out, lot.x, lot.z, w, d, y + h + 0.8, rng, dr, 0.55)
 
   if (out.detailed) {
     const f = front(lot)
-    const litRate = 0.35 + rng() * 0.4
+    const frontLen = f.fx ? d : w
+    const litRate = 0.35 + dr() * 0.4
+    const group = dr() < 0.55 ? 2 : 1
+    for (let s = 1; s < storeys; s++) {
+      course(out, lot.x, lot.z, w, d, y + shopH + 1.3 + s * 4.4, 0.2, 0.1, '#8d8578')
+    }
     for (const [nx, nz, span, yaw] of faces(w, d)) {
-      grid(out, lot.x, lot.z, nx, nz, span, yaw,
-        y + shopH + 2.6, storeys, 4.4, 1.7, 2.0, 4.2, litRate, rng)
+      const fr = Math.sign(nx) === f.fx && Math.sign(nz) === f.fz
+      const xs = rhythm(span, 3.8, fr ? group : 1)
+      for (let s = 0; s < storeys; s++) {
+        const top = s === storeys - 1
+        paneRow(out, lot.x, lot.z, nx, nz, yaw, xs, y + shopH + 2.6 + s * 4.4,
+          1.6, top ? 1.7 : 2.2, litRate, dr, fr ? '#d9d2c2' : undefined)
+      }
       // the shopfront band: wide panes between piers, warm at night on every
       // side, because a corner unit trades on both streets
       const n = bays(span, 6.2)
@@ -240,20 +586,30 @@ export const mixedUse = (out: BuildOut, lot: Lot) => {
           az + (nz ? Math.sign(nz) * 0.04 : 0), pw, 3.6, yaw)
       }
     }
-    // sign band and an awning over the entrance side only
+    // the fascia with its lettering, and an awning over the entrance side
     box(out.solid, sign, f.x(0, 0.16), y + shopH - 0.7, f.z(0, 0.16),
-      (f.fx ? d : w) * 0.8, 1.1, 0.3, lot.face)
+      frontLen * 0.8, 1.1, 0.3, lot.face)
+    glyphs(out, f, lot.face, y + shopH - 0.7, 0.33, frontLen * 0.62, dr)
     put(out.solid, BOX, sign, f.x(0, 0.9), y + 5.2, f.z(0, 0.9),
-      0.42, lot.face, 0, (f.fx ? d : w) * 0.66, 0.1, 1.9)
+      0.42, lot.face, 0, frontLen * 0.66, 0.1, 1.9)
+    // a blade sign on a bracket at one corner, the thing you see first
+    // looking down a street rather than across it
+    const bo = (frontLen / 2 - 0.9) * (dr() < 0.5 ? 1 : -1)
+    const bladeC = pick(SIGNS, dr())
+    box(out.solid, '#2c2e2f', f.x(bo, 0.8), y + shopH + 3.7, f.z(bo, 0.8),
+      f.fx ? 1.6 : 0.1, 0.1, f.fx ? 0.1 : 1.6, 0, SURF.none)
+    box(out.solid, bladeC, f.x(bo, 1.0), y + shopH + 2.5, f.z(bo, 1.0),
+      f.fx ? 1.3 : 0.18, 2.2, f.fx ? 0.18 : 1.3, 0, SURF.none)
     // and the doorway into the flats above, beside the shop
-    const o = (f.fx ? d : w) * 0.34
+    const o = frontLen * 0.34
     panel(out.solid, '#2b2b2e', f.x(o, 0.08), y + 2.4, f.z(o, 0.08), 1.9, 4.6, lot.face,
       SURF.plank)
     box(out.solid, '#8b867c', f.x(o, 0.7), y + 0.09, f.z(o, 0.7),
       2.6, 0.18, 1.3, lot.face, SURF.paving)
+    keepOut(out, f.x(o, 0.7), f.z(o, 0.7), f.fx ? 0.75 : 1.4, f.fx ? 1.4 : 0.75)
   }
 
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, w / 2 + 0.3, y + h + 0.8, d / 2 + 0.3)))
+  flatRoof(out.boxes, lot.x, y - 2, lot.z, w / 2 + 0.3, y + h + 0.8, d / 2 + 0.3)
 }
 
 /* ---------------------------------------------------------- block-scale -- */
@@ -287,6 +643,7 @@ export const warehouse = (out: BuildOut, lot: Lot) => {
   const geo = roll < 0.4 ? BARREL : roll < 0.7 ? GAMBREL : PRISM
   put(out.solid, geo, metal, lot.x, y + h - 0.05, lot.z,
     0, long ? 0 : Math.PI / 2, 0, run * 1.04, rise, span * 1.06, SURF.panel)
+  roofSolids(out.boxes, geo, lot.x, y + h - 0.05, lot.z, long ? 0 : Math.PI / 2, run * 1.04, rise, span * 1.06)
   // vents along the ridge, which is most of what says "industrial" at range
   const vents = Math.max(2, Math.round(run / 9))
   for (let i = 0; i < vents; i++) {
@@ -316,6 +673,7 @@ export const warehouse = (out: BuildOut, lot: Lot) => {
     }
     box(out.solid, '#83807a', f.x(0, 4.5), y + 0.05, f.z(0, 4.5),
       frontage * 0.9, 0.12, 9.0, lot.face, SURF.paving)
+    keepOut(out, f.x(0, 4.5), f.z(0, 4.5), f.fx ? 4.6 : frontage * 0.46, f.fx ? frontage * 0.46 : 4.6)
     // the dock: a ledge at truck-bed height with a step up onto it
     const dockX = f.x(frontage * 0.4, 1.3)
     const dockZ = f.z(frontage * 0.4, 1.3)
@@ -371,6 +729,7 @@ export const chapel = (out: BuildOut, lot: Lot) => {
   // across the nave and left most of the roof off the building
   put(out.solid, PRISM, roofC, cx, y + h - 0.05, cz, 0, f.fx ? 0 : Math.PI / 2, 0,
     naveL * 1.04, rise, naveW * 1.14, SURF.shingle)
+  roofSolids(out.boxes, PRISM, cx, y + h - 0.05, cz, f.fx ? 0 : Math.PI / 2, naveL * 1.04, rise, naveW * 1.14)
   out.boxes.push(noStand(aabb(cx, y - 2, cz, nw / 2 + 0.3, y + h, nd / 2 + 0.3)))
 
   // the tower, set at one end of the front elevation
@@ -384,6 +743,8 @@ export const chapel = (out: BuildOut, lot: Lot) => {
   put(out.solid, CONE4, roofC, tx, y + th + 0.6 + tw * 0.9, tz,
     0, lot.face, 0, tw * 1.15, tw * 1.8, tw * 1.15, SURF.shingle)
   out.boxes.push(noStand(aabb(tx, y - 2, tz, tw / 2 + 0.25, y + th, tw / 2 + 0.25)))
+  // the spire as a steep, short-ridged gable: a perch at the top of the town
+  roofSolids(out.boxes, PRISM, tx, y + th + 0.6, tz, 0, 0.5, tw * 1.8, tw * 1.15)
 
   if (out.detailed) {
     // the belfry: dark louvred openings on all four sides, one lit lamp
@@ -416,6 +777,7 @@ export const chapel = (out: BuildOut, lot: Lot) => {
       Math.PI / 2, lot.face, 0, 2.3, 0.1, 2.3)
     box(out.solid, '#8b867c', nx_(0, 2.4), y + 0.09, nz_(0, 2.4),
       4.0, 0.18, 4.4, lot.face, SURF.paving)
+    keepOut(out, nx_(0, 2.4), nz_(0, 2.4), 2.3, 2.3)
 
     // the churchyard: a low wall around the lot and a scatter of headstones
     const yw = (f.fx ? lot.w : lot.d) / 2
@@ -502,53 +864,246 @@ export const parkingDeck = (out: BuildOut, lot: Lot) => {
       (f.fx ? d : w) * 0.3, 1.2, 0.3, lot.face)
   }
 
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z,
-    w / 2 + 0.25, y + levels * lift + 2, d / 2 + 0.25)))
+  // the top deck is a floor, and the stair core stands two units proud of it
+  flatRoof(out.boxes, lot.x, y - 2, lot.z, w / 2 + 0.25, y + levels * lift + 0.6, d / 2 + 0.25)
+  out.boxes.push(aabb(cx, y - 2, cz, cw / 2 + 0.1, y + levels * lift + 2, cw / 2 + 0.1))
 }
 
 /* ------------------------------------------------------------ towers ---- */
 
+/** the green of weathered copper, for the odd pyramid crown */
+const COPPER = '#5b7a6c'
+
 /**
  * A downtown tower: two or three setback stages so the silhouette has a
- * shoulder, a window grid up every face, and a beacon box on top of the tall
- * ones. Setbacks are what stop a skyline reading as a bar chart.
+ * shoulder, standing on a lobby and finished with a crown. Setbacks stop a
+ * skyline reading as a bar chart; the other three choices stop two towers
+ * of the same height reading as one tower twice.
+ *
+ * - **The lobby** is a double-height glazed ground floor, lit all night.
+ *   More than half the time it is an *arcade*: the glazing is set back
+ *   behind a colonnade and the tower's first stage is carried over it on the
+ *   columns, so the pavement runs in under the building. That one is
+ *   collided as what it is (a core, a column each, and the mass above the
+ *   arcade), not as a box round the footprint.
+ * - **The skin** is one of three: a punched grid of paired windows (with a dark plant floor
+ *   every ninth storey, the band real towers hide their machinery behind),
+ *   piers (vertical fins between bays running the height of a stage, the
+ *   glazing a dark strip between them), or bands (one ribbon of glass a
+ *   storey, the curtain wall of a later decade).
+ * - **The crown** is a copper or slate pyramid, a stepped top with a spire,
+ *   a drum and needle, or a flat roof with its plant and bulkhead on show.
+ *
+ * Each stage collides as its own standable box up to its cap, so every
+ * setback is a terrace a flight can land on, and the crown's parts are
+ * solid on top of the last one.
  */
 export const tower = (out: BuildOut, lot: Lot) => {
   const { rng } = lot
   const shade = pick(TOWER, rng())
   const stages = lot.height > 70 ? 3 : lot.height > 40 ? 2 : 1
   const y = lot.baseY
+  const skin = rng()
+  const crown = rng()
+  const arcade = rng() < 0.6 && Math.min(lot.w, lot.d) > 16 && lot.height > 30
+  const dr = fork(rng)
+  const litRate = 0.22 + dr() * 0.4
+  const lobbyH = 7.4
   let bottom = y
   let w = lot.w
   let d = lot.d
-  const litRate = 0.22 + rng() * 0.4
+  const f = front(lot)
+  /** each stage's footprint and the top of its cap: the setbacks are
+      terraces you can land on, so each stage is its own standable box */
+  const tiers: Array<{ w: number; d: number; y0: number; y1: number }> = []
 
   for (let s = 0; s < stages; s++) {
     const share = s === stages - 1 ? 1 : 0.42 + rng() * 0.2
     const h = (lot.height - (bottom - y)) * share
-    box(out.solid, shade, lot.x, bottom + h / 2 - 0.6, lot.z, w, h + 1.2, d, 0, SURF.panel)
-    box(out.solid, '#3f444a', lot.x, bottom + h + 0.3, lot.z,
-      w + 0.6, 0.6, d + 0.6, 0, SURF.paving)
-
-    if (out.detailed) {
-      const storeys = Math.max(2, Math.round(h / 5.4))
-      for (const [nx, nz, span, yaw] of faces(w, d)) {
-        grid(out, lot.x, lot.z, nx, nz, span, yaw,
-          bottom + 2.6, storeys, 5.4, 1.9, 2.4, 4.2, litRate, rng,
-          '#28303a', '#ffd291',
-          (st) => bottom + 2.6 + st * 5.4 > bottom + h - 1.4)
+    const ground = s === 0
+    if (ground && arcade) {
+      const inset = 3.2
+      const cw = w - inset * 2
+      const cd = d - inset * 2
+      // the glazed core the arcade runs round, and the mass carried over it
+      box(out.solid, '#3a4048', lot.x, y + lobbyH / 2 - 0.6, lot.z, cw, lobbyH + 1.2, cd, 0,
+        SURF.panel)
+      box(out.solid, shade, lot.x, y + (lobbyH + h) / 2, lot.z, w, h - lobbyH, d, 0,
+        SURF.panel)
+      out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, cw / 2 + 0.2, y + lobbyH, cd / 2 + 0.2)))
+      // columns round the perimeter, one every six or seven units
+      for (const [nx, nz, span] of faces(w, d)) {
+        const n = Math.max(2, Math.round(span / 6.5))
+        for (let i = 0; i <= n; i++) {
+          // each corner belongs to the face that comes first round the
+          // building, so it is stamped once
+          if (nz === 0 && (i === 0 || i === n)) continue
+          const t = (i / n - 0.5) * (span - 1.0)
+          const px = lot.x + (nx === 0 ? t : Math.sign(nx) * (w / 2 - 0.5))
+          const pz = lot.z + (nz === 0 ? t : Math.sign(nz) * (d / 2 - 0.5))
+          box(out.solid, '#6a6f74', px, y + lobbyH / 2 - 0.3, pz, 0.9, lobbyH + 0.6, 0.9, 0,
+            SURF.paving)
+          out.boxes.push(noStand(aabb(px, y - 1, pz, 0.5, y + lobbyH, 0.5)))
+        }
+      }
+      if (out.detailed) {
+        for (const [nx, nz, span, yaw] of faces(cw, cd)) {
+          const sx = Math.sign(nx)
+          const sz = Math.sign(nz)
+          panel(out.solid, '#243039', lot.x + nx, y + lobbyH / 2, lot.z + nz,
+            span * 0.9, lobbyH - 1.4, yaw)
+          panel(out.glass, '#ffe6b8', lot.x + nx + sx * 0.03, y + lobbyH / 2,
+            lot.z + nz + sz * 0.03, span * 0.9, lobbyH - 1.4, yaw)
+        }
+      }
+    } else {
+      box(out.solid, shade, lot.x, bottom + h / 2 - 0.6, lot.z, w, h + 1.2, d, 0, SURF.panel)
+      if (ground) {
+        // a plinth the lobby glazing is set into
+        course(out, lot.x, lot.z, w, d, y + lobbyH / 2 - 0.5, lobbyH + 1, 0.2, '#3f444a')
+        if (out.detailed) {
+          for (const [nx, nz, span, yaw] of faces(w, d)) {
+            const sx = Math.sign(nx)
+            const sz = Math.sign(nz)
+            panel(out.solid, '#243039', lot.x + nx + sx * 0.2, y + lobbyH / 2,
+              lot.z + nz + sz * 0.2, span * 0.8, lobbyH - 2.0, yaw)
+            panel(out.glass, '#ffe6b8', lot.x + nx + sx * 0.23, y + lobbyH / 2,
+              lot.z + nz + sz * 0.23, span * 0.8, lobbyH - 2.0, yaw)
+          }
+          // a canopy over the doors, over head height
+          const frontLen = f.fx ? d : w
+          box(out.solid, '#2f3338', f.x(0, 1.6), y + lobbyH - 1.0, f.z(0, 1.6),
+            f.fx ? 3.2 : frontLen * 0.4, 0.4, f.fx ? frontLen * 0.4 : 3.2, 0, SURF.paving)
+        }
       }
     }
+    // the stage's cap: a thin lip, or on the odd tower a heavier cornice
+    course(out, lot.x, lot.z, w, d, bottom + h + 0.3, 0.6, 0.3, '#3f444a')
+    if (skin < 0.34 && s < stages - 1) {
+      course(out, lot.x, lot.z, w, d, bottom + h - 0.9, 1.4, 0.12, '#4a5057')
+    }
+
+    if (out.detailed) {
+      const y0 = (ground ? y + lobbyH : bottom) + 2.6
+      const top = bottom + h - 1.4
+      const storeys = Math.max(1, Math.floor((top - y0) / 5.4) + 1)
+      for (const [nx, nz, span, yaw] of faces(w, d)) {
+        const sx = Math.sign(nx)
+        const sz = Math.sign(nz)
+        if (skin < 0.34) {
+          const xs = rhythm(span, 3.9, 2)
+          for (let st = 0; st < storeys; st++) {
+            const wy = y0 + st * 5.4
+            if (wy > top) break
+            // a plant floor every ninth storey: no panes, a louvred band
+            if (st % 9 === 8) continue
+            paneRow(out, lot.x, lot.z, nx, nz, yaw, xs, wy, 1.9, 2.4, litRate, dr)
+          }
+        } else if (skin < 0.67) {
+          const xs = rhythm(span, 3.6, 1)
+          const pitch = xs.length > 1 ? xs[1] - xs[0] : span
+          const gh = top - y0 + 2.2
+          for (const a of xs) {
+            const ax = nx === 0 ? lot.x + a : lot.x + nx
+            const az = nz === 0 ? lot.z + a : lot.z + nz
+            panel(out.solid, '#28303a', ax, y0 - 1.1 + gh / 2, az, pitch * 0.62, gh, yaw)
+            for (let st = 0; st < storeys; st++) {
+              const wy = y0 + st * 5.4
+              if (wy > top) break
+              if (dr() < litRate) {
+                panel(out.glass, '#ffd291', ax + sx * 0.03, wy, az + sz * 0.03,
+                  pitch * 0.62, 2.4, yaw)
+              }
+            }
+          }
+          // the fins between bays, proud of the glazing
+          for (let i = 0; i <= xs.length; i++) {
+            const a = (i < xs.length ? xs[i] : xs[i - 1] + pitch) - pitch / 2
+            box(out.solid, shade,
+              lot.x + (nx === 0 ? a : nx + sx * 0.2), y0 - 1.1 + gh / 2,
+              lot.z + (nz === 0 ? a : nz + sz * 0.2),
+              0.5, gh, 0.5, 0, SURF.paving)
+          }
+        } else {
+          for (let st = 0; st < storeys; st++) {
+            const wy = y0 + st * 5.4
+            if (wy > top) break
+            panel(out.solid, '#28303a', lot.x + nx, wy, lot.z + nz, span * 0.94, 2.8, yaw)
+            if (dr() < litRate) {
+              panel(out.glass, '#ffd291', lot.x + nx + sx * 0.03, wy, lot.z + nz + sz * 0.03,
+                span * 0.94, 2.8, yaw)
+            }
+          }
+        }
+      }
+      if (skin < 0.34) {
+        for (let st = 8; st < storeys; st += 9) {
+          const wy = y0 + st * 5.4
+          if (wy > top) break
+          course(out, lot.x, lot.z, w, d, wy, 2.6, 0.08, '#3a3f45', SURF.panel)
+        }
+      }
+    }
+    tiers.push({ w, d, y0: ground && arcade ? y + lobbyH : ground ? y - 2 : bottom - 0.5, y1: bottom + h + 0.6 })
     bottom += h
-    w *= 0.74
-    d *= 0.74
+    if (s < stages - 1) {
+      w *= 0.74
+      d *= 0.74
+    }
   }
-  if (lot.height > 60) {
-    box(out.solid, '#5a1e1e', lot.x, bottom + 1.2, lot.z, 1.2, 2.4, 1.2)
+  for (const t of tiers) {
+    flatRoof(out.boxes, lot.x, t.y0, lot.z, t.w / 2 + 0.3, t.y1, t.d / 2 + 0.3)
   }
 
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z,
-    lot.w / 2 + 0.3, y + lot.height, lot.d / 2 + 0.3)))
+  // the crown, on the last stage's own footprint
+  const top = bottom + 0.6
+  const tall = lot.height > 60
+  if (crown < 0.26) {
+    const rise = Math.min(w, d) * 0.45 + 2
+    put(out.solid, CONE4, pick([COPPER, '#3a3f45', '#4a4038'], rng()),
+      lot.x, top + rise / 2, lot.z, 0, 0, 0, w * 1.04, rise, d * 1.04, SURF.shingle)
+    // a pyramid read as a short-ridged gable: its middle is a slope to
+    // climb, and its corners fall back to the stage's own roof inside it
+    roofSolids(out.boxes, PRISM, lot.x, top, lot.z, w > d ? 0 : Math.PI / 2,
+      Math.abs(w - d) + 0.5, rise, Math.min(w, d) * 1.04)
+    if (tall) shaft(out.solid, '#6a6f74', lot.x, top + rise - 0.4, lot.z, 0.2, 8, 0.06, 6)
+  } else if (crown < 0.5) {
+    // stepped: two shrinking storeys and a spire
+    let sw = w * 0.72
+    let sd = d * 0.72
+    let sy = top
+    for (let i = 0; i < 2; i++) {
+      const sh = 4.4 - i
+      box(out.solid, shade, lot.x, sy + sh / 2, lot.z, sw, sh, sd, 0, SURF.panel)
+      course(out, lot.x, lot.z, sw, sd, sy + sh + 0.2, 0.4, 0.2, '#3f444a')
+      out.boxes.push(aabb(lot.x, sy - 0.5, lot.z, sw / 2 + 0.2, sy + sh + 0.4, sd / 2 + 0.2))
+      sy += sh + 0.4
+      sw *= 0.66
+      sd *= 0.66
+    }
+    shaft(out.solid, '#7a7f84', lot.x, sy, lot.z, Math.min(sw, sd) * 0.3, 10 + lot.height * 0.08,
+      0.02, 8)
+  } else if (crown < 0.68) {
+    // a drum and a needle
+    const r = Math.min(w, d) * 0.3
+    shaft(out.solid, shade, lot.x, top, lot.z, r, 5, r * 0.92, 12, 0, SURF.panel)
+    shaft(out.solid, '#3f444a', lot.x, top + 5, lot.z, r * 1.08, 0.6, r * 1.08, 12)
+    // the drum's lid, as the square inside its circle, and the needle a post
+    out.boxes.push(aabb(lot.x, top - 0.5, lot.z, r * 0.72, top + 5.6, r * 0.72))
+    out.boxes.push(noStand(aabb(lot.x, top + 5.6, lot.z, r * 0.6, top + 5.6 + r * 3.2, r * 0.6)))
+    put(out.solid, CONE12, '#6a6f74', lot.x, top + 5.6 + r * 1.6, lot.z, 0, 0, 0,
+      r * 1.2, r * 3.2, r * 1.2, SURF.panel)
+  } else {
+    // flat, with the machinery on show
+    box(out.solid, '#4a5054', lot.x, top + 2.2, lot.z, w * 0.46, 4.4, d * 0.4, 0, SURF.panel)
+    out.boxes.push(aabb(lot.x, top - 0.5, lot.z, w * 0.23, top + 4.4, d * 0.2))
+    rooftop(out, lot.x, lot.z, w, d, top, rng, dr, 0)
+    if (tall) {
+      shaft(out.solid, '#6a6f74', lot.x, top + 4.4, lot.z, 0.22, 9, 0.1, 6)
+      box(out.solid, '#5a1e1e', lot.x, top + 13.6, lot.z, 0.7, 1.0, 0.7)
+    }
+  }
+
 }
 
 /**
@@ -575,14 +1130,32 @@ export const slabTower = (out: BuildOut, lot: Lot) => {
   box(out.solid, '#3f444a', lot.x, y + h + 0.5, lot.z, w + 0.7, 1.0, d + 0.7, 0, SURF.paving)
   // rooftop plant and a mast, which is what a flat top needs to not read as a
   // block that ran out of budget
-  box(out.solid, '#4a5054', lot.x + (rng() - 0.5) * w * 0.3, y + h + 2.6,
-    lot.z + (rng() - 0.5) * d * 0.3, w * 0.34, 3.2, d * 0.6, 0, SURF.panel)
+  const px = lot.x + (rng() - 0.5) * w * 0.3
+  const pz = lot.z + (rng() - 0.5) * d * 0.3
+  box(out.solid, '#4a5054', px, y + h + 2.6, pz, w * 0.34, 3.2, d * 0.6, 0, SURF.panel)
   shaft(out.solid, '#6a6f74', lot.x, y + h + 4.2, lot.z, 0.22, 9, 0.1, 6)
+  // the cap is the roof, and the plant on it a box to climb
+  flatRoof(out.boxes, lot.x, y - 2, lot.z, w / 2 + 0.4, y + h + 1.0, d / 2 + 0.4)
+  out.boxes.push(aabb(px, y + h, pz, w * 0.17, y + h + 4.2, d * 0.3))
   box(out.solid, '#5a1e1e', lot.x, y + h + 13.4, lot.z, 0.7, 1.0, 0.7)
 
   if (out.detailed) {
     const broad = alongX ? w : d
     const fins = Math.max(3, Math.round(broad / 3.4))
+    // the lobby: glazing set into the dark plinth, lit all night, and a
+    // canopy over the doors on whichever face meets the street
+    const f = front(lot)
+    for (const [nx, nz, span, yaw] of faces(w, d)) {
+      const sx = Math.sign(nx)
+      const sz = Math.sign(nz)
+      panel(out.solid, '#243039', lot.x + nx + sx * 0.25, y + 2.3, lot.z + nz + sz * 0.25,
+        span * 0.8, 3.2, yaw)
+      panel(out.glass, '#ffe6b8', lot.x + nx + sx * 0.28, y + 2.3, lot.z + nz + sz * 0.28,
+        span * 0.8, 3.2, yaw)
+    }
+    const fw = (f.fx ? d : w) / 2 + 0.25
+    box(out.solid, '#2f3338', lot.x + f.fx * (fw + 1.4), y + 5.2, lot.z + f.fz * (fw + 1.4),
+      f.fx ? 2.8 : Math.min(w, 9), 0.36, f.fx ? Math.min(d, 9) : 2.8, 0, SURF.paving)
     for (const [nx, nz, span, yaw] of faces(w, d)) {
       const isBroad = alongX ? nz !== 0 : nx !== 0
       if (isBroad) {
@@ -612,7 +1185,6 @@ export const slabTower = (out: BuildOut, lot: Lot) => {
     }
   }
 
-  out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, w / 2 + 0.4, y + h, d / 2 + 0.4)))
 }
 
 /**
@@ -663,6 +1235,10 @@ export const roundTower = (out: BuildOut, lot: Lot) => {
   box(out.solid, '#5a1e1e', lot.x, y + h + 12.0, lot.z, 0.6, 0.9, 0.6)
 
   out.boxes.push(noStand(aabb(lot.x, y - 2, lot.z, r + 0.3, y + h, r + 0.3)))
+  // the cap ring as the square most of it covers (its corners overhang a
+  // little air), so the round roof is somewhere to land; the plant drum on it
+  out.boxes.push(aabb(lot.x, y - 2, lot.z, rt * 0.9, y + h + 1.0, rt * 0.9))
+  out.boxes.push(aabb(lot.x, y + h, lot.z, rt * 0.5, y + h + 3.6, rt * 0.5))
 }
 
 /* --------------------------------------------------- enterable shop ---- */
@@ -756,8 +1332,10 @@ export const shopFront = (out: BuildOut, lot: Lot) => {
   if (!out.detailed) {
     const h = floorY + SHOP_H - baseY
     box(out.solid, body, lot.x, baseY + h / 2, lot.z, W, h, D, 0, SURF.plaster)
-    out.boxes.push(noStand(aabb(lot.x, baseY - 2, lot.z,
-      W / 2 + 0.2, floorY + SHOP_H, D / 2 + 0.2)))
+    // the roof slab, so the shell's roofline is the detailed shop's
+    box(out.solid, '#4a463f', lot.x, floorY + SHOP_H + 0.3, lot.z, W + 0.6, 0.6, D + 0.6, 0,
+      SURF.paving)
+    flatRoof(out.boxes, lot.x, baseY - 2, lot.z, W / 2 + 0.2, floorY + SHOP_H + 0.6, D / 2 + 0.2)
     return
   }
 
@@ -774,13 +1352,13 @@ export const shopFront = (out: BuildOut, lot: Lot) => {
 
   // ceiling slab doubling as the flat roof, with a light lining underneath:
   // the slab's own underside is roof-dark, and a dark ceiling swallowed the
-  // whole room
+  // whole room. Its collision top is a floor: somewhere to land on a flight
   boxL('#4a463f', 0, 0, floorY + SHOP_H + 0.3,
     2 * halfU + 0.6, 0.6, 2 * halfV + 0.6, SURF.paving)
   boxL('#8d867a', 0, 0, floorY + SHOP_H - 0.05,
     2 * halfU - 2 * WALL_T + 0.2, 0.1, 2 * halfV - 2 * WALL_T + 0.2, SURF.plaster)
   solidL(0, 0, 2 * halfU + 0.6, 2 * halfV + 0.6,
-    floorY + SHOP_H, floorY + SHOP_H + 0.6)
+    floorY + SHOP_H, floorY + SHOP_H + 0.6, true)
 
   /* ---- walls, doorway facing the street ---- */
 
@@ -1014,3 +1592,37 @@ export const BLOCK_KIND_RATE = (district: District) =>
     it rolled wants a whole block rather than a share of one */
 export const isBlockKind = (k: BuildKind) =>
   k === 'warehouse' || k === 'chapel' || k === 'parking'
+
+/**
+ * Which kit a platted lot actually raises once the ground under it is known,
+ * or null for none: a footprint whose corners disagree by more than its
+ * plinth can hide builds nothing (a block-scale shell carries a deeper one,
+ * so it takes a bumpier site), and an enterable shop past a shin-and-a-bit of
+ * spread would need a staircase for a stoop, so it builds a shell instead.
+ * The chunk and the far field's impostors both ask here, so a lot the chunk
+ * turns into a mid-rise is a mid-rise from the air too.
+ */
+export const settleKind = (
+  kind: BuildKind, district: District, baseY: number, topY: number,
+): BuildKind | null => {
+  if (topY - baseY > (isBlockKind(kind) ? 3.0 : 2.2)) return null
+  if (kind === 'shop' && topY - baseY > 1.2) return district === 'suburb' ? 'house' : 'midrise'
+  return kind
+}
+
+/** raise `kind` on `lot`: the one dispatch every consumer of a lot goes
+    through, the chunk at every tier and the far field's impostors alike */
+export const raiseKind = (out: BuildOut, kind: BuildKind, lot: Lot) => {
+  switch (kind) {
+    case 'tower': tower(out, lot); break
+    case 'slab': slabTower(out, lot); break
+    case 'round': roundTower(out, lot); break
+    case 'midrise': midriseBlock(out, lot); break
+    case 'mixed': mixedUse(out, lot); break
+    case 'shop': shopFront(out, lot); break
+    case 'warehouse': warehouse(out, lot); break
+    case 'chapel': chapel(out, lot); break
+    case 'parking': parkingDeck(out, lot); break
+    default: suburbHouse(out, lot)
+  }
+}

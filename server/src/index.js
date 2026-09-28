@@ -20,6 +20,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 import Database from 'better-sqlite3';
 import { createAnalytics } from './analytics.js';
 import { createYouTubeSearch } from './ytsearch.js';
+import { createPropRegistry } from './props.js';
+import { createWorldEffects } from './worldEffects.js';
 
 // ---------------------------------------------------------------- config
 
@@ -132,7 +134,7 @@ const WORLD_CHAT_RATE_WINDOW_MS = 20_000;
 const WORLD_SIGNAL_RATE_MAX = 150; // an ICE burst is chatty and short-lived
 const WORLD_SIGNAL_RATE_WINDOW_MS = 10_000;
 const WORLD_MAX_TEXT_LEN = 200;
-const WORLD_MAX_SIGNAL_LEN = 6_000; // one SDP blob; maxPayload is 8 KiB
+const WORLD_MAX_SIGNAL_LEN = 6_000; // one SDP blob; maxPayload is 256 KiB (batched props)
 const WORLD_LEVEL_RE = /^[a-z0-9-]{1,24}$/;
 // A player's colours: four packed hex triplets from src/game/player/look.ts.
 // This process has no opinion about which of them is the visor and which is
@@ -146,10 +148,29 @@ const WORLD_COORD_LIMIT = 1e7; // the planet is endless, the wire is not
 // SEAT_* in src/game/net/protocol.ts. This process does not know what a
 // helicopter is and does not need to — a vehicle here is an index, a
 // transform and two seat holders.
-const WORLD_FLEET = 3;
+const WORLD_FLEET = 4; // car, boat, heli, ship: src/game/net/protocol.ts's WIRE_VEHICLES
 const WORLD_SEATS = 2;
 const WORLD_SEAT_RATE_MAX = 20; // door-handle spam, per window
 const WORLD_SEAT_RATE_WINDOW_MS = 10_000;
+// Bumping into people. A shove is a velocity one walker proposes for another
+// and the victim's own client applies to itself (src/game/net/shove.ts); this
+// process only checks that the two are actually standing near each other,
+// clamps it and forwards it. Mirrors SHOVE_MAX there.
+const WORLD_SHOVE_MAX = 24; // units/s, planar and vertical
+const WORLD_SHOVE_REACH = 12; // between the two last reported poses; lag is generous
+const WORLD_SHOVE_RATE_MAX = 12; // a held lean is ~3 a second
+const WORLD_SHOVE_RATE_WINDOW_MS = 3_000;
+// The physgun on a player. Same deal as a shove: the grabber proposes where
+// the victim's limb should be (and, letting go, how fast they leave), and the
+// victim's own client pins its own ragdoll to it (src/game/net/grab.ts). This
+// process checks the two are within the beam's reach, the victim is on foot
+// and not flying, and the stream is not a firehose. Mirrors THROW_MAX there.
+const WORLD_GRAB_REACH = 180; // the beam's farthest push, plus lag
+const WORLD_GRAB_THROW_MAX = 40; // units/s
+const WORLD_GRAB_LIMBS = 13;
+const WORLD_GRAB_PHASES = new Set(['hold', 'freeze', 'release']);
+const WORLD_GRAB_RATE_MAX = 90; // the hold streams at ~20Hz
+const WORLD_GRAB_RATE_WINDOW_MS = 3_000;
 
 const MAX_TEXT_LEN = 600;
 const HISTORY_LIMIT = 60;
@@ -339,7 +360,7 @@ function strike(ws) {
 // more than these tiny JSON payloads could ever save.
 const wss = new WebSocketServer({
   noServer: true,
-  maxPayload: 8 * 1024,
+  maxPayload: 256 * 1024,
   perMessageDeflate: false,
 });
 const roomSockets = new Map(ROOMS.map((r) => [r, new Set()])); // room -> Set<ws>
@@ -853,6 +874,12 @@ function handleDuelRematch(ws) {
 //      proximity voice is browser-to-browser and no audio touches this box
 //   4. the fleet — the one piece of world state that exists, and the one
 //      question clients cannot settle between themselves: who has the wheel
+//   5. shoves — one walker bumping another, relayed to the victim alone
+//      when the two are near each other and both on foot
+//   6. grabs: the physgun holding another player, streamed to the victim
+//      alone, who pins their own ragdoll to it
+//   7. sandbox props: per-level ownership, claims, joints and dirty poses;
+//      props.js arbitrates while one browser simulates each connected group
 //
 // Sockets stay in the world independently of chat: `ws.world` is set by
 // world-join and is the whole of a player's server-side state.
@@ -864,15 +891,23 @@ const worldChatRate = new WeakMap();
 const worldSignalRate = new WeakMap();
 const worldSeatRate = new WeakMap();
 const worldLookRate = new WeakMap();
+const worldShoveRate = new WeakMap();
+const worldGrabRate = new WeakMap();
 let worldTicker = null;
 let worldDirty = false;
+const propRegistry = createPropRegistry({ players: worldPlayers, send, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
+const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: propRegistry.get });
 
 // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
-// `set` says whether anyone has ever moved this machine, and until they have
-// the server has no opinion about where it is — every client's own spawn puts
-// it on the same probed home spot, so silence is the correct answer.
+// `hand` is whoever has an *empty* machine on their physgun (or is letting it
+// settle after one), and is its authority exactly as a driver is, which is
+// why the two exclude each other; `set` says whether anyone has ever moved
+// this machine, and until they have the server has no opinion about where it
+// is: every client's own spawn puts it on the same probed home spot, so
+// silence is the correct answer.
 const worldFleet = Array.from({ length: WORLD_FLEET }, () => ({
   seats: new Array(WORLD_SEATS).fill(0),
+  hand: 0,
   set: false,
   x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
 }));
@@ -884,7 +919,13 @@ const W_CROUCH = 4;
 const W_SWIM = 8;
 const W_SPEAKING = 16;
 const W_DOWN = 32;
-const W_FLAGS = W_GROUNDED | W_RUN | W_CROUCH | W_SWIM | W_SPEAKING | W_DOWN;
+const W_FLY = 64; // noclip
+const W_HELD = 128; // hanging off somebody's physgun
+const W_FLAGS = W_GROUNDED | W_RUN | W_CROUCH | W_SWIM | W_SPEAKING | W_DOWN | W_FLY | W_HELD;
+// an emote rides a move as one integer the server never decodes (the id in
+// the low four bits, its age above them: src/game/player/emotes.ts), so all
+// it checks is that it is one, and small
+const W_EMOTE_MAX = 1 << 16;
 
 function allowWorld(map, ws, max, windowMs) {
   const now = Date.now();
@@ -938,7 +979,7 @@ function worldBroadcast(payload, except = null) {
 /* -------------------------------------------------------------- the fleet */
 
 function worldSeatTable() {
-  return worldFleet.map((v, i) => [i, v.seats[0], v.seats[1]]);
+  return worldFleet.map((v, i) => [i, v.seats[0], v.seats[1], v.hand]);
 }
 
 /** the machines anyone has actually moved. An untouched fleet sends nothing */
@@ -962,6 +1003,10 @@ function announceSeats() {
 function clearSeatsOf(id) {
   let changed = false;
   for (const v of worldFleet) {
+    if (v.hand === id) {
+      v.hand = 0;
+      changed = true;
+    }
     for (let s = 0; s < v.seats.length; s++) {
       if (v.seats[s] === id) {
         v.seats[s] = 0;
@@ -986,7 +1031,8 @@ function handleWorldSeat(ws, msg) {
   }
   const v = worldFleet[msg.v];
   const holder = v.seats[msg.seat];
-  if (holder !== 0 && holder !== w.id) {
+  // a machine on somebody else's physgun is not a machine you can climb into
+  if ((holder !== 0 && holder !== w.id) || (v.hand !== 0 && v.hand !== w.id)) {
     // somebody beat them to the door by a round trip
     send(ws, { type: 'world-seat-denied', v: msg.v, seat: msg.seat });
     return;
@@ -1004,6 +1050,32 @@ function handleWorldUnseat(ws) {
   if (clearSeatsOf(w.id)) announceSeats();
 }
 
+/** take an empty machine on the physgun, or let it go. One authority per
+    machine: refused (in silence, the table simply does not name you) while
+    anybody is sitting in it or somebody else already has it */
+function handleWorldHold(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (!allowWorld(worldSeatRate, ws, WORLD_SEAT_RATE_MAX, WORLD_SEAT_RATE_WINDOW_MS)) return;
+  if (!Number.isInteger(msg.v) || msg.v < 0 || msg.v >= WORLD_FLEET || typeof msg.on !== 'boolean') {
+    strike(ws);
+    return;
+  }
+  const v = worldFleet[msg.v];
+  if (msg.on) {
+    if (v.hand === w.id) return;
+    if (v.hand !== 0 || v.seats.some((s) => s !== 0)) {
+      send(ws, { type: 'world-hold-denied', v: msg.v });
+      return;
+    }
+    v.hand = w.id;
+  } else {
+    if (v.hand !== w.id) return;
+    v.hand = 0;
+  }
+  announceSeats();
+}
+
 function handleWorldVehicle(ws, msg) {
   const w = ws.world;
   if (!w) return;
@@ -1016,8 +1088,9 @@ function handleWorldVehicle(ws, msg) {
   }
   const v = worldFleet[msg.v];
   // the entirety of the server's opinion about physics: you may move the
-  // machine you are holding the wheel of, and no other
-  if (v.seats[0] !== w.id) return;
+  // machine you are holding the wheel of, or the empty one on your physgun,
+  // and no other
+  if (v.seats[0] !== w.id && !(v.seats[0] === 0 && v.hand === w.id)) return;
   if (!finite(msg.x) || !finite(msg.y) || !finite(msg.z)) {
     strike(ws);
     return;
@@ -1040,6 +1113,8 @@ function handleWorldVehicle(ws, msg) {
 // it — including its own subject, so the payload stays identical per level and
 // the client can reconcile against what the server thinks it said.
 function worldTick() {
+  propRegistry.tick();
+  worldEffects.tick();
   if (!worldDirty || worldPlayers.size === 0) return;
   worldDirty = false;
   const byLevel = new Map();
@@ -1058,7 +1133,12 @@ function worldTick() {
   for (const [, list] of byLevel) {
     const players = list.map((ws) => {
       const p = ws.world;
-      return [p.id, r2(p.x), r2(p.y), r2(p.z), r3(p.yaw), r3(p.pitch), r2(p.gait), p.f];
+      const row = [p.id, r2(p.x), r2(p.y), r2(p.z), r3(p.yaw), r3(p.pitch), r2(p.gait), p.f];
+      // the optional tail (protocol.ts's PoseTuple): an emote, and where the
+      // arm points, only for somebody doing either
+      if (p.e || p.pt) row.push(p.e);
+      if (p.pt) row.push(r3(p.py), r3(p.pp));
+      return row;
     });
     const text = JSON.stringify(
       vehicles.length > 0
@@ -1110,7 +1190,10 @@ function handleWorldJoin(ws, msg) {
   // the join may carry a look, so nobody ever sees the wrong colours — not
   // even for the one tick between the world-enter and a world-look
   if (typeof msg.look === 'string' && WORLD_LOOK_RE.test(msg.look)) ws.look = msg.look;
-  ws.world = { id, slot, level, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED };
+  ws.world = {
+    id, slot, level, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED,
+    e: 0, pt: false, py: 0, pp: 0,
+  };
   worldPlayers.set(id, ws);
   const vehicles = worldVehicleRows();
   send(ws, {
@@ -1128,6 +1211,8 @@ function handleWorldJoin(ws, msg) {
     ...(vehicles.length > 0 ? { vehicles } : {}),
     ...(worldFleet.some((v) => v.seats.some(Boolean)) ? { seats: worldSeatTable() } : {}),
   });
+  propRegistry.join(ws);
+  worldEffects.snapshot(ws);
   worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
   worldDirty = true;
   startWorldTicker();
@@ -1138,6 +1223,8 @@ function leaveWorld(ws) {
   if (!w) return;
   ws.world = null;
   worldPlayers.delete(w.id);
+  propRegistry.leave(w.id, w.level);
+  worldEffects.leave(w.id);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
   const freed = clearSeatsOf(w.id);
@@ -1168,6 +1255,13 @@ function handleWorldMove(ws, msg) {
   w.pitch = msg.pitch;
   w.gait = finite(msg.gait) ? Math.max(0, Math.min(1, msg.gait)) : 0;
   w.f = Number.isInteger(msg.f) ? msg.f & W_FLAGS : 0;
+  // both optional, and absent from older clients: absence is "neither"
+  w.e = Number.isInteger(msg.e) && msg.e > 0 && msg.e < W_EMOTE_MAX ? msg.e : 0;
+  w.pt = finite(msg.py) && finite(msg.pp);
+  if (w.pt) {
+    w.py = msg.py;
+    w.pp = Math.max(-1.6, Math.min(1.6, msg.pp));
+  }
   worldDirty = true;
 }
 
@@ -1178,7 +1272,11 @@ function handleWorldLevel(ws, msg) {
     strike(ws);
     return;
   }
+  const previousLevel = w.level;
   w.level = msg.level;
+  propRegistry.leave(w.id, previousLevel);
+  propRegistry.join(ws);
+  worldEffects.snapshot(ws);
   // the fleet lives in one level; walking a seam out of it is getting out
   if (clearSeatsOf(w.id)) announceSeats();
   worldDirty = true;
@@ -1247,6 +1345,102 @@ function handleWorldSignal(ws, msg) {
   // level seam mid-handshake, is a race the caller already recovers from.
   if (!peer || peer === ws || peer.world.level !== w.level) return;
   send(peer, { type: 'world-signal', from: w.id, data: msg.data });
+}
+
+// Somebody bumped into somebody. Nobody's position is ever moved here: the
+// velocity goes to the victim, whose own client decides whether it is a
+// stumble, a flop or nothing. What this process guards is that a shove comes
+// from someone standing next to its target (their last reported poses, with
+// room for the playback lag), that neither is sitting in a machine or flying
+// through the world in noclip, and that it is not a firehose.
+function worldSeated(id) {
+  for (const v of worldFleet) if (v.seats.includes(id)) return true;
+  return false;
+}
+
+function handleWorldShove(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (!Number.isInteger(msg.to) || !finite(msg.vx) || !finite(msg.vy) || !finite(msg.vz)) {
+    strike(ws);
+    return;
+  }
+  // dropped, never punished: a lean held into somebody is a steady stream
+  if (!allowWorld(worldShoveRate, ws, WORLD_SHOVE_RATE_MAX, WORLD_SHOVE_RATE_WINDOW_MS)) return;
+  const peer = worldPlayers.get(msg.to);
+  if (!peer || peer === ws || peer.world.level !== w.level) return;
+  const p = peer.world;
+  if (Math.hypot(p.x - w.x, p.z - w.z) > WORLD_SHOVE_REACH) return;
+  if (Math.abs(p.y - w.y) > WORLD_SHOVE_REACH) return;
+  if ((w.f | p.f) & W_FLY) return;
+  if (worldSeated(w.id) || worldSeated(p.id)) return;
+  let vx = msg.vx;
+  let vz = msg.vz;
+  const planar = Math.hypot(vx, vz);
+  if (planar > WORLD_SHOVE_MAX) {
+    vx *= WORLD_SHOVE_MAX / planar;
+    vz *= WORLD_SHOVE_MAX / planar;
+  }
+  const vy = Math.max(-WORLD_SHOVE_MAX, Math.min(WORLD_SHOVE_MAX, msg.vy));
+  send(peer, { type: 'world-shove', from: w.id, vx: r2(vx), vy: r2(vy), vz: r2(vz) });
+}
+
+// Somebody has somebody else on the end of a physgun. Streamed at about the
+// snapshot rate while held; a 'freeze' pins the limb where it is and a
+// 'release' carries the throw. Nothing here moves anybody: the victim's own
+// client pins its own body to the point, caps the hold and times it out.
+// Every refusal is silent, because a hold is a stream and the victim's side
+// already lets go of one that stops arriving.
+function handleWorldGrab(ws, msg) {
+  const w = ws.world;
+  if (!w) return;
+  if (
+    !Number.isInteger(msg.to) ||
+    !WORLD_GRAB_PHASES.has(msg.phase) ||
+    !Number.isInteger(msg.limb) ||
+    msg.limb < 0 ||
+    msg.limb >= WORLD_GRAB_LIMBS ||
+    !finite(msg.x) ||
+    !finite(msg.y) ||
+    !finite(msg.z)
+  ) {
+    strike(ws);
+    return;
+  }
+  if (!allowWorld(worldGrabRate, ws, WORLD_GRAB_RATE_MAX, WORLD_GRAB_RATE_WINDOW_MS)) return;
+  const peer = worldPlayers.get(msg.to);
+  if (!peer || peer === ws || peer.world.level !== w.level) return;
+  const p = peer.world;
+  // a release always goes through, so a victim is never left hanging by a
+  // refusal; everything else must be honest
+  if (msg.phase !== 'release') {
+    if (Math.hypot(p.x - w.x, p.y - w.y, p.z - w.z) > WORLD_GRAB_REACH) return;
+    if (Math.hypot(msg.x - w.x, msg.y - w.y, msg.z - w.z) > WORLD_GRAB_REACH) return;
+    if (p.f & W_FLY) return;
+    if (worldSeated(p.id)) return;
+  }
+  let vx = finite(msg.vx) ? msg.vx : 0;
+  let vy = finite(msg.vy) ? msg.vy : 0;
+  let vz = finite(msg.vz) ? msg.vz : 0;
+  const speed = Math.hypot(vx, vy, vz);
+  if (speed > WORLD_GRAB_THROW_MAX) {
+    const k = WORLD_GRAB_THROW_MAX / speed;
+    vx *= k;
+    vy *= k;
+    vz *= k;
+  }
+  send(peer, {
+    type: 'world-grab',
+    from: w.id,
+    phase: msg.phase,
+    limb: msg.limb,
+    x: r2(clampCoord(msg.x)),
+    y: r2(clampCoord(msg.y)),
+    z: r2(clampCoord(msg.z)),
+    vx: r2(vx),
+    vy: r2(vy),
+    vz: r2(vz),
+  });
 }
 
 // ---------------------------------------------------------------- analytics
@@ -1576,6 +1770,24 @@ function handleMessage(ws, msg) {
     case 'duel-rematch':
       handleDuelRematch(ws);
       return;
+    case 'world-portal':
+    case 'world-air-hop':
+      worldEffects.handle(ws, msg);
+      break;
+    case 'world-prop-spawn':
+    case 'world-prop-move':
+    case 'world-prop-ack':
+    case 'world-prop-claim':
+    case 'world-prop-remove':
+    case 'world-prop-cleanup':
+    case 'world-prop-hit':
+    case 'world-prop-break':
+    case 'world-prop-explosion':
+    case 'world-prop-meta':
+    case 'world-prop-joint':
+    case 'world-prop-unjoint':
+      propRegistry.handle(ws, msg);
+      break;
     case 'world-join':
       handleWorldJoin(ws, msg);
       return;
@@ -1603,8 +1815,17 @@ function handleMessage(ws, msg) {
     case 'world-vehicle':
       handleWorldVehicle(ws, msg);
       return;
+    case 'world-hold':
+      handleWorldHold(ws, msg);
+      return;
     case 'world-look':
       handleWorldLook(ws, msg);
+      return;
+    case 'world-shove':
+      handleWorldShove(ws, msg);
+      return;
+    case 'world-grab':
+      handleWorldGrab(ws, msg);
       return;
     case 'peeko-monitor':
       handlePeekoMonitor(ws, msg);

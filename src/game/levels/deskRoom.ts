@@ -1,25 +1,32 @@
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import type { ModelLike } from './houseWorld'
-import { CEIL_H, HOUSE, PART_X } from './houseWorld'
+import { CEIL_H, HOUSE, PART_X, UP } from './houseWorld'
 import { addBoxFrom, noStand, padXZ } from '../physics/collision'
 
 /*
-  The desk corner of the bedroom: the desk itself and everything dressed
+  The desk corner of the computer room: the desk itself and everything dressed
   around it — the built-in-code keyboard (the GLB's own is a featureless
   slab), the mug, the plant, the rug, the bookshelf, the cork board, the
   low table, the paper stacks. Pure scene construction lifted out of the
   scene shell so CrtScene only keeps what genuinely needs the renderer
   (the tube, the glass punch-through, the lights, the cameras). Also the
   home of the shared wood/glass materials the house builder reuses so the
-  rooms match the desk. The computer model itself stays with the scene —
-  the screen mesh is the CSS3D anchor — but its slab keyboard and mouse
-  are swapped for real ones here via swapPeripherals().
+  rooms match the desk. The computer model itself stays with the scene (the
+  screen mesh is the CSS3D anchor) but its slab keyboard and mouse are
+  swapped for real ones here via swapPeripherals().
+
+  The room is upstairs, at the house's UP. Everything here is placed at its
+  old x and z with UP added to its height, and `deskTop` is a world height,
+  so the camera cinematics CrtScene measures off the desk and its glass come
+  along without knowing which storey they are on.
 */
 
 export interface DeskRoomHandles {
   /** world-space height of the desk surface; the room is scaled around it */
   deskTop: number
+  /** the floor the desk stands on */
+  floorY: number
   /** the desk's four drawer fronts and the carcass they slide out of. The
       desk is this module's, but the machinery that makes a drawer work is
       the house's (`levels/fittings.ts`), so the parts are published rather
@@ -47,7 +54,9 @@ interface BuildOpts {
 }
 
 export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts): DeskRoomHandles {
+  const floorY = UP
   desk.scene.scale.setScalar(2.0)
+  desk.scene.position.y = floorY
   desk.scene.traverse((o) => {
     if ((o as THREE.Mesh).isMesh) {
       o.castShadow = true
@@ -55,10 +64,11 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
     }
   })
   scene.add(desk.scene)
+  desk.scene.updateMatrixWorld(true)
   const deskTop = new THREE.Box3().setFromObject(desk.scene).max.y
   // Two solids, not one. The desk itself is a surface — you can hop onto it,
   // and its top has to be the real deskTop, so the pad is x/z only. The dead
-  // strip it denies behind itself runs back through the bedroom wall, and
+  // strip it denies behind itself runs back through the computer room wall, and
   // that one is emphatically not a floor: standing on it past the wall plane,
   // the wall box would eject you out of the house.
   //
@@ -73,8 +83,8 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
   const deskBlock = padXZ(new THREE.Box3().setFromObject(desk.scene), 0.35)
   obstacles.push(deskBlock)
   obstacles.push(noStand(new THREE.Box3(
-    new THREE.Vector3(deskBlock.min.x, 0, HOUSE.minZ - 0.6),
-    new THREE.Vector3(deskBlock.max.x, CEIL_H, deskBlock.min.z),
+    new THREE.Vector3(deskBlock.min.x, floorY, HOUSE.minZ - 0.6),
+    new THREE.Vector3(deskBlock.max.x, floorY + CEIL_H, deskBlock.min.z),
   )))
 
   const makeBox = (w: number, h: number, d: number, material: THREE.Material, castShadow = true) => {
@@ -244,7 +254,7 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
   const rug = new THREE.Group()
   const rugBase = new THREE.Mesh(new THREE.PlaneGeometry(4.9, 3.25), rugMat)
   rugBase.rotation.x = -Math.PI / 2
-  rugBase.position.set(0.25, 0.012, 4.55)
+  rugBase.position.set(0.25, floorY + 0.012, 4.55)
   rugBase.receiveShadow = true
   rug.add(rugBase)
   const rugTrim = [
@@ -255,7 +265,7 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
   ] as const
   rugTrim.forEach(([w, h, d, x, y, z]) => {
     const trim = makeBox(w, h, d, rugTrimMat, false)
-    trim.position.set(x, y, z)
+    trim.position.set(x, floorY + y, z)
     rug.add(trim)
   })
   scene.add(rug)
@@ -285,14 +295,14 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
       shelf.add(book)
     }
   })
-  // against the bedroom's east partition. It hung on the house's outer east
+  // against the computer room's east partition. It hung on the house's outer east
   // wall until that side of the room became the entry hall; the partition
   // faces the room the same way, so only the x moved
-  shelf.position.set(PART_X - 0.38, 0, 6.45)
+  shelf.position.set(PART_X - 0.38, floorY, 6.45)
   scene.add(shelf)
   addBoxFrom(obstacles, shelf, 0.2)
   // noStand: a bookshelf tall enough that standing on it puts the eye
-  // through the bedroom ceiling
+  // through the room's ceiling
   noStand(obstacles[obstacles.length - 1])
 
   const cork = new THREE.Group()
@@ -355,7 +365,7 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
   addString(pinPoints[0], pinPoints[1])
   addString(pinPoints[1], pinPoints[3])
   // scooted toward the door: the bed's wall real estate is spoken for
-  cork.position.set(0.2, 3.15, 10.5 - 0.045)
+  cork.position.set(0.2, floorY + 3.15, 10.5 - 0.045)
   cork.rotation.y = Math.PI
   scene.add(cork)
 
@@ -379,7 +389,7 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
   const stackB = makeBox(0.39, 0.05, 0.28, bookMats[0], false)
   stackB.position.set(-0.16, 0.735, -0.03)
   lowTable.add(stackB)
-  lowTable.position.set(HOUSE.minX + 1.05, 0, 3.2)
+  lowTable.position.set(HOUSE.minX + 1.05, floorY, 3.2)
   lowTable.rotation.y = 0.15
   scene.add(lowTable)
   addBoxFrom(obstacles, lowTable, 0.18)
@@ -402,6 +412,7 @@ export function buildDeskRoom({ scene, obstacles, desk, mug, plant }: BuildOpts)
 
   return {
     deskTop,
+    floorY,
     drawers: ['Desk_Drawer1', 'Desk_Drawer2', 'Desk_Drawer3', 'Desk_Drawer4']
       .map((n) => desk.scene.getObjectByName(n))
       .filter(Boolean) as THREE.Object3D[],

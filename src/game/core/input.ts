@@ -12,41 +12,19 @@
   shell's own window-level Esc handler never sees it — which is also why the
   keydown listener rides the capture phase.
 */
+import { BOUND_CODES, SWALLOWED_CODES } from '../sandbox/bindings'
 
-const MOVE_KEYS = new Set([
-  'KeyW',
-  'KeyA',
-  'KeyS',
-  'KeyD',
-  'ArrowUp',
-  'ArrowDown',
-  'ArrowLeft',
-  'ArrowRight',
-  'Space', // jump; preventDefault also keeps the page from scrolling
-])
-// sprint and crouch modifiers; c is a crouch alias for anyone wary of
-// the browser eating ctrl chords. v and x ride along so the scene can
-// edge-detect the camera toggle and the ragdoll flop off the same set, and
-// so do the multiplayer keys: t opens the chat line, m arms the microphone,
-// n swaps open-mic for push-to-talk, and b is the push-to-talk key itself —
-// the only one of them the scene reads as a held state rather than an edge.
-// F9 is the collision wireframe (collisionDebug.ts); it lives here rather than
-// behind a build flag because the thing it diagnoses — a solid that disagrees
-// with the geometry it stands for — only ever shows up in a real walk
-const MOD_KEYS = new Set([
-  'ShiftLeft',
-  'ShiftRight',
-  'ControlLeft',
-  'ControlRight',
-  'KeyC',
-  'KeyV',
-  'KeyX',
-  'KeyT',
-  'KeyM',
-  'KeyN',
-  'KeyB',
-  'F9',
-])
+// which keys are tracked, and which have their browser default swallowed,
+// both come from the one key table (sandbox/bindings.ts): movement, sprint and
+// crouch, the flop, the camera, noclip, the console and spawn menu keys, the
+// emote wheel (b, a toggle, with 1-9 picking a slice while it is up) and the
+// point key (f or the middle button, held), the multiplayer keys (m arms the
+// microphone, n swaps the talk mode, g is the push-to-talk key, the one the
+// scene reads as a held state), and F9, the
+// collision wireframe (collisionDebug.ts), which lives here rather than
+// behind a build flag because the thing it diagnoses (a solid that disagrees
+// with the geometry it stands for) only ever shows up in a real walk. The
+// scene edge-detects the toggles off the same set.
 
 export interface RoamInputOpts {
   /** the WebGL canvas: lock target, pointer events, cursor */
@@ -72,8 +50,12 @@ export interface RoamInputOpts {
 }
 
 export interface RoamInput {
-  /** codes currently held; the walk controller reads this every tick */
+  /** codes currently held; the walk controller reads this every tick.
+      While the pointer is locked the mouse buttons are here too, as
+      `Mouse0` (left), `Mouse1` (middle) and `Mouse2` (right) */
   keys: ReadonlySet<string>
+  /** wheel notches since the last call, positive rolled away from you */
+  takeWheel: () => number
   readonly locked: boolean
   /** grab the mouse like a game; a browser refusal is fine, clicking locks */
   tryLock: () => void
@@ -88,6 +70,7 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
   const { dom, isActive, isLive, isPaused, isTyping, onTurn, onUse, onEscResume, onLock } = opts
   const keys = new Set<string>()
   let locked = false
+  let wheel = 0
   let downPt: { moved: number } | null = null
 
   const setCursor = (c: string) => {
@@ -115,15 +98,18 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
     }
     if (isPaused()) return // the world ignores the keyboard under the menu
     if (isTyping()) return // every key belongs to the chat line while it is up
-    // movement keys register during the stand-up glide too, so a held W
-    // starts the walk the very frame the controls go live
-    if (MOVE_KEYS.has(e.code)) {
+    // E is the interact key first: it goes to onUse and is also tracked, so
+    // a tool can read it as a held modifier (the physgun's rotate)
+    if (e.code === 'KeyE') {
       keys.add(e.code)
-      e.preventDefault()
-    } else if (MOD_KEYS.has(e.code)) {
+      if (isLive() && onUse()) e.preventDefault()
+      return
+    }
+    // everything else in the key table registers during the stand-up glide
+    // too, so a held W starts the walk the very frame the controls go live
+    if (BOUND_CODES.has(e.code)) {
       keys.add(e.code)
-    } else if (e.code === 'KeyE' && isLive()) {
-      if (onUse()) e.preventDefault()
+      if (SWALLOWED_CODES.has(e.code)) e.preventDefault()
     }
   }
   const onKeyUp = (e: KeyboardEvent) => keys.delete(e.code)
@@ -158,6 +144,26 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
     }
   }
 
+  // the buttons are mousedown/mouseup rather than pointer events: a second
+  // button pressed while the first is held (RMB to freeze while LMB holds)
+  // is a pointermove, not a pointerdown. Only while locked, where a click is
+  // a trigger; unlocked, a click is the grab of the mouse itself
+  const onMouseDown = (e: MouseEvent) => {
+    if (!locked || !isActive() || !isLive() || isPaused() || isTyping()) return
+    keys.add(`Mouse${e.button}`)
+    // the middle button is the point key: never the browser's autoscroll
+    if (e.button === 1) e.preventDefault()
+  }
+  const onMouseUp = (e: MouseEvent) => keys.delete(`Mouse${e.button}`)
+  const onWheel = (e: WheelEvent) => {
+    if (!locked || !isActive() || !isLive() || isPaused()) return
+    e.preventDefault()
+    if (e.deltaY) wheel += e.deltaY < 0 ? 1 : -1
+  }
+  const onContext = (e: Event) => {
+    if (locked) e.preventDefault()
+  }
+
   // capture phase: the pause menu's esc must win over the OS shell's
   // window-level esc handler regardless of registration order
   window.addEventListener('keydown', onKeyDown, true)
@@ -167,9 +173,18 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
   dom.addEventListener('pointerdown', onPtrDown)
   dom.addEventListener('pointermove', onPtrMove)
   dom.addEventListener('pointerup', onPtrUp)
+  document.addEventListener('mousedown', onMouseDown)
+  document.addEventListener('mouseup', onMouseUp)
+  document.addEventListener('wheel', onWheel, { passive: false })
+  document.addEventListener('contextmenu', onContext)
 
   return {
     keys,
+    takeWheel: () => {
+      const n = wheel
+      wheel = 0
+      return n
+    },
     get locked() {
       return locked
     },
@@ -187,6 +202,10 @@ export function createRoamInput(opts: RoamInputOpts): RoamInput {
       dom.removeEventListener('pointerdown', onPtrDown)
       dom.removeEventListener('pointermove', onPtrMove)
       dom.removeEventListener('pointerup', onPtrUp)
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('wheel', onWheel)
+      document.removeEventListener('contextmenu', onContext)
     },
   }
 }

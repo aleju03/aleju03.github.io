@@ -19,14 +19,11 @@
   decimals (a hair under a tenth of a degree), positions two (a centimetre) —
   both far finer than the interpolation that reads them.
 
-  The fleet is the one exception to "nothing about the planet travels", and it
-  is not an exception at all: a car is not the planet. Where a chunk is a pure
-  function of its coordinates, a machine is where somebody left it, so the
-  three transforms and the six seats are the only world state this server has
-  ever held. The shape follows the same rule as everything else here — the
-  driver's client owns the physics and its transform is relayed; the server
-  arbitrates *who* is driving and nothing else. It is the referee for the one
-  question two clients cannot answer between themselves.
+  The fleet and sandbox are stateful exceptions: machines and props remain
+  where players leave them. The server arbitrates seats and prop claims,
+  while one client simulates each machine or connected contraption. Prop
+  records and compact movement batches live in propProtocol.ts; the same
+  server and frontend release must understand both halves of the wire.
 */
 
 /** the id the server hands a socket for as long as it stays in the world.
@@ -44,9 +41,25 @@ export const POSE = {
   speaking: 16,
   /** ragdolled or getting back up */
   down: 32,
+  /** noclip: floating, no ground under the pose. Without it a flyer reads
+      as someone frozen at the top of a jump */
+  fly: 64,
+  /** hanging off somebody's physgun (net/grab.ts). While it is set the
+      position is the ragdoll's chest, and everyone else's copy of the body
+      is pulled along it instead of tumbling on its own */
+  held: 128,
 } as const
 
-/** [id, x, y, z, yaw, pitch, gait, poseBits] — y is the soles, not the eye */
+/** [id, x, y, z, yaw, pitch, gait, poseBits, emote?, pointYaw?, pointPitch?]
+    y is the soles, not the eye.
+
+    The tail is optional and only as long as it has to be: an emote rides as
+    one integer (`player/emotes.ts`'s `packEmote`: the id and how long it has
+    been playing, so a late arrival sees the same beat), present when either
+    an emote is playing or the player is pointing; the point is a world
+    direction from the right shoulder, present only while pointing. A tuple
+    of eight is somebody doing neither, which is also everything an older
+    server sends */
 export type PoseTuple = [
   PlayerId,
   number,
@@ -56,6 +69,9 @@ export type PoseTuple = [
   number,
   number,
   number,
+  number?,
+  number?,
+  number?,
 ]
 
 export interface RosterEntry {
@@ -76,7 +92,7 @@ export interface RosterEntry {
     do not need their spelling repeated fifteen times a second, and the server
     (which knows nothing about what a helicopter is) only has to bounds-check
     a small integer. Mirrored by W_FLEET in server/src/index.js */
-export const WIRE_VEHICLES = ['car', 'boat', 'heli'] as const
+export const WIRE_VEHICLES = ['car', 'boat', 'heli', 'ship'] as const
 export type WireVehicle = (typeof WIRE_VEHICLES)[number]
 
 /** the chair with the controls, and the one without */
@@ -89,10 +105,13 @@ export const SEAT_COUNT = 2
     banking helicopter are most of what a vehicle looks like from outside */
 export type VehicleTuple = [number, number, number, number, number, number, number]
 
-/** [vid, driverId, passengerId]; 0 is an empty chair, since ids start at 1.
-    The whole table is resent on any change — it is six numbers, and a
-    per-seat delta would be more protocol than the thing it describes */
-export type SeatTuple = [number, PlayerId, PlayerId]
+/** [vid, driverId, passengerId, handId]; 0 is an empty chair (or empty
+    hands), since ids start at 1. The hand is whoever has an *empty* machine
+    on their physgun, or is letting one settle after it: its authority, the
+    way a driver is, and the server keeps the two apart. The whole table is
+    resent on any change: it is a dozen numbers, and a per-seat delta would
+    be more protocol than the thing it describes */
+export type SeatTuple = [number, PlayerId, PlayerId, PlayerId]
 
 // ---------------------------------------------------------------- server -> client
 
@@ -158,6 +177,13 @@ export interface WorldSeatDenied {
   seat: number
 }
 
+/** the physgun claim on a machine lost: somebody is sitting in it, or
+    somebody else already has it */
+export interface WorldHoldDenied {
+  type: 'world-hold-denied'
+  v: number
+}
+
 export interface WorldChat {
   type: 'world-chat'
   id: PlayerId
@@ -199,7 +225,41 @@ export interface WorldLook {
   look?: string
 }
 
+/** somebody bumped into us hard enough to matter. The velocity is theirs
+    to propose and ours to apply: `net/shove.ts`'s taker decides whether it
+    is a stumble, a flop or nothing (seated, flying, just knocked down). The
+    server only forwards it when the two are standing near each other */
+export interface WorldShove {
+  type: 'world-shove'
+  from: PlayerId
+  vx: number
+  vy: number
+  vz: number
+}
+
+/** somebody has us on the end of a physgun. `hold` streams at about the
+    snapshot rate with where the grabbed limb should be; `freeze` pins it
+    there; `release` lets go with the throw's velocity. Ours to apply, and
+    `net/grab.ts`'s taker caps it and times it out */
+export type GrabPhase = 'hold' | 'freeze' | 'release'
+export interface WorldGrab {
+  type: 'world-grab'
+  from: PlayerId
+  phase: GrabPhase
+  limb: number
+  x: number
+  y: number
+  z: number
+  vx: number
+  vy: number
+  vz: number
+}
+
 export type WorldServerMessage =
+  | import('./effectProtocol').EffectServerMessage
+  | import('./propProtocol').PropServerMessage
+  | WorldShove
+  | WorldGrab
   | WorldWelcome
   | WorldEnter
   | WorldExit
@@ -208,6 +268,7 @@ export type WorldServerMessage =
   | WorldSignal
   | WorldSeats
   | WorldSeatDenied
+  | WorldHoldDenied
   | WorldName
   | WorldLook
 
@@ -219,6 +280,8 @@ export type VoiceSignal =
   | { kind: 'ice'; candidate: RTCIceCandidateInit }
 
 export type WorldClientMessage =
+  | import('./effectProtocol').EffectClientMessage
+  | import('./propProtocol').PropClientMessage
   /** `look` rides the join so a body is never drawn in the wrong colours even
       for the one tick between arriving and repainting */
   | { type: 'world-join'; level: string; look?: string }
@@ -235,6 +298,12 @@ export type WorldClientMessage =
       pitch: number
       gait: number
       f: number
+      /** the emote playing, packed (see PoseTuple); omitted is none */
+      e?: number
+      /** where the right arm points, a world yaw and pitch; both omitted
+          when it is not pointing */
+      py?: number
+      pp?: number
     }
   | { type: 'world-level'; level: string }
   | { type: 'world-chat'; text: string }
@@ -245,8 +314,30 @@ export type WorldClientMessage =
   /** give up whichever chair I hold. Getting out, a level seam, sitting back
       down at the desk — all the same message */
   | { type: 'world-unseat' }
+  /** take an empty machine on my physgun, or let it go. Answered by a
+      world-seats naming me as its hand, or a world-hold-denied */
+  | { type: 'world-hold'; v: number; on: boolean }
   /** where the machine I am driving now is. Ignored from anyone who is not
       its driver, which is the whole of the server's opinion about physics */
+  /** I bumped into this player: here is the velocity it should take.
+      Relayed to them alone, clamped, rate-limited, and dropped unless the
+      two of us are within WORLD_SHOVE_REACH of each other and on foot */
+  | { type: 'world-shove'; to: PlayerId; vx: number; vy: number; vz: number }
+  /** my physgun has this player by `limb`: see WorldGrab. Relayed to them
+      alone while the two of us are within the beam's reach and they are on
+      foot; a release is always relayed, and its velocity is clamped */
+  | {
+      type: 'world-grab'
+      to: PlayerId
+      phase: GrabPhase
+      limb: number
+      x: number
+      y: number
+      z: number
+      vx: number
+      vy: number
+      vz: number
+    }
   | {
       type: 'world-vehicle'
       v: number
@@ -273,6 +364,8 @@ export function packPose(o: {
   swimming: boolean
   speaking: boolean
   down: boolean
+  fly?: boolean
+  held?: boolean
 }): number {
   return (
     (o.grounded ? POSE.grounded : 0) |
@@ -280,6 +373,8 @@ export function packPose(o: {
     (o.crouch ? POSE.crouch : 0) |
     (o.swimming ? POSE.swimming : 0) |
     (o.speaking ? POSE.speaking : 0) |
-    (o.down ? POSE.down : 0)
+    (o.down ? POSE.down : 0) |
+    (o.fly ? POSE.fly : 0) |
+    (o.held ? POSE.held : 0)
   )
 }

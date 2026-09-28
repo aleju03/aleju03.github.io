@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>physics film</title>
+    <style>
+      html, body { margin: 0; background: #11151a; }
+      canvas { display: block; }
+      #labels { position: absolute; left: 0; top: 0; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <!-- Dev server only, like index.html beside it: scripts/film.mjs drives
+         this page over CDP. The labels are DOM so a screenshot carries them
+         and the WebGL canvas stays exactly what the game would draw. -->
+    <canvas id="c" width="16" height="16"></canvas>
+    <div id="labels"></div>
+    <script type="module">
+      import { sheet, list, videoStart, videoFrame, videoReport, videoLinks, turntable, thumbs, sounds, links, collapseLinks } from './film.ts'
+      window.__film = { sheet, list, videoStart, videoFrame, videoReport, videoLinks, turntable, thumbs, sounds, links, collapseLinks, ready: true }
+    </script>
+  </body>
+</html>

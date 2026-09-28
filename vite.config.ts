@@ -1,4 +1,5 @@
-import { defineConfig, type Plugin } from 'vite'
+import { realpathSync } from 'node:fs'
+import { defineConfig, searchForWorkspaceRoot, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { email, github, linkedin, more, secondary, showcase } from './src/data/projects'
@@ -112,6 +113,25 @@ function videoSearch(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss(), llmsTxt(), videoSearch()],
+  // Rapier is only ever reached through a dynamic import (the sandbox loads
+  // it after the planet attaches), so the dev server's dependency scan never
+  // sees it up front, finds it mid-session, re-optimises, and answers the
+  // import with a 504 that reloads the page. Naming it here pre-bundles it.
+  optimizeDeps: {
+    include: ['@dimforge/rapier3d-compat'],
+  },
+  // the probe harnesses (scripts/probe/cdp.mjs) run their own vite beside
+  // whoever else is working, and node_modules may be shared between
+  // checkouts; one dependency cache per harness port keeps two servers from
+  // invalidating each other's pre-bundles mid-run (a 504 "Outdated Optimize
+  // Dep" on a dynamic import)
+  cacheDir: process.env.VITE_CACHE_DIR || 'node_modules/.vite',
+  // ...and a checkout that borrows its node_modules through a symlink (the
+  // builders' git worktrees do) has its fonts served from outside the root,
+  // which vite refuses with a 403 unless the link's real target is allowed
+  server: {
+    fs: { allow: [searchForWorkspaceRoot(process.cwd()), realpathSync('node_modules')] },
+  },
   build: {
     // Three.js is intentionally isolated behind idle/interaction-triggered 3D
     // features. Keep warnings for chunks larger than that known vendor split.

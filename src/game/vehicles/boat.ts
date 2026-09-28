@@ -1,12 +1,16 @@
 import * as THREE from 'three'
 import {
+  V,
   at,
   blade,
+  capRing,
+  creased,
+  createFacets,
   createPartBuilder,
   loft,
+  skinRings,
   markDynamic,
   revolve,
-  ringFrom,
   ringSuper,
   slab,
   tube,
@@ -28,16 +32,15 @@ import type { DriveEnv, DriveStep, NetPose, Vehicle } from './types'
 import type { HullStation, Solid } from '../physics/collision'
 
 /*
-  The boat: a small open runabout with a centre console and an outboard, the
-  kind of thing left pulled up on a quiet coast. Thirteen units stem to
+  The boat: a small centre console with a T-top and an outboard, the kind of
+  thing a mid-2000s fishing shop sold and left pulled up on a quiet coast. Thirteen units stem to
   transom, which at this world's scale (1 unit = 0.48 m) is a 6.25 m hull —
   small enough that one person drives it perched at the console, big enough
   that the swell moves it rather than throws it.
 
   ------------------------------------------------------------------ the hull
 
-  A hull is the one shape in this project that a box will not fake, and it is
-  exactly what `loft` and a piecewise section function were written for. Every
+  A hull is the one shape in this project that a box will not fake. Every
   station here is the same eighteen-point half-outline, mirrored: a V bottom
   from the keel out to the chine, topsides from the chine up to the sheer, the
   gunwale cap rolling inboard, and then — inside the same closed ring — the
@@ -52,6 +55,16 @@ import type { HullStation, Solid } from '../physics/collision'
   boat is really built: a hull moulding and a liner moulding bonded at the
   sheer.
 
+  The rings are skinned cell by cell with creased normals (parts.ts's
+  `createFacets`, the same kit as the car's), so the V bottom, the chine,
+  the flared topsides, the cap and the liner are flat panels with hard
+  folds between them: what the pixel look reads, where the smooth loft read
+  as a bar of soap. Each cell's panel is read off its ring index, which is
+  how the bottom below the chine comes out antifouling red and the rest
+  white. Over the console (a flat-panelled moulding with a wraparound of
+  three flat panes on it) stands a T-top on four chrome legs, its canvas
+  clear of a seated rider's hat, and the outboard's cowl is black.
+
   One number opens and closes the cockpit: `open`, 0 at the ends and 1
   amidships. At open = 0 the "sole" rises to just above the sheer and pulls in
   to half the beam, so the inner half of the ring stops being a cockpit and
@@ -65,12 +78,9 @@ import type { HullStation, Solid } from '../physics/collision'
     the single most identifiable line on a small planing boat. It is a
     *longitudinal* fold, so `Station.crease` — which splits smoothing across a
     station, i.e. transversely — cannot make it. Instead the chine point goes
-    into the half-outline **twice**. The two coincident vertices give the
-    strip below the chine and the strip above it their own normals,
-    `computeVertexNormals` averages within each side rather than across, and
-    the fold stays a knife edge for the whole thirteen units at a cost of one
-    vertex per station per side. The sole-to-wall corner is doubled for the
-    same reason.
+    into the half-outline **twice**, which the creased normals now make
+    doubly sure of: the fold stays a knife edge for the whole thirteen
+    units. The sole-to-wall corner is doubled for the same reason.
   - **The deadrise varies.** 40 degrees at the entry, 24 amidships, 11 at the
     transom. A hull with one deadrise all the way either pounds (too flat
     forward) or will not plane (too deep aft); the taper is what a planing
@@ -82,7 +92,7 @@ import type { HullStation, Solid } from '../physics/collision'
 
   Beam grows to its 4.60 maximum about 60% aft and then holds to a wide square
   transom. The transom is a flat vertical cap, and the last station closes its
-  cockpit back to open = 0 before that cap is fanned: `loft`'s cap is a fan
+  cockpit back to open = 0 before that cap is fanned: `capRing` is a fan
   from the ring's centroid, which tiles a convex outline correctly and folds
   triangles back on themselves over the C-shape an open station would give it.
 
@@ -146,10 +156,9 @@ import type { HullStation, Solid } from '../physics/collision'
   reversing anything: the windscreen's crescent ring ran clockwise (`flip()`
   had been accidentally correcting it), and the wheel rim's section circled the
   wrong way (`flip()` never touched that one, so the rim had been inside out
-  from the day it was written). Every closed shell on the boat now has a
-  positive signed volume and a consistently wound index — hull +37.81, console
-  +1.67, outboard cowl +0.33, transom cap +13.95 — and none of its 72 flat
-  caps faces inward.
+  from the day it was written). The windscreen and the console have since been
+  rebuilt as flat panels wound by an outward hint (`quadOut`), and the hull
+  by `skinRings`, whose cells face out by construction.
 */
 
 /* ------------------------------------------------------------------- scale --
@@ -451,6 +460,10 @@ const TAU = Math.PI * 2
 
 /* --------------------------------------------------------------------- build */
 
+/** the leaning post's face: far enough aft of the console that a seated
+    rider's knees stop short of its aft face (measure -- seats) */
+const HELM_Z = 2.25
+
 export interface BoatOpts {
   mats: VehicleMaterials
 }
@@ -462,15 +475,41 @@ export function buildBoat(opts: BoatOpts): Vehicle {
 
   const B = createPartBuilder()
 
-  const stations: Station[] = SECTIONS.map((s, i) => ({
-    z: s.z,
-    ring: hullRing(s),
-    // the transom is a pressed corner, not a rolled one: split smoothing at
-    // the last full station so the flat cap cannot drag its normal forward
-    // into the run of the topsides
-    crease: i === SECTIONS.length - 2,
-  }))
-  B.add(loft(stations, { capStart: 'flat', capEnd: 'flat' }), 'paint2')
+  /*
+    The hull, in panels. The same station rings the loft used to skin, but
+    skinned cell by cell with creased normals (parts.ts's createFacets), so
+    the V bottom, the chine, the flared topsides, the gunwale cap and the
+    cockpit liner are separate planes with hard folds between them, which is
+    what reads through the pixel look; the smooth loft read as a bar of
+    soap. And the bottom is its own colour: antifouling red below the chine,
+    the one colour a boat out of the water shows, and on the water the thin
+    line of it along the waterline when she lifts onto the plane.
+
+    The rings run keel-first round the outside (counter-clockwise in the
+    section), the other way to the car's, so they are reversed on the way in
+    and each cell's panel read off the original index: `h` counts half-ring
+    segments from the keel, 0..4 the bottom, 5..8 the topsides, 9..10 the
+    cap, the rest the liner.
+  */
+  const HF = createFacets()
+  const N = 34
+  const hullRings = SECTIONS.map((sec) => {
+    const r = hullRing(sec)
+    const pts: THREE.Vector3[] = []
+    for (let i = 0; i < N; i++) {
+      const j = (N - i) % N
+      pts.push(V(r[j * 2], r[j * 2 + 1], sec.z))
+    }
+    return pts
+  })
+  skinRings(HF, hullRings, (_s, k) => {
+    const o = N - 1 - k
+    const h = o < N / 2 ? o : N - 1 - o
+    return h <= 4 ? 'paint' : 'paint2'
+  }, true)
+  capRing(HF, hullRings[0], -1, 'paint2')
+  capRing(HF, hullRings[hullRings.length - 1], 1, 'paint2')
+  HF.flush(B)
 
   // a moulded sole panel laid a hair over the liner. It is here to give the
   // cockpit floor a colour of its own; a one-colour interior reads as a bucket
@@ -536,21 +575,26 @@ export function buildBoat(opts: BoatOpts): Vehicle {
   const AFT_RAKE = Math.atan2(AFT_TOP - AFT_UPPER, CONSOLE_TOP - UPPER_Y)
 
   {
-    // lofted up its own +z and then stood on end, because the kit skins along
-    // z and a console is a vertical thing. rx = -90 maps the loft's +z to +y
-    // and the section's +y to -z, i.e. up and forward — which is how the
-    // rings below are dimensioned: (half-width, forward reach, aft reach)
-    const col: Station[] = [
-      { z: 0, ring: ringSuper(0.72, 0.5, 0.5, 5, 5, 16) },
-      { z: CONSOLE_H * 0.48, ring: ringSuper(0.7, 0.48, 0.52, 5, 5, 16) },
-      { z: CONSOLE_H * 0.86, ring: ringSuper(0.66, 0.4, AFT_UPPER, 4.5, 4.5, 16) },
-      { z: CONSOLE_H, ring: ringSuper(0.58, 0.3, AFT_TOP, 4, 4, 16) },
+    /*
+      The console, as a moulding of flat panels: a box with chamfered
+      shoulders whose top slopes down to a dash at the front and runs level
+      aft, where the wheel and the panel are let into its aft face (z 1.10).
+      It stands on the sole and is open underneath.
+    */
+    const CF = createFacets()
+    const prof = (z: number, top: number, w: number) => [
+      V(-w, consoleSole, z), V(-w, top - 0.12, z), V(-w + 0.12, top, z),
+      V(w - 0.12, top, z), V(w, top - 0.12, z), V(w, consoleSole, z),
     ]
-    B.add(
-      loft(col, { capStart: 'flat', capEnd: 'flat' }),
-      'paint2',
-      at(0, consoleSole, CONSOLE_Z, -Math.PI / 2),
-    )
+    const cr = [
+      prof(CONSOLE_Z - 0.5, CONSOLE_TOP - 0.26, 0.62),
+      prof(CONSOLE_Z - 0.05, CONSOLE_TOP, 0.72),
+      prof(CONSOLE_Z + AFT_TOP + 0.05, CONSOLE_TOP, 0.72),
+    ]
+    skinRings(CF, cr, () => 'paint2')
+    capRing(CF, cr[0], -1, 'paint2')
+    capRing(CF, cr[cr.length - 1], 1, 'paint2')
+    CF.flush(B)
     /*
       The dash: a dark panel let into the aft face above the wheel. It was
       placed at z = 1.01 with an invented -0.22 of rake, and the skin at those
@@ -567,36 +611,53 @@ export function buildBoat(opts: BoatOpts): Vehicle {
 
   {
     /*
-      The windscreen: a crescent ring — an arc out and an arc back, doubled at
-      both ends so the edges stay sharp — lofted a short way and stood on end.
-      Curving it across the beam is the whole trick; a flat pane in front of a
-      console reads as a bus shelter. 0.50 units of screen (24 cm) raked 20
-      degrees aft, which keeps its top just under the bow rail's.
-
-      The first half of t is the *inner* arc, and that is not a detail. `loft`
-      needs its rings wound counter-clockwise, like `ringSuper`'s; running the
-      outer arc first traces this crescent the other way round and the pane
-      comes out inside out. It used to, and the `flip()` this file has just
-      lost was quietly correcting it — the one thing that wrapper ever got
-      right, and only by accident.
+      The windscreen: three flat panes, a wide one across the front and two
+      angled back round the shoulders, raked aft and standing on the dash,
+      with a dark frame along the top. A wraparound in flat glass is what a
+      centre console of the period had, and flat panes read at this
+      resolution where a curved one reads as a smear.
     */
-    const R = 1.9
-    const screenRing = (halfAng: number, thick: number): Ring =>
-      ringFrom((t) => {
-        const u = t < 0.5 ? t * 2 : (1 - t) * 2
-        const a = (u - 0.5) * 2 * halfAng
-        const rr = R + (t < 0.5 ? -thick * 0.5 : thick * 0.5)
-        return [Math.sin(a) * rr, Math.cos(a) * rr - R]
-      }, 20)
-    const glass: Station[] = [
-      { z: 0, ring: screenRing(0.36, 0.05) },
-      { z: 0.5, ring: screenRing(0.345, 0.045) },
-    ]
-    B.add(
-      loft(glass, { capStart: 'flat', capEnd: 'flat' }),
-      'glass',
-      at(0, CONSOLE_TOP - 0.03, CONSOLE_Z - 0.4, -Math.PI / 2 + 0.35),
-    )
+    const WF = createFacets()
+    const baseY = CONSOLE_TOP - 0.2
+    const H = 0.78
+    const rake = 0.34
+    const zf = CONSOLE_Z - 0.34
+    const up = (p: THREE.Vector3) => V(p.x * 0.96, p.y + H, p.z + rake)
+    const pts = [V(-0.7, baseY + 0.12, zf + 0.46), V(-0.5, baseY, zf), V(0.5, baseY, zf), V(0.7, baseY + 0.12, zf + 0.46)]
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i]
+      const b = pts[i + 1]
+      WF.quadOut(a, b, up(b), up(a), 'glass', V((a.x + b.x) * 0.5, 0.3, -1))
+    }
+    WF.flush(B)
+    B.add(tube(pts.map(up), 0.035, 5), 'dark')
+    B.both(() => {
+      B.add(tube([pts[3], up(pts[3])], 0.03, 5), 'dark')
+    })
+  }
+
+  {
+    /*
+      The T-top: a canvas roof on four chrome legs over the console and the
+      leaning post, the silhouette that says centre console from a hundred
+      units off. Its underside is at 4.03 over the waterline, clear of a
+      seated rider's hat (3.87 for the passenger's), and its legs stand on the sole either side
+      of the console and aft of the helm seat, inside the gunwale.
+    */
+    const TOP_Y = 4.1
+    const zf = CONSOLE_Z - 0.25
+    const za = HELM_Z + 0.95
+    B.both(() => {
+      for (const z of [zf, za]) {
+        const sole = soleOf(sectionAt(z)).y
+        B.add(
+          tube([V(0.82, sole, z), V(0.82, TOP_Y - 0.1, z + (z === zf ? 0.18 : -0.12))], 0.05, 6),
+          'chrome',
+        )
+      }
+      B.add(tube([V(0.82, TOP_Y - 0.1, zf + 0.18), V(0.82, TOP_Y - 0.1, za - 0.12)], 0.045, 6), 'chrome')
+    })
+    B.add(creased(slab(2.1, 0.14, 2.9, 0.06)), 'seat', at(0, TOP_Y, (zf + za) / 2))
   }
 
   // the throttle: one lever to starboard, forward for ahead
@@ -626,7 +687,7 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     B.add(slab(0.82, 0.6, 0.14, 0.06), 'seat', at(0, sole + lift + 0.34, z + back * 0.3, back * -0.16))
   }
   // the helm perch, aft of the console — the driver half sits on it
-  seatAt(1.75, 1, 0.87)
+  seatAt(HELM_Z + 0.13, 1, 0.87)
   // and a lower seat forward of it, over the tank, facing back into the boat
   seatAt(-0.35, -1, 0.6)
 
@@ -822,16 +883,17 @@ export function buildBoat(opts: BoatOpts): Vehicle {
   const OUT_Z = 6.45
   const MB = createPartBuilder()
   {
-    // the cowling — the only part of the boat that is neither white nor steel
+    // the cowling: black, the outboard of the period, in creased facets so
+    // it reads as a moulded box rather than a pebble, with a white band
     const cowl: Station[] = [
-      { z: -0.06, y: 0.3, ring: ringSuper(0.3, 0.2, 0.24, 4, 4, 14) },
-      { z: 0.16, y: 0.3, ring: ringSuper(0.4, 0.27, 0.3, 4.5, 4.5, 14) },
-      { z: 0.52, y: 0.28, ring: ringSuper(0.42, 0.28, 0.31, 4.5, 4.5, 14) },
-      { z: 0.78, y: 0.24, ring: ringSuper(0.34, 0.22, 0.26, 4, 4, 14) },
+      { z: -0.06, y: 0.3, ring: ringSuper(0.3, 0.2, 0.24, 4, 4, 10) },
+      { z: 0.16, y: 0.3, ring: ringSuper(0.4, 0.27, 0.3, 4.5, 4.5, 10) },
+      { z: 0.52, y: 0.28, ring: ringSuper(0.42, 0.28, 0.31, 4.5, 4.5, 10) },
+      { z: 0.78, y: 0.24, ring: ringSuper(0.34, 0.22, 0.26, 4, 4, 10) },
     ]
-    MB.add(loft(cowl, { capStart: 'flat', capEnd: 'flat' }), 'paint2')
+    MB.add(creased(loft(cowl, { capStart: 'flat', capEnd: 'flat' })), 'trim')
     MB.both(() => {
-      MB.add(slab(0.05, 0.12, 0.42, 0.02), 'dark', at(0.4, 0.3, 0.4))
+      MB.add(slab(0.05, 0.1, 0.5, 0.02), 'paint2', at(0.41, 0.3, 0.38))
     })
 
     // the midsection, a streamlined strut. Lofted up its own +z and then
@@ -959,13 +1021,18 @@ export function buildBoat(opts: BoatOpts): Vehicle {
   // same height by construction
   const driverSeat = new THREE.Group()
   driverSeat.name = 'driverSeat'
-  driverSeat.position.set(0, 2.35, 1.62)
+  driverSeat.position.set(0, 2.35, HELM_Z)
+  // an open cockpit: the walls are the T-top's canvas overhead and the
+  // console ahead of the knees (the seat is aft of it by that much), and the
+  // sides are the gunwales
+  driverSeat.userData.room = new THREE.Box3(new THREE.Vector3(-1.9, -2.3, -1.6), new THREE.Vector3(1.9, 1.6, 2.2))
   root.add(driverSeat)
   // a leaning post is two-up. 0.95 to starboard keeps a seated body's
   // shoulders inside a 2.3 half-beam with the gunwale still outboard of them
   const passengerSeat = new THREE.Group()
   passengerSeat.name = 'passengerSeat'
-  passengerSeat.position.set(0.95, 2.35, 1.62)
+  passengerSeat.position.set(0.95, 2.35, HELM_Z)
+  passengerSeat.userData.room = new THREE.Box3(new THREE.Vector3(-2.8, -2.3, -1.6), new THREE.Vector3(1.0, 1.6, 2.2))
   root.add(passengerSeat)
   markDynamic(root)
 
@@ -1473,8 +1540,8 @@ export function buildBoat(opts: BoatOpts): Vehicle {
       stretch: 4,
       fov: 64,
       anchor: new THREE.Vector3(0, 1.2, 0.6),
-      eye: new THREE.Vector3(0, 2.35, 1.3),
-      eye2: new THREE.Vector3(0.95, 2.35, 1.3),
+      eye: new THREE.Vector3(0, 2.35, HELM_Z - 0.32),
+      eye2: new THREE.Vector3(0.95, 2.35, HELM_Z - 0.32),
     },
     size: { halfX: 2.3, halfZ: 6.5, height: 2.6 },
     hull: HULL,
@@ -1489,6 +1556,9 @@ export function buildBoat(opts: BoatOpts): Vehicle {
     },
     solid,
     reach: 5,
+    // a hull is mostly air: on the physgun it is light, and dropped in the
+    // sea it floats high on its own keel
+    carry: { mass: 240, density: 0.35, bottom: -KEEL },
     placeAt,
     mount: () => {},
     dismount: () => {},

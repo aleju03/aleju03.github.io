@@ -289,6 +289,8 @@ export const SURFACE_FEEL: Record<StepSurface, SurfaceFeel> = {
   sand: { grip: 0.5, drag: 8.5, spray: 0.9, dust: 0xd9c79a },
   snow: { grip: 0.34, drag: 6.5, spray: 0.85, dust: 0xe8eef2 },
   water: { grip: 0.28, drag: 12, spray: 1, dust: 0xa9c4cc },
+  // the Moon's dust: nothing but the ship lands there today
+  regolith: { grip: 0.45, drag: 7.5, spray: 0.8, dust: 0x9a9892 },
 }
 
 /* ------------------------------------------------------------------ math -- */

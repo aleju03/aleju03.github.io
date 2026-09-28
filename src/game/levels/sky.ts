@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { HOUSE } from './houseWorld'
+import { insideBy } from './houseWorld'
 import { seeded } from '../core/rand'
 import { canvasTexture, makeGlowTexture } from '../core/textures'
 import { gfx } from '../world/quality'
@@ -7,7 +7,7 @@ import { gfx } from '../world/quality'
 /*
   Everything above the horizon, and the clock that drives it.
 
-  A full day is DAY_LEN seconds, Minecraft-style. The sun and moon ride one
+  A full day is DAY_LEN seconds, Minecraft-style, most of it daylight. The sun and moon ride one
   orbit half a day apart; a painted day dome crossfades over the star dome, a
   shell of animated FBM clouds drifts over both (adapted from cortiz2894/
   stylized-components' SkyDome, MIT © Christian Ortiz), a twilight band flares
@@ -30,6 +30,14 @@ import { gfx } from '../world/quality'
   a city and never reach it. There is a real one out there now, so the fakes
   are gone and this module kept only the part that was never a lie — the sky.
 
+  Every frame of it goes through the pixel look (render/pixelLook.ts), which
+  posterizes and grades whatever this module paints, so the colours here are
+  painted for that: the day dome a deeper blue than it reads, the clouds as
+  a hard-rimmed shape in three flat tones rather than a soft gradient (which
+  came out of the posterize as a blotch with a dithered halo), the twilight
+  band peaking at the skyline and fading at both ends of its cylinder, and
+  the stars held back until the twilight has gone.
+
   The sun carries the world's one moving shadow map: an ortho projection
   parked on the player. Its `castShadow` flag never changes after construction
   because doing that changes every lit material's shader program and used to
@@ -37,10 +45,39 @@ import { gfx } from '../world/quality'
   night its uniform strength is zero and its hand-managed map sleeps; outside
   it refreshes only after meaningful camera travel or sun rotation. The
   house's baked interior maps follow the same no-auto-update rule.
+
+  Above it all, the sky thins. update() takes `space` (levels/space.ts's
+  spaceK, 0 under the air and 1 above it): the day dome, the clouds, the
+  twilight band, the haze and the red-eye fade out, the fog goes black, the
+  ambient drains, and the stars come out whatever the hour. The sun stays.
+  The sky's own moon disc steps aside for the real one out there
+  (world/globe.ts), and on the Moon itself `moonDisc` false hides it.
 */
 
-const DAY_LEN = 480 // seconds per full in-world day
+const DAY_LEN = 1200 // seconds per full in-world day
 const START_TOD = 0.36 // 0 midnight .. 0.5 noon; 0.36 = mid-morning
+/*
+  The clock does not run evenly. At eight minutes a day the daylight was
+  gone in about four, which was too short to get anything done in; a
+  longer, even day would only make the night drag as much. So the day is
+  twenty minutes and the hours between DAWN and DUSK take DAY_SHARE of
+  them (about fourteen and a half minutes of light), and the night the
+  rest (about five and a half, still long enough to aim a portal at the
+  Moon). The mapping is piecewise linear, so the sky's own dusk and dawn
+  ramps, which are written against tod, are just crossed more slowly.
+*/
+const DAWN = 0.23
+const DUSK = 0.77
+const DAY_SHARE = 0.72
+/** tod for a clock that has run `r` cycles from dawn */
+const todOfCycle = (r: number) => {
+  const f = r - Math.floor(r)
+  return f < DAY_SHARE
+    ? DAWN + (f / DAY_SHARE) * (DUSK - DAWN)
+    : (DUSK + ((f - DAY_SHARE) / (1 - DAY_SHARE)) * (1 - (DUSK - DAWN))) % 1
+}
+/** where the clock starts, so boot still lands on START_TOD */
+const START_CYCLE = ((START_TOD - DAWN) / (DUSK - DAWN)) * DAY_SHARE
 
 export interface SkyState {
   /** 0 night .. 1 day (smoothed on sun elevation) */
@@ -64,10 +101,41 @@ export interface SkyState {
 }
 
 export interface SkyHandles {
-  update: (camPos: THREE.Vector3, todOverride?: number) => SkyState
+  /** `space` 0..1 thins the sky away (see the header); `moonDisc` false
+      hides the sky's own moon (you are standing on it) */
+  update: (
+    camPos: THREE.Vector3, todOverride?: number, space?: number, moonDisc?: boolean, dip?: number,
+    frame?: SkyFrame | null,
+  ) => SkyState
   /** the world's one moving shadow caster. Its castShadow flag is stable;
       strength and explicit map updates handle indoor/night transitions */
   sun: THREE.DirectionalLight
+  /**
+   * Scale everything that stands for "infinitely far away" about the camera.
+   * A sphere centred on the eye projects the same at any radius, so this
+   * changes nothing on screen but depth: the domes are drawn in the
+   * transparent pass with the depth test on, so at their 430 units they
+   * used to cover any terrain past them. The far field (world/farfield.ts)
+   * reaches kilometres, and levels/altitude.ts's far plane grows with it;
+   * the dome grows too, to just inside that plane
+   */
+  setScale: (k: number) => void
+  /** the unit direction the sky's moon is drawn in at the last update */
+  moonDir: (out: THREE.Vector3) => THREE.Vector3
+  /** ...and the sun's, in the unturned sky (a frame turns it for the scene) */
+  sunDir: (out: THREE.Vector3) => THREE.Vector3
+}
+
+/**
+ * The sky turned about the lens, for space (levels/outsideWorld.ts): flying at
+ * the Moon, the whole of space swings round you until the Moon is underfoot,
+ * and the stars and the sun swing with it. `sun`, when given, is where the
+ * sun is in the unturned sky (space's own sun, eased toward the Moon's
+ * morning as you come in to land), and there it is always full day.
+ */
+export interface SkyFrame {
+  q: THREE.Quaternion
+  sun?: THREE.Vector3
 }
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
@@ -129,11 +197,14 @@ const makeDayTexture = () =>
   canvasTexture([1024, 512], (ctx, w, h) => {
     const rand = seeded(0xdaf)
     const sky = ctx.createLinearGradient(0, 0, 0, h)
-    sky.addColorStop(0, '#6f9fc9')
-    sky.addColorStop(0.5, '#93b8d6')
-    sky.addColorStop(0.78, '#bad2e0')
-    sky.addColorStop(0.9, '#d9e6ea')
-    sky.addColorStop(1, '#e4e9e2')
+    // a confident blue: deep at the zenith, clearing to a pale cyan at the
+    // horizon. These go through ACES and the grade, both of which lift and
+    // soften a sky, so they are painted a good deal deeper than they read
+    sky.addColorStop(0, '#1d62c4')
+    sky.addColorStop(0.5, '#2f7ed4')
+    sky.addColorStop(0.78, '#5da3dc')
+    sky.addColorStop(0.9, '#8cc2e6')
+    sky.addColorStop(1, '#b2d8ee')
     ctx.fillStyle = sky
     ctx.fillRect(0, 0, w, h)
     // a faint painted haze layer high up; the real clouds are the animated
@@ -162,13 +233,22 @@ const makeDayTexture = () =>
     }
   })
 
+/*
+  The twilight band hangs on a cylinder, and a cylinder has a bottom edge.
+  It used to end at full strength a couple of degrees under the horizon,
+  which is exactly where an orbit shot over the fog line looks, and drew a
+  hard horizontal seam across the sky with the stars going on above it. It
+  peaks at the horizon now (58% of the way down the cylinder, see below) and
+  fades to nothing at both ends.
+*/
 const makeTwilightTexture = () =>
   canvasTexture([64, 128], (ctx, w, h) => {
     const g = ctx.createLinearGradient(0, 0, 0, h)
     g.addColorStop(0, 'rgba(255,150,80,0)')
-    g.addColorStop(0.62, 'rgba(255,145,72,0.18)')
-    g.addColorStop(0.88, 'rgba(255,170,96,0.5)')
-    g.addColorStop(1, 'rgba(255,196,120,0.62)')
+    g.addColorStop(0.35, 'rgba(255,120,60,0.12)')
+    g.addColorStop(0.583, 'rgba(255,125,60,0.5)')
+    g.addColorStop(0.78, 'rgba(255,110,60,0.2)')
+    g.addColorStop(1, 'rgba(255,110,60,0)')
     ctx.fillStyle = g
     ctx.fillRect(0, 0, w, h)
   })
@@ -222,21 +302,32 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     transparent haze draw.
   */
   const horizonFogU = { value: new THREE.Color('#0d1220') }
+  /** how high up the dome the fog colour reaches: low by day, so a clear
+      sky stays blue almost to the skyline, higher at night */
+  const horizonReachU = { value: 0.14 }
+  /** where the horizon is, as the sine of how far below level: 0 on the
+      ground, and from high up the planet's limb (outsideWorld passes the
+      dip), so the fog colour starts where the ground does. Left at level,
+      it painted a flat slate band between the sky and the curve of the
+      planet on the way up */
+  const horizonDipU = { value: 0 }
   const blendHorizon = <T extends THREE.MeshBasicMaterial>(material: T, key: string): T => {
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uHorizonFog = horizonFogU
+      shader.uniforms.uHorizonReach = horizonReachU
+      shader.uniforms.uHorizonDip = horizonDipU
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\n varying vec3 vSkyDir;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\n vSkyDir = position;')
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
-          '#include <common>\n varying vec3 vSkyDir;\n uniform vec3 uHorizonFog;',
+          '#include <common>\n varying vec3 vSkyDir;\n uniform vec3 uHorizonFog;\n uniform float uHorizonReach;\n uniform float uHorizonDip;',
         )
         .replace(
           '#include <opaque_fragment>',
           `#include <opaque_fragment>
-           float horizonFogK = 1.0 - smoothstep(0.0, 0.14, normalize(vSkyDir).y);
+           float horizonFogK = 1.0 - smoothstep(-uHorizonDip, uHorizonReach - uHorizonDip, normalize(vSkyDir).y);
            gl_FragColor.rgb = mix(gl_FragColor.rgb, uHorizonFog, horizonFogK);`,
         )
     }
@@ -263,9 +354,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   {
     const rand = seeded(0x57a2)
     for (let i = 0; i < STARS; i++) {
-      // cosine-distributed in elevation, kept above a shallow horizon so the
-      // shell's own bottom edge is never something you can look at
-      const el = Math.asin(rand() * 0.98 - 0.08)
+      // cosine-distributed in elevation, and all of them above the horizon:
+      // a star under it is a star drawn over the fog band
+      const el = Math.asin(0.02 + rand() * 0.96)
       const az = rand() * Math.PI * 2
       const r = 418
       starPos[i * 3] = Math.cos(el) * Math.cos(az) * r
@@ -277,7 +368,9 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       starCol[i * 3 + 1] = b * (warm ? 0.96 : 0.93)
       starCol[i * 3 + 2] = b * (warm ? 0.86 : 1)
       starPhase[i] = rand() * Math.PI * 2
-      starSize[i] = rand() < 0.06 ? 5.5 + rand() * 3 : 2 + rand() * 2
+      // in *internal* pixels: the look renders a few hundred lines and
+      // scales them up three or four times, so a 3 here was a snowflake
+      starSize[i] = rand() < 0.06 ? 2 : 1
     }
   }
   const starGeo = new THREE.BufferGeometry()
@@ -309,7 +402,11 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       .replace(
         'gl_PointSize = size;',
         `gl_PointSize = aSize;
-         vTw = (0.55 + 0.45 * sin(uTwinkle * 1.7 + aPhase)) * uFade;`,
+         vTw = (0.55 + 0.45 * sin(uTwinkle * 1.7 + aPhase)) * uFade;
+         // and by the sky's own brightness: the horizon glows at night
+         // (the moonlit haze, the city), and a star over it is a dot on a
+         // lit wall, so they thin out below twenty degrees or so
+         vTw *= smoothstep(0.08, 0.38, normalize(position).y);`,
       )
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n varying float vTw;')
@@ -439,39 +536,74 @@ export function buildSky(opts: BuildOpts): SkyHandles {
            // front of it there, and uHaze below puts it in the same air. The
            // fade is only the last degree or so, where the dome's own far side
            // would otherwise show through under the fog line
-           float horizon = smoothstep(0.0, 0.022, dir.y);
+           // Toward the skyline the deck thins rather than fades: the cover
+           // threshold rises over the lowest degrees, so the last clouds end
+           // on their own hard rims. An alpha fade there (and a cut before
+           // it) posterized into a ruler-straight edge across every view
+           // from the air, the clouds sliced flat along it
+           float horizon = smoothstep(0.0, 0.012, dir.y);
            if (horizon < 0.004) {
              gl_FragColor.a = 0.0;
            } else {
-             vec3 flat3 = vec3(dir.x, dir.y * 0.42, dir.z);
-             vec3 p = flat3 * 5.4;
-             p.xz += vec2(0.82, 0.57) * (uCloudTime * 0.011);
-             // the weather: banks and open blue, on their own slow drift
-             float bank = cNoise(flat3 * 1.1 + vec3(uCloudTime * 0.004, 0.0, 0.0));
-             float cover = uCover - (bank - 0.5) * 0.24;
+             /*
+               A cloud LAYER, not a painted dome: the view ray is carried up
+               to a flat deck one unit overhead and the noise is sampled
+               where it lands, so clouds are big overhead and shrink and
+               crowd toward the horizon in true perspective. Sampled on the
+               dome's own direction they were decals, one size from the
+               zenith to the skyline.
+
+               Three flat tones, each for a reason: the side away from the
+               sun (the density climbs toward the sun there), a flat shaded
+               base (the part of the cloud nearest the horizon on screen,
+               which is the underside a cumulus shows from below), and the
+               lit rest. Blue-grey shade, a white or warm lit face, and a
+               soft rim that the look's posterize cuts to one step.
+             */
+             float dy = max(dir.y, 0.018);
+             vec2 uv = dir.xz / dy;
+             float far0 = length(uv);
+             vec2 drift = vec2(0.82, 0.57) * (uCloudTime * 0.011);
+             vec3 p = vec3(uv * 2.2 + drift, uCloudTime * 0.004);
+             // weather banks on a slower, bigger field
+             float bank = cNoise(vec3(uv * 0.22 + drift * 0.3, 0.5));
+             // thinning toward the horizon (A4's rise of the cover threshold
+             // over the lowest degrees), and with distance along the deck,
+             // so the far clouds break up rather than packing into a wall
+             float cover = uCover - (bank - 0.5) * 0.24
+               + pow(1.0 - smoothstep(0.0, 0.22, dir.y), 1.5) * 0.7
+               + smoothstep(4.0, 16.0, far0) * 0.08;
              float f = cFbm(p);
-             float cov = smoothstep(cover, cover + 0.09, f);
-             float f2 = cFbm(p + normalize(uSunDir) * 0.3);
-             float litK = clamp(0.5 + (f - f2) * 7.5, 0.0, 1.0);
+             // the rim is as wide as a pixel or two whatever the cloud's size
+             // on screen: a fixed width in noise units was a hard edge at the
+             // horizon and a blurry one overhead
+             float rimW = clamp(fwidth(f) * 2.0, 0.003, 0.03);
+             float cov = smoothstep(cover, cover + rimW, f);
+             vec2 sunXZ = uSunDir.xz;
+             sunXZ = dot(sunXZ, sunXZ) > 1e-4 ? normalize(sunXZ) : vec2(0.0, 1.0);
+             float fSun = cFbm(p + vec3(sunXZ * 0.28, 0.0));
+             vec2 away = normalize(dir.xz + vec2(1e-5));
+             float fOut = cFbm(p + vec3(away * (0.22 + 0.02 * far0), 0.0));
+             float base = step(fOut, cover + 0.02) * step(0.06, dir.y);
+             float shadeK = step(f + 0.012, fSun);
+             float litK = base > 0.5 ? 0.0 : (shadeK > 0.5 ? 0.55 : 1.0);
              vec3 col = mix(uCloudShade, uCloudLit, litK);
-             // the silver lining: the edge of a cloud in front of the sun
-             float rim = pow(max(dot(dir, normalize(uSunDir)), 0.0), 7.0);
-             col += uCloudLit * rim * 0.5 * litK;
+             float rim = step(0.93, dot(dir, normalize(uSunDir)));
+             col += uCloudLit * rim * 0.25 * litK;
              float a = cov;
              #ifdef RICH_SKY
-               // the high layer: thinner, faster, and always lit — it is
-               // above the deck, so it never sits in the deck's shadow
-               vec3 q = vec3(dir.x, dir.y * 0.22, dir.z) * 5.6
-                        + vec3(uCloudTime * 0.032, 0.0, uCloudTime * 0.021);
+               // the high layer, on a deck twice as far up: thinner, faster,
+               // always lit, and thinning toward the skyline like the deck
+               vec3 q = vec3(uv * 0.5 + vec2(uCloudTime * 0.032, uCloudTime * 0.021), 1.7);
                float wisp = cNoise(q) * 0.66 + cNoise(q * 2.4) * 0.34;
-               float aw = smoothstep(0.5, 0.78, wisp) * 0.5 * (1.0 - cov);
+               float th = 0.7 + 0.25 * (1.0 - smoothstep(0.02, 0.25, dir.y));
+               float aw = smoothstep(th, th + clamp(fwidth(wisp) * 2.0, 0.003, 0.02), wisp)
+                 * 0.7 * (1.0 - cov);
                a = cov + aw;
                col = mix(mix(uCloudShade, uCloudLit, 0.9), col, cov / max(a, 0.001));
              #endif
              // a cloud at the skyline is seen through the same air as the
-             // ground under it; without this it floats in front of the fog.
-             // Not all the way to the fog colour — a bank on the horizon has
-             // to keep enough of itself to still read as a cloud
+             // ground under it
              col = mix(uHaze, col, 0.3 + 0.7 * smoothstep(0.0, 0.26, dir.y));
              gl_FragColor.rgb = col;
              gl_FragColor.a = clamp(a, 0.0, 1.0) * horizon * uCloudOpacity;
@@ -498,9 +630,11 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     depthWrite: false, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending,
   }))
+  // y -50..70 around the camera, so the horizon (y = 0) sits 58% of the way
+  // down it, where its texture peaks
   const twilightBand = new THREE.Mesh(
-    new THREE.CylinderGeometry(400, 400, 88, 48, 1, true), twilightMat)
-  twilightBand.position.y = 26
+    new THREE.CylinderGeometry(400, 400, 120, 48, 1, true), twilightMat)
+  twilightBand.position.y = 10
   twilightBand.renderOrder = -9.6
   twilightBand.frustumCulled = false
   dome.add(twilightBand)
@@ -583,6 +717,12 @@ export function buildSky(opts: BuildOpts): SkyHandles {
 
   const sunLight = new THREE.DirectionalLight('#fff2dc', 0)
   sunLight.target.position.set(0, 0, 10)
+  // the target moves with the lens as much as the light does, and the scene
+  // freezes the matrices of everything not marked dynamic: frozen, it stayed
+  // at (0, 0, 10) while the light followed the player, so anywhere but home
+  // the sun shone from the direction of the house, grazing, a few hundred
+  // units out, and on the Moon (sixty thousand out) from the horizon
+  sunLight.target.userData.dynamic = true
   sunLight.userData.dynamic = true
   // the live outdoor shadow: one modest map following the player. The box
   // reaches a chunk or so in every direction — past that, daylight fog has
@@ -622,8 +762,17 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   // past the fog line into a hole punched in the sky. A dark slate blue reads
   // as air instead, and matches the band the star dome paints at the horizon
   const FOG_NIGHT = new THREE.Color('#0d1220')
-  const FOG_DAY = new THREE.Color('#a9c0d4')
-  const FOG_DUSK = new THREE.Color('#a56a3d')
+  // a clear blue air rather than a pale grey one: it is what distance is
+  // painted in by day, and a grey here made every horizon overcast
+  const FOG_DAY = new THREE.Color('#8ab8e8')
+  // The dusk air is cool. It was mauve (a half-strength brown over the day's
+  // blue-grey), then amber, and both times everything past twenty-five
+  // metres, sky, towers, crowns and fog alike, became one warm plane the
+  // shapes dissolved into. A low sun's warmth belongs to the light itself
+  // (the sun's colour, the disc, the horizon band, the lamps); the air and
+  // the shadows it fills stay grey-blue, which is what keeps the masses
+  // separate and the frame from reading as sepia
+  const FOG_DUSK = new THREE.Color('#7c8799')
   const HEMI_SKY_NIGHT = new THREE.Color('#66748f')
   const HEMI_SKY_DAY = new THREE.Color('#cfe2f2')
   const HEMI_GROUND_NIGHT = new THREE.Color('#2a231a')
@@ -632,10 +781,12 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   const SUN_HIGH = new THREE.Color('#fff2dc')
   const DOME_DUSK = new THREE.Color('#ffb87a')
   const CLOUD_LIT_DAY = new THREE.Color('#ffffff')
-  const CLOUD_LIT_DUSK = new THREE.Color('#ffc493')
+  const CLOUD_LIT_DUSK = new THREE.Color('#ffd9ab')
   const CLOUD_LIT_NIGHT = new THREE.Color('#39435c')
-  const CLOUD_SHADE_DAY = new THREE.Color('#93a8c4')
-  const CLOUD_SHADE_DUSK = new THREE.Color('#b57e59')
+  // a cumulus's shadow side is a light blue-grey, not a storm: with the
+  // darker shade the whole deck read as grey paper by the time it was graded
+  const CLOUD_SHADE_DAY = new THREE.Color('#8fa6c4')
+  const CLOUD_SHADE_DUSK = new THREE.Color('#6d7488')
   const CLOUD_SHADE_NIGHT = new THREE.Color('#1a2233')
 
   const birth = performance.now()
@@ -646,17 +797,37 @@ export function buildSky(opts: BuildOpts): SkyHandles {
   /** how far past the house shell the daylight comes back up; see `indoor` */
   const INDOOR_FADE = 1.6
 
-  const update = (camPos: THREE.Vector3, todOverride?: number) => {
+  let lastA = 0
+  const SPACE_FOG = new THREE.Color('#000000')
+  const SPACE_HEMI = new THREE.Color('#1c2130')
+
+  const sunWant = new THREE.Vector3()
+  const lastSunDir = new THREE.Vector3()
+  const update = (
+    camPos: THREE.Vector3, todOverride?: number, space = 0, moonDisc = true, dip = 0,
+    frame: SkyFrame | null = null,
+  ) => {
     const now = performance.now()
     const tod = todOverride !== undefined
       ? todOverride
-      : (START_TOD + (now - birth) / (1000 * DAY_LEN)) % 1
+      : todOfCycle(START_CYCLE + (now - birth) / (1000 * DAY_LEN))
     const a = (tod - 0.25) * Math.PI * 2
+    lastA = a
     const sunEl = Math.sin(a)
     const moonEl = -sunEl
-    const day = smooth01((sunEl + 0.06) / 0.28)
+    /*
+      The dusk used to be over before it started: daylight ran out at a sun
+      six hundredths under the horizon and the twilight peaked on it, so
+      `--tod 0.78`, which everything here calls dusk, was already full night
+      with stars. Daylight now fades over a longer run either side of the
+      horizon, and the twilight is centred a little after sunset and wider,
+      so 0.74 is golden hour (about where it always was, since that was the
+      best-liked moment of the day) and 0.78 is the afterglow rather than
+      night: the stars wait for the twilight to finish.
+    */
+    const day = smooth01((sunEl + 0.22) / 0.52)
     const night = 1 - day
-    const twilight = Math.max(0, 1 - Math.abs(sunEl) / 0.26)
+    const twilight = Math.max(0, 1 - Math.abs(sunEl + 0.06) / 0.3)
     const moonUp = smooth01(moonEl / 0.3)
     /*
       Is the camera in the house, damping the sun and the daylight ambience so
@@ -681,10 +852,12 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       really is leaving. The front door sits on `HOUSE.minZ` with about a
       unit and a half of path beyond it, so the transition still completes
       before they are properly out in the yard.
+
+      The shell is the house's whole footprint, the garage included
+      (`insideBy`), and it is a plan, not a volume: both storeys are indoors,
+      and so is anybody standing on the roof, which is nobody.
     */
-    const dxIn = Math.min(camPos.x - HOUSE.minX, HOUSE.maxX - camPos.x)
-    const dzIn = Math.min(camPos.z - HOUSE.minZ, HOUSE.maxZ - camPos.z)
-    const indoor = smooth01(1 + Math.min(dxIn, dzIn) / INDOOR_FADE)
+    const indoor = smooth01(1 + insideBy(camPos.x, camPos.z) / INDOOR_FADE)
 
     state.day = day
     state.night = night
@@ -701,11 +874,21 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     state.fogColor.lerpColors(FOG_NIGHT, FOG_DAY, day)
     // golden hour used to be a 45% nudge and read as ordinary grey haze; the
     // whole point of a low sun is that the air itself goes amber
-    if (twilight > 0.001) state.fogColor.lerp(FOG_DUSK, twilight * 0.72)
+    if (twilight > 0.001) state.fogColor.lerp(FOG_DUSK, Math.min(1, twilight * 1.25) * 0.85)
+    // above the air there is nothing to be the colour of distance
+    if (space > 0) state.fogColor.lerp(SPACE_FOG, smooth01(space * 1.3))
     horizonFogU.value.copy(state.fogColor)
+    horizonReachU.value = 0.14 - 0.09 * day * (1 - twilight)
+    horizonDipU.value = Math.sin(dip)
     state.hemiSky.lerpColors(HEMI_SKY_NIGHT, HEMI_SKY_DAY, day)
     state.hemiGround.lerpColors(HEMI_GROUND_NIGHT, HEMI_GROUND_DAY, day)
     state.dayBoost = 1 + 2.1 * day * (1 - 0.7 * indoor)
+    if (space > 0) {
+      // a black sky fills nothing in: the shadow side of anything is dark
+      state.hemiSky.lerp(SPACE_HEMI, space)
+      state.hemiGround.lerp(SPACE_HEMI, space)
+      state.dayBoost += (0.8 - state.dayBoost) * space
+    }
 
     // the domes and the celestial bodies ride with the camera: the world is
     // endless now, so a sky pinned to the origin would slide off it — and it
@@ -713,37 +896,63 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     // the horizon band under the player's feet
     dome.position.copy(camPos)
     starTwinkle.value = (now - birth) / 1000
-    starFade.value = night * night
+    // stars wait for the twilight to go: drawn over the orange band they
+    // read as a seam between two skies, not as a sky getting darker
+    starFade.value = Math.max(
+      night * night * Math.pow(1 - smooth01(twilight / 0.45), 2),
+      smooth01((space - 0.15) / 0.45),
+    )
 
     // sun and moon ride inside the camera-parked dome now, so their positions
     // are offsets, not world coordinates; lookAt still wants world space
-    sun.visible = sunEl > -0.14
+    if (frame) dome.quaternion.copy(frame.q)
+    else if (dome.quaternion.w !== 1) dome.quaternion.identity()
+    const sunUp = frame?.sun ? frame.sun.y : sunEl
+    sun.visible = sunUp > -0.14 || !!frame
     if (sun.visible) {
-      sun.position.set(Math.cos(a) * 380, sunEl * 380, 80)
+      if (frame?.sun) sun.position.copy(frame.sun).multiplyScalar(380)
+      else sun.position.set(Math.cos(a) * 380, sunEl * 380, 80)
+      dome.updateMatrixWorld()
       sun.lookAt(camPos.x, camPos.y, camPos.z + 8)
     }
-    moon.visible = moonEl > -0.14
+    moon.visible = moonEl > -0.14 && moonDisc && space < 0.12
     if (moon.visible) {
       moon.position.set(-Math.cos(a) * 380, moonEl * 380, 80)
       moon.lookAt(camPos.x, camPos.y, camPos.z + 8)
     }
-    sunLight.position.set(
-      camPos.x + Math.cos(a) * 60, camPos.y + Math.max(0.02, sunEl) * 60, camPos.z + 12.6)
-    sunLight.target.position.set(camPos.x, camPos.y, camPos.z + 10)
+    if (frame) {
+      // the light follows the turned sky: its offset is the sun's direction
+      // turned by the frame, from a target parked on the lens as always
+      if (frame.sun) sunWant.copy(frame.sun)
+      else sunWant.set(Math.cos(a) * 60, Math.max(0.02, sunEl) * 60, 2.6)
+      sunWant.normalize().applyQuaternion(frame.q)
+      sunLight.target.position.set(camPos.x, camPos.y, camPos.z + 10)
+      sunLight.position.copy(sunLight.target.position).addScaledVector(sunWant, 60)
+      if (sunWant.dot(lastSunDir) < 0.9995) {
+        sunLight.shadow.needsUpdate = true
+        lastSunDir.copy(sunWant)
+      }
+    } else {
+      sunLight.position.set(
+        camPos.x + Math.cos(a) * 60, camPos.y + Math.max(0.02, sunEl) * 60, camPos.z + 12.6)
+      sunLight.target.position.set(camPos.x, camPos.y, camPos.z + 10)
+    }
     // the twilight term keeps a low sun burning: on the bare elevation curve
     // alone, golden hour was the greyest moment of the day instead of the one
     // everything else in the scene is warmest at
     sunLight.intensity =
-      (2.3 * Math.pow(Math.max(0, sunEl), 0.65) + twilight * 0.9 * (sunEl > 0 ? 1 : 0.25)) *
+      // the below-horizon share is the afterglow's warm key on whatever
+      // faces the set sun: without it a dusk town was one flat blue-grey
+      (frame?.sun ? 2.3 : 2.3 * Math.pow(Math.max(0, sunEl), 0.65) + twilight * 0.9 * (sunEl > 0 ? 1 : 0.7)) *
       (1 - 0.88 * indoor)
-    sunLight.color.lerpColors(SUN_LOW, SUN_HIGH, clamp01(sunEl * 1.6))
+    sunLight.color.lerpColors(SUN_LOW, SUN_HIGH, clamp01((frame?.sun ? 1 : sunEl) * 1.6))
     // `castShadow` stays true forever so the door cannot change shader
     // variants. Fade the uniform contribution instead, and only ask for a map
     // refresh after enough travel / solar motion to matter. A grazing sun is
     // faded too: a near-horizontal ortho box smears one texel row across half
     // the world, which reads worse than no shadow at all.
     const shadowStrength =
-      smooth01((sunEl - 0.04) / 0.1) * (1 - smooth01((indoor - 0.72) / 0.18))
+      (frame?.sun ? 1 : smooth01((sunEl - 0.04) / 0.1)) * (1 - smooth01((indoor - 0.72) / 0.18))
     sunLight.shadow.intensity = shadowStrength
     if (shadowStrength > 0.001) {
       const moved = !Number.isFinite(shadowAnchor.x) || shadowAnchor.distanceTo(camPos) >= SHADOW_TRAVEL
@@ -757,12 +966,20 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       }
     }
 
-    dayMat.opacity = day
+    dayMat.opacity = day * (1 - space)
+    // out there the night's painted gradient goes too: space is black, with
+    // stars in it, below the horizon as much as above
+    starMat.color.setScalar(1 - 0.92 * space)
     // the whole painted sky leans amber as the sun grazes the horizon; the
     // basic material's colour multiplies its map, so this is free
-    dayMat.color.setRGB(1, 1, 1).lerp(DOME_DUSK, twilight * 0.85)
-    twilightMat.opacity = twilight * 0.8
-    hazeMat.opacity = night
+    // lightly: tinting the whole dome amber took the blue out of the zenith,
+    // and a dusk sky is blue overhead and orange only at the skyline, which
+    // is the twilight band's job
+    dayMat.color.setRGB(1, 1, 1).lerp(DOME_DUSK, twilight * 0.15)
+    // a deep orange at part strength: added over the pale horizon air at
+    // full strength it summed to an overexposed white stripe
+    twilightMat.opacity = twilight * 0.55 * (1 - space)
+    hazeMat.opacity = night * (1 - space)
 
     // clouds: white cotton at noon, embers at the horizon crossings, a faint
     // slate drift over the stars at night
@@ -775,10 +992,16 @@ export function buildSky(opts: BuildOpts): SkyHandles {
       .copy(CLOUD_SHADE_NIGHT).lerp(CLOUD_SHADE_DAY, day).lerp(CLOUD_SHADE_DUSK, twilight * 0.8)
     // night clouds have to stay a suggestion: at daylight opacity the deck
     // reads as smoke over the stars rather than cloud under them
-    cloudU.uCloudOpacity.value = 0.3 + day * 0.66 + twilight * 0.12
+    cloudU.uCloudOpacity.value = (0.3 + day * 0.66 + twilight * 0.12) * Math.max(0, 1 - space * 6)
+    // what space has faded out entirely is not drawn at all: the cloud shell
+    // is the most expensive fill in the sky
+    cloudDome.visible = space < 0.17
+    dayDome.visible = space < 0.999
+    twilightBand.visible = haze.visible = space < 0.999
     // the weather breathes: a two-and-a-half minute swing between a scattered
     // sky and a covered one, slow enough to be a mood rather than an effect
-    cloudU.uCover.value = 0.53 - Math.sin(ct * 0.041) * 0.06
+    // (fewer clouds than the deck first had: the sky is the blue, they are in it)
+    cloudU.uCover.value = 0.57 - Math.sin(ct * 0.041) * 0.06
     cloudU.uHaze.value.copy(state.fogColor)
 
     // the red-eye, strobing through its slow circle
@@ -787,10 +1010,18 @@ export function buildSky(opts: BuildOpts): SkyHandles {
     redEye.position.set(camPos.x + Math.cos(pa) * 260, camPos.y + 190, camPos.z + Math.sin(pa) * 260)
     redEye.lookAt(camPos.x, camPos.y, camPos.z)
     planeMat.opacity =
-      (0.08 + Math.pow(Math.max(0, Math.sin(t * 5.2)), 24) * 0.85) * (0.35 + 0.65 * night)
+      (0.08 + Math.pow(Math.max(0, Math.sin(t * 5.2)), 24) * 0.85) * (0.35 + 0.65 * night) * (1 - space)
 
     return state
   }
 
-  return { update, sun: sunLight }
+  return {
+    update,
+    sun: sunLight,
+    setScale: (k) => {
+      if (dome.scale.x !== k) dome.scale.setScalar(k)
+    },
+    moonDir: (out) => out.set(-Math.cos(lastA) * 380, -Math.sin(lastA) * 380, 80).normalize(),
+    sunDir: (out) => out.set(Math.cos(lastA) * 60, Math.max(0.02, Math.sin(lastA)) * 60, 2.6).normalize(),
+  }
 }

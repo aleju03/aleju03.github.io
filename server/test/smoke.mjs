@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { propSmoke } from './props.mjs';
+import { effectsSmoke } from './worldEffects.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -91,6 +93,9 @@ function startServer(port = '0') {
 async function main() {
   const port = await startServer();
   const url = `ws://127.0.0.1:${port}/ws`;
+
+  await effectsSmoke(url, connect);
+  await propSmoke(url, connect);
 
   // 1. Guest hello: gets a guest name and the room list.
   const guest = connect(url);
@@ -515,6 +520,35 @@ async function main() {
   assert.ok(seen, 'the snapshot carries the walker that moved');
   assert.equal(seen[1], 12.35, 'positions are rounded to centimetres');
   assert.equal(seen[7], 3, 'pose flags survive the trip');
+  assert.equal(seen.length, 8, 'somebody neither emoting nor pointing sends no tail');
+
+  // an emote (one packed integer) and a point (a world yaw and pitch) ride
+  // the tuple's optional tail; junk in either is dropped, not relayed
+  w2.send({ type: 'world-move', x: 12.3456, y: 1.5, z: -8, yaw: 1.5708, pitch: 0, gait: 0, f: 1, e: 0x152, py: 0.5, pp: 0.25 });
+  let tail = null;
+  for (let i = 0; i < 5 && !(tail && tail.length === 11); i++) {
+    const t = await w1.nextOf('world-tick', 'snapshot after an emote and a point');
+    tail = t.players.find((p) => p[0] === welcome2.you);
+  }
+  assert.deepEqual(tail.slice(8), [0x152, 0.5, 0.25], 'the emote and the point survive the trip');
+  w2.send({ type: 'world-move', x: 12.3456, y: 1.5, z: -8, yaw: 1.5708, pitch: 0, gait: 0, f: 1, e: 'wave', py: 'up' });
+  for (let i = 0; i < 5 && tail.length !== 8; i++) {
+    const t = await w1.nextOf('world-tick', 'snapshot after a junk emote');
+    tail = t.players.find((p) => p[0] === welcome2.you);
+  }
+  assert.equal(tail.length, 8, 'a junk emote or point is dropped');
+
+  // the noclip bit (64) is a pose flag like the others, so a flyer's body
+  // floats on everyone else's screen instead of hanging mid-jump
+  w2.send({ type: 'world-move', x: 12.3456, y: 30, z: -8, yaw: 1.5708, pitch: 0, gait: 0, f: 64 });
+  // (a tick already in flight when the move was sent may still carry the old
+  // pose, so give it a few snapshots rather than exactly the next one)
+  let flyBits = -1;
+  for (let i = 0; i < 5 && flyBits !== 64; i++) {
+    const flying = await w1.nextOf('world-tick', 'snapshot after a flying move');
+    flyBits = flying.players.find((p) => p[0] === welcome2.you)?.[7] ?? -1;
+  }
+  assert.equal(flyBits, 64, 'the fly bit survives the trip');
 
   // stepping through a level seam takes you out of everyone else's snapshot
   w2.send({ type: 'world-level', level: 'backrooms' });
@@ -526,6 +560,26 @@ async function main() {
   );
   w2.send({ type: 'world-level', level: 'overworld' });
   await w1.nextOf('world-tick', 'snapshot after coming back');
+
+  // two players who both fly to the Moon meet there: its snapshot carries
+  // them both, at the Moon's own coordinates (it stands at z 60000 in the
+  // scene), and the overworld's no longer does
+  w1.send({ type: 'world-level', level: 'moon' });
+  w2.send({ type: 'world-level', level: 'moon' });
+  w2.send({ type: 'world-move', x: 4, y: 1.5, z: 60004, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  let onMoon = null;
+  for (let i = 0; i < 6; i++) {
+    const t = await w1.nextOf('world-tick', 'a snapshot on the Moon');
+    const them = t.players.find((p) => p[0] === welcome2.you);
+    if (t.players.length === 2 && them && them[3] === 60004) {
+      onMoon = t;
+      break;
+    }
+  }
+  assert.ok(onMoon, 'both walkers on the Moon are in its snapshot, where they stand');
+  w1.send({ type: 'world-level', level: 'overworld' });
+  w2.send({ type: 'world-level', level: 'overworld' });
+  await w1.nextOf('world-tick', 'snapshot after the Moon');
 
   w1.send({ type: 'world-chat', text: '  hello out there  ' });
   const shout = await w2.nextOf('world-chat', 'world chat delivered');
@@ -594,7 +648,7 @@ async function main() {
   w1.send({ type: 'world-seat', v: 0, seat: 0 });
   const seats1 = await w2.nextOf('world-seats', 'the seat table is broadcast');
   await w1.nextOf('world-seats', 'the claimant hears it too');
-  assert.deepEqual(seats1.seats[0], [0, welcome1.you, 0], 'w1 has the wheel of the car');
+  assert.deepEqual(seats1.seats[0], [0, welcome1.you, 0, 0], 'w1 has the wheel of the car');
 
   // the same chair, a round trip later
   w2.send({ type: 'world-seat', v: 0, seat: 0 });
@@ -606,7 +660,7 @@ async function main() {
   w2.send({ type: 'world-seat', v: 0, seat: 1 });
   const seats2 = await w1.nextOf('world-seats', 'the passenger seat is granted');
   await w2.nextOf('world-seats', 'and the passenger hears it too');
-  assert.deepEqual(seats2.seats[0], [0, welcome1.you, welcome2.you], 'two up in the car');
+  assert.deepEqual(seats2.seats[0], [0, welcome1.you, welcome2.you, 0], 'two up in the car');
 
   // only the driver may say where the machine is
   w2.send({ type: 'world-vehicle', v: 0, x: 999, y: 999, z: 999, yaw: 0, pitch: 0, roll: 0 });
@@ -623,22 +677,129 @@ async function main() {
   w2.send({ type: 'world-seat', v: 2, seat: 0 });
   const seats3 = await w1.nextOf('world-seats', 'moving between machines');
   await w2.nextOf('world-seats', 'the mover hears it too');
-  assert.deepEqual(seats3.seats[0], [0, welcome1.you, 0], 'the car seat was given up');
-  assert.deepEqual(seats3.seats[2], [2, welcome2.you, 0], 'and the helicopter taken');
+  assert.deepEqual(seats3.seats[0], [0, welcome1.you, 0, 0], 'the car seat was given up');
+  assert.deepEqual(seats3.seats[2], [2, welcome2.you, 0, 0], 'and the helicopter taken');
 
   // a level seam is getting out
   w2.send({ type: 'world-level', level: 'backrooms' });
   const seats4 = await w1.nextOf('world-seats', 'a level change frees the chair');
   await w2.nextOf('world-seats', 'the leaver hears it too');
-  assert.deepEqual(seats4.seats[2], [2, 0, 0], 'nobody flies into the backrooms');
+  assert.deepEqual(seats4.seats[2], [2, 0, 0, 0], 'nobody flies into the backrooms');
   w2.send({ type: 'world-level', level: 'overworld' });
+
+  // 17b'. The physgun on an empty machine: one hand at a time, never on an
+  //       occupied one, its holder the only voice for where it is, and a
+  //       chair in it refused while somebody else has it.
+  w2.send({ type: 'world-hold', v: 0, on: true });
+  const noHold = await w2.nextOf('world-hold-denied', 'a machine with a driver cannot be grabbed');
+  assert.equal(noHold.v, 0);
+  w2.send({ type: 'world-hold', v: 1, on: true });
+  const held = await w1.nextOf('world-seats', 'an empty boat is taken on the physgun');
+  await w2.nextOf('world-seats', 'the holder hears it too');
+  assert.deepEqual(held.seats[1], [1, 0, 0, welcome2.you], 'w2 has the boat');
+  w1.send({ type: 'world-hold', v: 1, on: true });
+  await w1.nextOf('world-hold-denied', 'two hands on one boat are refused');
+  w1.send({ type: 'world-seat', v: 1, seat: 1 });
+  await w1.nextOf('world-seat-denied', 'nobody boards a boat somebody else is holding');
+  w1.send({ type: 'world-vehicle', v: 1, x: 5, y: 5, z: 5, yaw: 0, pitch: 0, roll: 0 });
+  w2.send({ type: 'world-vehicle', v: 1, x: -20, y: 3, z: 7, yaw: 1, pitch: 2, roll: 3 });
+  let htick = await w1.nextOf('world-tick', 'a held machine rides the snapshot');
+  while (!htick.vehicles?.some((r) => r[0] === 1)) htick = await w1.nextOf('world-tick', 'waiting for the boat');
+  assert.deepEqual(
+    htick.vehicles.find((r) => r[0] === 1),
+    [1, -20, 3, 7, 1, 2, 3],
+    'the holder moves it, and nobody else does'
+  );
+  w2.send({ type: 'world-hold', v: 1, on: false });
+  const let_go = await w1.nextOf('world-seats', 'letting go frees the boat');
+  await w2.nextOf('world-seats', 'the holder hears it too');
+  assert.deepEqual(let_go.seats[1], [1, 0, 0, 0], 'nobody has the boat');
+
+  // 17c. Shoves. One walker bumping another is a velocity relayed to the
+  //      victim alone, and only when it is honest: the two standing near each
+  //      other, both on foot, and the push clamped to what a body can do.
+  //      Anything else is dropped in silence, so each refusal is followed by
+  //      a chat line and the victim must see the chat without a shove first.
+  const noShoveBefore = async (client, label) => {
+    for (let i = 0; i < 40; i++) {
+      const msg = await client.next(label);
+      assert.notEqual(msg.type, 'world-shove', `${label}: a shove got through`);
+      if (msg.type === 'world-chat') return;
+    }
+    throw new Error(`never saw the chat marker (${label})`);
+  };
+  // w1 is still at the wheel of the car: a seated body cannot be bumped
+  w1.send({ type: 'world-move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  w2.send({ type: 'world-move', x: 2, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  await w1.nextOf('world-tick', 'both on the pavement');
+  w2.send({ type: 'world-shove', to: welcome1.you, vx: 8, vy: 3, vz: 0 });
+  w2.send({ type: 'world-chat', text: 'marker: seated' });
+  await noShoveBefore(w1, 'a shove at a seated driver is dropped');
+  w1.send({ type: 'world-unseat' });
+  await w1.nextOf('world-seats', 'the driver gets out');
+  await w2.nextOf('world-seats', 'everyone sees the car emptied');
+  // on foot and side by side: relayed, from the right player, clamped
+  w1.send({ type: 'world-shove', to: welcome2.you, vx: 90, vy: 3.004, vz: 0 });
+  const shoved = await w2.nextOf('world-shove', 'a shove reaches its victim');
+  assert.equal(shoved.from, welcome1.you, 'the victim is told who bumped them');
+  assert.equal(shoved.vx, 24, 'the planar push is clamped to WORLD_SHOVE_MAX');
+  assert.equal(shoved.vy, 3, 'rounded like every other number on the wire');
+  // across the street is not a bump
+  w2.send({ type: 'world-move', x: 60, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  await w1.nextOf('world-tick', 'the victim walks off');
+  w1.send({ type: 'world-shove', to: welcome2.you, vx: 8, vy: 3, vz: 0 });
+  w1.send({ type: 'world-chat', text: 'marker: far' });
+  await noShoveBefore(w2, 'a shove from sixty units away is dropped');
+  // nor is one at yourself, and garbage is a strike rather than a relay
+  w1.send({ type: 'world-shove', to: welcome1.you, vx: 8, vy: 0, vz: 0 });
+  w1.send({ type: 'world-chat', text: 'marker: self' });
+  await noShoveBefore(w1, 'a shove at yourself is dropped');
+  // 17d. Grabs. The physgun on a player is a stream relayed to the victim
+  //      alone, inside the beam's reach, never at somebody flying, and a
+  //      throw is clamped; a release always goes through.
+  const noGrabBefore = async (client, label) => {
+    for (let i = 0; i < 40; i++) {
+      const msg = await client.next(label);
+      assert.notEqual(msg.type, 'world-grab', `${label}: a grab got through`);
+      if (msg.type === 'world-chat') return;
+    }
+    throw new Error(`never saw the chat marker (${label})`);
+  };
+  w1.send({ type: 'world-grab', to: welcome2.you, phase: 'hold', limb: 4, x: 58.004, y: 5, z: 0 });
+  const grabbed = await w2.nextOf('world-grab', 'a grab reaches its victim');
+  assert.equal(grabbed.from, welcome1.you, 'the victim is told who has them');
+  assert.equal(grabbed.phase, 'hold');
+  assert.equal(grabbed.limb, 4);
+  assert.equal(grabbed.x, 58, 'the point is rounded like everything else');
+  w1.send({ type: 'world-grab', to: welcome2.you, phase: 'release', limb: 4, x: 58, y: 5, z: 0, vx: 90, vy: 0, vz: 0 });
+  const thrown = await w2.nextOf('world-grab', 'the release reaches its victim');
+  assert.equal(thrown.phase, 'release');
+  assert.equal(thrown.vx, 40, 'a throw is clamped to WORLD_GRAB_THROW_MAX');
+  // somebody in noclip is not there to be held
+  w2.send({ type: 'world-move', x: 60, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 64 });
+  await w1.nextOf('world-tick', 'the victim takes off');
+  w1.send({ type: 'world-grab', to: welcome2.you, phase: 'hold', limb: 4, x: 58, y: 5, z: 0 });
+  w1.send({ type: 'world-chat', text: 'marker: grab flying' });
+  await noGrabBefore(w2, 'a grab at a flyer is dropped');
+  // nor is anybody past the beam's reach
+  w2.send({ type: 'world-move', x: 400, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: 1 });
+  await w1.nextOf('world-tick', 'the victim runs off');
+  w1.send({ type: 'world-grab', to: welcome2.you, phase: 'hold', limb: 4, x: 20, y: 5, z: 0 });
+  w1.send({ type: 'world-chat', text: 'marker: grab far' });
+  await noGrabBefore(w2, 'a grab from four hundred units away is dropped');
+  console.log('17d. open world: grabs relayed within reach, never at a flyer, throws clamped');
+  // back behind the wheel, for 17b's last check: a dropped driver's seat
+  w1.send({ type: 'world-seat', v: 0, seat: 0 });
+  await w1.nextOf('world-seats', 'the driver gets back in');
+  await w2.nextOf('world-seats', 'everyone sees it');
+  console.log('17c. open world: shoves relayed to the victim only when near, on foot and clamped');
 
   w1.ws.close();
   const exited = await w2.nextOf('world-exit', 'walker departure announced');
   assert.equal(exited.id, welcome1.you);
   // a dropped driver must not leave the car locked forever
   const seats5 = await w2.nextOf('world-seats', 'a dropped socket frees its seat');
-  assert.deepEqual(seats5.seats[0], [0, 0, 0], 'the abandoned car is claimable again');
+  assert.deepEqual(seats5.seats[0], [0, 0, 0, 0], 'the abandoned car is claimable again');
   w2.ws.close();
   console.log('17b. open world: seat arbitration, driver-only transforms, seats freed on exit');
 

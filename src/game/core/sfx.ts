@@ -1,9 +1,10 @@
 /*
-  One-shot movement and interaction sounds. Footsteps are a filtered noise
-  scuff over a low heel thump, parameterized per surface so wood knocks,
-  grass swishes and the backrooms carpet swallows the step — synthesized
-  like sounds.ts and the backrooms hum, nothing shipped, nothing
-  copyrighted. The house doors are the one exception on the whole site: a
+  One-shot movement and interaction sounds, synthesized like sounds.ts and
+  the backrooms hum. Footsteps and landings are voiced in footsteps.ts
+  (three switchable sets, one of them recorded; this module only hands them
+  the context), and everything else here is built from the two primitives
+  below, a filtered noise burst and a pitched-down sine knock. The house
+  doors are the first recorded exception on the site: a
   hinge is stick-slip friction, and the sawtooth-through-a-tremolo version
   of that (still below, and still what you hear on a cold load) never
   stopped sounding like a synthesizer imitating a door. So they play nine
@@ -21,6 +22,8 @@
   Math.random() is deliberate: audio grain is cosmetic, not world state, so
   it stays outside the seeded determinism contract (core/rand.ts).
 */
+
+import { playLand, playStep } from './footsteps'
 
 let ac: AudioContext | null = null
 let noiseBuf: AudioBuffer | null = null
@@ -159,51 +162,20 @@ const thump = (a: AudioContext, at: number, f0: number, gain: number, dur: numbe
 export type StepSurface =
   | 'wood' | 'stone' | 'grass' | 'carpet'
   | 'sand' | 'snow' | 'asphalt' | 'water'
+  | 'regolith'
 
-/* per-surface voicing: bandpass center for the scuff, its width and length,
-   and how much tonal knock rides underneath. The four outdoor surfaces came
-   with the open world and are voiced against the original four rather than
-   from scratch: sand is grass with the knock taken out and the scuff pushed
-   down, snow is a shorter, duller sand (a squeak with no ring under it),
-   asphalt is stone with the top end filed off, and water is a wide, wet
-   splash — the widest bandpass here, and the only one whose scuff outweighs
-   everything else in the mix. */
-const STEP: Record<
-  StepSurface,
-  { bp: number; q: number; dur: number; scuff: number; knock: number; knockF: number }
-> = {
-  wood: { bp: 1300, q: 0.8, dur: 0.07, scuff: 0.028, knock: 0.05, knockF: 84 },
-  stone: { bp: 2300, q: 1.2, dur: 0.05, scuff: 0.034, knock: 0.024, knockF: 105 },
-  grass: { bp: 850, q: 0.5, dur: 0.11, scuff: 0.055, knock: 0.008, knockF: 66 },
-  carpet: { bp: 520, q: 0.5, dur: 0.09, scuff: 0.022, knock: 0.026, knockF: 58 },
-  sand: { bp: 720, q: 0.45, dur: 0.1, scuff: 0.046, knock: 0.004, knockF: 58 },
-  snow: { bp: 600, q: 0.7, dur: 0.07, scuff: 0.038, knock: 0.006, knockF: 52 },
-  asphalt: { bp: 1750, q: 1.0, dur: 0.055, scuff: 0.031, knock: 0.022, knockF: 96 },
-  water: { bp: 1150, q: 0.32, dur: 0.16, scuff: 0.07, knock: 0.005, knockF: 48 },
-}
-
-/** one sole landing; weight is the walk's gait (0..1), already crouch-scaled */
+/** one sole landing; weight is the walk's gait (0..1), already crouch-scaled.
+    The voicing, its three sets and the switch between them are footsteps.ts */
 export const footstep = (surface: StepSurface, weight: number, run: boolean) => {
   if (weight <= 0.05) return
   const a = audio()
-  if (!a) return
-  const p = STEP[surface]
-  const now = a.currentTime
-  // every step lands a little different: gain and pitch jitter per strike
-  const w = weight * (run ? 1.3 : 1) * (0.8 + Math.random() * 0.4)
-  const pitch = 0.88 + Math.random() * 0.24
-  burst(a, now, 'bandpass', p.bp * pitch, p.q, p.scuff * w, p.dur)
-  thump(a, now, p.knockF * pitch, p.knock * w, 0.08)
+  if (a) playStep(a, surface, weight, run)
 }
 
 /** a fall absorbed: k is 0..1 of how hard the touchdown hit */
 export const landThump = (surface: StepSurface, k: number) => {
   const a = audio()
-  if (!a) return
-  const p = STEP[surface]
-  const now = a.currentTime
-  thump(a, now, p.knockF * 0.8, 0.03 + 0.08 * k, 0.13)
-  burst(a, now, 'bandpass', p.bp * 0.8, p.q, p.scuff * (0.8 + k), p.dur * 1.4)
+  if (a) playLand(a, surface, k)
 }
 
 /**
@@ -238,6 +210,56 @@ export const propSnap = (hard: number) => {
   s.start(now, Math.random() * 0.6)
   s.stop(now + 0.3)
   thump(a, now + 0.04, 92, 0.02 + 0.05 * w, 0.2)
+}
+
+/**
+ * A prop arriving out of the catalogue: a quick airy "fwip" (the thing
+ * appearing) and a soft wooden knock under it, pitched down for heavy things
+ * so a concrete block lands lower than a ball. Levels sit with the landing
+ * thump's, so a spawn is a click in the mix rather than an event.
+ */
+export const spawnPop = (mass: number) => {
+  const a = audio()
+  if (!a) return
+  const now = a.currentTime
+  const heavy = Math.min(1, Math.log10(1 + Math.max(0, mass)) / 3)
+  // a cork coming out: a sine that jumps up in pitch in a few milliseconds
+  // (a rising blip is what an ear calls "pop"), a puff of air round it and a
+  // soft landing thump under it, lower for heavier things. It used to be a
+  // tick and a thump at about -51 dBA, a dozen dB under a door, which in
+  // play was no sound at all
+  const f0 = 420 - 170 * heavy
+  const o = a.createOscillator()
+  o.type = 'sine'
+  o.frequency.setValueAtTime(f0, now)
+  o.frequency.exponentialRampToValueAtTime(f0 * 2.3, now + 0.045)
+  const g = a.createGain()
+  g.gain.setValueAtTime(0.0001, now)
+  g.gain.exponentialRampToValueAtTime(0.09, now + 0.006)
+  g.gain.exponentialRampToValueAtTime(0.0004, now + 0.13)
+  o.connect(g).connect(a.destination)
+  o.start(now)
+  o.stop(now + 0.15)
+  burst(a, now, 'bandpass', 1500 - 500 * heavy, 0.7, 0.04, 0.14)
+  thump(a, now + 0.02, 150 - 70 * heavy, 0.08 + 0.05 * heavy, 0.16)
+}
+
+/** the Q catalogue's paper under the cursor: a tab picked, a page turned,
+    an entry pressed. Small, dry and a little different each time */
+export const menuTick = (kind: 'tab' | 'page' | 'pick') => {
+  const a = audio()
+  if (!a) return
+  const now = a.currentTime
+  const r = 0.92 + Math.random() * 0.16
+  if (kind === 'page') {
+    // a sheet flipped: a short breathy sweep of paper noise
+    burst(a, now, 'bandpass', 1700 * r, 0.6, 0.035, 0.11)
+    burst(a, now + 0.04, 'bandpass', 2600 * r, 0.8, 0.02, 0.07)
+    return
+  }
+  // a tab or an entry: a pencil tap, the entry a touch brighter
+  burst(a, now, 'bandpass', (kind === 'pick' ? 3200 : 2400) * r, 1.2, 0.04, 0.03)
+  thump(a, now, (kind === 'pick' ? 900 : 650) * r, 0.035, 0.05)
 }
 
 /** the hinge working: the recorded swing, or the stick-slip judder below

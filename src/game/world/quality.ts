@@ -65,6 +65,24 @@ export interface Gfx {
       layer. Three extra noise samples over a third of the screen — free on a
       real card, not on a cold iGPU */
   richSky: boolean
+  /** internal lines the pixel look (render/pixelLook.ts) aims for at the
+      visitor's "pixels: medium" and full render scale. Unlike everything
+      else in here it is live, because it is a target size and not geometry;
+      it lives in the record because what a card can fill is a tier question.
+      360 is chunkier than Lethal Company's own 520 on purpose: it is an exact
+      3x on 1080p and 4x on 1440p, so every pixel is square, and at that size
+      the bands and the outlines read as drawn. A cold iGPU gets a hair less,
+      which only matters on odd screen sizes */
+  pixelLines: number
+  /** rings of the far field (world/farfield.ts), each twice the reach of
+      the one inside it: 3 reaches 2 km past the camera, 4 reaches 4 km.
+      Baked like the rest, because a ring is geometry */
+  farLevels: number
+  /** rubble a collapsing building may keep moving at once
+      (sandbox/destruction.ts). Each lump is a Rapier hull and its own draw,
+      so it is a real budget: past it the oldest settled ones are welded
+      where they lie and breaking up stops a level coarser */
+  rubble: number
 }
 
 // The two lattices are deliberately the same size on each tier, which puts
@@ -73,11 +91,11 @@ export interface Gfx {
 // that all of it was being spent at distances where none of it could be seen.
 const MEDIUM: Gfx = {
   grassSide: 144, grassNearSide: 144, flowerSide: 44, shadowMap: 1024, canopyK: 1,
-  birds: 26, fauna: 8, pedestrians: 5, richSky: false,
+  birds: 26, fauna: 8, pedestrians: 5, richSky: false, pixelLines: 340, rubble: 110, farLevels: 3,
 }
 const HIGH: Gfx = {
   grassSide: 224, grassNearSide: 224, flowerSide: 60, shadowMap: 2048, canopyK: 1.45,
-  birds: 54, fauna: 14, pedestrians: 9, richSky: true,
+  birds: 54, fauna: 14, pedestrians: 9, richSky: true, pixelLines: 360, rubble: 220, farLevels: 4,
 }
 
 export const gfx: Gfx = { ...MEDIUM }

@@ -15,6 +15,10 @@
   blotches are drawn nine times at every tile offset, so a tiled 256px square
   has no visible seam and no repeating landmark at low contrast.
 
+  `stockTexture` is the same recipe with the pulp as a parameter, which is
+  how the sandbox's receipt printer and spawn catalogue get their own paper
+  without a second texture routine.
+
   The palette lives here because the sheet and the things written on it are
   one object, and both `PauseScreen.tsx` and `WorldIdentity.tsx` need the same
   ink. That is also why it is not the site's stone scale: those tokens flip
@@ -70,27 +74,53 @@ let cached: string | null = null
     re-rasterised on every pause would be the most expensive thing on a screen
     whose whole job is to be cheap */
 export function paperTexture(): string {
-  if (cached) return cached
+  cached ??= stockTexture({ base: PAPER, seed: 0x9e3779b9, grain: 1, flecks: 90, fleck: '90,74,52' })
+  return cached
+}
+
+export interface StockSpec {
+  /** the paper's own colour */
+  base: string
+  seed: number
+  /** 1 is the pause sheet's pulp; thermal till roll is nearer 0.4 */
+  grain: number
+  flecks: number
+  /** the flecks' colour as an "r,g,b" triple */
+  fleck: string
+}
+
+const stocks = new Map<string, string>()
+
+/**
+ * Any paper stock, by the pause sheet's recipe: the receipt printer's till
+ * roll and the spawn menu's catalogue pages are the same process with a
+ * different pulp. Cached per spec, so each stock rasterises once.
+ */
+export function stockTexture(spec: StockSpec): string {
+  const key = JSON.stringify(spec)
+  const hit = stocks.get(key)
+  if (hit !== undefined) return hit
   const canvas = document.createElement('canvas')
   canvas.width = canvas.height = SIZE
   const g = canvas.getContext('2d')
-  if (!g) return (cached = '')
+  if (!g) return ''
 
-  g.fillStyle = PAPER
+  g.fillStyle = spec.base
   g.fillRect(0, 0, SIZE, SIZE)
 
   // the pulp: two octaves, low contrast. Anything stronger than a couple of
   // percent stops being paper and starts being camouflage
-  const rand = lcg(0x9e3779b9)
+  const rand = lcg(spec.seed)
   const coarse = noiseField(8, rand)
   const fine = noiseField(32, rand)
   const img = g.getImageData(0, 0, SIZE, SIZE)
   const px = img.data
+  const k = spec.grain
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
       const u = x / SIZE
       const v = y / SIZE
-      const n = (coarse(u, v) - 0.5) * 9 + (fine(u, v) - 0.5) * 5 + (rand() - 0.5) * 4
+      const n = ((coarse(u, v) - 0.5) * 9 + (fine(u, v) - 0.5) * 5 + (rand() - 0.5) * 4) * k
       const i = (y * SIZE + x) * 4
       px[i] = Math.min(255, Math.max(0, px[i] + n))
       px[i + 1] = Math.min(255, Math.max(0, px[i + 1] + n))
@@ -101,11 +131,11 @@ export function paperTexture(): string {
 
   // flecks: the darker specks in cheap stock. Drawn nine times so the ones
   // near an edge continue onto the opposite one
-  for (let i = 0; i < 90; i++) {
+  for (let i = 0; i < spec.flecks; i++) {
     const x = rand() * SIZE
     const y = rand() * SIZE
     const r = 0.4 + rand() * 0.9
-    g.fillStyle = `rgba(90,74,52,${0.05 + rand() * 0.09})`
+    g.fillStyle = `rgba(${spec.fleck},${0.05 + rand() * 0.09})`
     for (let ox = -1; ox <= 1; ox++) {
       for (let oy = -1; oy <= 1; oy++) {
         g.beginPath()
@@ -115,8 +145,9 @@ export function paperTexture(): string {
     }
   }
 
-  cached = canvas.toDataURL('image/png')
-  return cached
+  const url = canvas.toDataURL('image/png')
+  stocks.set(key, url)
+  return url
 }
 
 /** a shape circled with the marker: four lopsided radii and a degree of tilt,

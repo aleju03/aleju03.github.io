@@ -20,6 +20,10 @@ import * as THREE from 'three'
   of the walls, so anything whose box is taller than the thing it wraps says
   so at registration.
 
+  A box may also be `through` for a frame: a portal is open in it where the
+  walker stands (sandbox/tools/portals.ts), and all three questions below
+  skip it until the body has gone through or stepped away.
+
   The other is `hull`, and it exists because one class of solid moves: a
   vehicle. Everything the world builds is axis-aligned by construction, so an
   AABB costs it nothing — but a 9.4-unit car parked at forty-five degrees has
@@ -30,6 +34,18 @@ import * as THREE from 'three'
   section tables the bodywork is lofted from. The box stays as the broad
   phase — it is the hull's own bounds, so nothing that misses the box can hit
   the hull, and every solid without one pays exactly what it paid before.
+
+  The third is `ramp`, the static cousin of a hull: one slope of a pitched
+  roof, a box whose top rises linearly across one axis. Roofs used to be
+  noStand boxes to the ridge, which was fine until flight made them somewhere
+  to land, and a roof you could not stand on pushed a landing body out of its
+  nearest wall. The three questions here read the slope (and treat one a
+  hand over the feet as underfoot, so a hop up the roof lands instead of
+  being thrown off the eaves); everything else that scans boxes sees the
+  wedge's bounding box. kitbash.ts's `roofSolids` registers them for the
+  town and the landmarks, houseWorld for the house. And `surfaceAbove` is
+  the question the walk asks once, when a flight ends: feet let go inside a
+  building come out on its top rather than out through a wall.
 
   Padding is x/z only (padXZ, and addBoxFrom on top of it). The pad exists so
   shoulders don't clip a wall; inflating it upward would leave the player
@@ -105,8 +121,41 @@ export interface Breakable {
     honest without asking every builder for real geometry. */
 export interface Solid extends THREE.Box3 {
   noStand?: boolean
+  /** a portal is open in it where the walker stands this frame
+      (sandbox/tools/portals.ts): it is no wall and no floor until the body
+      has gone through or stepped away */
+  through?: boolean
   hull?: Hull
   breaks?: Breakable
+  ramp?: Ramp
+}
+
+/** a top that is not level: one slope of a pitched roof. Across the box
+    along `axis` it rises linearly from `lo` at the min edge to `hi` at the
+    max edge, and is level the other way; the box's own max.y is the higher
+    of the two, so it stays an honest broad phase. Only the three questions
+    here read the slope (and the ragdoll, through `topAt`); anything else
+    that scans boxes sees the wedge's bounding box, which over-reports and
+    never misses. See `rampTop` for who registers them */
+export interface Ramp {
+  axis: 'x' | 'z'
+  lo: number
+  hi: number
+}
+
+/** how far over the feet a roof slope still counts as underfoot rather than
+    as a wall (see resolveXZ) */
+const RAMP_REACH = 0.5
+
+/** the height of a box's top over (x, z): its max.y, or its slope's height
+    there for a ramp. Hulls are not asked here (see hullTopAt) */
+export const topAt = (b: Solid, x: number, z: number) => {
+  const r = b.ramp
+  if (!r) return b.max.y
+  const t = r.axis === 'x'
+    ? (x - b.min.x) / Math.max(1e-6, b.max.x - b.min.x)
+    : (z - b.min.z) / Math.max(1e-6, b.max.z - b.min.z)
+  return r.lo + (r.hi - r.lo) * Math.min(1, Math.max(0, t))
 }
 
 /** one control station of a hull profile: at this local z the footprint
@@ -231,9 +280,28 @@ const hullTopAt = (h: Hull, x: number, z: number) => {
   return h.y + prof.top
 }
 
+/** solids that are not boxes and do not hold still: the sandbox's rigid
+    bodies (src/game/sandbox/). A set may carry one, and then the three
+    questions below ask it too, after the boxes, so every caller of
+    supportY/resolveXZ/blockedAt (the walk, the body's feet, the chase boom)
+    meets the props without knowing they exist. The provider owns the exact
+    shapes; this module only knows the three questions. */
+export interface DynamicSolids {
+  /** the highest standable surface under (x, z) at or below `reach` (the
+      provider may allow a small mantle above it), or -Infinity */
+  topAt: (x: number, z: number, reach: number) => number
+  /** push a body's point out of anything overlapping its y-span above the
+      step band, the same deal resolveXZ gives a box */
+  pushOut: (p: THREE.Vector3, footY: number, headY: number, stepUp: number) => void
+  /** would a body standing here be inside one */
+  blocks: (x: number, z: number, footY: number, headY: number, stepUp: number) => boolean
+}
+
 export interface CollisionSet {
   boxes: Solid[]
   bounds: WorldBounds
+  /** the moving solids, when a sandbox is attached to this set */
+  dynamic?: DynamicSolids
 }
 
 export const makeCollisionSet = (bounds: WorldBounds, boxes: Solid[] = []): CollisionSet => ({
@@ -281,17 +349,50 @@ export const supportY = (
 ) => {
   let top = floorY
   for (const b of set.boxes) {
-    if (b.noStand || b.max.y <= b.min.y || b.max.y <= top) continue
+    if (b.noStand || b.through || b.max.y <= b.min.y || b.max.y <= top) continue
     // out of reach culls a plain box outright, but a hull's box top is the
     // whole body's highest point — the bonnet under the player's feet can be
     // well inside a reach the roof is well outside of, so it has to be asked
-    if (!b.hull && b.max.y > reach) continue
+    if (!b.hull && !b.ramp && b.max.y > reach) continue
     if (x < b.min.x || x > b.max.x || z < b.min.z || z > b.max.z) continue
-    const t = b.hull ? hullTopAt(b.hull, x, z) : b.max.y
-    if (t > reach || t <= top) continue
+    const t = b.hull ? hullTopAt(b.hull, x, z) : topAt(b, x, z)
+    // a slope a hand over the reach is still underfoot (see resolveXZ)
+    if (t > (b.ramp ? reach + RAMP_REACH : reach) || t <= top) continue
     top = t
   }
+  if (set.dynamic) {
+    const t = set.dynamic.topAt(x, z, reach)
+    if (t > top) top = t
+  }
   return top
+}
+
+/** where a body whose feet are *inside* something comes out on top, or
+    null when they are inside nothing. Of the solids round (x, z) that the
+    feet are in, the tallest top is taken, and the answer is the highest
+    standable surface at or below it plus `headroom`, so feet landed in a
+    building's mass come out on its roof, and feet in the eave-level mass of
+    a house come out on the slope over it (the mass is noStand; the roof is
+    `headroom` higher). Asked once, by the walk, on the tick a flight ends:
+    letting go of noclip inside a building used to push the body out of the
+    nearest wall, and it dropped down the outside to the street */
+export const surfaceAbove = (
+  x: number,
+  z: number,
+  footY: number,
+  headroom: number,
+  set: CollisionSet,
+) => {
+  let ceil = -Infinity
+  for (const b of set.boxes) {
+    if (b.hull) continue
+    if (x <= b.min.x || x >= b.max.x || z <= b.min.z || z >= b.max.z) continue
+    if (b.min.y > footY || topAt(b, x, z) <= footY) continue
+    if (b.max.y > ceil) ceil = b.max.y
+  }
+  if (ceil === -Infinity) return null
+  const t = supportY(x, z, ceil + headroom, set, -Infinity)
+  return t > footY ? t : null
 }
 
 /** would a body standing here be inside something? The same overlap test
@@ -310,15 +411,17 @@ export const blockedAt = (
   if (x < set.bounds.minX || x > set.bounds.maxX) return true
   if (z < set.bounds.minZ || z > set.bounds.maxZ) return true
   for (const b of set.boxes) {
+    if (b.through) continue
     const walkable = b.noStand ? footY : footY + stepUp
     if (b.max.y <= walkable || b.min.y >= headY) continue
     if (!(x > b.min.x && x < b.max.x && z > b.min.z && z < b.max.z)) continue
     // one test for both of a hull's ways out: a point past the profile reports
     // -Infinity, a point over something low enough to walk onto reports it
     if (b.hull && hullTopAt(b.hull, x, z) <= walkable) continue
+    if (b.ramp && topAt(b, x, z) <= Math.max(walkable, footY + RAMP_REACH)) continue
     return true
   }
-  return false
+  return set.dynamic ? set.dynamic.blocks(x, z, footY, headY, stepUp) : false
 }
 
 /** clamp to the level bounds, then push out of every box the body's own
@@ -340,6 +443,7 @@ export const resolveXZ = (
     // so there is nothing to climb onto and it stays a wall to the last
     // millimetre — but it still stops blocking once the feet clear it,
     // which is what lets a walk cross a low rail from something taller.
+    if (b.through) continue
     const walkable = b.noStand ? footY : footY + stepUp
     if (b.max.y <= walkable || b.min.y >= headY) continue
     if (!(p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z)) continue
@@ -347,6 +451,11 @@ export const resolveXZ = (
       pushOutHull(p, b.hull, walkable)
       continue
     }
+    // a roof slope under the feet (or low enough to step up) is a floor, and
+    // so is one a hand's width over them in mid-air: a hop up the slope has
+    // its feet under the surface ahead for a tick or two, and that is a
+    // landing, not a wall to be thrown off the eaves by
+    if (b.ramp && topAt(b, p.x, p.z) <= Math.max(walkable, footY + RAMP_REACH)) continue
     const exitL = p.x - b.min.x
     const exitR = b.max.x - p.x
     const exitN = p.z - b.min.z
@@ -357,6 +466,9 @@ export const resolveXZ = (
     else if (m === exitN) p.z = b.min.z
     else p.z = b.max.z
   }
+  // the moving solids last: a prop pushed against a wall is resolved after
+  // the wall, so the player ends up against the prop rather than inside it
+  set.dynamic?.pushOut(p, footY, headY, stepUp)
 }
 
 /** where a world point sits inside a hull, and the shortest way out of it.

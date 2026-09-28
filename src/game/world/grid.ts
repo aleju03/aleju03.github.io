@@ -1,15 +1,16 @@
 /*
   The one grid everything outdoors agrees on.
 
-  A chunk is 64 units square and the streaming ring, the town road network and
-  the terrain mesh all index off it. The offset is not arbitrary: the world is
-  shifted so that chunk (0, 0) is exactly the block the house stands in, which
-  buys two things. Roads run along chunk borders, so a town's street grid never
-  cuts a block in half and no building ever straddles a streaming boundary; and
-  the border in front of the property lands on z = -11.2, which is precisely
-  where the hand-authored street used to sit (its asphalt ran -14.4..-8). The
-  generated street therefore arrives exactly where the porch, the gate and the
-  front walk were already built to meet it.
+  A chunk is 64 units square and the streaming ring and the terrain mesh index
+  off it. The offset is not arbitrary: the world is shifted so that chunk
+  (0, 0) is exactly the block the house stands in, and the border in front of
+  the property lands on z = -11.2, which is precisely where the hand-authored
+  street used to sit (its asphalt ran -14.4..-8). Streets no longer follow
+  chunk borders (a town's plan is its own, streets.ts), but the home town's
+  plan pins its front street to that line, so the generated street still
+  arrives exactly where the porch, the gate and the front walk were built to
+  meet it. A building may straddle a chunk border now; the chunk its centre
+  is in builds it.
 
   GRID is the terrain mesh's cell size. Collision samples the surface through
   the same lattice (terrain.ts's terrainY), so the player stands on the drawn
@@ -57,15 +58,18 @@ export const inYard = (x: number, z: number, pad = 0) =>
   z > YARD_FENCE.minZ - pad &&
   z < YARD_FENCE.maxZ + pad
 
-/** the authored hardscape inside the fence — the house slab, the back porch,
-    the front step and walk, the stepping stones — mirrored from houseWorld the
+/** the authored hardscape inside the fence (the house slab and the garage's,
+    the back porch, the front step and walk, the driveway, the stepping
+    stones) mirrored from houseWorld the
     same way YARD_FENCE is, so the grass field can grow the yard's turf and
     still mow around what was built by hand. */
 const HOME_HARD_RECTS = [
   { minX: -8.1, maxX: 8.1, minZ: -2.3, maxZ: 25.0 }, // house + wall margin
+  { minX: 7.4, maxX: 13.5, minZ: -2.3, maxZ: 14.5 }, // the garage
   { minX: -5.6, maxX: -1.5, minZ: 24.4, maxZ: 27.5 }, // back porch slab
   { minX: 3.85, maxX: 7.15, minZ: -3.1, maxZ: -1.7 }, // front doorstep
   { minX: 4.6, maxX: 6.4, minZ: -4.3, maxZ: -2.9 }, // front walk to the gate
+  { minX: 7.8, maxX: 12.8, minZ: -4.6, maxZ: -1.7 }, // the driveway
 ]
 const HOME_STONES: Array<[number, number]> = [
   [-2.1, 27.3], [-1.0, 28.4], [0.2, 29.3], [1.5, 30.1],

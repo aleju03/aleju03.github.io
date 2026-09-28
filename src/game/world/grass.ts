@@ -6,7 +6,7 @@ import { inYard, onHomeHardscape } from './grid'
 import { SEA_Y, biomeAt, groundColorAt, terrainY } from './terrain'
 import type { BiomeId } from './biomes'
 import { pavedAt, placeAt, roadAt } from './settlements'
-import { insideInterior } from './interiors'
+import { insideInterior, onInteriorsAdded, type InteriorRect } from './interiors'
 import { gfx } from './quality'
 import { applySway } from './wind'
 
@@ -100,6 +100,10 @@ import { applySway } from './wind'
 const NEAR_STEP = 0.163
 const FAR_STEP = 0.42
 const F_STEP = 2.1
+/** tiles along each side of a blade lattice (see makeBladeField). Four is
+    sixteen draws a field, of which a lens culls about half; more tiles cull
+    finer and pay for it in per-draw CPU, which this field cannot win back */
+const TILES_PER_SIDE = 4
 
 /*
   Blade heights, in world units — and the world is at about 0.43 m to the
@@ -278,12 +282,33 @@ const makeFlowerTexture = () =>
 /**
  * A scrolling lattice of instance slots. Slot (i, j) lives at a fixed world
  * position; the toroidal index means a scroll overwrites exactly the slots
- * that left the field. `fill` places or hides one slot.
+ * that left the field. `fill` places or hides one slot. `refill` hands
+ * `recheck` every live slot whose jittered position could fall inside a
+ * world rectangle, which is how a footprint that streamed in after the field
+ * had already filled (world/interiors.ts) takes its blades back out.
+ * `recheck` only ever hides: it reads the slot's stored position rather than
+ * re-deriving it, because re-running `fill` (terrain, biome and ground colour
+ * per slot) over a suburb chunk's worth of drives cost tens of milliseconds.
  */
-const makeLattice = (side: number, step: number, fill: (i: number, j: number) => void) => {
+const makeLattice = (
+  side: number, step: number,
+  fill: (i: number, j: number) => void,
+  recheck: (i: number, j: number) => boolean,
+) => {
   let originI = Number.POSITIVE_INFINITY
   let originJ = Number.POSITIVE_INFINITY
-  return (px: number, pz: number): boolean => {
+  const refill = (r: InteriorRect): boolean => {
+    if (!Number.isFinite(originI)) return false
+    // a slot's jitter reaches most of a step either way, and the tests pad
+    const i0 = Math.max(originI, Math.floor(r.minX / step) - 2)
+    const i1 = Math.min(originI + side - 1, Math.ceil(r.maxX / step) + 2)
+    const j0 = Math.max(originJ, Math.floor(r.minZ / step) - 2)
+    const j1 = Math.min(originJ + side - 1, Math.ceil(r.maxZ / step) + 2)
+    let hid = false
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) hid = recheck(i, j) || hid
+    return hid
+  }
+  const scroll = (px: number, pz: number): boolean => {
     const oi = Math.round(px / step) - side / 2
     const oj = Math.round(pz / step) - side / 2
     if (oi === originI && oj === originJ) return false
@@ -307,6 +332,7 @@ const makeLattice = (side: number, step: number, fill: (i: number, j: number) =>
     originJ = oj
     return true
   }
+  return { scroll, refill }
 }
 
 interface Opts {
@@ -329,8 +355,31 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
 
   /**
    * One scrolling lattice of blade clumps: its own pool, material, scroller
-   * and fade radius. Built twice — see the two-lattice note at the top of the
-   * file — with nothing shared between the near and far fields but this code.
+   * and fade radius. Built twice (see the two-lattice note at the top of the
+   * file) with nothing shared between the near and far fields but this code.
+   *
+   * The pool is drawn as TILES_PER_SIDE² tiles rather than one instanced
+   * mesh, and that is the whole of this field's frame cost. As one mesh it
+   * could not be culled (its bounds are the whole field), so every frame
+   * shaded all 2.4 million vertices of both lattices whatever the lens was
+   * pointed at: the lawn behind you, the lawn under the computer room's
+   * floor, and every zero-scale slot on a road or a roof, which is most of a
+   * town. And every row that scrolled flagged the entire pool for upload,
+   * about four megabytes a field, which walking does every few frames and
+   * driving does every frame. Measured on the house's front path at 160 fps
+   * on an RTX 4070, the field was 0.7 ms of a 1.25 ms frame.
+   *
+   * So the slots now live in plain arrays, and a tile owns a fixed square of
+   * the *toroidal* index space. Because the lattice's side is a whole number
+   * of tiles, a toroidal tile is also a square of the world (world tile W
+   * lands on toroidal tile W mod n), except for the one row and column
+   * straddling the scroll seam, whose slots come from both edges of the
+   * field and whose bounds honestly say so. A tile is repacked only when one
+   * of its slots was refilled: its live clumps are copied to the front of
+   * its buffers, `count` is set to them, and only that range is uploaded.
+   * Hidden slots cost nothing and a tile outside the frustum is not drawn.
+   * What reaches the screen is the same set of blades with the same
+   * attributes, so the field looks exactly as it did.
    */
   const makeBladeField = (side: number, step: number, widthK: number) => {
     const HALF = (side * step) / 2
@@ -356,20 +405,49 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
     trackDisposable(mat)
 
     const count = side * side
-    const mesh = new THREE.InstancedMesh(geo, mat, count)
-    mesh.frustumCulled = false
-    // blades never cast (sixteen thousand casters for no visible return) but
-    // they do receive: a lawn that stays lit inside a tree's shadow floats
-    mesh.castShadow = false
-    mesh.receiveShadow = true
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    const blade = new Float32Array(count * 2) // yaw, phase
-    const bladeAttr = new THREE.InstancedBufferAttribute(blade, 2)
-    bladeAttr.setUsage(THREE.DynamicDrawUsage)
-    geo.setAttribute('aBlade', bladeAttr)
-    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3)
-    mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
-    parent.add(mesh)
+    // the slots, by toroidal id: position, width and height (a height of
+    // zero is a hidden slot), yaw and phase, colour
+    const slotPos = new Float32Array(count * 3)
+    const slotWH = new Float32Array(count * 2)
+    const slotBlade = new Float32Array(count * 2)
+    const slotCol = new Float32Array(count * 3)
+
+    const tiles = side % TILES_PER_SIDE === 0 ? TILES_PER_SIDE : 1
+    const T = side / tiles
+    const group = new THREE.Group()
+    const tileMesh: THREE.InstancedMesh[] = []
+    const tileBlade: THREE.InstancedBufferAttribute[] = []
+    const dirty = new Uint8Array(tiles * tiles)
+    for (let t = 0; t < tiles * tiles; t++) {
+      // the blade shape is shared; only the per-instance attributes are not
+      const tg = new THREE.BufferGeometry()
+      tg.setAttribute('position', geo.getAttribute('position'))
+      tg.setAttribute('normal', geo.getAttribute('normal'))
+      tg.setAttribute('color', geo.getAttribute('color'))
+      tg.setIndex(geo.getIndex())
+      const bladeAttr = new THREE.InstancedBufferAttribute(new Float32Array(T * T * 2), 2)
+      bladeAttr.setUsage(THREE.DynamicDrawUsage)
+      tg.setAttribute('aBlade', bladeAttr)
+      trackDisposable(tg)
+      const mesh = new THREE.InstancedMesh(tg, mat, T * T)
+      // an empty tile draws nothing (three skips a zero instance count) but
+      // stays visible, so a covered warm-up still compiles the field
+      mesh.count = 0
+      // culled on bounds this module keeps, rather than on bounds three
+      // would compute from every instance matrix the first time it asked
+      mesh.boundingSphere = new THREE.Sphere()
+      // blades never cast (sixteen thousand casters for no visible return) but
+      // they do receive: a lawn that stays lit inside a tree's shadow floats
+      mesh.castShadow = false
+      mesh.receiveShadow = true
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(T * T * 3), 3)
+      mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
+      group.add(mesh)
+      tileMesh.push(mesh)
+      tileBlade.push(bladeAttr)
+    }
+    parent.add(group)
 
     /** place one blade slot; (i, j) are absolute lattice coordinates */
     const fill = (i: number, j: number) => {
@@ -378,6 +456,7 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
       const ii = ((i % side) + side) % side
       const jj = ((j % side) + side) % side
       const id = jj * side + ii
+      dirty[Math.floor(jj / T) * tiles + Math.floor(ii / T)] = 1
 
       const jitterX = rand2(i, j, 0x51f3) - 0.5
       const jitterZ = rand2(i, j, 0x77a1) - 0.5
@@ -422,8 +501,7 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
       // is open air to this field, and blades grew up through the planks
       if (ok && insideInterior(x, z, 0.3)) ok = false
       if (!ok) {
-        m.compose(hidden, q, s.set(0, 0, 0))
-        mesh.setMatrixAt(id, m)
+        slotWH[id * 2 + 1] = 0
         return
       }
 
@@ -439,11 +517,17 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
       // near field draws over the whole region where the difference would be
       // visible, so the two never have to agree on a width
       const w = (0.13 + r * 0.07) * widthK
-      m.compose(p.set(x, y - 0.05, z), q, s.set(w, h, w))
-      mesh.setMatrixAt(id, m)
+      slotPos[id * 3] = x
+      slotPos[id * 3 + 1] = y - 0.05
+      slotPos[id * 3 + 2] = z
+      slotWH[id * 2] = w
+      // positive, or the repack reads it as a hidden slot. The paved fade
+      // never quite reaches zero where a blade is kept (paved <= 0.42), so
+      // this only guards the arithmetic
+      slotWH[id * 2 + 1] = Math.max(1e-4, h)
 
-      blade[id * 2] = rand2(i, j, 0x3ea7) * Math.PI * 2
-      blade[id * 2 + 1] = rand2(i, j, 0x1d55) * Math.PI * 2
+      slotBlade[id * 2] = rand2(i, j, 0x3ea7) * Math.PI * 2
+      slotBlade[id * 2 + 1] = rand2(i, j, 0x1d55) * Math.PI * 2
 
       // the blade is painted with the pixel of ground it grows out of —
       // groundColorAt filled `c` above, straw drifts, paved fade and biome
@@ -451,17 +535,93 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
       // The only corrections are the detail map's average (DETAIL_K) and a
       // small per-blade jitter standing in for the map's mottle
       const k = DETAIL_K * (0.92 + rand2(i, j, 0x64b2) * 0.16)
-      mesh.instanceColor!.setXYZ(id, c.r * k, c.g * k, c.b * k)
+      slotCol[id * 3] = c.r * k
+      slotCol[id * 3 + 1] = c.g * k
+      slotCol[id * 3 + 2] = c.b * k
     }
 
-    const scroll = makeLattice(side, step, fill)
+    /** copy one tile's live slots to the front of its buffers, set its
+        count and its bounds, and upload that range and nothing else */
+    const box = new THREE.Box3()
+    const repack = (tile: number) => {
+      const mesh = tileMesh[tile]
+      const mm = mesh.instanceMatrix.array as Float32Array
+      const cc = mesh.instanceColor!.array as Float32Array
+      const bb = tileBlade[tile].array as Float32Array
+      const i0 = (tile % tiles) * T
+      const j0 = Math.floor(tile / tiles) * T
+      let n = 0
+      let minX = Infinity, minY = Infinity, minZ = Infinity
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+      for (let lj = 0; lj < T; lj++) {
+        for (let li = 0; li < T; li++) {
+          const id = (j0 + lj) * side + i0 + li
+          const h = slotWH[id * 2 + 1]
+          if (h <= 0) continue
+          const w = slotWH[id * 2]
+          const x = slotPos[id * 3]
+          const y = slotPos[id * 3 + 1]
+          const z = slotPos[id * 3 + 2]
+          // compose(position, identity, (w, h, w)), column-major
+          const o = n * 16
+          mm[o] = w; mm[o + 1] = 0; mm[o + 2] = 0; mm[o + 3] = 0
+          mm[o + 4] = 0; mm[o + 5] = h; mm[o + 6] = 0; mm[o + 7] = 0
+          mm[o + 8] = 0; mm[o + 9] = 0; mm[o + 10] = w; mm[o + 11] = 0
+          mm[o + 12] = x; mm[o + 13] = y; mm[o + 14] = z; mm[o + 15] = 1
+          cc[n * 3] = slotCol[id * 3]
+          cc[n * 3 + 1] = slotCol[id * 3 + 1]
+          cc[n * 3 + 2] = slotCol[id * 3 + 2]
+          bb[n * 2] = slotBlade[id * 2]
+          bb[n * 2 + 1] = slotBlade[id * 2 + 1]
+          n++
+          if (x < minX) minX = x
+          if (x > maxX) maxX = x
+          if (y < minY) minY = y
+          if (y + h > maxY) maxY = y + h
+          if (z < minZ) minZ = z
+          if (z > maxZ) maxZ = z
+        }
+      }
+      mesh.count = n
+      if (!n) return
+      // a unit of slack round the roots for the lean, the wind and a boot
+      box.min.set(minX - 1, minY - 0.2, minZ - 1)
+      box.max.set(maxX + 1, maxY + 0.6, maxZ + 1)
+      box.getBoundingSphere(mesh.boundingSphere!)
+      mesh.instanceMatrix.clearUpdateRanges()
+      mesh.instanceMatrix.addUpdateRange(0, n * 16)
+      mesh.instanceMatrix.needsUpdate = true
+      mesh.instanceColor!.clearUpdateRanges()
+      mesh.instanceColor!.addUpdateRange(0, n * 3)
+      mesh.instanceColor!.needsUpdate = true
+      tileBlade[tile].clearUpdateRanges()
+      tileBlade[tile].addUpdateRange(0, n * 2)
+      tileBlade[tile].needsUpdate = true
+    }
+
+    /** take a standing slot back out if a footprint now covers it */
+    const recheck = (i: number, j: number) => {
+      const ii = ((i % side) + side) % side
+      const jj = ((j % side) + side) % side
+      const id = jj * side + ii
+      if (slotWH[id * 2 + 1] <= 0) return false
+      if (!insideInterior(slotPos[id * 3], slotPos[id * 3 + 2], 0.3)) return false
+      slotWH[id * 2 + 1] = 0
+      dirty[Math.floor(jj / T) * tiles + Math.floor(ii / T)] = 1
+      return true
+    }
+    const lattice = makeLattice(side, step, fill, recheck)
     return {
-      mesh,
-      update: (px: number, pz: number) => {
-        if (!scroll(px, pz)) return
-        mesh.instanceMatrix.needsUpdate = true
-        mesh.instanceColor!.needsUpdate = true
-        bladeAttr.needsUpdate = true
+      group,
+      update: (px: number, pz: number, arrived: InteriorRect[]) => {
+        let moved = lattice.scroll(px, pz)
+        for (const r of arrived) moved = lattice.refill(r) || moved
+        if (!moved) return
+        for (let t = 0; t < dirty.length; t++) {
+          if (!dirty[t]) continue
+          dirty[t] = 0
+          repack(t)
+        }
       },
     }
   }
@@ -536,12 +696,32 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
     flowers.instanceColor!.setXYZ(id, c.r, c.g, c.b)
   }
 
-  const scrollFlowers = makeLattice(F_SIDE, F_STEP, fillFlower)
+  const flowerMat4 = flowers.instanceMatrix.array as Float32Array
+  const recheckFlower = (i: number, j: number) => {
+    const ii = ((i % F_SIDE) + F_SIDE) % F_SIDE
+    const jj = ((j % F_SIDE) + F_SIDE) % F_SIDE
+    const id = jj * F_SIDE + ii
+    const o = id * 16
+    if (flowerMat4[o] === 0 && flowerMat4[o + 2] === 0) return false
+    if (!insideInterior(flowerMat4[o + 12], flowerMat4[o + 14], 0.3)) return false
+    m.compose(hidden, q, s.set(0, 0, 0))
+    flowers.setMatrixAt(id, m)
+    return true
+  }
+  const flowerLattice = makeLattice(F_SIDE, F_STEP, fillFlower, recheckFlower)
+
+  // footprints that arrived since the last frame, re-culled on the next one
+  let arrived: InteriorRect[] = []
+  trackDisposable({ dispose: onInteriorsAdded((rects) => { arrived = arrived.concat(rects) }) })
 
   const update = (px: number, pz: number) => {
-    near.update(px, pz)
-    far.update(px, pz)
-    if (scrollFlowers(px, pz)) {
+    const fresh = arrived
+    if (fresh.length) arrived = []
+    near.update(px, pz, fresh)
+    far.update(px, pz, fresh)
+    let bloom = flowerLattice.scroll(px, pz)
+    for (const r of fresh) bloom = flowerLattice.refill(r) || bloom
+    if (bloom) {
       flowers.instanceMatrix.needsUpdate = true
       flowers.instanceColor!.needsUpdate = true
     }
@@ -550,8 +730,8 @@ export function buildGrass({ parent, trackDisposable }: Opts): GrassHandles {
   return {
     update,
     setVisible: (on) => {
-      near.mesh.visible = on
-      far.mesh.visible = on
+      near.group.visible = on
+      far.group.visible = on
       flowers.visible = on
     },
   }

@@ -6,6 +6,28 @@
     node scripts/measure.mjs chunks        build cost and vertex budget
     node scripts/measure.mjs landmarks     site density and the kind mix
     node scripts/measure.mjs smoke         build a few thousand chunks, catch throws
+    node scripts/measure.mjs far           the far field: build cost per slice
+                                           and in total, what it holds, and the
+                                           chunk ring it replaces from the air
+    node scripts/measure.mjs physics       the sandbox: ground, cost, stacks,
+                                           tunnelling, the walker, scenarios,
+                                           destruction
+    node scripts/measure.mjs world-effects shared portals, crossings and jump clouds
+    node scripts/measure.mjs prop-sync     shared props, handoffs, joints, cleanup and idle traffic
+    node scripts/measure.mjs console       every console command run headless
+                                           against a real sandbox, and noclip
+    node scripts/measure.mjs fracture      every building in a few town blocks
+                                           taken apart: pieces, cost, support
+    node scripts/measure.mjs body          the player character: every variant's
+                                           cost and closure, folds across every
+                                           filmstrip, the run lean, the hooks
+    node scripts/measure.mjs bodies        bumping into people: the film's street run
+                                           headless, a sweep of approaches for the
+                                           closest two bodies ever get, the pass's
+                                           cost, and a shove between two players
+    node scripts/measure.mjs seats         who fits in the fleet: riders in the
+                                           tallest headgear seated in every chair,
+                                           vertices through the hull or canopy
     node scripts/measure.mjs eval <file>   run your own probe with the world imported
 
   `src/game/` is renderer-free by design, so all of it runs here: fields, chunk
@@ -91,6 +113,47 @@ for (const [label, cx, cz] of zones) {
   }
 }
 `,
+  // the far field (world/farfield.ts): what it costs to build, in slices
+  // and in total, what it holds, and what it replaces from the air
+  far: `
+const { buildFarField } = await import('${W}/farfield.ts')
+const { setGfxTier, gfx } = await import('${W}/quality.ts')
+const spots = [['home', 0, 30], ['downtown', 0, -340], ['forest', -147, -845], ['coast', -1725, -1300]]
+for (const tier of ['medium', 'high']) {
+  setGfxTier(tier)
+  for (const [label, x, z] of spots) {
+    const far = buildFarField({ parent: new THREE.Group(), water: new THREE.Color(), trackDisposable: () => {} })
+    far.update(x, z, 200, () => false, 0)
+    let total = 0, slices = 0, worst = 0
+    while (far.pending) {
+      const ms = far.work(0.001)
+      total += ms; slices++; worst = Math.max(worst, ms)
+      far.update(x, z, 200, () => false, 0)
+    }
+    const st = far.stats()
+    console.log(tier.padEnd(7) + label.padEnd(10) + String(st.tiles).padStart(4) + ' tiles ' +
+      String(st.verts).padStart(7) + ' verts ' + String(st.tris).padStart(7) + ' tris  ' +
+      total.toFixed(0).padStart(5) + ' ms total, ' + (total / st.tiles).toFixed(1) + ' ms/tile, ' +
+      slices + ' slices, worst ' + worst.toFixed(2) + ' ms, reach ' + Math.round(far.reach(x, z)))
+    far.dispose()
+  }
+}
+// what the ring costs from the air: the old wide ring against the one the
+// far field lets it shrink to (streamer.ts's RADIUS_HIGH and RADIUS_FAR)
+setGfxTier('medium')
+for (const [label, x, z] of spots.slice(1)) {
+  const cx = chunkX(x), cz = chunkZ(z)
+  for (const r of [6, 3]) {
+    let v = 0, n = 0
+    const t0 = performance.now()
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      v += vertsOf(buildChunk(cx + dx, cz + dz, tierFor(Math.max(Math.abs(dx), Math.abs(dz))), MATS)); n++
+    }
+    console.log('ring ' + r + '  ' + label.padEnd(10) + String(n).padStart(4) + ' chunks ' +
+      String(v).padStart(8) + ' verts  ' + (performance.now() - t0).toFixed(0).padStart(5) + ' ms to build')
+  }
+}
+`,
   landmarks: `
 const half = 27
 const tally = new Map()
@@ -134,12 +197,19 @@ if (bad) process.exitCode = 1
 
 const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]
+// the sandbox's report lives in its own file (it is long, and it imports the
+// sandbox, which nothing else here needs); `physics <section>` runs one part
+if (what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies' || what === 'body' || what === 'seats' || what === 'prop-sync' || what === 'world-effects') {
+  body = readFileSync(join(ROOT, 'scripts', 'measure', `${what}.js`), 'utf8')
+    .replace(/'\.\.\/\.\.\/src\//g, `'${ROOT}/src/`)
+    .replace(/'\.\.\/\.\.\/server\//g, `'${ROOT}/server/`)
+}
 if (what === 'eval') {
   if (!arg) { console.error('measure.mjs eval <file.js>'); process.exit(1) }
   body = readFileSync(resolve(arg), 'utf8')
 }
 if (!body) {
-  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|eval <file>>`)
+  console.error(`usage: node scripts/measure.mjs <${Object.keys(REPORTS).join('|')}|physics [section]|console|eval <file>>`)
   console.error('\nan `eval` file is plain JS with the whole world already imported:')
   console.error('  buildChunk tierFor kitsFor VARIANTS SNAP BIOMES classify')
   console.error('  landmarkIn landmarkAt LANDMARK_CELL placeAt roadAt')
@@ -151,7 +221,9 @@ if (!body) {
 
 // esbuild resolves `three` from the entry file's directory upward, so the
 // entry has to live inside the project even though the output does not
-const stage = join(ROOT, 'node_modules', '.cache', 'world-measure')
+// one stage per run: node_modules may be shared between worktrees, and two
+// runs writing the same entry.js (and deleting it on exit) race each other
+const stage = join(ROOT, 'node_modules', '.cache', `world-measure-${process.pid}`)
 mkdirSync(stage, { recursive: true })
 const entry = join(stage, 'entry.js')
 writeFileSync(entry, PRELUDE + body)
@@ -161,6 +233,6 @@ const build = spawnSync('npx', [
   `--outfile=${out}`, '--log-level=error',
 ], { stdio: 'inherit', cwd: ROOT })
 if (build.status !== 0) process.exit(build.status ?? 1)
-const run = spawnSync(process.execPath, [out], { stdio: 'inherit' })
+const run = spawnSync(process.execPath, [...(process.env.PROF ? ['--cpu-prof', `--cpu-prof-dir=${process.env.PROF}`] : []), out, ...((what === 'physics' || what === 'console' || what === 'fracture' || what === 'bodies' || what === 'body' || what === 'seats' || what === 'prop-sync' || what === 'world-effects') && arg ? [arg] : [])], { stdio: 'inherit' })
 rmSync(stage, { recursive: true, force: true })
 process.exit(run.status ?? 0)

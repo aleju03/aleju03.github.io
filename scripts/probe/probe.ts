@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { buildChunk, type Chunk } from '../../src/game/world/chunk'
-import { makeChunkMats } from '../../src/game/world/streamer'
+import { buildWorld, makeChunkMats, tintWater } from '../../src/game/world/streamer'
 import { chunkX, chunkZ } from '../../src/game/world/grid'
 import { SEA_Y, sampleAt, terrainY } from '../../src/game/world/terrain'
 import { landmarkIn, type LandmarkKind } from '../../src/game/world/landmarks'
@@ -11,6 +11,20 @@ import { buildFauna, loadFaunaModels, type FaunaModels } from '../../src/game/wo
 import { buildPedestrians } from '../../src/game/world/pedestrians'
 import type { Solid } from '../../src/game/physics/collision'
 import type { BiomeId } from '../../src/game/world/biomes'
+import { buildSky } from '../../src/game/levels/sky'
+import { buildHouse } from '../../src/game/levels/houseWorld'
+import { buildGrass } from '../../src/game/world/grass'
+import { registerInteriors } from '../../src/game/world/interiors'
+import { createPixelLook, type PixelLook } from '../../src/game/render/pixelLook'
+import {
+  BIOME_AIR, airForSky, lightsForSky, nearestLamps,
+} from '../../src/game/render/atmosphere'
+import type { SkyState } from '../../src/game/levels/sky'
+import { altitudeOf, domeScaleFor, fogForAltitude, viewFarFor } from '../../src/game/levels/altitude'
+import { windUniforms } from '../../src/game/world/wind'
+import { gfx } from '../../src/game/world/quality'
+import { buildMoon, moonGroundY } from '../../src/game/levels/moon'
+import { MOON_ORIGIN } from '../../src/game/levels/space'
 
 /*
   The world, rendered off to one side so it can be photographed.
@@ -29,19 +43,28 @@ import type { BiomeId } from '../../src/game/world/biomes'
   every wall as a grey rectangle. One shot taken that way is indistinguishable
   from a real regression, and it cost most of a conversation.
 
+  The same rule covers the frame itself. Every tile is drawn through the
+  game's own post pass (`render/pixelLook.ts`: the low internal resolution,
+  outlines, grade and dithered posterize), under the game's own sky
+  (`levels/sky.ts`, pinned at the asked-for `tod`, which also hands back the
+  fog and the sun), over the game's own grass field. A shot without those is
+  a picture of a different game; `raw` skips only the post pass, for a
+  before and after of the look itself.
+
   Two things it deliberately does not have. There is no walker, no physics and
-  no day cycle: the light rig below is CrtScene's numbers pinned at whatever
-  `tod` was asked for. And there is no streaming, just a fixed neighbourhood
-  of chunks built once, because a probe that streams has the reused-renderer
-  ghosting problem the notes warn about, where late-built chunk geometry draws
-  nothing at all and impersonates whatever you just changed.
+  no running clock: the light rig below is CrtScene's numbers pinned at
+  whatever `tod` was asked for. And there is no streaming, just a fixed
+  neighbourhood of chunks built once, because a probe that streams has the
+  reused-renderer ghosting problem the notes warn about, where late-built
+  chunk geometry draws nothing at all and impersonates whatever you just
+  changed.
 */
 
 export type Tod = number
 
 export interface Target {
   /** what to look at */
-  kind: 'at' | 'biome' | 'landmark' | 'town' | 'home'
+  kind: 'at' | 'biome' | 'landmark' | 'town' | 'home' | 'moon'
   arg?: string
   x?: number
   z?: number
@@ -75,6 +98,25 @@ export interface ShotSpec {
       is photographed is otherwise the live system, wandering, grazing and
       following the pavement exactly as it does in the world */
   life?: number
+  /** skip the pixel look: the renderer's own ACES straight to the canvas,
+      antialiased, the way every frame was drawn before render/ existed */
+  raw?: boolean
+  /** internal lines per tile for the look; 0 picks half the tile height,
+      which is an exact 2x upscale */
+  lines?: number
+  /** overrides for the look's knobs (render/pixelLook.ts's LookKnobs), plus
+      `day` / `night` objects overriding the grade presets (render/grade.ts).
+      For tuning the look without an edit-reload cycle */
+  look?: Record<string, unknown>
+  /** altitudes: each target is shot from each of these heights over its
+      ground, through the real streamer (see altTile). A row per target */
+  alts?: number[]
+  /** far-field rings for altitude tiles (world/quality.ts's farLevels);
+      0 draws the world without one */
+  farLevels?: number
+  /** with `alts`: fly it instead of placing it (see climbRow). Seconds on
+      the ground before take-off */
+  climb?: number
 }
 
 export interface Prop {
@@ -103,6 +145,10 @@ export interface ShotResult {
       from a street whose crowd all spawned behind the camera */
   animals?: number
   people?: number
+  /** altitude tiles: meshes drawn (after frustum culling is not counted) */
+  draws?: number
+  /** altitude tiles: what the far field holds */
+  far?: { tiles: number; verts: number; tris: number; pending: number; reach?: number; worstMs?: number; fog?: number[]; camFar?: number; alt?: number }
 }
 
 /* ------------------------------------------------------------- searching -- */
@@ -126,6 +172,11 @@ const search = (
 
 const resolve = (t: Target): { x: number; z: number; label: string } => {
   if (t.kind === 'home') return { x: 0, z: 34, label: 'home' }
+  if (t.kind === 'moon') {
+    // moon:<dx>,<dz> off the landing site (moon:0,0 is the pad itself)
+    const [dx, dz] = (t.arg ?? '0,0').split(',').map(Number)
+    return { x: MOON_ORIGIN.x + (dx || 0), z: MOON_ORIGIN.z + (dz || 0), label: `moon:${dx || 0},${dz || 0}` }
+  }
   if (t.kind === 'at') return { x: t.x ?? 0, z: t.z ?? 0, label: `${t.x},${t.z}` }
   if (t.kind === 'biome') {
     const want = t.arg as BiomeId
@@ -178,47 +229,74 @@ const resolveAllLandmarks = () => landmarkRings(() => true, 9)
 
 /* --------------------------------------------------------------- the rig -- */
 
-/** CrtScene's own roam numbers, pinned at a time of day instead of animated.
-    Copied rather than imported because sky.ts drives them off a live clock
-    and a mounted scene graph; the constants are what matter here. */
-const HEMI_SKY_DAY = new THREE.Color('#cfe2f2')
-const HEMI_GROUND_DAY = new THREE.Color('#5f6a52')
-const HEMI_SKY_NIGHT = new THREE.Color('#5a6678')
-const HEMI_GROUND_NIGHT = new THREE.Color('#241d16')
-const SUN_LOW = new THREE.Color('#ffb066')
-const SUN_HIGH = new THREE.Color('#fff2dc')
-const FOG_NIGHT = new THREE.Color('#0d1220')
-const FOG_DAY = new THREE.Color('#a9c0d4')
+/** CrtScene's roam hemisphere: HEMI_ROAM scaled by the sky's own day boost,
+    in the sky's own colours. The sun, the fog and the domes are the real
+    sky module's, pinned at `tod`. */
+const HEMI_ROAM = 1.5
+const noop = () => {}
 
-const lightFor = (scene: THREE.Scene, tod: Tod, at: THREE.Vector3) => {
-  // elevation of the sun over the horizon, 0 at dawn/dusk, 1 at noon
-  const sunEl = Math.sin((tod - 0.25) * Math.PI * 2)
-  const day = Math.max(0, Math.min(1, sunEl * 3))
-  const dayBoost = 1 + 2.1 * day
-  const hemi = new THREE.HemisphereLight(
-    HEMI_SKY_NIGHT.clone().lerp(HEMI_SKY_DAY, day),
-    HEMI_GROUND_NIGHT.clone().lerp(HEMI_GROUND_DAY, day),
-    1.5 * dayBoost,
-  )
+/** the sky the last lightFor built, for a climb that re-dresses it per frame */
+let lastSky: ReturnType<typeof buildSky> | null = null
+export const lightFor = (scene: THREE.Scene, tod: Tod, cam: THREE.Vector3, far = 900) => {
+  const sky = buildSky({ parent: scene, trackTexture: noop, trackDisposable: noop })
+  lastSky = sky
+  sky.setScale(domeScaleFor(far))
+  const st = sky.update(cam, tod)
+  // sky.ts only asks for a sun map while the sun is strong enough to cast
+  // one, and CrtScene bakes it once under the boot cover regardless. A still
+  // frame has no boot: at dusk and at night the shadow sampler would have no
+  // map behind it, and every lit draw fails validation and draws nothing
+  sky.sun.shadow.needsUpdate = true
+  const hemi = new THREE.HemisphereLight(st.hemiSky, st.hemiGround, HEMI_ROAM * st.dayBoost)
   scene.add(hemi)
-  const sun = new THREE.DirectionalLight(
-    SUN_LOW.clone().lerp(SUN_HIGH, Math.max(0, Math.min(1, sunEl * 1.6))),
-    2.3 * Math.pow(Math.max(0, sunEl), 0.65),
+  scene.fog = new THREE.Fog(st.fogColor.clone(), st.fogNear, st.fogFar)
+  scene.background = st.fogColor.clone()
+  return st
+}
+
+/** what the air thickens by under a point: 'town' in a settlement, the
+    biome elsewhere, as outsideWorld's biomeAt answers it for the game */
+const airGround = (x: number, z: number) => {
+  const s = sampleAt(x, z)
+  return s.place.district ? 'town' : s.biome
+}
+
+/**
+ * Dress the look for a still frame the way CrtScene dresses it for a live
+ * one: the grade's mood, the air's density for this moment and this ground,
+ * the sun's glow, and the night's lamp pools and headlamp. `lamps` is a flat
+ * xyz list of the fixtures in the tile (a chunk's `lamps`), nearest first
+ * or not; the headlamp rides the camera, as the walker's own would.
+ */
+const lampPick = new Float32Array(16 * 3)
+const lampD2 = new Float32Array(16)
+const sunDir = new THREE.Vector3()
+export const dressLook = (
+  look: PixelLook, scene: THREE.Scene, st: SkyState, cam: THREE.Camera,
+  biome: string | null, lamps: number[] = [], headlamp = true, alt = 0, reach = 0,
+) => {
+  look.setMood(st.night * (1 - st.twilight))
+  let sun: THREE.DirectionalLight | null = null
+  let hemi: THREE.HemisphereLight | null = null
+  scene.traverse((o) => {
+    if ((o as THREE.DirectionalLight).isDirectionalLight && !sun) sun = o as THREE.DirectionalLight
+    if ((o as THREE.HemisphereLight).isHemisphereLight && !hemi) hemi = o as THREE.HemisphereLight
+  })
+  const s = sun as THREE.DirectionalLight | null
+  if (s) sunDir.subVectors(s.position, s.target.position).normalize()
+  airForSky(
+    look.air, st, BIOME_AIR[biome ?? ''] ?? 1, sunDir, s ? s.color : new THREE.Color(),
+    alt, reach, SEA_Y,
   )
-  const a = (tod - 0.25) * Math.PI * 2
-  sun.position.set(at.x + Math.cos(a) * 60, at.y + Math.max(0.02, sunEl) * 60, at.z + 12.6)
-  sun.target.position.copy(at)
-  sun.castShadow = true
-  sun.shadow.mapSize.set(2048, 2048)
-  sun.shadow.bias = -0.0004
-  sun.shadow.normalBias = 0.5
-  const c = sun.shadow.camera
-  c.left = -70; c.right = 70; c.top = 70; c.bottom = -70; c.near = 1; c.far = 220
-  c.updateProjectionMatrix()
-  scene.add(sun, sun.target)
-  const fog = FOG_NIGHT.clone().lerp(FOG_DAY, day)
-  scene.fog = new THREE.Fog(fog, 26 + day * 30, 176 + day * 64)
-  scene.background = fog.clone().lerp(new THREE.Color('#ffffff'), 0.12)
+  cam.updateMatrixWorld()
+  const cp = cam.getWorldPosition(new THREE.Vector3())
+  const n = nearestLamps(cp.x, cp.z, lamps, lamps.length / 3, lampPick, 16, lampD2)
+  const h = hemi as THREE.HemisphereLight | null
+  const amb = h ? h.color.clone().multiplyScalar(h.intensity) : new THREE.Color(0.1, 0.1, 0.1)
+  lightsForSky(look.lights, st, lampPick, n, amb)
+  if (!headlamp) look.lights.head.on = false
+  look.lights.head.pos.copy(cp)
+  cam.getWorldDirection(look.lights.head.dir)
 }
 
 /* ----------------------------------------------------------------- props -- */
@@ -311,7 +389,6 @@ const addLife = (
   scene: THREE.Scene, x: number, z: number, gy: number, seconds: number,
   obstacles: Solid[],
 ) => {
-  const noop = () => {}
   const fauna = buildFauna({
     parent: scene, obstacles, trackDisposable: noop, ring: { near: 14, spread: 26 },
   })
@@ -347,6 +424,9 @@ const addLife = (
 /* ---------------------------------------------------------------- shoot -- */
 
 let renderer: THREE.WebGLRenderer | null = null
+let look: PixelLook | null = null
+/** the first GL error flagged straight after drawing a tile, this shot */
+let lastGlError = ''
 /** the built tiles of the last shot, so `pick` can raycast into them */
 let tiles: Array<{ scene: THREE.Scene; cam: THREE.Camera; chunks: Chunk[] }> = []
 
@@ -355,14 +435,251 @@ const disposeTiles = () => {
   tiles = []
 }
 
+/*
+  The view from the air: noclip, or the helicopter.
+
+  Every other tile here is a fixed neighbourhood of chunks built once, which
+  is honest at a walker's eye and a lie from a hundred units up, where what
+  the frame is made of is the streamer's own decisions: how far the ring
+  reaches at this height, which tier each ring gets, what stands past it,
+  and how the fog and the air open up. So an altitude tile runs the real
+  streamer (`buildWorld`) at the camera, primes the whole ring with no frame
+  budget, settles every fade, and dresses the sky, the fog and the look
+  through the same altitude module the game uses (levels/altitude.ts).
+
+  The camera stands `alt` over the target's ground, backed off along the
+  bearing and pitched down a fixed sixteen degrees: the horizon sits in the
+  top quarter of the frame and the target in the lower third, which is how
+  anybody actually flies in noclip.
+*/
+const ALT_PITCH = 0.28
+const altTile = (
+  spec: ShotSpec, x: number, z: number, label: string, alt: number,
+  tw: number, th: number, index: number,
+): ShotResult => {
+  const r = renderer!
+  const scene = new THREE.Scene()
+  const gy = terrainY(x, z)
+  const back = Math.max(10, alt / Math.tan(0.63))
+  const cam = new THREE.PerspectiveCamera(58, tw / th, 0.2, 900)
+  // a low camera downtown can land inside a tower: swing the bearing round
+  // to the first one whose lens is in the open (the chunk under the lens is
+  // built for its boxes and thrown away; the real ring is built below)
+  const mats = makeChunkMats(noop, noop)
+  let yaw = spec.yaw
+  for (const off of [0, 1.05, -1.05, 2.1, -2.1, Math.PI]) {
+    yaw = spec.yaw + off
+    const px = x + Math.cos(yaw) * back
+    const pz = z + Math.sin(yaw) * back
+    const c = buildChunk(chunkX(px), chunkZ(pz), 'bare', mats)
+    const p = new THREE.Vector3(px, gy + alt, pz)
+    const inside = c.boxes.some((b) => b.clone().expandByScalar(2).containsPoint(p))
+    for (const g of c.geos) g.dispose()
+    if (!inside) break
+  }
+  cam.position.set(x + Math.cos(yaw) * back, gy + alt, z + Math.sin(yaw) * back)
+  cam.lookAt(
+    cam.position.x - Math.cos(yaw) * Math.cos(ALT_PITCH),
+    cam.position.y - Math.sin(ALT_PITCH),
+    cam.position.z - Math.sin(yaw) * Math.cos(ALT_PITCH),
+  )
+  const camAlt = altitudeOf(cam.position.y, terrainY(cam.position.x, cam.position.z))
+  // --far 0 is the world as it was before the far field: the wide ring and
+  // the old fog ramp, for a before and after
+  const farWas = gfx.farLevels
+  if (spec.farLevels !== undefined) gfx.farLevels = spec.farLevels
+  const world = buildWorld({
+    scene, obstacles: [], trackTexture: noop, trackDisposable: noop,
+  })
+  gfx.farLevels = farWas
+  // the first update plans the far field and picks the ring for this height;
+  // the far field is then built whole (a game spreads it over frames), the
+  // ring re-picked now that it exists, and primed with no frame budget
+  world.update(cam.position.x, cam.position.z, 1 / 60, camAlt)
+  world.primeFar(cam.position.x, cam.position.z, camAlt, 1e5)
+  world.update(cam.position.x, cam.position.z, 1 / 60, camAlt)
+  world.prime(cam.position.x, cam.position.z, 1e9)
+  // every chunk dissolves in over world/fade.ts's FADE_S from its birth
+  // stamp; a still frame wants them all arrived, and the far field's mask
+  // wants to know they have
+  windUniforms.uTime.value += 30
+  world.update(cam.position.x, cam.position.z, 0, camAlt)
+  const reach = world.farReach(cam.position.x, cam.position.z)
+  cam.far = viewFarFor(camAlt, reach)
+  cam.updateProjectionMatrix()
+  const st = lightFor(scene, spec.tod, cam.position, cam.far)
+  fogForAltitude(st, camAlt, reach)
+  const fog = scene.fog as THREE.Fog
+  fog.near = st.fogNear
+  fog.far = st.fogFar
+  world.setNight(st.night)
+  world.setWaterTint(st.fogColor, st.day)
+  if (look) {
+    const lampBuf = new Float32Array(16 * 3)
+    const n = world.nearLamps(cam.position.x, cam.position.z, lampBuf, 16)
+    dressLook(
+      look, scene, st, cam, airGround(cam.position.x, cam.position.z),
+      Array.from(lampBuf.subarray(0, n * 3)), false, camAlt, reach,
+    )
+  }
+  tiles.push({ scene, cam, chunks: [] })
+  if (look) look.render(scene, cam)
+  else r.render(scene, cam)
+  const err = r.getContext().getError()
+  if (err && !lastGlError) lastGlError = `0x${err.toString(16)} on tile ${index} (${label})`
+  const s = sampleAt(x, z)
+  let verts = 0
+  let draws = 0
+  scene.traverseVisible((o) => {
+    const m = o as THREE.Mesh
+    if (!m.isMesh) return
+    draws++
+    verts += m.geometry.getAttribute('position')?.count ?? 0
+  })
+  return {
+    label, x: Math.round(x), z: Math.round(z), y: Math.round(gy * 10) / 10,
+    biome: s.biome, district: s.place.district, verts, draws,
+    far: { ...world.farStats(), reach: Math.round(reach), fog: [Math.round(fog.near), Math.round(fog.far)], camFar: Math.round(cam.far), alt: Math.round(camAlt) },
+  }
+}
+
+/*
+  A climb, as the game plays it: one streamer, ticked a sixtieth of a second
+  at a time under its real frame budget, with the wind clock (and so every
+  chunk's fade) running. The camera stands at the target's eye line for
+  `climb` seconds (the far field builds in the background there, the way it
+  does while somebody walks), then rises at 30 u/s while drifting forward at
+  20, and a frame is photographed as it passes each of `alts`. With
+  `--climb 0` it takes off at once, which is the worst case: nothing past
+  the ring is built yet, and the frames show what stands in meanwhile.
+*/
+const climbRow = (
+  spec: ShotSpec, x: number, z: number, label: string,
+  tw: number, th: number, row: number, canvasH: number,
+): ShotResult[] => {
+  const r = renderer!
+  const scene = new THREE.Scene()
+  const world = buildWorld({ scene, obstacles: [], trackTexture: noop, trackDisposable: noop })
+  const cam = new THREE.PerspectiveCamera(58, tw / th, 0.2, 900)
+  const yaw = spec.yaw
+  const fx = -Math.cos(yaw)
+  const fz = -Math.sin(yaw)
+  let px = x
+  let pz = z
+  let alt = 3.84
+  const dt = 1 / 60
+  world.update(px, pz, dt, alt)
+  world.prime(px, pz, 200)
+  lightFor(scene, spec.tod, new THREE.Vector3(px, terrainY(px, pz) + alt, pz))
+  const sky = lastSky!
+  const out: ShotResult[] = []
+  const alts = [...(spec.alts ?? [])].sort((a, b) => a - b)
+  let next = 0
+  let t = 0
+  let worst = 0
+  while (next < alts.length && t < 120) {
+    const flying = t >= (spec.climb ?? 0)
+    if (flying) {
+      alt += 30 * dt
+      px += fx * 20 * dt
+      pz += fz * 20 * dt
+    }
+    const t0 = performance.now()
+    world.update(px, pz, dt, alt)
+    worst = Math.max(worst, performance.now() - t0)
+    t += dt
+    if (!flying || alt < alts[next]) continue
+    const gy = terrainY(px, pz)
+    cam.position.set(px, gy + alt, pz)
+    cam.lookAt(px + fx * Math.cos(ALT_PITCH), gy + alt - Math.sin(ALT_PITCH), pz + fz * Math.cos(ALT_PITCH))
+    const reach = world.farReach(px, pz)
+    cam.far = viewFarFor(alt, reach)
+    cam.updateProjectionMatrix()
+    const st = sky.update(cam.position, spec.tod)
+    sky.setScale(domeScaleFor(cam.far))
+    sky.sun.shadow.needsUpdate = true
+    fogForAltitude(st, alt, reach)
+    const fog = scene.fog as THREE.Fog
+    fog.near = st.fogNear
+    fog.far = st.fogFar
+    world.setNight(st.night)
+    world.setWaterTint(st.fogColor, st.day)
+    if (look) {
+      dressLook(look, scene, st, cam, airGround(px, pz), [], false, alt, reach)
+    }
+    r.setViewport(next * tw, canvasH - (row + 1) * th, tw, th)
+    r.setScissor(next * tw, canvasH - (row + 1) * th, tw, th)
+    if (look) look.render(scene, cam)
+    else r.render(scene, cam)
+    tiles.push({ scene, cam, chunks: [] })
+    const s = sampleAt(px, pz)
+    out.push({
+      label: `${label} climb @${alts[next]} t=${t.toFixed(1)}s`,
+      x: Math.round(px), z: Math.round(pz), y: Math.round(gy),
+      biome: s.biome, district: s.place.district, verts: 0,
+      far: { ...world.farStats(), reach: Math.round(reach), worstMs: Math.round(worst * 10) / 10 },
+    })
+    next++
+  }
+  return out
+}
+
+/*
+  The Moon, as the 'moon' level draws it once you have landed: its ground
+  (levels/moon.ts) at its own origin in the scene, under the sky with space
+  turned all the way up (black, the day dome gone, the hemisphere light at
+  space's own), orbit or eye framing as for any other target.
+*/
+const moonTile = (
+  spec: ShotSpec, x: number, z: number, label: string, tw: number, th: number,
+  index: number, cols: number, height: number,
+): ShotResult => {
+  const r = renderer!
+  const scene = new THREE.Scene()
+  const moon = buildMoon({ parent: scene, obstacles: [], trackDisposable: noop })
+  moon.ensureBuilt()
+  moon.root.visible = true
+  const gy = moonGroundY(x, z)
+  const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.5, 6000)
+  const aim = new THREE.Vector3()
+  if (spec.eye) {
+    cam.position.set(x, gy + 3.55, z)
+    aim.set(x + Math.sin(spec.yaw) * 20, gy + 2.0, z + Math.cos(spec.yaw) * 20)
+  } else {
+    cam.position.set(x + Math.cos(spec.yaw) * spec.dist, gy + spec.height, z + Math.sin(spec.yaw) * spec.dist)
+    aim.set(x, gy + spec.height * 0.32, z)
+  }
+  cam.lookAt(aim)
+  const sky = buildSky({ parent: scene, trackTexture: noop, trackDisposable: noop })
+  sky.setScale(domeScaleFor(cam.far))
+  const st = sky.update(cam.position, spec.tod, 1, false)
+  sky.sun.shadow.needsUpdate = true
+  scene.add(new THREE.HemisphereLight(st.hemiSky, st.hemiGround, HEMI_ROAM * st.dayBoost))
+  scene.fog = new THREE.Fog(st.fogColor.clone(), 4000, 5800)
+  scene.background = st.fogColor.clone()
+  if (look) dressLook(look, scene, st, cam, null, [], spec.eye)
+  tiles.push({ scene, cam, chunks: [] })
+  const col = index % cols
+  const row = Math.floor(index / cols)
+  r.setViewport(col * tw, height - (row + 1) * th, tw, th)
+  r.setScissor(col * tw, height - (row + 1) * th, tw, th)
+  if (look) look.render(scene, cam)
+  else r.render(scene, cam)
+  return {
+    label, x: Math.round(x), z: Math.round(z), y: Math.round(gy * 10) / 10,
+    biome: 'rock' as BiomeId, district: null, verts: 0,
+  }
+}
+
 export const shoot = (spec: ShotSpec): ShotResult[] => {
   const canvas = document.getElementById('c') as HTMLCanvasElement
   const list = spec.targets.length === 1 && spec.targets[0].kind === 'landmark'
     && spec.targets[0].arg === '*'
     ? resolveAllLandmarks()
     : spec.targets.map(resolve)
-  const cols = Math.min(spec.cols, list.length)
-  const rows = Math.ceil(list.length / cols)
+  const count = list.length * Math.max(1, spec.alts?.length ?? 0)
+  const cols = spec.alts?.length ? spec.alts.length : Math.min(spec.cols, count)
+  const rows = Math.ceil(count / cols)
   const [tw, th] = spec.tile
   canvas.width = tw * cols
   canvas.height = th * rows
@@ -370,31 +687,71 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
   // a fresh renderer per shot, deliberately. A reused one ghosts late-built
   // chunk geometry: valid, raycastable, in the scene, and drawing nothing,
   // which impersonates exactly the feature you just changed
+  look?.dispose()
+  look = null
   renderer?.dispose()
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+  // antialiasing only for the raw frame: the look renders into its own
+  // aliased target and would pay for a multisampled canvas it never uses
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: !!spec.raw })
   renderer.setPixelRatio(1)
   renderer.setSize(canvas.width, canvas.height, false)
-  renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 1.1
+  if (spec.raw) {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.1
+  } else {
+    look = createPixelLook(renderer)
+    // what the tile is drawn at: an exact 2x unless asked otherwise
+    look.knobs.lines = spec.lines || Math.round(th / 2)
+    const { day, night, ...knobs } = (spec.look ?? {}) as {
+      day?: Record<string, unknown>; night?: Record<string, unknown>
+    }
+    Object.assign(look.knobs, knobs)
+    look.setGrade(day, night)
+  }
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.shadowMap.type = THREE.PCFShadowMap
   renderer.setScissorTest(true)
 
   disposeTiles()
+  lastGlError = ''
   const keep: THREE.Texture[] = []
   const mats = makeChunkMats((t) => keep.push(t), () => {})
   // the streamer fades a chunk in over its baked birth stamp and holds the
   // glass at zero opacity by day; a still frame wants both settled
   ;(mats.glass as THREE.MeshBasicMaterial).opacity =
-    spec.tod < 0.22 || spec.tod > 0.78 ? 1 : 0
+    spec.tod < 0.24 || spec.tod > 0.74 ? 1 : 0
 
   const out: ShotResult[] = []
+  if (spec.alts?.length && spec.climb !== undefined) {
+    list.forEach((t, row) => {
+      out.push(...climbRow(spec, t.x, t.z, t.label, tw, th, row, canvas.height))
+    })
+    return out
+  }
+  if (spec.alts?.length) {
+    // targets down the rows, altitudes across: `--alt 10,40,120,300` over
+    // three places is one sheet a critic can read left to right as a climb
+    let i = 0
+    for (const t of list) {
+      for (const alt of spec.alts) {
+        const col = i % cols
+        const row = Math.floor(i / cols)
+        renderer.setViewport(col * tw, canvas.height - (row + 1) * th, tw, th)
+        renderer.setScissor(col * tw, canvas.height - (row + 1) * th, tw, th)
+        out.push(altTile(spec, t.x, t.z, `${t.label} @${alt}`, alt, tw, th, i))
+        i++
+      }
+    }
+    return out
+  }
   for (let i = 0; i < list.length; i++) {
     const { x, z, label } = list[i]
+    if (label.startsWith('moon:')) {
+      out.push(moonTile(spec, x, z, label, tw, th, i, cols, canvas.height))
+      continue
+    }
     const scene = new THREE.Scene()
     const gy = terrainY(x, z)
-    lightFor(scene, spec.tod, new THREE.Vector3(x, gy, z))
-
     const c0 = chunkX(x)
     const d0 = chunkZ(z)
     const chunks: Chunk[] = []
@@ -402,8 +759,15 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     // walls the shot is showing rather than walking through them
     const boxes: Solid[] = []
     let verts = 0
-    for (let dz = -spec.rings; dz <= spec.rings; dz++)
-      for (let dx = -spec.rings; dx <= spec.rings; dx++) {
+    // By water, one ring more: a sea is flat and open to the sky, so the
+    // edge of a 3x3 is a hard line across it a hundred units off, where the
+    // game's ring (and its fog) would carry it on to the horizon
+    let rings = spec.rings
+    for (let a = 0; a < 8 && rings === spec.rings; a++) {
+      if (terrainY(x + Math.cos(a) * 90, z + Math.sin(a) * 90) < SEA_Y) rings = spec.rings + 2
+    }
+    for (let dz = -rings; dz <= rings; dz++)
+      for (let dx = -rings; dx <= rings; dx++) {
         const c = buildChunk(c0 + dx, d0 + dz, spec.tier, mats)
         c.group.traverse((o) => {
           const m = o as THREE.Mesh
@@ -415,19 +779,94 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
         for (const g of c.geos) verts += g.getAttribute('position').count
       }
 
+    // The camera, placed after the chunks so it can see their solids. A
+    // bearing whose lens lands inside a building, or whose view of the
+    // target runs through one, is swapped for the nearest one that does not
+    // (a suburb orbit used to photograph the inside of a wall). The yaw asked
+    // for wins whenever it is clear, so a shot stays reproducible
+    const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.2, 900)
+    const aim = new THREE.Vector3()
+    const place = (yaw: number) => {
+      if (spec.eye) {
+        cam.position.set(x, gy + 3.55, z)
+        aim.set(x + Math.sin(yaw) * 20, gy + 2.0, z + Math.cos(yaw) * 20)
+      } else {
+        cam.position.set(
+          x + Math.cos(yaw) * spec.dist, gy + spec.height, z + Math.sin(yaw) * spec.dist)
+        aim.set(x, gy + spec.height * 0.32, z)
+      }
+    }
+    const blocked = () => {
+      const ray = new THREE.Ray(cam.position.clone(), aim.clone().sub(cam.position).normalize())
+      // the eye line only needs its first stretch clear; an orbit needs the
+      // whole way in to the target
+      const reach = spec.eye ? 7 : cam.position.distanceTo(aim) - 4
+      const hit = new THREE.Vector3()
+      let n = 0
+      for (const b of boxes) {
+        if (b.containsPoint(cam.position)) n += 10
+        else if (ray.intersectBox(b, hit) && hit.distanceTo(cam.position) < reach) n++
+      }
+      return n
+    }
+    let bestYaw = spec.yaw
+    let best = Number.POSITIVE_INFINITY
+    for (const off of [0, 1.05, -1.05, 2.1, -2.1, Math.PI]) {
+      place(spec.yaw + off)
+      const n = blocked()
+      if (n < best) { best = n; bestYaw = spec.yaw + off }
+      if (n === 0) break
+    }
+    place(bestYaw)
+    cam.lookAt(aim)
+    const sky = lightFor(scene, spec.tod, cam.position)
+    tintWater(mats.water, sky.fogColor, sky.day)
+    // the lattice is pinned under whatever it is updated at: the target, so
+    // an orbit shot has turf where it is looking rather than under the lens
+    // ...and the chunks' footprints registered *after* it has filled, the way
+    // the game's streamer usually delivers them, so a shot exercises the
+    // grass's late re-cull (world/interiors.ts) rather than skipping it
+    const grass = buildGrass({ parent: scene, trackDisposable: noop })
+    grass.update(x, z)
+    for (const c of chunks) registerInteriors(`${c.cx},${c.cz}`, c.interiors)
+    grass.update(x, z)
+
+    // nothing generated stands on the property (grid.ts's RESERVED), so the
+    // house has to be stood in it or `home` photographs an empty lawn. Architecture only: the furniture is ~35 downloaded GLBs,
+    // and the lamp it clones onto each ceiling is an empty stand-in
+    if (label === 'home') {
+      const house = buildHouse({
+        scene, obstacles: [],
+        darkWoodMat: new THREE.MeshStandardMaterial({ color: '#3b2a1f', roughness: 0.7 }),
+        windowGlassMat: new THREE.MeshStandardMaterial({
+          color: '#9fb4c4', roughness: 0.1, transparent: true, opacity: 0.35,
+        }),
+        lamp: { scene: new THREE.Group() },
+        trackTexture: noop, trackDisposable: noop,
+      })
+      house.setDay(sky.day)
+      // the chunks drawn round it already carry the property's ground
+      house.worldGround()
+      // its spot lights hand-bake their maps (CrtScene does it under the
+      // boot cover). A shadow sampler with no map behind it fails every lit
+      // draw with INVALID_OPERATION, and the whole tile renders as fog
+      for (const l of house.shadowLights) l.shadow.needsUpdate = true
+      house.root.traverse((o) => {
+        const m = o as THREE.Mesh
+        if (m.isMesh) { m.castShadow = true; m.receiveShadow = true }
+      })
+    }
+
+    if (look) {
+      const lamps: number[] = []
+      for (const c of chunks) for (const l of c.lamps) lamps.push(l.x, l.y, l.z)
+      // the headlamp is the walker's, so only an eye-line shot carries one
+      dressLook(look, scene, sky, cam, airGround(cam.position.x, cam.position.z), lamps, spec.eye)
+    }
+
     if (spec.props?.length) addProps(scene, x, z, spec.props)
     const life = spec.life ? addLife(scene, x, z, gy, spec.life, boxes) : null
 
-    const cam = new THREE.PerspectiveCamera(spec.eye ? 58 : 42, tw / th, 0.2, 900)
-    if (spec.eye) {
-      cam.position.set(x, gy + 3.55, z)
-      cam.lookAt(x + Math.sin(spec.yaw) * 20, gy + 2.0, z + Math.cos(spec.yaw) * 20)
-    } else {
-      cam.position.set(
-        x + Math.cos(spec.yaw) * spec.dist, gy + spec.height,
-        z + Math.sin(spec.yaw) * spec.dist)
-      cam.lookAt(x, gy + spec.height * 0.32, z)
-    }
     tiles.push({ scene, cam, chunks })
 
     const col = i % cols
@@ -436,7 +875,10 @@ export const shoot = (spec: ShotSpec): ShotResult[] => {
     const py = canvas.height - (row + 1) * th
     renderer.setViewport(px, py, tw, th)
     renderer.setScissor(px, py, tw, th)
-    renderer.render(scene, cam)
+    if (look) look.render(scene, cam)
+    else renderer.render(scene, cam)
+    const err = renderer.getContext().getError()
+    if (err && !lastGlError) lastGlError = `0x${err.toString(16)} on tile ${i} (${label})`
 
     const s = sampleAt(x, z)
     out.push({
@@ -485,3 +927,42 @@ export const pick = (tile: number, px: number, py: number) => {
     }
   })
 }
+
+/**
+ * Frame cost of the last shot's first tile: `n` redraws of it, each forced
+ * to finish with a one-pixel readback so the clock measures the GPU rather
+ * than the command queue. Median milliseconds per frame, which is how the
+ * look's fill saving and the cost of its passes are measured against --raw.
+ */
+export const bench = (n = 60) => {
+  const t = tiles[0]
+  if (!t || !renderer) return null
+  const gl = renderer.getContext()
+  const px = new Uint8Array(4)
+  const draw = () => {
+    if (look) look.render(t.scene, t.cam)
+    else renderer!.render(t.scene, t.cam)
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px)
+  }
+  for (let i = 0; i < 5; i++) draw()
+  const ms: number[] = []
+  for (let i = 0; i < n; i++) {
+    const t0 = performance.now()
+    draw()
+    ms.push(performance.now() - t0)
+  }
+  ms.sort((a, b) => a - b)
+  return {
+    median: Math.round(ms[n >> 1] * 100) / 100,
+    p90: Math.round(ms[Math.floor(n * 0.9)] * 100) / 100,
+    internal: look ? `${look.internal.w}x${look.internal.h}` : 'native',
+  }
+}
+
+/** the GL error flag read straight after each tile of the last shot. A draw that fails validation
+    (a shadow sampler with no map, a feedback loop) draws nothing and throws
+    nothing, so the harness asks */
+export const glError = () => lastGlError
+
+/** the last shot's tiles, for poking at from the console over CDP */
+export const lastTiles = () => ({ tiles, renderer, look })

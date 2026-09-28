@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { CollisionSet } from '../physics/collision'
-import { resolveXZ, supportY } from '../physics/collision'
+import { resolveXZ, supportY, surfaceAbove } from '../physics/collision'
+import { axis, held } from '../sandbox/bindings'
 
 /*
   The first-person movement sim, React-free and renderer-free: it reads a
@@ -39,7 +40,25 @@ import { resolveXZ, supportY } from '../physics/collision'
   While `frozen` (a level cut in flight) planar input and jumps are ignored
   but gravity and the crouch ease keep integrating, exactly like the old
   inline loop.
+
+  And `noclip` is Garry's Mod's free flight, the third integrator in here and
+  the simplest: no collision, no gravity, no ground. You fly where you look
+  (pitch included, so W at the sky climbs), jump rises and c sinks straight
+  up and down, sprint is fast and ctrl is slow (the key table's fly* rows). Velocity chases the
+  wished one through an exponential ease, quicker to speed up than to coast
+  down, which is what makes it feel like a body with a little mass rather
+  than a camera on rails, and the lens banks a hair into a strafe. Switching
+  it off anywhere simply hands the flight's velocity to the walk as a fall,
+  so letting go mid-air drops you with the momentum you had, and letting go
+  underground puts you back on the surface, because the landing test finds
+  the feet already below the support. Letting go inside a building (a roof
+  landed on a little too low, a wall flown into) stands you on top of it:
+  the first walk tick after a flight asks collision.ts's `surfaceAbove`.
 */
+
+/** the mid-air hop's launch speed as a share of a jump's: height goes with
+    its square, so 0.85 is about three quarters of a jump's height again */
+const HOP_K = 0.85
 
 export interface WalkTuning {
   /** standing eye height over the surface underfoot */
@@ -102,12 +121,16 @@ export interface WalkStep {
   /** a sole landed this tick — one per bob cycle, at the bottom of the dip.
       The sim only reports it; the scene decides what a step sounds like */
   footfall: boolean
+  /** the one mid-air hop fired this tick: the scene puffs a cloud under it */
+  airHop: boolean
   /** the body is in water over its chest: buoyancy owns the vertical, planar
       speed is damped, and the scene should stop asking the ground what a
       footstep sounds like */
   swimming: boolean
   /** 0 dry .. 1 eye at the waterline; the scene tints and muffles with it */
   wet: number
+  /** noclip: collision, gravity and the ground are all off this tick */
+  flying: boolean
 }
 
 export interface WalkController {
@@ -119,6 +142,15 @@ export interface WalkController {
   readonly crouchK: number
   /** absolute world height of the soles — furniture tops included */
   readonly feetY: number
+  /** free flight (see the header). Setting it mid-air carries the velocity
+      across in both directions */
+  noclip: boolean
+  /** multiplies the walk's gravity: the console's `gravity` reaches the
+      player through this. Clamped so nobody can be stranded in the sky */
+  gravityScale: number
+  /** multiplies noclip's speed: the scene raises it with height, so a climb
+      to orbit takes seconds (levels/space.ts's flyScale). 1 by default */
+  flyScale: number
   /** mouse-look; sens is the player's multiplier, sign flips lock vs drag */
   turn: (dx: number, dy: number, sign: 1 | -1, sens: number) => void
   /** hard-place the player (level spawn): position, heading, floor underfoot */
@@ -127,6 +159,24 @@ export interface WalkController {
       came to rest); feetY is absolute, so a body that settled on the sofa
       stands up on the sofa */
   teleport: (x: number, z: number, feetY: number) => void
+  /** carry the walker by an offset with everything else kept: velocity,
+      heading, flight. A seamless level seam (flying onto the Moon) moves the
+      whole frame under you, and a teleport's full stop would show */
+  shift: (dx: number, dy: number, dz: number) => void
+  /** a shove from outside the walk: a bump off another body, the bounce
+      off a head you landed on, somebody else's shoulder arriving over the
+      network. Planar velocity the walk's own control does not eat (it
+      decays on its own, quickly underfoot and slowly in the air), and an
+      upward kick that leaves the ground. `stun` is a knock-back: the speed
+      the walk was carrying is mostly lost and the keys do nothing for that
+      many seconds. Ignored in noclip */
+  push: (vx: number, vy: number, vz: number, stun?: number) => void
+  /** carried out of a portal (sandbox/tools/portals.ts) at this velocity,
+      all three axes: the walk's own speed takes as much of the planar part
+      as a run could, and the rest is the drift a flight leaves, which only
+      air drag and a landing take away. Always leaves the ground, so a fall
+      into a floor portal comes out of a wall portal as a flight */
+  fling: (vx: number, vy: number, vz: number) => void
   /** kill planar velocity only (the moment a level cut triggers) */
   haltPlanar: () => void
   /** zero all motion state (level swap, sitting down) */
@@ -139,6 +189,19 @@ export interface WalkController {
     never crosses it, and a jump into a low one reads as bumping your head */
 const CROWN = 0.4
 
+/** free flight's cruising speed, units/s: a little under three sprints,
+    which crosses a town block in a couple of seconds. Sprint multiplies it,
+    ctrl divides it */
+const FLY_SPEED = 26
+const FLY_FAST = 3.2
+const FLY_SLOW = 0.22
+/** the most downward speed a flight hands the fall that follows it, u/s */
+const LAND_CARRY = 10
+/** how fast a shove bleeds away, per second: underfoot the soles grip and
+    a bump is a stagger of a step or two; in the air only drag takes it */
+const SHOVE_GRIP = 5.5
+const SHOVE_AIR = 1.2
+
 export function createWalkController(
   rig: THREE.PerspectiveCamera,
   tune: WalkTuning,
@@ -149,15 +212,107 @@ export function createWalkController(
   let feetY = 0 // absolute; the sole height, whatever it is standing on
   let vy = 0
   let grounded = true
+  /** the one hop allowed between landings has been spent */
+  let hopped = false
+  /** space was down last tick, so a hop needs a fresh press, never a hold */
+  let jumpWas = false
   let bobT = 0
   let stride = 0 // which bob cycle the last voiced footfall belonged to
+  let noclip = false
+  /** a flight just ended: on the next walk tick, feet found inside a solid
+      come out on top of it (collision.ts's surfaceAbove) */
+  let unstick = false
+  let gravityScale = 1
+  let flyScale = 1
+  let bank = 0 // the flight's strafe roll, radians
+  const fly = new THREE.Vector3() // the flight's velocity, all three axes
+  /** what a flight hands the fall when noclip goes off mid-air: planar
+      momentum that only air drag takes away, on top of the walk's own
+      air control (which eases toward the keys at the same quick rate it
+      does on the ground, and would otherwise stop a 26 u/s flyer dead in a
+      few frames). Zero again the moment the feet touch anything */
+  const drift = new THREE.Vector3()
+  /** a push from outside (see `push`), decaying at its own rate. Kept apart
+      from `vel` because `vel` eases toward the keys ten times a second and
+      would swallow a bump in a frame or two, which reads as hitting a wall
+      rather than being knocked back */
+  const shove = new THREE.Vector3()
+  /** seconds left of a knock-back during which the keys do nothing */
+  let stunT = 0
+  const wish = new THREE.Vector3()
   const vel = new THREE.Vector3()
   const want = new THREE.Vector3()
   // reused across ticks: the walk loop runs at 60Hz and shouldn't feed the GC
   const step: WalkStep = {
     planar: 0, gait: 0, grounded: true, duck: false, run: false, moved: false,
-    vx: 0, vz: 0, vy: 0, landing: 0, support: 0, footfall: false,
-    swimming: false, wet: 0,
+    vx: 0, vz: 0, vy: 0, landing: 0, support: 0, footfall: false, airHop: false,
+    swimming: false, wet: 0, flying: false,
+  }
+
+  /** the flight tick: see the header */
+  const flyStep = (o: WalkStepOpts): WalkStep => {
+    const { dt, keys, frozen, waterY, fovBase } = o
+    const fwd = frozen ? 0 : axis(keys, 'back', 'forward')
+    const side = frozen ? 0 : axis(keys, 'left', 'right')
+    const up = frozen ? 0 : axis(keys, 'flyDown', 'flyUp')
+    const cp = Math.cos(pitch)
+    // forward is the gaze, pitch and all; right stays level, so a strafe
+    // never climbs; up is the world's up, not the camera's
+    wish.set(
+      (-Math.sin(yaw) * cp) * fwd + Math.cos(yaw) * side,
+      Math.sin(pitch) * fwd + up,
+      (-Math.cos(yaw) * cp) * fwd - Math.sin(yaw) * side,
+    )
+    const want = wish.length()
+    if (want > 1) wish.multiplyScalar(1 / want)
+    const speed =
+      FLY_SPEED * flyScale * (held(keys, 'flyFast') ? FLY_FAST : 1) * (held(keys, 'flySlow') ? FLY_SLOW : 1)
+    wish.multiplyScalar(speed)
+    // quicker to get going than to coast to a stop: the coast is the part
+    // that reads as weight, and a snappy start is the part that reads as
+    // control. Braking against the current velocity uses the quick rate too
+    const braking = want > 0 && fly.dot(wish) < 0
+    const rate = want > 0 ? (braking ? 9 : 5.5) : 2.6
+    fly.lerp(wish, 1 - Math.exp(-rate * dt))
+    rig.position.addScaledVector(fly, dt)
+    crouchK += (0 - crouchK) * (1 - Math.exp(-11 * dt))
+    feetY = rig.position.y - tune.eye
+    vy = fly.y
+    grounded = false
+    // a hair of roll into the strafe, scaled by how fast the flight is going
+    const planar = Math.hypot(fly.x, fly.z)
+    const bankWant = -side * 0.045 * Math.min(1, fly.length() / (FLY_SPEED * flyScale))
+    bank += (bankWant - bank) * (1 - Math.exp(-5 * dt))
+    rig.rotation.x = pitch
+    rig.rotation.y = yaw
+    rig.rotation.z = bank
+    // the lens widens with speed, more than a sprint does: at three times
+    // cruise the world should visibly stream
+    const k = Math.max(0, Math.min(1, (fly.length() / flyScale - FLY_SPEED * 0.6) / (FLY_SPEED * 2.4)))
+    const fovWant = fovBase + 12 * k
+    if (Math.abs(rig.fov - fovWant) > 0.02) {
+      rig.fov += (fovWant - rig.fov) * (1 - Math.exp(-6 * dt))
+      rig.updateProjectionMatrix()
+    }
+    step.planar = planar
+    step.gait = 0
+    step.grounded = false
+    step.duck = false
+    step.run = false
+    step.swimming = false
+    step.flying = true
+    step.wet =
+      waterY === undefined
+        ? 0
+        : Math.min(1, Math.max(0, (waterY - feetY) / Math.max(0.01, tune.eye)))
+    step.vx = fly.x
+    step.vz = fly.z
+    step.vy = fly.y
+    step.landing = 0
+    step.footfall = false
+    step.support = feetY
+    step.moved = fly.lengthSq() > 0.0025 || Math.abs(bank) > 1e-3
+    return step
   }
 
   return {
@@ -182,6 +337,49 @@ export function createWalkController(
     get feetY() {
       return feetY
     },
+    get noclip() {
+      return noclip
+    },
+    set noclip(on: boolean) {
+      if (on === noclip) return
+      noclip = on
+      if (on) {
+        // take off with whatever the walk was doing, so a toggle mid-jump
+        // keeps the jump's drift instead of stopping dead in the air
+        fly.set(vel.x, grounded ? 0 : vy, vel.z)
+        grounded = false
+      } else {
+        // and land the same way round: the flight's velocity becomes a fall
+        // that keeps its drift until it lands
+        vel.set(0, 0, 0)
+        drift.set(fly.x, 0, fly.z)
+        // ...up to what a flight at ground level could carry: letting go at
+        // orbital speed (flyScale) is a fall, not a cannon shot
+        const cap = FLY_SPEED * FLY_FAST
+        if (drift.lengthSq() > cap * cap) drift.setLength(cap)
+        // the planar drift is kept whole, the dive is not: letting go a hop
+        // over a street while sinking must land you on your feet, and a real
+        // drop still earns its flop from the gravity it falls through
+        vy = Math.max(fly.y, -LAND_CARRY)
+        grounded = false
+        fly.set(0, 0, 0)
+        bank = 0
+        rig.rotation.z = 0
+        unstick = true
+      }
+    },
+    get gravityScale() {
+      return gravityScale
+    },
+    get flyScale() {
+      return flyScale
+    },
+    set flyScale(k: number) {
+      flyScale = Math.max(1, k)
+    },
+    set gravityScale(k: number) {
+      gravityScale = Math.max(0.1, Math.min(4, k))
+    },
     turn: (dx, dy, sign, sens) => {
       const k = 0.0019 * sens
       yaw += sign * dx * k
@@ -189,41 +387,90 @@ export function createWalkController(
     },
     spawnAt: (x, z, yawTo, y) => {
       feetY = y
+      unstick = false
       vy = 0
+      fly.set(0, 0, 0)
       grounded = true
       rig.position.set(x, y + tune.eye, z)
       yaw = yawTo
       pitch = 0
     },
+    shift: (dx, dy, dz) => {
+      feetY += dy
+      rig.position.x += dx
+      rig.position.y += dy
+      rig.position.z += dz
+    },
     teleport: (x, z, y) => {
       feetY = y
+      unstick = false
       vy = 0
+      fly.set(0, 0, 0)
       grounded = true
       rig.position.set(x, y + tune.eye, z)
     },
+    push: (px, py, pz, stun = 0) => {
+      if (stun > 0 && !noclip) {
+        // the run is lost: most of the speed the walk was carrying goes, and
+        // for `stun` seconds the keys do nothing but the shove plays out
+        stunT = Math.max(stunT, stun)
+        vel.multiplyScalar(0.15)
+      }
+      if (noclip) return
+      shove.x += px
+      shove.z += pz
+      // a kick up takes the feet off the ground and never slows a rise
+      // already under way (a stomp's bounce mid-hop is still a bounce)
+      if (py > 0) {
+        grounded = false
+        vy = Math.max(vy, py)
+      }
+    },
+    fling: (vx, vyIn, vz) => {
+      if (noclip) {
+        fly.set(vx, vyIn, vz)
+        return
+      }
+      const planar = Math.hypot(vx, vz)
+      const k = planar > tune.runSpeed ? tune.runSpeed / planar : 1
+      vel.set(vx * k, 0, vz * k)
+      drift.set(vx - vel.x, 0, vz - vel.z)
+      shove.set(0, 0, 0)
+      vy = vyIn
+      grounded = false
+    },
     haltPlanar: () => {
       vel.set(0, 0, 0)
+      drift.set(0, 0, 0)
+      shove.set(0, 0, 0)
+      fly.set(0, 0, 0)
     },
     resetMotion: () => {
       vel.set(0, 0, 0)
+      drift.set(0, 0, 0)
+      shove.set(0, 0, 0)
+      fly.set(0, 0, 0)
+      stunT = 0
       crouchK = 0
       vy = 0
       grounded = true
       bobT = 0
       stride = 0 // or the clock rewind reads as one phantom footfall
     },
-    update: ({ dt, keys, frozen, groundY, groundAt, ceilingY, waterY, collision, fovBase }) => {
-      const fwd = frozen
-        ? 0
-        : (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
-          (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
-      const side = frozen
-        ? 0
-        : (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) -
-          (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0)
+    update: (o) => {
+      step.airHop = false
+      if (noclip) return flyStep(o)
+      const { dt, keys, frozen, groundY, groundAt, ceilingY, waterY, collision, fovBase } = o
+      step.flying = false
+      const grav = tune.grav * gravityScale
+      // knocked back off somebody: the legs are not the player's for a beat
+      const stunned = stunT > 0
+      if (stunned) stunT = Math.max(0, stunT - dt)
+      const fwd = frozen || stunned ? 0 : axis(keys, 'back', 'forward')
+      const side = frozen || stunned ? 0 : axis(keys, 'left', 'right')
       // shift sprints, ctrl (or c) crouches; crouching wins the argument
-      const duck = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')
-      const run = !duck && (keys.has('ShiftLeft') || keys.has('ShiftRight'))
+      const duck = held(keys, 'crouch')
+      const run = !duck && held(keys, 'sprint')
       // deep enough to swim: the water is over the chest. Decided on last
       // tick's feet, before anything moves, so the mode can't flicker
       // mid-integration between the planar step and the vertical one
@@ -247,11 +494,44 @@ export function createWalkController(
       // ease the velocity so steps start and stop with a little weight
       vel.lerp(want, 1 - Math.exp(-10 * dt))
       rig.position.addScaledVector(vel, dt)
+      const driftX = rig.position.x
+      const driftZ = rig.position.z
+      if (!grounded && !swimming) {
+        drift.multiplyScalar(Math.exp(-0.35 * dt))
+        rig.position.addScaledVector(drift, dt)
+      } else drift.set(0, 0, 0)
+      // a shove rides on top of both, and is walled the same way below
+      const shoving = shove.x !== 0 || shove.z !== 0
+      if (shoving) {
+        rig.position.addScaledVector(shove, dt)
+        shove.multiplyScalar(Math.exp(-(grounded || swimming ? SHOVE_GRIP : SHOVE_AIR) * dt))
+        if (shove.x * shove.x + shove.z * shove.z < 1e-4) shove.set(0, 0, 0)
+      }
       // a solid is only a wall where it overlaps the body: standing, ledges
       // up to tune.step are climbed through; airborne, nothing is, so a hop
       // has to clear a surface before it can carry over it
+      // the first tick after a flight: landed inside a building (a roof
+      // dipped into, a wall flown into), stand on top of it rather than be
+      // pushed out through the nearest wall to fall down the outside
+      if (unstick) {
+        unstick = false
+        const up = surfaceAbove(rig.position.x, rig.position.z, feetY, tune.eye, collision)
+        if (up !== null) {
+          feetY = up
+          if (vy < 0) vy = 0
+        }
+      }
       const stepUp = grounded ? tune.step : 0
       resolveXZ(rig.position, collision, feetY, feetY + tune.eye, stepUp)
+      // a wall met mid-drift takes that axis of the drift away
+      if (drift.x !== 0 && Math.abs(rig.position.x - driftX) < Math.abs(drift.x * dt) * 0.5) drift.x = 0
+      if (drift.z !== 0 && Math.abs(rig.position.z - driftZ) < Math.abs(drift.z * dt) * 0.5) drift.z = 0
+      // ...and of a shove: a body knocked into a wall stops against it
+      // rather than grinding along it for the rest of the decay
+      if (shoving) {
+        if (Math.abs(rig.position.x - driftX) < Math.abs((drift.x + shove.x) * dt) * 0.5) shove.x = 0
+        if (Math.abs(rig.position.z - driftZ) < Math.abs((drift.z + shove.z) * dt) * 0.5) shove.z = 0
+      }
       // whatever is under the feet now — the level floor unless a box top
       // stands between. The floor itself is per-position where the level says
       // so (terrain), and it is sampled here rather than before the move: the
@@ -267,9 +547,21 @@ export function createWalkController(
         floorY,
       )
       // space jumps; holding it bunny-hops off each landing
-      if (!frozen && !swimming && keys.has('Space') && grounded && !duck) {
+      const jumpNow = !frozen && held(keys, 'jump')
+      const jumpPress = jumpNow && !jumpWas
+      jumpWas = jumpNow
+      if (grounded) hopped = false
+      if (!frozen && !stunned && !swimming && jumpNow && grounded && !duck) {
         grounded = false
         vy = tune.jumpV
+      } else if (jumpPress && !grounded && !hopped && !stunned && !swimming) {
+        // and one smaller hop in the air, on a fresh press: about three
+        // quarters of a jump's height again from wherever it is fired,
+        // enough for a ledge a plain jump misses, never a second full one. It
+        // replaces a fall rather than adding to it, so a late hop still lifts
+        hopped = true
+        vy = Math.max(vy, tune.jumpV * HOP_K)
+        step.airHop = true
       }
       step.landing = 0
       if (swimming && waterY !== undefined) {
@@ -285,8 +577,8 @@ export function createWalkController(
         // instead left the head permanently just under water.
         const floatFeet = waterY + 0.8 - tune.eye
         vy += (floatFeet - feetY) * 6.5 * dt
-        vy -= tune.grav * 0.1 * dt
-        if (!frozen && keys.has('Space')) vy += 30 * dt
+        vy -= grav * 0.1 * dt
+        if (!frozen && held(keys, 'jump')) vy += 30 * dt
         if (!frozen && duck) vy -= 30 * dt
         vy *= Math.exp(-3.4 * dt)
         feetY += vy * dt
@@ -296,7 +588,7 @@ export function createWalkController(
           if (vy < 0) vy = 0
         }
       } else if (!grounded) {
-        vy -= tune.grav * dt
+        vy -= grav * dt
         feetY += vy * dt
         if (vy <= 0 && feetY <= support) {
           feetY = support
@@ -364,12 +656,12 @@ export function createWalkController(
         waterY === undefined
           ? 0
           : Math.min(1, Math.max(0, (waterY - feetY) / Math.max(0.01, tune.eye)))
-      step.vx = vel.x
-      step.vz = vel.z
+      step.vx = vel.x + drift.x + shove.x
+      step.vz = vel.z + drift.z + shove.z
       step.vy = grounded ? 0 : vy
       step.support = support
       step.moved =
-        planar > 0.05 || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02 || feetY !== support
+        planar > 0.05 || shoving || !grounded || Math.abs((duck ? 1 : 0) - crouchK) > 0.02 || feetY !== support
       return step
     },
   }

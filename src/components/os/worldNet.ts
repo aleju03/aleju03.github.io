@@ -2,10 +2,12 @@ import { sessionExpired } from './session'
 import type { Session } from './osContext'
 import {
   isWorldMessage,
+  type GrabPhase,
   type PlayerId,
   type VoiceSignal,
   type WorldServerMessage,
 } from '../../game/net/protocol'
+import { packEmote } from '../../game/player/emotes'
 
 /*
   The socket the 3D world's shared walk runs on — the fourth on this server,
@@ -35,11 +37,15 @@ const NICK_KEY = 'alejos-nick'
 export type WorldStatus = 'offline' | 'connecting' | 'live'
 
 export interface WorldNet {
+  effect: (message: import('../../game/net/effectProtocol').EffectClientMessage) => void
+  prop: (message: import('../../game/net/propProtocol').PropClientMessage) => void
   readonly status: WorldStatus
   /** the ICE servers the server handed over at join; the STUN/TURN set voice
       opens peers with. Empty until `world-welcome` lands */
   readonly ice: RTCIceServer[]
-  /** report the local player's pose; call every frame, it throttles itself */
+  /** report the local player's pose; call every frame, it throttles itself.
+      `emote` is the id playing (0 none) and `emoteAge` how long it has; the
+      point direction is NaN when not pointing (see protocol.ts's PoseTuple) */
   move: (
     x: number,
     y: number,
@@ -48,6 +54,10 @@ export interface WorldNet {
     pitch: number,
     gait: number,
     flags: number,
+    emote?: number,
+    emoteAge?: number,
+    pointYaw?: number,
+    pointPitch?: number,
   ) => void
   /** the local player stepped through a level seam */
   setLevel: (level: string) => void
@@ -68,6 +78,18 @@ export interface WorldNet {
   seat: (v: number, seat: number) => void
   /** give up whichever chair we hold */
   unseat: () => void
+  /** take an empty machine on the physgun (or let it go); the answer is a
+      world-seats naming us as its hand, or a world-hold-denied */
+  hold: (v: number, on: boolean) => void
+  /** we bumped into this player: the velocity their own client should take
+      (game/net/shove.ts). Throttled by the caller, clamped by the server */
+  shove: (to: PlayerId, vx: number, vy: number, vz: number) => void
+  /** our physgun has this player (game/net/grab.ts). Throttled by the
+      caller, checked and clamped by the server */
+  grab: (
+    to: PlayerId, phase: GrabPhase, limb: number,
+    x: number, y: number, z: number, vx?: number, vy?: number, vz?: number,
+  ) => void
   /** where the machine we are driving is; throttled like `move` */
   vehicle: (
     v: number,
@@ -144,14 +166,18 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   let spitch = NaN
   let sgait = NaN
   let sflags = -1
-  // and the same for the machine under us. A separate clock on purpose: the
+  let semote = 0
+  let semoteFrom = 0
+  let spointing = false
+  let spy = NaN
+  let spp = NaN
+  // and the same for the machines under us. A separate clock on purpose: the
   // drive frame reports both, and one shared throttle would drop every other
-  // vehicle packet in favour of a pose that has not changed
-  let lastVehicle = 0
-  let vx = NaN
-  let vy = NaN
-  let vz = NaN
-  let vyaw = NaN
+  // vehicle packet in favour of a pose that has not changed. And one clock
+  // per machine, since a car still settling off the physgun reports while
+  // its thrower drives off in something else
+  const lastVehicle: number[] = []
+  const vLast: number[][] = []
 
   const setStatus = (next: WorldStatus) => {
     if (status === next) return
@@ -214,7 +240,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
         // suppressors think: the server we are talking to may be a different
         // process than the one that heard the last one
         sflags = -1
-        vx = NaN
+        vLast.length = 0
         return
       }
       if (data.type === 'nick-ok') {
@@ -283,6 +309,8 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   else queueMicrotask(() => opts.onStatus('offline'))
 
   return {
+    effect: (message) => { if (joined) raw(message) },
+    prop: (message) => { if (joined) raw(message) },
     get status() {
       return status
     },
@@ -291,11 +319,20 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
       return ice
     },
 
-    move(x, y, z, yaw, pitch, gait, flags) {
+    move(x, y, z, yaw, pitch, gait, flags, emote = 0, emoteAge = 0, pointYaw = NaN, pointPitch = NaN) {
       if (!joined) return
       const now = performance.now()
       if (now - lastSent < SEND_MS) return
+      // an emote counts as a change when a different one starts or the same
+      // one is begun again (its start moves), not merely because it aged
+      const emoteFrom = emote ? now - emoteAge * 1000 : 0
+      const pointing = Number.isFinite(pointYaw) && Number.isFinite(pointPitch)
       const still =
+        emote === semote &&
+        Math.abs(emoteFrom - semoteFrom) < 150 &&
+        pointing === spointing &&
+        (!pointing ||
+          (Math.abs(pointYaw - spy) < TURN_EPS && Math.abs(pointPitch - spp) < TURN_EPS)) &&
         Math.abs(x - sx) < MOVE_EPS &&
         Math.abs(y - sy) < MOVE_EPS &&
         Math.abs(z - sz) < MOVE_EPS &&
@@ -312,28 +349,41 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
       spitch = pitch
       sgait = gait
       sflags = flags
-      raw({ type: 'world-move', x, y, z, yaw, pitch, gait, f: flags })
+      semote = emote
+      semoteFrom = emoteFrom
+      spointing = pointing
+      spy = pointYaw
+      spp = pointPitch
+      raw({
+        type: 'world-move', x, y, z, yaw, pitch, gait, f: flags,
+        // the tail only when there is one: most packets are neither
+        ...(emote ? { e: packEmote(emote, emoteAge) } : {}),
+        ...(pointing ? { py: +pointYaw.toFixed(3), pp: +pointPitch.toFixed(3) } : {}),
+      })
     },
 
     vehicle(v, x, y, z, yaw, pitch, roll) {
       if (!joined) return
       const now = performance.now()
-      if (now - lastVehicle < SEND_MS) return
+      const last = lastVehicle[v] ?? 0
+      if (now - last < SEND_MS) return
       // A parked machine with the engine running still has to say so — a late
       // arrival learns where it is from the welcome, but a machine that came
       // to rest between two of their snapshots would otherwise hold the last
-      // *moving* pose on everyone else's screen
+      // *moving* pose on everyone else's screen. Pitch and roll count: a car
+      // turned over on the physgun without moving is still moving
+      const was = vLast[v]
       const still =
-        Math.abs(x - vx) < MOVE_EPS &&
-        Math.abs(y - vy) < MOVE_EPS &&
-        Math.abs(z - vz) < MOVE_EPS &&
-        Math.abs(yaw - vyaw) < TURN_EPS
-      if (still && now - lastVehicle < IDLE_MS) return
-      lastVehicle = now
-      vx = x
-      vy = y
-      vz = z
-      vyaw = yaw
+        was !== undefined &&
+        Math.abs(x - was[0]) < MOVE_EPS &&
+        Math.abs(y - was[1]) < MOVE_EPS &&
+        Math.abs(z - was[2]) < MOVE_EPS &&
+        Math.abs(yaw - was[3]) < TURN_EPS &&
+        Math.abs(pitch - was[4]) < TURN_EPS &&
+        Math.abs(roll - was[5]) < TURN_EPS
+      if (still && now - last < IDLE_MS) return
+      lastVehicle[v] = now
+      vLast[v] = [x, y, z, yaw, pitch, roll]
       raw({ type: 'world-vehicle', v, x, y, z, yaw, pitch, roll })
     },
 
@@ -343,6 +393,23 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
 
     unseat() {
       inWorld({ type: 'world-unseat' })
+    },
+
+    hold(v, on) {
+      inWorld({ type: 'world-hold', v, on })
+    },
+
+    shove(to, vx, vy, vz) {
+      const r = (n: number) => Math.round(n * 100) / 100
+      inWorld({ type: 'world-shove', to, vx: r(vx), vy: r(vy), vz: r(vz) })
+    },
+
+    grab(to, phase, limb, x, y, z, vx = 0, vy = 0, vz = 0) {
+      const r = (n: number) => Math.round(n * 100) / 100
+      inWorld({
+        type: 'world-grab', to, phase, limb,
+        x: r(x), y: r(y), z: r(z), vx: r(vx), vy: r(vy), vz: r(vz),
+      })
     },
 
     setLevel(next) {
