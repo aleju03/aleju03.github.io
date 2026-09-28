@@ -15,8 +15,10 @@ import { MARK, stockTexture } from './paper'
   command printed in bold, the result under it, a spawn as an item line with
   a dotted leader running out to the quantity like the groceries on a real
   receipt, an error in the red that two-colour thermal paper prints, other
-  people's chat as it arrives. Each new line feeds the paper up one line in a
-  few hard steps, which is what a stepper motor does.
+  people's chat as it arrives. Each new line feeds the paper up one line in
+  one short smooth slide. It was a few hard steps, the way a stepper motor
+  moves, and on screen that read as the console jittering every time it
+  printed.
 
   It is the chat line too, and it works with nobody else around. `/` or text
   starting with it runs a command (commands.ts, bilingual at the source);
@@ -402,7 +404,7 @@ export default function SandboxConsole({
           style={{
             transformOrigin: 'bottom left',
             transform: 'rotate(-0.8deg)',
-            animation: isOpen ? 'receipt-rise 160ms steps(4)' : paperFade,
+            animation: isOpen ? 'receipt-rise 170ms cubic-bezier(0.2, 0.8, 0.2, 1)' : paperFade,
           }}
         >
           <div
@@ -425,7 +427,7 @@ export default function SandboxConsole({
               }}
             >
               {/* keyed by the newest line, so every print feeds the paper up */}
-              <div key={lines.length ? lines[lines.length - 1].key : 0} style={{ animation: 'receipt-feed 150ms steps(3)' }}>
+              <div key={lines.length ? lines[lines.length - 1].key : 0} style={{ animation: 'receipt-feed 140ms cubic-bezier(0.2, 0.8, 0.2, 1)' }}>
                 {shown.map(line)}
               </div>
             </div>

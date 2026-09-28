@@ -435,6 +435,10 @@ export default function PauseScreen({
     { id: 'first', label: tp.firstPerson },
     { id: 'third', label: tp.thirdPerson },
   ] as const
+  const fpsWords = [
+    { id: 'off', label: tp.fpsOff },
+    { id: 'on', label: tp.fpsOn },
+  ] as const
   const detailWords = DETAILS.map((id, i) => ({ id, label: tp.detailNames[i] }))
   const tierWord = (g: GfxTier) => tp.detailNames[DETAILS.indexOf(g === 'high' ? 'full' : 'lean')]
   // a dial at the bottom of its travel is off, and "0%" is a number
@@ -674,6 +678,12 @@ export default function PauseScreen({
                     step={1}
                     display={prefs.cap === 0 ? tp.noLimit : `${prefs.cap} fps`}
                     onChange={(i) => onPrefs((p) => ({ ...p, cap: FPS_CAPS[i] ?? 0 }))}
+                  />
+                  <Choice
+                    label={tp.fpsCounter}
+                    options={fpsWords}
+                    value={prefs.fps ? 'on' : 'off'}
+                    onPick={(v) => onPrefs((p) => ({ ...p, fps: v === 'on' }))}
                   />
                 </div>
 

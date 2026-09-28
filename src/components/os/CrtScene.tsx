@@ -539,6 +539,10 @@ export default function CrtScene({
   const interactRef = useRef(onInteract)
   const liveRef = useRef(screenLive)
   const prefsRef = useRef(prefs)
+  /** the frame counter's number, written straight into the DOM twice a
+      second by walkTick: a React render per reading would be the counter
+      costing frames it is counting */
+  const fpsTextRef = useRef<HTMLSpanElement>(null)
   const paperPlaneRef = useRef(paperPlane)
   // the live roam prop, readable from inside the scene's build closure: a
   // /world entrance has it true before roamRef exists to be called
@@ -3387,6 +3391,8 @@ export default function CrtScene({
         // render-scale dial restores it to the new ceiling on the next frame
         let pr = prCeil
         let emaMs = 16
+        let fpsFrames = 0
+        let fpsFrom = 0
         let prWait = 1.5
         // the frame limiter's next deadline, kept beside the governor because
         // the two read the same clock and argue about the same number
@@ -3642,6 +3648,19 @@ export default function CrtScene({
             if (nextFrame < now) nextFrame = now + interval
           }
           const rawMs = now - lastT
+          // the frame counter: drawn frames over the last half second
+          fpsFrames++
+          if (fpsFrom === 0) fpsFrom = now
+          else if (now - fpsFrom >= 500) {
+            const el = fpsTextRef.current
+            if (el) {
+              const n = Math.round((fpsFrames * 1000) / (now - fpsFrom))
+              el.textContent = String(n)
+              el.style.color = n < 30 ? '#b3322b' : ''
+            }
+            fpsFrames = 0
+            fpsFrom = now
+          }
           // a hit-stop: the few frames after the player lands a knock run
           // near-frozen, which is what makes a hit read as a hit. Time only,
           // local only: nothing about it travels
@@ -5617,6 +5636,28 @@ export default function CrtScene({
       {/* what is in your hands, for a moment after it changes (ToolSwitcher.tsx).
           Mounted for the whole walk so the fade keeps its clock; the rest
           only puts it away */}
+      {/* the frame counter: a strip of masking tape stuck in the top right
+          corner with the number pencilled on, red under thirty */}
+      {roam && walking && prefs.fps && !paused && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute top-3 right-4 z-30 flex items-baseline gap-1 px-2.5 py-[2px] font-mono italic"
+          style={{
+            transform: 'rotate(2.5deg)',
+            background: 'linear-gradient(90deg, rgba(247,236,205,0.92), rgba(238,224,190,0.95))',
+            color: '#3a2f22',
+            boxShadow: '0 1px 2px rgba(60,44,26,0.3)',
+            clipPath: 'polygon(2% 8%, 98% 0, 100% 92%, 0 100%)',
+          }}
+        >
+          <span ref={fpsTextRef} className="text-[13px] font-semibold tabular-nums">
+            --
+          </span>
+          <span className="text-[10px]" style={{ color: '#7a6a54' }}>
+            fps
+          </span>
+        </div>
+      )}
       {roam && walking && (
         <ToolSwitcher
           belt={belt}

@@ -98,6 +98,8 @@ export interface RoamPrefs {
   scale: number
   /** how chunky the pixel art is. Live */
   pixels: PixelSize
+  /** the frames-a-second strip taped to the top right corner of the walk */
+  fps: boolean
 }
 
 /**
@@ -130,6 +132,7 @@ const OLD_CAP_DEFAULT = 160
 const PREFS_DEFAULT: RoamPrefs = {
   fov: 60, sens: 1, third: false, cap: 120, detail: 'auto', scale: 1,
   pixels: 'medium', micVol: 1, voiceVol: 1, musicVol: 1, ambVol: 1, voiceFx: 'none',
+  fps: false,
 }
 
 /** a stored volume, which may be a 0 somebody meant: `Number(x) || d` would
@@ -171,6 +174,7 @@ export const loadPrefs = (): RoamPrefs => {
         pixels: PIXEL_SIZES.includes(p.pixels as PixelSize)
           ? (p.pixels as PixelSize)
           : PREFS_DEFAULT.pixels,
+        fps: p.fps === true,
       }
     }
   } catch {
