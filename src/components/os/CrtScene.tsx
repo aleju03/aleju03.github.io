@@ -58,6 +58,8 @@ import { GRAVITY } from '../../game/sandbox/physics'
 import SandboxConsole, { type FeedLine } from './SandboxConsole'
 import Crosshair, { type CrosshairAim } from './Crosshair'
 import SpawnMenu, { type CatalogueSource, type OrderLine } from './SpawnMenu'
+import { builds } from './buildsStore'
+import { buildNotices } from '../../game/sandbox/blueprint/clipboard'
 import ToolSwitcher, { type BeltState } from './ToolSwitcher'
 import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
@@ -623,6 +625,7 @@ export default function CrtScene({
     // to be torn down explicitly rather than left to the disposer: an engine
     // that is only garbage-collected keeps idling under an unmounted scene
     let disposeFleet: (() => void) | null = null
+    let offBuildNotes: (() => void) | null = null
     let disposeLook: (() => void) | null = null
     const disposer = createDisposer()
 
@@ -2658,6 +2661,30 @@ export default function CrtScene({
               text: bilingual('nobody out here to hear it', 'no hay nadie aquí que lo escuche'),
             })
           }
+        }
+        // the builds book (BuildsPanel.tsx, buildsStore.ts): a blueprint set
+        // down at the crosshair, the book brought up by `/builds`, and the
+        // duplicator's lines in the feed
+        {
+          let actions: typeof import('../../game/sandbox/blueprint/actions') | null = null
+          void import('../../game/sandbox/blueprint/actions').then((m) => { actions = m })
+          builds.bind({
+            session: () => sessionRef.current,
+            paste: (bp) => {
+              const sb = host.sandbox()
+              if (!sb || !actions) return false
+              setMenu(false)
+              return actions.pasteAtCrosshair(host, sb, bp).ok
+            },
+            open: () => {
+              typingRef.current = false
+              setTyping(null)
+              setMenu(true)
+            },
+          })
+          const offNotes = buildNotices.subscribe((n) =>
+            pushFeed({ tone: n.tone, text: bilingual(n.en, n.es) }))
+          offBuildNotes = offNotes
         }
         // a click in the catalogue is a spawn at the crosshair, the same one
         // `spawn <kind>` does, without the echo
@@ -4768,6 +4795,10 @@ export default function CrtScene({
                 // scripted contraptions (a car, a rocket, a hovercraft), through
                 // the app's own module graph so they share its contraptions
                 __contraptionBuild: () => import('../../game/sandbox/contraption/build'),
+                // the builds book's store and the duplicator's clipboard
+                __builds: builds,
+                __blueprints: () => import('../../game/sandbox/blueprint/blueprint'),
+                __blueprintClipboard: () => import('../../game/sandbox/blueprint/clipboard'),
                 // the shared walk, for a two-client drive: the keys (the
                 // physgun's trigger is a mouse button only a locked pointer
                 // reports), who else is here and what their beams are doing
@@ -5653,6 +5684,8 @@ export default function CrtScene({
       setNickRef.current = null
       disposeFleet?.()
       disposeFleet = null
+      offBuildNotes?.()
+      offBuildNotes = null
       if (scene) {
         scene.traverse((o) => {
           const mesh = o as THREE.Mesh

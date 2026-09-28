@@ -137,6 +137,7 @@ const round4 = (n: number) => Math.round(n * 10000) / 10000
 /** a name fit to show and store: no control characters, one line, 40 long */
 export const cleanName = (raw: unknown): string =>
   typeof raw === 'string'
+    // eslint-disable-next-line no-control-regex
     ? raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40)
     : ''
 

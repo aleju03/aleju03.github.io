@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { BatchProxy } from '../batch'
 import { KINDS } from '../kinds'
 import type { Sandbox, Vec3Like } from '../sandbox'
-import type { Blueprint } from './blueprint'
+import { DROP, type Blueprint } from './blueprint'
 
 /*
   The paste preview: the blueprint's props drawn where they would land.
@@ -67,7 +67,7 @@ export function createGhost(sb: Sandbox, bp: Blueprint): Ghost | null {
       tint.copy(ok ? GOOD : BAD).multiplyScalar(0.8 + 0.2 * Math.sin(time * 6))
       for (const g of parts) {
         v.copy(g.pos).applyQuaternion(qy)
-        g.obj.position.set(at.x + v.x, at.y + v.y + 0.02, at.z + v.z)
+        g.obj.position.set(at.x + v.x, at.y + v.y + DROP, at.z + v.z)
         g.obj.quaternion.copy(g.quat).premultiply(qy)
         g.obj.visible = true
         // one shared colour: the batcher reads it in the same frame

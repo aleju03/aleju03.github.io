@@ -50,6 +50,11 @@ export const setPropCap = (n: number) => {
 }
 export const getPropCap = () => propCap
 
+/** a build is set down this far over the surface it was aimed at and let
+    fall: terrain is not flat under a big plate, and a body that starts a
+    hair inside a slope is pushed out at several units a second */
+export const DROP = 0.12
+
 export const JOINT_TYPES: readonly ConstraintType[] = ['weld', 'axis', 'rope', 'nocollide']
 
 export interface BpProp {
@@ -213,7 +218,7 @@ export function place(sb: Sandbox, bp: Blueprint, o: PlaceOpts): Placed {
     v.set(p.pos[0], p.pos[1], p.pos[2]).applyQuaternion(qy)
     q.set(p.quat[0], p.quat[1], p.quat[2], p.quat[3]).premultiply(qy)
     const data = p.keys >= 0 ? { part: { keys: p.keys, flip: p.flip } } : undefined
-    ids.push(sb.spawn(p.kind, { x: o.at.x + v.x, y: o.at.y + v.y + 0.02, z: o.at.z + v.z }, {
+    ids.push(sb.spawn(p.kind, { x: o.at.x + v.x, y: o.at.y + v.y + DROP, z: o.at.z + v.z }, {
       quaternion: { x: q.x, y: q.y, z: q.z, w: q.w },
       scale: p.scale,
       mass: p.mass > 0 ? p.mass : undefined,

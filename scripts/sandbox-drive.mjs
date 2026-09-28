@@ -137,6 +137,16 @@
                                       own body taken and pulled about and let
                                       go; positions and speeds printed (no NaN,
                                       capped). Shots grab-* beside the others
+    npm run drive -- blueprints       the duplicator and the builds book: three
+                                      props welded, copied with the tool gun's
+                                      copy mode (the whole graph from one
+                                      click), the paste ghost on the ground,
+                                      pasted with a click, saved with /save,
+                                      everything cleaned up, /load brings it
+                                      back, pushed (it moves as one), one
+                                      undo removes it; the builds book shot;
+                                      links counted (must be 0). Shots
+                                      blueprints-*.png beside the others
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -1764,6 +1774,178 @@ try {
     console.log(`  rocket ${(p[1] - (await evaluate(`window.__sandbox.groundY(${p[0]}, ${p[2]})`))).toFixed(0)} u up after 2.5 s on i`)
     const links = await evaluate('window.__cLinks')
     console.log(`  ${links.length} programs linked from the catalogue to the rocket${links.length ? ': ' + links.join(', ') : ''}`)
+    await run('cleanup')
+  }
+
+  if (WHAT.includes('blueprints') && has('baseline')) {
+    // the same link counter with the tool gun out in its weld mode and the
+    // view swung down at the ground, to tell a link of the duplicator's from
+    // one the tool gun makes on its own
+    await stand()
+    await look(0.6, -0.3)
+    await evaluate(`(() => { window.__bLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__bWrapped) continue; gl.__bWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__bLinks++; real(p) } } return true })()`)
+    await evaluate('window.__tools.select(2); true')
+    await sleep(1500)
+    await look(0.6, -0.5)
+    await sleep(1500)
+    await look(0.6, 0)
+    await sleep(1500)
+    console.log(`baseline: ${await evaluate('window.__bLinks')} programs linked with the tool gun out and the view moved`)
+  }
+  if (WHAT.includes('blueprints') && !has('baseline')) {
+    /*
+      The duplicator in the real game. Three props are welded by script (the
+      tool gun's own joining is the contraption drive's business), then
+      everything under test goes through the real thing: the tool gun's copy
+      mode clicked on one of them must take all three and both welds; the
+      paste mode shows its ghost over the ground and a click places the build
+      as one undo entry; /save keeps it in a slot, cleanup wipes the world,
+      /load brings it back; a push on one prop moves the others with it (the
+      welds came through the round trip); one undo removes the lot; and the
+      builds book is opened on its tab. Every shader link from the first copy
+      on is counted (must be 0; the thumbnail is drawn in a context of its own
+      that this counter does not see, by design).
+    */
+    console.log('blueprints')
+    await stand()
+    await look(0.6, -0.3)
+    await evaluate(`(() => { window.__bLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__bWrapped) continue; gl.__bWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__bLinks++; (window.__bInfo ||= []).push(gl.getAttachedShaders(p).map((sh) => gl.getShaderSource(sh).split('\\n').filter((l) => /^#define (USE_|NUM_|SHADOW|DEPTH|PHYS|STANDARD|FLAT|TONE|OPAQUE|IS_)/.test(l)).join(' ').slice(0, 900)).join(' || ')); real(p) } } return true })()`)
+    const aimAt = async (x, y, z) => {
+      await evaluate(`(() => { const c = window.__sandboxCamera.position, w = window.__sandboxWalk
+        const dx = ${x} - c.x, dy = ${y} - c.y, dz = ${z} - c.z
+        w.yaw = Math.atan2(-dx, -dz); w.pitch = Math.atan2(dy, Math.hypot(dx, dz)); return true })()`)
+      await sleep(350)
+    }
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const click = async () => { await hold('Mouse0', true); await sleep(200); await hold('Mouse0', false); await sleep(300) }
+    const posOf = (id) => evaluate(`(() => { const p = window.__sandbox.get(${id}); if (!p) return null
+      const t = p.body.translation(); return [t.x, t.y, t.z] })()`)
+    const count = () => evaluate(`(() => { let n = 0; window.__sandbox.forEach(() => n++); return n })()`)
+    const joints = () => evaluate('window.__tools.contraption.stats.constraints')
+    const yaw = await evaluate('window.__sandboxWalk.yaw')
+    // 1. a tower of three, welded: a crate on a plate, a barrel on the crate
+    //    (touching, and balanced, so it is at rest when it is copied)
+    const ids = await evaluate(`(() => {
+      const sb = window.__sandbox, c = window.__sandboxCamera.position, y = ${yaw}
+      const fx = -Math.sin(y), fz = -Math.cos(y)
+      const p = { x: c.x + fx * 11, z: c.z + fz * 11 }
+      const g = sb.groundY(p.x, p.z)
+      const plate = sb.spawn('plate_m', { x: p.x, y: g + 0.12, z: p.z }, { yaw: y })
+      const crate = sb.spawn('crate', { x: p.x, y: g + 1.5, z: p.z }, { yaw: y })
+      const barrel = sb.spawn('barrel', { x: p.x, y: g + 3.8, z: p.z }, { yaw: y })
+      const con = window.__tools.contraption
+      con.add('weld', crate, plate); con.add('weld', barrel, crate)
+      return [plate, crate, barrel] })()`)
+    await waitFor(() => evaluate(`(() => { let w = 0; window.__sandbox.forEach((q) => { const v = q.body.linvel(); w = Math.max(w, Math.hypot(v.x, v.y, v.z)) }); return w < 0.05 })()`), 40, 500, 'the tower at rest')
+    console.log(`  built: ${ids.length} props, ${await joints()} welds`)
+    // 2. copy mode, one click on the crate
+    await evaluate('window.__tools.select(2); window.__tools.toolgun.setMode("copy"); true')
+    await sleep(400)
+    let p = await posOf(ids[1])
+    await aimAt(p[0], p[1], p[2])
+    await click()
+    const clip = await evaluate(`(async () => { const m = await window.__blueprintClipboard(); const bp = m.clipboard.get()
+      return bp && { props: bp.props.length, joints: bp.joints.length, kinds: bp.props.map((q) => q.kind).sort() } })()`)
+    console.log(`  copied: ${JSON.stringify(clip)} (links so far ${await evaluate('window.__bLinks')})`)
+    if (!clip || clip.props !== 3 || clip.joints !== 2) console.log('  the whole graph was not copied  <-- WRONG')
+    // 3. paste mode: the ghost over the ground beside the original
+    const before = await count()
+    await evaluate('window.__tools.toolgun.setMode("paste"); true')
+    await sleep(500)
+    const spot = [p[0] + 9 * Math.cos(yaw), p[1] - 2, p[2] - 9 * Math.sin(yaw)]
+    await aimAt(spot[0], spot[1], spot[2])
+    await sleep(900)
+    console.log(`  paste mode: ${await evaluate('window.__tools.toolgun.state')}, ${await count()} props (ghost draws none)`)
+    await shot('blueprints-ghost')
+    const slotBefore = await evaluate('window.__tools.slot')
+    const dump = (label) => evaluate(`(() => { const out = []; window.__sandbox.forEach((q) => { const t = q.body.translation(), v = q.body.linvel(); out.push(q.kind.id + ' y' + t.y.toFixed(2) + ' ground' + window.__sandbox.groundY(t.x, t.z).toFixed(2) + ' half' + q.extents.y.toFixed(2) + ' v' + Math.hypot(v.x, v.y, v.z).toFixed(1) + ' ' + q.mode) }); return out })()`).then((o) => console.log('    ' + label + ' ' + JSON.stringify(o)))
+    await dump('before click')
+    await hold('Mouse0', true)
+    await sleep(60)
+    await hold('Mouse0', false)
+    for (let i = 0; i < 3; i++) { await sleep(200); await dump('t+' + (i + 1) * 0.2) }
+    const after = await count()
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    console.log(`  clicked: ${before} -> ${after} props, ${await joints()} welds, tool slot ${slotBefore}`)
+    if (after !== before + 3 || (await joints()) !== 4) console.log('  the paste did not arrive whole  <-- WRONG')
+    await sleep(1200)
+    await shot('blueprints-pasted')
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    // 4. save it, wipe the world, load it back
+    await run('save drivecar')
+    await sleep(2500)
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    console.log(`  saved: ${await evaluate(`window.__builds.slots().map((s) => s.name + ' (' + s.props + ', thumb ' + (s.thumb ? s.thumb.length : 0) + ')').join(', ')`)}`)
+    await run('cleanup')
+    // (the three built by script were never recorded, so cleanup leaves them)
+    await evaluate(`${JSON.stringify(ids)}.forEach((id) => window.__sandbox.remove(id))`)
+    await sleep(1500)
+    console.log(`  after cleanup: ${await count()} props, ${await joints()} welds`)
+    await evaluate('window.__tools.select(0)')
+    // (the same clear patch of grass: a bush's collision box under a plate
+    // throws it, as it would throw a crate)
+    await aimAt(spot[0], spot[1], spot[2])
+    const settle = async (label) => {
+      let worst = 0
+      for (let i = 0; i < 5; i++) {
+        await sleep(300)
+        worst = Math.max(worst, await evaluate(`(() => { let w = 0; window.__sandbox.forEach((q) => { const v = q.body.linvel(); w = Math.max(w, Math.hypot(v.x, v.y, v.z)) }); return w })()`))
+      }
+      console.log(`  ${label}: ${await count()} props, fastest ${worst.toFixed(1)} u/s over 1.5 s`)
+    }
+    await run('load drivecar')
+    await settle('/load')
+    const back = await evaluate(`(() => { const ids = []; window.__sandbox.forEach((q) => ids.push(q.id)); return ids })()`)
+    console.log(`  /load: ${back.length} props, ${await joints()} welds`)
+    if (back.length !== 3 || (await joints()) !== 2) console.log('  the loaded build is not whole  <-- WRONG')
+    await shot('blueprints-loaded')
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    // 5. the weld held through the round trip: push one prop, the rest follow
+    const kinds = await evaluate(`${JSON.stringify(back)}.map((id) => [id, window.__sandbox.get(id).kind.id])`)
+    const crateId = kinds.find(([, k]) => k === 'crate')[0]
+    const plateId = kinds.find(([, k]) => k === 'plate_m')[0]
+    // (the plate takes the shove: a crate hit that hard breaks, which is
+    // its own feature and not the weld's)
+    const gap = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+    const p0 = await posOf(plateId)
+    const c0 = await posOf(crateId)
+    await evaluate(`window.__sandbox.applyImpulse(${plateId}, { x: 0, y: 0, z: 2500 })`)
+    await sleep(3000)
+    const p1 = await posOf(plateId)
+    const c1 = await posOf(crateId)
+    const moved = Math.hypot(p1[0] - p0[0], p1[2] - p0[2])
+    const carried = Math.hypot(c1[0] - c0[0], c1[2] - c0[2])
+    console.log(`  shoved the plate: it moved ${moved.toFixed(2)} u, the crate on it ${carried.toFixed(2)} u, and they are ${gap(p0, c0).toFixed(2)} -> ${gap(p1, c1).toFixed(2)} u apart`)
+    if (moved < 0.1 || carried < 0.1 || Math.abs(gap(p1, c1) - gap(p0, c0)) > 1) console.log('  the weld did not hold  <-- WRONG')
+    // 6. the builds book
+    await tap('KeyQ')
+    await sleep(500)
+    console.log(`  builds tab at ${JSON.stringify(await where('[data-category="*builds"]'))}`)
+    await evaluate(`document.querySelector('[data-category="*builds"]').click()`)
+    await sleep(900)
+    console.log(`  book on its builds tab: ${await evaluate(`/my builds|mis construcciones/.test(document.body.innerText)`)}`)
+    await shot('blueprints-book')
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    await tap('Escape')
+    await sleep(500)
+    // 7. one undo takes the whole paste away
+    await tap('KeyZ')
+    await sleep(1500)
+    if ((await count()) > 0) {
+      await tap('KeyZ')
+      await sleep(1500)
+    }
+    console.log(`  undo: ${await count()} props, ${await joints()} welds left`)
+    // (a skinned program is the herd's or the crowd's first draw, which
+    // comes whenever an animal wanders into view: not the duplicator's)
+    const infos = await evaluate('window.__bInfo || []')
+    const ours = infos.filter((i) => !/USE_SKINNING/.test(i))
+    console.log(`  ${ours.length} programs of ours linked from the first copy to the end (${infos.length - ours.length} skinned: the fauna)`)
+    for (const i of ours) console.log('    linked: ' + i)
     await run('cleanup')
   }
 
