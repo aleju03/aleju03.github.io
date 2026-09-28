@@ -49,6 +49,10 @@ export interface WorldNet {
   /** the ICE servers the server handed over at join; the STUN/TURN set voice
       opens peers with. Empty until `world-welcome` lands */
   readonly ice: RTCIceServer[]
+  /** the server signed this socket in as the admin: the hello's own answer,
+      which is the flag every admin-only world message is checked against.
+      The roster cannot say, because the roster is everyone *else* */
+  readonly admin: boolean
   /** report the local player's pose; call every frame, it throttles itself.
       `emote` is the id playing (0 none) and `emoteAge` how long it has; the
       point direction is NaN when not pointing (see protocol.ts's PoseTuple) */
@@ -162,6 +166,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
   let reconnectTimer = 0
   let level = opts.level
   let ice: RTCIceServer[] = []
+  let admin = false
   /** a rename is in flight, so the next `nick-ok` or `error` on this socket
       is its answer. Nothing else this socket sends can be answered by either */
   let nickPending = false
@@ -236,6 +241,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
         // the rule the whole session module exists for: never keep walking
         // around under a name the server just told us it does not know
         if (data.badToken) sessionExpired()
+        admin = !!(data.user as { admin?: boolean } | null)?.admin
         retry = 0
         joined = true
         // whatever nick the hello managed to claim, or the guest-xxxx the
@@ -327,6 +333,9 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
       return status
     },
 
+    get admin() {
+      return admin
+    },
     get ice() {
       return ice
     },

@@ -2549,9 +2549,10 @@ export default function CrtScene({
           worldLoaded: () => outside.hasWorld(),
           placesHere: () => !!levels.current.house,
           online: () => net !== null,
-          // `bring`: the admin flag is ours on the roster (the server checks
-          // again), and anyone on any level can be brought
-          admin: () => remote.you !== null && !!remote.roster.get(remote.you)?.admin,
+          // `bring`: the admin flag is the one the world socket's hello came
+          // back with (the roster never lists us, so it cannot say; the server
+          // checks again), and anyone on any level can be brought
+          admin: () => !!net?.admin,
           roster: () =>
             [...remote.roster].filter(([id]) => id !== remote.you).map(([id, e]) => ({ id, name: e.name })),
           bring: (to) => {
