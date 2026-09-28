@@ -19,14 +19,13 @@ import { texelate } from '../render/texel'
   and, more importantly, an environment map for them to reflect. There is no
   environment to capture: the sky is a set of camera-parked domes and the
   ground is streamed chunks, so a real cube camera would cost a render of the
-  world per update. Instead the env map is *painted*: a 128x64 equirectangular
-  canvas holding the sky gradient, a horizon haze band, the ground colour and
-  a hot sun blob, drawn from the same numbers sky.ts is already computing.
-  It is painted once, from the first sky the fleet is handed. See the note on
-  `setDay` for why repainting it was measurably pointless.
+  world per update. Instead a procedural sky gradient, horizon, ground and
+  sun are painted and filtered once by scripts/bake-vehicle-env.mjs. Its small
+  cubeUV atlas ships ready to sample: runtime PMREM filtering of this fixed
+  reflection was a multi-second GPU stall when opening the front door.
 
-  The day cycle then drives `envMapIntensity` and a global tint on every
-  material here, so a car parked at midnight is a dark shape with a cold sheen
+  The day cycle then drives `envMapIntensity` on the reflective materials
+  here, so a car parked at midnight is a dark shape with a cold sheen
   and the same car at noon is bright and glossy — without a single extra light
   in the scene.
 
@@ -41,63 +40,54 @@ export interface VehicleMaterials {
   /** a per-vehicle paint colour without a second material: clone the paint
       slot, keep the same env map and clearcoat, change only the base colour */
   paint: (hex: string, opts?: { metallic?: number; roughness?: number }) => THREE.MeshPhysicalMaterial
-  /** re-light everything for the current sky. `day` 0..1, `night` its
-      complement, plus the fog colour so reflections agree with the air */
-  setDay: (day: number, night: number, fog: THREE.Color, sunEl: number) => void
+  /** dim reflections and light the lamps with the day cycle (0..1) */
+  setDay: (day: number, night: number) => void
   /** headlamps/tail lamps on, 0..1 — the emissive strength of the lamp slots */
   setLamps: (head: number, tail: number) => void
   dispose: () => void
 }
 
-/* -------------------------------------------------------------- env map -- */
+// The source is procedural, but its roughness filtering is baked offline.
+// Keep the image shared; each scene owns/disposes its own GPU texture.
+let environmentImage: HTMLImageElement | null = null
+let environmentLoad: Promise<HTMLImageElement | null> | null = null
+export const preloadVehicleEnvironment = () => {
+  environmentLoad ??= new THREE.ImageLoader()
+    .loadAsync(`${import.meta.env.BASE_URL}os/textures/vehicle-env.png`)
+    .then((image) => (environmentImage = image))
+    .catch(() => null)
+  return environmentLoad
+}
 
-/**
- * The painted sky, as an equirectangular strip.
- *
- * Equirect means u is azimuth and v is elevation, so the whole image is a
- * vertical gradient plus one blob for the sun — which is genuinely all a
- * reflection needs to sell a curved painted surface. The horizon sits at
- * v = 0.5; below it is ground, above it is sky, and the band right at the
- * seam is the fog colour, because that is what a car's flanks actually
- * reflect: the haze at eye level, not the zenith.
- */
-const paintEnv = (
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  sky: THREE.Color,
-  horizon: THREE.Color,
-  ground: THREE.Color,
-  sunEl: number,
-  sunPower: number,
-) => {
-  const css = (c: THREE.Color, a = 1) =>
-    `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${a})`
-  const g = ctx.createLinearGradient(0, 0, 0, h)
-  g.addColorStop(0, css(sky))
-  g.addColorStop(0.34, css(sky))
-  g.addColorStop(0.47, css(horizon))
-  g.addColorStop(0.53, css(horizon))
-  g.addColorStop(0.72, css(ground))
-  g.addColorStop(1, css(ground))
-  ctx.fillStyle = g
-  ctx.fillRect(0, 0, w, h)
-  if (sunPower > 0.01) {
-    // the sun, wrapped three times so a blob straddling the seam is not cut
-    // in half — the same trick the sky dome's haze blobs use
-    const sy = h * (0.5 - Math.max(-0.2, sunEl) * 0.5)
-    const r = w * 0.075
-    ctx.globalCompositeOperation = 'lighter'
-    for (const wrap of [-w, 0, w]) {
-      const s = ctx.createRadialGradient(w * 0.3 + wrap, sy, 1, w * 0.3 + wrap, sy, r)
-      s.addColorStop(0, `rgba(255,250,235,${0.95 * sunPower})`)
-      s.addColorStop(0.35, `rgba(255,238,205,${0.35 * sunPower})`)
-      s.addColorStop(1, 'rgba(255,230,190,0)')
-      ctx.fillStyle = s
-      ctx.fillRect(0, 0, w, h)
-    }
-    ctx.globalCompositeOperation = 'source-over'
+const vehicleEnvironment = (): THREE.Texture | null => {
+  if (typeof document === 'undefined') return null
+  // Stable atlas dimensions even in a synchronous preview, before I/O has
+  // completed: receiving the image must not change the shader's cubeUV layout.
+  const fallback = document.createElement('canvas')
+  fallback.width = 336
+  fallback.height = 128
+  const ctx = fallback.getContext('2d')
+  if (ctx) {
+    ctx.fillStyle = '#808080'
+    ctx.fillRect(0, 0, fallback.width, fallback.height)
   }
+  const texture = new THREE.Texture(environmentImage ?? fallback)
+  texture.mapping = THREE.CubeUVReflectionMapping
+  texture.colorSpace = THREE.LinearSRGBColorSpace
+  texture.flipY = false
+  texture.generateMipmaps = false
+  texture.minFilter = texture.magFilter = THREE.LinearFilter
+  texture.needsUpdate = true
+  if (!environmentImage) {
+    let disposed = false
+    texture.addEventListener('dispose', () => { disposed = true })
+    void preloadVehicleEnvironment().then((image) => {
+      if (!image || disposed) return
+      texture.image = image
+      texture.needsUpdate = true
+    })
+  }
+  return texture
 }
 
 /* -------------------------------------------------------------- textures -- */
@@ -129,32 +119,12 @@ const makeTreadTexture = () =>
 
 /* ---------------------------------------------------------------- build -- */
 
-const SKY_DAY = new THREE.Color('#8fb6dc')
-const SKY_NIGHT = new THREE.Color('#0e1524')
-const GROUND_DAY = new THREE.Color('#5b6350')
-const GROUND_NIGHT = new THREE.Color('#0c0e11')
-
 export function createVehicleMaterials(track: {
   texture: <T extends THREE.Texture>(t: T) => T
   add: <D extends { dispose: () => void }>(d: D) => D
 }): VehicleMaterials {
-  const ENV_W = 128
-  const ENV_H = 64
-  const envCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null
-  let envTex: THREE.Texture | null = null
-  let envCtx: CanvasRenderingContext2D | null = null
-  if (envCanvas) {
-    envCanvas.width = ENV_W
-    envCanvas.height = ENV_H
-    envCtx = envCanvas.getContext('2d')
-    if (envCtx) {
-      paintEnv(envCtx, ENV_W, ENV_H, SKY_DAY, new THREE.Color('#c9d8e4'), GROUND_DAY, 0.6, 1)
-    }
-    envTex = new THREE.CanvasTexture(envCanvas)
-    envTex.mapping = THREE.EquirectangularReflectionMapping
-    envTex.colorSpace = THREE.SRGBColorSpace
-    track.texture(envTex)
-  }
+  const envTex = vehicleEnvironment()
+  if (envTex) track.texture(envTex)
 
   const tread = typeof document !== 'undefined' ? track.texture(texelate(makeTreadTexture())) : null
   if (tread) {
@@ -260,45 +230,11 @@ export function createVehicleMaterials(track: {
     paint, paint2, trim, chrome, metal, glass, rubber, dark, lamp, lampRed, seat,
   }
 
-  /* The env map is painted once, from the first sky this fleet is handed, and
-     never repainted. That is not a compromise. It is what was already
-     happening, minus the work.
-
-     It used to climb a sixteen-step ladder of the day, on the stated theory
-     that three re-runs its PMREM pass whenever the source texture is flagged.
-     It does not, for this texture. What the shader samples is not the equirect
-     canvas but the cubeUV render target WebGLCubeUVMaps builds out of it, and
-     `getPMREM` only rebuilds that target when `texture.isRenderTargetTexture`
-     is true (three 0.184.0). A CanvasTexture is never one, so the target is
-     generated on the first draw, cached against the texture, and returned
-     unchanged for the rest of the session. Every later `needsUpdate` repainted
-     8192 pixels and re-uploaded them for reflections that could not see them.
-
-     The timing was the other half of the bug. The ladder quantised `day`, the
-     smoothstepped 0..1 curve out of sky.ts rather than the clock, and `day` only
-     moves during twilight. So all sixteen no-op repaints fired inside the ~21
-     second dusk window and none of them fired anywhere else; the old comment's
-     "twice a minute" was never the shape it had.
-
-     What actually carries the day cycle here is `envMapIntensity` and the tint
-     below, which is why the frozen reflection has never been visible. The
-     known limitation is that a session that boots at night keeps a night sky
-     in the map through the following noon; fixing that properly means owning a
-     PMREMGenerator (and therefore the renderer) in here, which is a bigger
-     change than the reflection is worth. */
-  let envPainted = false
-  const skyC = new THREE.Color()
-  const groundC = new THREE.Color()
+  // The baked daylight reflection is stable across sessions. Night lighting
+  // still follows the live sky through intensity, without filtering a new map.
   const tinted: THREE.Material[] = [paint, paint2, trim, chrome, metal, glass, lamp, lampRed]
 
-  const setDay = (day: number, night: number, fog: THREE.Color, sunEl: number) => {
-    if (envCtx && envTex && !envPainted) {
-      envPainted = true
-      skyC.lerpColors(SKY_NIGHT, SKY_DAY, day)
-      groundC.lerpColors(GROUND_NIGHT, GROUND_DAY, day)
-      paintEnv(envCtx, ENV_W, ENV_H, skyC, fog, groundC, sunEl, day)
-      envTex.needsUpdate = true
-    }
+  const setDay = (day: number, night: number) => {
     // reflections fade with the light rather than the material changing: a
     // black car at midnight is not a different paint, it is the same paint
     // with nothing to reflect

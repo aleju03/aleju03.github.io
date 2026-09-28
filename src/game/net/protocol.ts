@@ -258,11 +258,23 @@ export interface WorldGrab {
   vz: number
 }
 
+/** the admin brought us to them: where to stand, already spaced off them
+    and anybody else brought in the same breath. Our own client moves us,
+    the same honesty as a shove */
+export interface WorldBring {
+  type: 'world-bring'
+  from: PlayerId
+  x: number
+  y: number
+  z: number
+}
+
 export type WorldServerMessage =
   | import('./effectProtocol').EffectServerMessage
   | import('./propProtocol').PropServerMessage
   | import('./damageProtocol').DamageServerMessage
   | WorldShove
+  | WorldBring
   | WorldGrab
   | WorldWelcome
   | WorldEnter
@@ -328,6 +340,8 @@ export type WorldClientMessage =
       Relayed to them alone, clamped, rate-limited, and dropped unless the
       two of us are within WORLD_SHOVE_REACH of each other and on foot */
   | { type: 'world-shove'; to: PlayerId; vx: number; vy: number; vz: number }
+  /** admin only: bring this player (or everyone on my level) to me */
+  | { type: 'world-bring'; to: PlayerId | 'all' }
   /** my physgun has this player by `limb`: see WorldGrab. Relayed to them
       alone while the two of us are within the beam's reach and they are on
       foot; a release is always relayed, and its velocity is clamped */

@@ -779,6 +779,9 @@ export default function AlejOS({
   // the screen the shutdown started from, so the CRT-off collapse plays over
   // what was actually showing (turning off at login must not flash the desktop)
   const [downFrom, setDownFrom] = useState<Phase>('on')
+  // a 3D shutdown that leaves you in the room: the stand-up starts on the
+  // same frame as the tube collapse, rather than after a retreat from the glass
+  const [downToRoom, setDownToRoom] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
   // why the login screen is up, when it is up for a reason the visitor did not
   // choose: an expired session hands back the welcome screen, and doing that
@@ -1017,25 +1020,27 @@ export default function AlejOS({
   const shutdown = useCallback(
     (toSite = false) => {
       sounds.shutdown()
+      const toRoom = mode === '3d' && !toSite
       setDownFrom(phase)
+      setDownToRoom(toRoom)
       setStartOpen(false)
       setMenu(null)
       setTaskMenu(null)
       closeAllDialogs()
       setDownMsg(false)
       setPhase('down')
-      // the picture collapses to a bright line first, then the farewell text;
-      // in 3D mode the camera retreat from the glass lands at ~0.85s, and the
-      // room phase must take over right then: any later is dead air spent
-      // staring at a frozen frame before the stand-up begins
-      setTimeout(() => setDownMsg(true), 650)
+      // the picture collapses to a bright line first, then the farewell text.
+      // Shutting down into the room skips the text: you are already standing
+      // up while the tube collapses behind you, and the room phase takes the
+      // screen the moment the line is gone
+      if (!toRoom) setTimeout(() => setDownMsg(true), 650)
       setTimeout(
         () => {
           setWins([])
           setActiveId('')
           setSelected(new Set())
           setSession(null)
-          if (mode === '3d' && !toSite) {
+          if (toRoom) {
             // the machine is dark but the room is still there: walk it
             setPhase('room')
           } else {
@@ -1043,7 +1048,7 @@ export default function AlejOS({
             returnToSite()
           }
         },
-        mode === '3d' ? 900 : 2200,
+        toRoom ? 600 : mode === '3d' ? 900 : 2200,
       )
     },
     [mode, phase, returnToSite],
@@ -2542,8 +2547,8 @@ export default function AlejOS({
           )}
           <Suspense fallback={null}>
             <CrtScene
-              off={phase === 'down'}
-              roam={phase === 'room' || away}
+              off={phase === 'down' && !downToRoom}
+              roam={phase === 'room' || away || (phase === 'down' && downToRoom)}
               screenLive={phase === 'on'}
               paperPlane={planeInRoom}
               // who the shared walk introduces you as; the desktop owns the

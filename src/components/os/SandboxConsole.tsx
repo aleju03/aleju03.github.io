@@ -24,7 +24,8 @@ import { MARK, stockTexture } from './paper'
   with a note when it is not. T and Enter open it empty, `/` opens it with the
   slash already typed. Tab completes and cycles what it could be (pencilled on
   above the line you are typing, the chosen one swiped with the same marker
-  as the pause sheet), up and down recall what you typed before, and Esc
+  as the pause sheet); while that list is up, up and down walk it and Enter
+  takes the swiped one, and otherwise they recall what you typed before. Esc
   closes it.
 
   Closed, it keeps printing: fresh lines stay on the strip for a few seconds
@@ -124,6 +125,9 @@ function Composer({
   const [value, setValue] = useState(seed)
   const [sel, setSel] = useState(0)
   const recallAt = useRef(-1)
+  // set once the arrows have moved through the list, so Enter takes the pick
+  // rather than sending what is typed; typing hands Enter back to the line
+  const [browsing, setBrowsing] = useState(false)
 
   // focus a frame late: the key that opened the line is still going down,
   // and focusing inside its own keydown would type it into the box
@@ -140,9 +144,11 @@ function Composer({
   const completion = value.startsWith('/') ? complete(value) : null
   const suggestions = completion?.suggestions ?? []
   const pick = Math.min(sel, Math.max(0, suggestions.length - 1))
+  const listed = suggestions.length > 0 && !(suggestions.length === 1 && suggestions[0].line === value)
 
   const accept = (dir: 1 | -1) => {
     if (!suggestions.length) return
+    setBrowsing(false)
     // a second tab on a line that already reads as the pick moves to the next
     const cur = suggestions[pick]
     const next = cur && value === cur.line ? (pick + dir + suggestions.length) % suggestions.length : pick
@@ -159,6 +165,11 @@ function Composer({
       onClose()
     } else if (e.key === 'Enter') {
       e.preventDefault()
+      if (browsing && listed && suggestions[pick].line !== value) {
+        setValue(suggestions[pick].line)
+        setBrowsing(false)
+        return
+      }
       const text = value.trim()
       if (text && sent[sent.length - 1] !== text) sent.push(text)
       if (sent.length > 80) sent.shift()
@@ -166,6 +177,13 @@ function Composer({
     } else if (e.key === 'Tab') {
       e.preventDefault()
       accept(e.shiftKey ? -1 : 1)
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && listed) {
+      // with the list up, the arrows walk it; the first press lands on the
+      // pick already swiped rather than skipping past it
+      e.preventDefault()
+      const step = e.key === 'ArrowDown' ? 1 : -1
+      setSel(browsing ? (pick + step + suggestions.length) % suggestions.length : pick)
+      setBrowsing(true)
     } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault()
       if (!sent.length) return
@@ -203,7 +221,7 @@ function Composer({
           <span className="block italic">{say(cmd.help)}</span>
         </div>
       )}
-      {suggestions.length > 0 && !(suggestions.length === 1 && suggestions[0].line === value) && (
+      {listed && (
         <ul className="mb-1.5 space-y-px text-[11px]">
           {suggestions.map((sg, i) => (
             <li key={sg.line}>
@@ -248,6 +266,7 @@ function Composer({
           onChange={(e) => {
             setValue(e.target.value)
             setSel(0)
+            setBrowsing(false)
             recallAt.current = -1
           }}
           onKeyDown={onKey}

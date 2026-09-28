@@ -73,7 +73,6 @@ export function emptyFleet(): VehicleFleet {
     placeFromNet: () => {},
     where: () => ({ dist: 0, bearing: 'N' }),
     setDay: () => {},
-    setLightWarmup: () => {},
     setMuted: () => {},
     sleep: () => {},
     dispose: () => {},

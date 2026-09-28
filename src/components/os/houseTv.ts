@@ -130,6 +130,10 @@ interface Opts {
 
 /** how far the player may stand from the set and still work its buttons */
 const REACH2 = 3.4 * 3.4
+/** and how far above or below it: under half a storey, because the bedroom
+    is straight over the living room and the set used to answer through the
+    floor to anybody looking at their feet up there */
+const REACH_Y = 3.2
 const AIM = 0.5
 
 export function buildHouseTv({ scene, cssScene, screen, trackDisposable }: Opts): TvHandles {
@@ -277,7 +281,7 @@ export function buildHouseTv({ scene, cssScene, screen, trackDisposable }: Opts)
     const dx = screen.centre.x - p.x
     const dy = screen.centre.y - p.y
     const dz = screen.centre.z - p.z
-    if (dx * dx + dz * dz >= REACH2) return false
+    if (dx * dx + dz * dz >= REACH2 || Math.abs(dy) >= REACH_Y) return false
     const dd = dx * dx + dy * dy + dz * dz
     const dist = Math.sqrt(dd) || 1e-4
     return (dx * gaze.x + dy * gaze.y + dz * gaze.z) / dist >= AIM

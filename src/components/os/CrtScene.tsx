@@ -2294,6 +2294,7 @@ export default function CrtScene({
           // E: get out of whatever you are in, else the machine's prompt, else
           // a door's, else climb into whatever is parked in front of you
           onUse: () => {
+            if (loadingWorld) return true
             // while the beam holds something E is its rotate modifier
             if (tools?.capturesUse && !fleet.riding) return true
             if (fleet.riding) {
@@ -3004,9 +3005,8 @@ export default function CrtScene({
           if (bulbMat) bulbMat.emissiveIntensity = 3.5 * k
           house.setRoamLight(k)
           house.setDay(sky.day)
-          // the fleet's paintwork has no lights of its own: what it reflects
-          // is a painted equirect sky repainted off these same numbers, and
-          // its headlamps and nav lights come up with the dusk
+          // The fleet's baked sky reflection dims with daylight; headlamps
+          // and navigation lights come up with the dusk.
           fleet.setDay(sky.day, sky.night, sky.fogColor, sky.sunEl)
           sceneFog.color.copy(sky.fogColor)
           sceneFog.near = sky.fogNear
@@ -3547,6 +3547,16 @@ export default function CrtScene({
 
         const walkTick = (now: number) => {
           if (disposed || !roaming) return
+          // The compositor animates the cover. Rendering here would race the
+          // shader warm-up, draw its staged tools, and keep the GPU busy with
+          // frames nobody can see. Also keep held movement out of the cut.
+          if (loadingWorld) {
+            lastT = now
+            nextFrame = now
+            edges.update(input.keys)
+            raf = requestAnimationFrame(walkTick)
+            return
+          }
           /*
             The frame limiter.
 
@@ -3612,6 +3622,8 @@ export default function CrtScene({
             outsideShell(camera.position)
           ) {
             void loadWorldCovered()
+            raf = requestAnimationFrame(walkTick)
+            return
           }
           prWait -= rawMs / 1000
           // The render-scale dial, taken the frame after it moves. It is a
@@ -4337,12 +4349,8 @@ export default function CrtScene({
           The world the walk will eventually be handed, built while there is
           still a cover over the scene's very first frame.
 
-          Two inner rings is what prime has always guaranteed; the extra
-          budget buys as much of the outer ones as it can, because the frame
-          budget's alternative is to dribble them out at two milliseconds a
-          frame into the face of somebody who already has the controls. This
-          covered pass guarantees that first ring before either entrance draws
-          its first visible frame.
+          The visible inner rings are ready before either entrance draws;
+          distant terrain streams under the ordinary frame budget.
 
           It deliberately does *not* sweep every chunk through a first draw.
           That was tried: a one-pixel viewport through four headings pulled
@@ -4366,12 +4374,8 @@ export default function CrtScene({
           So compile the sun-lit surface variants asynchronously, then do one
           render with the sun map flagged into a one-pixel viewport. The depth
           programs only exist when Three performs a real shadow pass, so
-          compileAsync alone cannot cover them. The car's two headlight spots
-          are the other thresholded program layout: expose them at zero
-          intensity for a second compile and the first dusk can reuse that
-          cached variant instead of linking the whole lit world in one frame.
-          It is the same total cost either way — the only choice is whether it
-          is paid behind the boot cover or in someone's face on the doorstep.
+          compileAsync alone cannot cover them. The car's headlight count is
+          stable through day and night: one layout and one bake cover both.
         */
         const warmCam = new THREE.PerspectiveCamera(110, 1, 0.1, 900)
         const warmSize = new THREE.Vector2()
@@ -4467,14 +4471,20 @@ export default function CrtScene({
             Object.assign(window, { __sandbox: Object.assign(next, { run, console: sbConsole }) })
           }
         }
+        const loadWorldModules = () => Promise.all([
+          import('../../game/vehicles/registry').then(async (registry) => {
+            await registry.preloadVehicleEnvironment()
+            return registry
+          }),
+          import('../../game/sandbox/sandbox'),
+          import('../../game/sandbox/tools/toolbelt'),
+        ])
         let worldReady: Promise<void> | null = null
         const ensureWorld = () => {
           worldReady ??= (async () => {
-            const [, registry, sbMod, toolsMod] = await Promise.all([
+            const [, [registry, sbMod, toolsMod]] = await Promise.all([
               outside.attachWorld(),
-              import('../../game/vehicles/registry'),
-              import('../../game/sandbox/sandbox'),
-              import('../../game/sandbox/tools/toolbelt'),
+              loadWorldModules(),
             ])
             if (disposed || !scene) return
             sandboxMod = sbMod
@@ -4652,11 +4662,9 @@ export default function CrtScene({
         /**
          * The world arriving mid-session, behind the boot cover.
          *
-         * Reuses BootCover rather than inventing a second loading state: it is
-         * already built to animate on the compositor through a main thread that
-         * is blocked in multi-second lumps, which is exactly what compiling the
-         * outdoor shader variants does. Anything hand-rolled here would freeze
-         * for the part of the wait it exists to cover.
+         * StepOutCover animates on the compositor while shader programs link.
+         * The walk sleeps during this cut so it cannot render partially warmed
+         * materials or move the player through a world still being built.
          *
          * Idempotent through `worldReady`, so the door, the walk-out backstop
          * and a second press all land on one load.
@@ -4694,14 +4702,14 @@ export default function CrtScene({
           outside.sun.shadow.needsUpdate = true
           render()
         }
-        /** the fleet's meshes unculled for the warm's sun passes, and its
-            lamps put out for the second of them */
+        /** the fleet's meshes unculled for the warm's sun pass */
         const warmUnculled: THREE.Object3D[] = []
-        const warmDark: THREE.Object3D[] = []
         const warmForRoam = async (at: THREE.Vector3) => {
           await ensureWorld()
           if (disposed) return
-          outside.prime(at.x, at.z, 200)
+          // Build the visible inner rings. Distant chunks keep their normal
+          // streaming budget instead of adding 200 ms to every first exit.
+          outside.prime(at.x, at.z)
           if (!webgl || !scene) return
           // Constructors leave all three machines at (0,0,0), hidden by the
           // fleet root. Terrain and collision now exist, so place them before
@@ -4739,49 +4747,23 @@ export default function CrtScene({
             // parallel while BootCover continues animating on the compositor.
             await webgl.compileAsync(scene, warmCam).catch(() => {})
             if (disposed || !webgl || !scene) return
-            // At dusk the car adds two visible SpotLights. Their count is a
-            // shader define, so compile and first-draw that layout now while
-            // BootCover still owns the screen. The helper restores the live
-            // day-cycle visibility even if compilation or teardown interrupts.
-            fleet.setLightWarmup(true)
-            try {
-              await webgl.compileAsync(scene, warmCam).catch(() => {})
-              if (disposed || !webgl || !scene) return
-              webgl.getSize(warmSize)
-              webgl.setScissorTest(true)
-              webgl.setScissor(0, 0, 1, 1)
-              webgl.setViewport(0, 0, 1, 1)
-              outside.sun.shadow.needsUpdate = true
-              /* Every machine into the sun's map, whatever its box covers,
-                 with the headlamps lit and then dark: a depth program's key
-                 carries the spot count too. The fleet runs on the Moon as
-                 well, far from where it was warmed, and its depth variants
-                 were being linked there, mid-walk, the moment a car was
-                 delivered in whichever lamp state this pass had missed */
-              fleet.root.traverse((o) => {
-                if ((o as THREE.Mesh).isMesh && o.frustumCulled) {
-                  o.frustumCulled = false
-                  warmUnculled.push(o)
-                }
-              })
-              webgl.render(scene, warmCam)
-              fleet.setLightWarmup(false)
-              fleet.root.traverse((o) => {
-                if ((o as THREE.SpotLight).isSpotLight && o.visible) {
-                  o.visible = false
-                  warmDark.push(o)
-                }
-              })
-              outside.sun.shadow.needsUpdate = true
-              webgl.render(scene, warmCam)
-            } finally {
-              for (const o of warmUnculled) o.frustumCulled = true
-              for (const o of warmDark) o.visible = true
-              warmUnculled.length = 0
-              warmDark.length = 0
-              fleet.setLightWarmup(false)
-            }
+            webgl.getSize(warmSize)
+            webgl.setScissorTest(true)
+            webgl.setScissor(0, 0, 1, 1)
+            webgl.setViewport(0, 0, 1, 1)
+            outside.sun.shadow.needsUpdate = true
+            // Warm every machine's depth variants, including those parked
+            // outside this camera's frustum (they can be delivered anywhere).
+            fleet.root.traverse((o) => {
+              if ((o as THREE.Mesh).isMesh && o.frustumCulled) {
+                o.frustumCulled = false
+                warmUnculled.push(o)
+              }
+            })
+            webgl.render(scene, warmCam)
           } finally {
+            for (const o of warmUnculled) o.frustumCulled = true
+            warmUnculled.length = 0
             tools?.unstage()
             avatars.unstage()
             outside.warmSpace(false)
@@ -4921,6 +4903,7 @@ export default function CrtScene({
           // and the covered wait at the front door is then only the build and
           // the shader compile rather than the download as well.
           outside.preloadWorld()
+          void loadWorldModules().catch(() => {})
           webgl.domElement.style.pointerEvents = 'auto'
           input.setCursor('grab')
           // with the OS still running the tube keeps spilling light
@@ -4940,15 +4923,17 @@ export default function CrtScene({
           // announce ourselves while the stand-up glide plays, so the roster
           // and the first snapshots have landed by the time the controls do
           joinWorld()
-          // push back from the desk and rise to standing height: a quarter
-          // second, because anything longer is a wait between you and the walk. The /world entrance
+          // push back from the desk and rise to standing height in one move,
+          // straight off the glass: half a second reads as standing up, and
+          // it used to be two moves (a retreat, then the rise) that together
+          // were a wait between you and the walk. The /world entrance
           // never sat down, so it opens standing instead of gliding up out
           // of a chair nobody watched it push back from
           const s0 = performance.now()
           const from = camera.position.clone()
           const standTick = () => {
             if (disposed || !roaming) return
-            const t = instant ? 1 : Math.min(1, (performance.now() - s0) / 240)
+            const t = instant ? 1 : Math.min(1, (performance.now() - s0) / 500)
             camera.position.lerpVectors(from, SPAWN, EASE(t))
             const aim = lookAngles(camera.position, front)
             camera.rotation.set(aim.pitch, aim.yaw, 0)
@@ -5115,6 +5100,7 @@ export default function CrtScene({
         }
         // the door prompt button routes here (E does the same via input)
         doorRef.current = () => {
+          if (loadingWorld) return
           if (!house.useDoor(headPos, headDir)) outside.useDoor(headPos, headDir)
           if (!outside.hasWorld() && atExteriorDoor(headPos)) void loadWorldCovered()
         }

@@ -129,6 +129,10 @@ export interface SandboxHost {
   fog?: (k: number) => void
   /** everyone else in the world */
   players?: () => PlayerInfo[]
+  /** logged in as the site's owner, which is what `bring` asks for */
+  admin?: () => boolean
+  /** ask the server to bring a player (or everyone here) to us; false offline */
+  bring?: (to: number | 'all') => boolean
   /** say something on the shared chat; false offline */
   chat?: (text: string) => boolean
   /** tools the tool slots offer, and handing one over (the physgun piece) */
@@ -780,8 +784,8 @@ registerCommand({
       ctx.print({ tone: 'help', text: msg(`/${usage(c, 'en')}`, `/${usage(c, 'es')}`), right: c.help })
     }
     ctx.out(msg(
-      'tab completes, up and down go back through what you typed',
-      'tab completa, arriba y abajo repiten lo que escribiste',
+      'tab completes; up and down pick from the list and enter takes it, or go back through what you typed',
+      'tab completa; arriba y abajo eligen de la lista y enter la toma, o repiten lo que escribiste',
     ))
   },
 })
@@ -996,6 +1000,41 @@ registerCommand({
     host.teleport!(found!.x, found!.z, undefined, found!.yaw)
     const d = Math.round(Math.hypot(found!.x - here.x, found!.z - here.z))
     ctx.item(found!.label, `${d} u`)
+  },
+})
+
+registerCommand({
+  name: 'bring',
+  aliases: ['summon'],
+  args: [
+    {
+      name: 'who', nameEs: 'quién', type: 'text',
+      choices: (host) => ['all', ...(host.players?.().map((p) => p.name) ?? [])],
+    },
+  ],
+  help: msg(
+    'bring a player, or all, to where you stand (admin)',
+    'trae a un jugador, o a todos, a donde estás (administrador)',
+  ),
+  run: (ctx) => {
+    const host = ctx.host
+    if (!host.online?.() || !host.bring) ctx.fail(msg('nobody out here to bring', 'no hay nadie aquí para traer'))
+    if (!host.admin?.()) ctx.fail(msg('only the admin can bring people', 'solo el administrador puede traer gente'))
+    const want = ctx.args.join(' ').trim().toLowerCase()
+    if (!want) ctx.fail(msg('usage: bring <player|all>', 'uso: bring <jugador|all>'))
+    const players = host.players?.() ?? []
+    if (want === 'all') {
+      if (!players.length) ctx.fail(msg('nobody else on this level', 'no hay nadie más en este nivel'))
+      host.bring!('all')
+      ctx.ok(msg(`brought ${players.length} ${plural(players.length, 'player')}`,
+        `trajiste a ${players.length} ${pluralEs(players.length, 'jugador')}`))
+      return
+    }
+    const who = players.find((p) => p.name.toLowerCase() === want) ??
+      players.find((p) => p.name.toLowerCase().startsWith(want))
+    if (!who) ctx.fail(msg(`nobody called "${want}" on this level`, `nadie llamado "${want}" en este nivel`))
+    host.bring!(who!.id)
+    ctx.ok(msg(`brought ${who!.name}`, `trajiste a ${who!.name}`))
   },
 })
 

@@ -184,8 +184,9 @@ vehicles/
                   createPartBuilder() with both() for x-symmetry, merging one
                   mesh per material slot
   materials.ts    clearcoat paint, tinted glazing, chrome, rubber with a
-                  painted tread, lamps, and the painted equirect env map
-                  they reflect, repainted off the sky's own numbers
+                  painted tread, lamps, and a prefiltered procedural sky
+                  reflection (regenerate with `node scripts/bake-vehicle-env.mjs`);
+                  its intensity follows the day without runtime PMREM filtering
   chassis.ts      what they share: the support probe, the oriented-footprint
                   sweep against the CollisionSet, the per-surface grip table
   car.ts          land: a mid-2000s three-door hatch drawn in flat, creased

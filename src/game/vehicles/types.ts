@@ -234,9 +234,5 @@ export interface Vehicle {
   netStep: (env: DriveEnv, p: NetPose) => DriveStep
   /** day cycle: headlamps, nav lights, instrument glow */
   setDay?: (day: number, night: number) => void
-  /** Temporarily expose threshold-switched renderer lights so the scene can
-      compile their lighting layout under its boot cover. Turning this back
-      off restores the visibility dictated by the live day cycle. */
-  setLightWarmup?: (on: boolean) => void
   dispose: () => void
 }
