@@ -80,8 +80,9 @@ export interface Gfx {
   farLevels: number
   /** rubble a collapsing building may keep moving at once
       (sandbox/destruction.ts). Each lump is a Rapier hull and its own draw,
-      so it is a real budget: past it the oldest settled ones are welded
-      where they lie and breaking up stops a level coarser */
+      so it is a real budget: past it the oldest settled ones are put to
+      sleep and breaking up stops a level coarser, and past one and a half
+      times it the oldest small ones shrink away */
   rubble: number
 }
 

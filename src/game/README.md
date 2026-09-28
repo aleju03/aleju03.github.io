@@ -1575,8 +1575,9 @@ else happens until something damages it. Then it is *opened*, once:
 `world/fracture.ts` reads its stamps back out of the merged soup, hollows the
 volumetric ones into shells (outside untouched, so nothing visibly changes),
 lays a floor at every storey line, cuts the lot on a grid taken from the lot
-(so the pieces and their keys are the same on every tier) and groups what is
-in each cell and facing into a piece; `world/debris.ts`'s ruins hang that
+(so the pieces and their keys are the same on every tier; how coarse is
+`PIECE_SCALE`, the one knob for how much rubble a building makes) and groups
+what is in each cell and facing into a piece; `world/debris.ts`'s ruins hang that
 rebuilt soup where the building was, collapse its old span, and give every
 piece that carries anything its own box. From then on a piece leaving is a
 tree leaving: its span collapses, its box empties, and the ruin remembers its
@@ -1594,10 +1595,13 @@ about the foot of the far wall, the upper ones faster, so it shears apart
 and swings out in big slabs and slams down across the street in a couple of
 seconds. A low or evenly failed one crushes down storey by storey
 (`pancake`). A falling lump breaks when it lands, one level at a time
-(cluster, storeys, sides, panels, Voronoi shards with capped break faces),
-every panel leaves with its corners knocked off (`chipFrags`) and rebar or
-splinters out of the break (`breakDecor`, drawn only), and big rubble hitting
-what is still standing damages it. Crawling rubble is damped and put to
+(cluster, storeys, sides, panels) and stops at the panel: one stood on its
+end is pushed over, and only a blast close by (or a big panel landing very
+hard) breaks it into two or three Voronoi shards with capped break faces.
+Out where a blast was weak its pieces leave whole, neighbours on one face as
+one slab. Every panel leaves with its corners knocked off (`chipFrags`) and
+rebar or splinters out of the break (`breakDecor`, drawn only), and big
+rubble hitting what is still standing damages it. Crawling rubble is damped and put to
 sleep, or a heap of hulls stays one awake island for good. The dust is its
 own depthless, dithered, banded material (fx.ts's `hazeMaterial`): no
 outline, so it reads as air, and it thins out instead of shrinking. Lumps are ordinary props (kinds
@@ -1617,6 +1621,16 @@ Rules that bite:
   neighbour's box off the leaving piece.
 - **What a ram breaks is born ahead of it and faster than it**, or it
   bounces off its own rubble (`hurt`'s `carried`).
+- **Fewer, bigger pieces, or the street is carpeted and the frame goes.**
+  At the old cut (cells five to nine units, every storey raked in half, three
+  or four shards a piece everywhere) one power-10 blast into a downtown
+  mid-rise made 2,258 bodies, kept 850 of them alive at once and left 1,000
+  draw calls on the street, at 17 to 30 fps in the collapse. `PIECE_SCALE`
+  (fracture.ts) and the shard rules (destruction.ts's `SHATTER_F`,
+  `SHARD_BIG`) are what took that to about a third. A blast is felt through
+  a piece's middle (`CORE`), not its nearest corner, or bigger pieces would
+  hand a blast more of the building. `measure -- rubble` and `drive --
+  rubble` are the numbers.
 - **Only big rubble damages buildings, and a knock must count.** Before
   both gates one tower brought down seventeen buildings and every slab settling
   against a wall chipped it.
@@ -1634,10 +1648,13 @@ Rules that bite:
   out (a teleported piece is born inside the heap and throws its neighbours
   over the rooftops); and nothing put to rest is let move faster than
   `SETTLED_CAP` unless a blast or a player moves it (the physgun marks what it
-  grabs `data.handled`, and destruction leaves those alone). Anything standing
-  taller than a storey and a bit breaks on its landing. `measure physics
-  destruction` reports what is still moving at +4 s and +8 s and the fastest
-  a settled piece was caught at.
+  grabs `data.handled`, and destruction leaves those alone), except falling:
+  a piece whose footing went drops at the speed things drop. Nothing is put
+  to sleep in the air, and a frozen piece whose footing leaves (a lump breaks
+  up or shrinks away, a piece leaves the building) is thawed to fall again.
+  A slab standing on its end, taller than a storey and a bit, is pushed
+  over. `measure physics destruction` reports what is still moving at +4 s
+  and +8 s and the fastest a settled piece was caught at.
 - **Never touch a body from inside a Rapier query.** `ground.ts`'s wake after
   a box shrinks did, and destruction shrinks boxes by the hundred.
 
@@ -1649,6 +1666,8 @@ npm run film -- sandbox:ruin --frames 1 --start 10.9 --tile 1280x800   the ruin 
 npm run film -- props:collapse-links     shader links during both (must be 0)
 npm run measure -- physics destruction   pieces, rubble, frame cost (DESTRUCTION_EXTRA=12 to watch it settle)
 npm run measure -- fracture              every building and landmark taken apart
+npm run measure -- rubble [1,3,10]       /explode into a downtown mid-rise and a tower: bodies, draws, frame cost (RUBBLE_SEQ=6 for six rockets)
+npm run drive -- rubble --power 10       the same blast in the real renderer: frame cost over the collapse, a shot of the aftermath
 /collapse [near|far|left|right|down]     the console: fell what you look at
 /damage [power]                          a hole in the wall you look at
 ```

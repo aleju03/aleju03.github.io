@@ -28,6 +28,13 @@
                                       triangles) in the computer room, at
                                       the front gate by day and night, and
                                       downtown
+    npm run drive -- rubble [--power 10] [--building x,z] [--tag t]
+                                      a downtown mid-rise blown up from the
+                                      middle of a face with /explode: frame
+                                      cost, rubble bodies and links over the
+                                      collapse, and a shot of the aftermath
+                                      to ~/.cache/overhaul/lighter-rubble
+                                      (--rubble-out <dir>)
     npm run drive -- carry [--vehicle heli]
                                       the physgun on a parked machine: taken,
                                       lifted, turned, thrown, landed, handed
@@ -162,7 +169,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
+const VALUED = new Set(['--rubble-out', '--power', '--building', '--back', '--tag', '--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -310,8 +317,10 @@ try {
     rAF outrun the panel, which is the only way the fps column says anything
     about a cap.
   */
-  const perf = async () => {
-    console.log('perf')
+  // the frame instrumentation perf and rubble share: rAF timed on the CPU
+  // (and the GPU where the timer query exists), draws, triangles, program
+  // switches, uploads and stalls counted off the context's own entry points
+  const instrument = async () => {
     await evaluate(`(() => {
       const c = [...document.querySelectorAll('canvas')].find((k) => k.width > 64 && k.getContext('webgl2'))
       const gl = c.getContext('webgl2')
@@ -377,6 +386,7 @@ try {
       })
       return S.ext
     })()`).then((ok) => console.log(`  GPU timer query: ${ok ? 'yes' : 'no'}`))
+  }
     // and the card's own view: board power and utilisation, sampled by the
     // driver. Only comparable between runs made the same way: with vsync
     // off, headless Chrome's own compositor spins the card at full clock
@@ -428,6 +438,9 @@ try {
       if (card.watts !== null) console.log(`  ${''.padEnd(26)} card: ${n(card.watts, 1)} W  util ${n(card.util, 0)}%  ${n(card.clock, 0)} MHz`)
       return r
     }
+  const perf = async () => {
+    console.log('perf')
+    await instrument()
     /* --breakdown: what one frame drew, by the object that drew it. Every
        mesh in the scene gets an onBeforeRender and an onBeforeShadow hook
        for one frame, labelled by its nearest named ancestors, and the
@@ -594,8 +607,93 @@ try {
     }
     console.log(`  could not get to ${where}`)
   }
+  /*
+    A downtown building blown up from the middle of one face, timed in the
+    real renderer: the console's `/explode <power>` aimed at the mid-height of
+    the face toward the camera, then the frame cost over the collapse in
+    windows (0-2, 2-5, 5-10, 10-15 s), with the rubble's bodies (alive and
+    awake), how many the building was cut into, and the shader links over
+    the whole collapse (must be 0). One shot of the aftermath at +15 s.
+  */
+  const rubble = async () => {
+    console.log('rubble')
+    const power = Number(flag('power', 10))
+    const [bx, bz] = flag('building', '-137,-306').split(',').map(Number)
+    const back = Number(flag('back', 55))
+    const R_OUT = resolve(flag('rubble-out', join(process.env.HOME ?? '.', '.cache/overhaul/lighter-rubble')))
+    mkdirSync(R_OUT, { recursive: true })
+    await run('time 12:00')
+    await goTo(`${bx - back} ${bz}`)
+    await sleep(20000)
+    await stand()
+    await look(-Math.PI / 2, 0.1)
+    await sleep(1500)
+    await instrument()
+    await evaluate(`(() => {
+      window.__rLinks = 0
+      for (const c of document.querySelectorAll('canvas')) {
+        if (!c.width || c.__rLinkWrapped) continue
+        const gl = c.getContext('webgl2')
+        if (!gl) continue
+        c.__rLinkWrapped = true
+        const real = gl.linkProgram.bind(gl)
+        gl.linkProgram = (p) => { window.__rLinks++; real(p) }
+      }
+      return true
+    })()`)
+    const state = () => evaluate(`(async () => {
+      const m = await import('/src/game/sandbox/destruction.ts')
+      const d = m.destructionOf(window.__sandbox)
+      let n = 0, awake = 0, meshes = 0
+      window.__sandbox.forEach((p) => {
+        if (!p.data.rubble) return
+        n++
+        if (p.mode === 'dynamic' && !p.body.isSleeping()) awake++
+        p.mesh?.traverse((o) => { if (o.isMesh && o.visible) meshes++ })
+      })
+      let pieces = 0, lifted = 0, opened = 0
+      for (const st of d.ruins.near(${bx}, 0, ${bz}, 200)) {
+        if (!st.open) continue
+        opened++
+        pieces += st.open.frac.pieces.length
+        for (let i = 0; i < st.open.alive.length; i++) if (!st.open.alive[i]) lifted++
+      }
+      return { n, awake, meshes, pieces, lifted, opened, links: window.__rLinks }
+    })()`)
+    await measure('standing, before', 3)
+    // the crosshair on the middle of the face toward us
+    const aimed = await evaluate(`(async () => {
+      const m = await import('/src/game/sandbox/destruction.ts')
+      const d = m.destructionOf(window.__sandbox)
+      const cam = window.__sandboxCamera.position
+      const s = d.nearest({ x: ${bx}, y: cam.y, z: ${bz} }, 40)
+      if (!s) return null
+      const b = s.box
+      const tx = b.min.x, ty = (s.rec.baseY + b.max.y) / 2, tz = (b.min.z + b.max.z) / 2
+      const w = window.__sandboxWalk
+      w.yaw = Math.atan2(-(tx - cam.x), -(tz - cam.z))
+      w.pitch = Math.atan2(ty - cam.y, Math.hypot(tx - cam.x, tz - cam.z))
+      return s.rec.id + ' ' + s.rec.kind
+    })()`)
+    console.log(`  aimed at ${aimed}`)
+    await sleep(400)
+    console.log(`  > explode ${power}: ${(await run(`explode ${power}`)).join(' / ')}`)
+    await evaluate('window.__sandboxWalk.pitch = 0.1; true')
+    const say = (label, st) => console.log(`  ${''.padEnd(26)} ${label}: ${st.n} rubble bodies (${st.awake} awake, ` +
+      `${st.meshes} meshes); ${st.opened} building(s) opened, ${st.pieces} pieces, ${st.lifted} lifted; ${st.links} links`)
+    for (const [a, b2] of [[0, 2], [2, 5], [5, 10], [10, 15]]) {
+      await measure(`collapse ${a}-${b2} s`, b2 - a)
+      say(`at ${b2} s`, await state())
+    }
+    const tag = flag('tag', 'now')
+    const png = await probe.screenshot(W, H)
+    const path = join(R_OUT, `rubble-${tag}.png`)
+    writeFileSync(path, png)
+    console.log(`  wrote ${path}`)
+  }
   if (WHAT.includes('perf')) await perf()
-  if (WHAT.some((w) => w !== 'perf')) {
+  if (WHAT.includes('rubble')) await rubble()
+  if (WHAT.some((w) => w !== 'perf' && w !== 'rubble')) {
     await goTo(AT)
     await sleep(1000)
   }
