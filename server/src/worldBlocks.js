@@ -11,6 +11,13 @@
  * socket, and a level nobody has stood in for EMPTY_TTL_MS is forgotten.
  * Coordinates are held to the world's own box (WORLD blocks either side,
  * HEIGHT tall), and anything else is dropped whole.
+ *
+ * Claims (claims.js): an edit inside somebody else's claimed chunk column is
+ * refused cell by cell, blasts included, and never stored or relayed. The
+ * sender is told with a `world-block-refused` carrying, per refused cell, the
+ * value the server holds (or -1 when the cell is still the generated
+ * terrain), so its optimistic edit is put back rather than left as a ghost
+ * only they can see.
  */
 export const MAX_EDITS = 250_000;
 const EDITS_PER_MESSAGE = 2048;
@@ -21,7 +28,7 @@ const MAX_ID = 255;
 
 const int = (n) => Number.isInteger(n);
 
-export function createWorldBlocks({ players, send, now = Date.now }) {
+export function createWorldBlocks({ players, send, now = Date.now, claims = null }) {
   const levels = new Map();
   const rates = new WeakMap();
   const level = (name) => {
@@ -71,13 +78,28 @@ export function createWorldBlocks({ players, send, now = Date.now }) {
         if (Math.abs(x) > WORLD || Math.abs(z) > WORLD || y < 0 || y >= HEIGHT || id < 0 || id > MAX_ID) return;
       }
       const l = level(w.level);
-      for (let i = 0; i < m.edits.length; i += 4) {
-        const k = `${m.edits[i]},${m.edits[i + 1]},${m.edits[i + 2]}`;
+      let edits = m.edits;
+      if (claims) {
+        const kept = [];
+        const refused = [];
+        let owner = '';
+        for (let i = 0; i < edits.length; i += 4) {
+          const c = claims.check(ws, edits[i], edits[i + 2]);
+          if (!c) { kept.push(edits[i], edits[i + 1], edits[i + 2], edits[i + 3]); continue; }
+          owner = c.name;
+          refused.push(edits[i], edits[i + 1], edits[i + 2], l.blocks.get(`${edits[i]},${edits[i + 1]},${edits[i + 2]}`) ?? -1);
+        }
+        if (refused.length) send(ws, { type: 'world-block-refused', level: w.level, edits: refused, owner });
+        if (!kept.length) return;
+        edits = kept;
+      }
+      for (let i = 0; i < edits.length; i += 4) {
+        const k = `${edits[i]},${edits[i + 1]},${edits[i + 2]}`;
         l.blocks.delete(k);
-        l.blocks.set(k, m.edits[i + 3]);
+        l.blocks.set(k, edits[i + 3]);
         if (l.blocks.size > MAX_EDITS) l.blocks.delete(l.blocks.keys().next().value);
       }
-      const out = { type: 'world-blocks', level: w.level, from: w.id, edits: m.edits, blast: m.blast === true };
+      const out = { type: 'world-blocks', level: w.level, from: w.id, edits, blast: m.blast === true };
       for (const s of peers(w.level)) if (s !== ws) send(s, out);
     },
   };

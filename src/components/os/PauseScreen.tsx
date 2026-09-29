@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import WorldIdentity, { type WorldIdentityProps } from './WorldIdentity'
 import { CIRCLED, INK, INK_SOFT, MARK, PAPER, paperTexture } from './paper'
 import { Note, Rule } from './PaperMarks'
+import RoomStrip from './RoomStrip'
+import PlayPanel from './PlayPanel'
+import { useRoundText } from './roundText'
 import { keyHint } from '../../game/sandbox/bindings'
 import { useI18n } from '../../i18n'
 import {
@@ -87,7 +90,7 @@ export interface PersonWhere {
   bearing?: string
 }
 
-type Page = 'character' | 'settings' | 'people'
+type Page = 'character' | 'settings' | 'people' | 'play'
 
 /**
   A row of the menu. The selected one is swiped through with the marker: a
@@ -549,6 +552,15 @@ export interface PauseScreenProps {
   people: PersonWhere[]
   /** put this sheet away for the map sheet (MapPicker.tsx) */
   onMaps: () => void
+  /** who may use whose things (net/remoteSocial.ts): the scope's protection
+      switch, who you have let in, and the toggles. Absent offline */
+  permissions?: {
+    protect: boolean
+    canSwitch: boolean
+    friends: readonly string[]
+    onProtect: (on: boolean) => void
+    onFriend: (name: string, on: boolean) => void
+  }
   identity: Omit<WorldIdentityProps, 'active'>
   onLeave?: () => void
   onResume: () => void
@@ -564,11 +576,13 @@ export default function PauseScreen({
   tier,
   people,
   onMaps,
+  permissions,
   identity,
   onLeave,
   onResume,
 }: PauseScreenProps) {
   const { t, language } = useI18n()
+  const { tr: rt } = useRoundText()
   const [page, setPage] = useState<Page>('character')
   // the mic test: up, refused, and a bump that re-reads the devices once
   // the microphone has been allowed and their names can be read
@@ -592,6 +606,8 @@ export default function PauseScreen({
     // only when there is a walk to share. Offline the page would be a page
     // about nobody, and the answer would never change
     ...(multiplayer ? [{ id: 'people' as const, label: tp.people }] : []),
+    // the rounds (PlayPanel.tsx): friends' goals, in the same shared walk
+    ...(multiplayer ? [{ id: 'play' as const, label: rt('play') }] : []),
   ]
   const cameras = [
     { id: 'first', label: tp.firstPerson },
@@ -738,6 +754,9 @@ export default function PauseScreen({
             </Note>
           </p>
         </header>
+
+        {/* which room this is, with the invite link and the way back to public */}
+        <RoomStrip />
 
         {/* Scrolls when a short window needs it, but never draws a bar: a bar
             takes its own width out of the columns, the widest option row then
@@ -1036,6 +1055,8 @@ export default function PauseScreen({
                 are drawn from, and a name here is a name you can shout at.
                 Somebody with no bearing is in another level: they found the
                 backrooms, or flew to the Moon */}
+            {page === 'play' && <PlayPanel />}
+
             {page === 'people' && (
               <div className="max-w-lg">
                 <div className="flex items-baseline justify-between gap-4">
@@ -1044,6 +1065,27 @@ export default function PauseScreen({
                   </span>
                   <Note>{tp.sayHint}</Note>
                 </div>
+                {permissions && (
+                  <div className="mt-3 flex items-baseline justify-between gap-4">
+                    <Note>{tp.protectLabel}</Note>
+                    <button
+                      type="button"
+                      disabled={!permissions.canSwitch}
+                      aria-pressed={permissions.protect}
+                      title={tp.protectHint}
+                      onClick={() => permissions.onProtect(!permissions.protect)}
+                      className="font-display relative px-1 py-0.5 text-[20px] uppercase disabled:cursor-not-allowed"
+                      style={{ color: permissions.protect ? INK : INK_SOFT }}
+                    >
+                      {permissions.protect ? tp.on : tp.off}
+                      <span
+                        aria-hidden
+                        className={`absolute -inset-x-2.5 -inset-y-1.5 ${permissions.protect ? 'opacity-100' : 'opacity-0'}`}
+                        style={CIRCLED}
+                      />
+                    </button>
+                  </div>
+                )}
                 {people.length === 0 ? (
                   <p className="mt-4 font-display text-[22px] uppercase" style={{ color: `${INK}55` }}>
                     {tp.nobody}
@@ -1069,6 +1111,23 @@ export default function PauseScreen({
                         >
                           {p.name}
                         </span>
+                        {permissions && (
+                          <button
+                            type="button"
+                            aria-pressed={permissions.friends.includes(p.name)}
+                            title={tp.friendHint}
+                            onClick={() => permissions.onFriend(p.name, !permissions.friends.includes(p.name))}
+                            className="font-display relative px-1 py-0.5 text-[17px] uppercase"
+                            style={{ color: permissions.friends.includes(p.name) ? INK : INK_SOFT }}
+                          >
+                            {tp.friend}
+                            <span
+                              aria-hidden
+                              className={`absolute -inset-x-2 -inset-y-1 ${permissions.friends.includes(p.name) ? 'opacity-100' : 'opacity-0'}`}
+                              style={CIRCLED}
+                            />
+                          </button>
+                        )}
                         {p.dist === undefined || p.bearing === undefined ? (
                           <Note>{tp.elsewhere}</Note>
                         ) : (

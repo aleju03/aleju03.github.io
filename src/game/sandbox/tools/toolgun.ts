@@ -1,12 +1,17 @@
 import * as THREE from 'three'
 import { contraptionOf, type ConstraintType, type Contraption } from '../contraption/contraption'
 import { KEY_PAIRS } from '../contraption/parts'
+import { creativeOf } from '../creative/creative'
+import { PALETTE } from '../creative/tags'
+import { held } from '../bindings'
 import { historyOf } from '../history'
+import { clipboard } from '../blueprint/clipboard'
+import { createDuplicator } from '../blueprint/dupe'
 import type { Prop, PropId, Sandbox } from '../sandbox'
 import type { ToolInput } from './types'
 import { TOOL_MODES, type ToolMode } from './toolgunText'
 
-export { TOOL_MODES, MODE_NAMES, toolgunLine, toolgunScreen, type ToolMode } from './toolgunText'
+export { TOOL_MODES, MODE_NAMES, toolgunLine, toolgunScreen, toolgunSwatch, type ToolMode } from './toolgunText'
 
 type Msg = { en: string; es: string }
 
@@ -31,7 +36,17 @@ type Msg = { en: string; es: string }
     nocollide  click A, click B: the two pass through each other
     keys       click a thruster, wheel or hoverball to step it to its next
                key pair; right click reverses it
+    paint      click a prop to paint it in the palette colour (wheel or , .
+               and [ ] pick it, shown on the gun's screen); right click clears
+    balloon    click a prop: a balloon of that colour is tied above it by a
+               rope. Click a balloon then a prop to tie one already there;
+               right click cuts a prop's ropes
     remove     click a prop to remove it; right click strips its joints
+    copy       click a prop: it and everything joined to it go to the
+               clipboard as a blueprint; right click takes that one prop
+    paste      the clipboard as a ghost on the crosshair (blueprint/dupe.ts);
+               left click places it as one undo entry, the wheel or E turns
+               it, right click forgets it
   In the four two-click modes, right click cancels a first click, or with
   none pending takes that mode's joints off whatever it is aimed at.
 
@@ -50,7 +65,7 @@ const LABELS: Record<ConstraintType, Msg> = {
 /** how far the tool reaches, units */
 export const TOOL_RANGE = 120
 
-export type ToolgunEventType = 'select' | 'join' | 'cancel' | 'set' | 'remove' | 'fail' | 'mode'
+export type ToolgunEventType = 'select' | 'join' | 'cancel' | 'set' | 'remove' | 'fail' | 'mode' | 'deny'
 export interface ToolgunEvent {
   type: ToolgunEventType
   /** where the shot landed (the tracer's end), world */
@@ -63,6 +78,9 @@ export interface Toolgun {
   readonly mode: ToolMode
   setMode: (m: ToolMode) => void
   cycle: (dir: number) => void
+  /** paste mode is showing a ghost, so the wheel turns it and does not
+      change tools */
+  readonly wantsWheel: boolean
   /** the first prop of a two-click mode, once picked */
   readonly pending: PropId | null
   /** one frame; the gun is out and live */
@@ -73,6 +91,12 @@ export interface Toolgun {
   retarget: (sb: Sandbox) => void
   /** in the keys mode: the pair on the part under the crosshair */
   readonly aimedKeys: string | null
+  /** the palette colour paint and balloon use, 0..11 */
+  readonly color: number
+  /** step the palette, wrapping */
+  stepColor: (dir: number) => void
+  /** the wheel means the palette in this mode, not the next tool */
+  readonly wantsColorWheel: boolean
   /** `mode:step`, which changes exactly when the readout should */
   readonly state: string
   dispose: () => void
@@ -87,6 +111,12 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
   let altWas = false
   let modeWas = false
   let aimedKeys: string | null = null
+  const dupe = createDuplicator(sb)
+  /** where the paste ghost is, this frame */
+  let pasteAt: THREE.Vector3 | null = null
+  let color = 0
+  let colorKeysWas = false
+  const creative = () => creativeOf(sb)
   const fns = new Set<(e: ToolgunEvent) => void>()
   const ev: ToolgunEvent = { type: 'fail', point: new THREE.Vector3(), normal: new THREE.Vector3(0, 1, 0), prop: -1 }
   const emit = (type: ToolgunEventType, point: THREE.Vector3 | null, normal: THREE.Vector3 | null, prop: PropId) => {
@@ -142,14 +172,93 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
     return true
   }
 
+  /** somebody else's prop, and the scope protects it: the gun buzzes and the
+      toast says whose it is (network.denied), and nothing else happens */
+  const forbidden = (prop: Prop | null, point: THREE.Vector3, normal: THREE.Vector3 | null) => {
+    if (!prop || !sb.network?.may || sb.network.may(prop.id)) return false
+    sb.network.denied?.(prop.id)
+    emit('deny', point, normal, prop.id)
+    return true
+  }
+
+  /** paint a prop (0 clears), as one undo entry that puts the old tag back */
+  const paintProp = (id: PropId, idx: number, point: THREE.Vector3, normal: THREE.Vector3 | null) => {
+    const cr = creative()
+    if (idx === 0 && cr.tagOf(id).paint === 0) {
+      emit('fail', point, normal, -1)
+      return
+    }
+    const before = cr.paint(id, idx)
+    if (before === false) {
+      emit('fail', point, normal, -1)
+      return
+    }
+    historyOf(sb).record({
+      label: idx ? { en: 'paint', es: 'pintura' } : { en: 'clear paint', es: 'quitar pintura' },
+      undo: () => creative().restore(id, before),
+    })
+    emit('set', point, normal, id)
+  }
+
+  /** the balloon mode's left click. With nothing picked, a click on a prop
+      ties a new balloon above it and a click on a balloon picks it up; with
+      one picked, the click ties it to what was hit */
+  const balloonClick = (
+    prop: Prop | null, hit: { point: THREE.Vector3 } | null, point: THREE.Vector3, normal: THREE.Vector3 | null,
+  ) => {
+    const cr = creative()
+    const undoRope = (from: PropId, rope: number, label: Msg, props?: PropId) => {
+      const entry = historyOf(sb).record({ label, kind: props !== undefined ? 'balloon' : undefined, props, undo: () => con.remove(rope) })
+      for (const r of con.constraints(from)) if (r.id === rope) r.entry = entry
+    }
+    if (pending) {
+      const A = sb.get(pending.id)
+      pending = null
+      const rope = A && prop && hit && prop.id !== A.id ? cr.tieExisting(A.id, prop.id, hit.point) : null
+      if (rope === null || !A) {
+        emit('fail', point, normal, -1)
+        return
+      }
+      undoRope(A.id, rope, { en: 'rope', es: 'cuerda' })
+      emit('join', point, normal, prop!.id)
+      return
+    }
+    if (!prop || !hit) {
+      emit('fail', point, normal, -1)
+      return
+    }
+    if (prop.kind.id === 'balloon') {
+      pending = { id: prop.id, local: new THREE.Vector3(), normal: new THREE.Vector3(0, 1, 0) }
+      emit('select', point, normal, prop.id)
+      return
+    }
+    const made = cr.tie(prop.id, hit.point, color + 1)
+    if (!made) {
+      emit('fail', point, normal, -1)
+      return
+    }
+    undoRope(made.balloon, made.rope, { en: 'balloon', es: 'globo' }, made.balloon)
+    emit('join', point, normal, prop.id)
+  }
+
   const primary = (input: ToolInput) => {
     const hit = sb.raycast(input.aim.eye, input.aim.dir, TOOL_RANGE, { props: true, world: true })
     const point = hit?.point ?? p.copy(input.aim.dir).multiplyScalar(TOOL_RANGE).add(input.aim.eye)
     const prop = hit?.prop ?? null
     const normal = hit?.normal ?? null
+    if (forbidden(prop, point, normal)) return
     if (mode === 'keys') {
       if (prop && con.cycleKeys(prop.id, 1) >= 0) emit('set', point, normal, prop.id)
       else emit('fail', point, normal, -1)
+      return
+    }
+    if (mode === 'copy') {
+      emit(dupe.copy(prop, false) ? 'select' : 'fail', point, normal, prop?.id ?? -1)
+      return
+    }
+    if (mode === 'paste') {
+      const done = pasteAt ? dupe.paste(pasteAt) : false
+      emit(done ? 'join' : 'fail', point, normal, -1)
       return
     }
     if (mode === 'remove') {
@@ -158,6 +267,15 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
         emit('remove', point, normal, id)
         sb.remove(id)
       } else emit('fail', point, normal, -1)
+      return
+    }
+    if (mode === 'paint') {
+      if (prop) paintProp(prop.id, color + 1, point, normal)
+      else emit('fail', point, normal, -1)
+      return
+    }
+    if (mode === 'balloon') {
+      balloonClick(prop, hit, point, normal)
       return
     }
     if (!pending) {
@@ -193,11 +311,22 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
     const hit = sb.raycast(input.aim.eye, input.aim.dir, TOOL_RANGE, { props: true, world: true })
     const point = hit?.point ?? p.copy(input.aim.dir).multiplyScalar(TOOL_RANGE).add(input.aim.eye)
     const prop = hit?.prop ?? null
+    if (mode === 'paste') {
+      const had = !!clipboard.get()
+      dupe.clear()
+      emit(had ? 'cancel' : 'fail', point, hit?.normal ?? null, -1)
+      return
+    }
+    if (mode === 'copy') {
+      emit(dupe.copy(prop, true) ? 'select' : 'fail', point, hit?.normal ?? null, prop?.id ?? -1)
+      return
+    }
     if (pending) {
       pending = null
       emit('cancel', point, hit?.normal ?? null, -1)
       return
     }
+    if (forbidden(prop, point, hit?.normal ?? null)) return
     if (!prop) {
       emit('fail', point, hit?.normal ?? null, -1)
       return
@@ -211,8 +340,18 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
       }
     }
     else if (mode === 'remove') n = con.strip(prop.id)
+    else if (mode === 'paint') {
+      paintProp(prop.id, 0, point, hit?.normal ?? null)
+      return
+    } else if (mode === 'balloon') n = con.strip(prop.id, 'rope')
     else n = con.strip(prop.id, mode)
     emit(n ? 'set' : 'fail', point, hit?.normal ?? null, n ? prop.id : -1)
+  }
+
+  const stepColor = (dir: number) => {
+    const n = PALETTE.length
+    color = (((color + dir) % n) + n) % n
+    emit('mode', null, null, -1)
   }
 
   const update = (input: ToolInput) => {
@@ -232,12 +371,27 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
     fireWas = fire
     altWas = alt
     modeWas = modeKey
+    if (mode === 'paint' || mode === 'balloon') {
+      const k = input.keys
+      const step = k ? (held(k, 'colorNext') ? 1 : 0) - (held(k, 'colorPrev') ? 1 : 0) : 0
+      if (step && !colorKeysWas) stepColor(step)
+      colorKeysWas = step !== 0
+    } else colorKeysWas = false
     // the keys mode reads the pair off whatever it is pointed at
     if (mode === 'keys') {
       const hit = sb.raycast(input.aim.eye, input.aim.dir, TOOL_RANGE, { props: true, world: false })
       const st = hit?.prop ? con.part(hit.prop.id) : null
       aimedKeys = st && st.keys >= 0 ? `${KEY_PAIRS[st.keys].label}${st.flip ? ' rev' : ''}` : null
     } else aimedKeys = null
+    // paste keeps its ghost on whatever the crosshair is on
+    if (mode === 'paste') {
+      const hit = sb.raycast(input.aim.eye, input.aim.dir, TOOL_RANGE, { props: true, world: true })
+      pasteAt = dupe.hover(input, hit)
+      aimedKeys = dupe.label
+    } else {
+      pasteAt = null
+      dupe.hide()
+    }
   }
 
   return {
@@ -260,8 +414,12 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
     get pending() {
       return pending?.id ?? null
     },
+    get wantsWheel() {
+      return mode === 'paste' && dupe.wantsWheel
+    },
     update,
     cancel: () => {
+      dupe.hide()
       pending = null
       fireWas = altWas = modeWas = false
     },
@@ -273,13 +431,24 @@ export function createToolgun(sbIn: Sandbox): Toolgun {
       sb = next
       con = contraptionOf(next)
       pending = null
+      dupe.retarget(next)
     },
     get aimedKeys() {
       return aimedKeys
     },
-    get state() {
-      return `${mode}:${pending ? 1 : 0}`
+    get color() {
+      return color
     },
-    dispose: () => fns.clear(),
+    stepColor,
+    get wantsColorWheel() {
+      return mode === 'paint' || mode === 'balloon'
+    },
+    get state() {
+      return `${mode}:${pending || (mode === 'paste' && clipboard.get()) ? 1 : 0}${mode === 'paint' || mode === 'balloon' ? `:${color}` : ''}`
+    },
+    dispose: () => {
+      fns.clear()
+      dupe.dispose()
+    },
   }
 }

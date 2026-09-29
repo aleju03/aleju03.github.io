@@ -4,9 +4,10 @@ import { createPropRegistry } from '../src/props.js';
 function limits() {
   const owner = { world: { id: 1, level: 'limits', x: 0, y: 0, z: 0 }, nick: 'owner' };
   const players = new Map([[1, owner]]), messages = [];
-  const registry = createPropRegistry({ players, send: (_, m) => messages.push(m) });
+  let clock = 1e6;
+  const registry = createPropRegistry({ players, send: (_, m) => messages.push(m), now: () => clock });
   registry.join(owner);
-  for (let nonce = 1; nonce <= 151; nonce++) registry.handle(owner, {
+  for (let nonce = 1; nonce <= 151; nonce++, clock += 50) registry.handle(owner, {
     type: 'world-prop-spawn', level: 'limits', nonce, kind: 'crate', pose: [0,1,0,300,0,0,0,0,10000,1],
   });
   assert.equal(messages.filter(m => m.type === 'world-prop-spawn').length, 150);
@@ -28,6 +29,9 @@ export async function propSmoke(url, connect) {
       await c.nextOf('world-prop-snapshot', 'snapshot');
     }
     const tx = (c, m) => c.send({ level: 'prop-test', ...m });
+    // ownership itself is tested in protection.mjs; this flow is about handoffs between strangers
+    tx(a, { type: 'world-social', op: 'protect', on: false });
+    assert.equal((await a.nextOf('world-social-note', 'protection off')).code, 'protect-off');
     const spawn = async (c, nonce, kind = 'crate') => {
       tx(c, { type: 'world-prop-spawn', nonce, kind, scale: 1.2, pose: [0, 1, 100, 300, 200, 0, 0, 0, 10000, 1] });
       let m;
@@ -51,7 +55,6 @@ export async function propSmoke(url, connect) {
     assert.equal(granted.authority, b.you); assert.equal(granted.pose[2], 200); assert.equal(granted.epoch, 2);
     tx(b, { type: 'world-prop-cleanup', target: 'all' });
     assert.equal((await b.nextOf('world-prop-denied', 'cleanup denied')).reason, 'admin');
-    tx(b, { type: 'world-prop-remove', id: p.id });
     const own = await spawn(b, 2, 'barrel');
     const late = connect(url); sockets.push(late);
     await late.opened; late.send({ type: 'hello' }); await late.nextOf('hello-ok', 'late hello');
@@ -102,6 +105,34 @@ export async function propSmoke(url, connect) {
     assert.equal((await a.nextOf('world-prop-denied', 'kind validation')).reason, 'invalid');
     tx(a, { type: 'world-prop-spawn', nonce: 100, kind: 'crate', pose: [0,1,0,0,0,0,0,0,0,0] });
     assert.equal((await a.nextOf('world-prop-denied', 'rotation validation')).reason, 'invalid');
-    console.log('props: spawn, move, claims, epochs, joints, metadata, hits, break, blast, cleanup, limits, admin, levels and late join passed');
+    // The creative record (paint, a lamp's switch, a sign's words): anyone in
+    // reach sets it, the server normalises and bounds it, and a late joiner's
+    // snapshot carries it.
+    const tagged = await spawn(a, 200, 'sign');
+    assert.equal(tagged.tag, null);
+    const words = [...'  HELLO   world '].map((c) => c.charCodeAt(0));
+    tx(late, { type: 'world-prop-tag', id: tagged.id, tag: [3, 0, ...words] });
+    let shown;
+    do { shown = (await a.nextOf('world-prop-state', 'tag announced')).props.find((q) => q.id === tagged.id); } while (!shown?.tag);
+    assert.deepEqual(shown.tag, [3, 0, ...[...'HELLO world'].map((c) => c.charCodeAt(0))], 'blanks squeezed and trimmed');
+    tx(late, { type: 'world-prop-tag', id: tagged.id, tag: [99, 0] });
+    assert.equal((await late.nextOf('world-prop-denied', 'bad paint')).reason, 'invalid');
+    tx(late, { type: 'world-prop-tag', id: tagged.id, tag: [0, 0, 10] });
+    assert.equal((await late.nextOf('world-prop-denied', 'control character')).reason, 'invalid');
+    tx(late, { type: 'world-prop-tag', id: tagged.id, tag: [0, 0, ...Array(41).fill(65)] });
+    assert.equal((await late.nextOf('world-prop-denied', 'too long')).reason, 'invalid');
+    tx(late, { type: 'world-prop-tag', id: tagged.id, tag: [0, 1] });
+    let lamp;
+    do { lamp = (await a.nextOf('world-prop-state', 'lamp switch')).props.find((q) => q.id === tagged.id); } while (lamp?.tag?.[1] !== 1);
+    assert.deepEqual(lamp.tag, [0, 1], 'text wiped, switch kept');
+    tx(late, { type: 'world-prop-tag', id: tagged.id, tag: [5, 0, 241] });
+    const lateTag = connect(url); sockets.push(lateTag);
+    await lateTag.opened; lateTag.send({ type: 'hello' }); await lateTag.nextOf('hello-ok', 'tag late hello');
+    lateTag.send({ type: 'world-join', level: 'prop-test' }); await lateTag.nextOf('world-welcome', 'tag late welcome');
+    const tagSnapshot = await lateTag.nextOf('world-prop-snapshot', 'tag late snapshot');
+    assert.deepEqual(tagSnapshot.props.find((q) => q.id === tagged.id).tag, [5, 0, 241], 'a late joiner gets the tag');
+    tx(late, { type: 'world-prop-remove', id: tagged.id });
+    tx(a, { type: 'world-prop-remove', id: tagged.id });
+    console.log('props: spawn, move, claims, epochs, joints, metadata, hits, break, blast, cleanup, limits, admin, levels, late join and creative tags passed');
   } finally { for (const c of sockets) c.ws.close(); }
 }

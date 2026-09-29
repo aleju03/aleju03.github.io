@@ -28,6 +28,12 @@
                                       public/os/maps/README.md). Any run with
                                       --picker also shoots the sheet itself,
                                       which every walk now starts on
+    npm run drive -- creatures        the living things: a herd by day in Cubeland, the dark's
+                                      zombies, creeper and skeleton at night, a creeper's
+                                      crater (blocks counted), a kill's drops, /mobs and
+                                      /spawnmob, and Nuketown's walkers shot down and
+                                      getting up; links counted (must be 0). Shots
+                                      creatures-*. Two clients: scripts/creatures-drive.mjs
     npm run drive -- cubeland [--only a,b]
                                       Cubeland: the spawn from four headings
                                       and the air, a block broken and a tower
@@ -47,6 +53,7 @@
                                       shots to ~/.cache/overhaul/space
                                       (--space-out <dir>); --dump-globe stops at
                                       orbit and writes the globe's painted map
+    (private rooms have their own three-client harness: node scripts/rooms-drive.mjs)
     npm run drive -- perf             frame cost (cpu, gpu, draw calls,
                                       triangles) in the computer room, at
                                       the front gate by day and night, and
@@ -104,6 +111,21 @@
                                       crate; links counted (must be 0).
                                       Shots to ~/.cache/overhaul/emotes
                                       (--emote-out)
+    npm run drive -- health           hit points offline: /health, /hurt, /heal, /pvp
+                                      and /kill answer what they must with no
+                                      server, the bar and the death sheet stay
+                                      away, and the hurt/died/respawn events
+                                      driven by hand put up the bar, the
+                                      killfeed and the sheet (shots health-*).
+                                      The two-client drive is
+                                      scripts/health-drive.mjs
+    npm run drive -- rounds           the round's screens with no server: the store fed
+                                      by hand, a shot of each game's HUD (countdown,
+                                      deathmatch and its scoreboard, the seeker's
+                                      blindfold, a disguised prop, the race, the
+                                      build gallery) and the results sheet (shots
+                                      rounds-*). The two-client drive over a real
+                                      relay is scripts/rounds-drive.mjs
     npm run drive -- portal           the portal gun: taken from the catalogue's
                                       tools tab, a blue and an orange portal
                                       opened on two walls downtown and each
@@ -154,6 +176,36 @@
                                       own body taken and pulled about and let
                                       go; positions and speeds printed (no NaN,
                                       capped). Shots grab-* beside the others
+    npm run drive -- protection       ownership and anti-grief with two real clients
+                                      on a private relay (scripts/protection-drive.mjs):
+                                      a stranger's physgun denied (buzz, toast),
+                                      a friend's allowed, unfriended, /share;
+                                      in Cubeland a claim declines a stranger's
+                                      dig, and with the client's guard lifted
+                                      the server refuses it and the correction
+                                      puts the block back; links counted (0).
+                                      Shots protection-* (--out)
+    npm run drive -- blueprints       the duplicator and the builds book: three
+                                      props welded, copied with the tool gun's
+                                      copy mode (the whole graph from one
+                                      click), the paste ghost on the ground,
+                                      pasted with a click, saved with /save,
+                                      everything cleaned up, /load brings it
+                                      back, pushed (it moves as one), one
+                                      undo removes it; the builds book shot;
+                                      links counted (must be 0). Shots
+                                      blueprints-*.png beside the others
+    npm run drive -- creative         the creative tools: a crate painted with the
+                                      tool gun (and undone), balloons tied on
+                                      until it lifts, a lamp at night with its
+                                      pool (E switches it), a sign typed
+                                      through the console E opens, dynamite's
+                                      five seconds beside a barrel, and the
+                                      camera's photographs (size, a copy on
+                                      disk, the zoom); the new sounds' peaks;
+                                      links counted (must be 0). Shots to
+                                      ~/.cache/overhaul/creative
+                                      (--creative-out <dir>)
     npm run drive                     the first three
 
   --at x,z | place       where the console and menu shots stand (5654,-844, the
@@ -192,7 +244,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`)
   return i === -1 ? fallback : argv[i + 1]
 }
-const VALUED = new Set(['--only', '--rubble-out', '--power', '--building', '--back', '--tag', '--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
+const VALUED = new Set(['--only', '--parts', '--creative-out', '--rubble-out', '--power', '--building', '--back', '--tag', '--emote-out', '--portal-out', '--parts-out', '--vm-out', '--out', '--at', '--fly-at', '--fly-yaw', '--yaw', '--frames', '--lang', '--cap', '--spots', '--vehicle'])
 const wanted = argv.filter((a, i) => !a.startsWith('--') && !VALUED.has(argv[i - 1]))
 if (has('help') || argv.includes('-h')) {
   // the header above is the help; print it rather than booting anything
@@ -201,6 +253,12 @@ if (has('help') || argv.includes('-h')) {
   process.exit(0)
 }
 const WHAT = wanted.length ? wanted : ['console', 'menu', 'noclip']
+// the ownership scenario needs a relay and two browsers of its own, so it
+// runs as its own script before this one boots a single-client probe
+if (WHAT.includes('protection')) {
+  await import('./protection-drive.mjs')
+  process.exit(0)
+}
 const OUT = resolve(flag('out', 'shots/sandbox'))
 const W = 1280
 const H = 800
@@ -259,7 +317,7 @@ const CODES = {
   KeyQ: ['q', 81], KeyV: ['v', 86], KeyW: ['w', 87], KeyT: ['t', 84], KeyZ: ['z', 90],
   KeyC: ['c', 67], Enter: ['Enter', 13], Tab: ['Tab', 9], Space: [' ', 32],
   ShiftLeft: ['Shift', 16], Slash: ['/', 191], Escape: ['Escape', 27], F5: ['F5', 116],
-  KeyG: ['g', 71], KeyF: ['f', 70], KeyB: ['b', 66],
+  KeyG: ['g', 71], KeyF: ['f', 70], KeyB: ['b', 66], KeyP: ['p', 80],
   Digit1: ['1', 49], Digit2: ['2', 50], Digit3: ['3', 51], Digit4: ['4', 52], Digit5: ['5', 53],
   Digit6: ['6', 54], Digit7: ['7', 55], Digit8: ['8', 56], Digit9: ['9', 57],
 }
@@ -297,7 +355,7 @@ try {
   // a walk starts at home (a scenario that wants another map goes there
   // itself); the map sheet is the pause menu's "change map"
   await waitFor(
-    () => evaluate(`!!window.__sandbox?.run && !!window.__sandboxWalk && !!window.__pickMap`),
+    () => evaluate(`!!window.__sandbox?.run && !!window.__sandboxWalk && !!window.__pickMap && !!window.__sandboxCamera && !!window.__tools`),
     360, 500, 'the walk and the sandbox',
   )
   if (has('picker')) {
@@ -786,6 +844,84 @@ try {
     await shot('console-closed')
     await run('cleanup')
     await sleep(300)
+  }
+
+  if (WHAT.includes('health')) {
+    console.log('health')
+    await look(null, -0.1)
+    for (const l of ['health', 'hurt 20', 'heal', 'pvp on', 'kill']) {
+      console.log(`  > ${l}: ${(await run(l)).join(' / ')}`)
+      await sleep(200)
+    }
+    // the store, fed the server's own messages by hand
+    await evaluate(`(() => { const h = window.__health, lv = window.__levels.current.id
+      h.receive({ type: 'world-welcome', you: 1, tick: 66, slot: 0, players: [] })
+      h.receive({ type: 'world-pvp', level: lv, on: true, by: 0 })
+      h.receive({ type: 'world-hp', level: lv, rows: [[1, 42, 100, 0]] })
+      h.receive({ type: 'world-death', level: lv, id: 7, by: 1, kind: 'rocket', sc: [[7, 0, 1, 0], [1, 1, 0, 1]] })
+      h.receive({ type: 'world-death', level: lv, id: 1, by: 0, kind: 'lava', sc: [[1, 1, 1, 1]] })
+      return true })()`)
+    await sleep(600)
+    await shot('health-down')
+    await evaluate(`(() => { const h = window.__health, lv = window.__levels.current.id
+      h.receive({ type: 'world-respawn', level: lv, id: 1 })
+      h.receive({ type: 'world-hp', level: lv, rows: [[1, 100, 100, 2]] }); return true })()`)
+    await sleep(600)
+    await shot('health-back')
+    await evaluate('window.__health.offline()')
+  }
+
+  if (WHAT.includes('rounds')) {
+    // the round's screens with no server: the store fed the server's own
+    // messages by hand, one state per game, and a shot of each HUD. The
+    // two-client drive (real rounds over a real relay) is scripts/rounds-drive.mjs
+    console.log('rounds')
+    await look(null, -0.1)
+    const feed = (msgs) => evaluate(`(() => { const r = window.__rounds.state; for (const m of ${JSON.stringify(msgs)}) r.receive(m); return true })()`)
+    const st = (ph, mode, extra = {}) => ({
+      type: 'world-round', v: 1, ph, mode, lv: 'nuketown', now: Date.now(), end: Date.now() + 60_000, host: 1,
+      rd: [1, 2], p: [], obj: {}, ...extra,
+    })
+    await feed([{ type: 'world-welcome', you: 1, tick: 66, slot: 0, players: [{ id: 2, name: 'Ada' }, { id: 3, name: 'Bo' }] }])
+    // deathmatch: the countdown, then play with a score line and the board held
+    await feed([st('countdown', 'deathmatch', { end: Date.now() + 3200, p: [[1, 'a', '', 0, 0, 0, 0], [2, 'b', '', 0, 0, 0, 0], [3, 'b', '', 0, 0, 0, 0]] })])
+    await sleep(500)
+    await shot('rounds-countdown')
+    await feed([st('playing', 'deathmatch', { end: Date.now() + 251_000, obj: { limit: 40, teams: true }, p: [[1, 'a', '', 7, 7, 3, 0], [2, 'b', '', 9, 9, 6, 0], [3, 'b', '', 4, 4, 5, 0]] })])
+    await sleep(700)
+    await shot('rounds-deathmatch')
+    await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Tab' })); true`)
+    await sleep(400)
+    await shot('rounds-scoreboard')
+    await evaluate(`window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Tab' })); true`)
+    // hide and seek: the seeker's blindfold, then a hider's view
+    const seekAt = Date.now() + 20_000
+    await feed([st('playing', 'hide', { end: Date.now() + 260_000, obj: { seekAt }, p: [[1, 'b', 'seeker', 0, 0, 0, 0], [2, 'a', 'hider', 0, 0, 0, 0], [3, 'a', 'hider', 0, 0, 0, 0]] })])
+    await sleep(600)
+    await shot('rounds-hide-seeker-blind')
+    await feed([st('playing', 'hide', { end: Date.now() + 260_000, obj: { seekAt }, p: [[1, 'a', 'hider', 0, 0, 0, 0], [2, 'b', 'seeker', 0, 0, 0, 0], [3, 'a', 'hider', 0, 0, 0, 0]] })])
+    await sleep(600)
+    await shot('rounds-hide-hider')
+    // prop hunt: a prop with a disguise on
+    await feed([st('playing', 'prophunt', { end: Date.now() + 260_000, obj: { seekAt: Date.now() - 1000, decoys: 60 }, p: [[1, 'a', 'prop', 0, 0, 0, 0], [2, 'b', 'hunter', 3, 1, 0, 0], [3, 'a', 'prop', 0, 0, 0, 0]], dg: [[1, 'barrel']] })])
+    await sleep(600)
+    await shot('rounds-prophunt-prop')
+    console.log('  race', await evaluate('window.__renderer.info.programs.length'))
+    // the race on foot, and the gallery of the build contest
+    await feed([st('playing', 'race', { lv: 'cubeland', end: Date.now() + 400_000, obj: { cps: [[10, 10, 8], [60, 10, 8], [60, 60, 8]], laps: 2, foot: 1, goAt: Date.now() - 2000, grid: [0, 0, 0] }, p: [[1, '', '', 0, 4, 0, 0], [2, '', '', 0, 6, 0, 0], [3, '', '', 0, 1, 0, 0]] })])
+    console.log('  fed', await evaluate('window.__renderer.info.programs.length'))
+    await sleep(600)
+    console.log('  slept', await evaluate('window.__renderer.info.programs.length'))
+    await shot('rounds-race')
+    await feed([st('playing', 'build', { lv: 'cubeland', end: Date.now() + 100_000, obj: { theme: 3, stage: 'gallery', buildEndAt: Date.now() - 1000, plots: [[1, 0, 0], [2, 2, 0]], gal: { plot: 2, i: 1, n: 2, endAt: Date.now() + 14_000 } }, p: [[1, '', '', 0, 0, 0, 0], [2, '', '', 0, 0, 0, 0]] })])
+    await sleep(600)
+    await shot('rounds-build-gallery')
+    // results: a team won
+    await feed([st('results', 'deathmatch', { end: Date.now() + 9000, obj: { limit: 40, teams: true }, p: [[1, 'a', '', 7, 7, 3, 0], [2, 'b', '', 9, 9, 6, 0], [3, 'b', '', 4, 4, 5, 0]], res: { win: [2, 3], team: 'b', why: 'limit', rows: [[2, 'b', 9, 9, 6], [1, 'a', 7, 7, 3], [3, 'b', 4, 4, 5]] } })])
+    await sleep(700)
+    await shot('rounds-results')
+    console.log(`  ${(await run('round')).join(' / ')}`)
+    await evaluate('window.__rounds.state.offline()')
   }
 
   if (WHAT.includes('menu')) {
@@ -1809,6 +1945,178 @@ try {
     await run('cleanup')
   }
 
+  if (WHAT.includes('blueprints') && has('baseline')) {
+    // the same link counter with the tool gun out in its weld mode and the
+    // view swung down at the ground, to tell a link of the duplicator's from
+    // one the tool gun makes on its own
+    await stand()
+    await look(0.6, -0.3)
+    await evaluate(`(() => { window.__bLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__bWrapped) continue; gl.__bWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__bLinks++; real(p) } } return true })()`)
+    await evaluate('window.__tools.select(2); true')
+    await sleep(1500)
+    await look(0.6, -0.5)
+    await sleep(1500)
+    await look(0.6, 0)
+    await sleep(1500)
+    console.log(`baseline: ${await evaluate('window.__bLinks')} programs linked with the tool gun out and the view moved`)
+  }
+  if (WHAT.includes('blueprints') && !has('baseline')) {
+    /*
+      The duplicator in the real game. Three props are welded by script (the
+      tool gun's own joining is the contraption drive's business), then
+      everything under test goes through the real thing: the tool gun's copy
+      mode clicked on one of them must take all three and both welds; the
+      paste mode shows its ghost over the ground and a click places the build
+      as one undo entry; /save keeps it in a slot, cleanup wipes the world,
+      /load brings it back; a push on one prop moves the others with it (the
+      welds came through the round trip); one undo removes the lot; and the
+      builds book is opened on its tab. Every shader link from the first copy
+      on is counted (must be 0; the thumbnail is drawn in a context of its own
+      that this counter does not see, by design).
+    */
+    console.log('blueprints')
+    await stand()
+    await look(0.6, -0.3)
+    await evaluate(`(() => { window.__bLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__bWrapped) continue; gl.__bWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__bLinks++; (window.__bInfo ||= []).push(gl.getAttachedShaders(p).map((sh) => gl.getShaderSource(sh).split('\\n').filter((l) => /^#define (USE_|NUM_|SHADOW|DEPTH|PHYS|STANDARD|FLAT|TONE|OPAQUE|IS_)/.test(l)).join(' ').slice(0, 900)).join(' || ')); real(p) } } return true })()`)
+    const aimAt = async (x, y, z) => {
+      await evaluate(`(() => { const c = window.__sandboxCamera.position, w = window.__sandboxWalk
+        const dx = ${x} - c.x, dy = ${y} - c.y, dz = ${z} - c.z
+        w.yaw = Math.atan2(-dx, -dz); w.pitch = Math.atan2(dy, Math.hypot(dx, dz)); return true })()`)
+      await sleep(350)
+    }
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const click = async () => { await hold('Mouse0', true); await sleep(200); await hold('Mouse0', false); await sleep(300) }
+    const posOf = (id) => evaluate(`(() => { const p = window.__sandbox.get(${id}); if (!p) return null
+      const t = p.body.translation(); return [t.x, t.y, t.z] })()`)
+    const count = () => evaluate(`(() => { let n = 0; window.__sandbox.forEach(() => n++); return n })()`)
+    const joints = () => evaluate('window.__tools.contraption.stats.constraints')
+    const yaw = await evaluate('window.__sandboxWalk.yaw')
+    // 1. a tower of three, welded: a crate on a plate, a barrel on the crate
+    //    (touching, and balanced, so it is at rest when it is copied)
+    const ids = await evaluate(`(() => {
+      const sb = window.__sandbox, c = window.__sandboxCamera.position, y = ${yaw}
+      const fx = -Math.sin(y), fz = -Math.cos(y)
+      const p = { x: c.x + fx * 11, z: c.z + fz * 11 }
+      const g = sb.groundY(p.x, p.z)
+      const plate = sb.spawn('plate_m', { x: p.x, y: g + 0.12, z: p.z }, { yaw: y })
+      const crate = sb.spawn('crate', { x: p.x, y: g + 1.5, z: p.z }, { yaw: y })
+      const barrel = sb.spawn('barrel', { x: p.x, y: g + 3.8, z: p.z }, { yaw: y })
+      const con = window.__tools.contraption
+      con.add('weld', crate, plate); con.add('weld', barrel, crate)
+      return [plate, crate, barrel] })()`)
+    await waitFor(() => evaluate(`(() => { let w = 0; window.__sandbox.forEach((q) => { const v = q.body.linvel(); w = Math.max(w, Math.hypot(v.x, v.y, v.z)) }); return w < 0.05 })()`), 40, 500, 'the tower at rest')
+    console.log(`  built: ${ids.length} props, ${await joints()} welds`)
+    // 2. copy mode, one click on the crate
+    await evaluate('window.__tools.select(2); window.__tools.toolgun.setMode("copy"); true')
+    await sleep(400)
+    let p = await posOf(ids[1])
+    await aimAt(p[0], p[1], p[2])
+    await click()
+    const clip = await evaluate(`(async () => { const m = await window.__blueprintClipboard(); const bp = m.clipboard.get()
+      return bp && { props: bp.props.length, joints: bp.joints.length, kinds: bp.props.map((q) => q.kind).sort() } })()`)
+    console.log(`  copied: ${JSON.stringify(clip)} (links so far ${await evaluate('window.__bLinks')})`)
+    if (!clip || clip.props !== 3 || clip.joints !== 2) console.log('  the whole graph was not copied  <-- WRONG')
+    // 3. paste mode: the ghost over the ground beside the original
+    const before = await count()
+    await evaluate('window.__tools.toolgun.setMode("paste"); true')
+    await sleep(500)
+    const spot = [p[0] + 9 * Math.cos(yaw), p[1] - 2, p[2] - 9 * Math.sin(yaw)]
+    await aimAt(spot[0], spot[1], spot[2])
+    await sleep(900)
+    console.log(`  paste mode: ${await evaluate('window.__tools.toolgun.state')}, ${await count()} props (ghost draws none)`)
+    await shot('blueprints-ghost')
+    const slotBefore = await evaluate('window.__tools.slot')
+    const dump = (label) => evaluate(`(() => { const out = []; window.__sandbox.forEach((q) => { const t = q.body.translation(), v = q.body.linvel(); out.push(q.kind.id + ' y' + t.y.toFixed(2) + ' ground' + window.__sandbox.groundY(t.x, t.z).toFixed(2) + ' half' + q.extents.y.toFixed(2) + ' v' + Math.hypot(v.x, v.y, v.z).toFixed(1) + ' ' + q.mode) }); return out })()`).then((o) => console.log('    ' + label + ' ' + JSON.stringify(o)))
+    await dump('before click')
+    await hold('Mouse0', true)
+    await sleep(60)
+    await hold('Mouse0', false)
+    for (let i = 0; i < 3; i++) { await sleep(200); await dump('t+' + (i + 1) * 0.2) }
+    const after = await count()
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    console.log(`  clicked: ${before} -> ${after} props, ${await joints()} welds, tool slot ${slotBefore}`)
+    if (after !== before + 3 || (await joints()) !== 4) console.log('  the paste did not arrive whole  <-- WRONG')
+    await sleep(1200)
+    await shot('blueprints-pasted')
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    // 4. save it, wipe the world, load it back
+    await run('save drivecar')
+    await sleep(2500)
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    console.log(`  saved: ${await evaluate(`window.__builds.slots().map((s) => s.name + ' (' + s.props + ', thumb ' + (s.thumb ? s.thumb.length : 0) + ')').join(', ')`)}`)
+    await run('cleanup')
+    // (the three built by script were never recorded, so cleanup leaves them)
+    await evaluate(`${JSON.stringify(ids)}.forEach((id) => window.__sandbox.remove(id))`)
+    await sleep(1500)
+    console.log(`  after cleanup: ${await count()} props, ${await joints()} welds`)
+    await evaluate('window.__tools.select(0)')
+    // (the same clear patch of grass: a bush's collision box under a plate
+    // throws it, as it would throw a crate)
+    await aimAt(spot[0], spot[1], spot[2])
+    const settle = async (label) => {
+      let worst = 0
+      for (let i = 0; i < 5; i++) {
+        await sleep(300)
+        worst = Math.max(worst, await evaluate(`(() => { let w = 0; window.__sandbox.forEach((q) => { const v = q.body.linvel(); w = Math.max(w, Math.hypot(v.x, v.y, v.z)) }); return w })()`))
+      }
+      console.log(`  ${label}: ${await count()} props, fastest ${worst.toFixed(1)} u/s over 1.5 s`)
+    }
+    await run('load drivecar')
+    await settle('/load')
+    const back = await evaluate(`(() => { const ids = []; window.__sandbox.forEach((q) => ids.push(q.id)); return ids })()`)
+    console.log(`  /load: ${back.length} props, ${await joints()} welds`)
+    if (back.length !== 3 || (await joints()) !== 2) console.log('  the loaded build is not whole  <-- WRONG')
+    await shot('blueprints-loaded')
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    // 5. the weld held through the round trip: push one prop, the rest follow
+    const kinds = await evaluate(`${JSON.stringify(back)}.map((id) => [id, window.__sandbox.get(id).kind.id])`)
+    const crateId = kinds.find(([, k]) => k === 'crate')[0]
+    const plateId = kinds.find(([, k]) => k === 'plate_m')[0]
+    // (the plate takes the shove: a crate hit that hard breaks, which is
+    // its own feature and not the weld's)
+    const gap = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+    const p0 = await posOf(plateId)
+    const c0 = await posOf(crateId)
+    await evaluate(`window.__sandbox.applyImpulse(${plateId}, { x: 0, y: 0, z: 2500 })`)
+    await sleep(3000)
+    const p1 = await posOf(plateId)
+    const c1 = await posOf(crateId)
+    const moved = Math.hypot(p1[0] - p0[0], p1[2] - p0[2])
+    const carried = Math.hypot(c1[0] - c0[0], c1[2] - c0[2])
+    console.log(`  shoved the plate: it moved ${moved.toFixed(2)} u, the crate on it ${carried.toFixed(2)} u, and they are ${gap(p0, c0).toFixed(2)} -> ${gap(p1, c1).toFixed(2)} u apart`)
+    if (moved < 0.1 || carried < 0.1 || Math.abs(gap(p1, c1) - gap(p0, c0)) > 1) console.log('  the weld did not hold  <-- WRONG')
+    // 6. the builds book
+    await tap('KeyQ')
+    await sleep(500)
+    console.log(`  builds tab at ${JSON.stringify(await where('[data-category="*builds"]'))}`)
+    await evaluate(`document.querySelector('[data-category="*builds"]').click()`)
+    await sleep(900)
+    console.log(`  book on its builds tab: ${await evaluate(`/my builds|mis construcciones/.test(document.body.innerText)`)}`)
+    await shot('blueprints-book')
+    console.log(`  links so far ${await evaluate('window.__bLinks')}`)
+    await tap('Escape')
+    await sleep(500)
+    // 7. one undo takes the whole paste away
+    await tap('KeyZ')
+    await sleep(1500)
+    if ((await count()) > 0) {
+      await tap('KeyZ')
+      await sleep(1500)
+    }
+    console.log(`  undo: ${await count()} props, ${await joints()} welds left`)
+    // (a skinned program is the herd's or the crowd's first draw, which
+    // comes whenever an animal wanders into view: not the duplicator's)
+    const infos = await evaluate('window.__bInfo || []')
+    const ours = infos.filter((i) => !/USE_SKINNING/.test(i))
+    console.log(`  ${ours.length} programs of ours linked from the first copy to the end (${infos.length - ours.length} skinned: the fauna)`)
+    for (const i of ours) console.log('    linked: ' + i)
+    await run('cleanup')
+  }
+
   if (WHAT.includes('emotes')) {
     /*
       The wheel is put up with a real b (it is a toggle) and its cursor set
@@ -2166,6 +2474,315 @@ try {
     console.log(`  ${await evaluate('window.__wLinks')} programs linked across the weapons shots`)
   }
 
+  if (WHAT.includes('creative')) {
+    /*
+      The creative tools for real: a crate painted with the tool gun's paint
+      mode (and undone), balloons tied on with its balloon mode until a crate
+      lifts, a lamp at night with its pool on the ground and E switching it, a
+      sign typed through the console E opens, a stick of dynamite's five
+      seconds beside a barrel, and the camera taking photographs (their size
+      and a copy written to disk). Every shader link is counted from the
+      moment the walk starts (must be 0), and the new sounds' peaks are
+      printed beside a crate's. Shots to ~/.cache/overhaul/creative
+      (--creative-out <dir>).
+    */
+    console.log('creative')
+    const CR_OUT = resolve(flag('creative-out', join(process.env.HOME ?? '.', '.cache/overhaul/creative')))
+    mkdirSync(CR_OUT, { recursive: true })
+    const crShot = async (name) => {
+      const path = join(CR_OUT, `${name}.png`)
+      writeFileSync(path, await probe.screenshot(W, H))
+      console.log(`  wrote ${path}`)
+    }
+    await evaluate(`(() => { window.__cLinks = 0; for (const c of document.querySelectorAll('canvas')) {
+      const gl = c.width && c.getContext('webgl2'); if (!gl || gl.__cWrapped) continue; gl.__cWrapped = true
+      const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__cLinks++
+        const src = (gl.getAttachedShaders(p) ?? []).map((sh) => gl.getShaderSource(sh) ?? '').join('\\n')
+        const name = /#define SHADER_NAME ([^\\s]+)/.exec(src)?.[1] ?? [...src.matchAll(/uniform \\S+ (u[A-Z]\\w*)/g)].map((m) => m[1]).slice(0, 4).join(' ')
+        ;(window.__cLinkNames ??= []).push((window.__cPhase || 'start') + ': ' + (name || 'raw') + ' / ' + [...new Set(src.match(/#define (USE_\\w+|NUM_\\w+ \\d+|SHADOWMAP_TYPE_\\w+|DEPTH_PACKING \\d+|IS_\\w+|DITHER\\w*|LOOK_\\w+|[A-Z_]{6,} \\d+)/g) ?? [])].join(',').slice(0, 400))
+        real(p) } } return true })()`)
+    const hold = (code, on) => evaluate(`(() => { const k = window.__input.keys; ${on ? `k.add('${code}')` : `k.delete('${code}')`}; return true })()`)
+    const click = async (code = 'Mouse0', ms = 260) => {
+      await hold(code, true)
+      await sleep(ms)
+      await hold(code, false)
+      await sleep(260)
+    }
+    const aimAt = async (x, y, z) => {
+      await evaluate(`(() => { const c = window.__sandboxCamera.position, w = window.__sandboxWalk
+        const dx = ${x} - c.x, dy = ${y} - c.y, dz = ${z} - c.z
+        w.yaw = Math.atan2(-dx, -dz); w.pitch = Math.atan2(dy, Math.hypot(dx, dz)); return true })()`)
+      await sleep(400)
+    }
+    const posOf = (id) => evaluate(`(() => { const p = window.__sandbox.get(${id}); if (!p) return null
+      const t = p.body.translation(); return [t.x, t.y, t.z] })()`)
+    // a kind set down `d` ahead and `s` to the right of the lens
+    const ahead = (kind, d, s, extra = '') => evaluate(`(() => { const sb = window.__sandbox, c = window.__sandboxCamera.position, y = window.__sandboxWalk.yaw
+      const fx = -Math.sin(y), fz = -Math.cos(y), x = c.x + fx * ${d} - fz * ${s}, z = c.z + fz * ${d} + fx * ${s}
+      return sb.spawn('${kind}', { x, y: sb.restY('${kind}', x, z) + 0.3, z }${extra ? ', ' + extra : ''}) })()`)
+    const cr = (js) => evaluate(`(() => { const cr = window.__creative(); return ${js} })()`)
+    const PARTS = flag('parts', 'paint,balloons,lamp,sign,dynamite,camera,sounds')
+    const part = (n) => PARTS.split(',').includes(n)
+    const until = (js, label, tries = 120) => waitFor(() => evaluate(js), tries, 500, label)
+    await evaluate('window.__sandbox.clear(), true')
+    await stand()
+    await look(0.6, -0.05)
+    await evaluate('window.__tools.select(2)')
+    await sleep(500)
+    const yaw0 = await evaluate('window.__sandboxWalk.yaw')
+
+    /* ---------------------------------------------------------- paint -- */
+    if (part('paint')) {
+    console.log(' paint')
+    await evaluate("window.__cPhase = 'paint'")
+    await evaluate("window.__tools.toolgun.setMode('paint')")
+    const crates = []
+    for (const s of [-4.5, 0, 4.5]) crates.push(await ahead('crate', 10, s, `{ yaw: ${yaw0} }`))
+    await sleep(2500)
+    const painted = []
+    for (const [i, colour] of [[0, 0], [1, 6], [2, 4]]) {
+      // the wheel's job: step the palette to the colour, then click the crate
+      await evaluate(`(() => { const g = window.__tools.toolgun; while (g.color !== ${colour}) g.stepColor(1); return true })()`)
+      const at = await posOf(crates[i])
+      await aimAt(at[0], at[1], at[2])
+      await click()
+      painted.push(await cr(`cr.tagOf(${crates[i]}).paint`))
+    }
+    console.log(`  paint indexes after three clicks: ${painted.join(', ')} (want 1, 7, 5)`)
+    const tints = await evaluate(`[${crates.join(',')}].map((id) => { const t = window.__sandbox.get(id).mesh.tint; return t ? t.getHexString() : null })`)
+    console.log(`  tints on the proxies: ${tints.join(', ')}`)
+    await aimAt(...(await posOf(crates[1])))
+    await look(yaw0, -0.05)
+    await sleep(600)
+    await crShot('paint')
+    // undo takes the last one back, and the console paints too
+    await tap('KeyZ', 200)
+    await sleep(600)
+    console.log(`  after Z the last crate's paint is ${await cr(`cr.tagOf(${crates[2]}).paint`)} (want 0)`)
+    await aimAt(...(await posOf(crates[2])))
+    await run('paint pink')
+    console.log(`  /paint pink: ${await cr(`cr.tagOf(${crates[2]}).paint`)} (want 10)`)
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* ------------------------------------------------------- balloons -- */
+    if (part('balloons')) {
+    console.log(' balloons')
+    await evaluate("window.__cPhase = 'balloons'")
+    await look(yaw0, -0.05)
+    await evaluate("window.__tools.toolgun.setMode('balloon')")
+    const load = await ahead('crate', 9, 0, `{ yaw: ${yaw0} }`)
+    await sleep(2500)
+    const y0 = (await posOf(load))[1]
+    for (const colour of [0, 4, 6]) {
+      await evaluate(`(() => { const g = window.__tools.toolgun; while (g.color !== ${colour}) g.stepColor(1); return true })()`)
+      const at = await posOf(load)
+      await aimAt(at[0], at[1] + 0.3, at[2])
+      await click()
+    }
+    console.log(`  balloons alive: ${await cr('cr.balloons')} (want 3)`)
+    await until(`window.__sandbox.get(${load}).body.translation().y > ${y0 + 4}`, 'the crate to rise', 600)
+    const ys = (await posOf(load))[1]
+    console.log(`  crate rose ${(ys - y0).toFixed(1)} units on three balloons`)
+    {
+      // back off a few steps and look at the crate with its balloons above it
+      const at = await posOf(load)
+      await aimAt(at[0], at[1] + 3.2, at[2])
+    }
+    await sleep(800)
+    await crShot('balloons')
+    await tap('KeyZ', 200)
+    await sleep(500)
+    console.log(`  Z takes the last balloon back: ${await cr('cr.balloons')} left (want 2)`)
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* ----------------------------------------------------------- lamp -- */
+    if (part('lamp')) {
+    console.log(' lamp')
+    await evaluate("window.__cPhase = 'lamp'")
+    await evaluate('window.__tools.select(0)')
+    await run('time night')
+    await look(yaw0, -0.08)
+    const lamp = await ahead('lamp', 5, 0, `{ yaw: ${yaw0} }`)
+    await sleep(3500)
+    const bulb = await evaluate(`(() => { const t = window.__sandbox.get(${lamp}).body.translation(); return [t.x, t.y + 1.0, t.z] })()`)
+    const pools = () => evaluate(`(() => { const l = window.__look.lights; const out = []
+      for (let i = 0; i < l.count; i++) out.push([l.pools[i * 4], l.pools[i * 4 + 1], l.pools[i * 4 + 2], l.pools[i * 4 + 3], l.weights[i]])
+      return out })()`)
+    const near = (list) => list.some((p) => Math.hypot(p[0] - bulb[0], p[1] - bulb[1], p[2] - bulb[2]) < 0.6 && p[4] > 0.5)
+    await aimAt(bulb[0], bulb[1] - 0.6, bulb[2])
+    await sleep(800)
+    const on = await pools()
+    console.log(`  lamp on at night: ${on.length} pool(s), the lamp's is among them: ${near(on)}`)
+    console.log(`  prompt: "${await evaluate(`(document.body.innerText.match(/switch the lamp \\w+/) ?? [''])[0]`)}"`)
+    await crShot('lamp-on-night')
+    await tap('KeyE', 200)
+    await sleep(6000)
+    const off = await pools()
+    console.log(`  after E: off flag ${await cr(`cr.tagOf(${lamp}).off`)}, lamp's pool present: ${near(off)}`)
+    await crShot('lamp-off-night')
+    await tap('KeyE', 200)
+    await sleep(9000)
+    console.log(`  E again: pool back: ${near(await pools())}`)
+    await run('time 10:30')
+    await sleep(2500)
+    await aimAt(bulb[0], bulb[1] - 0.5, bulb[2])
+    await crShot('lamp-day')
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* ----------------------------------------------------------- sign -- */
+    if (part('sign')) {
+    console.log(' sign')
+    await evaluate("window.__cPhase = 'sign'")
+    await look(yaw0, -0.05)
+    const sign = await ahead('sign', 5.5, 0, `{ yaw: ${yaw0} }`)
+    await sleep(2500)
+    const sp = await posOf(sign)
+    await aimAt(sp[0], sp[1] + 0.7, sp[2])
+    console.log(`  prompt: "${await evaluate(`(document.body.innerText.match(/write on the sign/) ?? [''])[0]`)}"`)
+    await tap('KeyE', 200)
+    await sleep(800)
+    const seeded = await evaluate(`(document.querySelector('input,textarea')?.value) ?? null`)
+    console.log(`  E opens the console with: ${JSON.stringify(seeded)}`)
+    await type('HELLO WORLD FROM THE SANDBOX')
+    await sleep(300)
+    await tap('Enter', 150)
+    await sleep(1500)
+    console.log(`  sign text: ${JSON.stringify(await cr(`cr.tagOf(${sign}).text`))}`)
+    console.log(`  sign body: ${JSON.stringify(await evaluate(`(() => { const p = window.__sandbox.get(${sign}); if (!p) return 'gone'; const t = p.body.translation(); return { at: [t.x, t.y, t.z], visible: p.mesh?.visible, geo: !!p.mesh?.geo, parked: p.parked, mode: p.mode, batches: window.__sandbox.stats.batches, instances: window.__sandbox.stats.instances } })()`))}`)
+    console.log(`  tiles: ${await evaluate(`(async () => { const s = await import('/src/game/sandbox/creative/signs.ts'); return JSON.stringify(s.tileStats()) })()`)}`)
+    await look(yaw0, -0.05)
+    await aimAt(sp[0], sp[1] + 0.7, sp[2])
+    await crShot('sign')
+    await evaluate(`window.__sandboxCamera.position.constructor && true`)
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* ------------------------------------------------------- dynamite -- */
+    if (part('dynamite')) {
+    console.log(' dynamite')
+    await evaluate("window.__cPhase = 'dynamite'")
+    await look(yaw0, -0.05)
+    await evaluate(`window.__cBooms = []; window.__sandbox.onExplosion((e) => window.__cBooms.push({ t: window.__sandbox.stats.time, power: e.power })); true`)
+    const tnt = await ahead('dynamite', 5, 0, `{ yaw: ${yaw0} }`)
+    const bar = await ahead('barrel_explosive', 9, 3)
+    await sleep(2500)
+    const tp = await posOf(tnt)
+    await aimAt(tp[0], tp[1], tp[2])
+    console.log(`  prompt: "${await evaluate(`(document.body.innerText.match(/light the fuse/) ?? [''])[0]`)}"`)
+    const t0 = await evaluate('window.__sandbox.stats.time')
+    await tap('KeyE', 200)
+    const lit = await evaluate(`window.__sandbox.get(${tnt}).data.life?.fuse ?? null`)
+    console.log(`  fuse after E: ${lit === null ? 'none' : lit.toFixed(2)} s`)
+    await until(`(window.__sandbox.get(${tnt})?.data.life?.fuse ?? 9) < 3.6`, 'the fuse to burn down', 100)
+    await crShot('dynamite-burning')
+    await until('window.__cBooms.length > 0', 'the blast', 200)
+    const booms = await evaluate('window.__cBooms')
+    console.log(`  blast after ${(booms[0].t - t0).toFixed(2)} s of simulated time, power ${booms[0].power}`)
+    await crShot('dynamite-blast')
+    await waitFor(() => evaluate(`!window.__sandbox.get(${bar})`), 120, 500, 'the barrel to go').catch(() => {})
+    console.log(`  barrel beside it: ${await evaluate(`window.__sandbox.get(${bar}) ? 'still there' : 'gone (chained)'`)}`)
+    await evaluate('window.__sandbox.clear(), true')
+    await sleep(500)
+    }
+
+    /* --------------------------------------------------------- camera -- */
+    if (part('camera')) {
+    console.log(' camera')
+    await evaluate("window.__cPhase = 'camera'")
+    await stand()
+    await look(yaw0, 0.02)
+    await ahead('crate', 12, -3)
+    await ahead('barrel', 14, 3)
+    await ahead('lamp', 9, 0)
+    await sleep(2500)
+    await evaluate('window.__photos.clear()')
+    await evaluate('window.__tools.select(7)')
+    await sleep(1200)
+    console.log(`  in hand: ${await evaluate('window.__tools.tool')}, viewfinder up: ${await evaluate('window.__photos.get().held')}`)
+    await crShot('camera-viewfinder')
+    await click('Mouse0', 260)
+    await until('window.__photos.get().photos.length > 0 && !!window.__photos.get().photos[0].url', 'the photograph', 60)
+    const photo = await evaluate('(() => { const p = window.__photos.get().photos[0]; return { w: p.w, h: p.h, bytes: p.bytes } })()')
+    console.log(`  photograph ${photo.w}x${photo.h}, PNG ${photo.bytes} bytes`)
+    await sleep(700)
+    await crShot('camera-print-developing')
+    // the picture itself, written out and looked at
+    const b64 = await evaluate(`(async () => { const b = window.__photos.get().photos[0].blob
+      const buf = new Uint8Array(await b.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 8192) s += String.fromCharCode(...buf.subarray(i, i + 8192))
+      return btoa(s) })()`)
+    writeFileSync(join(CR_OUT, 'photo-0.png'), Buffer.from(b64, 'base64'))
+    console.log(`  wrote ${join(CR_OUT, 'photo-0.png')}`)
+    // and it is not a blank rectangle
+    const varied = await evaluate(`(async () => { const img = new Image(); img.src = window.__photos.get().photos[0].url; await img.decode()
+      const c = document.createElement('canvas'); c.width = 64; c.height = 40; const g = c.getContext('2d'); g.drawImage(img, 0, 0, 64, 40)
+      const d = g.getImageData(0, 0, 64, 40).data; const seen = new Set(); for (let i = 0; i < d.length; i += 4) seen.add((d[i] >> 4) * 256 + (d[i + 1] >> 4) * 16 + (d[i + 2] >> 4))
+      return seen.size })()`)
+    console.log(`  distinct colours in the photograph: ${varied} (a blank frame has 1)`)
+    await sleep(3500)
+    await crShot('camera-print-developed')
+    // right click: the hand-held zoom
+    await click('Mouse2', 260)
+    await until('window.__tools.camera.zoom > 2.6', 'the zoom', 60)
+    console.log(`  zoom ${(await evaluate('window.__tools.camera.zoom')).toFixed(2)}x, lens ${(await evaluate('window.__sandboxCamera.fov')).toFixed(1)} degrees`)
+    await sleep(600)
+    await crShot('camera-zoom')
+    await click('Mouse0', 260)
+    await sleep(1000)
+    await tap('KeyP', 200)
+    await sleep(500)
+    console.log(`  photographs held: ${await evaluate('window.__photos.get().photos.length')}, note: ${await evaluate('JSON.stringify(window.__photos.get().note)')}`)
+    await click('Mouse2', 260)
+    await evaluate('window.__tools.select(0)')
+    }
+
+    // (a control for the link count: the console opened with t, on its own)
+    if (part('chat')) {
+      console.log(' chat')
+      await evaluate("window.__cPhase = 'chat'")
+      await look(yaw0, -0.05)
+      await tap('KeyT', 200)
+      await sleep(800)
+      await type('/help')
+      await tap('Enter', 150)
+      await sleep(2500)
+    }
+
+    /* --------------------------------------------------------- sounds -- */
+    const levels = await evaluate(`(async () => {
+      const snd = await import('/src/game/sandbox/impactSounds.ts')
+      const c = await import('/src/game/sandbox/creative/sfx.ts')
+      const out = {}
+      const at = { x: 0.5, y: 0, z: -1 }
+      const m = async (name, fn) => {
+        const r = await snd.measureSound(() => { snd.setEar(0, 0, 0); fn() }, 2)
+        out[name] = r.peak.toFixed(3)
+      }
+      await m('crate hit', () => snd.impactSound('wood', 1, 30, at.x, at.y, at.z))
+      await m('crate break', () => snd.breakSound('wood', 1, at.x, at.y, at.z))
+      await m('balloon pop', () => snd.breakSound('rubber', 1, at.x, at.y, at.z))
+      await m('barrel boom', () => snd.boom(1, at.x, at.y, at.z))
+      await m('lamp click', () => c.lampClick(at.x, at.y, at.z, true))
+      await m('paint spray', () => c.paintSpray(at.x, at.y, at.z))
+      await m('sign chalk', () => c.signWrite(at.x, at.y, at.z))
+      await m('fuse tick', () => c.fuseTick(at.x, at.y, at.z, 0.2))
+      await m('fuse tick (last)', () => c.fuseTick(at.x, at.y, at.z, 1))
+      await m('shutter', () => c.shutter(at.x, at.y, at.z))
+      await m('balloon tie', () => c.tieSqueak(at.x, at.y, at.z))
+      return out
+    })()`)
+    console.log(`  peaks: ${Object.entries(levels).map(([k, v]) => `${k} ${v}`).join(', ')}`)
+    console.log(`  ${await evaluate('window.__cLinks')} programs linked across the whole walk (must be 0)`)
+    for (const n of (await evaluate('window.__cLinkNames ?? []'))) console.log(`    linked ${n}`)
+    await evaluate('window.__sandbox.clear(), true')
+  }
+
   if (WHAT.includes('nuketown')) {
     /*
       The map from the angles its references are taken from (map coordinates
@@ -2324,6 +2941,168 @@ try {
     await sleep(3000)
   }
 
+  if (WHAT.includes('creatures')) {
+    /*
+      The living things (src/game/creatures/), single client: a herd of pigs,
+      cows, sheep and chickens by day in Cubeland, the dark's zombies,
+      creeper and skeleton at night (the hour pinned with `time`), a creeper
+      blowing a crater (blocks counted before and after), a kill's drops, the
+      console's /mobs and /spawnmob, and Nuketown's walkers shot down and
+      getting back up. Shader links counted from arrival (must be 0). The two
+      client checks (host handoff, the second client hurting one, a mob
+      hurting a person through the health system) are scripts/creatures-drive.mjs.
+    */
+    console.log('creatures')
+    await evaluate(`(() => {
+      const gl = [...document.querySelectorAll('canvas')].find((c) => c.width > 64 && c.getContext('webgl2')).getContext('webgl2')
+      window.__cLinks = 0
+      if (!gl.__cubeWrapped) { const real = gl.linkProgram.bind(gl); gl.linkProgram = (p) => { window.__cLinks++; return real(p) }; gl.__cubeWrapped = true }
+      return true
+    })()`)
+    console.log(`  ${(await run('map cubeland')).join(' / ')}`)
+    await sleep(9000)
+    await evaluate('window.__cLinks = 0; true')
+    await stand()
+    await run('time 0.4')
+    // a bare meadow to stage the shots on: the first 17x17-block square of
+    // plain grass (no trunk or leaf above it, level to a block) round the spawn
+    const meadow = await evaluate(`(() => {
+      const C = window.__cubeland, G = C.blockId('grass'), s = C.level.spawn
+      const plants = ['tall_grass', 'poppy', 'dandelion', 'fern', 'blue_orchid', 'cornflower', 'oxeye_daisy', 'sugar_cane', 'dead_bush', 'red_mushroom', 'brown_mushroom'].map((k) => C.blockId(k))
+      const top = (x, z) => { for (let y = 95; y >= 0; y--) { const b = C.store.get(x, y, z); if (b && !plants.includes(b)) return y } return -1 }
+      const bx0 = Math.floor(s.x / 2), bz0 = Math.floor((s.z + 40000) / 2)
+      for (let r = 0; r < 300; r += 6) for (let a = 0; a < 16; a++) {
+        const cx = bx0 + Math.round(Math.cos(a / 16 * 6.283) * r), cz = bz0 + Math.round(Math.sin(a / 16 * 6.283) * r), y0 = top(cx, cz)
+        if (y0 < 0) continue
+        let ok = true
+        for (let dz = -6; dz <= 6 && ok; dz += 2) for (let dx = -6; dx <= 6 && ok; dx += 2) {
+          const t = top(cx + dx, cz + dz)
+          if (Math.abs(t - y0) > 2 || C.store.get(cx + dx, t, cz + dz) !== G) ok = false
+        }
+        if (ok) return [cx, cz, y0]
+      }
+      return null
+    })()`)
+    console.log(`  meadow: ${JSON.stringify(meadow)}`)
+    if (meadow) {
+      await evaluate(`window.__sandbox.console.host.teleport(${meadow[0] * 2 + 1}, ${-40000 + meadow[1] * 2 + 1}, ${(meadow[2] + 1) * 2 + 0.2}, 0); true`)
+      await sleep(4000)
+      await stand()
+    }
+    const D = (js) => evaluate(`(() => { const D = window.__creatures(), cam = window.__sandboxCamera, w = window.__sandboxWalk, C = window.__cubeland, sb = window.__sandbox;
+      const ahead = (d, side = 0) => ({ x: cam.position.x - Math.sin(w.yaw) * d + Math.cos(w.yaw) * side, z: cam.position.z - Math.cos(w.yaw) * d - Math.sin(w.yaw) * side });
+      ${js} })()`)
+    // headless draws a frame or two a second, so the sim's clock crawls: where a
+    // rule needs seconds of it (a fuse, a burn, a fallen mannequin) it is stepped by hand
+    const ff = (secs) => D(`for (let i = 0; i < ${Math.round(secs * 30)}; i++) D.sim.update(1 / 30); return true`)
+    console.log('  ' + (await D('return JSON.stringify(D.count())')))
+    // the wild by day: wait for the spawner to lay down a herd of its own
+    let wild = 0
+    for (let k = 0; k < 40 && wild < 4; k++) {
+      await sleep(2000)
+      wild = await D('return D.count().passive')
+    }
+    console.log(`  the spawner alone laid down ${wild} calm animals by day (${await D('return D.count().hostile')} hostile)`)
+    await D(`D.sim.clear(); return true`)
+    // a herd, placed: two of each in a loose group ahead
+    await D(`for (const [k, n] of [['pig', 5], ['cow', 3], ['sheep', 4], ['chicken', 4]]) for (let i = 0; i < n; i++) {
+      const p = ahead(12 + Math.random() * 10, (Math.random() - 0.5) * 18); D.sim.spawn(k, p.x, p.z) } return true`)
+    await look(0, -0.12)
+    await sleep(6000)
+    console.log('  ' + (await run('mobs count')).join(' / '))
+    console.log(`  ${await D('return JSON.stringify(D.view.stats)')} parts drawn; ${await evaluate('window.__sandbox.stats.batches')} batches`)
+    await shot('creatures-herd')
+    // a hit flashes and shoves and sends the herd running
+    await D(`const c = [...D.sim.creatures.values()].find((c) => c.kind.id === 'pig'); if (c) D.sim.hit(c.id, 3, 4, 0, true); return true`)
+    await sleep(500)
+    await shot('creatures-hit')
+    // drops: a kill by a player leaves its drops as gib props
+    const drops0 = await D(`let n = 0; sb.forEach((p) => { if (p.data.mob) n++ }); return n`)
+    await D(`for (const c of [...D.sim.creatures.values()]) if (c.kind.id === 'pig' || c.kind.id === 'sheep') D.sim.hit(c.id, 99, 0, 0, true); return true`)
+    await sleep(3000)
+    const drops1 = await D(`let n = 0; sb.forEach((p) => { if (p.data.mob) n++ }); return n`)
+    console.log(`  kills dropped ${drops1 - drops0} props (gibs)`)
+    await shot('creatures-drops')
+    // night: the dark breeds hostiles, and a lit spot is safe
+    await run('mobs peaceful')
+    await run('time 0.97')
+    await D(`D.sim.clear(); return true`)
+    await sleep(500)
+    console.log('  peaceful: ' + (await run('spawnmob zombie')).join(' / '))
+    await run('mobs hostile')
+    let dark = 0
+    for (let k = 0; k < 45 && dark < 3; k++) {
+      await sleep(2000)
+      dark = await D('return D.count().hostile')
+    }
+    console.log(`  the dark bred ${dark} hostile at night`)
+    await D(`D.sim.clear(); const kinds = ['zombie', 'zombie', 'skeleton', 'creeper', 'zombie']; kinds.forEach((k, i) => { const p = ahead(16 + i * 3, (i - 2) * 6); D.sim.spawn(k, p.x, p.z) }); return true`)
+    await look(0, -0.08)
+    await sleep(4000)
+    await shot('creatures-night')
+    // by day a zombie burns away
+    await run('time 0.4')
+    const burnHp = await D(`const z = [...D.sim.creatures.values()].find((c) => c.kind.id === 'zombie'); return z ? [z.hp, z.burning] : null`)
+    await ff(6)
+    await sleep(1000)
+    const burnHp2 = await D(`const z = [...D.sim.creatures.values()].find((c) => c.kind.id === 'zombie'); return z ? [z.hp, z.burning] : 'gone'`)
+    console.log(`  a zombie in daylight: ${JSON.stringify(burnHp)} then ${JSON.stringify(burnHp2)}`)
+    // a creeper blows a crater: blocks in a ball counted around where it stands
+    await D(`D.sim.clear(); window.__boom = 0; window.__off = sb.onExplosion(() => window.__boom++); window.__ed = C.net.all().length; return true`)
+    const before = await D(`const p = ahead(9); window.__crater = p; let n = 0; const bx = Math.floor(p.x / 2), bz = Math.floor((p.z + 40000) / 2), by = Math.floor(cam.position.y / 2) - 1;
+      for (let y = by - 6; y <= by + 6; y++) for (let z = bz - 6; z <= bz + 6; z++) for (let x = bx - 6; x <= bx + 6; x++) if (C.store.get(x, y, z)) n++
+      // on the player's own level, wherever round the meadow that is
+      let made = null
+      for (let t = 0; t < 80 && !made; t++) {
+        const an = Math.random() * 6.283, d = 7 + Math.random() * 4
+        const c = D.sim.spawn('creeper', cam.position.x + Math.cos(an) * d, cam.position.z + Math.sin(an) * d)
+        if (c && Math.abs(c.y - w.feetY) < 0.6) made = c; else if (c) D.sim.remove(c.id)
+      }
+      window.__made = !!made; return n`)
+    let boom = false
+    for (let k = 0; k < 40 && !boom; k++) {
+      await ff(0.5)
+      await sleep(400)
+      if (await D(`return [...D.sim.creatures.values()].some((c) => c.kind.id === 'creeper' && c.st === 4)`)) await shot('creatures-fuse')
+      boom = await D(`return window.__boom > 0`)
+    }
+    await sleep(1200)
+    const after = await D(`const p = window.__crater; let n = 0; const bx = Math.floor(p.x / 2), bz = Math.floor((p.z + 40000) / 2), by = Math.floor(cam.position.y / 2) - 1;
+      for (let y = by - 6; y <= by + 6; y++) for (let z = bz - 6; z <= bz + 6; z++) for (let x = bx - 6; x <= bx + 6; x++) if (C.store.get(x, y, z)) n++
+      return n`)
+    console.log(`  (creeper placed: ${await evaluate('window.__made')})`)
+    console.log('  creeper now: ' + await D(`const c = [...D.sim.creatures.values()].find((c) => c.kind.id === 'creeper'); return JSON.stringify(c ? [c.x, c.y, c.z, c.st, c.fuse, c.want, c.gy, cam.position.x, cam.position.y, cam.position.z, D.count()] : 'gone')`))
+    console.log(`  the creeper went off: ${boom} (${await evaluate('window.__boom')} explosions); ${await D('return C.net.all().length - window.__ed')} block edits from it (blocks in the ball ${before} -> ${after})`)
+    await look(0, -0.3)
+    await sleep(1500)
+    await shot('creatures-crater')
+    console.log(`  programs linked since arrival in Cubeland: ${await evaluate('window.__cLinks')} (must be 0)`)
+    // Nuketown: six mannequins strolling; one shot down gets back up
+    await run('mobs clear')
+    console.log(`  ${(await run('map nuketown')).join(' / ')}`)
+    await waitFor(() => evaluate('window.__levels.current.id === "nuketown" && !!window.__creatures()'), 120, 1000, 'Nuketown')
+    await sleep(3000)
+    await evaluate('window.__cLinks = 0; true')
+    await stand()
+    await sleep(3000)
+    console.log('  ' + (await D('return JSON.stringify(D.count())')))
+    await D(`const s = window.__levels.current.spawn; return true`)
+    await sleep(6000)
+    await shot('creatures-walkers')
+    await D(`const ws = [...D.sim.creatures.values()].filter((c) => c.kind.id === 'walker'); window.__downed = ws[0]?.id; for (const c of ws.slice(0, 3)) D.sim.hit(c.id, 99, 4, 2, true); return ws.length`)
+    await sleep(2500)
+    await shot('creatures-fallen')
+    const down = await D(`const c = D.sim.creatures.get(window.__downed); return c ? c.st : -1`)
+    let up = false
+    for (let k = 0; k < 20 && !up; k++) {
+      await ff(1)
+      await sleep(500)
+      up = await D(`const c = D.sim.creatures.get(window.__downed); return !!c && c.st !== 5`)
+    }
+    console.log(`  a shot walker was down (state ${down}) and ${up ? 'got back up' : 'did NOT get up'}`)
+    await shot('creatures-risen')
+    console.log(`  programs linked since arrival in Nuketown: ${await evaluate('window.__cLinks')} (must be 0)`)
+  }
   if (WHAT.includes('cubeland')) {
     /*
       Cubeland: the spawn from four headings and from the air, then the
@@ -4009,5 +4788,7 @@ try {
     for (const e of probe.errors.slice(0, 10)) console.log(`  ${String(e).split('\n')[0]}`)
   }
 } finally {
+  // (printed here as well as above, so a scenario that threw shows why)
+  if (probe.errors.length && process.exitCode === undefined) for (const e of probe.errors.slice(0, 6)) console.log(`  page error: ${String(e).split('\n')[0]}`)
   probe.close()
 }

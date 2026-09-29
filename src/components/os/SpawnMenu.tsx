@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { menuTick } from '../../game/core/sfx'
 import { useI18n } from '../../i18n'
 import type { PropKind } from '../../game/sandbox/kinds'
@@ -6,6 +6,8 @@ import type { SpawnCategory, SpawnEntry } from '../../game/sandbox/spawnlist'
 import { MARK, stockTexture } from './paper'
 import { keyHint } from '../../game/sandbox/bindings'
 import { labelIn, type Label } from '../../game/sandbox/history'
+import { BuildsLeft, BuildsRight } from './BuildsPanel'
+import { builds } from './buildsStore'
 
 /*
   The spawn menu is a mail-order catalogue.
@@ -84,6 +86,8 @@ export interface SpawnMenuProps {
 }
 
 const ALL = '*'
+/** the last index tab: the builds book (BuildsPanel.tsx) instead of plates */
+const BUILDS = '*builds'
 /** plates across a page, and one plate's height (picture, number, name,
     small print). Rows are measured, so a short window gets shorter pages */
 const COLS = 5
@@ -130,6 +134,13 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
     }
   }, [open, source, pics])
   const findRef = useRef<HTMLInputElement>(null)
+  // `/builds` (and anything else that wants the book) asks for its tab
+  const tabAsks = useSyncExternalStore(builds.subscribe, builds.tabRequests)
+  const [seenAsks, setSeenAsks] = useState(tabAsks)
+  if (tabAsks !== seenAsks) {
+    setSeenAsks(tabAsks)
+    setCat(BUILDS)
+  }
   /** which spread of the current section is open, and how many rows of
       plates a page has room for */
   const [leaf, setLeaf] = useState(0)
@@ -158,8 +169,10 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
   const cats = useMemo(() => (source ? source.categories(entries) : []), [source, entries])
   if (!open) return null
 
-  const current = cat === ALL || cats.some((c) => c.id === cat) ? cat : ALL
+  const current = cat === ALL || cat === BUILDS || cats.some((c) => c.id === cat) ? cat : ALL
+  const onBuilds = current === BUILDS && !query.trim()
   const catName = (c: SpawnCategory) => (language === 'es' ? c.labelEs : c.label)
+  const buildsTab = t.sandbox.builds.tab
   // a search reads the whole catalogue, whatever section it is open at, in
   // both languages, so "barril" finds the drum with the menu in English
   const q = query.trim().toLowerCase()
@@ -169,7 +182,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
         [e.id, e.label, e.labelEs ?? '', catOf(e.category)?.label ?? '', catOf(e.category)?.labelEs ?? '']
           .some((w) => w.toLowerCase().includes(q)))
     : current === ALL ? entries : entries.filter((e) => e.category === current)
-  const title = q ? `${s.find} "${query.trim()}"` : current === ALL ? s.everything : catName(catOf(current)!)
+  const title = q ? `${s.find} "${query.trim()}"` : current === ALL ? s.everything : current === BUILDS ? buildsTab : catName(catOf(current)!)
   // paginated like a printed book, two pages to a spread: "all of it" runs
   // over as many spreads as it needs from page 1, and each category follows
   // on its own. A search is laid out on the "all of it" pages
@@ -292,7 +305,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
       : `1px 1px 0 ${EDGE_A}, 2px 2px 0 ${EDGE_B}, 3px 3px 0 ${EDGE_A}, 4px 4px 0 ${EDGE_B}, 5px 5px 0 ${EDGE_A}`,
   })
 
-  const tabs = [{ id: ALL, label: s.everything, labelEs: s.everything }, ...cats]
+  const tabs = [{ id: ALL, label: s.everything, labelEs: s.everything }, ...cats, { id: BUILDS, label: buildsTab, labelEs: buildsTab }]
   return (
     <div
       className="absolute inset-0 z-40 flex items-center justify-center bg-black/15"
@@ -357,7 +370,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
                   boxShadow: on ? 'none' : 'inset 0 -3px 4px -2px rgba(60,40,20,0.35)',
                 }}
               >
-                {c.id === ALL ? c.label : catName(c as SpawnCategory)}
+                {c.id === ALL || c.id === BUILDS ? c.label : catName(c as SpawnCategory)}
               </button>
             )
           })}
@@ -365,6 +378,8 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
 
         {/* ---- the left page: masthead, find line, plates ---- */}
         <section className="relative flex w-1/2 flex-col rounded-l-[5px] px-6 pt-4 pb-3" style={pageBg('l')}>
+          {onBuilds && <BuildsLeft onPin={onPin} />}
+          {!onBuilds && (<>
           <div className="flex items-end gap-4">
             <h2 className="font-display text-[30px] leading-[0.9] font-semibold tracking-tight" style={{ color: RED }}>
               {s.title}
@@ -441,6 +456,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
             )}
             <span className="shrink-0">{firstPage}</span>
           </div>
+          </>)}
         </section>
 
         {/* the gutter: the two pages fold into it, stapled twice */}
@@ -483,6 +499,8 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
               transformOrigin: '100% 100%',
             }}
           />
+          {onBuilds && <BuildsRight onPin={onPin} />}
+          {!onBuilds && (<>
           <div className="flex items-baseline gap-3">
             <h3 className="font-display truncate text-[24px] leading-none font-semibold">{title}</h3>
             <span className="shrink-0 font-mono text-[10.5px]" style={{ color: INK_SOFT }}>
@@ -500,6 +518,7 @@ export default function SpawnMenu({ open, source, orders, onSpawn, onCleanup, on
               {firstPage + 1}
             </span>
           </div>
+          </>)}
         </section>
 
         {/* the order slip: a carbon copy of what you have had delivered,

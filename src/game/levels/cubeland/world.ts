@@ -67,6 +67,10 @@ export interface VoxelStore {
   /** change a block; returns what was there, or -1 when nothing changed */
   set: (bx: number, by: number, bz: number, id: number) => number
   onSet: (fn: (e: BlockEdit) => void) => () => void
+  /** drop the stored edit at a block (it is generated terrain again once the
+      caller has put the generated block back with `set`): a refused edit
+      must not linger in the catch-up list */
+  forget: (bx: number, by: number, bz: number) => void
   /** every edit, per chunk (index to block) */
   readonly edits: ReadonlyMap<number, ReadonlyMap<number, number>>
   /** the walker's boxes for a chunk, merged and padded (cached until it changes) */
@@ -309,6 +313,15 @@ export const createVoxelStore = (o: { ox: number; oz: number; radius: number }):
     onSet: (fn) => {
       fns.add(fn)
       return () => fns.delete(fn)
+    },
+    forget: (bx, by, bz) => {
+      const cx = Math.floor(bx / CHUNK)
+      const cz = Math.floor(bz / CHUNK)
+      const k = chunkKey(cx, cz)
+      const e = edits.get(k)
+      if (!e) return
+      e.delete(idx(bx - cx * CHUNK, by, bz - cz * CHUNK))
+      if (!e.size) edits.delete(k)
     },
     edits,
     boxesOf,

@@ -87,6 +87,17 @@ export const BINDINGS = {
   /** the tool gun (column 2): r steps to its next mode (reload, like Garry's
       Mod's own tool gun has no better key for it); shift+r steps back */
   toolMode: ['KeyR'],
+  /** the tool gun's paint and balloon modes: the palette one step back and
+      forward (the wheel does the same). Comma and period as well as the
+      brackets, because the brackets are an AltGr chord on some layouts */
+  colorPrev: ['BracketLeft', 'Comma'],
+  colorNext: ['BracketRight', 'Period'],
+
+  /** the camera out (tools/camera.ts): save or copy the last photograph.
+      The pointer is locked on foot, so the strip's buttons cannot be clicked;
+      these do the same. P and Y are the two letters nothing else took */
+  photoSave: ['KeyP'],
+  photoCopy: ['KeyY'],
 
   /* --- contraptions ---------------------------------------------------- */
   /** the keys a thruster, wheel or hoverball can be set to answer to
@@ -117,6 +128,17 @@ export const BINDINGS = {
       easy to hold with the left hand while it walks */
   pushToTalk: ['KeyG'],
 
+  /* --- rounds (game/modes) ------------------------------------------- */
+  /** prop hunt: become the prop under the crosshair (again: yourself). The
+      left button, not a letter: every letter is taken, Y is the camera's copy,
+      and a prop's tools are away for the round, so the click is free */
+  disguise: ['Mouse0'],
+  /** held: the round's scoreboard */
+  scoreboard: ['Tab'],
+  /** the build contest's marks, while the gallery is on (the tool slots'
+      digits, which nothing else needs there) */
+  vote: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'],
+
   /* --- diagnostics ----------------------------------------------------- */
   collisionDebug: ['F9'],
 } as const satisfies Record<string, readonly string[]>
@@ -145,7 +167,7 @@ export const BOUND_CODES: ReadonlySet<string> = new Set(
 export const SWALLOWED_CODES: ReadonlySet<string> = new Set([
   ...BINDINGS.forward, ...BINDINGS.back, ...BINDINGS.left, ...BINDINGS.right,
   ...BINDINGS.jump, ...BINDINGS.camera, ...BINDINGS.command, ...BINDINGS.flySlow,
-  ...BINDINGS.chat,
+  ...BINDINGS.chat, ...BINDINGS.scoreboard,
 ])
 
 /**

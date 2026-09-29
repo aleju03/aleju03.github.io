@@ -42,7 +42,7 @@ const r4 = (n) => Math.round(n * 10000) / 10000;
 const vec3 = (a, limit) =>
   Array.isArray(a) && a.length === 3 && a.every(finite) && a.every((v) => Math.abs(v) <= limit) ? a : null;
 
-export function createWeapons({ players, send, seated, flying, now = Date.now }) {
+export function createWeapons({ players, send, seated, flying, health = null, rounds = null, now = Date.now }) {
   const rates = new WeakMap();
   const allow = (ws, kind, cap) => {
     let r = rates.get(ws);
@@ -95,7 +95,10 @@ export function createWeapons({ players, send, seated, flying, now = Date.now })
         const len = Math.hypot(d[0], d[1], d[2]);
         if (len < 0.5 || len > 2) return;
         if (Math.hypot(o[0] - w.x, o[2] - w.z) > ORIGIN_REACH || Math.abs(o[1] - w.y) > ORIGIN_REACH) return;
-        if (seated(w.id)) return;
+        if (seated(w.id) || health?.isDead(ws)) return;
+        // a round decides who may fire what (props hold no gun, a spectator none)
+        if (rounds && !rounds().mayShoot(ws, m.w)) return;
+        health?.shot(ws, m.w);
         const out = {
           type: 'world-shot', level: w.level, id: w.id, w: m.w, seq: m.seq,
           o: o.map(r2), d: d.map((v) => r4(v / len)),
@@ -114,6 +117,7 @@ export function createWeapons({ players, send, seated, flying, now = Date.now })
       if (!at) return strike(ws);
       if (!allow(ws, 'hit', HITS_PER_S)) return;
       if (Math.hypot(at[0] - w.x, at[1] - w.y, at[2] - w.z) > HIT_REACH[m.w]) return;
+      if (rounds && !rounds().mayShoot(ws, m.w)) return;
       const out = { type: 'world-shot-hit', level: w.level, id: w.id, w: m.w, seq: m.seq, at: at.map(r2) };
       if (m.d !== undefined) {
         const d = vec3(m.d, 1e4);
@@ -123,6 +127,7 @@ export function createWeapons({ players, send, seated, flying, now = Date.now })
       if (m.prop !== undefined) {
         if (!Number.isSafeInteger(m.prop)) return strike(ws);
         out.prop = m.prop;
+        rounds?.().propHit(ws, m.prop, m.w);
         if (m.fr !== undefined) {
           if (!Array.isArray(m.fr) || m.fr.length !== 7 || !m.fr.every(finite) || m.fr.some((v) => Math.abs(v) > FRAME_LIMIT)) return strike(ws);
           out.fr = m.fr.map((v, i) => (i < 3 ? r2(v) : r4(v)));
@@ -141,6 +146,8 @@ export function createWeapons({ players, send, seated, flying, now = Date.now })
         if (!v || victim === ws || v.level !== w.level) return;
         if (Math.hypot(v.x - at[0], v.z - at[2]) > VICTIM_REACH || Math.abs(v.y - at[1]) > VICTIM_REACH) return;
         out.player = m.player;
+        // a round may take the hit for its own rules (a tag, a disguise)
+        if (!(rounds && rounds().playerHit(ws, victim, m.w, at))) health?.hit(ws, victim, m.w, at);
         const vel = vec3(m.v, 1e4);
         if (!vel) return strike(ws);
         if (!seated(v.id) && !flying(v)) {

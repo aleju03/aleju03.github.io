@@ -16,8 +16,14 @@ import './catalogue'
 // the blocks after it: their cells go into the atlas and their kinds into the
 // catalogue's Blocks tab (Cubeland builds with them, anywhere else they fall)
 import './blocks'
+// the creatures' cells, for the same reason: the atlas packs on first use
+import '../creatures/cells'
 // the contraption parts register after the catalogue, under their own tab
 import './contraption/parts'
+// balloons, lamps, signs and dynamite register after both, and one controller
+// per sandbox is made below so it hears every spawn
+import { creativeOf } from './creative/creative'
+import './creative/commands'
 import { createBatcher, warmBatch, type Batcher } from './batch'
 import { createFx, type Fx } from './fx'
 import { createLife, type BreakEvent, type PropLife } from './breakables'
@@ -25,11 +31,16 @@ import { createExplosions, type ExplosionEvent, type Explosions } from './explos
 // the scene reaches these through its dynamic import of this module, so
 // knocking the walker and the town flat costs the room boot nothing
 export { blastImpact, blastWatch } from './explosion'
+// the balloon, lamp, sign and dynamite controller (the scene asks it for lamp
+// pools and what E does)
+export { creativeOf } from './creative/creative'
 export { CATALOGUE, CATEGORIES, catalogueEntry, inCategory, type CatalogueEntry, type Category } from './catalogue'
 export { renderThumbnails } from './thumbnails'
 // destruction registers its rubble kinds and its console commands on import,
 // and the scene attaches it to the world's ruins once both exist
 export { attachDestruction, destructionOf, type Destruction, type DamageRecord } from './destruction'
+// registers the duplicator's console commands (copy, paste, save, load, builds, publish)
+import './blueprint/commands'
 import { setEar, setEarFallback } from './impactSounds'
 
 /*
@@ -137,6 +148,15 @@ export interface SandboxNetwork {
   readonly online: boolean
   authority: (id: PropId) => boolean
   owns: (id: PropId) => boolean
+  /** may I use this prop as its owner would (mine, shared, a friend's, or the
+      scope has protection off). Asking never costs a round trip: it reads the
+      mirror of the server's last word */
+  may?: (id: PropId) => boolean
+  /** the tools tell the mirror they were refused: a quiet "that belongs to
+      NAME" toast, throttled */
+  denied?: (id: PropId) => void
+  /** open (or close) props to everybody: the ids given, or all of mine */
+  share?: (ids: PropId[] | 'all', on: boolean) => void
   claim: (id: PropId, reason: 'hand' | 'seat' | 'keys') => boolean
   release: (id: PropId) => void
   cleanup: (target: string) => void
@@ -671,6 +691,7 @@ export function createSandbox(opts: SandboxOpts): Sandbox {
   }
   life = createLife(sb, effects, (at, power, radius, source) => void explosions.explode(at, power, radius, source))
   explosions = createExplosions(sb, effects, life.damage)
+  creativeOf(sb)
   return sb
 }
 

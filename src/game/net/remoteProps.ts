@@ -17,6 +17,8 @@ import * as THREE from 'three'
 import type { Sandbox, Prop } from '../sandbox/sandbox'
 import { catalogueEntry } from '../sandbox/catalogue'
 import { contraptionOf } from '../sandbox/contraption/contraption'
+import { creativeOf } from '../sandbox/creative/creative'
+import { tagKey } from '../sandbox/creative/tags'
 import { breakSound } from '../sandbox/impactSounds'
 import type { NetProp, NetJoint, PropPose, PropClientMessage, PropServerMessage } from './propProtocol'
 import type { WorldServerMessage } from './protocol'
@@ -27,6 +29,8 @@ interface Body {
   samples: Array<{ at: number; row: PropPose }>
   last: string
   meta: string
+  /** the creative tag as last agreed with the server (sent or received) */
+  tagSent: string
 }
 interface LevelState {
   name: string
@@ -43,6 +47,15 @@ interface LevelState {
   claims: Map<number, number>
   acknowledgements: PropPose[]
   kicks: Map<number, { x: number; y: number; z: number }>
+}
+/** what the prop mirror asks the social mirror (remoteSocial.ts), kept as two
+    plain callbacks so this module needs neither the socket nor the store */
+export interface PropGuard {
+  /** may I use a prop of this owner (the owner's world id, its share flag) */
+  may?: (owner: number, share: boolean) => boolean
+  /** the server said a prop belongs to somebody else: the quiet toast and the
+      denied buzz */
+  denied?: (owner: string) => void
 }
 export interface PropNetwork {
   attach: (sb: Sandbox, level: string) => void
@@ -65,11 +78,27 @@ const pack = (p: Prop, id: number, epoch: number, tail = false): PropPose => {
   return r
 }
 
-export function createPropNetwork(send: (m: PropClientMessage) => void, notify: (en: string, es: string) => void = () => {}, now = () => performance.now()): PropNetwork {
+export function createPropNetwork(
+  send: (m: PropClientMessage) => void,
+  notify: (en: string, es: string) => void = () => {},
+  now = () => performance.now(),
+  guard: PropGuard = {},
+): PropNetwork {
   const levels = new Map<string, LevelState>()
   let you = 0
   let active = ''
   let delay = 132
+  /** may I act on this prop as its owner would: mine, shared, a friend's, or
+      protection is off. Without a social mirror it is the old rule, owner only */
+  const mayUse = (n: NetProp) => n.owner === you || (guard.may?.(n.owner, n.share === true) ?? false)
+  /** the server, or our own mirror, said no: a quiet toast, at most one in a
+      short while (a held trigger asks every frame) */
+  let quietUntil = 0
+  const refused = (owner: string) => {
+    if (now() < quietUntil) return
+    quietUntil = now() + 1500
+    guard.denied?.(owner)
+  }
   const state = (name: string): LevelState => {
     let l = levels.get(name)
     if (!l) {
@@ -108,7 +137,7 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
       let id: number
       if (pending && sb.get(nonce!)) id = nonce!
       else id = sb.spawn(n.kind, position(n.pose), { scale: n.scale, mass: n.mass, quaternion: rotation(n.pose), data: { net: true } })
-      b = { net: n, local: id, samples: [], last: '', meta: '' }
+      b = { net: n, local: id, samples: [], last: '', meta: '', tagSent: '' }
       l.bodies.set(n.id, b); l.local.set(id, b)
       if (nonce !== undefined && pending) l.pending.delete(nonce)
     }
@@ -144,15 +173,21 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
       const life = (p.data.life ??= {}) as Record<string, number>
       ;[life.hp, life.fuse, life.boom, life.lit] = n.life
     }
+    // Paint, a lamp's switch, a sign's words: whoever set them last wins, unless
+    // this client has an edit of its own it has not sent yet
+    if (tagKey(p.data.tag as number[] | null | undefined) === b.tagSent) {
+      creativeOf(sb).receive(p, n.tag ?? null)
+      b.tagSent = tagKey(n.tag)
+    }
     if (ack) l.acknowledgements.push(ack)
     if (pending?.removed) send({ type: 'world-prop-remove', level: active, id: n.id })
   }
-  const joint = (l: LevelState, j: NetJoint, nonce?: number) => {
+  const joint = (l: LevelState, j: NetJoint, nonce?: number, from?: number) => {
     if (l.joints.has(j.id)) return
     const sb = l.sb!, c = contraptionOf(sb)
     const a = l.bodies.get(j.a), b = l.bodies.get(j.b)
     if (!a || !b) return
-    const existing = nonce !== undefined && a.net.owner === you ? c.constraints().find((r) => r.id === nonce && r.a === a.local && r.b === b.local) : undefined
+    const existing = nonce !== undefined && from === you ? c.constraints().find((r) => r.id === nonce && r.a === a.local && r.b === b.local) : undefined
     const r = existing ?? c.add(j.kind, a.local, b.local, { frames: j.frames })
     if (r) { l.joints.set(j.id, r.id); l.jointSent.add(r.id) }
   }
@@ -210,7 +245,7 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
             const t = p.body.translation()
             if (m.how === 'break') {
               breakSound(p.kind.surface ?? 'wood', 1, t.x, t.y, t.z)
-              sb.fx.debris(p.kind.surface === 'glass' ? 'glass' : 'wood', t, { x: 0, y: 0, z: 0 }, p.extents.length())
+              sb.fx.debris(p.kind.surface === 'glass' ? 'glass' : p.kind.surface === 'rubber' ? 'plastic' : 'wood', t, { x: 0, y: 0, z: 0 }, p.extents.length())
             }
             sb.remove(b.local)
           }
@@ -225,7 +260,7 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
             finally { replaying = false; l.applying = true }
           }
           break
-        case 'world-prop-joint': joint(l, m.joint, m.nonce); break
+        case 'world-prop-joint': joint(l, m.joint, m.nonce, m.from); break
         case 'world-prop-unjoint': {
           const id = l.joints.get(m.id)
           if (id !== undefined) contraptionOf(sb).remove(id)
@@ -235,7 +270,9 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
         case 'world-prop-denied':
           if (m.op === 'world-prop-spawn' && m.nonce !== undefined) { sb.remove(m.nonce); l.pending.delete(m.nonce) }
           if (m.reason === 'admin') notify('Only the admin can clean up other players. Cleanup all also works when you are alone.', 'Solo el administrador puede limpiar lo de otros. Cleanup all también funciona cuando estás a solas.')
-          else if (m.reason === 'limit') notify('Prop limit reached (150 per player). Clean up some of your stuff first.', 'Límite de objetos alcanzado (150 por jugador). Limpia algunas de tus cosas primero.')
+          else if (m.reason === 'limit') notify(`Prop limit reached (${m.cap ?? 150} per player). Clean up some of your stuff first.`, `Límite de objetos alcanzado (${m.cap ?? 150} por jugador). Limpia algunas de tus cosas primero.`)
+          else if (m.reason === 'rate') { if (m.op === 'world-prop-spawn') notify('Spawning too fast. Slow down a moment.', 'Sacas objetos demasiado rápido. Espera un momento.') }
+          else if (m.reason === 'protected') refused(m.owner ?? '?')
           else if (m.reason === 'name') notify('No props found for that player.', 'No se encontraron objetos de ese jugador.')
           break
       }
@@ -269,7 +306,15 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
     sb.network = {
       authority: (id) => authority(l, id),
       get online() { return !!you && l.ready && active === name },
-      owns: (id) => l.applying || (l.local.has(id) ? l.local.get(id)!.net.owner === you : true),
+      owns: (id) => l.applying || (l.local.has(id) ? mayUse(l.local.get(id)!.net) : true),
+      may: (id) => l.applying || (l.local.has(id) ? mayUse(l.local.get(id)!.net) : true),
+      denied: (id) => { const b = l.local.get(id); if (b) refused(b.net.name) },
+      share: (ids, on) => {
+        if (!you || active !== name) return
+        if (ids === 'all') { send({ type: 'world-prop-share', level: name, all: true, on }); return }
+        const net = ids.map((id) => l.local.get(id)?.net.id).filter((n): n is number => n !== undefined)
+        if (net.length) send({ type: 'world-prop-share', level: name, ids: net, on })
+      },
       claim,
       release: (id) => {
         const b = l.local.get(id)
@@ -286,7 +331,7 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
         const b = l.local.get(id)
         if (!b) return true
         if (sb.get(id)?.data.breaking && authority(l, id)) return true
-        if (b.net.owner === you) send({ type: 'world-prop-remove', level: name, id: b.net.id })
+        if (mayUse(b.net)) send({ type: 'world-prop-remove', level: name, id: b.net.id })
         return false
       },
       frame: () => {
@@ -332,10 +377,18 @@ export function createPropNetwork(send: (m: PropClientMessage) => void, notify: 
           b.meta = meta
         }
         if (rows.length) send({ type: 'world-prop-move', level: name, rows })
+        for (const b of l.bodies.values()) {
+          const p = sb.get(b.local)
+          if (!p) continue
+          const key = tagKey(p.data.tag as number[] | null | undefined)
+          if (key === b.tagSent) continue
+          b.tagSent = key
+          send({ type: 'world-prop-tag', level: name, id: b.net.id, tag: (p.data.tag as number[] | null | undefined) ?? null })
+        }
         for (const r of c.constraints()) {
           if (l.jointSent.has(r.id)) continue
           const a = l.local.get(r.a), b = l.local.get(r.b)
-          if (!a || !b || a.net.owner !== you || b.net.owner !== you || !authority(l, r.a) || !authority(l, r.b)) continue
+          if (!a || !b || !mayUse(a.net) || !mayUse(b.net) || !authority(l, r.a) || !authority(l, r.b)) continue
           send({ type: 'world-prop-joint', level: name, id: a.net.id, b: b.net.id, kind: r.type, frames: r.frames, nonce: r.id })
           l.jointSent.add(r.id)
         }

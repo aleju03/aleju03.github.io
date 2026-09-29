@@ -4,6 +4,7 @@ import type { StepSurface } from '../core/sfx'
 import type { SandboxGround } from '../sandbox/ground'
 import type { Felling, Ruins } from '../world/debris'
 import type { Prop, Sandbox } from '../sandbox/sandbox'
+import type { CreatureWorld } from '../creatures/world'
 
 /*
   The level contract. A level is a walkable place: it owns its collision
@@ -171,6 +172,9 @@ export interface Level {
   collision: CollisionSet
   /** default arrival point, used when a seam doesn't carry its own */
   spawn: LevelSpawn
+  /** where each side of a round starts, side 0 then side 1 (modes/deathmatch.ts).
+      Absent, a round has only the random `spawn` */
+  teamSpawns?: readonly (readonly LevelSpawn[])[]
   /** the player just arrived through a seam (start ambience, stream chunks) */
   enter: () => void
   /** the player just left through a seam */
@@ -229,4 +233,8 @@ export interface Level {
   hands?: LevelHands
   /** the physgun can tear things out of the level itself */
   grab?: LevelGrab
+  /** living things walk here (src/game/creatures/): the level answers what
+      the ground is for a creature and which kinds live on it, and the scene
+      runs the simulation, the wire and the drawing. Needs a sandbox */
+  creatures?: CreatureWorld
 }

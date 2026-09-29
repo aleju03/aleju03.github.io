@@ -17,6 +17,9 @@
                                            destruction
     node scripts/measure.mjs world-effects shared portals, crossings and jump clouds
     node scripts/measure.mjs prop-sync     shared props, handoffs, joints, cleanup and idle traffic
+    node scripts/measure.mjs blueprints    the duplicator: share code round trip and refusals, a
+                                           pasted car that holds together, one undo, the prop
+                                           cap and a second client seeing the paste
     node scripts/measure.mjs damage-sync   shared world damage: replayed blows, the ruins
                                            union, felled props and a late join
     node scripts/measure.mjs console       every console command run headless
@@ -204,7 +207,7 @@ if (bad) process.exitCode = 1
 
 const FILE_REPORTS = [
   'physics', 'console', 'fracture', 'bodies', 'body', 'car', 'seats', 'prop-sync',
-  'world-effects', 'streaming', 'pedestrians', 'collision', 'damage-sync', 'weapons', 'rubble',
+  'world-effects', 'streaming', 'pedestrians', 'collision', 'damage-sync', 'weapons', 'rubble', 'blueprints', 'creative',
 ]
 const [what, arg] = process.argv.slice(2)
 let body = REPORTS[what]

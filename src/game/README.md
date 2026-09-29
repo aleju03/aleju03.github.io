@@ -99,6 +99,10 @@ player/
                      variant's own vertices): what keeps an emote's or a
                      point's mittens out of the body wearing them.
                      `npm run measure -- bodies reach` must never go below 0
+  health.ts          the client's view of server-owned hit points: own and
+                     remote hp, pvp flag, killfeed, scoreboard, the death
+                     countdown and its events. healthSfx.ts: hurt, death and
+                     respawn synths, quiet by design
   chaseCam.ts        createChaseCam(): the third-person boom (f5), over the
                      right shoulder (h swaps it), exactly clipped against the
                      level, folding onto the head when crushed; also frames
@@ -141,7 +145,8 @@ levels/
                      levels, falls, obsidian where they meet), block light
                      flooded from torches, lamps and lava, the real game's
                      20-minute day, and the edits' handle for the wire
-                     (net/remoteBlocks.ts)
+                     (net/remoteBlocks.ts); creatures.ts is its half of the
+                     creature seam and claims guard its edits
   houseWorld.ts      the house + yard, two storeys (walls, stairs, slab, roof,
                      doors, furniture placement); owns the property line
                      inward. The computer room is upstairs, at UP
@@ -177,6 +182,15 @@ net/                 the shared walk, see "Multiplayer" below
                      to the stream, capped and timed out
   spawn.ts           scatterSpawn(): the sunflower offset that keeps two
                      simultaneous arrivals out of each other's ribcage
+  healthProtocol.ts, socialProtocol.ts, creatureProtocol.ts,
+  roundProtocol.ts   the wire types of health, ownership, creatures and
+                     rounds (each is in protocol.ts's unions)
+  remoteSocial.ts    the headless mirror of who may touch what (friends,
+                     the protection switch, chunk claims) and the notices
+  remoteCreatures.ts the interpolating store for the host's snapshots
+  remoteRounds.ts    the round's phase, participants, objective, clock offset
+creatures/           animals and monsters, see "Creatures" below
+modes/               rounds and their five games, see "Rounds and modes"
 vehicles/            three driveable machines, see "The fleet" below
 sandbox/             rigid-body props on Rapier, see "The sandbox" below
 render/              the look: pixel art in 3D, see "The look" below
@@ -896,6 +910,17 @@ sandbox/
                 `keyHint`). Nobody else spells a KeyboardEvent code
   commands.ts   the console: a typed command registry with completion and
                 help in both languages, run against a `SandboxHost`
+  healthCommands.ts, socialCommands.ts, creatureCommands.ts, roundCommands.ts
+                the console verbs of the server-owned systems: /health /hurt
+                /heal /pvp /kill /god; /protect /share /friend /claim
+                /votekick and kin; /mobs /spawnmob; `round`
+  blueprint/    the duplicator and saved builds, see "Blueprints" below:
+                blueprint.ts (capture/place), code.ts (share codes), dupe.ts,
+                ghost.ts, thumb.ts, clipboard.ts, actions.ts, commands.ts
+  creative/     paint, balloons, lamps, signs, dynamite, see "Creative
+                tools" below: tags.ts (the shared record), creative.ts (the
+                per-sandbox controller), kinds.ts, models.ts, signs.ts (the
+                text tile pool), sfx.ts, commands.ts
   history.ts    undo (Z) and cleanup, one stack per owner (`historyOf(sb)`)
   rules.ts      the shared knobs (gravity, timescale, cleanup of everyone's)
                 and the seam the network routes them through
@@ -921,7 +946,10 @@ sandbox/
                   their keys every frame. What is in your hands is shown by
                   components/os/ToolSwitcher.tsx, paper tags on strings
     toolgun.ts    under 2: weld, axis, rope, no-collide, keys, remove (two
-                  clicks, R steps the mode), each joint one undo entry
+                  clicks, R steps the mode), each joint one undo entry;
+                  then copy and paste (the duplicator), paint and balloon
+    camera.ts     the camera, the tools column's last item (slot 7): photo
+                  and hand-held zoom requests; the picture is photoStore's
     toolgunText.ts  its words in both languages, import-free for the scene
     scenarios.ts  the films: swing, rotate, heavy, throw, ragdoll, each -3p
     portals.ts    under 2, the portal gun's world: placing a portal (a ray,
@@ -1715,6 +1743,100 @@ power, radius, the throw, seed, time per event) and `ruins.ruined` (building
 id to lifted piece keys). The pieces an event lifts follow from the record;
 the rubble's flight does not, and stays each client's own.
 
+### Blueprints and persistence
+
+The tool gun's two modes after `remove` are **copy** and **paste** (the
+duplicator). Copy takes a prop and everything joined to it (welds, axles,
+ropes, no-collides, so parts and seats come along) into the clipboard as a
+*blueprint*; right click takes just the one. Paste hangs it on the crosshair
+as a ghost (blue, red when it would not fit under the prop cap), the wheel
+turns it 15 degrees a notch (shift 45, E a quarter turn), and a click places
+it as ONE undo entry. `/copy [radius]`, `/paste`, `/save NAME`, `/load NAME`,
+`/unsave NAME`, `/builds`, `/publish NAME` are the console side. Slots (max
+50, with a pixel thumbnail) live in the browser; a **share code** is `BP1.` +
+base64url(zlib-deflate(JSON)). The catalogue's last tab, **builds**
+(`components/os/BuildsPanel.tsx`, store in `buildsStore.ts`: IndexedDB, then
+localStorage, then memory), holds your slots, the share field and the public
+gallery. The gallery and the persisted Cubeland edits are server-side (REST,
+`server/README.md` "Published builds" and "Persisted Cubeland edits").
+
+`sandbox/blueprint/` is headless: `blueprint.ts` (`capture`, `place`,
+`roomFor`, limits 300 props / 1,200 joints), `code.ts` (encode, strict decode),
+`dupe.ts` (the tool gun's state machine), `ghost.ts`, `thumb.ts`,
+`clipboard.ts`, `actions.ts`, `commands.ts`.
+
+- **The ghost is tinted, not translucent, on purpose.** A transparent prop
+  material is a different program (three keys programs on `opaque`) and would
+  link the first time someone raised the duplicator. The ghost is `BatchProxy`
+  children of `sb.root` with `tint` past 1, the existing instanced program.
+- **Paste goes through the ordinary spawn path,** so the server's per-owner cap,
+  spawn bucket and ownership apply unchanged. The client pre-checks `roomFor`
+  and refuses the whole paste ("room for N") instead of arriving in half;
+  `setPropCap(n)` should follow the room's cap.
+- **Poses are the world frame at capture and the paste yaw is applied on the
+  way out;** joint frames are local, so nothing is re-derived. Set down 0.12
+  over the surface, and copy something at rest (a build copied mid-fall pastes
+  mid-fall, and an unbalanced tower topples).
+- **Only the catalogue's kinds travel** (`isKnownKind`, equal to the server's
+  `PROP_KINDS`, asserted in `measure prop-sync`).
+- **The share code is versioned by its prefix (`BP1.`).** Changing the format
+  is `BP2.`, with `BP1.` still decoded. The server's validation
+  (`builds.js:checkCode`) is a second copy of `code.ts:fromJson` on purpose
+  (the server is plain JS with no build): keep them in step. The server
+  refuses where the client clamps.
+- **Persisted Cubeland is blocks only, never props.** A prop is a live
+  simulation owned by one browser, with an ownership record meaningless once
+  those sockets are gone; blocks are integers over a pure function. The
+  persistence wrapper never forwards `left()` to the blocks module (its
+  empty-level forgetting would overwrite the stored world with almost nothing),
+  and an empty map is never written.
+
+Verification: `npm run measure -- blueprints` (capture, code, malformed codes,
+rotated paste, one undo, a second client), `npm run drive -- blueprints` (real
+game, counts 0 links of ours), `cd server && npm test` (gallery and persist).
+
+### Creative tools
+
+Paint, balloons, lamps, signs, dynamite and the camera: cheap toys on the
+existing prop atlas material (no new program), multiplayer-safe. **Paint** and
+**balloon** are tool gun modes (twelve colours on the wheel or `[` `]`; a
+balloon is tied above a prop with the contraption's own rope, lifts with
+`addForce` on the simulator that owns it, pops at a 9 u/s change of velocity, a
+shot or 330 units). `lamp`, `sign` (E opens `/sign <text>`, 40 characters) and
+`dynamite` (E lights a 5 s fuse; power 2, radius 21, chains a barrel) are
+catalogue kinds. The **camera** is slot 7 of the tools column: left click takes
+a photo, right click zooms, `P` saves the last as a PNG, `Y` copies it
+(`components/os/photoStore.ts`, `PhotoCamera.tsx`). Code is
+`sandbox/creative/` (`creativeOf(sb)` is one controller per sandbox) and
+`sandbox/tools/camera.ts`.
+
+- **Text on a sign rides the atlas, not a material.** Batches are keyed by
+  geometry, so a sign's text is *which geometry its proxy draws*: one board per
+  pre-declared atlas cell (`sign_0..23`), repainted at runtime with `art.ts`'s
+  `repaintCell`. Past 24 different texts on screen the extras show the blank
+  board. `cell()` throws after the atlas packs, so `signs.ts` must be imported
+  before the first material (`sandbox.ts` imports `creative.ts` first thing).
+- **The tag is the only shared state:** `[paint, flags, ...chars]`
+  (`creative/tags.ts`, import-free), sent as `world-prop-tag`. Anyone within 90
+  units may set it, not only the physics owner; the server validates and
+  normalises it (`cleanTag` mirrors `tags.ts`: keep the allowed characters in
+  step). The client sends when `data.tag` differs from what it last agreed and
+  adopts the server's only when it has no unsent edit.
+- **Lamps are pools, never lights.** `creative.lampPools()` feeds the scene's
+  `gatherLamps` (up to four nearest, ahead of the street's); a scene light would
+  relink every lit program.
+- **Paint tint is multiplicative** (scaled 1.7 for anything not white to begin
+  with) and shares `proxy.tint` with the dynamite's blink, which `apply()` undoes.
+- **A balloon's lift is a drag law,** `LIFT * (1 - vy/22)` fading out toward y
+  230..300, so more balloons are faster and none leaves at a rocket's speed.
+- **The photograph is taken in the render's own task:** the canvas has no
+  `preserveDrawingBuffer`, so `photoStore.capture` copies it with `drawImage`
+  straight after `look.render`. The HUD is DOM and is not in it.
+- Anything that indexed the tool column by number must use `slots.ts`.
+
+Verification: `npm run measure -- creative`, `npm run drive -- creative`,
+`node scripts/creative-sync-drive.mjs` (two Chromes and a relay).
+
 ## Multiplayer
 
 The walk is shared. `net/` is the simulation half, headless-safe like
@@ -1955,6 +2077,223 @@ level nobody has been in for fifteen minutes is forgotten. Verification:
 `npm run measure -- damage-sync` runs two clients (and then a late third)
 against the real server modules in Node and checks a console blow, a
 relayed blast, a felled prop and a late join leave identical ruins.
+
+### Rooms
+
+The shared world is one per (room, level). The default room, `public`, is the
+world exactly as it was; anyone can make a private room (a 6-character code)
+and send `/world?room=CODE`. Only people in a room see each other, chat, hear
+each other's voice handshake, and share props, blocks, damage, portals, shots
+and the four vehicles. `ws.world.level` stays the plain level id everywhere;
+isolation is that **each room has its own `players` map and its own instance of
+every server module** (`buildRoom` in `server/src/index.js`, registry in
+`worldRooms.js`), so a module cannot leak across rooms because it was never
+handed anyone from another.
+
+Client: `components/os/worldRoom.ts` (the store: wanted room, create flag, live
+room, error; `?room=` parsing, code minting, invite URL), `worldNet.ts` (the
+join carries the room, read on every join so a reconnect rejoins it),
+`RoomStrip.tsx` (on the map sheet and pause sheet), `RoomChip.tsx` (HUD chip in
+a private room). On a change of wanted room CrtScene does `leaveWorld();
+joinWorld()`, the teardown of sitting down and standing up, so nothing is
+half-stale.
+
+- **Any new server world module is created inside `buildRoom` and dispatched
+  with `roomOf(ws)?.x.handle(...)`.** A module created at file scope with the
+  global `worldPlayers` is shared by every room. Its `snapshot/left/leave`
+  calls go through `room.x`.
+- `ws.room` on the server is the unrelated *chat* room; the world's is
+  `ws.world.room`, an object.
+- Rooms are chosen after the join already happened (CrtScene joins at
+  stand-up), so going private from the sheet is a re-join and the public world
+  briefly sees "x is here / x left". A `?room=` link joins directly.
+- Link and created rooms join with `create:true`; a hand-typed code with
+  `create:false`, so a typo is `room_unknown`, not a fresh empty room. A welcome
+  without `room` when a private one was asked for is a refusal (old server).
+- A private room is forgotten `WORLD_ROOM_GRACE_MS` after it empties, props and
+  all. Per-scope caps (150 props, 400 in a private room) follow the room.
+
+Verification: `cd server && npm test` (step 0, `test/worldRooms.mjs`),
+`node scripts/rooms-drive.mjs [--shots dir]` (three Chromes and a relay).
+
+### Ownership and protection
+
+By default a thing belongs to whoever made it. **Props:** only the owner, the
+owner's friends and admins may physgun (which is also freeze), weld, rope, axis,
+remove or drive the parts of a prop; anyone can still bump, blast, hit or walk
+on one. Refusals are `world-prop-denied {reason:'protected', id, owner}`, and
+the tools ask the client's mirror first (a `deny` event: a buzz, the beam's
+miss flash, a throttled "that belongs to NAME" line). **Switches:** `/protect
+on|off` (default on; the scope's first player or an admin), `/share [all]`,
+`/unshare [all]`; some kinds spawn shared (`OPEN_KINDS`). **Friends:**
+`/friend`, `/unfriend`, `/friends`, one-way grants, at most 32, persisted per
+registered account (`world_friends`). **Cubeland claims:** `/claim`, `/unclaim`,
+`/claims`, one 16x16 chunk column each, at most 4 per owner; the client declines
+an edit before making it, the server refuses whatever arrives anyway
+(`world-block-refused`) and the client reverts. **Limits:** 150 props per owner,
+a spawn bucket, `cleanup` only touches your own, a departed owner's props and
+claims wait 5 minutes. **Votes and admin:** `/votekick`, `/yes`, `/no`,
+`/kick`, `/mute`, `/unmute`.
+
+Server: `protection.js`, `claims.js`, and `worldSocial.js` which builds both
+over a room's `players` (`room.social`); `props.js` takes the `access` option,
+`worldBlocks.js` the `claims` option. Client: `net/socialProtocol.ts`,
+`net/remoteSocial.ts` (the mirror), `sandbox/socialCommands.ts`,
+`remoteProps.ts`'s `PropGuard`, `remoteBlocks.ts`, Cubeland's `BlockNet`
+(`locked()` in `edit`, break, place, carve and grab), the tools' `deny`.
+
+- **The client is a mirror, the server the authority.** A stale mirror only
+  costs a refusal round trip; never trust it.
+- **Owner identity is not the world id.** A prop's owner id dies with the
+  socket; its `ownerKey` (account or socket, a WeakMap, never sent) survives,
+  which is how one account on two tabs is one owner and how adoption works.
+- **Protection off is free for all,** including remove and weld.
+- **Corrections need the server's value.** The server stores only deltas over
+  generated terrain, so `world-block-refused` carries `-1` for "generated" and
+  the client regenerates that cell (`generateChunk`) and `forget`s its edit, or
+  the catch-up list keeps offering the ghost.
+- Local fluids and falling blocks run on every client and are declined by the
+  same `edit` guard at a claim boundary.
+- The vote counts everyone but the accused with `max(3, floor(voters/2)+1)`
+  yes, so a room of three cannot vote. Mute and claims are per room, in memory;
+  only friends persist. Vehicles and seats are not props and stay public.
+
+Verification: `cd server && npm test` (step "protection" and its per-room
+step), `npm run drive -- protection` (two Chromes and a relay).
+
+### Health and pvp
+
+`server/src/health.js` owns every hit point (100, regeneration 8 hp/s after five
+quiet seconds, death, a 3 s respawn with 2 s of protection that a shot ends,
+a scoreboard); `player/health.ts` is the client's view and
+`components/os/HealthHud.tsx` the DOM (bar, vignettes, killfeed, death sheet).
+One instance per room (`room.health`), scope `ws.world.level`. Other server
+modules call `health.hurt(ws, amount, {by, kind})`, `heal`, `kill` (bypasses god
+and guard), `setPvp(scope, on, {sticky})`, `stats`, `onDeath`, `onRespawn`
+(a mode picks spawn spots), `setGuard`, `setRespawn`, `revive`, `reset`.
+Console: `/health /hurt /heal /pvp /kill /god` (`sandbox/healthCommands.ts`).
+
+- **The client never says how much.** Pistol 12, crossbow 45 (x1.5 headshot),
+  and a blast derived from the relay's own validated position, power and
+  radius. A hit needs a shot of that weapon in the last 8 s to have paid for it;
+  credits are spent even with pvp off so free play cannot bank them for a fight.
+- **Free play is unchanged:** with pvp off a `world-shot-hit` on a player still
+  shoves and hurts nobody. Players are hurt by blasts only in pvp and only from
+  a rocket in the last 8 s or a prop (a barrel); the console's `explode` hurts
+  no one. Self blast is half damage, pvp only.
+- **Falls are reported, then clamped.** The client sends `landing` over 30 u/s;
+  the server clamps it to what it saw (`sqrt(2 g drop) * 1.15 + 3` over the last
+  20 s of poses, flyers ignored) and charges 3 hp per u/s above 32.
+- **Dead players are a heap and do not shoot.** CrtScene gates `wantsUp` and
+  `standNow` on `health.dead`; death leaves any vehicle, seat and noclip.
+- `kind` is a lowercase tag (`/^[a-z][a-z0-9_]{0,15}$/`, else `env`); a new kind
+  needs a line in `sandbox.health.kinds` in both languages. `heal` and `god` are
+  refused in pvp unless admin. Environment sources call `health.hurt(ws, 15 *
+  dt, { kind: 'lava' })` from a tick.
+- No shader work: the HUD is DOM, the plate's health pip a sprite on the plate's
+  own program. Offline there are no hit points. Vehicle collision damage is not
+  built (`world-fall` is the shape it would take).
+
+Verification: `cd server && npm test` (`test/health.mjs`),
+`node scripts/health-drive.mjs` (two Chromes), `npm run drive -- health`.
+
+### Creatures
+
+`creatures/` is a reusable animal-and-monster system, used in Cubeland (pig,
+cow, sheep, chicken, zombie, creeper, skeleton) and, small, in Nuketown (six
+mannequin walkers). One client per scope simulates (**the host**); the rest
+interpolate; the server designates the host, relays and referees damage.
+Bodies are boxes (`BatchProxy`s on the props' atlas material, so no new
+program) and voices are WebAudio.
+
+- `kinds.ts` the table (append-only wire `index`), `world.ts` the two seams
+  (`CreatureWorld`: the level's `footing`, `spots`, `light`...; `CreatureEnv`:
+  the scene's `players`, `daylight`, `hurtPlayer`, `explode`), `sim.ts` the
+  1/30 s simulation, `collisionWorld.ts` (Nuketown), `models.ts`/`cells.ts`,
+  `view.ts`, `sounds.ts`, and `director.ts`, the one thing the scene talks to.
+  `net/creatureProtocol.ts` and `remoteCreatures.ts`; `/mobs`, `/spawnmob`;
+  `server/src/creatures.js`.
+- **Host** is the longest-present player in room+level; offline, the local
+  player. A new host adopts the herd it was watching (`sim.adopt`). Snapshots go
+  at 8 Hz, only with someone else there.
+- **Damage in** arrives through the crowd's `ImpactWatch` seam
+  (`director.knock`), `sb.onExplosion` (host only; remote rockets arrive as the
+  relay's replay, so nothing is counted twice) and props flying into creatures;
+  a guest sends `world-creature-hit`. **Damage out** is `env.hurtPlayer`, which
+  becomes `world-creature-attack`; the server applies `health.hurt(victim, n,
+  {by: 0, kind: 'mob'})` with its own number.
+- Passive kinds spawn on grass by day, hostile ones where the light is under
+  0.3 (night, caves); zombies and skeletons burn in daylight. A creeper hisses
+  1.5 s inside 6.5 units, then `env.explode`. Skeletons shoot `arrow` creatures.
+  A kill leaves `drops` as catalogue props flagged `gib`; there is no inventory.
+
+- **Cells are declared before the atlas packs.** A new cell goes in `cells.ts`
+  (`sandbox.ts` imports it). A new kind is a row in `kinds.ts` (append only), a
+  spec in `models.ts`, and, if the server should accept it, `KIND_COUNT` in
+  `creatures.js` (a test compares; `K_ZOMBIE`, `K_CREEPER`, `K_ARROW` mirror
+  the indices).
+- **Anything world-shaped is read through the level's `footing`,** which must
+  return a fresh object. No `level.id ===`.
+- **The sim runs only on the host.** A guest's `sim` is empty; its speed, head
+  turn, fuse and arrow pitch are derived from how the eight-integer rows change.
+- **The director updates before `sandbox.tick`** (the batcher writes matrices at
+  its end), and its children draw only while their level is live.
+- Steering is local feelers, not pathfinding; no breeding, swimming or
+  inter-creature collision. Creeper blasts beyond 170 units of the host are not
+  relayed as explosions (the block edits still are).
+
+Verification: `node scripts/creatures-test.mjs` (Node), `cd server && npm test`,
+`npm run drive -- creatures`, `node scripts/creatures-drive.mjs`, and `npm run
+drive -- links` must stay at 0.
+
+### Rounds and modes
+
+A lobby, a countdown, a round, a results sheet and five games (deathmatch with
+teams or free for all, hide and seek, prop hunt, race, build contest). **The
+server owns every rule and every clock;** the client draws, holds the walker
+still where a game says so, and reports what only it can see. Server:
+`rounds.js` (the engine, one per room, `room.rounds`), `roundModes.js` (one
+object per game; **a sixth mode is one entry here plus one in `modes/defs.ts`**),
+`roundData.js` (numbers measured once from client level code: Nuketown's 317
+clear spots, the street loop, Cubeland's flat plots). Client: `net/roundProtocol.ts`,
+`net/remoteRounds.ts`, `modes/` (`defs.ts` names and rules in both languages,
+`director.ts`, one file per game, `ringLayer.ts`), `components/os/PlayPanel.tsx`,
+`RoundHud.tsx`, `worldRound.ts`, `roundText.ts`, and the `round` console verb.
+
+`lobby` -> `countdown` (participants on another map get `world-round-go` and run
+their own `goMap`; up to 30 s for arrivals) -> `playing` (pvp, the respawn rule
+and the health guard are set on the room's scope) -> `results` (12 s) ->
+`lobby` (`cleanup`, state restored). Everyone else is a spectator: immune,
+cannot fire. `debug` (admin, or a private room's host) lowers minimums to 1.
+
+- **Scope is `ws.world.level`.** A participant is in the round only while on its
+  level; walking off is leaving.
+- **Time rides as ms-left plus the server's `now`.** Never compare a server time
+  with `performance.now()`; use `state.untilAt(serverMs)`. `obj` keys ending in
+  `At` are server times.
+- **Damage goes through `health.hurt` only,** and the round's veto (`guard`) is
+  what makes teams, spectators, props and tag work. A forced `kill` skips it.
+- **Movement gating is the server walking a wanderer back with a `tp`;** the
+  client also freezes itself (`frozen()` in the walk step).
+- **Peaceful during rounds:** `creatures.hold(level)` while `playing`, restoring
+  the previous `/mobs` setting after.
+- **Prop hunt disguises are batch proxies** on the live sandbox root. If a kind's
+  mesh is not a proxy it is not drawn; never draw a plain mesh (a new program
+  links at first sight). Kinds in `NO_DISGUISE` are refused (mirrored in
+  `defs.ts`, compared by `test/roundsDefs.mjs`). The disguise is a left click.
+  The rings keep a collapsed warm mesh of their material for the same reason.
+- **Checkpoints are the server's call:** order, watched position (ring radius +
+  16), claimed position, top speed (140 u/s car, 40 on foot).
+- **The plots are claims** (`claims.assign`, four chunk columns each), so the
+  existing guard marks and refuses. Everything is bounded: 16 participants,
+  ten commands a second, one round per room, sixty decoys.
+- The fleet has one car per room, so street races are a time trial; build
+  contest edits are not cleared afterwards.
+
+Verification: `cd server && npm test` (`rounds*.mjs`), `npm run drive -- rounds`,
+`node scripts/rounds-drive.mjs [--only dm,hide,prop,race,build]`, `npm run
+drive -- links`. `roundData.js`'s numbers were probed with `npm run measure --
+eval <file>`.
 
 ## The look
 

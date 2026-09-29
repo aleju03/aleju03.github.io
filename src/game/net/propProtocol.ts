@@ -18,6 +18,11 @@ export interface NetProp {
   lock: 'hand' | 'seat' | 'keys' | null
   part: number[] | null
   life: number[] | null
+  /** anyone may use it (the owner's /share, or a toy that starts open) */
+  share?: boolean
+  /** the creative props' record (sandbox/creative/tags.ts): paint, a lamp's
+      switch, a sign's text. Anyone in reach may set it, whoever simulates */
+  tag?: number[] | null
   transfer?: { to: number; lock: 'hand' | 'seat' | 'keys' | null; waiting: number }
 }
 export interface NetJoint {
@@ -36,9 +41,11 @@ export type PropServerMessage = { level: string } & (
   | { type: 'world-prop-hit'; id: number; amount: number; ignite: boolean }
   | { type: 'world-prop-break'; id: number; how: 'break' | 'explode' }
   | { type: 'world-prop-explosion'; from: number; at: number[]; power: number; radius: number }
-  | { type: 'world-prop-joint'; joint: NetJoint; nonce: number }
+  | { type: 'world-prop-joint'; joint: NetJoint; nonce: number; from?: number }
   | { type: 'world-prop-unjoint'; id: number }
-  | { type: 'world-prop-denied'; op: string; reason: string; nonce?: number }
+  /** `protected`: the prop belongs to `owner` (and `id` says which); `limit`
+      carries the per-owner `cap` that was hit */
+  | { type: 'world-prop-denied'; op: string; reason: string; nonce?: number; id?: number; owner?: string; cap?: number }
 )
 export type PropClientMessage = { level: string } & (
   | { type: 'world-prop-spawn'; nonce: number; kind: string; scale: number; mass: number; pose: PropPose }
@@ -47,9 +54,11 @@ export type PropClientMessage = { level: string } & (
   | { type: 'world-prop-hit'; id: number; amount: number; ignite: boolean }
   | { type: 'world-prop-remove'; id: number }
   | { type: 'world-prop-cleanup'; target: string }
+  | { type: 'world-prop-share'; ids?: number[]; all?: boolean; on: boolean }
   | { type: 'world-prop-break'; id: number; epoch: number; how: 'break' | 'explode' }
   | { type: 'world-prop-explosion'; id?: number; epoch?: number; at: number[]; power: number; radius: number }
   | { type: 'world-prop-meta'; id: number; epoch: number; part: number[] | null; life: number[] | null }
+  | { type: 'world-prop-tag'; id: number; tag: number[] | null }
   | { type: 'world-prop-joint'; id: number; b: number; kind: NetJoint['kind']; frames: number[]; nonce: number }
   | { type: 'world-prop-unjoint'; id: number }
 )

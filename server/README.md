@@ -22,6 +22,13 @@ v2 replaced the old 1:1 messenger protocol entirely, so deploy the server and th
 | `ANALYTICS_RETENTION_DAYS` | no | `180` | Rows older than this are pruned hourly |
 | `ANALYTICS_SITE_HOSTS` | no | unset | Comma-separated hosts that count as real traffic in the live feed, e.g. `aleju03.github.io`. Keeps localhost and preview deploys out |
 | `ANALYTICS_TIME_ZONE` | no | `UTC` | IANA zone for the feed's clock labels |
+| `WORLD_MAX_ROOMS` | no | `200` | Private world rooms alive at once (see "World rooms") |
+| `WORLD_ROOM_MAX_PLAYERS` | no | `16` | Players per private room. The public room keeps its own cap (32) |
+| `WORLD_ROOM_GRACE_MS` | no | `30000` | How long an empty private room lives before it is forgotten, props and all |
+| `BUILDS_PUBLISH_MAX` | no | `5` | Builds one account may publish (or re-publish) per ten minutes; the smoke test raises it |
+| `ROUND_COUNTDOWN_MS` | no | `6000` | The minimum countdown before a round begins (a test knob; at least 50) |
+| `ROUND_TIME_SCALE` | no | `1` | Multiplies every mode's own clocks (the hiding time, the build minutes, the race turns); a test knob |
+| `ROUND_RESULTS_MS` | no | `12000` | How long the results sheet stays up (a test knob; at least 50) |
 | `YT_SEARCH` | no | `on` | Set to `off` to unmount the browser's video search. Nothing else depends on it |
 
 ## Video search
@@ -149,7 +156,7 @@ question two clients cannot answer between themselves. Even there the server
 simulates nothing: it hands out chairs and relays the transform of whoever is
 sitting in the driving one.
 
-- `{type:'world-join', level, look?}` → `{type:'world-welcome', you, tick, players:[{id,name,admin,registered,look?}], vehicles?, seats?}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`. The two optional fields catch a late arrival up on the fleet, and are absent while it is untouched. Until somebody moves a machine, every client's own spawn agrees about where all three are
+- `{type:'world-join', level, look?, room?, create?}` → `{type:'world-welcome', you, room, tick, players:[{id,name,admin,registered,look?}], vehicles?, seats?}`, and everyone else gets `{type:'world-enter', player}`. Capped at `WORLD_MAX_PLAYERS`; a full world answers `error/unavailable`. The two optional fields catch a late arrival up on the fleet, and are absent while it is untouched. Until somebody moves a machine, every client's own spawn agrees about where all three are
 - `{type:'world-look', look}` → `{type:'world-look', id, look}` to everyone else. `look` is 24 hex characters, four packed colours from `src/game/player/look.ts`, and this process never parses it; it is stored on the socket and relayed, so a repaint survives walking out of the world and back in. A malformed one is a strike, not a silent drop, because only a hand-written client can send one. The join carries the same field so nobody is ever drawn in the wrong colours, not even for one tick
 - `{type:'nick', name}` → `{type:'nick-ok', name}` to the sender **and** `{type:'world-name', id, name}` to everyone else in the world. Renaming is not a world message at all: it is the chat server's existing nick, because one socket carries one identity and the plate over your head, the chat rail and the arcade boards all have to agree on it. Registered users are refused, as they always were
 - `{type:'world-move', x, y, z, yaw, pitch, gait, f, e?, py?, pp?}`. The hot path, ~15/s per client, dropped rather than punished above the rate cap. `y` is the soles, not the eye; `f` is a pose bitfield (grounded/run/crouch/swim/**speaking**/down) mirrored by `POSE` in protocol.ts. `e` is the emote playing, packed as one small integer the server only range-checks (id and age, `src/game/player/emotes.ts`); `py`/`pp` are where the right arm points (a world yaw and pitch), sent only while pointing
@@ -163,6 +170,28 @@ sitting in the driving one.
 - `{type:'world-chat', text}` → `{type:'world-chat', id, name, admin, registered, text, at}` to everyone in the world. Not stored: this is shouting across a field, not a room with history
 - `{type:'world-signal', to, data}` → `{type:'world-signal', from, data}`. The WebRTC offer/answer/ICE relay for proximity voice, forwarded verbatim between two peers in the same level. **No audio ever passes through this process**; peers talk browser to browser and the server only introduces them. A signal aimed at someone who just left or stepped through a seam is dropped in silence, because that race is one the caller already recovers from
 - `world-exit {id}` on departure; a socket closing leaves the world as well as its chat room and any duel
+
+### World rooms
+
+The world is not one place any more: it is one place **per room**. `room` on
+`world-join` is absent or `'public'` (the shared world, exactly as it always
+was) or a code of 4-12 letters and digits, compared upper-case. Only the people
+in a room see each other, chat, hear each other's voice handshake, share props,
+blocks, damage, portals, weapons fire, and sit in the same four vehicles.
+
+- `{type:'world-join', level, room:'AMBER7', create?:true}`: joins that room if it exists; with `create:true` makes it if it does not (creation is limited to 3 per socket per minute and 12 per address per 10 minutes, answered `error/rate`); without `create` an unknown code is `error/room_unknown` (unknown-code attempts are limited to 10 per address per minute, then `error/rate`, so a code is as private as it is hard to guess). A malformed code is a strike. `error/room_full` (private rooms hold `WORLD_ROOM_MAX_PLAYERS`, public holds `WORLD_MAX_PLAYERS`) and `error/room_limit` (`WORLD_MAX_ROOMS` alive) round it out. A refused join leaves the socket free to join again.
+- `world-welcome.room` is always present: `'public'` or the code. To switch rooms a client sends `world-leave` and joins again (same socket, in order); everything else keeps its meaning, and `level` on the wire is always the plain level id.
+- A private room forgets itself `WORLD_ROOM_GRACE_MS` after its last player leaves, with all of its props, ruins, blocks, portals and seat table. Inside that grace a dropped connection rejoins its own room as it was. Codes are minted by the client (six characters of an alphabet without lookalikes, ~887M codes), so the invite link exists before the socket does; the server only validates.
+
+The isolation is structural, not a filter: `server/src/worldRooms.js` owns the
+rooms, and `buildRoom` in `index.js` gives each one its **own** `players` map
+and its own copy of every module (props, effects, damage, blocks, weapons, the
+fleet). Each module already scoped itself by filtering `players` on
+`ws.world.level`, so handing it a smaller map is the whole of the isolation and
+nothing in a module knows rooms exist. The world tick, chat, signalling, shove,
+grab, bring, look and name broadcasts are all per room (`worldBroadcast(room,
+...)`, `room.players.get`). **A new world module must be created inside
+`buildRoom` and dispatched through `roomOf(ws)`**, or it is global.
 
 ### Sandbox props
 
@@ -189,11 +218,13 @@ motion omits velocities. A final sleeping pose is sent once; unchanged props
 produce no traffic. Other clients interpolate two ticks behind, never
 extrapolate, and keep the Rapier body kinematic.
 
-A prop record is `{id,owner,name,authority,epoch,kind,scale,mass,pose,lock,part,life,transfer?}`.
+A prop record is `{id,owner,name,authority,epoch,kind,scale,mass,pose,lock,part,life,tag,transfer?}`.
 `owner` is the spawner's world-session id, separate from authority. `name` is
 retained for admin cleanup after the spawner leaves. `lock` is null, `hand`,
 `seat` or `keys`. `part` is null or `[keyPair,flip,targetHeight,fire]`;
 `life` is null or `[health,fuseSeconds,detonationSeconds,initialFuseSeconds]`.
+`tag` is null or the creative record `[paint,flags,...chars]` (see
+`world-prop-tag`).
 A pending `transfer` is `{to,lock,waiting}`, where `waiting` is the previous
 authority until its acknowledgement arrives.
 
@@ -225,6 +256,15 @@ authority until its acknowledgement arrives.
   health/fuses from the authority. Only the owner can change key bindings
   and flip; a driver can update motion-related part state. The result is a
   `world-prop-state`. Fuse countdowns are quantized to fifths of a second.
+- C to S `world-prop-tag {id,tag}` sets a prop's creative record: `tag` is
+  null or `[paint,flags,...chars]` (paint 0..12 is the tool gun's palette and
+  a balloon's colour; flags bit 0 is a lamp switched off; chars are a sign's
+  text, at most 40 code points from printable ASCII and the Spanish set). Anyone
+  within reach (90 units) may set it, whoever owns or simulates the prop;
+  the server normalises it (blanks squeezed and trimmed), rejects anything
+  outside those bounds with `world-prop-denied invalid`, limits it to 12 per
+  second, and announces the prop in a `world-prop-state`. A `tag` field on
+  every prop of a snapshot, spawn or state carries it to late joiners.
 - C to S `world-prop-joint {id,b,kind,frames,nonce}` joins two props owned and
   simulated by the sender. `kind` is `weld`, `axis`, `rope`, or `nocollide`.
   `frames` is 17 numbers: anchor A (3), anchor B (3), relative frame B
@@ -244,23 +284,70 @@ authority until its acknowledgement arrives.
   console's own range, so a peer's replay is the same blast. S to C
   `world-prop-explosion {from,at,power,radius}` plays the effect and lets each
   prop's authority apply its own impulse and damage, including chain fuses.
-- C to S `world-prop-remove {id}` removes only the sender's own prop. Undo
-  uses this path. S to C `world-prop-remove {ids}` removes bodies and their
+- C to S `world-prop-remove {id}` removes a prop the sender may use as its
+  owner would (own, a friend's, shared, or protection off; see Ownership
+  below). Undo uses this path. S to C `world-prop-remove {ids}` removes bodies and their
   incident constraints, also used for cleanup and breakage.
 - C to S `world-prop-cleanup {target}`: `mine`, `all`, or a player name.
   Mine uses the server's ownership registry, independent of undo history.
   All requires admin or being the only player in this level. A name always
   requires admin, and matches stored spawner names case-insensitively.
-- S to C `world-prop-denied {op,reason,nonce?}` reports `admin`, `limit`,
-  `name`, `busy`, `reach`, `invalid`, or `rate`. Spawn refusals remove the
-  pending body; cleanup permission and cap refusals print English/Spanish
-  messages in the console feed.
+- S to C `world-prop-denied {op,reason,nonce?,id?,owner?,cap?}` reports
+  `admin`, `limit` (with the per-owner `cap`), `name`, `busy`, `reach`,
+  `invalid`, `rate`, or `protected` (with the prop's `id` and its `owner`'s
+  name). Spawn refusals remove the pending body; cleanup permission and cap
+  refusals print English/Spanish messages in the console feed; `protected`
+  is a quiet "that belongs to NAME" and the tool's denied buzz.
 
 Leaving or changing levels retains props. The first remaining player in the
 level becomes authority; with nobody left authority is zero and the last
-pose stays parked. The first arrival takes over parked bodies. Ownership
-retains the original session id, so reconnecting with a new id does not
-silently adopt old props; the admin can clean those by the retained name.
+pose stays parked. The first arrival takes over parked bodies. A departed
+owner's props wait five minutes (an account's next socket adopts them back
+by its identity; a guest's identity is its socket, so a guest's do not come
+back) and are then removed, announced with an ordinary `world-prop-remove`.
+
+### Ownership, friends, claims, votes
+
+`src/protection.js`, `src/claims.js`, assembled per world by
+`src/worldSocial.js` and consulted by `props.js` (`access`) and
+`worldBlocks.js` (`claims`). Identity is the account (`u:name`) or, for a
+guest, the socket (`s:n`). Everything is scoped by `ws.world.level`.
+
+- Protection is on by default in every scope. Only the owner, the owner's
+  friends, an admin, or anyone when the prop is `share`d (or a toy kind that
+  starts open: ball, cone, melon, soda_can, bottle) may claim a prop for the
+  hand, seat or keys, remove it, weld/rope/axis it (both ends), unweld it, or
+  set its part keys. Bumping (`collision` claims), blasts and hits stay free.
+  `/protect on|off` is C to S `world-social {op:'protect',on}`, accepted from
+  the scope's first player (lowest world id) or an admin.
+- C to S `world-prop-share {ids?,all?,on}` sets the flag on the sender's own
+  props (an admin's on anyone's); a stranger's attempt is `protected`.
+- Caps: 150 props per owner in a public world, 400 in a private one (the
+  `isPrivate` callback), and a token bucket of 100 spawns refilling at 30 a
+  second, answered `limit`/`rate`. `cleanup mine` removes the caller's
+  identity's props, `all` needs an admin unless alone, a name needs an admin.
+- C to S `world-social {op}`: `friend|unfriend {name}` (one-way grant, at most
+  32, stored in `world_friends` for registered grantors and grantees, in
+  memory for guests), `votekick {name}`, `vote {yes}`, `kick {name}` (admin),
+  `mute {name,minutes?}` / `unmute {name}` (admin), `claim|unclaim {cx,cz}`.
+  Rate limited at 24 per 5 seconds. S to C `world-social {protect,host,
+  friends,grantedBy}` (personal, sent on any change) and
+  `world-social-note {code,...}` (a code and numbers; the browser words them).
+- Vote: one per scope, twenty seconds, opened by any member with at least
+  three others present, needs `max(3, floor(voters/2)+1)` yes among everyone
+  but the accused, and ends early when it can no longer pass. A pass is a
+  ten-minute ban from the scope: S to C `world-kicked {level,until,by}` and
+  the socket is removed from the world; a rejoin gets `world-kicked` again.
+  Admins cannot be voted out and can `kick` (the same ban).
+- Mute is timed (default 10 minutes, at most a day) and stops `world-chat`
+  (`error muted`) and `world-signal` relays.
+- Claims: a claim is one 16x16 block chunk column, full height, at most 4 per
+  owner. S to C `world-claims {claims:[[cx,cz,owner,allowed,mine]]}` is
+  personal. In `worldBlocks.js` an edit (or blast) in a claim its sender may
+  not edit is dropped cell by cell, and the sender gets `world-block-refused
+  {edits:[x,y,z,held]...,owner}` where `held` is the server's block there or
+  -1 for the generated terrain, so the client puts it back. An owner who left
+  keeps their claims five minutes.
 
 Portals are outside this protocol. Same-level prop crossings already go
 through the sandbox's transform setter and send the teleport flag, keeping
@@ -332,56 +419,6 @@ password is its HMAC). A static credential in the frontend bundle would be a
 public password for your relay's bandwidth. Any coturn-compatible provider works.
 Note this is the one setting that puts audio through a server you pay for: only
 the calls that cannot connect directly are relayed, but those are real bytes.
-
-## Run locally
-
-```sh
-cd server
-npm install
-ADMIN_TOKEN=dev-secret npm start
-```
-
-Health check at `GET /health`, WebSocket endpoint at `/ws`. Run the smoke test with `npm test`.
-
-## systemd unit
-
-```ini
-[Unit]
-Description=AlejOS chat server
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/node /opt/portfolio-chat/src/index.js
-WorkingDirectory=/opt/portfolio-chat
-Environment=PORT=8787
-Environment=ADMIN_TOKEN=change-me
-Environment=ALLOWED_ORIGINS=https://aleju.dev
-Environment=DB_PATH=/opt/portfolio-chat/data/chat.db
-Environment=ANALYTICS_URL=libsql://your-db.turso.io
-Environment=ANALYTICS_AUTH_TOKEN=change-me
-Environment=ANALYTICS_SITE_HOSTS=aleju03.github.io
-Restart=always
-User=www-data
-# Hard ceiling well above normal usage (~60MB); a runaway gets recycled.
-MemoryMax=256M
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## Caddy
-
-```
-chat.example.com {
-    reverse_proxy 127.0.0.1:8787
-}
-```
-
-## Frontend notes
-
-The frontend needs `VITE_CHAT_URL=wss://chat.example.com/ws` at build time. Without it, the AlejOS login screen still offers Guest, the Chat Rooms app falls back to the mail composer, and analytics capture goes quiet, since `src/analytics.ts` derives its capture endpoint from the same variable (`wss://…/ws` → `https://…/peeko/capture`), so there is no second URL to configure.
-
-To log in as admin, use the reserved username with `ADMIN_TOKEN` as the password on the AlejOS login screen. That session, and only that one, gets the **peeko** entry in the Start menu: the traffic dashboard.
 
 ### Portals and double-jump clouds
 
@@ -457,3 +494,228 @@ the shooter's level. `w` is 0 pistol, 1 crossbow, 2 rocket
 
 A malformed number or array is a strike; everything else that fails a check
 is dropped in silence, because shots are a stream.
+
+### Health, death and respawn
+
+`src/health.js` keeps hit points (100 each), regeneration (8 hp/s after five
+quiet seconds), death (3 s to respawn, 2 s of spawn protection that ends
+early if you shoot) and a per-level scoreboard, all keyed by `ws.world.level`.
+`damage(ws, amount, {by, kind})` is the one entry point; see
+`notes/health.md` for the API other modules call. Damage from another player
+lands only where the level's `pvp` flag is on (default off: weapons still
+knock players about and hurt nobody); falls, `/hurt`, `/kill` and the
+environment hurt regardless. Types are in `src/game/net/healthProtocol.ts`.
+
+- C to S `world-fall {speed}`: a landing speed (units/s). Believed only up to
+  `sqrt(2 * 34 * drop) * 1.15 + 3` where `drop` is the height above the
+  player's current pose that the server saw in the last twenty seconds; nothing
+  under 32 u/s hurts, then 3 hp per u/s. Ignored while flying or dead; two a
+  second.
+- C to S `world-health-cmd {cmd, n?, on?}`: `kill`, `hurt` (`n` 1..500),
+  `heal`, `god` (`on`), `pvp` (`on`), all for the sender's own level and body,
+  six a second. `heal` and `god` are refused with `world-health-no` while pvp
+  is on (the admin excepted); turning pvp on clears everyone's god mode.
+- S to C `world-hp {level, rows:[[id,hp,max,flags],...]}`: changed rows only,
+  coalesced once per world tick. `flags` bit 0 dead, bit 1 spawn-protected.
+  A late arrival gets the rows of everyone hurt.
+- S to C `world-death {level,id,by,kind,sc}`: `by` is the killer (0: the
+  environment or oneself), `kind` a lowercase tag (`pistol`, `crossbow`,
+  `rocket`, `blast`, `fall`, `lava`, `kill`, ...), `sc` the changed scoreboard
+  rows `[id,kills,deaths,score]`.
+- S to C `world-respawn {level,id,x?,z?}`: back on your feet; the client goes
+  to its level's spawn unless a mode's `onRespawn` hook named a spot.
+- S to C `world-pvp {level,on,by}` and `world-scores {level,rows}` (on
+  arrival, and empty after a `reset`).
+
+Damage numbers: pistol 12, crossbow 45, x1.5 for a hit above 3.4 units over
+the victim's feet. A hit only counts if a shot of that weapon paid for it in
+the last eight seconds (credits are spent whether or not pvp is on). A blast
+comes from the validated `world-prop-explosion`: up to 90 x sqrt(power)
+(0.3..1.2) falling off linearly to `min(radius, 24)`, half to the caster
+themselves and only in pvp; other players are hurt only if the caster fired
+a rocket in the last eight seconds or the blast came from a prop (a barrel).
+
+### Creatures
+
+`src/creatures.js` (one instance per room, built in `buildRoom`) is a relay and
+a referee, not a simulation: the animals and monsters are stepped by ONE
+client per scope, the host, because the world they walk on (Cubeland's blocks,
+a map's collision) is a pure function this process does not have. Scope is
+`ws.world.level`; types are in `src/game/net/creatureProtocol.ts`; the
+client's side is `src/game/creatures/` and `notes/creatures.md`.
+
+- **Host.** The longest-present player of the scope (the level within the
+  room), reassigned to the next longest the moment they leave or change level.
+  A newcomer never displaces a host. S to C `world-creature-host {level, host,
+  on, peaceful}` goes to the whole scope on every change and to a joiner on
+  arrival (`host` 0: nobody); `on` and `peaceful` are the scope's switches.
+- **Snapshots.** C to S `world-creatures {level, rows}` from the host only, about
+  8 Hz: at most 64 rows `[id, kind, x*10, y*10, z*10, yaw*100, hp, flags]`, all
+  integers, `id` 1..65000, `kind` below the table's size (9, mirrored in
+  `KIND_COUNT`), coordinates within 100000, `flags` low three bits the state.
+  A row that fails, a duplicate id, an over-long array or a snapshot from a
+  non-host drops the whole snapshot. Valid ones replace the scope's table (kept
+  only so a late joiner or a new host has something to start from) and are
+  relayed to everyone but the sender. A joiner is sent the table on arrival.
+- **Deaths.** C to S `world-creature-die {level,id,kind,x,y,z,by}` from the host,
+  30 a second; removes the row and is relayed (`by` 1: a player killed it, so
+  the drops fall).
+- **Damage to a creature.** C to S `world-creature-hit {level,id,amount,kx,kz}`
+  from any non-host: the creature must be in the table (and not an arrow), the
+  reporter's pose within 340 units of its last reported position, `amount`
+  clamped to 0.1..60, the shove to +-40, 24 a second per socket and 120 a second
+  per scope. It is forwarded to the host alone as `world-creature-hit {...,
+  from}`, which applies it.
+- **Damage by a creature.** C to S `world-creature-attack {level,id,victim,atk}`
+  from the host only (`atk` 0 melee, 1 arrow, 2 blast). `id` names the attacker
+  (for an arrow, the arrow itself); the server checks the row exists and is of
+  the right kind (zombie, arrow, creeper), that its last reported position is
+  within 7.5, 12 or 17 units of the victim's pose, that this blow is not a
+  repeat (a zombie's are 0.7 s apart per victim, an arrow and a creeper's blast
+  once each), and the per-socket (20/s) and per-scope (30/s) rate. **The amount
+  is the server's**: 5 for a blow, 4 for an arrow, up to 45 falling off
+  linearly to 11 units for a blast. It is applied with `health.hurt(victim, n,
+  {by: 0, kind: 'mob'})` (pvp is irrelevant) and, if any was taken, the victim
+  is sent S to C `world-creature-knock {level,vx,vz}` (at most 24 u/s).
+- **Spawning by request.** C to S `world-creature-spawn {level,kind,x,z}` (the
+  console's `/spawnmob`) from a non-host: a spawnable kind, a spot within 80
+  units of the asker, three a second; forwarded to the host as
+  `world-creature-spawn {..., from}`.
+- **Switches.** C to S `world-creature-cmd {level,cmd}` with `cmd` one of `on`,
+  `off`, `clear`, `peaceful`, `war`: only the host or an admin (anybody else is
+  answered `world-creature-no {reason}`), four a second. `off` and `clear`
+  empty the table and send everyone an empty `world-creatures` (which is also
+  how the host learns to clear its simulation).
+
+Everything is bounded: 64 rows a table, one table a scope, the cooldown map
+capped at 512 keys, a scope forgotten with its last player.
+### Rounds
+
+`src/rounds.js` is a per-room state machine, `lobby -> countdown -> playing ->
+results -> lobby`, built in `buildRoom` like every other world module
+(`room.rounds`) and keyed by `ws.world.level`, and `src/roundModes.js` is the
+table of games it runs (`deathmatch`, `prophunt`, `hide`, `race`, `build`),
+one object each: the maps it may run on, minimum and maximum players,
+duration, the room's pvp and respawn settings, its options, and the hooks
+`prepare/start/tick/pose/cmd/mayShoot/playerHit/propHit/guard/died/left/
+check/result/end/cleanup`. A sixth mode is an entry there and an entry in
+`src/game/modes/defs.ts`; `test/roundsDefs.mjs` fails if they disagree.
+`notes/modes.md` is the guide.
+
+What a round borrows from the rest of the server: `health.setPvp(level, on,
+{sticky})` and `health.setRespawn(level, ms | Infinity)` (both put back when
+the round ends), `health.setGuard(fn)` (a veto over who may hurt whom: teams,
+spectators, a prop hunt's props, nothing at all in a game of tag) and
+`health.onDeath`; `props.spawnSystem / removeSystem` (the decoys, owned by
+nobody and open to every hand); `claims.assign / free` (the build contest's
+plots); and `weapons.js`, which asks the round before letting a shot out
+(`mayShoot`), hands it validated hits on players (`playerHit`, so a tag is
+not damage) and on shared props (`propHit`, the hunter's penalty).
+
+Who plays: the host (the longest-standing player of the room) picks the game
+and options and may start; the ready play, plus the host; everyone ready and
+present starts it by itself. Anyone else in the room is a spectator (immune,
+cannot fire) until the next round, except a deathmatch, which takes a `join`.
+A participant who leaves the round's level or the room is out; under the
+minimum the round ends (`abandoned`), and a team with nobody left loses. The
+`debug` flag lowers every minimum to one, for the admin or the host of a
+private room. An emptied room forgets its round.
+
+- C to S `world-round-cmd {cmd, ...}`, ten a second: `mode {mode, level?}`
+  and `opt {key, value}` (host, lobby), `ready {on}`, `start` and `stop`
+  (host), `debug {on}`, `join`, and a mode's own verbs while playing:
+  `disguise {kind}` (prop hunt), `tag {target}` (hide and seek), `cp {i, x,
+  z}` (race: the running checkpoint count), `vote {n}` (build). Anything
+  malformed is a strike; a refusal is `world-round-no {cmd, reason, need?,
+  have?}` (`host`, `few`, `busy`, `admin`, `closed`, `full`).
+- S to C `world-round`: the whole state to the room, whenever a screen would
+  change (coalesced to ~2.5 a second in play): `ph` phase, `mode`, `lv` the
+  level, `now`/`end` server ms (clients count down with `end - now`), `host`,
+  `rd` ready ids, `p` rows `[id, team, role, score, a, b, out]`, `obj` the
+  mode's public data (keys ending `At` are server ms), `opt`, `dbg`, `w`
+  (waiting for someone to arrive), `dg` disguises `[[id, kind]]`, `res`
+  (`{win, team, why, rows}`) in the results phase.
+- S to C `world-round-go {level, mode, here?}` (change map: the client runs
+  its own level cut and reports it with `world-level`), `world-round-tp
+  {level, x, z, yaw}` (a grid slot, a plot, back to where you hid),
+  `world-round-ev {code, ...}` (an announcement, worded by the client) and
+  `world-round-dg {id, kind}`.
+
+The countdown waits up to 30 s for participants to arrive on the map and
+drops the ones who do not. Movement gating (hide and seek's seekers, prop
+hunt's hunters) is the server walking a wanderer back with a `tp`; the
+client also freezes itself. Checkpoints are validated against the position
+the server has watched the runner report, in order, and against a top speed
+(140 u/s in a car, 40 on foot). Test with `npm test` (`test/rounds.mjs`,
+`roundsDeathmatch.mjs`, `roundsModes.mjs`, `roundsDefs.mjs` on fake sockets
+and a fake clock, `roundsSocket.mjs` over the wire).
+
+## Published builds
+
+The public gallery of blueprints (`src/game/sandbox/blueprint/`), `src/builds.js`. REST beside the video search and the analytics capture, in this database's `builds` table; origin-checked against `ALLOWED_ORIGINS`, JSON in and out. Guests browse; publishing and deleting carry the session token as `Authorization: Bearer <token>` (the same token `hello` resumes), resolved by index.js.
+
+| Route | Auth | Does |
+| --- | --- | --- |
+| `GET /builds?sort=new\|top&page=N` | none | `{builds: [{id, name, author, props, spawns, at, thumb}], total, page, size: 10, sort}`; `thumb` is a small PNG data URL (or `""`), no codes in the list |
+| `GET /builds/:id` | none | the same row plus `code`. Counts one spawn per IP and build per ten minutes |
+| `POST /builds` `{name, code, thumb?}` | account | `201 {id, replaced: false}`; re-publishing a name replaces it (`200 {replaced: true}`) and costs no slot |
+| `DELETE /builds/:id` | author, or admin | `{ok: true}` |
+| `OPTIONS /builds…` | none | CORS preflight (`GET, POST, DELETE`, `authorization`) |
+
+Errors are `{error}`: `login` (401), `forbidden` (403), `not_found` (404), `name`/`code`/`thumb`/`bad_request` (400), `too_large` (413), `limit` (409, the 20-build cap; `limit: 20` rides along), `rate` (429), `forbidden_origin` (403), `method` (405).
+
+Bounds: name 40 characters after the chat's sanitiser (control characters out, one line); code at most 64 KB and a `BP1.` share code (base64url of zlib-deflated JSON, `src/game/sandbox/blueprint/code.ts`) that inflates to at most 1 MB and passes the same structural walk the client's importer applies, strictly (unknown kinds against `PROP_KINDS`, 1-300 props, at most 1,200 joints, numbers in range, quaternions nonzero, joints naming two different props); thumbnail a PNG data URL of at most 20 KB whose bytes begin with the PNG signature. An account holds at most 20 builds, 5 accepted publishes per ten minutes (`BUILDS_PUBLISH_MAX`) and 30 attempts per ten minutes (each costs an inflate); reads are 90 a minute per IP. The author is always the account name. `test/builds.mjs` runs it against the real server.
+
+## Persisted Cubeland edits
+
+`src/worldPersist.js` writes the public room's block edits to the `world_blocks` table (one row per level: edits packed six bytes each, zlib-deflated; 250,000 edits is about 800 KB) and loads them at boot, so the shared Cubeland survives a restart. Debounced 30 s after the first change, written off-thread, skipped when the bytes have not changed, and written synchronously on `SIGINT`/`SIGTERM`. Private rooms stay ephemeral, and props are deliberately not persisted (live physics state owned by one browser at a time, and per-owner protection records that mean nothing after a restart). It wraps the room's `worldBlocks` module from outside (`wrapSend`, `attach`, `restore`); the wiring is documented in `notes/saves.md`. `test/persist.mjs` restarts the module in-process.
+
+## Run locally
+
+```sh
+cd server
+npm install
+ADMIN_TOKEN=dev-secret npm start
+```
+
+Health check at `GET /health`, WebSocket endpoint at `/ws`. Run the smoke test with `npm test`.
+
+## systemd unit
+
+```ini
+[Unit]
+Description=AlejOS chat server
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/portfolio-chat/src/index.js
+WorkingDirectory=/opt/portfolio-chat
+Environment=PORT=8787
+Environment=ADMIN_TOKEN=change-me
+Environment=ALLOWED_ORIGINS=https://aleju.dev
+Environment=DB_PATH=/opt/portfolio-chat/data/chat.db
+Environment=ANALYTICS_URL=libsql://your-db.turso.io
+Environment=ANALYTICS_AUTH_TOKEN=change-me
+Environment=ANALYTICS_SITE_HOSTS=aleju03.github.io
+Restart=always
+User=www-data
+# Hard ceiling well above normal usage (~60MB); a runaway gets recycled.
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## Caddy
+
+```
+chat.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+## Frontend notes
+
+The frontend needs `VITE_CHAT_URL=wss://chat.example.com/ws` at build time. Without it, the AlejOS login screen still offers Guest, the Chat Rooms app falls back to the mail composer, and analytics capture goes quiet, since `src/analytics.ts` derives its capture endpoint from the same variable (`wss://…/ws` → `https://…/peeko/capture`), so there is no second URL to configure.
+
+To log in as admin, use the reserved username with `ADMIN_TOKEN` as the password on the AlejOS login screen. That session, and only that one, gets the **peeko** entry in the Start menu: the traffic dashboard.

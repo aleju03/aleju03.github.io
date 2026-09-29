@@ -137,6 +137,18 @@ function Doodle({ tool }: { tool: ToolId }) {
           <path d="M10 18h4M30 18h6" strokeWidth={1.6} />
         </g>
       )
+    case 'camera':
+      return (
+        <g {...ink}>
+          {/* a box body, the lens ringed twice, the flash bump and shutter */}
+          <path {...card} d="M5 17h38v22H5z" />
+          <path {...card} d="M15 17l3-6h12l3 6" />
+          <circle cx="24" cy="28" r="7.5" />
+          <circle cx="24" cy="28" r="3.6" stroke={BLUE} strokeWidth={2.2} />
+          <path d="M9 22h4" stroke={RED} strokeWidth={2.4} />
+          <path d="M37 21h3" strokeWidth={1.8} />
+        </g>
+      )
     case 'crossbow':
       return (
         <g {...ink}>

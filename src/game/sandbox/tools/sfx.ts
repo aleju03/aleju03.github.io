@@ -86,6 +86,9 @@ export interface PhysgunSfx {
   freeze: () => void
   unfreeze: () => void
   miss: () => void
+  /** refused: somebody else's prop. A short flat double buzz, a little lower and
+      drier than the miss so the two never read as the same thing */
+  deny: () => void
   dispose: () => void
 }
 
@@ -213,6 +216,14 @@ export function createPhysgunSfx(): PhysgunSfx {
       const t = a.currentTime
       pop(a, t, 'bandpass', 3000, 2, 0.03, 0.09)
       sweep(a, t, 'sawtooth', 900, 400, 0.012, 0.08)
+    },
+    deny: () => {
+      const a = sharedAudio()
+      if (!a) return
+      const t = a.currentTime
+      sweep(a, t, 'square', 150, 118, 0.016, 0.07)
+      sweep(a, t + 0.085, 'square', 130, 96, 0.016, 0.09)
+      pop(a, t, 'bandpass', 900, 1.5, 0.014, 0.05)
     },
     dispose: () => {
       if (voice) {

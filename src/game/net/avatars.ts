@@ -77,6 +77,14 @@ export interface AvatarEnv {
       its aim as the local body does (sandbox/tools/weaponView.ts puts the
       gun between the hands) */
   aimOf?: (id: PlayerId) => number
+  /** how hurt this player is, or null while they are whole: a small health
+      pip is drawn under their name plate (player/health.ts's `vitalsOf`) */
+  hpOf?: (id: PlayerId) => { hp: number; max: number; dead: boolean } | null
+  /** this player is drawn some other way (a prop-hunt disguise, modes/director.ts):
+      the body, plate and everything on it are hidden */
+  hidden?: (id: PlayerId) => boolean
+  /** a round's side colour for this player's name plate, or null */
+  tintOf?: (id: PlayerId) => string | null
 }
 
 export interface RemoteAvatars {
@@ -144,6 +152,28 @@ const BUBBLE_UP = BADGE_UP + 0.36
     over the head moves with it or a driver's name ends up on the ceiling */
 const STAND_TOP = DESIGN_CROWN
 const SEAT_TOP = (DESIGN_CROWN - DESIGN_EYE) * CABIN_FIT
+
+/** the health pip under a plate: nine textures (eighths of a bar, and an
+    empty one), shared by every body, and swapped on the sprite's material
+    like the plate's own map: no new program, no per-hit canvas */
+const PIP_W = 0.9
+const PIP_H = 0.11
+const PIP_UP = NAME_UP + 0.21
+const pipTex: (THREE.Texture | undefined)[] = []
+const pipTexture = (eighths: number) => {
+  const k = Math.max(0, Math.min(8, eighths))
+  return (pipTex[k] ??= canvasTexture([96, 14], (ctx, w, h) => {
+    ctx.clearRect(0, 0, w, h)
+    ctx.fillStyle = 'rgba(12,16,20,0.7)'
+    ctx.beginPath()
+    ctx.roundRect(0, 0, w, h, 5)
+    ctx.fill()
+    ctx.fillStyle = k > 4 ? '#79c060' : k > 2 ? '#e0b040' : '#e05a48'
+    ctx.beginPath()
+    ctx.roundRect(2, 2, Math.max(0, (w - 4) * (k / 8)), h - 4, 3)
+    if (k > 0) ctx.fill()
+  }))
+}
 
 /** one speaker glyph, shared by every badge in the world: a cone and two
     arcs, drawn once. Sprite materials still get their own instance so each
@@ -239,7 +269,12 @@ interface Avatar {
   nameText: string
   nameAdmin: boolean
   look: string | undefined
+  /** the side colour the plate is drawn in, when a round gives one */
+  tint: string | null
   badge: THREE.Sprite
+  /** the health pip, shown only while hurt; -1 when hidden */
+  pip: THREE.Sprite
+  pipK: number
   bubble: THREE.Sprite | null
   bubbleTex: THREE.Texture | null
   bubbleUntil: number
@@ -290,9 +325,9 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   const seatWorld = new THREE.Vector3()
   const chestOf = (a: Avatar) => Math.max(0, a.rig.limbs.findIndex((l) => l.name === 'chest'))
 
-  const namePlate = (text: string, admin: boolean) =>
+  const namePlate = (text: string, admin: boolean, tint: string | null = null) =>
     plaqueTexture(text, {
-      bg: admin ? 'rgba(157,85,66,0.82)' : 'rgba(12,16,20,0.62)',
+      bg: tint ?? (admin ? 'rgba(157,85,66,0.82)' : 'rgba(12,16,20,0.62)'),
       fg: '#f2f5f8',
       weight: admin ? '700' : '500',
     })
@@ -315,10 +350,14 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     badge.visible = false
     group.add(badge)
 
+    const pip = makeSprite(pipTexture(8), PIP_H, PIP_W / PIP_H)
+    pip.visible = false
+    group.add(pip)
+
     root.add(group)
     const a: Avatar = {
-      rig, group, name, nameTex, badge,
-      nameText: player.name, nameAdmin: player.admin, look: player.look,
+      rig, group, name, nameTex, badge, pip, pipK: -1,
+      nameText: player.name, nameAdmin: player.admin, look: player.look, tint: null,
       bubble: null, bubbleTex: null, bubbleUntil: 0,
       badgeK: 0, wasDown: false, clock: 0, seat: null, top: STAND_TOP,
       claimed: false, claimUntil: 0, follow: new THREE.Vector3(), following: false,
@@ -331,6 +370,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
   const stackTags = (a: Avatar) => {
     a.name.position.y = a.top + NAME_UP
     a.badge.position.y = a.top + BADGE_UP
+    a.pip.position.y = a.top + PIP_UP
     if (a.bubble) a.bubble.position.y = a.top + BUBBLE_UP
   }
 
@@ -375,6 +415,16 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     a.bubbleTex = null
   }
 
+  /** redraw the name plate from the avatar's current text, rank and tint */
+  const repaintPlate = (a: Avatar) => {
+    const { tex, aspect } = namePlate(a.nameText, a.nameAdmin, a.tint)
+    a.name.material.map = tex
+    a.name.material.needsUpdate = true
+    a.name.scale.set(NAME_H * aspect, NAME_H, 1)
+    a.nameTex.dispose()
+    a.nameTex = tex
+  }
+
   const despawn = (id: PlayerId) => {
     const a = avatars.get(id)
     if (!a) return
@@ -384,6 +434,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
     a.name.material.dispose()
     a.nameTex.dispose()
     a.badge.material.dispose()
+    a.pip.material.dispose()
     // The six materials this body built itself, and nothing else. The
     // geometry is deliberately left alone: every rig shares one module-level
     // set (see playerBody.ts), so disposing it here would take the arms off
@@ -427,6 +478,26 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
           a.rig.face(player.yaw)
         }
         a.clock += dt
+        // a prop-hunt disguise stands in for the body: draw nothing of it
+        if (worldEnv.hidden?.(id)) {
+          a.group.visible = false
+          a.wasDown = player.down
+          continue
+        }
+        // a round's side colours the plate (a redraw only when it changes)
+        const tint = worldEnv.tintOf?.(id) ?? null
+        if (tint !== a.tint) {
+          a.tint = tint
+          repaintPlate(a)
+        }
+        // a pip under the plate for anyone hurt: whole is nothing to draw
+        const vit = worldEnv.hpOf?.(id) ?? null
+        const eighths = vit && !vit.dead && vit.hp < vit.max ? Math.max(1, Math.ceil((vit.hp / vit.max) * 8)) : -1
+        if (eighths !== a.pipK) {
+          a.pipK = eighths
+          a.pip.visible = eighths >= 0
+          if (eighths >= 0) a.pip.material.map = pipTexture(eighths)
+        }
 
         // --- a seat wins over everything below ----------------------------
         // Sitting in something is the one state that owns placement outright:
@@ -570,12 +641,7 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       if (entry.name === a.nameText && entry.admin === a.nameAdmin) return
       a.nameText = entry.name
       a.nameAdmin = entry.admin
-      const { tex, aspect } = namePlate(entry.name, entry.admin)
-      a.name.material.map = tex
-      a.name.material.needsUpdate = true
-      a.name.scale.set(NAME_H * aspect, NAME_H, 1)
-      a.nameTex.dispose()
-      a.nameTex = tex
+      repaintPlate(a)
     },
 
     rigOf(id) {
@@ -616,6 +682,8 @@ export function createRemoteAvatars(eye: number, grav = 34): RemoteAvatars {
       for (const id of [...avatars.keys()]) despawn(id)
       badgeTex?.dispose()
       badgeTex = null
+      for (const t of pipTex) t?.dispose()
+      pipTex.length = 0
       root.parent?.remove(root)
     },
   }

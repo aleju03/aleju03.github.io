@@ -9,9 +9,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { propSmoke } from './props.mjs';
+import { protectionSmoke } from './protection.mjs';
 import { effectsSmoke } from './worldEffects.mjs';
 import { damageSmoke } from './worldDamage.mjs';
 import { weaponsSmoke } from './weapons.mjs';
+import { roomsSmoke } from './worldRooms.mjs';
+import { healthSmoke, healthRoomsSmoke } from './health.mjs';
+import { buildsSmoke, buildsRateSmoke } from './builds.mjs';
+import { persistSmoke } from './persist.mjs';
+import { creaturesSmoke } from './creatures.mjs';
+import { roundsUnit } from './rounds.mjs';
+import { roundsSmoke } from './roundsSocket.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -52,7 +60,7 @@ function connect(url) {
   // Skip broadcast chatter (rooms/users/typing, world ticks and the level
   // snapshots every world-level brings) until a given type arrives.
   const nextOf = async (type, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await next(label);
       if (msg.type === type) return msg;
     }
@@ -79,6 +87,13 @@ function startServer(port = '0') {
         ANALYTICS_URL: `file:${path.join(tmpDir, 'analytics.db')}`,
         ANALYTICS_SITE_HOSTS: 'aleju.dev',
         ALLOWED_ORIGINS: 'https://aleju.dev',
+        // rooms: a short grace and a small private cap, so death and fullness are cheap to test
+        WORLD_ROOM_GRACE_MS: '300',
+        WORLD_ROOM_MAX_PLAYERS: '3',
+        // the gallery's cap test publishes twenty builds in a row
+        BUILDS_PUBLISH_MAX: '1000',
+        ROUND_COUNTDOWN_MS: '300',
+        ROUND_RESULTS_MS: '400',
       },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
@@ -100,7 +115,20 @@ async function main() {
   await effectsSmoke(url, connect);
   await damageSmoke(url, connect);
   await weaponsSmoke(url, connect);
+  await healthSmoke(url, connect);
   await propSmoke(url, connect);
+  await roomsSmoke(url, connect);
+  await healthRoomsSmoke(url, connect);
+  await roundsUnit();
+  await roundsSmoke(url, connect);
+  console.log('0b. rounds: lobby, host powers, teams, leavers, results and cleanup for all five modes on fake sockets and a fake clock; one round over the wire');
+  console.log('0. world rooms: isolation of roster, ticks, chat, signals, props, damage and seats; join errors; death and rebirth; creation limits');
+  await protectionSmoke(url, connect);
+  await persistSmoke();
+  console.log('0b. persisted Cubeland edits: written, debounced, restored after a restart, private rooms left out');
+  await buildsRateSmoke();
+  await creaturesSmoke(url, connect);
+  console.log('0c. creatures: host designation and handoff, relay, bounds, hit validation, mob attacks through health, switches');
 
   // 1. Guest hello: gets a guest name and the room list.
   const guest = connect(url);
@@ -455,6 +483,23 @@ async function main() {
   assert.equal(rows[0].count, 2);
   console.log('16. breakdown aggregates a custom event property');
 
+  // 16c. The builds gallery: browse as a guest, publish as an account, caps,
+  //      refusals, pulls, deletion by author and by admin (test/builds.mjs)
+  const bob = connect(url);
+  await bob.opened;
+  bob.send({ type: 'hello' });
+  await bob.nextOf('hello-ok', 'bob hello-ok');
+  bob.send({ type: 'register', username: 'bob', password: 'hunter2' });
+  const bobReg = await bob.nextOf('auth-ok', 'bob auth-ok');
+  await buildsSmoke({
+    base: httpBase,
+    origin,
+    user: { token: reg.token, name: 'alice' },
+    other: { token: bobReg.token, name: 'bob' },
+    admin: { token: adminOk.token },
+  });
+  console.log('19. builds gallery: guests browse, accounts publish (20 cap, rate limit), refusals, pulls count once, author and admin delete');
+
   // 16b. Geo: with no edge header, the browser's timezone resolves the country.
   await capture({
     event: '$pageview',
@@ -589,10 +634,14 @@ async function main() {
   // Cubeland's blocks: an edit relayed to the other walker in the level,
   // bad quadruples dropped whole, and the map handed to an arrival
   w1.send({ type: 'world-level', level: 'cubeland' });
-  const emptyMap = await w1.nextOf('world-blockmap', 'the empty block map on arrival');
+  let emptyMap;
+  do emptyMap = await w1.nextOf('world-blockmap', 'the empty block map on arrival'); while (emptyMap.level !== 'cubeland');
   assert.deepEqual(emptyMap.edits, [], 'a level nobody has touched has an empty map');
   w2.send({ type: 'world-level', level: 'cubeland' });
-  await w2.nextOf('world-blockmap', 'the second arrival\'s map');
+  // (skip the overworld's map still queued from the walk back: taking it for
+  // Cubeland's let the edit below race the server's handling of this move)
+  let map2;
+  do map2 = await w2.nextOf('world-blockmap', 'the second arrival\'s map'); while (map2.level !== 'cubeland');
   w1.send({ type: 'world-blocks', level: 'cubeland', edits: [3, 40, -7, 0, 3, 41, -7, 5], blast: false });
   const relayed = await w2.nextOf('world-blocks', 'block edits relayed');
   assert.deepEqual(relayed.edits, [3, 40, -7, 0, 3, 41, -7, 5]);
@@ -752,7 +801,7 @@ async function main() {
   //      Anything else is dropped in silence, so each refusal is followed by
   //      a chat line and the victim must see the chat without a shove first.
   const noShoveBefore = async (client, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await client.next(label);
       assert.notEqual(msg.type, 'world-shove', `${label}: a shove got through`);
       if (msg.type === 'world-chat') return;
@@ -815,7 +864,7 @@ async function main() {
   //      alone, inside the beam's reach, never at somebody flying, and a
   //      throw is clamped; a release always goes through.
   const noGrabBefore = async (client, label) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 400; i++) {
       const msg = await client.next(label);
       assert.notEqual(msg.type, 'world-grab', `${label}: a grab got through`);
       if (msg.type === 'world-chat') return;

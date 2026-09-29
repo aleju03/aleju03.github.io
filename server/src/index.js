@@ -24,7 +24,14 @@ import { createPropRegistry } from './props.js';
 import { createWorldEffects } from './worldEffects.js';
 import { createWorldDamage } from './worldDamage.js';
 import { createWorldBlocks } from './worldBlocks.js';
+import { createWorldRooms, createLimiter, normalizeRoom, PUBLIC_ROOM } from './worldRooms.js';
 import { createWeapons } from './weapons.js';
+import { createWorldSocial } from './worldSocial.js';
+import { createHealth } from './health.js';
+import { createBuildGallery } from './builds.js';
+import { createWorldPersistence } from './worldPersist.js';
+import { createCreatures } from './creatures.js';
+import { createRounds } from './rounds.js';
 
 // ---------------------------------------------------------------- config
 
@@ -129,7 +136,12 @@ const DUEL_REMATCH_MS = 60_000;
 // process; peers talk WebRTC directly and only their offer/answer/ICE
 // handshake is relayed (world-signal).
 const WORLD_TICK_MS = 66; // ~15 snapshots a second
-const WORLD_MAX_PLAYERS = 32;
+const WORLD_MAX_PLAYERS = 32; // the public room
+// Private rooms: made by a code, small, few, and gone shortly after emptying.
+const WORLD_ROOM_MAX_PLAYERS = Number(process.env.WORLD_ROOM_MAX_PLAYERS) || 16;
+const WORLD_MAX_ROOMS = Number(process.env.WORLD_MAX_ROOMS) || 200;
+const WORLD_MAX_TOTAL = 320; // every room together
+const WORLD_ROOM_GRACE_MS = process.env.WORLD_ROOM_GRACE_MS !== undefined ? Number(process.env.WORLD_ROOM_GRACE_MS) : 30_000;
 const WORLD_MOVE_RATE_MAX = 40; // move packets per window per connection
 const WORLD_MOVE_RATE_WINDOW_MS = 1_000;
 const WORLD_CHAT_RATE_MAX = 8;
@@ -247,6 +259,17 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_scores_board ON scores(game, score);
 `);
+// A registered account's friend list: one row per grant ("this account may
+// use my things"), by the friend's username. Guests' lists live in memory
+// only (protection.js), and a guest grantee is never stored.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS world_friends (
+    user_id INTEGER NOT NULL,
+    friend TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, friend)
+  );
+`);
 
 const stmt = {
   userByName: db.prepare('SELECT * FROM users WHERE username = ?'),
@@ -297,6 +320,9 @@ const stmt = {
   ),
   scoreRankDesc: db.prepare('SELECT COUNT(*) AS n FROM scores WHERE game = ? AND score > ?'),
   scoreRankAsc: db.prepare('SELECT COUNT(*) AS n FROM scores WHERE game = ? AND score < ?'),
+  friendList: db.prepare('SELECT friend FROM world_friends WHERE user_id = ? ORDER BY at LIMIT 64'),
+  friendAdd: db.prepare('INSERT OR IGNORE INTO world_friends (user_id, friend, at) VALUES (?, ?, ?)'),
+  friendRemove: db.prepare('DELETE FROM world_friends WHERE user_id = ? AND friend = ?'),
 };
 
 // Startup maintenance: drop expired sessions and any history overflow left
@@ -334,6 +360,12 @@ function createToken(userId) {
   stmt.insertToken.run(token, userId, Date.now());
   return token;
 }
+
+// ------------------------------------------------- persisted Cubeland edits
+// The public room's block edits are written to `world_blocks` (worldPersist.js)
+// and loaded at boot. Wired in buildRoom for the PUBLIC room only.
+// Private rooms stay ephemeral; props are never persisted (see the header).
+const worldPersist = createWorldPersistence({ db });
 
 // ---------------------------------------------------------------- helpers
 
@@ -887,11 +919,27 @@ function handleDuelRematch(ws) {
 //      keys, felled props), kept and snapshotted by worldDamage.js, plus the
 //      blows being watched, relayed and never stored
 //
+//   9. rooms: every one of the above is per room (worldRooms.js). The public
+//      room is the world as it always was; a private one is made by a code,
+//      is small, and is forgotten after it empties
+//
 // Sockets stay in the world independently of chat: `ws.world` is set by
-// world-join and is the whole of a player's server-side state.
+// world-join and is the whole of a player's server-side state (its `room` is
+// the room object, never the wire; `ws.room` is the unrelated chat room).
+
+// the round clock's waits, in ms; the environment shortens them for tests
+const envMs = (name) => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 50 ? n : undefined;
+};
+const ROUND_TIMING = {
+  countdownMs: envMs('ROUND_COUNTDOWN_MS'),
+  resultsMs: envMs('ROUND_RESULTS_MS'),
+  timeScale: Number(process.env.ROUND_TIME_SCALE) > 0 ? Number(process.env.ROUND_TIME_SCALE) : undefined,
+};
 
 let worldSeq = 1;
-const worldPlayers = new Map(); // id -> ws
+const worldPlayers = new Map(); // id -> ws, every room: the ticker's and the total cap's view
 const worldMoveRate = new WeakMap(); // ws -> [timestamps]
 const worldChatRate = new WeakMap();
 const worldSignalRate = new WeakMap();
@@ -900,34 +948,103 @@ const worldLookRate = new WeakMap();
 const worldShoveRate = new WeakMap();
 const worldGrabRate = new WeakMap();
 let worldTicker = null;
-let worldDirty = false;
-const propRegistry = createPropRegistry({ players: worldPlayers, send, onRemove: (level, ids) => worldEffects.removeProps(level, ids) });
-const worldEffects = createWorldEffects({ players: worldPlayers, send, prop: propRegistry.get });
-const worldDamage = createWorldDamage({ players: worldPlayers, send });
-// Cubeland's broken and placed blocks, the last word per block (worldBlocks.js)
-const worldBlocks = createWorldBlocks({ players: worldPlayers, send });
-// the pistol, the crossbow and the rocket launcher: shots and hits relayed
-// to the level, checked for honesty (weapons.js)
-const worldWeapons = createWeapons({
-  players: worldPlayers,
-  send,
-  seated: (id) => worldSeated(id),
-  flying: (w) => (w.f & W_FLY) !== 0,
-});
+// The friends list is the database's, not a room's: an account's list follows
+// it into every room. Everything else of protection.js/claims.js (the switch,
+// mutes, kicks, votes, chunk claims) is built per room in buildRoom.
+const friendStore = {
+  list: (userId) => stmt.friendList.all(userId).map((r) => r.friend),
+  add: (userId, friend) => stmt.friendAdd.run(userId, friend, Date.now()),
+  remove: (userId, friend) => stmt.friendRemove.run(userId, friend),
+};
+// orphaned props and claims expire even in a room nobody is standing in,
+// where the world ticker is stopped
+setInterval(() => {
+  for (const room of worldRooms) {
+    room.props.sweep();
+    room.social.claims.tick();
+  }
+}, 5_000).unref();
 
-// The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
-// `hand` is whoever has an *empty* machine on their physgun (or is letting it
-// settle after one), and is its authority exactly as a driver is, which is
-// why the two exclude each other; `set` says whether anyone has ever moved
-// this machine, and until they have the server has no opinion about where it
-// is: every client's own spawn puts it on the same probed home spot, so
-// silence is the correct answer.
-const worldFleet = Array.from({ length: WORLD_FLEET }, () => ({
-  seats: new Array(WORLD_SEATS).fill(0),
-  hand: 0,
-  set: false,
-  x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
-}));
+// Rooms (worldRooms.js). Every module below is built ONCE PER ROOM and handed
+// that room's own `players` map, so a module that filters on `ws.world.level`
+// can only ever see its own room's people. `ws.world.room` is the room object;
+// the wire's `level` stays the plain level id. A module added later must be
+// created here, and dispatched through `roomOf(ws)`, or it will be global.
+function buildRoom(room) {
+  const players = room.players;
+  room.social = createWorldSocial({ players, send, name: displayName, eject: leaveWorld, store: friendStore, isPrivate: () => !room.isPublic });
+  room.props = createPropRegistry({
+    players,
+    send,
+    access: room.social.protection,
+    onRemove: (level, ids) => room.effects.removeProps(level, ids),
+    onBlast: (ws, blast) => room.health.blast(ws, blast),
+  });
+  room.effects = createWorldEffects({ players, send, prop: room.props.get });
+  room.damage = createWorldDamage({ players, send });
+  // Cubeland's broken and placed blocks, the last word per block (worldBlocks.js)
+  // Only the PUBLIC room's edits persist (worldPersist.js); a private room's world dies with it.
+  const blocks = createWorldBlocks({ players, send: worldPersist.wrapSend(send), claims: room.social.claims });
+  if (room.isPublic) {
+    room.blocks = worldPersist.attach(blocks);
+    worldPersist.restore(blocks);
+  } else room.blocks = blocks;
+  // hit points, death, respawn, pvp and the scoreboard (health.js): one per
+  // room, so pvp, the counters and the killfeed never cross rooms
+  room.health = createHealth({ players, send });
+  // the creatures' host, relay and referee (creatures.js): it simulates nothing
+  room.creatures = createCreatures({ players, send, health: room.health });
+  // the pistol, the crossbow and the rocket launcher: shots and hits relayed
+  // to the level, checked for honesty (weapons.js)
+  room.weapons = createWeapons({
+    players,
+    send,
+    seated: (id) => worldSeated(room, id),
+    flying: (w) => (w.f & W_FLY) !== 0,
+    health: room.health,
+    rounds: () => room.rounds,
+  });
+  // rounds: lobby, countdown, play, results (rounds.js). Built after health,
+  // props and claims, which it borrows settings from; weapons ask it through
+  // the getter above, health asks it through the guard and the death hook
+  room.rounds = createRounds({
+    players,
+    send,
+    health: room.health,
+    props: room.props,
+    claims: room.social.claims,
+    creatures: room.creatures,
+    isPublic: () => room.isPublic,
+    ...ROUND_TIMING,
+  });
+  room.health.setGuard((victim, source) => room.rounds.guard(victim, source));
+  room.health.onDeath((e) => room.rounds.died(e));
+  // The fleet. `seats[0]` is the driver, `seats[1]` the passenger, 0 for empty;
+  // `hand` is whoever has an *empty* machine on their physgun (or is letting it
+  // settle after one), and is its authority exactly as a driver is, which is
+  // why the two exclude each other; `set` says whether anyone has ever moved
+  // this machine, and until they have the server has no opinion about where it
+  // is: every client's own spawn puts it on the same probed home spot, so
+  // silence is the correct answer. Per room: two rooms have two cars.
+  room.fleet = Array.from({ length: WORLD_FLEET }, () => ({
+    seats: new Array(WORLD_SEATS).fill(0),
+    hand: 0,
+    set: false,
+    x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+  }));
+}
+
+const worldRooms = createWorldRooms({
+  build: buildRoom,
+  publicCap: WORLD_MAX_PLAYERS,
+  privateCap: WORLD_ROOM_MAX_PLAYERS,
+  maxRooms: WORLD_MAX_ROOMS,
+  graceMs: WORLD_ROOM_GRACE_MS,
+});
+const roomOf = (ws) => ws.world?.room ?? null;
+const roomCreateRate = createLimiter(3, 60_000); // per socket
+const roomCreateRateByIp = createLimiter(12, 10 * 60_000);
+const roomMissRateByIp = createLimiter(10, 60_000); // unknown-code guesses
 
 // pose bits, mirrored by src/game/net/protocol.ts's POSE flags
 const W_GROUNDED = 1;
@@ -987,39 +1104,40 @@ function iceServers() {
   return list;
 }
 
-function worldBroadcast(payload, except = null) {
-  for (const ws of worldPlayers.values()) {
+/** to everyone in the room (not the world: rooms never hear each other) */
+function worldBroadcast(room, payload, except = null) {
+  for (const ws of room.players.values()) {
     if (ws !== except) send(ws, payload);
   }
 }
 
 /* -------------------------------------------------------------- the fleet */
 
-function worldSeatTable() {
-  return worldFleet.map((v, i) => [i, v.seats[0], v.seats[1], v.hand]);
+function worldSeatTable(room) {
+  return room.fleet.map((v, i) => [i, v.seats[0], v.seats[1], v.hand]);
 }
 
 /** the machines anyone has actually moved. An untouched fleet sends nothing */
-function worldVehicleRows() {
+function worldVehicleRows(room) {
   const rows = [];
-  for (let i = 0; i < worldFleet.length; i++) {
-    const v = worldFleet[i];
+  for (let i = 0; i < room.fleet.length; i++) {
+    const v = room.fleet[i];
     if (!v.set) continue;
     rows.push([i, r2(v.x), r2(v.y), r2(v.z), r3(v.yaw), r3(v.pitch), r3(v.roll)]);
   }
   return rows;
 }
 
-function announceSeats() {
-  worldBroadcast({ type: 'world-seats', seats: worldSeatTable() });
+function announceSeats(room) {
+  worldBroadcast(room, { type: 'world-seats', seats: worldSeatTable(room) });
 }
 
 /** take this player out of whatever they were sitting in. Returns whether
     anything actually changed, so a routine leave does not broadcast a table
     nobody's name appears in. */
-function clearSeatsOf(id) {
+function clearSeatsOf(room, id) {
   let changed = false;
-  for (const v of worldFleet) {
+  for (const v of room.fleet) {
     if (v.hand === id) {
       v.hand = 0;
       changed = true;
@@ -1046,7 +1164,7 @@ function handleWorldSeat(ws, msg) {
     strike(ws);
     return;
   }
-  const v = worldFleet[msg.v];
+  const v = w.room.fleet[msg.v];
   const holder = v.seats[msg.seat];
   // a machine on somebody else's physgun is not a machine you can climb into
   if ((holder !== 0 && holder !== w.id) || (v.hand !== 0 && v.hand !== w.id)) {
@@ -1056,15 +1174,15 @@ function handleWorldSeat(ws, msg) {
   }
   // one body, one chair: taking a seat gives up the last one, which is also
   // how sliding across from the passenger side to the wheel works
-  clearSeatsOf(w.id);
+  clearSeatsOf(w.room, w.id);
   v.seats[msg.seat] = w.id;
-  announceSeats();
+  announceSeats(w.room);
 }
 
 function handleWorldUnseat(ws) {
   const w = ws.world;
   if (!w) return;
-  if (clearSeatsOf(w.id)) announceSeats();
+  if (clearSeatsOf(w.room, w.id)) announceSeats(w.room);
 }
 
 /** take an empty machine on the physgun, or let it go. One authority per
@@ -1078,7 +1196,7 @@ function handleWorldHold(ws, msg) {
     strike(ws);
     return;
   }
-  const v = worldFleet[msg.v];
+  const v = w.room.fleet[msg.v];
   if (msg.on) {
     if (v.hand === w.id) return;
     if (v.hand !== 0 || v.seats.some((s) => s !== 0)) {
@@ -1090,7 +1208,7 @@ function handleWorldHold(ws, msg) {
     if (v.hand !== w.id) return;
     v.hand = 0;
   }
-  announceSeats();
+  announceSeats(w.room);
 }
 
 function handleWorldVehicle(ws, msg) {
@@ -1103,7 +1221,7 @@ function handleWorldVehicle(ws, msg) {
     strike(ws);
     return;
   }
-  const v = worldFleet[msg.v];
+  const v = w.room.fleet[msg.v];
   // the entirety of the server's opinion about physics: you may move the
   // machine you are holding the wheel of, or the empty one on your physgun,
   // and no other
@@ -1123,19 +1241,27 @@ function handleWorldVehicle(ws, msg) {
   v.yaw = msg.yaw;
   v.pitch = msg.pitch;
   v.roll = msg.roll;
-  worldDirty = true;
+  w.room.dirty = true;
 }
 
-// One snapshot per level, stringified once and pushed to everyone standing in
-// it — including its own subject, so the payload stays identical per level and
-// the client can reconcile against what the server thinks it said.
+// One snapshot per (room, level), stringified once and pushed to everyone
+// standing in it — including its own subject, so the payload stays identical
+// per level and the client can reconcile against what the server thinks it said.
 function worldTick() {
-  propRegistry.tick();
-  worldEffects.tick();
-  if (!worldDirty || worldPlayers.size === 0) return;
-  worldDirty = false;
+  for (const room of worldRooms) {
+    room.props.tick();
+    room.effects.tick();
+    room.health.tick();
+    room.rounds.tick();
+    if (!room.dirty || room.players.size === 0) continue;
+    room.dirty = false;
+    tickRoom(room);
+  }
+}
+
+function tickRoom(room) {
   const byLevel = new Map();
-  for (const ws of worldPlayers.values()) {
+  for (const ws of room.players.values()) {
     const p = ws.world;
     let list = byLevel.get(p.level);
     if (!list) byLevel.set(p.level, (list = []));
@@ -1146,7 +1272,7 @@ function worldTick() {
   // anyone has moved a machine, and a client that is somewhere else simply
   // ignores it — which is cheaper than the bookkeeping that would work out
   // which level a parked car counts as being in.
-  const vehicles = worldVehicleRows();
+  const vehicles = worldVehicleRows(room);
   for (const [, list] of byLevel) {
     const players = list.map((ws) => {
       const p = ws.world;
@@ -1186,13 +1312,22 @@ function handleWorldJoin(ws, msg) {
     sendError(ws, 'bad_request');
     return;
   }
-  if (worldPlayers.size >= WORLD_MAX_PLAYERS) {
+  if (worldPlayers.size >= WORLD_MAX_TOTAL) {
     sendError(ws, 'unavailable', 'The world is full right now.');
     return;
   }
   const level = typeof msg.level === 'string' && WORLD_LEVEL_RE.test(msg.level) ? msg.level : null;
-  if (!level) {
+  // which room: absent/'public' is the shared world; anything else is a code
+  const code = normalizeRoom(msg.room);
+  if (!level || !code || (msg.create !== undefined && typeof msg.create !== 'boolean')) {
     strike(ws);
+    return;
+  }
+  const room = openRoom(ws, code, msg.create === true);
+  if (!room) return;
+  const until = room.social.protection.banned(ws, level);
+  if (until) {
+    send(ws, { type: 'world-kicked', level, until, by: 0 });
     return;
   }
   const id = worldSeq++;
@@ -1201,58 +1336,109 @@ function handleWorldJoin(ws, msg) {
   // into an offset — and freed the moment they leave, so a quiet world always
   // puts the next person on the exact original spot.
   const taken = new Set();
-  for (const other of worldPlayers.values()) taken.add(other.world.slot);
+  for (const other of room.players.values()) taken.add(other.world.slot);
   let slot = 0;
   while (taken.has(slot)) slot++;
   // the join may carry a look, so nobody ever sees the wrong colours — not
   // even for the one tick between the world-enter and a world-look
   if (typeof msg.look === 'string' && WORLD_LOOK_RE.test(msg.look)) ws.look = msg.look;
   ws.world = {
-    id, slot, level, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED,
+    id, slot, level, room, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, gait: 0, f: W_GROUNDED,
     e: 0, pt: false, py: 0, pp: 0,
   };
   worldPlayers.set(id, ws);
-  const vehicles = worldVehicleRows();
+  room.players.set(id, ws);
+  const vehicles = worldVehicleRows(room);
   send(ws, {
     type: 'world-welcome',
     you: id,
     slot,
     tick: WORLD_TICK_MS,
     ice: iceServers(),
-    players: [...worldPlayers.values()].filter((o) => o !== ws).map(worldRosterEntry),
+    // the room's name: 'public', or its code. Always present, so a client
+    // can tell a server that has rooms from one that has not
+    room: room.code,
+    players: [...room.players.values()].filter((o) => o !== ws).map(worldRosterEntry),
     // where the machines were left, so an arrival does not spend the first
     // seconds looking at a car that is really two kilometres up the coast.
     // The seat table travels on its own condition: somebody can be sitting in
     // a machine that has never been driven anywhere, and their body still has
     // to be drawn in it
     ...(vehicles.length > 0 ? { vehicles } : {}),
-    ...(worldFleet.some((v) => v.seats.some(Boolean)) ? { seats: worldSeatTable() } : {}),
+    ...(room.fleet.some((v) => v.seats.some(Boolean)) ? { seats: worldSeatTable(room) } : {}),
   });
-  propRegistry.join(ws);
-  worldEffects.snapshot(ws);
-  worldDamage.snapshot(ws);
-  worldBlocks.snapshot(ws);
-  worldWeapons.snapshot(ws);
-  worldBroadcast({ type: 'world-enter', player: worldRosterEntry(ws) }, ws);
-  worldDirty = true;
+  room.social.protection.join(ws);
+  room.social.claims.join(ws);
+  room.props.join(ws);
+  room.effects.snapshot(ws);
+  room.damage.snapshot(ws);
+  room.blocks.snapshot(ws);
+  room.weapons.snapshot(ws);
+  room.health.snapshot(ws);
+  room.creatures.snapshot(ws);
+  room.rounds.snapshot(ws);
+  worldBroadcast(room, { type: 'world-enter', player: worldRosterEntry(ws) }, ws);
+  room.dirty = true;
   startWorldTicker();
+}
+
+/** find or create the room a join asks for, or answer the error and return
+    null. Creation is limited per socket and per address; guessing codes is
+    limited per address, because a private room is exactly as private as its
+    code is hard to find. */
+function openRoom(ws, code, create) {
+  if (code === PUBLIC_ROOM) {
+    const room = worldRooms.publicRoom;
+    if (room.players.size >= room.cap) {
+      sendError(ws, 'unavailable', 'The world is full right now.');
+      return null;
+    }
+    return room;
+  }
+  const existing = worldRooms.get(code);
+  if (!existing) {
+    if (!create) {
+      if (!roomMissRateByIp(ws.ip)) sendError(ws, 'rate');
+      else sendError(ws, 'room_unknown', 'No room has that code.');
+      return null;
+    }
+    if (!roomCreateRate(ws) || !roomCreateRateByIp(ws.ip)) {
+      sendError(ws, 'rate', 'Too many rooms made. Wait a moment.');
+      return null;
+    }
+  }
+  const opened = worldRooms.open(code, create);
+  if (opened.error) {
+    const text = { room_full: 'That room is full.', room_limit: 'There are too many rooms right now.', room_unknown: 'No room has that code.' }[opened.error];
+    sendError(ws, opened.error, text);
+    return null;
+  }
+  return opened.room;
 }
 
 function leaveWorld(ws) {
   const w = ws.world;
   if (!w) return;
   ws.world = null;
+  const room = w.room;
   worldPlayers.delete(w.id);
-  propRegistry.leave(w.id, w.level);
-  worldEffects.leave(w.id);
-  worldDamage.left(w.level);
-  worldBlocks.left(w.level);
+  room.players.delete(w.id);
+  room.props.leave(w.id, w.level);
+  room.social.claims.left(ws, w.level);
+  room.social.protection.leave(ws, w.level, w.id);
+  room.effects.leave(w.id);
+  room.damage.left(w.level);
+  room.blocks.left(w.level);
+  room.health.left(w.id, w.level);
+  room.creatures.left(w.id, w.level);
+  room.rounds.left(ws, w.id);
   // a dropped connection must not leave the car locked forever. The machine
   // stays exactly where it was abandoned; only the chair is freed
-  const freed = clearSeatsOf(w.id);
-  worldBroadcast({ type: 'world-exit', id: w.id });
-  if (freed) announceSeats();
-  worldDirty = true;
+  const freed = clearSeatsOf(room, w.id);
+  worldBroadcast(room, { type: 'world-exit', id: w.id });
+  if (freed) announceSeats(room);
+  room.dirty = true;
+  worldRooms.left(room);
   stopWorldTicker();
 }
 
@@ -1277,6 +1463,8 @@ function handleWorldMove(ws, msg) {
   w.pitch = msg.pitch;
   w.gait = finite(msg.gait) ? Math.max(0, Math.min(1, msg.gait)) : 0;
   w.f = Number.isInteger(msg.f) ? msg.f & W_FLAGS : 0;
+  w.room.health.pose(ws);
+  w.room.rounds.pose(ws);
   // both optional, and absent from older clients: absence is "neither"
   w.e = Number.isInteger(msg.e) && msg.e > 0 && msg.e < W_EMOTE_MAX ? msg.e : 0;
   w.pt = finite(msg.py) && finite(msg.pp);
@@ -1284,7 +1472,7 @@ function handleWorldMove(ws, msg) {
     w.py = msg.py;
     w.pp = Math.max(-1.6, Math.min(1.6, msg.pp));
   }
-  worldDirty = true;
+  w.room.dirty = true;
 }
 
 function handleWorldLevel(ws, msg) {
@@ -1295,19 +1483,36 @@ function handleWorldLevel(ws, msg) {
     return;
   }
   const previousLevel = w.level;
+  const room = w.room;
+  const until = previousLevel === msg.level ? 0 : room.social.protection.banned(ws, msg.level);
+  if (until) {
+    // kicked from where it was walking to: out of the world, as a kick is
+    send(ws, { type: 'world-kicked', level: msg.level, until, by: 0 });
+    leaveWorld(ws);
+    return;
+  }
   w.level = msg.level;
-  propRegistry.leave(w.id, previousLevel);
-  propRegistry.join(ws);
-  worldEffects.snapshot(ws);
-  worldDamage.left(previousLevel);
-  worldDamage.snapshot(ws);
-  worldBlocks.left(previousLevel);
-  worldBlocks.snapshot(ws);
-  worldWeapons.snapshot(ws);
-  if (previousLevel !== w.level) worldWeapons.moved(ws, previousLevel);
+  room.props.leave(w.id, previousLevel);
+  room.social.claims.left(ws, previousLevel);
+  room.social.protection.leave(ws, previousLevel, w.id, true);
+  room.social.protection.join(ws);
+  room.social.claims.join(ws);
+  room.props.join(ws);
+  room.effects.snapshot(ws);
+  room.damage.left(previousLevel);
+  room.damage.snapshot(ws);
+  room.blocks.left(previousLevel);
+  room.blocks.snapshot(ws);
+  room.weapons.snapshot(ws);
+  if (previousLevel !== w.level) room.weapons.moved(ws, previousLevel);
+  if (previousLevel !== w.level) room.health.moved(ws, previousLevel);
+  room.health.snapshot(ws);
+  if (previousLevel !== w.level) room.creatures.moved(ws, previousLevel);
+  room.creatures.snapshot(ws);
+  if (previousLevel !== w.level) room.rounds.moved(ws, previousLevel);
   // the fleet lives in one level; walking a seam out of it is getting out
-  if (clearSeatsOf(w.id)) announceSeats();
-  worldDirty = true;
+  if (clearSeatsOf(room, w.id)) announceSeats(room);
+  room.dirty = true;
 }
 
 // A repaint. The server stores the string and forwards it; it never parses
@@ -1324,7 +1529,7 @@ function handleWorldLook(ws, msg) {
   if (!allowWorld(worldLookRate, ws, WORLD_LOOK_RATE_MAX, WORLD_LOOK_RATE_WINDOW_MS)) return;
   if (ws.look === msg.look) return;
   ws.look = msg.look;
-  worldBroadcast({ type: 'world-look', id: w.id, look: msg.look }, ws);
+  worldBroadcast(w.room, { type: 'world-look', id: w.id, look: msg.look }, ws);
 }
 
 function handleWorldChat(ws, msg) {
@@ -1342,12 +1547,16 @@ function handleWorldChat(ws, msg) {
     sendError(ws, 'too_long');
     return;
   }
+  if (w.room.social.protection.muted(ws)) {
+    sendError(ws, 'muted');
+    return;
+  }
   if (!allowWorld(worldChatRate, ws, WORLD_CHAT_RATE_MAX, WORLD_CHAT_RATE_WINDOW_MS)) {
     sendError(ws, 'rate');
     return;
   }
   // Not stored: world chat is shouted across a field, not a room with history.
-  worldBroadcast({
+  worldBroadcast(w.room, {
     type: 'world-chat',
     id: w.id,
     ...userPayload(ws),
@@ -1359,6 +1568,8 @@ function handleWorldChat(ws, msg) {
 function handleWorldSignal(ws, msg) {
   const w = ws.world;
   if (!w) return;
+  // a muted player is muted on voice too: their handshakes go nowhere
+  if (w.room.social.protection.muted(ws)) return;
   if (!allowWorld(worldSignalRate, ws, WORLD_SIGNAL_RATE_MAX, WORLD_SIGNAL_RATE_WINDOW_MS)) return;
   if (!Number.isInteger(msg.to) || msg.data === null || typeof msg.data !== 'object') {
     strike(ws);
@@ -1368,7 +1579,7 @@ function handleWorldSignal(ws, msg) {
     sendError(ws, 'too_long');
     return;
   }
-  const peer = worldPlayers.get(msg.to);
+  const peer = w.room.players.get(msg.to);
   // Dropped in silence on purpose: a peer that just left, or stepped through a
   // level seam mid-handshake, is a race the caller already recovers from.
   if (!peer || peer === ws || peer.world.level !== w.level) return;
@@ -1381,8 +1592,8 @@ function handleWorldSignal(ws, msg) {
 // from someone standing next to its target (their last reported poses, with
 // room for the playback lag), that neither is sitting in a machine or flying
 // through the world in noclip, and that it is not a firehose.
-function worldSeated(id) {
-  for (const v of worldFleet) if (v.seats.includes(id)) return true;
+function worldSeated(room, id) {
+  for (const v of room.fleet) if (v.seats.includes(id)) return true;
   return false;
 }
 
@@ -1395,13 +1606,13 @@ function handleWorldShove(ws, msg) {
   }
   // dropped, never punished: a lean held into somebody is a steady stream
   if (!allowWorld(worldShoveRate, ws, WORLD_SHOVE_RATE_MAX, WORLD_SHOVE_RATE_WINDOW_MS)) return;
-  const peer = worldPlayers.get(msg.to);
+  const peer = w.room.players.get(msg.to);
   if (!peer || peer === ws || peer.world.level !== w.level) return;
   const p = peer.world;
   if (Math.hypot(p.x - w.x, p.z - w.z) > WORLD_SHOVE_REACH) return;
   if (Math.abs(p.y - w.y) > WORLD_SHOVE_REACH) return;
   if ((w.f | p.f) & W_FLY) return;
-  if (worldSeated(w.id) || worldSeated(p.id)) return;
+  if (worldSeated(w.room, w.id) || worldSeated(w.room, p.id)) return;
   let vx = msg.vx;
   let vz = msg.vz;
   const planar = Math.hypot(vx, vz);
@@ -1431,11 +1642,11 @@ function handleWorldBring(ws, msg) {
   if (!allowWorld(worldShoveRate, ws, WORLD_SHOVE_RATE_MAX, WORLD_SHOVE_RATE_WINDOW_MS)) return;
   const peers = [];
   if (all) {
-    for (const peer of worldPlayers.values()) {
+    for (const peer of w.room.players.values()) {
       if (peer !== ws) peers.push(peer);
     }
   } else {
-    const peer = worldPlayers.get(msg.to);
+    const peer = w.room.players.get(msg.to);
     if (peer && peer !== ws) peers.push(peer);
   }
   const ring = 2.5 + Math.max(0, peers.length - 6) * 0.3;
@@ -1475,7 +1686,7 @@ function handleWorldGrab(ws, msg) {
     return;
   }
   if (!allowWorld(worldGrabRate, ws, WORLD_GRAB_RATE_MAX, WORLD_GRAB_RATE_WINDOW_MS)) return;
-  const peer = worldPlayers.get(msg.to);
+  const peer = w.room.players.get(msg.to);
   if (!peer || peer === ws || peer.world.level !== w.level) return;
   const p = peer.world;
   // a release always goes through, so a victim is never left hanging by a
@@ -1484,7 +1695,7 @@ function handleWorldGrab(ws, msg) {
     if (Math.hypot(p.x - w.x, p.y - w.y, p.z - w.z) > WORLD_GRAB_REACH) return;
     if (Math.hypot(msg.x - w.x, msg.y - w.y, msg.z - w.z) > WORLD_GRAB_REACH) return;
     if (p.f & W_FLY) return;
-    if (worldSeated(p.id)) return;
+    if (worldSeated(w.room, p.id)) return;
   }
   let vx = finite(msg.vx) ? msg.vx : 0;
   let vy = finite(msg.vy) ? msg.vy : 0;
@@ -1539,6 +1750,23 @@ try {
 const ytSearch = createYouTubeSearch({
   allowedOrigins: ALLOWED_ORIGINS,
   enabled: (process.env.YT_SEARCH ?? 'on') !== 'off',
+});
+
+// ------------------------------------------------------- published builds
+// The public gallery of blueprints (builds.js): REST beside the video search
+// and the analytics capture, its own table in this database. A bearer token is
+// resolved the way `hello` resolves one, so an account (or the admin) can
+// publish and delete and a guest can only browse.
+const buildGallery = createBuildGallery({
+  db,
+  allowedOrigins: ALLOWED_ORIGINS,
+  publishMax: Number(process.env.BUILDS_PUBLISH_MAX ?? 5),
+  authenticate: (token) => {
+    if (isAdminToken(token)) return { username: ADMIN_USERNAME, admin: true };
+    const row = stmt.userByToken.get(token);
+    if (!row || Date.now() - row.token_at > TOKEN_TTL_MS) return null;
+    return { username: row.username, admin: false };
+  },
 });
 
 // Admin sockets watching the live event feed -> their unsubscribe function.
@@ -1778,7 +2006,7 @@ function handleMessage(ws, msg) {
       // world's own panel has to change on the plate over their head too, and
       // the roster the other clients hold is the only copy of that name they
       // have. Sent to everyone but us, who already got the nick-ok
-      if (ws.world) worldBroadcast({ type: 'world-name', id: ws.world.id, name: nick }, ws);
+      if (ws.world) worldBroadcast(ws.world.room, { type: 'world-name', id: ws.world.id, name: nick }, ws);
       return;
     }
     case 'join':
@@ -1839,21 +2067,36 @@ function handleMessage(ws, msg) {
       return;
     case 'world-portal':
     case 'world-air-hop':
-      worldEffects.handle(ws, msg);
+      roomOf(ws)?.effects.handle(ws, msg);
       break;
     case 'world-damage':
     case 'world-ruin':
     case 'world-fell':
     case 'world-rebuild':
-      worldDamage.handle(ws, msg);
+      roomOf(ws)?.damage.handle(ws, msg);
       break;
     case 'world-blocks':
-      worldBlocks.handle(ws, msg);
+      roomOf(ws)?.blocks.handle(ws, msg);
       break;
     case 'world-shot':
     case 'world-shot-hit':
     case 'world-wield':
-      worldWeapons.handle(ws, msg, strike);
+      roomOf(ws)?.weapons.handle(ws, msg, strike);
+      break;
+    case 'world-fall':
+    case 'world-health-cmd':
+      roomOf(ws)?.health.handle(ws, msg, strike);
+      break;
+    case 'world-creatures':
+    case 'world-creature-die':
+    case 'world-creature-hit':
+    case 'world-creature-attack':
+    case 'world-creature-spawn':
+    case 'world-creature-cmd':
+      roomOf(ws)?.creatures.handle(ws, msg);
+      break;
+    case 'world-round-cmd':
+      roomOf(ws)?.rounds.handle(ws, msg, strike);
       break;
     case 'world-prop-spawn':
     case 'world-prop-move':
@@ -1865,9 +2108,16 @@ function handleMessage(ws, msg) {
     case 'world-prop-break':
     case 'world-prop-explosion':
     case 'world-prop-meta':
+    case 'world-prop-tag':
     case 'world-prop-joint':
     case 'world-prop-unjoint':
-      propRegistry.handle(ws, msg);
+    case 'world-prop-share':
+      roomOf(ws)?.props.handle(ws, msg);
+      break;
+    // friends, the protection switch, votes, kicks, mutes and chunk claims
+    case 'world-social':
+      if (msg.op === 'claim' || msg.op === 'unclaim') roomOf(ws)?.social.claims.handle(ws, msg);
+      else roomOf(ws)?.social.protection.handle(ws, msg);
       break;
     case 'world-join':
       handleWorldJoin(ws, msg);
@@ -1933,10 +2183,10 @@ const server = http.createServer((req, res) => {
     res.end('ok');
     return;
   }
-  // Two public routes, tried in turn: the browser's video search, then the
-  // analytics capture. Analytics *reads* happen over the authenticated
+  // Three public routes, tried in turn: the browser's video search, the
+  // builds gallery, then the analytics capture. Analytics *reads* happen over the authenticated
   // WebSocket, never here.
-  const routes = [ytSearch, analytics].filter(Boolean);
+  const routes = [ytSearch, buildGallery, analytics].filter(Boolean);
   (async () => {
     for (const route of routes) {
       if (await route.handleHttp(req, res)) return;
@@ -2073,6 +2323,7 @@ function shutdown() {
   for (const ws of wss.clients) ws.terminate();
   wss.close(() => {
     server.close(async () => {
+      worldPersist.flushSync();
       db.close();
       // flushes the last second of buffered events before the process goes
       await analytics?.stop().catch(() => {});

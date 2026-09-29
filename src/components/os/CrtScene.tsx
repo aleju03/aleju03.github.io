@@ -48,7 +48,7 @@ import { columnOf } from '../../game/sandbox/tools/slots'
 import type { PortalHooks } from '../../game/sandbox/tools/portalView'
 import type { Portal, PortalColor, PortalCrossing } from '../../game/sandbox/tools/portals'
 import type { ToolInput } from '../../game/sandbox/tools/types'
-import { createEdges, held, keyHint } from '../../game/sandbox/bindings'
+import { BINDINGS, createEdges, held, keyHint } from '../../game/sandbox/bindings'
 import {
   createConsole, msg as bilingual, say as sayIn, type Console, type Msg, type SandboxHost,
 } from '../../game/sandbox/commands'
@@ -60,7 +60,11 @@ import Crosshair, { type CrosshairAim } from './Crosshair'
 import SpawnMenu, { type CatalogueSource, type OrderLine } from './SpawnMenu'
 import BlockBar from './BlockBar'
 import MapPicker from './MapPicker'
+import { builds } from './buildsStore'
+import { buildNotices } from '../../game/sandbox/blueprint/clipboard'
 import ToolSwitcher, { type BeltState } from './ToolSwitcher'
+import PhotoCamera from './PhotoCamera'
+import { photoStore } from './photoStore'
 import { useI18n } from '../../i18n'
 import type { NetPose, Vehicle, VehicleId } from '../../game/vehicles/types'
 import { classifyGpu, gfx, setGfxTier, type GfxTier } from '../../game/world/quality'
@@ -82,9 +86,28 @@ import { createWorldEffects } from '../../game/net/worldEffects'
 import { createPropNetwork } from '../../game/net/remoteProps'
 import { createDamageNetwork } from '../../game/net/remoteDamage'
 import { createBlockNetwork } from '../../game/net/remoteBlocks'
+import { createSocialNetwork, describe as describeNote } from '../../game/net/remoteSocial'
+import '../../game/sandbox/socialCommands'
 import { createRemoteFleet } from '../../game/net/remoteVehicles'
 import { scatterSpawn } from '../../game/net/spawn'
 import { createWorldNet, isMintedName, worldConfigured, type WorldStatus } from './worldNet'
+import { getRoomState, subscribeRoom } from './worldRoom'
+import RoomChip from './RoomChip'
+import { createHealthState, type HealthState } from '../../game/player/health'
+import { deathSound, hurtSound, respawnSound } from '../../game/player/healthSfx'
+import '../../game/sandbox/healthCommands'
+import '../../game/sandbox/creatureCommands'
+import type { CreatureDirector } from '../../game/creatures/director'
+import type { PlayerRef } from '../../game/creatures/world'
+import type { CreatureServerMessage } from '../../game/net/creatureProtocol'
+import '../../game/sandbox/roundCommands'
+import { createRoundState, type RoundState } from '../../game/net/remoteRounds'
+import { createRoundDirector, type RoundDirector } from '../../game/modes/director'
+import { createRingLayer } from '../../game/modes/ringLayer'
+import { sideColor } from '../../game/modes/defs'
+import RoundHud from './RoundHud'
+import { bindRound } from './worldRound'
+import HealthHud from './HealthHud'
 import PauseScreen, { type PersonWhere } from './PauseScreen'
 import { PIXEL_LINES_K, PREFS_KEY, detailTier, loadPrefs } from './roamPrefs'
 import { snapPixelProofs, type PixelProofs } from './pixelProofs'
@@ -411,6 +434,8 @@ export default function CrtScene({
   /** the tool gun's readout: its `mode:step` and the keys it is aimed at */
   const [toolLine, setToolLine] = useState<{ state: string; keys: string | null } | null>(null)
   const [weaponLine, setWeaponLine] = useState<WeaponTool | null>(null)
+  /** the camera is in hand: its keys are on the tape */
+  const [cameraOut, setCameraOut] = useState(false)
   /** what is in your hands, for the switcher; `n` counts changes */
   const [belt, setBelt] = useState<BeltState>({ slot: 0, portal: false, n: 0 })
   /** Cubeland's hotbar, once the map has been loaded (BlockBar.tsx) */
@@ -418,6 +443,10 @@ export default function CrtScene({
   const [blockPics, setBlockPics] = useState<Map<string, string> | null>(null)
   /** what the crosshair is on (Crosshair.tsx) */
   const [aim, setAim] = useState<CrosshairAim>('none')
+  /** hit points and the killfeed (HealthHud.tsx): the store and a name lookup */
+  const [healthHud, setHealthHud] = useState<{ state: HealthState; nameOf: (id: number) => string } | null>(null)
+  /** the round's store and director, for its HUD (game/modes) */
+  const [roundHud, setRoundHud] = useState<{ state: RoundState; director: RoundDirector; nameOf: (id: number) => string } | null>(null)
   /** the channel the set is showing, while you are sitting in front of it */
   const [tvChannel, setTvChannel] = useState<string | null>(null)
   const [locked, setLocked] = useState(false)
@@ -464,6 +493,9 @@ export default function CrtScene({
   }, [notice])
   /** and its list of everyone else out there, taken at the same moment */
   const [people, setPeople] = useState<PersonWhere[]>([])
+  // who may use whose things, as the pause sheet's people page shows it
+  const [permState, setPermState] = useState({ protect: true, canSwitch: false, friends: [] as string[] })
+  const permRef = useRef<{ protect: (on: boolean) => void; friend: (name: string, on: boolean) => void } | null>(null)
   // the prompt buttons route here; E does the same through the input service
   const enterRef = useRef<(() => void) | null>(null)
   const leaveRef = useRef<(() => void) | null>(null)
@@ -557,6 +589,10 @@ export default function CrtScene({
   const resumeRef = useRef<(() => void) | null>(null)
   /** go to a map (see goMap in the scene) */
   const goMapRef = useRef<((id: MapId) => void) | null>(null)
+  /** the room wish changed (worldRoom.ts): drop the socket and re-enter */
+  const roomRestartRef = useRef<(() => void) | null>(null)
+  /** drops the round store from the menus' bridge (worldRound.ts) */
+  const roundUnbindRef = useRef<(() => void) | null>(null)
   /** a print on the map sheet: that map, or the world let go of */
   const pickMapRef = useRef<((id: MapId) => void) | null>(null)
   const failRef = useRef(onFail)
@@ -640,6 +676,7 @@ export default function CrtScene({
     const mount = mountRef.current
     if (!mount) return
     let disposed = false
+    const unsubRoom = subscribeRoom(() => roomRestartRef.current?.())
     let raf = 0
     let webgl: THREE.WebGLRenderer | null = null
     let scene: THREE.Scene | null = null
@@ -648,6 +685,7 @@ export default function CrtScene({
     // to be torn down explicitly rather than left to the disposer: an engine
     // that is only garbage-collected keeps idling under an unmounted scene
     let disposeFleet: (() => void) | null = null
+    let offBuildNotes: (() => void) | null = null
     let disposeLook: (() => void) | null = null
     const disposer = createDisposer()
 
@@ -1501,6 +1539,9 @@ export default function CrtScene({
         let partSeatRequest: { id: number; until: number } | null = null
         let toolLineNow = ''
         let weaponLineNow: WeaponTool | null = null
+        /** the camera took a photograph: copy the canvas after the next render */
+        let photoWant = false
+        let cameraOutNow = false
         /** the belt slot the switcher last showed; the belt starts on hands */
         let beltSlotNow = 0
         /** props still scaling in from a spawn, and how long that takes */
@@ -1892,6 +1933,24 @@ export default function CrtScene({
         })
         const shoveTaker = createShoveTaker()
         /*
+          Hit points (game/player/health.ts): the server keeps the numbers,
+          this remembers them, and the reactions (the flop of a death, the
+          walk back to the spawn, the sounds) are wired below the console's
+          host, which they use.
+        */
+        const health = createHealthState({ level: () => levels.current.id })
+        /*
+          Rounds (game/net/remoteRounds.ts, game/modes): the store is fed by the
+          socket like health, the director is built below the console's host,
+          which it acts through, and the HUD and the menus read both.
+        */
+        const roundState = createRoundState()
+        let rounds: RoundDirector | null = null
+        setHealthHud({
+          state: health,
+          nameOf: (id) => remote.roster.get(id)?.name ?? '?',
+        })
+        /*
           The physgun on other players (game/net/grab.ts): the same deal as a
           shove. Our beam streams where their limb should be and their client
           pins its own ragdoll to it; their beam does the same to us, and we
@@ -1966,6 +2025,14 @@ export default function CrtScene({
           seatOf: seatFor,
           // a weapon in their hands raises both arms onto their look
           aimOf: (id) => (tools?.weapons.wields.has(id) ? 1 : 0),
+          // a prop-hunt disguise stands in for the body, and a round's sides
+          // colour the name plates
+          hidden: (id) => rounds?.hidden(id) ?? false,
+          tintOf: (id) => {
+            if (!roundState.inRound && !roundState.watching) return null
+            const c = sideColor(roundState.mode, roundState.partOf(id)?.team ?? '')
+            return c ? `${c}d8` : null
+          },
         }
 
         const pushFeed = (line: Omit<FeedLine, 'key' | 'at'>) =>
@@ -1981,6 +2048,8 @@ export default function CrtScene({
         /** somebody bumped or shot us: our own body, our own call (a
             stumble through the walk, or past the flop line the ragdoll) */
         const takeShove = (vx: number, vy: number, vz: number) => {
+          // a disguised prop stands its ground: a bolt does not flop a barrel
+          if (rounds?.disguisedSelf()) return
           shoveV.set(vx, vy, vz)
           const able =
             !fleet.riding && !seating.current && partSeat === null && !walk.noclip && !godMode && !rig.down && !levels.frozen
@@ -1993,14 +2062,71 @@ export default function CrtScene({
             walk.push(shoveV.x, 0, shoveV.z)
           }
         }
+        // who may touch whose things (game/net/remoteSocial.ts): the mirror of
+        // the server's friends, protection switch and claims
+        const social = createSocialNetwork((m) => net?.social(m), { admin: () => sessionRef.current?.admin === true })
+        const quiet = (en: string, es: string) => pushFeed({ tone: 'system', text: bilingual(en, es) })
+        // dev only: the ownership drive reads the mirror
+        if (import.meta.env.DEV) Object.assign(window, { __social: social })
+        permRef.current = {
+          protect: (on) => social.send({ op: 'protect', on }),
+          friend: (name, on) => social.send({ op: on ? 'friend' : 'unfriend', name }),
+        }
+        social.onChange(() =>
+          setPermState({
+            protect: social.protect,
+            canSwitch: sessionRef.current?.admin === true || (social.host !== 0 && social.host === remote.you),
+            friends: [...social.friends],
+          }),
+        )
         const propNet = createPropNetwork(
           (m) => net?.prop(m),
           (en, es) => pushFeed({ tone: 'err', text: bilingual(en, es) }),
+          undefined,
+          {
+            may: social.may,
+            denied: (owner) => quiet(`that belongs to ${owner}`, `eso es de ${owner}`),
+          },
         )
+        /** the chunk column of Cubeland under the walker, once it is built */
+        let blockChunk: ((x: number, z: number) => { cx: number; cz: number }) | null = null
         // what players break: the buildings' lost pieces and the felled trees
         const damageNet = createDamageNetwork((m) => net?.damage(m))
+        // The living things (game/creatures/): one director per level that
+        // has any, made with that level's sandbox. The server's last word on
+        // who hosts, and its last table, are kept per level for a director
+        // made after they arrived.
+        const creatureDirs = new Map<string, CreatureDirector>()
+        const creatureMail = new Map<string, { host?: CreatureServerMessage; rows?: CreatureServerMessage }>()
+        const creatureList: PlayerRef[] = []
+        /** the walker first, then everyone in this level */
+        const creaturePlayers = (): PlayerRef[] => {
+          creatureList.length = 0
+          creatureList.push({ id: remote.you ?? 0, x: camera.position.x, y: walk.feetY, z: camera.position.z, self: true, dead: health.dead })
+          for (const [id, p] of remote.players) if (p.here) creatureList.push({ id, x: p.x, y: p.y, z: p.z, self: false, dead: p.down })
+          return creatureList
+        }
+        const creatureRoute = (m: CreatureServerMessage) => {
+          if (m.type === 'world-creature-knock') {
+            // a mob's blow: a stumble for a hit, a flop for a blast
+            takeShove(m.vx * 0.55, 3, m.vz * 0.55)
+            return
+          }
+          if (m.type === 'world-creature-no') {
+            quiet('only the first player here or an admin can do that', 'solo el primer jugador de aquí o un administrador puede hacer eso')
+            return
+          }
+          const mail = creatureMail.get(m.level) ?? {}
+          if (m.type === 'world-creature-host') mail.host = m
+          else if (m.type === 'world-creatures') mail.rows = m
+          creatureMail.set(m.level, mail)
+          creatureDirs.get(m.level)?.receive(m)
+        }
         // Cubeland's blocks: attached when the map is first loaded
-        const blockNet = createBlockNetwork((m) => net?.blocks(m))
+        const blockNet = createBlockNetwork(
+          (m) => net?.blocks(m),
+          (owner) => quiet(`that chunk belongs to ${owner}`, `ese chunk es de ${owner}`),
+        )
         const worldEffects = createWorldEffects({
           send: (m) => net?.effect(m),
           level: () => levels.current.id,
@@ -2022,8 +2148,17 @@ export default function CrtScene({
           })
         }
 
+        // the room the socket was opened for. Rooms are chosen on the map
+        // sheet (worldRoom.ts), and a socket is one room's for life: a change
+        // of wish is a full leave and re-join, which is exactly what sitting
+        // down and standing up again does, so nothing here can be half-stale
+        let joinedRoom: string | null = null
         const joinWorld = () => {
           if (net || !worldConfigured()) return
+          joinedRoom = getRoomState().code
+          // the paste pre-check must match the server's per-owner prop cap
+          // (protection.js): 150 in the public world, 400 in a private room
+          void import('../../game/sandbox/blueprint/blueprint').then((m) => m.setPropCap(joinedRoom ? 400 : 150))
           // The room is walkable long before the desktop has been logged into
           // — that is the whole of the /world entrance — so an absent session
           // is a guest, not a reason to stay out of the world. The server
@@ -2036,7 +2171,7 @@ export default function CrtScene({
             // is wearing now, which may not be what they wore at join
             look: () => packLook(lookRef.current),
             onStatus: (status) => {
-              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); tools?.weapons.offline() }
+              if (status !== 'live') { propNet.offline(); worldEffects.offline(); damageNet.offline(); blockNet.offline(); social.offline(); tools?.weapons.offline(); health.offline(); creatureMail.clear(); for (const d of creatureDirs.values()) d.reset(); roundState.offline() }
               setMp((m) => ({ ...m, status }))
             },
             onName: (name) => setMyName(name),
@@ -2047,10 +2182,17 @@ export default function CrtScene({
               worldEffects.receive(msg)
               damageNet.receive(msg)
               blockNet.receive(msg)
+              social.receive(msg)
               // shots, hits and who is holding what (sandbox/tools/weapons.ts)
               tools?.receive(msg)
+              health.receive(msg)
+              if (msg.type.startsWith('world-creature')) creatureRoute(msg as CreatureServerMessage)
+              roundState.receive(msg)
               switch (msg.type) {
                 case 'world-welcome':
+                  // god mode is ours to declare, and a new socket has forgotten
+                  if (godMode) net?.health({ type: 'world-health-cmd', cmd: 'god', on: true })
+                  for (const d of creatureDirs.values()) d.reset()
                   remote.welcome(msg.you, msg.tick, msg.players)
                   // what we spawn from here on is ours by the server's name
                   // for us, which is what undo and cleanup filter on
@@ -2099,6 +2241,19 @@ export default function CrtScene({
                   }
                   break
                 }
+                // a notice from the server's ownership rules: words, in the
+                // chat rail where a vote is being run and everyone can see it
+                case 'world-social-note': {
+                  const line = describeNote(msg)
+                  if (line) pushFeed({ tone: 'system', text: bilingual(line.en, line.es) })
+                  break
+                }
+                // removed from this world for a while: the walk carries on
+                // alone, and the server says the same again on any rejoin
+                case 'world-kicked':
+                  quiet('you were removed from this world for 10 minutes', 'te sacaron de este mundo por 10 minutos')
+                  leaveWorld()
+                  break
                 case 'world-tick':
                   remote.tick(msg.players, performance.now())
                   if (msg.vehicles) fleetNet.tick(msg.vehicles, performance.now())
@@ -2180,6 +2335,7 @@ export default function CrtScene({
         }
 
         const leaveWorld = () => {
+          social.offline()
           propNet.offline()
           worldEffects.offline()
           damageNet.offline()
@@ -2206,6 +2362,16 @@ export default function CrtScene({
           for (const { sb } of sandboxes.values()) historyOf(sb).me = LOCAL
           setTyping(null)
           typingRef.current = false
+        }
+
+        roomRestartRef.current = () => {
+          if (!net || getRoomState().code === joinedRoom) return
+          // out of the caller's stack: this is usually a socket handler
+          setTimeout(() => {
+            if (disposed || !net || getRoomState().code === joinedRoom) return
+            leaveWorld()
+            joinWorld()
+          }, 0)
         }
 
         /** move off the shared spawn tile onto our slot. Only ever fires once,
@@ -2252,6 +2418,20 @@ export default function CrtScene({
           setTyping(seed)
           input.clearKeys() // nothing stays latched while the line has the keys
           input.releaseLock()
+        }
+        /** E on a lamp, a stick of dynamite or a sign (sandbox/creative): a
+            sign opens the console with `/sign` and its words already typed */
+        let creativeUseAt = 0
+        const workCreative = () => {
+          if (reachPropNow === null || !sandbox || !sandboxMod) return false
+          // a held E repeats: one switch per press, not a flicker
+          const at = performance.now()
+          if (at - creativeUseAt < 450) return sandboxMod.creativeOf(sandbox).verb(reachPropNow, 'en') !== null
+          creativeUseAt = at
+          const cr = sandboxMod.creativeOf(sandbox)
+          const r = cr.use(reachPropNow)
+          if (r === 'sign') openChat(`/sign ${cr.tagOf(reachPropNow).text}`)
+          return r !== null
         }
         let menuNow = false
         /** the catalogue's find line has the keyboard (see SpawnMenu.tsx) */
@@ -2438,6 +2618,7 @@ export default function CrtScene({
               }
               if (takeSeat()) return true
               if (takePartSeat()) return true
+              if (workCreative()) return true
             }
             if (vehicleNow) {
               enterVehicle(vehicleNow.id, vehicleNow.seat)
@@ -2529,7 +2710,7 @@ export default function CrtScene({
             floor, so the console and the noclip key do too: the body stands
             up on the spot, at once, where the ragdoll came to rest */
         const standNow = () => {
-          if (!rig.down) return
+          if (!rig.down || health.dead) return
           rig.getupSpot(getupPt)
           const level = levels.current
           chase.drop()
@@ -2626,8 +2807,35 @@ export default function CrtScene({
             return walk.noclip
           },
           god: (on) => {
-            if (on !== undefined) godMode = on
+            if (on !== undefined && on !== godMode) {
+              godMode = on
+              // the server refuses a hurt god (and a god in a fight)
+              net?.health({ type: 'world-health-cmd', cmd: 'god', on })
+            }
             return godMode
+          },
+          rounds: {
+            state: () => roundState,
+            send: (m) => { net?.round(m); return net !== null },
+          },
+          health: {
+            read: () => ({ hp: health.hp, max: health.max, dead: health.dead, pvp: health.pvp, online: net !== null }),
+            kill: () => { net?.health({ type: 'world-health-cmd', cmd: 'kill' }); return net !== null },
+            hurt: (n) => { net?.health({ type: 'world-health-cmd', cmd: 'hurt', n }); return net !== null },
+            heal: () => { net?.health({ type: 'world-health-cmd', cmd: 'heal' }); return net !== null },
+            pvp: (on) => { net?.health({ type: 'world-health-cmd', cmd: 'pvp', on }); return net !== null },
+          },
+          // the living things of the live level (sandbox/creatureCommands.ts);
+          // absent where nothing lives
+          get creatures(): import('../../game/sandbox/creatureCommands').CreatureHost | undefined {
+            const d = creatureDirs.get(levels.current.id)
+            if (!d) return undefined
+            return {
+              command: (op) => d.command(op),
+              spawn: (kind) =>
+                d.spawn(kind, camera.position.x - Math.sin(walk.yaw) * 10, camera.position.z - Math.cos(walk.yaw) * 10),
+              count: () => d.count(),
+            }
           },
           thirdPerson: (on) => {
             const now = on ?? prefsRef.current.third
@@ -2655,6 +2863,14 @@ export default function CrtScene({
             if (!net) return false
             net.chat(text)
             return true
+          },
+          social: {
+            send: (m) => social.send(m),
+            admin: () => sessionRef.current?.admin === true,
+            protect: () => social.protect,
+            friends: () => social.friends,
+            claims: () => social.claims,
+            chunkHere: () => (levels.current.id === 'cubeland' && blockChunk ? blockChunk(headPos.x, headPos.z) : null),
           },
           clear: () => setFeed([]),
           // the belt's tools by name (`give pistol`, `give ballesta`): handed
@@ -2689,6 +2905,131 @@ export default function CrtScene({
           },
         }
         const sbConsole = createConsole(host)
+        /*
+          The round director's hands in this scene (game/modes/types.ts's
+          ModeHost): walking somewhere, changing map, asking for the car,
+          what the crosshair is on, where the rings stand. It is built here,
+          under the host, because every one of them is a thing the console
+          already does.
+        */
+        const ringLayer = createRingLayer(scene!)
+        const roundName = (id: number) =>
+          id === roundState.you ? (langRef.current === 'es' ? 'tú' : 'you') : remote.roster.get(id)?.name ?? '?'
+        rounds = createRoundDirector(roundState, {
+          you: () => roundState.you,
+          levelId: () => levels.current.id,
+          lang: () => (langRef.current === 'es' ? 'es' : 'en'),
+          nameOf: roundName,
+          here: () => ({ x: headPos.x, y: walk.feetY, z: headPos.z, yaw: walk.yaw }),
+          riding: () => !!fleet.riding,
+          teleport: (x, z, y, yaw) => host.teleport?.(x, z, y, yaw),
+          goLevel: (level) => {
+            resumeRef.current?.()
+            return goMap(mapOf(level))
+          },
+          send: (m) => net?.round(m),
+          others: function* () {
+            for (const [id, p] of remote.players) if (p.here) yield { id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }
+          },
+          aimedProp: () => {
+            const a = host.aim?.()
+            const hit = a && sandbox ? sandbox.raycast(a.origin, a.dir, 70, { props: true, world: true }) : null
+            return hit?.prop ? { kind: hit.prop.kind.id } : null
+          },
+          say: (text, tone) => pushFeed({ tone: tone ?? 'system', text }),
+          driveCar: () => {
+            orderVehicle('car')
+            window.setTimeout(() => enterVehicle('car'), 500)
+          },
+          groundAt: (x, z) => floorOf(levels.current, x, z),
+          rings: (rings) => ringLayer.set(rings, (x, z) => floorOf(levels.current, x, z)),
+          cue: (kind) => menuTick(kind === 'lap' ? 'tab' : 'pick'),
+          teamSpawns: (team) => levels.current.teamSpawns?.[team] ?? [],
+          scene: null,
+        })
+        setRoundHud({ state: roundState, director: rounds, nameOf: roundName })
+        const unbindRound = bindRound({
+          state: roundState,
+          send: (m) => net?.round(m),
+          nameOf: roundName,
+          headcount: () => remote.players.size + 1,
+          isAdmin: () => false,
+        })
+        const roundEdges = new Map<string, boolean>()
+        /** one edge per key per frame, for the mode modules */
+        const roundPressed = (action: string) => {
+          const codes: readonly string[] =
+            action === 'disguise' ? BINDINGS.disguise
+              : action === 'point' ? BINDINGS.point
+                : action.startsWith('vote') ? [BINDINGS.vote[Number(action.slice(4)) - 1]]
+                  : []
+          const down = codes.some((c) => input.keys.has(c))
+          const was = roundEdges.get(action) ?? false
+          roundEdges.set(action, down)
+          return down && !was
+        }
+        /** every frame a round is on: the modes' own tick, the rings, the disguises */
+        const roundsFrame = (dt: number) => {
+          if (!rounds) return
+          ringLayer.update(dt)
+          if (roundState.phase !== 'lobby' || rounds.active) {
+            rounds.tick({ dt, pressed: (a) => roundPressed(a) })
+          }
+          rounds.syncDisguises(sandbox?.root ?? null, (function* () {
+            for (const [id, p] of remote.players) if (p.here) yield { id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }
+          })())
+        }
+        roundUnbindRef.current = unbindRound
+        /*
+          What hit points make the body do. A death is the ordinary ragdoll
+          with the recovery held (the wantsUp test above): out of whatever we
+          were in, thrown away from whoever did it, and left in a heap until
+          the server says we are back. The respawn is the level's own spawn
+          (or the spot a mode chose), scattered a little so a fight's
+          survivors do not all stand up on one tile.
+        */
+        health.on((e) => {
+          if (e.type === 'hurt') {
+            hurtSound(e.amount)
+          } else if (e.type === 'died') {
+            deathSound()
+            if (levels.frozen) return
+            if (fleet.riding) leaveVehicle()
+            if (seating.current) leaveSeat()
+            leavePartSeat()
+            setNoclip(false)
+            const from = e.by ? remote.players.get(e.by) : null
+            let dx = Math.sin(walk.yaw)
+            let dz = Math.cos(walk.yaw)
+            if (from) {
+              const ax = camera.position.x - from.x
+              const az = camera.position.z - from.z
+              const len = Math.hypot(ax, az)
+              if (len > 0.01) { dx = ax / len; dz = az / len }
+            }
+            rig.flop(dx * 8, 5, dz * 8)
+          } else if (e.type === 'respawn') {
+            respawnSound()
+            const level = levels.current
+            const roundSpot = rounds?.respawnSpot()
+            const at = e.x !== undefined && e.z !== undefined
+              ? { x: e.x, z: e.z, yaw: walk.yaw }
+              : roundSpot
+                ? { x: roundSpot.x, z: roundSpot.z, yaw: roundSpot.yaw }
+                : level.house
+                ? { x: 5.5, z: -2.6, yaw: 0 }
+                : { x: level.spawn.x, z: level.spawn.z, yaw: level.spawn.yaw }
+            const clear = (cx: number, cz: number) => {
+              const floor = spawnY(level, cx, cz)
+              return !blockedAt(cx, cz, floor, floor + EYE, level.collision, EYE * 0.12)
+            }
+            const p = scatterSpawn(at.x, at.z, 1 + Math.floor(Math.random() * 8), clear)
+            host.teleport?.(p.x, p.z, level.house ? undefined : level.spawn.y, at.yaw)
+          } else if (e.type === 'refused') {
+            if (e.cmd === 'god') godMode = false
+            pushFeed({ tone: 'err', text: bilingual('not while pvp is on', 'no mientras el pvp está activo') })
+          }
+        })
         consoleRef.current = sbConsole
         sbConsole.onPrint((l) => pushFeed(l))
         // the console line's enter: a slash runs a command, anything else is
@@ -2706,6 +3047,30 @@ export default function CrtScene({
               text: bilingual('nobody out here to hear it', 'no hay nadie aquí que lo escuche'),
             })
           }
+        }
+        // the builds book (BuildsPanel.tsx, buildsStore.ts): a blueprint set
+        // down at the crosshair, the book brought up by `/builds`, and the
+        // duplicator's lines in the feed
+        {
+          let actions: typeof import('../../game/sandbox/blueprint/actions') | null = null
+          void import('../../game/sandbox/blueprint/actions').then((m) => { actions = m })
+          builds.bind({
+            session: () => sessionRef.current,
+            paste: (bp) => {
+              const sb = host.sandbox()
+              if (!sb || !actions) return false
+              setMenu(false)
+              return actions.pasteAtCrosshair(host, sb, bp).ok
+            },
+            open: () => {
+              typingRef.current = false
+              setTyping(null)
+              setMenu(true)
+            },
+          })
+          const offNotes = buildNotices.subscribe((n) =>
+            pushFeed({ tone: n.tone, text: bilingual(n.en, n.es) }))
+          offBuildNotes = offNotes
         }
         // a click in the catalogue is a spawn at the crosshair, the same one
         // `spawn <kind>` does, without the echo
@@ -3021,9 +3386,12 @@ export default function CrtScene({
             if (rig.ragdolling) rig.reset()
             if (level === from) return
             propNet.setLevel(level.id)
+            social.setLevel(level.id)
             worldEffects.setLevel(level.id)
             damageNet.setLevel(level.id)
             blockNet.setLevel(level.id)
+            health.newLevel()
+            for (const d of creatureDirs.values()) d.reset()
             net?.setLevel(level.id)
             // the server frees a chair at a level change: take it back
             if (craft?.spacecraft) reclaimSeat(craft.id)
@@ -3059,9 +3427,12 @@ export default function CrtScene({
             // announced: until it is, we are still drawing the crowd we just
             // walked away from, and they are still drawing us
             propNet.setLevel(level.id)
+            social.setLevel(level.id)
             worldEffects.setLevel(level.id)
             damageNet.setLevel(level.id)
             blockNet.setLevel(level.id)
+            health.newLevel()
+            for (const d of creatureDirs.values()) d.reset()
             net?.setLevel(level.id)
             rig.reset() // a ragdoll must not straddle a level swap
             rig.face(spawn.yaw)
@@ -3177,6 +3548,12 @@ export default function CrtScene({
         const lampBuf = new Float32Array(16 * 3)
         const lampRadii = new Float32Array(16)
         const worldLamps = new Float32Array(16 * 3)
+        // the lamps people have set down (sandbox/creative): a few pools of
+        // their own, ahead of the street's
+        const PROP_POOLS = 4
+        const propLamps = new Float32Array(PROP_POOLS * 3)
+        const propLampR = new Float32Array(PROP_POOLS)
+        let lampVer = -1
         const houseDist = new Float32Array(16)
         /*
           What the look is actually handed: every lamp still showing, with
@@ -3221,6 +3598,12 @@ export default function CrtScene({
             lampBuf[j * 3 + 2] = lz
             lampRadii[j] = src[i * 4 + 3]
           }
+          if (sandbox && sandboxMod) {
+            const k = sandboxMod.creativeOf(sandbox).lampPools(p.x, p.z, propLamps, propLampR, Math.min(PROP_POOLS, WANT_MAX - n))
+            lampBuf.set(propLamps.subarray(0, k * 3), n * 3)
+            lampRadii.set(propLampR.subarray(0, k), n)
+            n += k
+          }
           const m = outside.nearLamps(p.x, p.z, worldLamps, WANT_MAX - n)
           lampBuf.set(worldLamps.subarray(0, m * 3), n * 3)
           lampRadii.fill(8.5, n, n + m)
@@ -3243,6 +3626,15 @@ export default function CrtScene({
           const open = !!levels.current.outdoors
           const p = camera.position
           airAskAge++
+          // a lamp set down, taken up or switched shows at once, not at the
+          // next scheduled look
+          if (sandbox && sandboxMod) {
+            const v = sandboxMod.creativeOf(sandbox).lampVersion
+            if (v !== lampVer) {
+              lampVer = v
+              airAskAge = 999
+            }
+          }
           if (
             !Number.isFinite(airAskX) || airAskAge > 45 ||
             (p.x - airAskX) ** 2 + (p.z - airAskZ) ** 2 > 36
@@ -3387,6 +3779,13 @@ export default function CrtScene({
           applyLight()
           renderPortals()
           look.render(scene, camera)
+          // a photograph: the canvas is copied here, in the task that drew
+          // it, because a WebGL canvas without preserveDrawingBuffer is blank
+          // by the next one (photoStore.ts)
+          if (photoWant) {
+            photoWant = false
+            photoStore.capture(webgl.domElement)
+          }
           if (proofWaiters.length) {
             const sc = scene
             const waiting = proofWaiters
@@ -3600,6 +3999,7 @@ export default function CrtScene({
           if (level.crowd) outside.knockPeople(impacts)
           // ...and a crate on the physgun is solid to them too
           if (level.crowd && sandbox && !pausedNow) outside.pressPeople(sandbox)
+          if (level.creatures) creatureDirs.get(level.id)?.knock(impacts)
           // v swaps the boom for the cockpit. It is not the walk's saved
           // third-person preference — a car has two views and neither is the
           // one the pause menu's toggle means
@@ -3663,8 +4063,11 @@ export default function CrtScene({
               }
             }
             remote.sample(now, dt)
+            health.tick(dt)
+            avatarEnv.hpOf = health.vitalsOf
             avatarEnv.collision = level.collision
             avatarEnv.ceilingY = level.ceilingY
+            roundsFrame(dt)
             avatars.update(remote, dt, avatarEnv)
             remoteGrabs.tick(dt)
             voice?.update(remote.players, camera, dt)
@@ -3886,7 +4289,7 @@ export default function CrtScene({
             // a downed body forfeits movement until it has stood back up, and
             // so does a seated one: the seat owns the lens until E gives it
             // back. Gravity and the crouch ease keep integrating either way
-            frozen: levels.frozen || rig.down || !!sitting,
+            frozen: levels.frozen || rig.down || !!sitting || !!rounds?.frozen(),
             groundY: level.groundY,
             groundAt: portalsOn ? portalWalk!.ground(level) : level.groundYAt,
             flyFloor: level.noclipFloor ? level.groundYAt : undefined,
@@ -3894,12 +4297,18 @@ export default function CrtScene({
             ceilingY: level.ceilingAt ? level.ceilingAt(camera.position.x, camera.position.z, walk.feetY) : level.ceilingY,
             waterY: level.waterY,
             collision: level.collision,
-            fovBase: prefsRef.current.fov,
+            // the camera's hand-held zoom narrows the lens (tools/camera.ts)
+            fovBase: tools ? tools.camera.fov(prefsRef.current.fov) : prefsRef.current.fov,
           })
           // ...and whatever went into one comes out of the other
           if (portalsOn) portalWalk!.after(step.vx, step.vy, step.vz)
           // a fall that is too far to land lands you flat instead, carried on
           // with whatever speed you came in with
+          // a hard landing is reported for the server to weigh (health.js
+          // believes it only as far as the drop it watched us make)
+          if (step.landing > 30 && !sitting && !walk.noclip && !godMode && !health.dead) {
+            net?.health({ type: 'world-fall', speed: Math.round(step.landing * 10) / 10 })
+          }
           if (step.landing > FALL_FLOP && !rig.down && !sitting && !godMode) {
             rig.flop(step.vx, Math.min(6, step.landing * 0.15), step.vz)
           }
@@ -3935,7 +4344,7 @@ export default function CrtScene({
           // the world, standing: a seat, a heap on the floor and the pause
           // sheet all holster it
           // (a body on your own beam is down on purpose: the beam keeps it)
-          toolsLive = !!tools && !!sandbox && !sitting && (!rig.down || tools.physgun.holdsSelf) && fps && !rig.acting
+          toolsLive = !!tools && !!sandbox && !sitting && (!rig.down || tools.physgun.holdsSelf) && fps && !rig.acting && !rounds?.locked()
           if (tools && !pausedNow) {
             const k = input.keys
             // the number keys pick emotes while the wheel is up, and the click
@@ -3943,7 +4352,7 @@ export default function CrtScene({
             // button comes up)
             if (wheelSwallow && !held(k, 'grab') && !held(k, 'freeze')) wheelSwallow = false
             const gunsOff = wheel.open || wheelSwallow
-            if (!wheel.open) {
+            if (!wheel.open && !rounds?.locked()) {
               // a column per key, again steps down it (toolbelt.ts's COLUMNS)
               if (edges.pressed('slot1')) tools.column(0)
               else if (edges.pressed('slot2')) tools.column(1)
@@ -3979,6 +4388,23 @@ export default function CrtScene({
               toolLineNow = tl
               setToolLine(tl ? { state: tools.toolgun.state, keys: tools.toolgun.aimedKeys } : null)
             }
+            // the camera: a click asked for a photograph (taken after the
+            // next render, in the same task), the zoom, the viewfinder and
+            // the keys that save and copy the last one
+            {
+              const cam = toolsLive && tools.tool === 'camera'
+              if (cam !== cameraOutNow) {
+                cameraOutNow = cam
+                setCameraOut(cam)
+                photoStore.setHeld(cam)
+              }
+              photoStore.setZoom(tools.camera.zoom)
+              if (tools.camera.takeShot()) photoWant = true
+              if (cam) {
+                if (edges.pressed('photoSave')) photoStore.save()
+                if (edges.pressed('photoCopy')) void photoStore.copy()
+              }
+            }
             // a change of what is in your hands, however it came (a key, the
             // wheel, `give`, the catalogue): the tags come down (ToolSwitcher.tsx)
             if (tools.slot !== beltSlotNow) {
@@ -3996,6 +4422,11 @@ export default function CrtScene({
           // the props: one fixed-step physics frame, the walker's shoves and
           // weight in, a ride carried out (it moves camera x/z, so it runs
           // before anything below reads the head)
+          // the creatures, ahead of the props' tick: their parts are proxies the
+          // sandbox's batcher writes out at the end of it
+          if (sandbox && level.creatures) {
+            creatureDirs.get(level.id)?.update(dt, !pausedNow && !levels.frozen, creaturePlayers())
+          }
           if (sandbox) {
             // a flyer goes through props like everything else, so nothing
             // is shoved and nothing is stood on
@@ -4102,6 +4533,7 @@ export default function CrtScene({
           const wantsUp =
             rig.ragdolling &&
             rig.settled &&
+            !health.dead &&
             (flopNow ||
               held(input.keys, 'forward') || held(input.keys, 'back') ||
               held(input.keys, 'left') || held(input.keys, 'right') || held(input.keys, 'jump'))
@@ -4294,6 +4726,7 @@ export default function CrtScene({
             remote.sample(now, dt)
             avatarEnv.collision = level.collision
             avatarEnv.ceilingY = level.ceilingY
+            roundsFrame(dt)
             avatars.update(remote, dt, avatarEnv)
             remoteGrabs.tick(dt)
             voice?.update(remote.players, camera, dt)
@@ -4438,6 +4871,10 @@ export default function CrtScene({
                 // a contraption seat in reach, in any level with a sandbox
                 (reachPropNow !== null && !walk.noclip && tools?.contraption.isSeat(reachPropNow)
                   ? 'sit in the seat'
+                  : null) ??
+                // a lamp to switch, a fuse to light, a sign to write on
+                (reachPropNow !== null && sandbox && sandboxMod && !walk.noclip
+                  ? sandboxMod.creativeOf(sandbox).verb(reachPropNow, langRef.current)
                   : null)
           if (propVerb !== propVerbNow) {
             propVerbNow = propVerb
@@ -4470,6 +4907,7 @@ export default function CrtScene({
           if (level.crowd) outside.knockPeople(impacts)
           // ...and a crate on the physgun is solid to them too
           if (level.crowd && sandbox && !pausedNow) outside.pressPeople(sandbox)
+          if (level.creatures) creatureDirs.get(level.id)?.knock(impacts)
           // ...and its prompt is the lowest-priority one: the machine and a
           // door both win, because both are things you are standing right at
           // (and not to a flyer: a car offered to somebody passing overhead
@@ -4599,6 +5037,7 @@ export default function CrtScene({
           and the dev handle follow it across a cut (switchSandboxTo).
         */
         let sandboxMod: typeof import('../../game/sandbox/sandbox') | null = null
+        let creaturesMod: typeof import('../../game/creatures/director') | null = null
         const sandboxFor = (level: Level): Sandbox | null => {
           if (!level.sandbox || !sandboxMod || !scene) return null
           const have = sandboxes.get(level.id)
@@ -4620,6 +5059,25 @@ export default function CrtScene({
           o.attach?.(sb)
           sb.gravity = -GRAVITY * rules.gravity * gravityOf(level)
           sb.timescale = rules.timescale
+          if (level.creatures && creaturesMod) {
+            const d = creaturesMod.createCreatureDirector({
+              world: level.creatures,
+              sb,
+              level: level.id,
+              players: creaturePlayers,
+              daylight: () => lastSky?.day ?? 1,
+              send: (m) => net?.creature(m),
+              online: () => net !== null && net.status === 'live',
+              you: () => remote.you,
+              knockSelf: (vx, vz) => takeShove(vx * 0.55, 3, vz * 0.55),
+            })
+            creatureDirs.set(level.id, d)
+            const mail = creatureMail.get(level.id)
+            if (mail?.host) d.receive(mail.host)
+            if (mail?.rows) d.receive(mail.rows)
+            // a blast is applied to the creatures by the host alone
+            sb.onExplosion((e) => d.explosion(e))
+          }
           const h = historyOf(sb)
           h.me = remote.you ?? LOCAL
           h.onChange(() => {
@@ -4677,16 +5135,18 @@ export default function CrtScene({
           }),
           import('../../game/sandbox/sandbox'),
           import('../../game/sandbox/tools/toolbelt'),
+          import('../../game/creatures/director'),
         ])
         let worldReady: Promise<void> | null = null
         const ensureWorld = () => {
           worldReady ??= (async () => {
-            const [, [registry, sbMod, toolsMod]] = await Promise.all([
+            const [, [registry, sbMod, toolsMod, crMod]] = await Promise.all([
               outside.attachWorld(),
               loadWorldModules(),
             ])
             if (disposed || !scene) return
             sandboxMod = sbMod
+            creaturesMod = crMod
             // the world draws the yard's ground from here on
             house.worldGround()
             // synchronous and cheap: Rapier itself downloads behind it and
@@ -4739,11 +5199,12 @@ export default function CrtScene({
               weapons: {
                 players: function* () {
                   for (const [id, p] of remote.players) {
-                    if (p.here && !p.flying && !fleetNet.seatOf(id)) yield { id, x: p.x, y: p.y, z: p.z }
+                    if (p.here && !p.flying && !fleetNet.seatOf(id)) yield { id, x: p.x, y: p.y, z: p.z, ...rounds?.hitbox(id) }
                   }
                 },
                 people: (watch) => {
                   if (levels.current.crowd) outside.knockPeople(watch)
+                  creatureDirs.get(levels.current.id)?.knock(watch)
                 },
                 waterY: () => levels.current.waterY,
                 level: () => levels.current.id,
@@ -4848,6 +5309,9 @@ export default function CrtScene({
                   wheelApi.current?.aim(x, y)
                 },
                 __tools: tools,
+                // the camera's photographs, and the balloon/lamp/sign controller
+                __photos: photoStore,
+                __creative: (sb?: Sandbox) => sandboxMod?.creativeOf((sb ?? sandbox)!),
                 __worldEffects: worldEffects,
                 __portalWalk: portalWalk,
                 __portalMoon: portalMoon,
@@ -4855,11 +5319,18 @@ export default function CrtScene({
                 // scripted contraptions (a car, a rocket, a hovercraft), through
                 // the app's own module graph so they share its contraptions
                 __contraptionBuild: () => import('../../game/sandbox/contraption/build'),
+                // the builds book's store and the duplicator's clipboard
+                __builds: builds,
+                __blueprints: () => import('../../game/sandbox/blueprint/blueprint'),
+                __blueprintClipboard: () => import('../../game/sandbox/blueprint/clipboard'),
                 // the shared walk, for a two-client drive: the keys (the
                 // physgun's trigger is a mouse button only a locked pointer
                 // reports), who else is here and what their beams are doing
                 __input: input,
                 __remote: remote,
+                __health: health,
+                __creatures: () => creatureDirs.get(levels.current.id) ?? null,
+                __rounds: { state: roundState, get director() { return rounds }, pause: (on: boolean) => setPauseNow(on), here: () => host.here?.() },
                 __avatars: avatars,
                 __grabTaker: grabTaker,
                 // the view from the air: what the fog, the far field and the
@@ -4953,6 +5424,14 @@ export default function CrtScene({
               },
             })
             blockNet.attach(built.net)
+            blockChunk = built.net.chunkAt
+            built.net.setClaims({
+              at: social.claimAt,
+              denied: (owner) => quiet(`that chunk belongs to ${owner}`, `ese chunk es de ${owner}`),
+              entered: (c) => {
+                if (c) quiet(c.mine ? 'your claim' : `claimed by ${c.owner}`, c.mine ? 'tu terreno' : `terreno de ${c.owner}`)
+              },
+            })
             built.level.hands?.subscribe((h) => setBlockHud(h))
             // dev only: the drive harness digs, builds and blasts through it
             if (import.meta.env.DEV) Object.assign(window, { __cubeland: built })
@@ -5357,7 +5836,10 @@ export default function CrtScene({
           nextFrame = 0
           look.setScale(pr)
           // announce ourselves while the stand-up glide plays, so the roster
-          // and the first snapshots have landed by the time the controls do
+          // and the first snapshots have landed by the time the controls do.
+          // (Into the room worldRoom.ts already wants: a ?room= link is
+          // decided before this runs. A room picked on the map sheet
+          // afterwards is a re-join, via roomRestartRef.)
           joinWorld()
           // push back from the desk and rise to standing height in one move,
           // straight off the glass: half a second reads as standing up, and
@@ -5562,6 +6044,7 @@ export default function CrtScene({
             propSwing = 1.1
             return
           }
+          if (workCreative()) return
           takeSeat()
         }
         enterRef.current = () => {
@@ -5798,6 +6281,10 @@ export default function CrtScene({
       propRef.current = null
       resumeRef.current = null
       goMapRef.current = null
+      roundUnbindRef.current?.()
+      roundUnbindRef.current = null
+      roomRestartRef.current = null
+      unsubRoom()
       pixelProofsRef.current = null
       enterRef.current = null
       leaveRef.current = null
@@ -5805,6 +6292,8 @@ export default function CrtScene({
       setNickRef.current = null
       disposeFleet?.()
       disposeFleet = null
+      offBuildNotes?.()
+      offBuildNotes = null
       if (scene) {
         scene.traverse((o) => {
           const mesh = o as THREE.Mesh
@@ -5870,6 +6359,8 @@ export default function CrtScene({
                 : weaponLine
                   ? tapeLine(keyHint(`${t.sandbox.hud.weapons[weaponLine]} · ${
                       t.sandbox.hud.weaponTail} · ${t.sandbox.hud.pauses}`, language))
+                : cameraOut
+                  ? tapeLine(keyHint(`${t.sandbox.hud.camera} · ${t.sandbox.hud.pauses}`, language))
                 : toolLine
                   ? // the tool gun out: what its two buttons do in this mode, now
                     tapeLine(keyHint(`${toolgunLine(toolLine.state, language, toolLine.keys)} · ${
@@ -5881,6 +6372,8 @@ export default function CrtScene({
                 } · ${t.sandbox.hud.pauses}`, language))}
         </p>
       )}
+      {/* a private room's code, in the corner; nothing at all in public */}
+      {roam && walking && !paused && <RoomChip />}
       {/* the instrument panel. Deliberately the same quiet mono the rest of
           the HUD is in — a chrome speedometer over this world would be a
           different game's furniture */}
@@ -5962,6 +6455,13 @@ export default function CrtScene({
           onClose={() => closeMenuRef.current?.()}
         />
       )}
+      {/* hit points, the killfeed and the death sheet (HealthHud.tsx) */}
+      {roam && walking && !paused && roundHud && (
+        <RoundHud state={roundHud.state} director={roundHud.director} nameOf={roundHud.nameOf} />
+      )}
+      {roam && walking && !paused && healthHud && (
+        <HealthHud state={healthHud.state} nameOf={healthHud.nameOf} />
+      )}
       {/* the crosshair, whenever there is a walk to aim: also with the
           mouse freed for the catalogue, because that is exactly when you
           need to know where the thing you click is going to land */}
@@ -6007,6 +6507,7 @@ export default function CrtScene({
           }}
         />
       )}
+      {roam && walking && <PhotoCamera paused={paused} />}
       {roam && walking && (
         <ToolSwitcher
           belt={belt}
@@ -6049,6 +6550,17 @@ export default function CrtScene({
           tier={tierInfo}
           people={people}
           onMaps={() => setChoosing(true)}
+          permissions={
+            mp.status === 'live'
+              ? {
+                  protect: permState.protect,
+                  canSwitch: permState.canSwitch,
+                  friends: permState.friends,
+                  onProtect: (on) => permRef.current?.protect(on),
+                  onFriend: (name, on) => permRef.current?.friend(name, on),
+                }
+              : undefined
+          }
           identity={{
             look,
             onLook: setLook,

@@ -5,6 +5,7 @@ import { forceMusic, musicNow, type Mood } from '../music'
 import { labelIn, type History } from './history'
 import type { PropKind } from './kinds'
 import type { WorldRules } from './rules'
+import type { SocialHost } from './socialCommands'
 import type { PropId, Sandbox } from './sandbox'
 
 /*
@@ -144,6 +145,26 @@ export interface SandboxHost {
   bring?: (to: number | 'all') => boolean
   /** say something on the shared chat; false offline */
   chat?: (text: string) => boolean
+  /** friends, protection, claims, votes and mutes (socialCommands.ts) */
+  social?: SocialHost
+  /** hit points (sandbox/healthCommands.ts). Absent headless; `online` says
+      whether a server is keeping the numbers, without which there is no
+      health to speak of (each verb answers false, and the command says so) */
+  health?: {
+    read: () => { hp: number; max: number; dead: boolean; pvp: boolean; online: boolean }
+    kill: () => boolean
+    hurt: (n: number) => boolean
+    heal: () => boolean
+    pvp: (on: boolean) => boolean
+  }
+  /** the living things of this level (sandbox/creatureCommands.ts) */
+  creatures?: import('./creatureCommands').CreatureHost
+  /** the rounds (sandbox/roundCommands.ts): the store, and a way to speak to the
+      server. Absent headless */
+  rounds?: {
+    state: () => import('../net/remoteRounds').RoundState
+    send: (m: import('../net/roundProtocol').RoundClientMessage) => boolean
+  }
   /** tools the tool slots offer, and handing one over (the physgun piece) */
   tools?: () => string[]
   give?: (tool: string) => boolean
