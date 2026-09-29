@@ -2029,6 +2029,8 @@ export default function CrtScene({
         /** somebody bumped or shot us: our own body, our own call (a
             stumble through the walk, or past the flop line the ragdoll) */
         const takeShove = (vx: number, vy: number, vz: number) => {
+          // a disguised prop stands its ground: a bolt does not flop a barrel
+          if (rounds?.disguisedSelf()) return
           shoveV.set(vx, vy, vz)
           const able =
             !fleet.riding && !seating.current && partSeat === null && !walk.noclip && !godMode && !rig.down && !levels.frozen

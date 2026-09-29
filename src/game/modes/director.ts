@@ -44,6 +44,8 @@ export interface RoundDirector {
   blind: () => boolean
   respawnSpot: () => WalkerPose | null
   objective: () => { en: string; es: string } | null
+  /** we are wearing a disguise: a shot does not knock a prop over */
+  disguisedSelf: () => boolean
   /** an avatar's body should not be drawn (it is a prop) */
   hidden: (id: number) => boolean
   /** a bullet's cylinder for this player, when it is not a body's */
@@ -150,6 +152,7 @@ export function createRoundDirector(store: RoundState, host: ModeHost): RoundDir
     blind: () => !!mode?.blind?.(),
     respawnSpot: () => (store.phase === 'playing' ? mode?.respawnSpot?.() ?? null : null),
     objective: () => mode?.objective?.() ?? null,
+    disguisedSelf: () => store.inRound && store.disguises.has(store.you),
     hidden: (id) => store.disguises.has(id) && infoOf(store.disguises.get(id)!) !== null,
     hitbox(id) {
       const kind = store.disguises.get(id)

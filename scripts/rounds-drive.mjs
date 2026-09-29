@@ -58,9 +58,14 @@ const shim = `(() => {
   localStorage.setItem('portfolio-language', 'en')
   localStorage.setItem('alejos-roam-prefs', JSON.stringify({cap: 60}))
   window.__sentRounds = []
+  window.__hits = []
   const Native = window.WebSocket
   window.WebSocket = class extends Native {
-    send(s) { if (typeof s === 'string' && s.includes('world-round-cmd')) window.__sentRounds.push(JSON.parse(s)); super.send(s) }
+    send(s) {
+      if (typeof s === 'string' && s.includes('world-round-cmd')) window.__sentRounds.push(JSON.parse(s))
+      else if (typeof s === 'string' && s.includes('world-shot-hit')) window.__hits.push(JSON.parse(s))
+      super.send(s)
+    }
   }
 })()`
 async function chrome(i, path) {
@@ -89,7 +94,7 @@ async function chrome(i, path) {
   await send('Page.enable'); await send('Runtime.enable')
   await send('Page.addScriptToEvaluateOnNewDocument', { source: shim })
   await send('Page.navigate', { url: `http://localhost:${port}${path}` })
-  await waitFor(() => evaluate('!!window.__sandbox?.ready && window.__sandbox.network?.online && !!window.__pickMap && !!window.__rounds'), 480, 250, `sandbox ${i}`)
+  await waitFor(() => evaluate('!!window.__sandbox?.ready && window.__sandbox.network?.online && !!window.__pickMap && !!window.__rounds'), 2400, 250, `sandbox ${i}`)
   console.log(`Chrome ${i} on ${path}`)
   const run = (command) => evaluate(`__sandbox.run(${JSON.stringify(command)})`)
   const key = (code, on) => evaluate(`(() => { ${on ? `__input.keys.add('${code}')` : `__input.keys.delete('${code}')`}; return true })()`)
@@ -110,9 +115,15 @@ const stand = (c, x, z, yaw = 0, pitch = 0) => c.evaluate(`(async () => { await 
 /** what to look at when a step times out */
 const diag = async (cs) => {
   for (const c of cs) {
-    console.log(`  [${c.tag}]`, await c.evaluate(`JSON.stringify({ here: __rounds.here(), yaw: __sandboxWalk.yaw, pitch: __sandboxWalk.pitch, tool: __tools.tool, slot: __tools.slot, fire: __input.keys.has('Mouse0'), hp: __health.hp, dead: __health.dead, prot: __health.protectedNow, pvp: __health.pvp, phase: __rounds.state.phase, mine: __rounds.state.mine, others: [...__remote.players].map(([id, p]) => [id, Math.round(p.x), Math.round(p.z), p.here]), level: __levels.current.id })`))
+    console.log(`  [${c.tag}]`, await c.evaluate(`JSON.stringify({ here: __rounds.here(), yaw: __sandboxWalk.yaw, pitch: __sandboxWalk.pitch, tool: __tools.tool, slot: __tools.slot, fire: __input.keys.has('Mouse0'), hp: __health.hp, dead: __health.dead, prot: __health.protectedNow, pvp: __health.pvp, phase: __rounds.state.phase, mine: __rounds.state.mine, others: [...__remote.players].map(([id, p]) => [id, Math.round(p.x), Math.round(p.z), p.here]), level: __levels.current.id, hits: __hits.slice(-3), nshots: __hits.length })`))
     await c.shot(`diag-${c.tag}`)
   }
+}
+/** stand at (x, z) looking at a point (tx, ty, tz), eye 4.2 over the feet */
+const standAim = (c, x, z, tx, ty, tz) => {
+  const yaw = Math.atan2(-(tx - x), -(tz - z))
+  const pitch = Math.atan2(ty - 3.84, Math.hypot(tx - x, tz - z))
+  return stand(c, x, z, yaw, pitch)
 }
 const idle = async (cs) => { for (const c of cs) { const p = await c.phase(); if (p !== 'lobby') await c.run('round stop'); } await waitFor(async () => (await cs[0].phase()) === 'lobby', 80, 250, 'back to the lobby') }
 
@@ -232,36 +243,54 @@ try {
     const [hunter, prop] = roles[0] === 'hunter' ? [a, b] : [b, a]
     const pid = roles[0] === 'hunter' ? idb : ida
     // the prop walks up to a decoy, looks at it and presses Y
-    const decoy = await prop.evaluate(`(() => { let best = null; __sandbox.forEach(p => { if (p.data.net && !best) { const t = p.body.translation(); best = { id: p.id, kind: p.kind.id, x: t.x, y: t.y, z: t.z } } }); return best })()`)
-    console.log('  decoy', JSON.stringify(decoy))
-    await stand(prop, decoy.x + 4, decoy.z, Math.PI / 2, -0.1)
+    // (the decoys are scattered over the whole map, some behind walls: for a
+    // repeatable look, the prop drops a barrel of its own on the turning
+    // circle and copies that. It is as shared a prop as any decoy)
+    await stand(prop, -23996, 0, Math.PI / 2, -0.45)
     await sleep(1500)
-    await prop.key('KeyY', true); await sleep(300); await prop.key('KeyY', false)
+    await prop.run('spawn barrel')
+    await sleep(6000)
+    const decoy = await prop.evaluate(`(() => { let best = null; __sandbox.forEach(p => { if (p.data.net && p.kind.id === 'barrel' && (!best || p.id > best.id)) { const t = p.body.translation(); best = { id: p.id, kind: p.kind.id, x: t.x, y: t.y, z: t.z } } }); return best })()`)
+    console.log('  decoy', JSON.stringify(decoy))
+    await standAim(prop, decoy.x + 4, decoy.z, decoy.x, decoy.y, decoy.z)
+    await sleep(1500)
+    await prop.key('KeyY', true); await sleep(2500); await prop.key('KeyY', false)
     await waitFor(async () => (await hunter.st(`s.disguises.get(${pid})`)) !== undefined, 60, 250, 'the disguise reaches the hunter')
     console.log('  disguised as', await hunter.st(`s.disguises.get(${pid})`))
     assert.equal(await hunter.evaluate(`__rounds.director.hidden(${pid})`), true, 'the body is hidden on the hunter')
     await hunter.shot('prop-hunter-blind')
     // the hunt begins: the hunter walks up and looks at the disguise
     await waitFor(async () => !(await hunter.evaluate('__rounds.director.blind()')), 200, 250, 'the hunt begins')
-    const where = await prop.evaluate('(() => { const h = __rounds.here(); return [h.x, h.z] })()')
-    await stand(hunter, where[0] - 9, where[1], -Math.PI / 2, -0.12)
+    // out in the open, on the turning circle, where a line of sight is certain
+    const where = [-24000, 0]
+    await stand(prop, where[0], where[1], Math.PI / 2, 0)
+    await standAim(hunter, where[0] - 9, where[1], where[0], 1.2, where[1])
     await sleep(2500)
     await hunter.shot('prop-hunter-sees-the-disguise')
     const hp0 = await hunter.evaluate('__health.hp')
     // a wrong shot: at a decoy (facing away from the prop) costs 5 hp
-    await stand(hunter, decoy.x - 8, decoy.z + 3, -Math.PI / 2, -0.05)
+    await standAim(hunter, decoy.x - 6, decoy.z, decoy.x, decoy.y, decoy.z)
     await hunter.evaluate('__tools.select(4)')
     await sleep(800)
-    await hunter.key('Mouse0', true); await sleep(1200); await hunter.key('Mouse0', false)
+    await hunter.key('Mouse0', true); await sleep(6000); await hunter.key('Mouse0', false)
     await waitFor(async () => (await hunter.evaluate('__health.hp')) < hp0, 80, 250, 'a wrong shot costs the hunter')
     console.log('  hunter hp', hp0, '->', await hunter.evaluate('__health.hp'))
-    // a right shot: at the disguise's hitbox until the prop is found
-    await stand(hunter, where[0] - 9, where[1], -Math.PI / 2, -0.12)
+    // a right shot: at the disguise's hitbox until the prop is found. The
+    // crossbow (45 a bolt) because a headless frame rate cannot land nine
+    // pistol rounds inside the five seconds before hit points come back;
+    // every hit shoves the prop off the line, so it is stood back each try
+    await hunter.evaluate('__tools.select(5)')
     await stand(prop, where[0], where[1], Math.PI / 2, 0)
-    await sleep(1800)
-    await hunter.key('Mouse0', true)
-    await waitPhase(hunter, 'results', 60000, 'the prop is found')
-    await hunter.key('Mouse0', false)
+    await standAim(hunter, where[0] - 9, where[1], where[0], 1.2, where[1])
+    // pinned where it is, as a real player would stand their ground
+    await prop.evaluate(`window.__pin = setInterval(() => { const w = __sandboxWalk; w.teleport(${where[0]}, ${where[1]}, 0) }, 120); true`)
+    await sleep(1200)
+    // (a crossbow is one bolt a click)
+    for (let clicks = 0; clicks < 120 && (await hunter.phase()) === 'playing'; clicks++) {
+      await hunter.key('Mouse0', true); await sleep(900); await hunter.key('Mouse0', false); await sleep(1100)
+    }
+    await waitPhase(hunter, 'results', 20000, 'the prop is found')
+    await prop.evaluate('clearInterval(window.__pin); true')
     assert.equal(await hunter.st('s.result.why'), 'hunted')
     await sleep(600)
     await hunter.shot('prop-results-hunter'); await prop.shot('prop-results-prop')
