@@ -184,6 +184,29 @@ export function createCreatures({ players, send, health = null, now = Date.now }
     table: (name) => [...(scopes.get(name)?.table.values() ?? [])],
     hostOf: (name) => scopes.get(name)?.host ?? 0,
     tick: () => {},
+    /** a round holds a scope peaceful (rounds.js) and lets go afterwards. The
+        console cannot un-peace it meanwhile; `release` puts back what was set
+        before the hold. Idempotent both ways */
+    hold: (name) => {
+      const s = scope(name);
+      if (s.held) return;
+      s.held = { was: s.peaceful };
+      if (!s.peaceful) {
+        s.peaceful = true;
+        announce(name);
+      }
+    },
+    release: (name) => {
+      const s = scopes.get(name);
+      if (!s?.held) return;
+      const was = s.held.was;
+      s.held = null;
+      if (s.peaceful !== was) {
+        s.peaceful = was;
+        announce(name);
+      }
+    },
+    isPeaceful: (name) => scopes.get(name)?.peaceful ?? false,
     handle: (ws, m) => {
       const w = ws.world;
       if (!w || typeof m.level !== 'string' || m.level !== w.level) return;
@@ -280,7 +303,13 @@ export function createCreatures({ players, send, health = null, now = Date.now }
             return;
           }
           if (m.cmd === 'on' || m.cmd === 'off') s.on = m.cmd === 'on';
-          else if (m.cmd === 'peaceful' || m.cmd === 'war') s.peaceful = m.cmd === 'peaceful';
+          else if (m.cmd === 'peaceful' || m.cmd === 'war') {
+            // a round in play keeps the mobs peaceful; the console may not undo that
+            if (s.held) {
+              if (m.cmd === 'peaceful') s.held.was = true;
+              else s.held.was = false;
+            } else s.peaceful = m.cmd === 'peaceful';
+          }
           else if (m.cmd !== 'clear') return;
           if (m.cmd === 'clear' || m.cmd === 'off') {
             s.table.clear();

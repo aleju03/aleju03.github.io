@@ -63,6 +63,9 @@ export interface WorldNet {
   health: (message: import('../../game/net/healthProtocol').HealthClientMessage) => void
   /** the creatures' host snapshots, hits and attacks (game/net/creatureProtocol.ts) */
   creature: (message: import('../../game/net/creatureProtocol').CreatureClientMessage) => void
+  /** the round's commands: ready, mode, start, and a mode's own verbs
+      (game/net/roundProtocol.ts) */
+  round: (message: import('../../game/net/roundProtocol').RoundClientMessage) => void
   readonly status: WorldStatus
   /** the ICE servers the server handed over at join; the STUN/TURN set voice
       opens peers with. Empty until `world-welcome` lands */
@@ -374,6 +377,7 @@ export function createWorldNet(opts: WorldNetOpts): WorldNet {
     weapon: (message) => { if (joined) raw(message) },
     health: (message) => { if (joined) raw(message) },
     creature: (message) => { if (joined) raw(message) },
+    round: (message) => { if (joined) raw(message) },
     get status() {
       return status
     },

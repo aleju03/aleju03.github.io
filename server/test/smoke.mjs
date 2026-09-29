@@ -18,6 +18,8 @@ import { healthSmoke, healthRoomsSmoke } from './health.mjs';
 import { buildsSmoke, buildsRateSmoke } from './builds.mjs';
 import { persistSmoke } from './persist.mjs';
 import { creaturesSmoke } from './creatures.mjs';
+import { roundsUnit } from './rounds.mjs';
+import { roundsSmoke } from './roundsSocket.mjs';
 import { parseResults } from '../src/ytsearch.js';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -90,6 +92,8 @@ function startServer(port = '0') {
         WORLD_ROOM_MAX_PLAYERS: '3',
         // the gallery's cap test publishes twenty builds in a row
         BUILDS_PUBLISH_MAX: '1000',
+        ROUND_COUNTDOWN_MS: '300',
+        ROUND_RESULTS_MS: '400',
       },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
@@ -115,6 +119,9 @@ async function main() {
   await propSmoke(url, connect);
   await roomsSmoke(url, connect);
   await healthRoomsSmoke(url, connect);
+  await roundsUnit();
+  await roundsSmoke(url, connect);
+  console.log('0b. rounds: lobby, host powers, teams, leavers, results and cleanup for all five modes on fake sockets and a fake clock; one round over the wire');
   console.log('0. world rooms: isolation of roster, ticks, chat, signals, props, damage and seats; join errors; death and rebirth; creation limits');
   await protectionSmoke(url, connect);
   await persistSmoke();

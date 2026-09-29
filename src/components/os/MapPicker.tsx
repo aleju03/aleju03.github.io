@@ -4,6 +4,7 @@ import { MAPS, type MapId } from '../../game/levels/maps'
 import { useI18n } from '../../i18n'
 import { INK, INK_SOFT, MARK, PAPER, stockTexture } from './paper'
 import RoomStrip from './RoomStrip'
+import PlayPanel from './PlayPanel'
 import { Rule } from './PaperMarks'
 
 /*
@@ -135,6 +136,8 @@ export default function MapPicker({ here, onPick }: MapPickerProps) {
         {/* who to play with: the public world, a private room, or a code */}
         <Rule className="mt-6 mb-3 w-40" color={`${INK}66`} />
         <RoomStrip />
+        {/* and what to play: the host of a room picks a game before anyone walks anywhere */}
+        <div className="mt-4"><PlayPanel compact /></div>
       </div>
     </div>
   )

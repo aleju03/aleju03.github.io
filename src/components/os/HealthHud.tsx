@@ -170,7 +170,7 @@ export default function HealthHud({
 
       {pvpNote && (
         <p
-          className="pointer-events-none absolute top-14 left-1/2 z-20 -translate-x-1/2 px-3 py-[3px] font-mono text-[12px]"
+          className="pointer-events-none absolute top-[18%] left-1/2 z-20 -translate-x-1/2 px-3 py-[3px] font-mono text-[12px]"
           style={{ color: INK, background: TAPE, boxShadow: '0 1px 3px rgba(40,30,18,0.35)', transform: 'translateX(-50%) rotate(0.6deg)' }}
         >
           {pvpNote}

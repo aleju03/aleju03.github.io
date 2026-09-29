@@ -136,6 +136,10 @@ export interface WeaponTarget {
   x: number
   y: number
   z: number
+  /** the cylinder to test, when it is not a body's (a prop-hunt disguise is
+      the prop's shape) */
+  r?: number
+  h?: number
 }
 
 export interface WeaponWorld {
@@ -402,7 +406,7 @@ export function createWeapons(o: WeaponWorld): Weapons {
       for (const p of o.players()) {
         // (a copy of somebody's shot starts inside their own body)
         if (p.id === skip) continue
-        const t = rayCylinder(from, d, best, p.x, p.z, BODY_R, p.y, p.y + BODY_H)
+        const t = rayCylinder(from, d, best, p.x, p.z, p.r ?? BODY_R, p.y, p.y + (p.h ?? BODY_H))
         if (t >= 0 && t < best) {
           best = t
           hit = hitOut

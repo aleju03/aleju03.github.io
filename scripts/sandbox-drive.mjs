@@ -119,6 +119,13 @@
                                       killfeed and the sheet (shots health-*).
                                       The two-client drive is
                                       scripts/health-drive.mjs
+    npm run drive -- rounds           the round's screens with no server: the store fed
+                                      by hand, a shot of each game's HUD (countdown,
+                                      deathmatch and its scoreboard, the seeker's
+                                      blindfold, a disguised prop, the race, the
+                                      build gallery) and the results sheet (shots
+                                      rounds-*). The two-client drive over a real
+                                      relay is scripts/rounds-drive.mjs
     npm run drive -- portal           the portal gun: taken from the catalogue's
                                       tools tab, a blue and an orange portal
                                       opened on two walls downtown and each
@@ -859,6 +866,59 @@ try {
     await sleep(600)
     await shot('health-back')
     await evaluate('window.__health.offline()')
+  }
+
+  if (WHAT.includes('rounds')) {
+    // the round's screens with no server: the store fed the server's own
+    // messages by hand, one state per game, and a shot of each HUD. The
+    // two-client drive (real rounds over a real relay) is scripts/rounds-drive.mjs
+    console.log('rounds')
+    await look(null, -0.1)
+    const feed = (msgs) => evaluate(`(() => { const r = window.__rounds.state; for (const m of ${JSON.stringify(msgs)}) r.receive(m); return true })()`)
+    const st = (ph, mode, extra = {}) => ({
+      type: 'world-round', v: 1, ph, mode, lv: 'nuketown', now: Date.now(), end: Date.now() + 60_000, host: 1,
+      rd: [1, 2], p: [], obj: {}, ...extra,
+    })
+    await feed([{ type: 'world-welcome', you: 1, tick: 66, slot: 0, players: [{ id: 2, name: 'Ada' }, { id: 3, name: 'Bo' }] }])
+    // deathmatch: the countdown, then play with a score line and the board held
+    await feed([st('countdown', 'deathmatch', { end: Date.now() + 3200, p: [[1, 'a', '', 0, 0, 0, 0], [2, 'b', '', 0, 0, 0, 0], [3, 'b', '', 0, 0, 0, 0]] })])
+    await sleep(500)
+    await shot('rounds-countdown')
+    await feed([st('playing', 'deathmatch', { end: Date.now() + 251_000, obj: { limit: 40, teams: true }, p: [[1, 'a', '', 7, 7, 3, 0], [2, 'b', '', 9, 9, 6, 0], [3, 'b', '', 4, 4, 5, 0]] })])
+    await sleep(700)
+    await shot('rounds-deathmatch')
+    await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Tab' })); true`)
+    await sleep(400)
+    await shot('rounds-scoreboard')
+    await evaluate(`window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Tab' })); true`)
+    // hide and seek: the seeker's blindfold, then a hider's view
+    const seekAt = Date.now() + 20_000
+    await feed([st('playing', 'hide', { end: Date.now() + 260_000, obj: { seekAt }, p: [[1, 'b', 'seeker', 0, 0, 0, 0], [2, 'a', 'hider', 0, 0, 0, 0], [3, 'a', 'hider', 0, 0, 0, 0]] })])
+    await sleep(600)
+    await shot('rounds-hide-seeker-blind')
+    await feed([st('playing', 'hide', { end: Date.now() + 260_000, obj: { seekAt }, p: [[1, 'a', 'hider', 0, 0, 0, 0], [2, 'b', 'seeker', 0, 0, 0, 0], [3, 'a', 'hider', 0, 0, 0, 0]] })])
+    await sleep(600)
+    await shot('rounds-hide-hider')
+    // prop hunt: a prop with a disguise on
+    await feed([st('playing', 'prophunt', { end: Date.now() + 260_000, obj: { seekAt: Date.now() - 1000, decoys: 60 }, p: [[1, 'a', 'prop', 0, 0, 0, 0], [2, 'b', 'hunter', 3, 1, 0, 0], [3, 'a', 'prop', 0, 0, 0, 0]], dg: [[1, 'barrel']] })])
+    await sleep(600)
+    await shot('rounds-prophunt-prop')
+    console.log('  race', await evaluate('window.__renderer.info.programs.length'))
+    // the race on foot, and the gallery of the build contest
+    await feed([st('playing', 'race', { lv: 'cubeland', end: Date.now() + 400_000, obj: { cps: [[10, 10, 8], [60, 10, 8], [60, 60, 8]], laps: 2, foot: 1, goAt: Date.now() - 2000, grid: [0, 0, 0] }, p: [[1, '', '', 0, 4, 0, 0], [2, '', '', 0, 6, 0, 0], [3, '', '', 0, 1, 0, 0]] })])
+    console.log('  fed', await evaluate('window.__renderer.info.programs.length'))
+    await sleep(600)
+    console.log('  slept', await evaluate('window.__renderer.info.programs.length'))
+    await shot('rounds-race')
+    await feed([st('playing', 'build', { lv: 'cubeland', end: Date.now() + 100_000, obj: { theme: 3, stage: 'gallery', buildEndAt: Date.now() - 1000, plots: [[1, 0, 0], [2, 2, 0]], gal: { plot: 2, i: 1, n: 2, endAt: Date.now() + 14_000 } }, p: [[1, '', '', 0, 0, 0, 0], [2, '', '', 0, 0, 0, 0]] })])
+    await sleep(600)
+    await shot('rounds-build-gallery')
+    // results: a team won
+    await feed([st('results', 'deathmatch', { end: Date.now() + 9000, obj: { limit: 40, teams: true }, p: [[1, 'a', '', 7, 7, 3, 0], [2, 'b', '', 9, 9, 6, 0], [3, 'b', '', 4, 4, 5, 0]], res: { win: [2, 3], team: 'b', why: 'limit', rows: [[2, 'b', 9, 9, 6], [1, 'a', 7, 7, 3], [3, 'b', 4, 4, 5]] } })])
+    await sleep(700)
+    await shot('rounds-results')
+    console.log(`  ${(await run('round')).join(' / ')}`)
+    await evaluate('window.__rounds.state.offline()')
   }
 
   if (WHAT.includes('menu')) {
