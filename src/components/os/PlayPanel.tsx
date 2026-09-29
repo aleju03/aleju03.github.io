@@ -6,6 +6,7 @@ import { CIRCLED, INK, INK_SOFT, MARK } from './paper'
 import { Note, Rule } from './PaperMarks'
 import { useRoundText } from './roundText'
 import { useWorldRound } from './worldRound'
+import { worldConfigured } from './worldNet'
 
 /*
   The play page: pick a game, press ready, start it. It is written on the
@@ -98,6 +99,8 @@ export default function PlayPanel({ compact = false }: { compact?: boolean }) {
   const { bridge } = useWorldRound()
   const [note, setNote] = useState<string | null>(null)
   const state = bridge?.state ?? null
+  // rounds are played through the server: with none configured there is nothing to start
+  const offline = !worldConfigured()
 
   useEffect(() => {
     if (!state) return
@@ -111,7 +114,7 @@ export default function PlayPanel({ compact = false }: { compact?: boolean }) {
     return () => window.clearTimeout(id)
   }, [note])
 
-  if (!bridge || !state) {
+  if (offline || !bridge || !state) {
     return compact ? null : (
       <p><Note>{tr('offline')}</Note></p>
     )
