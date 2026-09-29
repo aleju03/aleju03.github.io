@@ -514,12 +514,17 @@ const PAINTERS: Record<string, (p: Px) => void> = {
   leaves: (p) => foliage(p, [0x4f8a2b, 0x3f7322, 0x5e9a36, 0x35651d], 0.22),
   birch_leaves: (p) => foliage(p, [0x76a24a, 0x64903d, 0x85b058, 0x587f34], 0.22),
   spruce_leaves: (p) => foliage(p, [0x3a5a38, 0x30502f, 0x456a43, 0x2a4428], 0.18),
+  // the liquids are shapes, not per-pixel noise: neighbouring blues or
+  // oranges less than a posterize step apart dither into static through the
+  // look, and scrolled they crawl. Both tile, so a merged quad and the
+  // scroll both wrap cleanly
   water: (p) => {
-    p.noise([0x3b6ed8, 0x3565cc, 0x4478e0], [5, 2, 2])
-    for (let k = 0; k < 6; k++) {
-      const y = Math.floor(p.rnd() * 16)
-      const x0 = Math.floor(p.rnd() * 16)
-      for (let x = 0; x < 4; x++) p.set((x0 + x) % 16, y, 0x6f9cf0)
+    p.rect(0, 0, TEX_SIZE, TEX_SIZE, 0x3a6bd4)
+    // one broad wavy crest across the tile: seen at a slant a texel shrinks
+    // under a pixel, and anything thinner than a few of them flickers
+    for (let x = 0; x < TEX_SIZE; x++) {
+      const dy = Math.round(1.6 * Math.sin((x / TEX_SIZE) * Math.PI * 2))
+      for (let k = 0; k < 4; k++) p.set(x, (6 + dy + k + TEX_SIZE) % TEX_SIZE, 0x5a8cea)
     }
   },
   glass: (p) => {
@@ -842,13 +847,22 @@ const PAINTERS: Record<string, (p: Px) => void> = {
     p.rect(5, 5, 6, 6, 0xf2fbf8)
   },
   lava: (p) => {
-    p.noise([0xd4520c, 0xe86a14, 0xc03e08, 0xf28a24], [4, 3, 2, 1])
-    for (let k = 0; k < 7; k++) {
-      const x0 = Math.floor(p.rnd() * 16)
-      const y = Math.floor(p.rnd() * 16)
-      for (let x = 0; x < 3; x++) p.set((x0 + x) % 16, y, 0xffc050)
-    }
-    p.speck(0x9a2a04, 0.05)
+    // a crust of molten cells on a wrapped tile: hot cores, orange flesh and
+    // dark seams where two cells meet
+    const pts = Array.from({ length: 5 }, () => [p.rnd() * TEX_SIZE, p.rnd() * TEX_SIZE])
+    for (let y = 0; y < TEX_SIZE; y++)
+      for (let x = 0; x < TEX_SIZE; x++) {
+        let d1 = Infinity
+        let d2 = Infinity
+        for (const [px, py] of pts) {
+          const dx = Math.min(Math.abs(x + 0.5 - px), TEX_SIZE - Math.abs(x + 0.5 - px))
+          const dy = Math.min(Math.abs(y + 0.5 - py), TEX_SIZE - Math.abs(y + 0.5 - py))
+          const d = Math.hypot(dx, dy)
+          if (d < d1) [d1, d2] = [d, d1]
+          else if (d < d2) d2 = d
+        }
+        p.set(x, y, d2 - d1 < 0.9 ? 0x7a1e02 : d1 < 1.8 ? 0xf08a22 : d1 < 3.6 ? 0xcc4a0a : 0xa83404)
+      }
   },
   ...wools,
   // (after the wools: nothing in the world is painted with these, they are

@@ -41,7 +41,8 @@ import { FADE_FRAG_ALPHA, FADE_FRAG_DISSOLVE, FADE_VERT_BODY, FADE_VERT_HEAD, fa
   ground and lights a cave by day and everything round it at night. A
   per-vertex flag makes the things that are light (glowstone, lanterns, the
   flame of a torch, lava) glow in their own colour, at the look's HDR.
-  Liquids scroll their texture, slowly when still and quickly when flowing.
+  Liquids scroll their texture a texel at a time, slowly when still and
+  quickly when flowing.
 
   The vertex colour arrives at half scale (a biome's tint can lift a
   channel over one) and is doubled here with the texel. The vertex format
@@ -83,10 +84,12 @@ const inject = (key: string) => (shader: THREE.WebGLProgramParametersWithUniform
     .replace('#include <begin_vertex>', `#include <begin_vertex>
   vTex = aTex * 0.0625;
   vBlk = aBlk;
-  // liquids move: a slow shimmer on a still one, a quick run on a flowing one
+  // liquids move: a slow drift on a still one, a quick run on a flowing one,
+  // a whole texel at a time (a sub-texel slide makes the look re-cut every
+  // texel edge every frame, which reads as crawling static)
   float liquidF = mod(floor(aBlk.y / 2.0), 2.0);
   float flowF = mod(floor(aBlk.y / 4.0), 2.0);
-  vTex.y -= liquidF * uTime * (flowF > 0.5 ? 1.3 : 0.18);
+  vTex.y -= liquidF * floor(uTime * (flowF > 0.5 ? 1.3 : 0.12) * 16.0) * 0.0625;
 ${FADE_VERT_BODY}`)
   shader.fragmentShader = shader.fragmentShader
     .replace(
@@ -144,10 +147,12 @@ export const terrainMaterials = (): TerrainMats => {
   const make = (key: 'solid' | 'water') => {
     const m = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: key === 'water' ? 0.35 : 1,
+      // (water is matte: a sheen washes it pale, up where the posterize's
+      // bands crowd together and every pixel dithers)
+      roughness: 1,
       metalness: 0,
       transparent: key === 'water',
-      opacity: key === 'water' ? 0.72 : 1,
+      opacity: key === 'water' ? 0.9 : 1,
       depthWrite: key !== 'water',
       emissive: new THREE.Color(0, 0, 0),
     })
